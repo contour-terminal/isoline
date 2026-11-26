@@ -70,24 +70,32 @@ variables and network access are explicit opt-ins, and a granted directory can n
 
 ## A taste of the embedding API
 
-A sketch of the shape the API is settling into (it will still change before 1.0):
+The API as it stands (it may still change before 1.0). This is real code: the test suite compiles and
+runs it (`src/isoline/api/ReadmeExample_test.cpp`).
 
 ```cpp
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/Store.hpp>
 
-auto const engine = isoline::api::Engine { isoline::api::EngineConfig { /* features, engine, limits */ } };
+auto const engine =
+    isoline::api::Engine { isoline::api::EngineConfig { /* features, engine, limits */ } };
 
-auto module = engine.load(wasmBytes);               // std::expected<Module, LoadError>
+auto const module = engine.load(wasmBytes); // std::expected<Module, LoadError>
 if (!module)
-    return report(module.error());                  // invalid module, or over a configured limit
+    return report(module.error()); // invalid module, or over a configured limit
 
 auto store = isoline::api::Store { engine, memoryAllocator };
 auto imports = isoline::api::Imports {};
-imports.define("env", "log", logFunction);          // a host function
+imports.define("env", "log", logType, logFunction); // a host function: its type and implementation
 
-auto instance = store.instantiate(*module, imports); // std::expected<Instance, InstantiateError>
-auto result = instance->call("add", { 2, 3 });       // traps, limits and interrupts come back as values
+auto const instance = store.instantiate(*module, imports); // std::expected<Instance, InstantiateError>
+if (!instance)
+    return report(instance.error());
+
+auto const args = std::array<isoline::api::Value, 2> { isoline::api::I32 { 2 }, isoline::api::I32 { 3 } };
+auto results = std::array<isoline::api::Value, 1> {};
+auto const called =
+    instance->call(*instance->function("add"), args, results); // traps come back as values
 ```
 
 [docs/embedding.md](docs/embedding.md) is the embedder's contract as it stands: the life cycle, the thread
