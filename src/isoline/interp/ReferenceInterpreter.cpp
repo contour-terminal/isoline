@@ -1043,8 +1043,7 @@ namespace
             }
             // uncovered-begin(execute-default)
             // Every instruction validation admits has a case above or a table row, which
-            // Numerics.everyFixedSignatureOpcodeHasARow and Simd.everyFixedSignatureSimdOpcodeHasARow
-            // hold the Numerics and Simd tables to.
+            // Opcode.everyRowDecodes holds every row of the opcode table to by running it.
             core::todo(binary::opcodeInfo(opcode).text);
         }
         // uncovered-end(execute-default)

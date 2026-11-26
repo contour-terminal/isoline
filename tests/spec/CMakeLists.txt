@@ -19,9 +19,8 @@ isoline_apply_target_policy(isoline_isotest_test TEST)
 add_test(NAME isoline_isotest_test COMMAND isoline_isotest_test)
 set_tests_properties(isoline_isotest_test PROPERTIES LABELS unit)
 
-# The feature set each suite source runs with: the 2.0 and 3.0 releases their own standard, a
-# proposal's suite every feature Isoline knows, as its tests build on 3.0.
-set(specFeatures_wasm2 wasm2)
+# The feature set each suite source runs with: the 3.0 release its own standard, a proposal's suite
+# every feature Isoline knows, as its tests build on 3.0.
 set(specFeatures_wasm3 wasm3)
 set(specFeatures_wide-arithmetic all)
 set(specFeatures_custom-page-sizes all)

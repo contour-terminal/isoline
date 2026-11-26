@@ -300,14 +300,9 @@ class RejectionMessageTest(unittest.TestCase):
 
 
 class CutSourcesTest(unittest.TestCase):
-    def test_theCutIsOptOut(self):
-        self.assertEqual(importer.cutFeaturesOf("wasm3", "wasm3,-gc", ["wasm2"]), "wasm3,-gc")
-        self.assertEqual(importer.cutFeaturesOf("new-proposal", "wasm3,-gc", ["wasm2"]), "wasm3,-gc")
-        self.assertIsNone(importer.cutFeaturesOf("wasm2", "wasm3,-gc", ["wasm2"]))
-
-    def test_theLockExemptsOnlyTheTwoZeroRelease(self):
+    def test_theLockCutsEverySource(self):
         lock = importer.loadFetchTools().readLock(SCRIPT.parent / "tools.lock")
-        self.assertEqual(lock["cut.exempt"].split(), ["wasm2"])
+        self.assertNotIn("cut.exempt", lock)
         self.assertIn("-gc", lock["cut.features"].split(","))
 
 

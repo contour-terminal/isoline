@@ -61,7 +61,7 @@
 # file, and its uncovered ones, exactly the exclusions below, are a larger share of fewer. No line or branch lost its coverage.
 
 exclude src/isoline/interp/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
-exclude src/isoline/interp/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Numerics.everyFixedSignatureOpcodeHasARow and Simd.everyFixedSignatureSimdOpcodeHasARow prove only the Numerics and Simd table rows; a Special opcode relies on execute()'s switch having its case, which no test lists out (Task 17's Opcode.everyRowDecodes walks every row)
+exclude src/isoline/interp/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Opcode.everyRowDecodes runs a module of every row of the opcode table, so an instruction without one aborts that test
 exclude src/isoline/interp/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
 exclude src/isoline/interp/ReferenceInterpreter.cpp numeric-shape-none numeric() of a non-numeric opcode: execute() dispatches only table rows here
 exclude src/isoline/interp/ReferenceInterpreter.cpp raw-bits rawBits of a vector or reference: a validated body pops a number there

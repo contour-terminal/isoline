@@ -19,13 +19,13 @@ What becomes a `skip` line is data, not a code path:
   imports from a name a poisoned module was registered under. A poisoned module, instance or
   registration poisons in turn, and a module command that is not poisoned makes its name (and, as
   the current module, the unnamed actions) clean again.
-- the GC cut, for every source but those tools.lock lists in `cut.exempt`: the pinned oracle,
-  `wasm-tools validate --features=<cut.features>`, validates the module of every command in
-  CUT_EXPECTATIONS. One it rejects with a message of GC_REJECTIONS (the innermost cause of the
-  oracle's error) becomes a skip `gc: <message>`, and a `module` or `module_definition` so cut is the
-  root of a poisoning. Where the suite expects the module valid, any other rejection fails the
-  import; where it expects it invalid or malformed, any other rejection keeps the assertion, and an
-  acceptance fails the import. The cut never hides a difference that is not GC's.
+- the GC cut, for every source: the pinned oracle, `wasm-tools validate --features=<cut.features>`,
+  validates the module of every command in CUT_EXPECTATIONS. One it rejects with a message of
+  GC_REJECTIONS (the innermost cause of the oracle's error) becomes a skip `gc: <message>`, and a
+  `module` or `module_definition` so cut is the root of a poisoning. Where the suite expects the
+  module valid, any other rejection fails the import; where it expects it invalid or malformed, any
+  other rejection keeps the assertion, and an acceptance fails the import. The cut never hides a
+  difference that is not GC's.
 A poisoned line's reason names its root, `<root's reason> (root wast line N; wast line M)`. Any
 other command the .isotest format cannot express fails the import, so that no assertion is dropped
 unseen. Each row pins how many skip lines its file has; the import fails when a file's count
@@ -542,15 +542,9 @@ def rejectionMessage(stderr):
     return OFFSET_SUFFIX.sub("", message)
 
 
-def cutFeaturesOf(source, cutFeatures, cutExempt):
-    """The features the cut runs with on a source's files: cutFeatures, or None, no cut, for a source
-    in cutExempt. The cut is opt-out, so a new source cannot lose it by being left unlisted."""
-    return None if source in cutExempt else cutFeatures
-
-
 def convert(wasmTools, cutFeatures, wast, outDir, work):
     """Converts one .wast file into outDir/<name>.isotest and its .wasm files, using work as scratch,
-    and cutting what the oracle run with cutFeatures rejects as GC; cutFeatures None cuts nothing."""
+    and cutting what the oracle run with cutFeatures rejects as GC."""
     name = wast.stem
     work.mkdir(parents=True)
     jsonPath = work / f"{name}.json"
@@ -564,8 +558,7 @@ def convert(wasmTools, cutFeatures, wast, outDir, work):
         raise SystemExit(f"{wast.name}: wasm-tools json-from-wast failed:\n{result.stderr}")
 
     translator = Translator(wast.name, lambda filename: importModuleNames((work / filename).read_bytes()),
-                            None if cutFeatures is None
-                            else lambda filename: oracleMessage(wasmTools, cutFeatures, work / filename))
+                            lambda filename: oracleMessage(wasmTools, cutFeatures, work / filename))
     lines = []
     skipped = 0
     for command in json.loads(jsonPath.read_text(encoding="utf-8"))["commands"]:
@@ -642,7 +635,6 @@ def main():
     cutFeatures = lock.get("cut.features")
     if cutFeatures is None:
         raise SystemExit(f"{LOCK.name} pins no cut.features")
-    cutExempt = lock.get("cut.exempt", "").split()
     rows = [row for row in readFiles(arguments.out / "files.txt") if row.exclude is None]
     given = dict(arguments.source)
 
@@ -654,7 +646,7 @@ def main():
             if row.source not in checkouts:
                 checkouts[row.source] = checkout(row.source, lock, given, temporary)
             work = temporary / "json" / row.source / row.path
-            commands, skipped = convert(wasmTools, cutFeaturesOf(row.source, cutFeatures, cutExempt),
+            commands, skipped = convert(wasmTools, cutFeatures,
                                         checkouts[row.source] / "test" / f"{row.path}.wast",
                                         row.directory(arguments.out), work)
             print(f"{row.source} {row.path}: {commands} commands, {skipped} skipped")

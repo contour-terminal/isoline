@@ -18,9 +18,9 @@ namespace isoline::interp
 /// Executes Wasm by the spec's small-step semantics, for clarity. Never a production engine.
 ///
 /// It is the oracle later engines are checked against, so it follows the spec's execution rules
-/// (WebAssembly 2.0, chapter 4) one instruction at a time, over a validated module, and favours
-/// being obviously right over being fast. Operands, locals, labels and call frames live in heap
-/// vectors: a Wasm call never recurses on the host stack, and a call deeper than
+/// (WebAssembly 3.0, chapter 4, for the proposals the decoder and validator accept) one instruction at a
+/// time, over a validated module, and favours being obviously right over being fast. Operands, locals, labels
+/// and call frames live in heap vectors: a Wasm call never recurses on the host stack, and a call deeper than
 /// Store::maxCallDepth() frames traps with CallStackExhausted. A host function runs synchronously,
 /// on the host stack, and may invoke Wasm again through this interpreter; each such nested
 /// invocation does recurse on the host stack, so at most MaxNestedInvocations invocations may be in
@@ -68,8 +68,8 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
                                                               std::span<runtime::Value const> args,
                                                               std::span<runtime::Value> results) override;
 
-    /// Evaluates a constant expression: the Wasm 2.0 constants, ref.null, ref.func and global.get,
-    /// and extended-const's i32 and i64 add, sub and mul.
+    /// Evaluates a constant expression: the constant instructions of every value type (v128.const
+    /// included), ref.null, ref.func and global.get, and extended-const's i32 and i64 add, sub and mul.
     /// @param store The store holding the instance.
     /// @param moduleInstance The instance whose globals and functions the expression names.
     /// @param expression The expression; valid for that instance's module.

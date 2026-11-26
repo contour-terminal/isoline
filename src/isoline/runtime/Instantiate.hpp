@@ -125,7 +125,7 @@ class ICodeExecutor
                                                                    binary::ConstExpr const& expression) = 0;
 };
 
-/// Instantiates a module, as the Wasm 2.0 spec's instantiate does (4.5.4).
+/// Instantiates a module, as the WebAssembly 3.0 spec's instantiate does (Execution, Modules).
 ///
 /// It checks the imports (their count, kinds and types, limits by subtyping), allocates the
 /// module's functions, tags, tables, memories and globals (evaluating the globals' initializers in order),

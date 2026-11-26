@@ -365,9 +365,9 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
 static_assert(OpcodeCount == 471,
-              "every non-SIMD WebAssembly 2.0 instruction (201), SIMD's 236, relaxed SIMD's 20, wide "
-              "arithmetic's four, typed function references' four, tail calls' three and exception "
-              "handling's three");
+              "every WebAssembly 3.0 instruction but GC's, and wide arithmetic's four: 2.0's non-SIMD "
+              "201, SIMD's 236, relaxed SIMD's 20, typed function references' four, tail calls' three "
+              "and exception handling's three");
 
 /// What the table knows about @p opcode.
 /// @param opcode The instruction to describe.

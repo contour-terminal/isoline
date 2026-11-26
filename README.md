@@ -22,6 +22,13 @@ ctest --preset clang-asan
 Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `macos-clang` and `msvc-debug`
 (from a Visual Studio Developer Command Prompt). Every preset builds into `out/<preset>/`.
 
+## Conformance
+
+Isoline implements the WebAssembly 3.0 core language without garbage collection, plus the wide
+arithmetic, custom page sizes and compact import section proposals. It runs the official 3.0 spec
+suite and each proposal's suite; [docs/conformance.md](docs/conformance.md) pins every suite and lists
+each excluded file and skipped assertion with its reason.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
