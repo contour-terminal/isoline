@@ -85,14 +85,22 @@ jobs:
         working-directory: out/clang-coverage
         run: |
           "llvm-profdata-$LLVM_VERSION" merge -sparse profiles/*.profraw -o isoline.profdata
-          ignore='vendor/|_deps/|^/usr/|_test\.cpp$|/out/'
-          "llvm-cov-$LLVM_VERSION" report src/isoline/isoline_test -instr-profile=isoline.profdata \
+          # The unit tests and the spec runner both exercise src/isoline/; the ratchet covers it alone.
+          objects=(src/isoline/isoline_test -object tests/spec/isoline_spec_runner
+                   -object tests/spec/isoline_isotest_test)
+          ignore='vendor/|_deps/|^/usr/|_test\.cpp$|/out/|/tests/|/testing/'
+          "llvm-cov-$LLVM_VERSION" report "${objects[@]}" -instr-profile=isoline.profdata \
             -ignore-filename-regex="$ignore" | tee coverage-summary.txt
-          "llvm-cov-$LLVM_VERSION" export src/isoline/isoline_test -instr-profile=isoline.profdata \
+          "llvm-cov-$LLVM_VERSION" export "${objects[@]}" -instr-profile=isoline.profdata \
+            -ignore-filename-regex="$ignore" -format=text > coverage.json
+          "llvm-cov-$LLVM_VERSION" export "${objects[@]}" -instr-profile=isoline.profdata \
             -ignore-filename-regex="$ignore" -format=lcov > coverage.lcov
-          "llvm-cov-$LLVM_VERSION" show src/isoline/isoline_test -instr-profile=isoline.profdata \
+          "llvm-cov-$LLVM_VERSION" show "${objects[@]}" -instr-profile=isoline.profdata \
             -ignore-filename-regex="$ignore" -format=html -output-dir=coverage-html
+      - name: Coverage ratchet
+        run: python3 -I scripts/coverage-check.py out/clang-coverage/coverage.json coverage-baseline.txt
       - name: Upload coverage report
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report

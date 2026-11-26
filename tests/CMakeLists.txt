@@ -24,9 +24,13 @@ set_tests_properties(spec-skips-unpinned PROPERTIES LABELS unit WILL_FAIL TRUE)
 add_test(NAME spec-skips-fewer COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-skips" 2)
 set_tests_properties(spec-skips-fewer PROPERTIES LABELS unit WILL_FAIL TRUE)
 
-# The spec importer's translation: which commands become skip lines, and which fail the import.
+# The coverage ratchet's checker, tested on fixture reports: it needs Python, not a coverage build.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME coverage-check-selftest
+             COMMAND Python3::Interpreter -I "${PROJECT_SOURCE_DIR}/scripts/coverage-check_test.py")
+    set_tests_properties(coverage-check-selftest PROPERTIES LABELS lint)
+    # The spec importer's translation: which commands become skip lines, and which fail the import.
     add_test(NAME import-spec-tests-selftest
              COMMAND Python3::Interpreter -I "${PROJECT_SOURCE_DIR}/scripts/import-spec-tests_test.py")
     set_tests_properties(import-spec-tests-selftest PROPERTIES LABELS lint)
