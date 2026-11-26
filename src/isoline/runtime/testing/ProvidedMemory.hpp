@@ -27,6 +27,10 @@ enum class GrowDecision : uint8_t
 /// fixed buffer of objectBytes followed by a guard it declares, and refuses every further request with
 /// Embedder, as Contour's takeProvision() does. The memory never moves, so bytes().data() is stable
 /// across grows, and every grow is the embedder's call (decide), within the buffer.
+///
+/// One memory is all a store on it can hold: a second instance with a memory, a module of several
+/// memories, or a component whose core instances each define one fails to instantiate with
+/// AllocationFailure{Memory, Embedder}. An embedder like it gives each store its own allocator.
 class ProvidedMemoryAllocator final: public IMemoryAllocator
 {
   public:

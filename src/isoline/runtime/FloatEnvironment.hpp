@@ -63,7 +63,9 @@ struct FloatControlLayout
 /// The row of the target Isoline was built for. CMake compiles exactly one of
 /// FloatControlX86_64.cpp, FloatControlArm64.cpp and FloatControlPortable.cpp, from the compiler's
 /// target architecture. MSVC on arm64, and a build for several architectures at once (a universal
-/// macOS build), take the portable row: there only the rounding mode is pinned.
+/// macOS build), take the portable row: there only the rounding mode is pinned. On MSVC arm64 that
+/// leaves FPCR's FZ, AH, FIZ and NEP unpinned, a known follow-up that must land before Windows arm64
+/// runs compiled code.
 /// @return The row.
 [[nodiscard]] FloatControlLayout const& hostFloatControlLayout() noexcept;
 

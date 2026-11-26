@@ -50,7 +50,8 @@ enum class NumericShape : uint8_t
 /// set, and subnormals neither flushed to zero nor treated as zero (no FTZ or DAZ). Every invocation
 /// of guest code establishes it (runtime::FloatEnvironmentScope, opened by runtime::InvocationScope),
 /// and so does every return from a host function (runtime::HostCallScope); on targets without a
-/// control-register row (runtime::hostFloatControlLayout()) only the rounding mode is pinned. min and max
+/// control-register row (runtime::hostFloatControlLayout()) only the rounding mode is pinned; the
+/// embedder's side of it is docs/embedding.md's "Floating point". min and max
 /// work on bits: any NaN operand gives the canonical NaN. Precondition (checked): numericShape(opcode) is
 /// Binary, and both operands are of its type.
 /// @param opcode The instruction.

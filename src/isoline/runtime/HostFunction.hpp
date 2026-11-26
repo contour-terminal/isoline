@@ -195,6 +195,7 @@ class CallableHostFunction final: public IHostFunction
 /// Makes a host function of a noexcept callable.
 /// @param function The callable.
 /// @return The host function, to add to a store (Store::addHostFunction()).
+/// @throws std::bad_alloc When the host has no memory for it; and whatever moving @p function throws.
 template <HostCallable F>
 [[nodiscard]] std::shared_ptr<IHostFunction> makeHostFunction(F function)
 {

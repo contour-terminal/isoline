@@ -4,7 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <ranges>
+#include <string_view>
 
 #include <isoline/runtime/Limits.hpp>
 
@@ -76,4 +78,36 @@ TEST_CASE("Limits.defaults")
     CHECK(limits.maxTags == 1'000'000);
     // No step limit: the budget is the whole range, and the docs say "unlimited".
     CHECK(limits.maxSteps == std::numeric_limits<uint64_t>::max());
+}
+
+TEST_CASE("Limits.eachRowNamesTheFieldItReads")
+{
+    // A store of a different value per field: each row's value() must read the field its field names.
+    auto const distinct = StoreLimits { .maxCallDepth = 1,
+                                        .maxStackValues = 2,
+                                        .maxNestedInvocations = 3,
+                                        .maxMemoryBytes = 4,
+                                        .maxTableElements = 5,
+                                        .maxMemories = 6,
+                                        .maxTables = 7,
+                                        .maxInstances = 8,
+                                        .maxExceptions = 9,
+                                        .maxExceptionValues = 10,
+                                        .maxTypes = 11,
+                                        .maxTags = 12,
+                                        .maxSteps = 13 };
+    auto const fields = std::map<std::string_view, uint64_t> {
+        { "maxCallDepth", 1 },        { "maxStackValues", 2 },   { "maxNestedInvocations", 3 },
+        { "maxMemoryBytes", 4 },      { "maxTableElements", 5 }, { "maxMemories", 6 },
+        { "maxTables", 7 },           { "maxInstances", 8 },     { "maxExceptions", 9 },
+        { "maxExceptionValues", 10 }, { "maxTypes", 11 },        { "maxTags", 12 },
+        { "maxSteps", 13 },
+    };
+    CHECK(fields.size() == LimitTable.size());
+    for (auto const& row: LimitTable)
+    {
+        INFO(row.field);
+        REQUIRE(fields.contains(row.field));
+        CHECK(row.value(distinct) == fields.at(row.field));
+    }
 }

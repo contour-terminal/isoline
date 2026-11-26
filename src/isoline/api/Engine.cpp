@@ -23,12 +23,12 @@ EngineIdentity EngineConfig::identity() const noexcept
     return EngineIdentity { .engine = engine, .mode = mode, .features = features };
 }
 
-Engine::Engine(EngineConfig config): _config { config }
+Engine::Engine(EngineConfig config) noexcept: _config { config }
 {
     Require(_config.features.checkPrerequisites().has_value());
 }
 
-ThreadPreparation::ThreadPreparation(std::unique_ptr<IThreadResource> resource):
+ThreadPreparation::ThreadPreparation(std::unique_ptr<IThreadResource> resource) noexcept:
     _resource { std::move(resource) }
 {
     Require(_resource != nullptr);

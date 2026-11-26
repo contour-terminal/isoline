@@ -115,8 +115,19 @@ if(ISOLINE_TESTING)
     endif()
     add_executable(isoline_test ${isolineTestSources})
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
+    # Where docs/embedding.md is, whose generated blocks PublishedLimits_test checks against the tables.
+    target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     isoline_apply_target_policy(isoline_test TEST)
     add_test(NAME isoline_test COMMAND isoline_test)
     # A bound, so a test that would hang (an interrupt test whose poll went missing) fails instead.
     set_tests_properties(isoline_test PROPERTIES LABELS unit TIMEOUT 600)
+    # The interrupt latency the specification publishes (p99 interrupt-to-return within 10 ms) is a
+    # property of optimized code: measured in release builds only, by the hidden [perf] cases, which
+    # the unit run above skips. It asserts wall-clock time, so every test preset but clang-release-perf
+    # excludes the perf label (CMakePresets.json): a plain `ctest --preset` on a loaded box, or under an
+    # emulator (wine, qemu), does not run it.
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_test(NAME isoline_interrupt_latency COMMAND isoline_test "[perf]")
+        set_tests_properties(isoline_interrupt_latency PROPERTIES LABELS perf TIMEOUT 300)
+    endif()
 endif()

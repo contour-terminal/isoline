@@ -73,7 +73,8 @@ struct StoreLimits
     /// within it. Each nesting takes host stack (a few frames, kilobytes under sanitizers), so this
     /// keeps Wasm → host → Wasm recursion from overflowing it; one more traps with CallStackExhausted.
     /// 100 leaves a wide margin: under ASan an 8 MiB stack overflowed at about 240 nestings, and a
-    /// release build's nesting takes 1–2 KB.
+    /// release build's nesting takes 1–2 KB. Every HostContext::invoke() is one more, so a
+    /// component-model call crossing N core instances through host adapters nests N + 1.
     uint32_t maxNestedInvocations = 100;
 
     /// The bytes all memories of the store may hold together.
@@ -137,9 +138,10 @@ struct StoreLimits
 /// One row of LimitTable: a limit, its name and what it counts.
 struct LimitRow
 {
-    Limit limit;           ///< The limit; equal to the row's index.
-    std::string_view name; ///< Its name in a refusal's message: "memory bytes".
-    std::string_view unit; ///< What it counts: "bytes".
+    Limit limit;            ///< The limit; equal to the row's index.
+    std::string_view name;  ///< Its name in a refusal's message: "memory bytes".
+    std::string_view unit;  ///< What it counts: "bytes".
+    std::string_view field; ///< The StoreLimits member that sets it, which value reads: "maxMemoryBytes".
     uint64_t (*value)(StoreLimits const& limits) noexcept; ///< Reads its value from a StoreLimits.
 };
 
@@ -148,54 +150,67 @@ inline constexpr auto LimitTable = std::to_array<LimitRow>({
     { .limit = Limit::CallDepth,
       .name = "call depth",
       .unit = "frames",
+      .field = "maxCallDepth",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxCallDepth; } },
     { .limit = Limit::StackValues,
       .name = "stack values",
       .unit = "values",
+      .field = "maxStackValues",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxStackValues; } },
     { .limit = Limit::NestedInvocations,
       .name = "nested invocations",
       .unit = "invocations",
+      .field = "maxNestedInvocations",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxNestedInvocations; } },
     { .limit = Limit::MemoryBytes,
       .name = "memory bytes",
       .unit = "bytes",
+      .field = "maxMemoryBytes",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxMemoryBytes; } },
     { .limit = Limit::TableElements,
       .name = "table elements",
       .unit = "elements",
+      .field = "maxTableElements",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTableElements; } },
     { .limit = Limit::Memories,
       .name = "memories",
       .unit = "memories",
+      .field = "maxMemories",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxMemories; } },
     { .limit = Limit::Tables,
       .name = "tables",
       .unit = "tables",
+      .field = "maxTables",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTables; } },
     { .limit = Limit::Instances,
       .name = "instances",
       .unit = "module instances",
+      .field = "maxInstances",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxInstances; } },
     { .limit = Limit::Exceptions,
       .name = "exceptions",
       .unit = "exceptions",
+      .field = "maxExceptions",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxExceptions; } },
     { .limit = Limit::ExceptionValues,
       .name = "exception values",
       .unit = "values",
+      .field = "maxExceptionValues",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxExceptionValues; } },
     { .limit = Limit::Types,
       .name = "types",
       .unit = "type units",
+      .field = "maxTypes",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTypes; } },
     { .limit = Limit::Tags,
       .name = "tags",
       .unit = "tags",
+      .field = "maxTags",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTags; } },
     { .limit = Limit::Steps,
       .name = "steps",
       .unit = "steps",
+      .field = "maxSteps",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxSteps; } },
 });
 

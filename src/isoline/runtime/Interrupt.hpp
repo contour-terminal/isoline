@@ -28,7 +28,9 @@ enum class InterruptState : uint8_t
 class Interrupter
 {
   public:
-    /// Interrupts: one release store. Callable from any thread, any number of times.
+    /// Interrupts: one release store to a lock-free atomic. Callable from any thread, any number of
+    /// times, and from a signal handler, through a raw pointer taken before (the shared_ptr a store hands
+    /// out is not async-signal-safe to copy).
     void interrupt() noexcept
     {
         _state.store(static_cast<uint8_t>(InterruptState::Interrupted), std::memory_order_release);
@@ -52,7 +54,8 @@ enum class PollSite : uint8_t
     FunctionEntry, ///< Every callee entry.
     LoopBackEdge,  ///< Every transfer of control to a loop label.
     HostReturn,    ///< Every return from a host function.
-    BulkGranule,   ///< Every granule of a bulk memory or table operation.
+    BulkGranule,   ///< Every granule of a bulk memory or table operation; an interrupt or a spent step
+                   ///< budget there leaves the granules before it written (partial writes).
     Instantiation, ///< Instantiation's entry, and before its start function.
     Unwind,        ///< Every UnwindPollItems labels and catch clauses an exception unwinds past.
     Sweep,         ///< Before every SweepPollItems items an exception sweep visits.

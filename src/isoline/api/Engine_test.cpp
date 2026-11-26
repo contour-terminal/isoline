@@ -18,12 +18,12 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
-using isoline::Feature;
-using isoline::FeatureSet;
 using isoline::api::Engine;
 using isoline::api::EngineConfig;
 using isoline::api::EngineIdentity;
 using isoline::api::ExecutionMode;
+using isoline::api::Feature;
+using isoline::api::FeatureSet;
 using isoline::api::LoadError;
 using isoline::api::ModuleTooLarge;
 using isoline::api::ThreadPreparation;

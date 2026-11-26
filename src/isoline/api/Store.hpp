@@ -182,9 +182,9 @@ enum class MemoryAccessError : uint8_t
 /// may use while it runs. A host function implementation shared by several stores (one Imports used by
 /// stores on several threads) is called on each of their threads at once, so it must be thread-safe.
 ///
-/// Nothing is thrown. Where the host runs out of memory before anything is added to the store, the
-/// call is refused (HostMemoryExhausted). Once the store is being changed (an instance allocated, a
-/// host function added, a call running) running out of memory terminates the process, as it does in
+/// Nothing but the constructor throws. Where the host runs out of memory before anything is added to the
+/// store, the call is refused (HostMemoryExhausted). Once the store is being changed (an instance allocated,
+/// a host function added, a call running) running out of memory terminates the process, as it does in
 /// runtime::invokeChecked(): the store is not exception-safe midway through a change.
 ///
 /// A store is neither copied nor moved: its instances point at it.
@@ -196,6 +196,7 @@ class Store
     ///               be destroyed before the store.
     /// @param allocator Allocates every linear memory of the store; must outlive it.
     /// @param observer Observes every poll of the store's executions; none when null. Must outlive it.
+    /// @throws std::bad_alloc When the host has no memory for the empty store.
     Store(Engine const& engine, IMemoryAllocator& allocator, IPollObserver* observer = nullptr);
 
     Store(Store const&) = delete;
@@ -207,6 +208,10 @@ class Store
     /// The store's interrupter: interrupt() it from any thread to stop the call running in the store,
     /// and every later call and instantiation, for good. It exists before any instantiation, so a start
     /// function is interruptible too, and a watchdog may keep it past the store.
+    ///
+    /// Interrupter::interrupt() is async-signal-safe; copying the shared pointer is not. To interrupt
+    /// from a signal handler, keep a raw Interrupter* (interrupter().get()) where the handler finds it,
+    /// and the shared pointer alive for as long as the handler may run.
     /// @return The interrupter, shared.
     [[nodiscard]] std::shared_ptr<Interrupter> const& interrupter() const noexcept;
 

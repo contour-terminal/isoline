@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <isoline/Features.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/DecodeLimits.hpp>
 #include <isoline/binary/Types.hpp>
@@ -17,12 +18,19 @@
 
 /// The names of the lower layers the embedding API is spoken in, re-exported into isoline::api.
 ///
-/// This list *is* the public subset of runtime/, binary/ and validate/: an embedder names these
+/// This list *is* the public subset of the feature vocabulary (isoline/Features.hpp), runtime/, binary/
+/// and validate/: an embedder names these
 /// through isoline::api, and api headers spell them unqualified. Every other runtime name is internal,
 /// installed but not the embedding API; raw access to a runtime::Store is test-only
 /// (api/testing/RuntimeAccess.hpp), because it bypasses every check the api makes.
 namespace isoline::api
 {
+
+// --- Features ---
+using isoline::Feature;
+using isoline::FeatureSet;
+using isoline::Standard;
+using isoline::UnmetPrerequisite;
 
 // --- Values ---
 using runtime::F32;

@@ -94,7 +94,7 @@ class ThreadPreparation
 
     /// A token that owns @p resource, released when the token is destroyed.
     /// @param resource What the engine set up on the thread (checked: not null).
-    explicit ThreadPreparation(std::unique_ptr<IThreadResource> resource);
+    explicit ThreadPreparation(std::unique_ptr<IThreadResource> resource) noexcept;
 
     /// Whether the token holds nothing, as an interpreter's does.
     /// @return Whether it owns no thread resource.
@@ -115,7 +115,7 @@ class Engine
     /// An engine of @p config.
     /// @param config Its configuration. Its feature set must be closed (checked: an unclosed set is a
     ///               programming error of the embedder; FeatureSet::withPrerequisites() closes one).
-    explicit Engine(EngineConfig config);
+    explicit Engine(EngineConfig config) noexcept;
 
     /// The configuration it was constructed with.
     /// @return The configuration.

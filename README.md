@@ -90,6 +90,10 @@ auto instance = store.instantiate(*module, imports); // std::expected<Instance, 
 auto result = instance->call("add", { 2, 3 });       // traps, limits and interrupts come back as values
 ```
 
+[docs/embedding.md](docs/embedding.md) is the embedder's contract as it stands: the life cycle, the thread
+and lifetime rules, every limit with its default, every place a running guest can be interrupted, and
+every way a load, a call or an instantiation fails.
+
 ## Platforms
 
 | Tier | Platforms | Engines |
