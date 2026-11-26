@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <variant>
 #include <vector>
 
@@ -136,9 +137,11 @@ Value evaluateConstantExpression(Store const& store,
                                  uint32_t moduleInstance,
                                  binary::ConstExpr const& expression)
 {
+    // The decoder ends every constant expression with end, and only there.
+    Require(!expression.empty() && expression.back().opcode == Opcode::End);
     auto const& instance = store.moduleInstance(moduleInstance);
     auto stack = std::vector<Value> {};
-    for (auto const& instruction: expression)
+    for (auto const& instruction: std::span { expression }.first(expression.size() - 1))
     {
         if (auto const constant = constantOf(*instance.module, instruction))
         {
@@ -147,7 +150,6 @@ Value evaluateConstantExpression(Store const& store,
         }
         switch (instruction.opcode)
         {
-            case Opcode::End: Require(stack.size() == 1); return stack.back();
             case Opcode::GlobalGet:
                 stack.push_back(store.global(instance.globals.at(instruction.a)).value);
                 break;
@@ -156,9 +158,8 @@ Value evaluateConstantExpression(Store const& store,
             default: applyArithmetic(instruction.opcode, stack); break;
         }
     }
-    // uncovered-begin(constant-without-end)
-    core::todo("a constant expression without end");
+    Require(stack.size() == 1);
+    return stack.back();
 }
-// uncovered-end(constant-without-end)
 
 } // namespace isoline::runtime
