@@ -11,7 +11,8 @@ isoline_apply_target_policy(isoline_isotest)
 
 add_executable(isoline_spec_runner SpecRunner.cpp)
 target_link_libraries(isoline_spec_runner PRIVATE isoline_isotest)
-isoline_apply_target_policy(isoline_spec_runner)
+# TEST: it is run by ctest alone, so a failing spec file must end it rather than open a dialog.
+isoline_apply_target_policy(isoline_spec_runner TEST)
 
 add_executable(isoline_isotest_test IsotestReader_test.cpp SpecCheck_test.cpp SpecFeatures_test.cpp)
 target_link_libraries(isoline_isotest_test PRIVATE isoline_isotest Catch2::Catch2WithMain)

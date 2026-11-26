@@ -137,12 +137,18 @@ message(STATUS "[isoline] compile options: ${ISOLINE_COMPILE_OPTIONS}")
 ## @brief Applies Isoline's warning set, sanitizers, coverage and clang-tidy to @p target.
 ##
 ## isoline_apply_target_policy(<target> [TEST])
-## TEST marks a Catch2 test binary, which additionally gets the test-only warning adjustments.
+## TEST marks a test binary, which additionally gets the test-only warning adjustments and, where
+## core-cpp provides it, core::testing_dialogs: on Windows a failed assertion, std::abort() or a crash
+## then reports to stderr and ends the process, instead of opening a dialog (the Debug CRT's abort
+## dialog, Windows Error Reporting) that waits for a click and holds the run until its timeout.
 function(isoline_apply_target_policy target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "TEST" "" "")
     target_compile_options(${target} PRIVATE ${ISOLINE_COMPILE_OPTIONS})
     if(arg_TEST)
         target_compile_options(${target} PRIVATE ${ISOLINE_TEST_COMPILE_OPTIONS})
+        if(TARGET core::testing_dialogs)
+            target_link_libraries(${target} PRIVATE core::testing_dialogs)
+        endif()
     endif()
     get_target_property(type ${target} TYPE)
     if(type STREQUAL "EXECUTABLE")
