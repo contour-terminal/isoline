@@ -639,6 +639,8 @@ InstantiationOutcome instantiateReporting(Store& store,
                                           std::shared_ptr<ModuleCode const> code,
                                           std::span<ExternValue const> imports)
 {
+    // The reference engine runs the validated module itself: code that claims to be its is a mix-up.
+    Require(code == nullptr || code->engine() != ExecutionEngine::Reference);
     Require(engineOf(code.get()) == executor.engine());
     // One invocation, with a fresh step budget its polls charge and its start function shares, and
     // its own refusal scope, so the start function's refused grows stay in it.

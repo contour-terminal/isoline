@@ -166,8 +166,9 @@ class ICodeExecutor
 /// segments' offsets) are evaluated by runtime::evaluateConstantExpression(), never by @p executor.
 ///
 /// The instance keeps @p module, and its module is @p module's, sharing its ownership; it keeps
-/// @p code likewise. @p code is code of @p executor's engine, null being the reference engine's
-/// (checked: a contract violation otherwise). Every external value in @p imports names an entity of
+/// @p code likewise. @p code is code of @p executor's engine, null being the reference engine's,
+/// and the reference engine's is always null: non-null code never claims ExecutionEngine::Reference
+/// (both checked: a contract violation otherwise). Every external value in @p imports names an entity of
 /// @p store (checked), and there are no more of them than the module has imports (checked).
 /// @param store The store to allocate in.
 /// @param executor Runs the start function, and later every function of the instance.

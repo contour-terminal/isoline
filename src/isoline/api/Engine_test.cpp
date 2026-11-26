@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <ranges>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -16,11 +17,13 @@
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
+#include <isoline/runtime/testing/ContractViolation.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
 using isoline::api::Engine;
 using isoline::api::EngineConfig;
 using isoline::api::EngineIdentity;
+using isoline::api::ExecutionEngine;
 using isoline::api::ExecutionMode;
 using isoline::api::Feature;
 using isoline::api::FeatureSet;
@@ -269,4 +272,12 @@ TEST_CASE("Engine.hostMemoryExhaustionIsNeitherALimitNorAFeature")
     CHECK_FALSE(isoline::api::requiredFeature(exhausted).has_value());
     CHECK_FALSE(
         isoline::api::requiredFeature(LoadError { ModuleTooLarge { .bytes = 9, .limit = 8 } }).has_value());
+}
+
+TEST_CASE("Contract.Engine.runsOnlyTheReferenceEngine", "[.contract]")
+{
+    // The fast engine is not wired into the API yet (P4 Task 14b removes this check and this case).
+    isoline::runtime::testing::endAtContractViolation();
+    std::ignore = Engine { EngineConfig { .engine = ExecutionEngine::Fast } };
+    FAIL("SURVIVED: the engine accepted the fast engine");
 }
