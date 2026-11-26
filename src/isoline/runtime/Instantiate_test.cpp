@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -19,6 +20,8 @@
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -39,6 +42,7 @@ using isoline::binary::Mutability;
 using isoline::binary::Opcode;
 using isoline::binary::TableType;
 using isoline::binary::testing::ModuleBuilder;
+using isoline::runtime::Abrupt;
 using isoline::runtime::AllocationFailure;
 using isoline::runtime::ExternValue;
 using isoline::runtime::FuncAddr;
@@ -47,10 +51,10 @@ using isoline::runtime::IMemoryAllocator;
 using isoline::runtime::InstantiationError;
 using isoline::runtime::LinkError;
 using isoline::runtime::LinkErrorCode;
-using isoline::runtime::PageSize;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Store;
+using isoline::runtime::Thrown;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::UnlimitedAllocator;
@@ -58,6 +62,9 @@ using isoline::runtime::Value;
 
 namespace
 {
+
+/// The default page size, 64 KiB.
+constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
 
 /// Limits of at least @p min, unbounded.
 Limits atLeast(uint64_t min)
@@ -89,10 +96,10 @@ class StubExecutor final: public isoline::runtime::ICodeExecutor
   public:
     std::vector<FuncAddr> invoked; ///< Every function invoked, in order.
 
-    [[nodiscard]] std::expected<void, Trap> invoke(Store& /*store*/,
-                                                   FuncAddr function,
-                                                   std::span<Value const> /*args*/,
-                                                   std::span<Value> /*results*/) override
+    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
+                                                     FuncAddr function,
+                                                     std::span<Value const> /*args*/,
+                                                     std::span<Value> /*results*/) override
     {
         invoked.push_back(function);
         return {};
@@ -115,10 +122,10 @@ class TrappingExecutor final: public isoline::runtime::ICodeExecutor
     /// @param trapAt The number of evaluations to perform before the one that traps.
     explicit TrappingExecutor(std::size_t trapAt): _trapAt { trapAt } {}
 
-    [[nodiscard]] std::expected<void, Trap> invoke(Store& /*store*/,
-                                                   FuncAddr /*function*/,
-                                                   std::span<Value const> /*args*/,
-                                                   std::span<Value> /*results*/) override
+    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
+                                                     FuncAddr /*function*/,
+                                                     std::span<Value const> /*args*/,
+                                                     std::span<Value> /*results*/) override
     {
         return {};
     }
@@ -144,9 +151,9 @@ class TrappingExecutor final: public isoline::runtime::ICodeExecutor
 };
 
 /// Decodes and validates @p builder's module; fails the test unless it is valid.
-std::shared_ptr<Module const> moduleOf(ModuleBuilder const& builder)
+std::shared_ptr<Module const> moduleOf(ModuleBuilder const& builder,
+                                       FeatureSet const& features = FeatureSet::wasm2())
 {
-    auto const features = FeatureSet::wasm2();
     auto const bytes = builder.build();
     auto module = isoline::binary::decodeModule(bytes, features);
     REQUIRE(module.has_value());
@@ -218,20 +225,11 @@ TEST_CASE("Instantiate.incompatibleImportType")
         auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
         CHECK(errorOf(instantiate(store, executor, module, imports)) == incompatible);
     }
-    SECTION("a tag, which P1 has no instances of to link")
+    SECTION("a tag")
     {
-        // The decoder reads no tag import, but a module built by hand may hold one.
-        auto tagged = std::make_shared<Module>();
-        tagged->types.push_back(FuncType {});
-        tagged->imports.push_back(isoline::binary::Import { .module = "m",
-                                                            .name = "t",
-                                                            .kind = ExternKind::Tag,
-                                                            .typeIndex = 0,
-                                                            .table = {},
-                                                            .memory = {},
-                                                            .global = {} });
-        auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = 0 } };
-        CHECK(errorOf(instantiate(store, executor, tagged, imports)) == incompatible);
+        auto const tag = store.addTag(store.internType(FuncType {}));
+        auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
+        CHECK(errorOf(instantiate(store, executor, module, imports)) == incompatible);
     }
     SECTION("the right function type")
     {
@@ -642,18 +640,89 @@ TEST_CASE("Instantiate.constantExpressionTraps")
     CHECK(instantiate(store, executor, module, {}).has_value());
 }
 
-TEST_CASE("Instantiate.tagImportIsIncompatible")
+TEST_CASE("Instantiate.tagImports")
 {
-    // Wasm 2.0 has no tags, so the import is built as data; no tag an embedder supplies matches it.
-    auto module = Module { *moduleOf(ModuleBuilder {}) };
-    module.imports.push_back(isoline::binary::Import { .module = "m", .name = "t", .kind = ExternKind::Tag });
+    // A tag import matches a tag of its type exactly, and binds to that very tag.
+    auto const features = FeatureSet::wasm3();
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .importTag("m", "t", 0)
+        .tag(0)
+        .exportEntity("imported", ExternKind::Tag, 0)
+        .exportEntity("defined", ExternKind::Tag, 1);
+    auto const module = moduleOf(builder, features);
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
     auto executor = StubExecutor {};
-    auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = 0 } };
-    auto const result =
-        instantiate(store, executor, std::make_shared<Module const>(std::move(module)), imports);
-    CHECK(errorOf(result) == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+
+    auto const other =
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::F32 }, .results = {} }));
+    auto const otherImports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = other } };
+    CHECK(errorOf(instantiate(store, executor, module, otherImports))
+          == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+    auto const function =
+        store.addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
+                              [](auto, auto) -> std::expected<void, Abrupt> { return {}; });
+    auto const functionImports =
+        std::vector { ExternValue { .kind = ExternKind::Func, .address = function } };
+    CHECK(errorOf(instantiate(store, executor, module, functionImports))
+          == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+
+    auto const tag =
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }));
+    auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
+    auto const first = instantiate(store, executor, module, imports);
+    REQUIRE(first.has_value());
+    auto const& instance = store.moduleInstance(*first);
+    REQUIRE(instance.tags.size() == 2);
+    CHECK(instance.tags[0] == tag);
+    CHECK(instance.tags[1] != tag);
+    CHECK(store.tag(instance.tags[1]).typeId == store.tag(tag).typeId);
+    CHECK(instance.exports.at(0).second == ExternValue { .kind = ExternKind::Tag, .address = tag });
+    CHECK(instance.exports.at(1).second
+          == ExternValue { .kind = ExternKind::Tag, .address = instance.tags[1] });
+    // A second instance defines a tag of its own: tags are not shared by type.
+    auto const second = instantiate(store, executor, module, imports);
+    REQUIRE(second.has_value());
+    CHECK(store.moduleInstance(*second).tags[0] == tag);
+    CHECK(store.moduleInstance(*second).tags[1] != store.moduleInstance(*first).tags[1]);
+}
+
+namespace
+{
+
+/// Evaluates nothing, and ends every invocation with an uncaught exception.
+class ThrowingExecutor final: public isoline::runtime::ICodeExecutor
+{
+  public:
+    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
+                                                     FuncAddr /*function*/,
+                                                     std::span<Value const> /*args*/,
+                                                     std::span<Value> /*results*/) override
+    {
+        return std::unexpected { Abrupt { Thrown { .exception = 3 } } };
+    }
+
+    [[nodiscard]] std::expected<Value, Trap> evaluateConst(Store& /*store*/,
+                                                           uint32_t /*moduleInstance*/,
+                                                           ConstExpr const& /*expression*/) override
+    {
+        return std::unexpected { Trap { TrapCode::Unreachable } };
+    }
+};
+
+} // namespace
+
+TEST_CASE("Instantiate.startThrows")
+{
+    // A start function's uncaught exception fails instantiation; the instance stays, as after a trap.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, {}).start(0);
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto executor = ThrowingExecutor {};
+    CHECK(errorOf(instantiate(store, executor, moduleOf(builder), {}))
+          == InstantiationError { Thrown { .exception = 3 } });
 }
 
 TEST_CASE("Instantiate.i64DataOffset")
@@ -693,6 +762,8 @@ TEST_CASE("Trap.specMessages")
     CHECK(specMessage(TrapCode::OutOfBoundsMemoryAccess)
           == std::string_view { "out of bounds memory access" });
     CHECK(specMessage(TrapCode::HostTrap) == std::string_view { "host trap" });
+    CHECK(specMessage(TrapCode::NullFunctionReference) == std::string_view { "null function reference" });
+    CHECK(specMessage(TrapCode::NullReference) == std::string_view { "null reference" });
 }
 
 TEST_CASE("Instantiate.specMessages")
@@ -702,4 +773,369 @@ TEST_CASE("Instantiate.specMessages")
     CHECK(specMessage(LinkErrorCode::UnknownImport) == "unknown import");
     CHECK(specMessage(LinkErrorCode::IncompatibleImportType) == "incompatible import type");
     CHECK(specMessage(AllocationFailure { .kind = ExternKind::Memory }) == "out of memory");
+}
+
+TEST_CASE("Instantiate.pageSizeMustMatch")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto executor = StubExecutor {};
+    auto const bytePages = MemoryType { .limits = atLeast(0), .pageSizeLog2 = 0 };
+    auto const importing = [](MemoryType const& type) {
+        auto builder = ModuleBuilder {};
+        builder.importMemory("m", "mem", type);
+        return moduleOf(builder, FeatureSet::all());
+    };
+    auto const provided = [&](MemoryType const& type) {
+        auto const memory = store.addMemory(type);
+        REQUIRE(memory.has_value());
+        return std::vector { ExternValue { .kind = ExternKind::Memory, .address = *memory } };
+    };
+    auto const incompatible = InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } };
+    // A 64 KiB-page memory where 1-byte pages are declared, and the other way round.
+    CHECK(errorOf(instantiate(
+              store, executor, importing(bytePages), provided(MemoryType { .limits = atLeast(0) })))
+          == incompatible);
+    CHECK(errorOf(instantiate(
+              store, executor, importing(MemoryType { .limits = atLeast(0) }), provided(bytePages)))
+          == incompatible);
+    CHECK(instantiate(store, executor, importing(bytePages), provided(bytePages)).has_value());
+    // Sizes compare in the memory's own pages: 70000 bytes are 70000 pages, more than 2^16.
+    auto const large = MemoryType { .limits = atLeast(70'000), .pageSizeLog2 = 0 };
+    CHECK(instantiate(store, executor, importing(large), provided(large)).has_value());
+}
+
+TEST_CASE("Instantiate.memory64")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    // Evaluates i64.const offsets, which StubExecutor does not.
+    auto executor = TrappingExecutor { std::numeric_limits<std::size_t>::max() };
+    auto const at64 = [](uint64_t min) {
+        return Limits { .min = min, .max = std::nullopt, .addressType = AddressType::I64 };
+    };
+    SECTION("an import matches by address type")
+    {
+        auto builder = ModuleBuilder {};
+        builder.importMemory("m", "mem", at64(1));
+        auto const module = moduleOf(builder, FeatureSet::wasm3());
+        auto const memory64 = store.addMemory(MemoryType { .limits = at64(1) });
+        auto const memory32 = store.addMemory(MemoryType { .limits = atLeast(1) });
+        REQUIRE(memory64.has_value());
+        REQUIRE(memory32.has_value());
+        auto const of = [](auto address) {
+            return std::vector { ExternValue { .kind = ExternKind::Memory, .address = address } };
+        };
+        CHECK(instantiate(store, executor, module, of(*memory64)).has_value());
+        CHECK(errorOf(instantiate(store, executor, module, of(*memory32)))
+              == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+    }
+    SECTION("an i64 data offset")
+    {
+        auto builder = ModuleBuilder {};
+        builder.memory(at64(1)).data({ 0x00, 0x42, 0x05, 0x0B, 0x01, 0x2A });
+        auto const result = instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {});
+        REQUIRE(result.has_value());
+        CHECK(store.memory(store.moduleInstance(*result).memories[0]).bytes[5] == std::byte { 0x2A });
+    }
+    SECTION("an i64 data offset past 2^32")
+    {
+        auto builder = ModuleBuilder {};
+        builder.memory(at64(1)).data({ 0x00, 0x42, 0x80, 0x80, 0x80, 0x80, 0x10, 0x0B, 0x01, 0x2A });
+        CHECK(errorOf(instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {}))
+              == InstantiationError { Trap { TrapCode::OutOfBoundsMemoryAccess } });
+    }
+    SECTION("a guest asks for more than the allocator grants")
+    {
+        // 2^40 pages is a valid memory64 minimum, and 64 PiB; the store refuses before allocating.
+        auto builder = ModuleBuilder {};
+        builder.memory(at64(uint64_t { 1 } << 40));
+        CHECK(errorOf(instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {}))
+              == InstantiationError { AllocationFailure { .kind = ExternKind::Memory } });
+        auto table = ModuleBuilder {};
+        table.table(TableType { .element = FuncRef, .limits = at64(uint64_t { 1 } << 62) });
+        CHECK(errorOf(instantiate(store, executor, moduleOf(table, FeatureSet::wasm3()), {}))
+              == InstantiationError { AllocationFailure { .kind = ExternKind::Table } });
+    }
+}
+
+namespace
+{
+
+/// The export named @p name of the instance at @p address.
+ExternValue exportOf(Store const& store, uint32_t address, std::string_view name)
+{
+    for (auto const& [exported, value]: store.moduleInstance(address).exports)
+        if (exported == name)
+            return value;
+    FAIL("no export " << name);
+    return {};
+}
+
+/// (ref null $index) of the module's type @p index.
+isoline::binary::ValueType refNullTo(uint32_t index)
+{
+    return isoline::binary::concreteRef(index, isoline::binary::Nullable::Yes);
+}
+
+} // namespace
+
+TEST_CASE("Instantiate.typeIdentityAcrossModules")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const identity =
+        FuncType { .params = { isoline::binary::I32 }, .results = { isoline::binary::I32 } };
+
+    // A: (func (param i32) (result i32)) at type index 0, exported.
+    auto a = ModuleBuilder {};
+    a.type(identity).function(0, {}, { 0x20, 0x00 }).exportFunction("f", 0);
+    auto const aAddress = instantiate(store, interpreter, moduleOf(a), {});
+    REQUIRE(aAddress.has_value());
+    auto const f = exportOf(store, *aAddress, "f");
+
+    // B: the same type at index 1, imported, put in a table and called through it.
+    auto b = ModuleBuilder {};
+    b.type(FuncType {})
+        .type(identity)
+        .type(FuncType { .params = {}, .results = { isoline::binary::I32 } })
+        .importFunction("a", "f", 1)
+        .table(TableType { .element = FuncRef, .limits = atLeast(1) })
+        .element({ 0x00, 0x41, 0x00, 0x0B, 0x01, 0x00 })
+        .function(2, {}, { 0x41, 0x07, 0x41, 0x00, 0x11, 0x01, 0x00 }) // call_indirect (type 1) 7 [0]
+        .exportFunction("call", 1);
+    auto const bAddress = instantiate(store, interpreter, moduleOf(b), std::vector { f });
+    REQUIRE(bAddress.has_value());
+    auto const& bInstance = store.moduleInstance(*bAddress);
+    // Equal types are one TypeId, whatever their index in each module.
+    REQUIRE(bInstance.types.size() == 3);
+    CHECK(bInstance.types[1] == store.function(f.address).typeId);
+    CHECK(bInstance.types[0] != bInstance.types[1]);
+    CHECK(store.type(bInstance.types[1]) == identity);
+
+    auto results = std::vector<Value>(1);
+    REQUIRE(interpreter.invoke(store, exportOf(store, *bAddress, "call").address, {}, results).has_value());
+    CHECK(results[0] == Value { I32 { .bits = 7 } });
+
+    // A type that differs is incompatible, at import as at call_indirect.
+    auto c = ModuleBuilder {};
+    c.type(FuncType { .params = { isoline::binary::I64 }, .results = { isoline::binary::I32 } })
+        .importFunction("a", "f", 0);
+    CHECK(errorOf(instantiate(store, interpreter, moduleOf(c), std::vector { f }))
+          == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+}
+
+TEST_CASE("Instantiate.typesInStoreForm")
+{
+    // A type naming another names it by its TypeId once interned, so the type (func (param (ref
+    // null $t))) of two modules is one, though $t has another index in each.
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto executor = StubExecutor {};
+    auto const wasm3 = FeatureSet::wasm3();
+    auto a = ModuleBuilder {};
+    a.type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .type(FuncType { .params = { refNullTo(0) }, .results = {} });
+    auto b = ModuleBuilder {};
+    b.type(FuncType {})
+        .type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .type(FuncType { .params = { refNullTo(1) }, .results = {} });
+    auto const aAddress = instantiate(store, executor, moduleOf(a, wasm3), {});
+    auto const bAddress = instantiate(store, executor, moduleOf(b, wasm3), {});
+    REQUIRE(aAddress.has_value());
+    REQUIRE(bAddress.has_value());
+    auto const& aTypes = store.moduleInstance(*aAddress).types;
+    auto const& bTypes = store.moduleInstance(*bAddress).types;
+    CHECK(aTypes[1] == bTypes[2]);
+    CHECK(store.type(aTypes[1]).params.at(0) == refNullTo(aTypes[0]));
+}
+
+TEST_CASE("Instantiate.tableInitializer")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const nonNullFunc =
+        isoline::binary::ValueType { .kind = isoline::binary::ValueKind::Ref,
+                                     .nullable = isoline::binary::Nullable::No,
+                                     .heap = { .kind = isoline::binary::AbstractHeapType::Func } };
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .function(0, {}, {})
+        .function(0, {}, {})
+        .table(TableType { .element = nonNullFunc, .limits = atLeast(3) }, { 0xD2, 0x01 })
+        .exportFunction("g", 1);
+    auto const address = instantiate(store, interpreter, moduleOf(builder, FeatureSet::wasm3()), {});
+    REQUIRE(address.has_value());
+    auto const& instance = store.moduleInstance(*address);
+    auto const& elements = store.table(instance.tables.at(0)).elements;
+    REQUIRE(elements.size() == 3);
+    for (auto const& element: elements)
+    {
+        CHECK(element.kind == RefKind::Func);
+        CHECK(element.address == instance.functions[1]);
+    }
+
+    // An initializer is evaluated like any constant expression, and a trap there ends instantiation.
+    auto trapping = ModuleBuilder {};
+    trapping.table(TableType { .element = FuncRef, .limits = atLeast(1) }, { 0xD0, 0x70 });
+    auto executor = TrappingExecutor { 0 };
+    CHECK(errorOf(instantiate(store, executor, moduleOf(trapping, FeatureSet::wasm3()), {}))
+          == InstantiationError { Trap { TrapCode::Unreachable } });
+}
+
+TEST_CASE("Instantiate.importsMatchByStoreTypes")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const wasm3 = FeatureSet::wasm3();
+    // The exporter's type 1 is (func); the importers declare it at index 0.
+    auto exporter = ModuleBuilder {};
+    exporter.type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .type(FuncType {})
+        .global(GlobalType { .type = refNullTo(1), .mutability = Mutability::Const }, { 0xD0, 0x01 })
+        .global(GlobalType { .type = refNullTo(1), .mutability = Mutability::Var }, { 0xD0, 0x01 })
+        .table(TableType { .element = refNullTo(1), .limits = atLeast(1) })
+        .exportEntity("const", ExternKind::Global, 0)
+        .exportEntity("var", ExternKind::Global, 1)
+        .exportEntity("table", ExternKind::Table, 0);
+    auto const exporterAddress = instantiate(store, interpreter, moduleOf(exporter, wasm3), {});
+    REQUIRE(exporterAddress.has_value());
+
+    auto const importing = [&](std::string_view name, auto declare) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {});
+        declare(builder);
+        auto const result = instantiate(store,
+                                        interpreter,
+                                        moduleOf(builder, wasm3),
+                                        std::vector { exportOf(store, *exporterAddress, name) });
+        return result.has_value();
+    };
+    auto const global = [](isoline::binary::ValueType type, Mutability mutability) {
+        return [=](ModuleBuilder& builder) {
+            builder.importGlobal("m", "g", GlobalType { .type = type, .mutability = mutability });
+        };
+    };
+    auto const table = [](isoline::binary::ValueType element) {
+        return [=](ModuleBuilder& builder) {
+            builder.importTable("m", "t", TableType { .element = element, .limits = atLeast(1) });
+        };
+    };
+    // An immutable global by subtyping; a mutable one and a table's elements by equality.
+    CHECK(importing("const", global(refNullTo(0), Mutability::Const)));
+    CHECK(importing("const", global(FuncRef, Mutability::Const)));
+    CHECK_FALSE(importing("const", global(isoline::binary::ExternRef, Mutability::Const)));
+    CHECK(importing("var", global(refNullTo(0), Mutability::Var)));
+    CHECK_FALSE(importing("var", global(FuncRef, Mutability::Var)));
+    CHECK(importing("table", table(refNullTo(0))));
+    CHECK_FALSE(importing("table", table(FuncRef)));
+}
+
+TEST_CASE("Instantiate.failedInstantiationInternsNoType")
+{
+    // A module of many distinct types that cannot link, or cannot allocate: each failed attempt
+    // leaves the store's types as they were, so retrying it grows nothing.
+    auto const distinctTypes = [](ModuleBuilder& builder) {
+        for (auto const count: std::views::iota(std::size_t { 0 }, std::size_t { 50 }))
+            builder.type(FuncType { .params = std::vector(count, isoline::binary::I32), .results = {} });
+    };
+    auto unlinkable = ModuleBuilder {};
+    distinctTypes(unlinkable);
+    unlinkable.importFunction("m", "f", 3);
+    auto unallocatable = ModuleBuilder {};
+    distinctTypes(unallocatable);
+    unallocatable.table(TableType { .element = refNullTo(7), .limits = atLeast(1'000) });
+
+    auto const allocator = CappedAllocator { 64 };
+    auto store = Store { allocator };
+    auto executor = StubExecutor {};
+    auto const host = store.addHostFunction(
+        FuncType { .params = { isoline::binary::I64 }, .results = {} },
+        [](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> { return {}; });
+    auto const before = store.typeCount();
+    auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+    auto const unlinkableModule = moduleOf(unlinkable, FeatureSet::wasm3());
+    auto const unallocatableModule = moduleOf(unallocatable, FeatureSet::wasm3());
+    for ([[maybe_unused]] auto const attempt: std::views::iota(0, 3))
+    {
+        CHECK(errorOf(instantiate(store, executor, unlinkableModule, imports))
+              == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+        CHECK(errorOf(instantiate(store, executor, unallocatableModule, {}))
+              == InstantiationError { AllocationFailure { .kind = ExternKind::Table } });
+        CHECK(store.typeCount() == before);
+    }
+
+    // One that succeeds interns its types, each at the TypeId it was resolved to; a type the store
+    // had already, (func (param i64)), keeps its id.
+    auto linkable = ModuleBuilder {};
+    distinctTypes(linkable);
+    linkable.type(FuncType { .params = { isoline::binary::I64 }, .results = {} })
+        .type(FuncType { .params = { refNullTo(2) }, .results = {} })
+        .type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .importFunction("m", "f", 50);
+    auto const address = instantiate(store, executor, moduleOf(linkable, FeatureSet::wasm3()), imports);
+    REQUIRE(address.has_value());
+    auto const& types = store.moduleInstance(*address).types;
+    CHECK(store.typeCount() == before + 51);
+    CHECK(types[50] == store.function(host).typeId);
+    for (auto const index: std::views::iota(std::size_t { 0 }, std::size_t { 50 }))
+        CHECK(store.type(types[index]).params.size() == index);
+    CHECK(types[52] == types[1]); // equal types of one module share their TypeId
+    CHECK(store.type(types[51]).params.at(0) == refNullTo(types[2]));
+}
+
+TEST_CASE("Instantiate.importOfAnUnheldTypeMatchesNothing")
+{
+    // An importer's type the store does not hold yet resolves to a TypeId no table or global in the
+    // store carries, so a table, a mutable global, or an immutable one of a non-bottom type, whose
+    // element or value type names it, matches nothing — and interns nothing.
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const wasm3 = FeatureSet::wasm3();
+    auto exporter = ModuleBuilder {};
+    exporter.type(FuncType {})
+        .global(GlobalType { .type = refNullTo(0), .mutability = Mutability::Const }, { 0xD0, 0x00 })
+        .global(GlobalType { .type = refNullTo(0), .mutability = Mutability::Var }, { 0xD0, 0x00 })
+        .table(TableType { .element = refNullTo(0), .limits = atLeast(1) })
+        .exportEntity("const", ExternKind::Global, 0)
+        .exportEntity("var", ExternKind::Global, 1)
+        .exportEntity("table", ExternKind::Table, 0);
+    auto const exporterAddress = instantiate(store, interpreter, moduleOf(exporter, wasm3), {});
+    REQUIRE(exporterAddress.has_value());
+    auto const before = store.typeCount();
+
+    // The importer's type 0 is one the store has never seen.
+    auto const importing = [&](std::string_view name, auto declare) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType { .params = { isoline::binary::F64, isoline::binary::F32 }, .results = {} });
+        declare(builder);
+        return errorOf(instantiate(store,
+                                   interpreter,
+                                   moduleOf(builder, wasm3),
+                                   std::vector { exportOf(store, *exporterAddress, name) }));
+    };
+    auto const incompatible = InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } };
+    CHECK(importing("table",
+                    [](ModuleBuilder& builder) {
+                        builder.importTable(
+                            "m", "t", TableType { .element = refNullTo(0), .limits = atLeast(1) });
+                    })
+          == incompatible);
+    CHECK(importing("var",
+                    [](ModuleBuilder& builder) {
+                        builder.importGlobal(
+                            "m", "g", GlobalType { .type = refNullTo(0), .mutability = Mutability::Var });
+                    })
+          == incompatible);
+    CHECK(importing("const",
+                    [](ModuleBuilder& builder) {
+                        builder.importGlobal(
+                            "m", "g", GlobalType { .type = refNullTo(0), .mutability = Mutability::Const });
+                    })
+          == incompatible);
+    CHECK(store.typeCount() == before);
 }

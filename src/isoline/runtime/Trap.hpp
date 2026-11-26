@@ -28,18 +28,22 @@ enum class TrapCode : uint8_t
     UndefinedElement,
     UninitializedElement,
     IndirectCallTypeMismatch,
+    NullFunctionReference,
+    NullReference,
     CallStackExhausted,
     HostTrap,
+    NullExceptionReference,
+    ExceptionLimitExceeded,
 };
 
 /// The last TrapCode enumerator, for checking TrapTable's size.
-inline constexpr auto LastTrapCode = TrapCode::HostTrap;
+inline constexpr auto LastTrapCode = TrapCode::ExceptionLimitExceeded;
 
 /// What the reference interpreter appends to a trap's message.
 enum class TrapDetail : uint8_t
 {
     None,  ///< Nothing: the message is the row's text.
-    Index, ///< The index the trap names (Trap::subject), after a space, signed as Int32.to_string spells it.
+    Index, ///< The index the trap names (Trap::subject), after a space, as Int64.to_string spells it.
 };
 
 /// One trap: its code and the message the spec test suite expects for it.
@@ -64,8 +68,15 @@ inline constexpr auto TrapTable = std::to_array<TrapRow>({
       .specMessage = "uninitialized element",
       .detail = TrapDetail::Index },
     { .code = TrapCode::IndirectCallTypeMismatch, .specMessage = "indirect call type mismatch" },
+    // call_ref's, and ref.as_non_null's.
+    { .code = TrapCode::NullFunctionReference, .specMessage = "null function reference" },
+    { .code = TrapCode::NullReference, .specMessage = "null reference" },
     { .code = TrapCode::CallStackExhausted, .specMessage = "call stack exhausted" },
     { .code = TrapCode::HostTrap, .specMessage = "host trap" },
+    // throw_ref's of a null exnref.
+    { .code = TrapCode::NullExceptionReference, .specMessage = "null exception reference" },
+    // A throw past the store's exception limits (StoreLimits): Isoline's, the spec has none.
+    { .code = TrapCode::ExceptionLimitExceeded, .specMessage = "exception limit exceeded" },
 });
 
 static_assert(
@@ -87,7 +98,7 @@ struct Trap
     /// Builds a trap; there is no default code, so a trap that forgets to name one does not compile.
     /// @param code Why it trapped.
     /// @param subject The index it names, if any.
-    constexpr explicit Trap(TrapCode code, std::optional<uint32_t> subject = {}) noexcept:
+    constexpr explicit Trap(TrapCode code, std::optional<int64_t> subject = {}) noexcept:
         code { code }, subject { subject }
     {
     }
@@ -95,7 +106,11 @@ struct Trap
     /// Why it trapped.
     TrapCode code;
     /// The index it names, such as call_indirect's table element; empty when it names none.
-    std::optional<uint32_t> subject;
+    ///
+    /// The interpreter widens an i32 index to an unsigned 64-bit address and prints that signed
+    /// (Int64.to_string), so this holds the address's bits as an int64_t: 2^32 - 1 stays positive,
+    /// and only an i64 index of 2^63 or more reads negative.
+    std::optional<int64_t> subject;
 
     bool operator==(Trap const&) const = default;
 };
@@ -117,14 +132,14 @@ struct Trap
 }
 
 /// The message the reference interpreter reports for @p trap: its row's message, followed by the
-/// index it names when the row's detail is Index.
+/// index it names, in decimal, when the row's detail is Index.
 /// @param trap The trap to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(Trap const& trap)
 {
     auto const& row = TrapTable[static_cast<std::size_t>(trap.code)];
     if (row.detail == TrapDetail::Index && trap.subject)
-        return std::format("{} {}", row.specMessage, static_cast<int32_t>(*trap.subject));
+        return std::format("{} {}", row.specMessage, *trap.subject);
     return std::string { row.specMessage };
 }
 

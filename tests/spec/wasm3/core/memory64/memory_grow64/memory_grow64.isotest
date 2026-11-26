@@ -1,0 +1,49 @@
+module memory_grow64.0.wasm
+assert_return invoke 73697a65 - -> i64:0
+assert_trap invoke 73746f72655f61745f7a65726f - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_trap invoke 6c6f61645f61745f7a65726f - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_trap invoke 73746f72655f61745f706167655f73697a65 - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_trap invoke 6c6f61645f61745f706167655f73697a65 - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 67726f77 - i64:1 -> i64:0
+assert_return invoke 73697a65 - -> i64:1
+assert_return invoke 6c6f61645f61745f7a65726f - -> i32:0
+assert_return invoke 73746f72655f61745f7a65726f - ->
+assert_return invoke 6c6f61645f61745f7a65726f - -> i32:2
+assert_trap invoke 73746f72655f61745f706167655f73697a65 - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_trap invoke 6c6f61645f61745f706167655f73697a65 - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 67726f77 - i64:4 -> i64:1
+assert_return invoke 73697a65 - -> i64:5
+assert_return invoke 6c6f61645f61745f7a65726f - -> i32:2
+assert_return invoke 73746f72655f61745f7a65726f - ->
+assert_return invoke 6c6f61645f61745f7a65726f - -> i32:2
+assert_return invoke 6c6f61645f61745f706167655f73697a65 - -> i32:0
+assert_return invoke 73746f72655f61745f706167655f73697a65 - ->
+assert_return invoke 6c6f61645f61745f706167655f73697a65 - -> i32:3
+module memory_grow64.1.wasm
+assert_return invoke 67726f77 - i64:0 -> i64:0
+assert_return invoke 67726f77 - i64:1 -> i64:0
+assert_return invoke 67726f77 - i64:0 -> i64:1
+assert_return invoke 67726f77 - i64:2 -> i64:1
+assert_return invoke 67726f77 - i64:320 -> i64:3
+assert_return invoke 67726f77 - i64:1 -> i64:323
+module memory_grow64.2.wasm
+assert_return invoke 67726f77 - i64:0 -> i64:0
+assert_return invoke 67726f77 - i64:1 -> i64:0
+assert_return invoke 67726f77 - i64:1 -> i64:1
+assert_return invoke 67726f77 - i64:2 -> i64:2
+assert_return invoke 67726f77 - i64:6 -> i64:4
+assert_return invoke 67726f77 - i64:0 -> i64:a
+assert_return invoke 67726f77 - i64:1 -> i64:ffffffffffffffff
+assert_return invoke 67726f77 - i64:10000 -> i64:ffffffffffffffff
+module memory_grow64.3.wasm
+assert_return invoke 636865636b2d6d656d6f72792d7a65726f - i64:0 i64:ffff -> i32:0
+assert_return invoke 67726f77 - i64:1 -> i64:1
+assert_return invoke 636865636b2d6d656d6f72792d7a65726f - i64:10000 i64:1ffff -> i32:0
+assert_return invoke 67726f77 - i64:1 -> i64:2
+assert_return invoke 636865636b2d6d656d6f72792d7a65726f - i64:20000 i64:2ffff -> i32:0
+assert_return invoke 67726f77 - i64:1 -> i64:3
+assert_return invoke 636865636b2d6d656d6f72792d7a65726f - i64:30000 i64:3ffff -> i32:0
+assert_return invoke 67726f77 - i64:1 -> i64:4
+assert_return invoke 636865636b2d6d656d6f72792d7a65726f - i64:40000 i64:4ffff -> i32:0
+assert_return invoke 67726f77 - i64:1 -> i64:5
+assert_return invoke 636865636b2d6d656d6f72792d7a65726f - i64:50000 i64:5ffff -> i32:0

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <core/Assert.hpp>
+
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -19,7 +22,7 @@ namespace isoline::binary::testing
 /// The unsigned LEB128 encoding of @p value, in its shortest form.
 /// @param value The value to encode.
 /// @return Its bytes.
-[[nodiscard]] inline std::vector<uint8_t> encodeU32(uint32_t value)
+[[nodiscard]] inline std::vector<uint8_t> encodeU64(uint64_t value)
 {
     auto bytes = std::vector<uint8_t> {};
     do
@@ -33,6 +36,14 @@ namespace isoline::binary::testing
     return bytes;
 }
 
+/// The unsigned LEB128 encoding of @p value, in its shortest form.
+/// @param value The value to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeU32(uint32_t value)
+{
+    return encodeU64(value);
+}
+
 /// The binary encoding of @p name: its u32 byte length, then its bytes.
 /// @param name The name to encode.
 /// @return Its bytes.
@@ -43,48 +54,126 @@ namespace isoline::binary::testing
     return bytes;
 }
 
-/// The one-byte encoding of a number, vector or abstract reference type.
-///
-/// Every reference type whose heap is not Extern is encoded as funcref (0x70), whatever its
-/// nullability or heap: P1's binary format knows no other reference types.
-/// @param type The type to encode; a reference must be funcref or externref.
-/// @return Its byte.
-[[nodiscard]] inline uint8_t encodeValueType(ValueType const& type)
+/// The signed LEB128 encoding of @p value, in its shortest form.
+/// @param value The value to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeS64(int64_t value)
+{
+    constexpr auto SignBit = uint8_t { 0x40 };
+    auto bytes = std::vector<uint8_t> {};
+    while (true)
+    {
+        auto const byte = static_cast<uint8_t>(static_cast<uint64_t>(value) & 0x7Fu);
+        value >>= 7; // arithmetic: the sign is kept
+        auto const done = (value == 0 && (byte & SignBit) == 0) || (value == -1 && (byte & SignBit) != 0);
+        bytes.push_back(done ? byte : static_cast<uint8_t>(byte | 0x80u));
+        if (done)
+            return bytes;
+    }
+}
+
+/// The one-byte code of every abstract heap type, as heap types and the reference shorthands
+/// write it; the decoder refuses those of GC (nofunc, noextern), which tests may still encode.
+struct AbstractHeapCode
+{
+    AbstractHeapType kind; ///< The abstract heap type.
+    uint8_t code;          ///< Its byte, an s7.
+};
+
+/// Every abstract heap type's code.
+inline constexpr auto AbstractHeapCodes = std::to_array<AbstractHeapCode>({
+    { .kind = AbstractHeapType::Func, .code = 0x70 },
+    { .kind = AbstractHeapType::Extern, .code = 0x6F },
+    { .kind = AbstractHeapType::Exn, .code = 0x69 },
+    { .kind = AbstractHeapType::NoFunc, .code = 0x73 },
+    { .kind = AbstractHeapType::NoExtern, .code = 0x72 },
+    { .kind = AbstractHeapType::NoExn, .code = 0x74 },
+});
+
+/// The encoding of @p heap: a concrete type index as a non-negative s33, an abstract heap by its code.
+/// @param heap The heap type to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeHeapType(HeapType const& heap)
+{
+    if (heap.kind == AbstractHeapType::Concrete)
+        return encodeS64(heap.typeIndex);
+    auto const row = std::ranges::find(AbstractHeapCodes, heap.kind, &AbstractHeapCode::kind);
+    Require(row != AbstractHeapCodes.end());
+    return { row->code };
+}
+
+/// The encoding of a value type: one byte for a number, a vector, or a nullable reference to an
+/// abstract heap (the shorthands funcref, externref, exnref and nullexnref, and those of GC); 0x63
+/// (nullable) or 0x64 (non-null) and the heap type for any other reference.
+/// @param type The type to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeValueType(ValueType const& type)
 {
     switch (type.kind)
     {
-        case ValueKind::I32: return 0x7F;
-        case ValueKind::I64: return 0x7E;
-        case ValueKind::F32: return 0x7D;
-        case ValueKind::F64: return 0x7C;
-        case ValueKind::V128: return 0x7B;
-        case ValueKind::Ref: return type.heap.kind == AbstractHeapType::Extern ? 0x6F : 0x70;
+        case ValueKind::I32: return { 0x7F };
+        case ValueKind::I64: return { 0x7E };
+        case ValueKind::F32: return { 0x7D };
+        case ValueKind::F64: return { 0x7C };
+        case ValueKind::V128: return { 0x7B };
+        case ValueKind::Ref: break;
     }
-    return 0x00;
+    constexpr auto NullableRef = uint8_t { 0x63 };
+    constexpr auto NonNullRef = uint8_t { 0x64 };
+    if (type.nullable == Nullable::Yes && type.heap.kind != AbstractHeapType::Concrete)
+        return encodeHeapType(type.heap);
+    auto bytes = std::vector<uint8_t> { type.nullable == Nullable::Yes ? NullableRef : NonNullRef };
+    auto const heap = encodeHeapType(type.heap);
+    bytes.insert(bytes.end(), heap.begin(), heap.end());
+    return bytes;
 }
 
 /// The binary encoding of @p limits: the flags byte, the minimum and, if bounded, the maximum.
-/// @param limits The limits to encode; both bounds must fit a u32.
+///
+/// The flags say whether a maximum follows (0x01) and whether the addresses are i64 (0x04, memory64);
+/// the bounds are u64s, which for values below 2^32 are the bytes of the u32s WebAssembly 2.0 reads.
+/// @param limits The limits to encode.
 /// @return Its bytes.
 [[nodiscard]] inline std::vector<uint8_t> encodeLimits(Limits const& limits)
 {
-    auto bytes = std::vector<uint8_t> { static_cast<uint8_t>(limits.max ? 0x01 : 0x00) };
-    auto const min = encodeU32(static_cast<uint32_t>(limits.min));
+    constexpr auto HasMaximum = uint8_t { 0x01 };
+    constexpr auto I64Addresses = uint8_t { 0x04 };
+    auto const flags = static_cast<uint8_t>((limits.max ? HasMaximum : 0)
+                                            | (limits.addressType == AddressType::I64 ? I64Addresses : 0));
+    auto bytes = std::vector<uint8_t> { flags };
+    auto const min = encodeU64(limits.min);
     bytes.insert(bytes.end(), min.begin(), min.end());
     if (limits.max)
     {
-        auto const max = encodeU32(static_cast<uint32_t>(*limits.max));
+        auto const max = encodeU64(*limits.max);
         bytes.insert(bytes.end(), max.begin(), max.end());
     }
     return bytes;
 }
 
+/// The binary encoding of @p type: its limits, with the custom-page-sizes flag (0x08) and the page
+/// size's exponent after the bounds when the page size is not the default 64 KiB.
+/// @param type The memory type to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeMemoryType(MemoryType const& type)
+{
+    constexpr auto CustomPageSize = uint8_t { 0x08 };
+    auto bytes = encodeLimits(type.limits);
+    if (type.pageSizeLog2 == DefaultPageSizeLog2)
+        return bytes;
+    bytes.front() |= CustomPageSize;
+    auto const exponent = encodeU32(type.pageSizeLog2);
+    bytes.insert(bytes.end(), exponent.begin(), exponent.end());
+    return bytes;
+}
+
 /// Assembles a binary module in tests.
 ///
-/// The structured methods fill the type, import, function, table, memory, global, export, start,
+/// The structured methods fill the type, import, function, table, memory, tag, global, export, start,
 /// element, data count, code and data sections, which build() writes in the binary format's order; raw
-/// sections follow them in the order they were added, so a test that needs a section elsewhere, or out of
-/// order, writes every section raw.
+/// sections follow them in the order they were added (those added with rawSectionBeforeCode() precede the
+/// code section instead), so a test that needs a section elsewhere, or out of order, writes every section
+/// raw.
 class ModuleBuilder
 {
   public:
@@ -131,22 +220,55 @@ class ModuleBuilder
     ModuleBuilder& importTable(std::string_view module, std::string_view name, TableType const& type)
     {
         auto entry = importHeader(module, name, 0x01);
-        entry.push_back(encodeValueType(type.element));
+        append(entry, encodeValueType(type.element));
         append(entry, encodeLimits(type.limits));
         _imports.push_back(std::move(entry));
         return *this;
     }
 
-    /// Appends a memory import to the import section.
+    /// Appends a memory import of 64 KiB pages to the import section.
     /// @param module The module name.
     /// @param name The field name.
     /// @param limits The memory's required size bounds, in pages.
     /// @return This builder.
     ModuleBuilder& importMemory(std::string_view module, std::string_view name, Limits const& limits)
     {
+        return importMemory(module, name, MemoryType { .limits = limits });
+    }
+
+    /// Appends a memory import to the import section.
+    /// @param module The module name.
+    /// @param name The field name.
+    /// @param type The memory's required type.
+    /// @return This builder.
+    ModuleBuilder& importMemory(std::string_view module, std::string_view name, MemoryType const& type)
+    {
         auto entry = importHeader(module, name, 0x02);
-        append(entry, encodeLimits(limits));
+        append(entry, encodeMemoryType(type));
         _imports.push_back(std::move(entry));
+        return *this;
+    }
+
+    /// Appends a tag import to the import section.
+    /// @param module The module name.
+    /// @param name The field name.
+    /// @param typeIndex The index of its function type.
+    /// @return This builder.
+    ModuleBuilder& importTag(std::string_view module, std::string_view name, uint32_t typeIndex)
+    {
+        auto entry = importHeader(module, name, 0x04);
+        append(entry, tagType(typeIndex));
+        _imports.push_back(std::move(entry));
+        return *this;
+    }
+
+    /// Appends a tag to the tag section (exception handling), which build() writes between the memory
+    /// and the global sections.
+    /// @param typeIndex The index of its function type.
+    /// @return This builder.
+    ModuleBuilder& tag(uint32_t typeIndex)
+    {
+        _tags.push_back(tagType(typeIndex));
         return *this;
     }
 
@@ -169,7 +291,26 @@ class ModuleBuilder
     /// @return This builder.
     ModuleBuilder& table(TableType const& type)
     {
-        _tables.push_back(type);
+        auto entry = encodeValueType(type.element);
+        append(entry, encodeLimits(type.limits));
+        _tables.push_back(std::move(entry));
+        return *this;
+    }
+
+    /// Appends a table with an initializer to the table section, in typed function references'
+    /// form: 0x40 0x00, the table type, then the expression every slot starts with.
+    /// @param type Its element type and size bounds.
+    /// @param initWithoutEnd Its initializer's instructions; build() appends the final end.
+    /// @return This builder.
+    ModuleBuilder& table(TableType const& type, std::vector<uint8_t> initWithoutEnd)
+    {
+        constexpr auto TableWithInitializer = uint8_t { 0x40 };
+        auto entry = std::vector<uint8_t> { TableWithInitializer, 0x00 };
+        append(entry, encodeValueType(type.element));
+        append(entry, encodeLimits(type.limits));
+        append(entry, initWithoutEnd);
+        entry.push_back(0x0B); // end
+        _tables.push_back(std::move(entry));
         return *this;
     }
 
@@ -187,12 +328,17 @@ class ModuleBuilder
         return *this;
     }
 
-    /// Appends a memory to the memory section.
+    /// Appends a memory of 64 KiB pages to the memory section.
     /// @param limits Its size bounds, in pages.
     /// @return This builder.
-    ModuleBuilder& memory(Limits limits)
+    ModuleBuilder& memory(Limits limits) { return memory(MemoryType { .limits = limits }); }
+
+    /// Appends a memory to the memory section.
+    /// @param type Its size bounds and page size.
+    /// @return This builder.
+    ModuleBuilder& memory(MemoryType const& type)
     {
-        _memories.push_back(limits);
+        _memories.push_back(type);
         return *this;
     }
 
@@ -252,6 +398,17 @@ class ModuleBuilder
         return *this;
     }
 
+    /// Appends a section verbatim just before the code section, where a custom section that names
+    /// code offsets (such as branch hints) sits in a real module.
+    /// @param id The section id.
+    /// @param payload The section's contents; build() prefixes their size.
+    /// @return This builder.
+    ModuleBuilder& rawSectionBeforeCode(uint8_t id, std::vector<uint8_t> payload)
+    {
+        _rawSectionsBeforeCode.emplace_back(id, std::move(payload));
+        return *this;
+    }
+
     /// Appends a section verbatim after the structured ones.
     /// @param id The section id.
     /// @param payload The section's contents; build() prefixes their size.
@@ -262,7 +419,8 @@ class ModuleBuilder
         return *this;
     }
 
-    /// The module's bytes: the preamble, then every non-empty structured section, then the raw ones.
+    /// The module's bytes: the preamble, then every non-empty structured section, with the raw sections
+    /// meant for before the code section ahead of it, then the other raw ones.
     /// @return The binary module.
     [[nodiscard]] std::vector<std::byte> build() const
     {
@@ -270,8 +428,9 @@ class ModuleBuilder
         appendSection(bytes, TypeSectionId, typeSection());
         appendSection(bytes, ImportSectionId, entriesOf(_imports));
         appendSection(bytes, FunctionSectionId, functionSection());
-        appendSection(bytes, TableSectionId, tableSection());
+        appendSection(bytes, TableSectionId, entriesOf(_tables));
         appendSection(bytes, MemorySectionId, memorySection());
+        appendSection(bytes, TagSectionId, entriesOf(_tags));
         appendSection(bytes, GlobalSectionId, entriesOf(_globals));
         appendSection(bytes, ExportSectionId, exportSection());
         if (_start)
@@ -279,6 +438,8 @@ class ModuleBuilder
         appendSection(bytes, ElementSectionId, entriesOf(_elements));
         if (_dataCount)
             appendRaw(bytes, DataCountSectionId, encodeU32(*_dataCount));
+        for (auto const& [id, payload]: _rawSectionsBeforeCode)
+            appendRaw(bytes, id, payload);
         appendSection(bytes, CodeSectionId, codeSection());
         appendSection(bytes, DataSectionId, entriesOf(_data));
         for (auto const& [id, payload]: _rawSections)
@@ -301,6 +462,7 @@ class ModuleBuilder
     static constexpr auto CodeSectionId = uint8_t { 10 };
     static constexpr auto DataSectionId = uint8_t { 11 };
     static constexpr auto DataCountSectionId = uint8_t { 12 };
+    static constexpr auto TagSectionId = uint8_t { 13 };
 
     struct ExportEntry
     {
@@ -346,8 +508,16 @@ class ModuleBuilder
 
     static void appendGlobalType(std::vector<uint8_t>& out, GlobalType const& type)
     {
-        out.push_back(encodeValueType(type.type));
+        append(out, encodeValueType(type.type));
         out.push_back(type.mutability == Mutability::Var ? 0x01 : 0x00);
+    }
+
+    /// A tag type: the attribute byte 0 (an exception), then the type index.
+    [[nodiscard]] static std::vector<uint8_t> tagType(uint32_t typeIndex)
+    {
+        auto bytes = std::vector<uint8_t> { 0x00 };
+        append(bytes, encodeU32(typeIndex));
+        return bytes;
     }
 
     [[nodiscard]] static std::vector<uint8_t> importHeader(std::string_view module,
@@ -373,7 +543,7 @@ class ModuleBuilder
     {
         append(out, encodeU32(static_cast<uint32_t>(types.size())));
         for (auto const& type: types)
-            out.push_back(encodeValueType(type));
+            append(out, encodeValueType(type));
     }
 
     [[nodiscard]] Entries typeSection() const
@@ -396,22 +566,11 @@ class ModuleBuilder
         return entries;
     }
 
-    [[nodiscard]] Entries tableSection() const
-    {
-        auto entries = Entries { .count = static_cast<uint32_t>(_tables.size()), .bytes = {} };
-        for (auto const& type: _tables)
-        {
-            entries.bytes.push_back(encodeValueType(type.element));
-            append(entries.bytes, encodeLimits(type.limits));
-        }
-        return entries;
-    }
-
     [[nodiscard]] Entries memorySection() const
     {
         auto entries = Entries { .count = static_cast<uint32_t>(_memories.size()), .bytes = {} };
-        for (auto const& limits: _memories)
-            append(entries.bytes, encodeLimits(limits));
+        for (auto const& type: _memories)
+            append(entries.bytes, encodeMemoryType(type));
         return entries;
     }
 
@@ -444,7 +603,7 @@ class ModuleBuilder
             for (auto const& [count, type]: runs)
             {
                 append(code, encodeU32(count));
-                code.push_back(encodeValueType(type));
+                append(code, encodeValueType(type));
             }
             append(code, function.body);
             code.push_back(0x0B); // end
@@ -457,14 +616,16 @@ class ModuleBuilder
     std::vector<FuncType> _types;
     std::vector<std::vector<uint8_t>> _imports;
     std::vector<FunctionEntry> _functions;
-    std::vector<TableType> _tables;
-    std::vector<Limits> _memories;
+    std::vector<std::vector<uint8_t>> _tables;
+    std::vector<MemoryType> _memories;
+    std::vector<std::vector<uint8_t>> _tags;
     std::vector<std::vector<uint8_t>> _globals;
     std::vector<ExportEntry> _exports;
     std::optional<uint32_t> _start;
     std::optional<uint32_t> _dataCount;
     std::vector<std::vector<uint8_t>> _elements;
     std::vector<std::vector<uint8_t>> _data;
+    std::vector<std::pair<uint8_t, std::vector<uint8_t>>> _rawSectionsBeforeCode;
     std::vector<std::pair<uint8_t, std::vector<uint8_t>>> _rawSections;
 };
 

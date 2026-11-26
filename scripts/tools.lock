@@ -8,6 +8,23 @@ wasm-tools.sha256.aarch64-linux = 773b5e6bf957f0d93a9a337c9c5fc4c35509706301a807
 wasm-tools.sha256.aarch64-macos = b568f04746a699c4068b8d751779b60b501cf2cab6d259a3bc973eb5eeb1f62b
 wasm-tools.sha256.x86_64-windows = 0803df158b4dbea6b029d11f4206c414f432f0447af91542817061e4f0bd912e
 
-# The WebAssembly 2.0 release: the commit the tag wg-2.0 names.
-spec.repository = https://github.com/WebAssembly/spec
-spec.commit = fffc6e12fa454e475455a7b58d3b5dc343980c10
+# The spec suites scripts/import-spec-tests.py imports, one source per name that tests/spec/files.txt
+# rows start with: `source.<name>.repository` and the `source.<name>.commit` imported.
+
+# The WebAssembly 3.0 release: the commit the tag wg-3.0 names.
+source.wasm3.repository = https://github.com/WebAssembly/spec
+source.wasm3.commit = 9d36019973201a19f9c9ebb0f10828b2fe2374aa
+
+# The proposals beyond 3.0 that Isoline implements, each its repository's suite at the commit
+# imported (docs/conformance.md lists them with the feature they test).
+source.wide-arithmetic.repository = https://github.com/WebAssembly/wide-arithmetic
+source.wide-arithmetic.commit = 024d4ce1b28cee7fd006d9c5175e3b7ece52b429
+source.custom-page-sizes.repository = https://github.com/WebAssembly/custom-page-sizes
+source.custom-page-sizes.commit = 61c873a1860acad2772539164f284cc5110f1b1b
+source.compact-imports.repository = https://github.com/WebAssembly/compact-import-section
+source.compact-imports.commit = 0624de829e2663da799e708444dec80337a3fe54
+
+# The GC cut: the language Isoline accepts is what the pinned wasm-tools validates with these
+# features, the 3.0 release without GC plus the proposals above. scripts/import-spec-tests.py skips
+# every module it rejects for GC, and the commands that use one, in the files of every source.
+cut.features = wasm3,-gc,wide-arithmetic,compact-imports,custom-page-sizes

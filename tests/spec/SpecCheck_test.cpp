@@ -16,13 +16,17 @@ using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
+using isoline::runtime::V128;
 using isoline::runtime::Value;
 using isoline::spectest::checkFailure;
 using isoline::spectest::checkResults;
+using isoline::spectest::describeAll;
 using isoline::spectest::ExpectedValue;
 using isoline::spectest::Failure;
+using isoline::spectest::LaneShape;
 using isoline::spectest::matches;
 using isoline::spectest::Stage;
+using isoline::spectest::stageName;
 
 namespace
 {
@@ -142,4 +146,93 @@ TEST_CASE("SpecCheck.failures")
     auto const broken = checkFailure(Stage::Harness, "", harness);
     REQUIRE_FALSE(broken.has_value());
     CHECK(broken.error() == "cannot open a.wasm");
+}
+
+TEST_CASE("SpecCheck.lanePatterns")
+{
+    auto expected = pattern(Pattern::Lanes);
+    expected.laneShape = LaneShape::F32x4;
+    expected.lanes = { Pattern::CanonicalNan32, Pattern::Exact, Pattern::ArithmeticNan32, Pattern::Exact };
+    expected.value = V128 { .lanes = { 0x3f80'0000'0000'0000, 0x0000'0000'0000'0000 } };
+    CHECK(matches(expected, V128 { .lanes = { 0x3f80'0000'7fc0'0000, 0x0000'0000'ffc0'0001 } }));
+    CHECK_FALSE(
+        matches(expected, V128 { .lanes = { 0x3f80'0000'7fa0'0000, 0x0000'0000'7fc0'0000 } })); // lane 0
+    CHECK_FALSE(
+        matches(expected, V128 { .lanes = { 0x3f80'0001'7fc0'0000, 0x0000'0000'7fc0'0000 } })); // lane 1
+    CHECK_FALSE(
+        matches(expected, V128 { .lanes = { 0x3f80'0000'7fc0'0000, 0x0000'0001'7fc0'0000 } })); // lane 3
+    CHECK_FALSE(matches(expected, F32 { 0x7fc0'0000 }));                                        // no vector
+
+    auto wide = pattern(Pattern::Lanes);
+    wide.laneShape = LaneShape::F64x2;
+    wide.lanes = { Pattern::Exact, Pattern::ArithmeticNan64, Pattern::Exact, Pattern::Exact };
+    wide.value = V128 { .lanes = { 0x3ff0'0000'0000'0000, 0 } };
+    CHECK(matches(wide, V128 { .lanes = { 0x3ff0'0000'0000'0000, 0xfff8'0000'0000'0001 } }));
+    CHECK_FALSE(matches(wide, V128 { .lanes = { 0x3ff0'0000'0000'0000, 0x7ff4'0000'0000'0000 } }));
+    CHECK(describeAll(std::vector { expected, wide })
+          == "v128:f32x4:nan:canonical,3f800000,nan:arithmetic,0 v128:f64x2:3ff0000000000000,nan:arithmetic");
+}
+
+TEST_CASE("SpecCheck.either")
+{
+    auto expected = pattern(Pattern::Either);
+    expected.alternatives = { exactly(I32 { 1 }), exactly(I32 { 2 }) };
+    CHECK(matches(expected, I32 { 1 }));
+    CHECK(matches(expected, I32 { 2 }));
+    CHECK_FALSE(matches(expected, I32 { 3 }));
+    CHECK(describeAll(std::vector { expected }) == "either(i32:1;i32:2)");
+}
+
+TEST_CASE("SpecCheck.anyNull")
+{
+    CHECK(
+        matches(pattern(Pattern::AnyNullRef), Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 }));
+    CHECK(matches(pattern(Pattern::AnyNullRef),
+                  Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 }));
+    CHECK_FALSE(
+        matches(pattern(Pattern::AnyNullRef), Ref { .kind = RefKind::Func, .heap = FuncHeap, .address = 3 }));
+    CHECK_FALSE(matches(pattern(Pattern::AnyNullRef), I32 { 0 }));
+    CHECK(describeAll(std::vector { pattern(Pattern::AnyNullRef) }) == "ref.null");
+}
+
+TEST_CASE("SpecCheck.newStages")
+{
+    CHECK(stageName(Stage::Exception) == "exception");
+    CHECK(stageName(Stage::Custom) == "custom");
+    // An exception is not a trap: assert_exception is not satisfied by an execute failure.
+    auto const trap = Failure { .stage = Stage::Execute, .message = "unreachable" };
+    CHECK_FALSE(checkFailure(Stage::Exception, "", trap).has_value());
+}
+
+TEST_CASE("SpecCheck.nullOfAConcreteTypeIsANullFunc")
+{
+    // The suite writes the null of a function type (ref null $t) as ref.null func: a null matches the
+    // expected null of the top of its heap's hierarchy.
+    auto const nullFunc = Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 };
+    auto const nullOfType =
+        Ref { .kind = RefKind::Null,
+              .heap = { .kind = isoline::binary::AbstractHeapType::Concrete, .typeIndex = 3 },
+              .address = 0 };
+    CHECK(matches(exactly(nullFunc), nullOfType));
+    CHECK_FALSE(
+        matches(exactly(Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 }), nullOfType));
+    CHECK(describeAll(std::vector<Value> { nullOfType }) == "ref.null:func");
+}
+
+TEST_CASE("SpecCheck.exceptionReferencesAreSpelledExn")
+{
+    // An exnref, null or not, is named by its hierarchy, as ref.null:exn and ref.exn:<address>.
+    auto const nullExn = Ref { .kind = RefKind::Null,
+                               .heap = { .kind = isoline::binary::AbstractHeapType::Exn },
+                               .address = 0 };
+    auto const noExn = Ref { .kind = RefKind::Null,
+                             .heap = { .kind = isoline::binary::AbstractHeapType::NoExn },
+                             .address = 0 };
+    auto const exception = Ref { .kind = RefKind::Exn,
+                                 .heap = { .kind = isoline::binary::AbstractHeapType::Exn },
+                                 .address = 3 };
+    CHECK(describeAll(std::vector<Value> { nullExn, noExn, exception })
+          == "ref.null:exn ref.null:exn ref.exn:3");
+    CHECK(matches(exactly(nullExn), noExn));
+    CHECK_FALSE(matches(exactly(nullExn), Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 }));
 }

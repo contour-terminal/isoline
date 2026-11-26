@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -14,10 +15,12 @@ using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
+using isoline::runtime::V128;
 using isoline::runtime::Value;
 using isoline::spectest::ActionKind;
 using isoline::spectest::CommandKind;
 using isoline::spectest::ExpectedValue;
+using isoline::spectest::LaneShape;
 using isoline::spectest::parseIsotest;
 
 namespace
@@ -158,5 +161,101 @@ TEST_CASE("IsotestReader.rejectsMalformedLines")
         auto const script = parseIsotest(std::string { "skip 61\n" } + line);
         REQUIRE_FALSE(script.has_value());
         CHECK(script.error().line == 2);
+    }
+}
+
+TEST_CASE("IsotestReader.parsesV128")
+{
+    auto const script = parseIsotest("assert_return invoke 66 - v128:0f0e0d0c0b0a09080706050403020100 -> "
+                                     "v128:00000000000000000000000000000001\n");
+    REQUIRE(script.has_value());
+    auto const& command = script->front();
+    CHECK(command.action.args
+          == std::vector<Value> { V128 { .lanes = { 0x0706'0504'0302'0100, 0x0f0e'0d0c'0b0a'0908 } } });
+    CHECK(command.expected == std::vector { exactly(V128 { .lanes = { 1, 0 } }) });
+}
+
+TEST_CASE("IsotestReader.parsesLanePatterns")
+{
+    auto const script =
+        parseIsotest("assert_return invoke 66 - -> v128:f32x4:nan:canonical,3f800000,nan:arithmetic,0 "
+                     "v128:f64x2:3ff0000000000000,nan:canonical\n");
+    REQUIRE(script.has_value());
+    auto const& expected = script->front().expected;
+    REQUIRE(expected.size() == 2);
+    using Pattern = ExpectedValue::Pattern;
+    CHECK(expected[0].pattern == Pattern::Lanes);
+    CHECK(expected[0].laneShape == LaneShape::F32x4);
+    CHECK(
+        expected[0].lanes
+        == std::array { Pattern::CanonicalNan32, Pattern::Exact, Pattern::ArithmeticNan32, Pattern::Exact });
+    // The exact lanes' bits, lane 0 lowest; a NaN pattern's lane holds zero.
+    CHECK(expected[0].value == Value { V128 { .lanes = { 0x3f80'0000'0000'0000, 0 } } });
+    CHECK(expected[1].laneShape == LaneShape::F64x2);
+    CHECK(expected[1].lanes[0] == Pattern::Exact);
+    CHECK(expected[1].lanes[1] == Pattern::CanonicalNan64);
+    CHECK(expected[1].value == Value { V128 { .lanes = { 0x3ff0'0000'0000'0000, 0 } } });
+}
+
+TEST_CASE("IsotestReader.parsesEither")
+{
+    auto const script = parseIsotest("assert_return invoke 66 - -> either(i32:1;i32:2) ref.null\n");
+    REQUIRE(script.has_value());
+    auto const& expected = script->front().expected;
+    REQUIRE(expected.size() == 2);
+    CHECK(expected[0].pattern == ExpectedValue::Pattern::Either);
+    CHECK(expected[0].alternatives == std::vector { exactly(I32 { 1 }), exactly(I32 { 2 }) });
+    CHECK(expected[1] == pattern(ExpectedValue::Pattern::AnyNullRef));
+}
+
+TEST_CASE("IsotestReader.parsesNewCommands")
+{
+    auto const script = parseIsotest("module_definition a.0.wasm 4d\n"
+                                     "module_definition a.1.wasm\n"
+                                     "module_instance 49 4d\n"
+                                     "module_instance - 4d\n"
+                                     "assert_exception invoke 66 4d i32:1 ->\n"
+                                     "assert_invalid_custom a.2.wasm 74\n");
+    REQUIRE(script.has_value());
+    REQUIRE(script->size() == 6);
+    auto const& commands = *script;
+    CHECK(commands[0].kind == CommandKind::ModuleDefinition);
+    CHECK(commands[0].file == "a.0.wasm");
+    CHECK(commands[0].name == std::string { "M" });
+    CHECK_FALSE(commands[1].name.has_value());
+    CHECK(commands[2].kind == CommandKind::ModuleInstance);
+    CHECK(commands[2].name == std::string { "I" });
+    CHECK(commands[2].definition == "M");
+    CHECK_FALSE(commands[3].name.has_value());
+    CHECK(commands[4].kind == CommandKind::AssertException);
+    CHECK(commands[4].action.field == "f");
+    CHECK(commands[4].action.module == std::string { "M" });
+    CHECK(commands[4].action.args == std::vector<Value> { I32 { 1 } });
+    CHECK(commands[5].kind == CommandKind::AssertInvalidCustom);
+    CHECK(commands[5].file == "a.2.wasm");
+    CHECK(commands[5].text == "t");
+}
+
+TEST_CASE("IsotestReader.rejectsMalformedNewValues")
+{
+    for (auto const* line: {
+             "assert_return invoke 66 - -> v128:0f0e\n",                              // too few digits
+             "assert_return invoke 66 - -> v128:0f0e0d0c0b0a090807060504030201000\n", // too many
+             "assert_return invoke 66 - -> v128:f32x4:0,0,0\n",                       // too few lanes
+             "assert_return invoke 66 - -> v128:f64x2:0,0,0\n",                       // too many lanes
+             "assert_return invoke 66 - -> v128:f64x2:0,nan:canonical32\n",           // no such lane
+             "assert_return invoke 66 - -> v128:f32x4:100000000,0,0,0\n",             // lane too wide
+             "assert_return invoke 66 - -> either(i32:1;i32:2\n",                     // unclosed
+             "assert_return invoke 66 - -> either(i32:1;either(i32:2;i32:3))\n",      // nested
+             "assert_return invoke 66 - -> either()\n",                               // no alternative
+             "invoke 66 - ref.null ->\n",               // a pattern is no argument
+             "invoke 66 - either(i32:1;i32:2) ->\n",    // nor is either
+             "assert_exception invoke 66 - -> i32:1\n", // no results
+             "module_instance 49\n",                    // no definition
+         })
+    {
+        INFO(line);
+        auto const script = parseIsotest(line);
+        CHECK_FALSE(script.has_value());
     }
 }

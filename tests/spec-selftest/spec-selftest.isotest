@@ -10,3 +10,13 @@ assert_unlinkable unlinkable.wasm 756e6b6e6f776e20696d706f7274
 assert_uninstantiable unlinkable.wasm 756e6b6e6f776e20696d706f7274
 assert_uninstantiable uninstantiable.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373
 assert_unlinkable uninstantiable.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module_definition i32.wasm 44
+module_instance 49 44
+assert_return invoke 616464 49 i32:1 i32:2 -> i32:3
+assert_return invoke 616464 - i32:1 i32:2 -> either(i32:4;i32:3)
+assert_exception invoke 616464 - i32:1 i32:2 ->
+assert_invalid_custom i32.wasm 78
+module_instance - 58
+module i32.wasm 4d
+module_instance 4e 4d
+assert_return invoke 616464 4e i32:1 i32:2 -> i32:3

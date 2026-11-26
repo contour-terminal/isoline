@@ -9,11 +9,15 @@
 #include <deque>
 #include <expected>
 #include <limits>
+#include <map>
 #include <new>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
 namespace isoline::runtime
@@ -21,7 +25,6 @@ namespace isoline::runtime
 
 namespace
 {
-    using binary::AddressType;
     using binary::ExternKind;
     using binary::Limits;
 
@@ -42,18 +45,13 @@ namespace
     /// The most pages a memory may reach.
     [[nodiscard]] constexpr uint64_t pageLimit(binary::MemoryType const& type) noexcept
     {
-        auto const reach =
-            type.limits.addressType == AddressType::I32 ? uint64_t { 1 } << 16 : uint64_t { 1 } << 48;
-        return unitLimit(type.limits, reach, PageSize);
+        return unitLimit(type.limits, binary::maxPages(type), binary::pageSize(type));
     }
 
     /// The most slots a table may reach.
     [[nodiscard]] constexpr uint64_t slotLimit(binary::TableType const& type) noexcept
     {
-        auto const reach = type.limits.addressType == AddressType::I32
-                               ? uint64_t { std::numeric_limits<uint32_t>::max() }
-                               : std::numeric_limits<uint64_t>::max();
-        return unitLimit(type.limits, reach, sizeof(Ref));
+        return unitLimit(type.limits, binary::maxTableSize(type), sizeof(Ref));
     }
 
     /// Resizes @p items to @p units units of @p unitBytes each, new items being @p fill, if the
@@ -79,8 +77,10 @@ namespace
         }
         catch (std::bad_alloc const&)
         {
+            // uncovered-begin(bad-alloc)
             return failure;
         }
+        // uncovered-end(bad-alloc)
         return {};
     }
 
@@ -103,26 +103,60 @@ namespace
     }
 } // namespace
 
-Store::Store(IMemoryAllocator const& allocator, uint32_t maxCallDepth):
-    _allocator { &allocator }, _maxCallDepth { maxCallDepth }
+Store::Store(IMemoryAllocator const& allocator, StoreLimits limits):
+    _allocator { &allocator }, _limits { limits }
 {
+}
+
+TypeId Store::internType(binary::FuncType type)
+{
+    auto const named = [this](binary::ValueType const& value) {
+        return !binary::isConcreteRef(value) || value.heap.typeIndex < _types.size();
+    };
+    Require(std::ranges::all_of(type.params, named) && std::ranges::all_of(type.results, named));
+    auto const next = typeCount();
+    Require(next < std::numeric_limits<TypeId>::max());
+    auto const [entry, added] = _typeIds.try_emplace(std::move(type), next);
+    if (added)
+        _types.push_back(&entry->first);
+    return entry->second;
+}
+
+std::optional<TypeId> Store::findType(binary::FuncType const& type) const
+{
+    auto const entry = _typeIds.find(type);
+    if (entry == _typeIds.end())
+        return std::nullopt;
+    return entry->second;
+}
+
+TypeId Store::typeCount() const noexcept
+{
+    return static_cast<TypeId>(_types.size());
+}
+
+binary::FuncType const& Store::type(TypeId id) const
+{
+    Require(id < _types.size());
+    return *_types[id];
 }
 
 FuncAddr Store::addHostFunction(binary::FuncType type, HostCallback callback)
 {
     Require(static_cast<bool>(callback));
-    return append(
-        _functions,
-        FunctionInstance {
-            .type = std::move(type), .moduleInstance = 0, .codeIndex = 0, .host = std::move(callback) });
+    auto const typeId = internType(std::move(type));
+    return append(_functions,
+                  FunctionInstance {
+                      .typeId = typeId, .moduleInstance = 0, .codeIndex = 0, .host = std::move(callback) });
 }
 
-FuncAddr Store::addModuleFunction(binary::FuncType type, uint32_t moduleInstance, uint32_t codeIndex)
+FuncAddr Store::addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32_t codeIndex)
 {
+    Require(typeId < _types.size());
     return append(
         _functions,
         FunctionInstance {
-            .type = std::move(type), .moduleInstance = moduleInstance, .codeIndex = codeIndex, .host = {} });
+            .typeId = typeId, .moduleInstance = moduleInstance, .codeIndex = codeIndex, .host = {} });
 }
 
 std::expected<TableAddr, AllocationFailure> Store::addTable(binary::TableType type, Ref init)
@@ -136,11 +170,12 @@ std::expected<TableAddr, AllocationFailure> Store::addTable(binary::TableType ty
 
 std::expected<MemAddr, AllocationFailure> Store::addMemory(binary::MemoryType type)
 {
+    Require(type.pageSizeLog2 < binary::PageSizeLog2Limit);
     auto bytes = std::vector<std::byte> {};
     return resize(bytes,
                   type.limits.min,
                   pageLimit(type),
-                  PageSize,
+                  binary::pageSize(type),
                   *_allocator,
                   std::byte {},
                   ExternKind::Memory)
@@ -151,6 +186,25 @@ std::expected<MemAddr, AllocationFailure> Store::addMemory(binary::MemoryType ty
 GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
 {
     return append(_globals, GlobalInstance { .type = type, .value = value });
+}
+
+TagAddr Store::addTag(TypeId typeId)
+{
+    Require(typeId < _types.size());
+    return append(_tags, TagInstance { .typeId = typeId });
+}
+
+std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value> payload)
+{
+    Require(tag < _tags.size());
+    // A host may allocate one, so its payload is checked as host results are: what a handler pushes
+    // is read by the tag's params.
+    Require(haveKinds(payload, type(_tags[tag].typeId).params));
+    if (_exceptions.size() >= _limits.maxExceptions
+        || payload.size() > _limits.maxExceptionValues - _exceptionValues)
+        return trap(TrapCode::ExceptionLimitExceeded);
+    _exceptionValues += payload.size();
+    return append(_exceptions, ExceptionInstance { .tag = tag, .payload = std::move(payload) });
 }
 
 uint32_t Store::addModuleInstance(ModuleInstance instance)
@@ -166,6 +220,11 @@ FunctionInstance const& Store::function(FuncAddr address) const
 FunctionInstance& Store::function(FuncAddr address)
 {
     return at(_functions, address);
+}
+
+binary::FuncType const& Store::functionType(FuncAddr address) const
+{
+    return type(function(address).typeId);
 }
 
 TableInstance const& Store::table(TableAddr address) const
@@ -198,6 +257,16 @@ GlobalInstance& Store::global(GlobalAddr address)
     return at(_globals, address);
 }
 
+TagInstance const& Store::tag(TagAddr address) const
+{
+    return at(_tags, address);
+}
+
+ExceptionInstance const& Store::exception(ExnAddr address) const
+{
+    return at(_exceptions, address);
+}
+
 ModuleInstance const& Store::moduleInstance(uint32_t address) const
 {
     return at(_moduleInstances, address);
@@ -211,14 +280,15 @@ ModuleInstance& Store::moduleInstance(uint32_t address)
 int64_t Store::growMemory(MemAddr address, uint64_t deltaPages)
 {
     auto& instance = memory(address);
-    auto const oldPages = instance.bytes.size() / PageSize;
+    auto const pageBytes = binary::pageSize(instance.type);
+    auto const oldPages = instance.bytes.size() / pageBytes;
     auto const limit = pageLimit(instance.type);
     if (deltaPages > limit - oldPages)
         return -1;
     return resize(instance.bytes,
                   oldPages + deltaPages,
                   limit,
-                  PageSize,
+                  pageBytes,
                   *_allocator,
                   std::byte {},
                   ExternKind::Memory)
@@ -241,7 +311,7 @@ int64_t Store::growTable(TableAddr address, uint64_t delta, Ref init)
 
 uint32_t Store::maxCallDepth() const noexcept
 {
-    return _maxCallDepth;
+    return _limits.maxCallDepth;
 }
 
 } // namespace isoline::runtime

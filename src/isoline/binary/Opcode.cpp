@@ -14,7 +14,7 @@ namespace isoline::binary
 namespace
 {
 
-    /// The prefix bytes of P1's prefixed opcodes.
+    /// The prefix bytes of the prefixed opcodes.
     constexpr auto MiscPrefix = uint8_t { 0xFC };
     constexpr auto SimdPrefix = uint8_t { 0xFD };
 
@@ -47,7 +47,7 @@ namespace
 
     constexpr auto PlainSlots = buildSlots<NoPrefix>();
     constexpr auto MiscSlots = buildSlots<MiscPrefix>();
-    constexpr auto SimdSlots = buildSlots<SimdPrefix>(); // empty in P1
+    constexpr auto SimdSlots = buildSlots<SimdPrefix>();
 
     /// The lookup array of one prefix.
     struct PrefixRow

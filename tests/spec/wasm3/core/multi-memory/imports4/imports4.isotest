@@ -1,0 +1,16 @@
+module imports4.0.wasm
+register 74657374
+module imports4.1.wasm
+assert_return invoke 67726f77 - i32:0 -> i32:1
+assert_return invoke 67726f77 - i32:1 -> i32:1
+assert_return invoke 67726f77 - i32:0 -> i32:2
+assert_return invoke 67726f77 - i32:1 -> i32:ffffffff
+assert_return invoke 67726f77 - i32:0 -> i32:2
+module imports4.2.wasm 4d676d
+register 67726f776e2d6d656d6f7279 4d676d
+assert_return invoke 67726f77 4d676d -> i32:1
+module imports4.3.wasm 4d67696d31
+register 67726f776e2d696d706f727465642d6d656d6f7279 4d67696d31
+assert_return invoke 67726f77 4d67696d31 -> i32:2
+module imports4.4.wasm 4d67696d32
+assert_return invoke 73697a65 4d67696d32 -> i32:3

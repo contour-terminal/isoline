@@ -11,6 +11,7 @@
 #include <variant>
 
 #include <isoline/binary/Module.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -91,8 +92,8 @@ struct LinkError
 };
 
 /// Why instantiation failed: an import did not bind, the store could not allocate a memory or table,
-/// or initialization trapped.
-using InstantiationError = std::variant<LinkError, AllocationFailure, Trap>;
+/// initialization trapped, or the start function threw an exception it did not catch.
+using InstantiationError = std::variant<LinkError, AllocationFailure, Trap, Thrown>;
 
 /// Executes code for instantiation: constant expressions, and the start function.
 ///
@@ -107,11 +108,12 @@ class ICodeExecutor
     /// @param function Its address.
     /// @param args Its arguments, matching its parameter types.
     /// @param results Receives its results; sized to its result types.
-    /// @return Nothing, or the trap execution ended with.
-    [[nodiscard]] virtual std::expected<void, Trap> invoke(Store& store,
-                                                           FuncAddr function,
-                                                           std::span<Value const> args,
-                                                           std::span<Value> results) = 0;
+    /// @return Nothing, or how execution ended abruptly: the trap, or the exception it threw and no
+    ///         handler caught.
+    [[nodiscard]] virtual std::expected<void, Abrupt> invoke(Store& store,
+                                                             FuncAddr function,
+                                                             std::span<Value const> args,
+                                                             std::span<Value> results) = 0;
 
     /// Evaluates a constant expression of a module instance.
     /// @param store The store holding the instance.
@@ -123,10 +125,10 @@ class ICodeExecutor
                                                                    binary::ConstExpr const& expression) = 0;
 };
 
-/// Instantiates a module, as the Wasm 2.0 spec's instantiate does (4.5.4).
+/// Instantiates a module, as the WebAssembly 3.0 spec's instantiate does (Execution, Modules).
 ///
 /// It checks the imports (their count, kinds and types, limits by subtyping), allocates the
-/// module's functions, tables, memories and globals (evaluating the globals' initializers in order),
+/// module's functions, tags, tables, memories and globals (evaluating the globals' initializers in order),
 /// evaluates the element segments, then initializes the tables and memories in segment order, as
 /// table.init and memory.init followed by elem.drop and data.drop would; declarative element
 /// segments are dropped too. The first segment that is out of bounds traps; the segments before it

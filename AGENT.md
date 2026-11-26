@@ -210,8 +210,10 @@ the design is not data-driven enough yet.
 ### Testability of every code area
 **Every code area must be testable, and new code lands with tests.** Every `*_test.cpp` under
 `src/isoline/` is compiled into the Catch2 binary `isoline_test` (CTest label `unit`); the
-official WebAssembly spec suite runs beside it. If something is hard to test, that is a design smell: inject the dependency and
-extract the decision, don't skip the test. Aim always to increase coverage.
+official WebAssembly 3.0 spec suite and the suites of the proposals beyond it run beside it (label
+`spec`), every file of the pinned suite imported or excluded with a reason (`docs/conformance.md`).
+If something is hard to test, that is a design smell: inject the dependency and extract the
+decision, don't skip the test. Aim always to increase coverage.
 
 ## Zero-warning policy
 

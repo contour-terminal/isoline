@@ -1,0 +1,14 @@
+module float_exprs0.0.wasm
+invoke 696e6974 - i32:0 f64:402e333333333333 ->
+invoke 696e6974 - i32:8 f64:402e666666666666 ->
+invoke 696e6974 - i32:10 f64:402e99999999999a ->
+invoke 696e6974 - i32:18 f64:402ecccccccccccd ->
+assert_return invoke 636865636b - i32:0 -> f64:402e333333333333
+assert_return invoke 636865636b - i32:8 -> f64:402e666666666666
+assert_return invoke 636865636b - i32:10 -> f64:402e99999999999a
+assert_return invoke 636865636b - i32:18 -> f64:402ecccccccccccd
+invoke 72756e - i32:20 f64:4008000000000000 ->
+assert_return invoke 636865636b - i32:0 -> f64:4014222222222222
+assert_return invoke 636865636b - i32:8 -> f64:4014444444444444
+assert_return invoke 636865636b - i32:10 -> f64:4014666666666667
+assert_return invoke 636865636b - i32:18 -> f64:4014888888888889

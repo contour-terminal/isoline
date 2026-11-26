@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// isoline_spec_runner <dir> [<skips>]: runs <dir>/<name>.isotest, one imported .wast file of the
-// spec suite, against the decoder, the validator and the reference interpreter. It fails when a
-// command fails, and when the script skips other than <skips> commands (0 when not given): every
-// skip is pinned in tests/spec/files.txt, so none appears unnoticed.
+// isoline_spec_runner <dir> <skips> --features <set>: runs <dir>/<name>.isotest, one imported .wast
+// file of the spec suite, against the decoder, the validator and the reference interpreter, with the
+// features of <set> on (wasm2, wasm3 or all). It fails when a command fails, and when the script
+// skips other than <skips> commands: every skip is pinned in tests/spec/files.txt, so none appears
+// unnoticed.
 
 #include <algorithm>
 #include <array>
@@ -33,16 +34,20 @@
 
 #include "IsotestReader.hpp"
 #include "SpecCheck.hpp"
+#include "SpecFeatures.hpp"
 #include <isoline/Features.hpp>
+#include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
-#include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/validate/Subtyping.hpp>
 #include <isoline/validate/ValidationError.hpp>
 #include <isoline/validate/Validator.hpp>
 
@@ -65,6 +70,21 @@ namespace
         return Failure { .stage = stage, .message = runtime::specMessage(trap) };
     }
 
+    /// The failure of an exception no handler caught: always Stage::Exception, which only
+    /// assert_exception expects, with the reference interpreter's message.
+    [[nodiscard]] Failure thrownFailure(runtime::Thrown const& /*thrown*/)
+    {
+        return Failure { .stage = Stage::Exception, .message = "uncaught exception" };
+    }
+
+    /// The failure of an invocation that ended abruptly: a trap at @p stage, or an uncaught exception.
+    [[nodiscard]] Failure abruptFailure(Stage stage, runtime::Abrupt const& abrupt)
+    {
+        if (auto const* thrown = std::get_if<runtime::Thrown>(&abrupt))
+            return thrownFailure(*thrown);
+        return trapFailure(stage, std::get<runtime::Trap>(abrupt));
+    }
+
     /// Whether @p value is of @p type: what the interpreter requires of every argument.
     [[nodiscard]] bool hasType(Value const& value, binary::ValueType const& type)
     {
@@ -77,8 +97,9 @@ namespace
             case binary::ValueKind::V128: return std::holds_alternative<runtime::V128>(value);
             case binary::ValueKind::Ref: break;
         }
+        // An argument's heap is that of the script's value, ref.null func for a (ref null $t) too.
         auto const* const ref = std::get_if<runtime::Ref>(&value);
-        return ref && ref->heap.kind == type.heap.kind;
+        return ref && validate::topOf(ref->heap.kind) == validate::topOf(type.heap.kind);
     }
 
     [[nodiscard]] std::expected<std::vector<std::byte>, Failure> readFile(std::filesystem::path const& path)
@@ -106,7 +127,7 @@ namespace
         auto instance = runtime::ModuleInstance {};
         instance.module = std::make_shared<Module const>();
         auto const ignore = [](std::span<Value const>,
-                               std::span<Value>) -> std::expected<void, runtime::Trap> {
+                               std::span<Value>) -> std::expected<void, runtime::Abrupt> {
             return {};
         };
         for (auto const& function: std::to_array<HostFunction>({
@@ -148,15 +169,29 @@ namespace
                                           ExternValue { .kind = ExternKind::Global, .address = address });
         }
 
-        auto const table = store.addTable(
-            TableType { .element = FuncRef,
-                        .limits = { .min = 10, .max = 20, .addressType = AddressType::I32 } },
-            runtime::Ref { .kind = runtime::RefKind::Null, .heap = FuncRef.heap, .address = 0 });
+        struct HostTable
+        {
+            std::string_view name;
+            AddressType addressType;
+        };
+        for (auto const& table: std::to_array<HostTable>({
+                 { .name = "table", .addressType = AddressType::I32 },
+                 { .name = "table64", .addressType = AddressType::I64 },
+             }))
+        {
+            auto const address = store.addTable(
+                TableType { .element = FuncRef,
+                            .limits = { .min = 10, .max = 20, .addressType = table.addressType } },
+                runtime::Ref { .kind = runtime::RefKind::Null, .heap = FuncRef.heap, .address = 0 });
+            if (!address)
+                throw std::runtime_error { "cannot allocate a spectest table" };
+            instance.exports.emplace_back(std::string { table.name },
+                                          ExternValue { .kind = ExternKind::Table, .address = *address });
+        }
         auto const memory =
             store.addMemory(MemoryType { .limits = { .min = 1, .max = 2, .addressType = AddressType::I32 } });
-        if (!table || !memory)
-            throw std::runtime_error { "cannot allocate the spectest table or memory" };
-        instance.exports.emplace_back("table", ExternValue { .kind = ExternKind::Table, .address = *table });
+        if (!memory)
+            throw std::runtime_error { "cannot allocate the spectest memory" };
         instance.exports.emplace_back("memory",
                                       ExternValue { .kind = ExternKind::Memory, .address = *memory });
         return instance;
@@ -174,8 +209,8 @@ namespace
     class Runner
     {
       public:
-        explicit Runner(std::filesystem::path directory):
-            _directory { std::move(directory) }, _store { _allocator }
+        Runner(std::filesystem::path directory, FeatureSet features):
+            _directory { std::move(directory) }, _features { features }, _store { _allocator }
         {
             _registered.emplace("spectest", _store.addModuleInstance(makeSpectest(_store)));
         }
@@ -200,6 +235,8 @@ namespace
             switch (command.kind)
             {
                 case CommandKind::Module: return defineModule(command);
+                case CommandKind::ModuleDefinition: return defineDefinition(command);
+                case CommandKind::ModuleInstance: return instantiateDefinition(command);
                 case CommandKind::Register: return registerModule(command);
                 case CommandKind::Invoke:
                     return perform(command.action)
@@ -218,6 +255,9 @@ namespace
                     return expectFailure(command, loadModule(command.file), Stage::Decode);
                 case CommandKind::AssertUnlinkable:
                     return expectFailure(command, instantiateFile(command.file), Stage::Link);
+                case CommandKind::AssertException:
+                    return expectFailure(command, perform(command.action), Stage::Exception);
+                case CommandKind::AssertInvalidCustom: return assertInvalidCustom(command);
                 case CommandKind::Skip: return {};
             }
             return std::unexpected { std::string { "unknown command" } };
@@ -239,6 +279,27 @@ namespace
                 stage, command.text, result ? std::nullopt : std::optional { result.error() });
         }
 
+        /// Checks that a module loads, and that one of the custom sections the decoder interpreted was
+        /// refused with a message starting with the expected one.
+        [[nodiscard]] Outcome assertInvalidCustom(Command const& command) const
+        {
+            auto const module = loadModule(command.file);
+            if (!module)
+                return checkFailure(Stage::Custom, command.text, module.error());
+            auto const& errors = (*module)->customErrors;
+            auto const matches = [&](binary::CustomSectionError const& error) {
+                return binary::specMessage(error.code).starts_with(command.text);
+            };
+            if (std::ranges::any_of(errors, matches))
+                return {};
+            // None matches: the first refusal, if any, is the one reported.
+            if (errors.empty())
+                return checkFailure(Stage::Custom, command.text, std::nullopt);
+            auto const message = std::string { binary::specMessage(errors.front().code) };
+            return checkFailure(
+                Stage::Custom, command.text, Failure { .stage = Stage::Custom, .message = message });
+        }
+
         /// Reads, decodes and validates a module file.
         [[nodiscard]] std::expected<std::shared_ptr<binary::Module const>, Failure> loadModule(
             std::string const& file) const
@@ -246,13 +307,11 @@ namespace
             auto const bytes = readFile(_directory / file);
             if (!bytes)
                 return std::unexpected { bytes.error() };
-            auto const features = FeatureSet::wasm2();
-            auto module = binary::decodeModule(*bytes, features);
+            auto module = binary::decodeModule(*bytes, _features);
             if (!module)
-                return std::unexpected { Failure {
-                    .stage = Stage::Decode,
-                    .message = std::string { binary::specMessage(module.error().code) } } };
-            if (auto const valid = validate::validateModule(*module, features); !valid)
+                return std::unexpected { Failure { .stage = Stage::Decode,
+                                                   .message = binary::specMessage(module.error()) } };
+            if (auto const valid = validate::validateModule(*module, _features); !valid)
                 return std::unexpected { Failure { .stage = Stage::Validate,
                                                    .message = validate::specMessage(valid.error()) } };
             return std::make_shared<binary::Module const>(std::move(*module));
@@ -265,7 +324,7 @@ namespace
             auto resolved = std::vector<ExternValue> {};
             for (auto const& import: module.imports)
             {
-                auto const exporter = _registered.find(import.module);
+                auto const exporter = _registered.find(binary::importModuleOf(module, import));
                 auto const value =
                     exporter == _registered.end() ? std::nullopt : exportOf(exporter->second, import.name);
                 if (!value)
@@ -308,6 +367,7 @@ namespace
                 {
                     return trapFailure(Stage::Instantiate, trap);
                 }
+                Failure operator()(runtime::Thrown const& thrown) const { return thrownFailure(thrown); }
             };
             return std::unexpected { std::visit(Describe {}, instance.error()) };
         }
@@ -319,10 +379,45 @@ namespace
             });
         }
 
+        /// Instantiates a module and makes it current. A name names both the instance and, as in
+        /// the reference interpreter's scripts, a definition for ModuleInstance.
         [[nodiscard]] Outcome defineModule(Command const& command)
         {
             _current = std::nullopt; // the commands after a module that failed fail too
-            auto const instance = instantiateFile(command.file);
+            auto module = loadModule(command.file);
+            if (!module)
+                return std::unexpected { describeFailure(module.error()) };
+            if (command.name)
+                _definitions[*command.name] = *module;
+            auto const instance = instantiateModule(std::move(*module));
+            if (!instance)
+                return std::unexpected { describeFailure(instance.error()) };
+            _current = *instance;
+            if (command.name)
+                _named[*command.name] = *instance;
+            return {};
+        }
+
+        /// Decodes and validates a module without instantiating it; a name keeps it for
+        /// ModuleInstance.
+        [[nodiscard]] Outcome defineDefinition(Command const& command)
+        {
+            auto module = loadModule(command.file);
+            if (!module)
+                return std::unexpected { describeFailure(module.error()) };
+            if (command.name)
+                _definitions[*command.name] = std::move(*module);
+            return {};
+        }
+
+        /// Instantiates a named definition, as a module command instantiates its file.
+        [[nodiscard]] Outcome instantiateDefinition(Command const& command)
+        {
+            _current = std::nullopt; // the commands after an instance that failed fail too
+            auto const definition = _definitions.find(command.definition);
+            if (definition == _definitions.end())
+                return std::unexpected { std::format("no module definition named {}", command.definition) };
+            auto const instance = instantiateModule(definition->second);
             if (!instance)
                 return std::unexpected { describeFailure(instance.error()) };
             _current = *instance;
@@ -374,7 +469,7 @@ namespace
 
             if (target->kind != ExternKind::Func)
                 return std::unexpected { harnessFailure(std::format("'{}' is no function", action.field)) };
-            auto const& type = _store.function(target->address).type;
+            auto const& type = _store.functionType(target->address);
             if (action.args.size() != type.params.size()
                 || !std::ranges::all_of(
                     std::views::iota(std::size_t { 0 }, type.params.size()),
@@ -386,7 +481,7 @@ namespace
                 results.push_back(runtime::defaultValue(resultType));
             auto const invoked = _interpreter.invoke(_store, target->address, action.args, results);
             if (!invoked)
-                return std::unexpected { trapFailure(Stage::Execute, invoked.error()) };
+                return std::unexpected { abruptFailure(Stage::Execute, invoked.error()) };
             return results;
         }
 
@@ -401,20 +496,25 @@ namespace
         }
 
         std::filesystem::path _directory;
+        FeatureSet _features;
         runtime::UnlimitedAllocator _allocator;
         runtime::Store _store;
-        interp::ReferenceInterpreter _interpreter;
+        interpreter::ReferenceInterpreter _interpreter;
         std::optional<uint32_t> _current;
         std::map<std::string, uint32_t, std::less<>> _named;
         std::map<std::string, uint32_t, std::less<>> _registered;
+        std::map<std::string, std::shared_ptr<binary::Module const>, std::less<>> _definitions;
     };
 
     /// Runs the script in @p directory.
     /// @param directory The directory of one imported .wast file.
     /// @param expectedSkips How many of its commands are skip lines.
+    /// @param features The features the decoder and the validator accept.
     /// @return 0 when every command passed and exactly @p expectedSkips were skipped, 1 when not,
     ///         and 2 when the script cannot be read.
-    [[nodiscard]] int runDirectory(std::filesystem::path directory, std::size_t expectedSkips)
+    [[nodiscard]] int runDirectory(std::filesystem::path directory,
+                                   std::size_t expectedSkips,
+                                   FeatureSet features)
     {
         if (!directory.has_filename())
             directory = directory.parent_path();
@@ -434,7 +534,7 @@ namespace
             return 2;
         }
 
-        auto runner = Runner { directory };
+        auto runner = Runner { directory, features };
         auto counts = std::array<std::size_t, 3> {};
         auto const location = scriptPath.string();
         for (auto const& command: *commands)
@@ -468,16 +568,19 @@ namespace
 int main(int argc, char const* argv[])
 {
     auto const arguments = std::span { argv, static_cast<std::size_t>(argc) };
-    auto const expectedSkips = arguments.size() == 3 ? isoline::spectest::parseCount(arguments[2])
-                                                     : std::optional<std::size_t> { 0 };
-    if (arguments.size() < 2 || arguments.size() > 3 || !expectedSkips)
+    auto const expectedSkips =
+        arguments.size() == 5 ? isoline::spectest::parseCount(arguments[2]) : std::nullopt;
+    auto const features = arguments.size() == 5 && std::string_view { arguments[3] } == "--features"
+                              ? isoline::spectest::featureSetNamed(arguments[4])
+                              : std::nullopt;
+    if (!expectedSkips || !features)
     {
-        std::cerr << "usage: isoline_spec_runner <directory> [<expected skips>]\n";
+        std::cerr << "usage: isoline_spec_runner <directory> <expected skips> --features <wasm2|wasm3|all>\n";
         return 2;
     }
     try
     {
-        return isoline::spectest::runDirectory(arguments[1], *expectedSkips);
+        return isoline::spectest::runDirectory(arguments[1], *expectedSkips, *features);
     }
     catch (std::exception const& error)
     {

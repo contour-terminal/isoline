@@ -1,0 +1,3 @@
+module load0.0.wasm
+assert_return invoke 6c6f616431 - i32:0 -> i64:1
+assert_return invoke 6c6f616432 - i32:0 -> i64:2

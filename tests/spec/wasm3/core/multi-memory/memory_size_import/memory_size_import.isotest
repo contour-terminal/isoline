@@ -1,0 +1,7 @@
+module memory_size_import.0.wasm
+register 4d
+module memory_size_import.1.wasm
+assert_return invoke 73697a6531 - -> i32:2
+assert_return invoke 73697a6532 - -> i32:0
+assert_return invoke 73697a6533 - -> i32:3
+assert_return invoke 73697a6534 - -> i32:4

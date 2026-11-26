@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +21,8 @@ namespace isoline::spectest
 enum class CommandKind : uint8_t
 {
     Module,               ///< Instantiate a module and make it the current one.
+    ModuleDefinition,     ///< Decode and validate a module, and name it for ModuleInstance.
+    ModuleInstance,       ///< Instantiate a named definition and make it the current module.
     Register,             ///< Make a module's exports importable under a name.
     Invoke,               ///< Perform an action; its results are not checked.
     AssertReturn,         ///< An action must return the expected values.
@@ -28,7 +33,12 @@ enum class CommandKind : uint8_t
     AssertMalformed,      ///< A module must fail to decode.
     AssertUnlinkable,     ///< A module must fail to link its imports.
     AssertUninstantiable, ///< A module must trap while it is instantiated.
-    Skip,                 ///< A command the script cannot express (a text-only module); counted, not run.
+    AssertException,      ///< An invocation must throw an exception out of the function.
+    AssertInvalidCustom,  ///< A module must load, and one of its custom sections be invalid.
+    /// A command the importer skipped, with its reason: an assertion of a text module, a text
+    /// module, or a command using a module, definition, instance or registration a skip poisoned.
+    /// Counted against the pinned count, not run.
+    Skip,
 };
 
 /// What an action does with an export.
@@ -47,6 +57,13 @@ struct Action
     std::vector<runtime::Value> args;     ///< Invoke: the arguments.
 };
 
+/// How a v128 of Pattern::Lanes is split into the lanes its patterns apply to.
+enum class LaneShape : uint8_t
+{
+    F32x4, ///< Four f32 lanes, lane 0 the lowest 32 bits.
+    F64x2, ///< Two f64 lanes, lane 0 the lowest 64 bits.
+};
+
 /// A value an assertion expects: exactly a value, or one of the patterns the spec suite allows.
 struct ExpectedValue
 {
@@ -59,13 +76,63 @@ struct ExpectedValue
         CanonicalNan64,  ///< An f64 canonical NaN, of either sign.
         ArithmeticNan64, ///< An f64 NaN with the quiet bit set, of either sign.
         AnyFunctionRef,  ///< Any non-null funcref.
+        AnyNullRef,      ///< The null reference of any heap.
+        Lanes,           ///< A v128 whose float lanes each match their own pattern of lanes.
+        Either,          ///< Any one of alternatives.
     };
 
     Pattern pattern = Pattern::Exact; ///< How to compare.
-    runtime::Value value;             ///< Exact: the value expected.
+    /// Exact: the value expected. Lanes: a V128 holding the bits of each Exact lane, zero elsewhere.
+    runtime::Value value;
+    /// Lanes: each lane's pattern, Exact or a NaN pattern of the shape's width (F64x2 uses two).
+    std::array<Pattern, 4> lanes {};
+    LaneShape laneShape = LaneShape::F32x4;     ///< Lanes: how the v128 is split.
+    std::vector<ExpectedValue> alternatives {}; ///< Either: the values any one of which matches.
 
     bool operator==(ExpectedValue const&) const = default;
 };
+
+/// The facts of one LaneShape: how its lane pattern token is spelled and what its lanes are.
+struct LaneFormat
+{
+    std::string_view prefix;           ///< The token's prefix, `v128:<shape>:`.
+    LaneShape shape;                   ///< The shape it describes.
+    std::size_t count;                 ///< How many lanes the token lists.
+    unsigned width;                    ///< The bits of each lane.
+    ExpectedValue::Pattern canonical;  ///< What `nan:canonical` means in a lane.
+    ExpectedValue::Pattern arithmetic; ///< What `nan:arithmetic` means in a lane.
+};
+
+/// Every LaneShape's facts, indexed by the shape: the reader parses lane tokens by them, and the
+/// checker splits and spells the lanes by them.
+constexpr auto LaneFormats = std::to_array<LaneFormat>({
+    { .prefix = "v128:f32x4:",
+      .shape = LaneShape::F32x4,
+      .count = 4,
+      .width = 32,
+      .canonical = ExpectedValue::Pattern::CanonicalNan32,
+      .arithmetic = ExpectedValue::Pattern::ArithmeticNan32 },
+    { .prefix = "v128:f64x2:",
+      .shape = LaneShape::F64x2,
+      .count = 2,
+      .width = 64,
+      .canonical = ExpectedValue::Pattern::CanonicalNan64,
+      .arithmetic = ExpectedValue::Pattern::ArithmeticNan64 },
+});
+
+static_assert(std::ranges::all_of(std::views::iota(std::size_t { 0 }, LaneFormats.size()),
+                                  [](std::size_t index) {
+                                      return static_cast<std::size_t>(LaneFormats.at(index).shape) == index;
+                                  }),
+              "LaneFormats is indexed by LaneShape");
+
+/// The facts of @p shape.
+/// @param shape A lane shape.
+/// @return Its row of LaneFormats.
+[[nodiscard]] constexpr LaneFormat const& laneFormat(LaneShape shape)
+{
+    return LaneFormats.at(static_cast<std::size_t>(shape));
+}
 
 /// One command of an .isotest script.
 struct Command
@@ -73,17 +140,22 @@ struct Command
     CommandKind kind = CommandKind::Skip; ///< What it asks for.
     std::size_t line = 0;                 ///< Its 1-based line in the script.
 
-    /// Module and the module assertions: the .wasm file, relative to the script's directory.
+    /// Module, ModuleDefinition and the module assertions: the .wasm file, relative to the script's
+    /// directory.
     std::string file;
 
-    /// Module: its name, if named. Register: the module to register; the current one if empty.
+    /// Module, ModuleDefinition and ModuleInstance: the name it is given, if any. Register: the
+    /// module to register; the current one if empty.
     std::optional<std::string> name;
+
+    /// ModuleInstance: the name of the ModuleDefinition to instantiate.
+    std::string definition;
 
     /// Register: the name to register under. The assertions with a message: the message the actual
     /// one must start with. Skip: why it is skipped.
     std::string text;
 
-    Action action;                       ///< Invoke and the action assertions: the action.
+    Action action;                       ///< Invoke, AssertException and the action assertions: the action.
     std::vector<ExpectedValue> expected; ///< AssertReturn: the values expected.
 };
 
@@ -100,8 +172,25 @@ struct ParseError
 ///
 /// Names and messages are hex-encoded UTF-8; an empty name is the empty token, which two adjacent
 /// spaces delimit. Values are `i32:`, `i64:`, `f32:` and `f64:` followed by their bits in hex, the
-/// NaN patterns `f32:nan:canonical` and friends, `ref.null:func`, `ref.null:extern`,
-/// `ref.extern:<n>`, `ref.func` (any non-null funcref, expected values only) and `ref.func:<n>`.
+/// NaN patterns `f32:nan:canonical` and friends, `v128:` followed by its 32 hex digits (the most
+/// significant first), `ref.null:func`, `ref.null:extern`, `ref.extern:<n>`, `ref.func:<n>`, and,
+/// as expected values only, these patterns:
+/// - `ref.func`, any non-null funcref, and `ref.null`, the null of any heap;
+/// - `v128:f32x4:<l0>,<l1>,<l2>,<l3>` and `v128:f64x2:<l0>,<l1>`, each lane its bits in hex or
+///   `nan:canonical` or `nan:arithmetic`;
+/// - `either(<value>;<value>…)`, any one of the values, none of which is an `either`.
+///
+/// The commands, after their keyword:
+/// - `module <file> [name]`, `module_definition <file> [name]`, `module_instance <name|-> <definition>`
+///   and `register <as> [name]`;
+/// - `invoke <export> <module|-> <arg>* -> <result>*` (the results unchecked), `assert_return invoke|get
+///   … -> <expected>*` and `assert_exception invoke <export> <module|-> <arg>* ->`;
+/// - `assert_trap invoke … -> <message>`, `assert_trap module <file> <message>` and
+///   `assert_exhaustion invoke … -> <message>`;
+/// - `assert_invalid`, `assert_malformed`, `assert_unlinkable`, `assert_uninstantiable` and
+///   `assert_invalid_custom`, each `<file> <message>`;
+/// - `skip <reason>`.
+///
 /// Empty lines are ignored.
 /// @param script The script's text.
 /// @return Its commands in order, or the first line that does not parse.

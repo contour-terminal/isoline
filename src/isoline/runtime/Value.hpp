@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <ranges>
+#include <span>
 #include <type_traits>
 #include <variant>
 
@@ -52,12 +56,39 @@ struct V128
     bool operator==(V128 const&) const = default;
 };
 
+/// The vector whose bytes, lowest lane byte first, are @p bytes: as memory and v128.const hold one.
+///
+/// Composed byte by byte, so the result is the same on hosts of either byte order.
+/// @param bytes The 16 bytes, byte 0 the lowest byte of lane 0.
+/// @return The vector.
+[[nodiscard]] constexpr V128 v128FromBytes(std::span<std::byte const, 16> bytes) noexcept
+{
+    auto vector = V128 {};
+    for (auto const index: std::views::iota(std::size_t { 0 }, bytes.size()))
+        vector.lanes[index / 8] |= uint64_t { std::to_integer<uint8_t>(bytes[index]) } << (8U * (index % 8));
+    return vector;
+}
+
+/// The bytes of @p vector, lowest lane byte first: as memory and v128.const hold it.
+///
+/// Decomposed byte by byte, so the result is the same on hosts of either byte order.
+/// @param vector The vector.
+/// @return Its 16 bytes, byte 0 the lowest byte of lane 0.
+[[nodiscard]] constexpr std::array<std::byte, 16> v128ToBytes(V128 vector) noexcept
+{
+    auto bytes = std::array<std::byte, 16> {};
+    for (auto const index: std::views::iota(std::size_t { 0 }, bytes.size()))
+        bytes[index] = static_cast<std::byte>(vector.lanes[index / 8] >> (8U * (index % 8)));
+    return bytes;
+}
+
 /// What a reference refers to.
 enum class RefKind : uint8_t
 {
     Null,   ///< Nothing: the null reference of its heap.
     Func,   ///< A function instance, by its store address.
     Extern, ///< A host object, by an address the embedder assigns.
+    Exn,    ///< An exception instance, by its store address (exception handling's exnref).
 };
 
 /// A reference value.
@@ -97,6 +128,16 @@ using Value = std::variant<I32, I64, F32, F64, V128, Ref>;
             }
         },
         value);
+}
+
+/// Whether @p values are one value of each kind @p types names, in order: what the host boundary
+/// checks of arguments, results and exception payloads (a reference's heap is not checked).
+/// @param values The values.
+/// @param types The types they must be of.
+/// @return Whether the counts match and each value's kind is its type's.
+[[nodiscard]] inline bool haveKinds(std::span<Value const> values, std::span<binary::ValueType const> types)
+{
+    return std::ranges::equal(values, types, {}, kindOf, &binary::ValueType::kind);
 }
 
 /// The value a local or a table slot of @p type starts with: zero, or the null reference.

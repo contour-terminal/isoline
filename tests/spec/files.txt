@@ -1,89 +1,277 @@
-# The spec suite's .wast files scripts/import-spec-tests.py imports, one per line, each with the
-# number of `skip` lines its .isotest holds: `<name> <skips>`. A skip is an assert_malformed of a
-# module given as text, which Isoline cannot parse yet. The import fails when a count differs, and
-# so does its CTest test; a new skip is a deliberate edit here, never a silent one.
-address                1
-align                  46
-binary                 0
-binary-leb128          0
-block                  15
-br                     0
-br_if                  0
-br_table               0
-bulk                   0
-call                   0
-call_indirect          11
-conversions            0
-custom                 0
-data                   0
-elem                   0
-endianness             0
-exports                0
-f32                    2
-f32_bitwise            0
-f32_cmp                0
-f64                    2
-f64_bitwise            0
-f64_cmp                0
-fac                    0
-float_exprs            0
-float_literals         78
-float_memory           0
-forward                0
-func                   23
-func_ptrs              0
-global                 3
-i32                    2
-i64                    2
-if                     24
-imports                16
-inline-module          0
-int_exprs              0
-int_literals           20
-labels                 0
-left-to-right          0
-linking                0
-load                   13
-local_get              0
-local_set              0
-local_tee              0
-loop                   15
-memory                 6
-memory_copy            0
-memory_fill            0
-memory_grow            0
-memory_init            0
-memory_redundancy      0
-memory_size            0
-memory_trap            0
-names                  0
-nop                    0
-ref_func               0
-ref_is_null            0
-ref_null               0
-return                 0
-select                 0
-skip-stack-guard-page  0
-stack                  0
-start                  1
-store                  7
-switch                 0
-table                  6
-table-sub              0
-table_copy             0
-table_fill             0
-table_get              0
-table_grow             0
-table_init             0
-table_set              0
-table_size             0
-traps                  0
-type                   2
-unreachable            0
-unreached-invalid      0
-unreached-valid        0
-unwind                 0
-utf8-custom-section-id 0
-utf8-import-field      0
-utf8-import-module     0
-utf8-invalid-encoding  176
+# The spec suites' .wast files scripts/import-spec-tests.py imports, one per line:
+# `<source> <path> <skips>`, the source a `source.<name>` of scripts/tools.lock and the path that of
+# the .wast file under its test/ directory, without `.wast`; the import lives in
+# tests/spec/<source>/<path>/. <skips> is the number of `skip` lines its .isotest holds, each a
+# command the importer names a reason for (an assertion of a module given as text, a module the GC
+# cut rejects, or a command using a module it skips). The import fails when a count differs, and so
+# does its CTest test; a new skip is a deliberate edit here, never a silent one. A row
+# `<source> <path> exclude <reason…>` names a file that is deliberately not imported, and why.
+# docs/conformance.md lists every exclusion and every skip of the GC cut.
+wasm3 core/address                  1
+wasm3 core/align                    46
+wasm3 core/annotations              70
+wasm3 core/binary                   0
+wasm3 core/binary-leb128            0
+wasm3 core/block                    15
+wasm3 core/br                       0
+wasm3 core/br_if                    0
+wasm3 core/br_on_non_null           0
+wasm3 core/br_on_null               0
+wasm3 core/br_table                 0
+wasm3 core/bulk-memory/bulk         0
+wasm3 core/bulk-memory/memory_copy  0
+wasm3 core/bulk-memory/memory_fill  0
+wasm3 core/bulk-memory/memory_init  0
+wasm3 core/bulk-memory/table-sub    0
+wasm3 core/bulk-memory/table_copy   0
+wasm3 core/bulk-memory/table_fill   0
+wasm3 core/bulk-memory/table_init   0
+wasm3 core/call                     0
+wasm3 core/call_indirect            11
+wasm3 core/call_ref                 0
+wasm3 core/comments                 4
+wasm3 core/const                    76
+wasm3 core/conversions              0
+wasm3 core/custom                   0
+wasm3 core/data                     2
+wasm3 core/elem                     2
+wasm3 core/endianness               0
+wasm3 core/exceptions/tag           5
+wasm3 core/exceptions/throw         0
+wasm3 core/exceptions/throw_ref     0
+wasm3 core/exceptions/try_table     2
+wasm3 core/exports                  0
+wasm3 core/f32                      2
+wasm3 core/f32_bitwise              0
+wasm3 core/f32_cmp                  0
+wasm3 core/f64                      2
+wasm3 core/f64_bitwise              0
+wasm3 core/f64_cmp                  0
+wasm3 core/fac                      0
+wasm3 core/float_exprs              0
+wasm3 core/float_literals           78
+wasm3 core/float_memory             0
+wasm3 core/float_misc               0
+wasm3 core/forward                  0
+wasm3 core/func                     23
+wasm3 core/func_ptrs                0
+wasm3 core/global                   11
+wasm3 core/i32                      2
+wasm3 core/i64                      2
+wasm3 core/id                       6
+wasm3 core/if                       24
+wasm3 core/imports                  16
+wasm3 core/inline-module            0
+wasm3 core/instance                 0
+wasm3 core/int_exprs                0
+wasm3 core/int_literals             20
+wasm3 core/labels                   0
+wasm3 core/left-to-right            0
+wasm3 core/linking                  0
+wasm3 core/load                     13
+wasm3 core/local_get                0
+wasm3 core/local_init               0
+wasm3 core/local_set                0
+wasm3 core/local_tee                0
+wasm3 core/loop                     15
+wasm3 core/memory                   3
+wasm3 core/memory64/address64       0
+wasm3 core/memory64/align64         46
+wasm3 core/memory64/binary_leb128_64 0
+wasm3 core/memory64/bulk64          0
+wasm3 core/memory64/call_indirect64 0
+wasm3 core/memory64/endianness64    0
+wasm3 core/memory64/float_memory64  0
+wasm3 core/memory64/load64          13
+wasm3 core/memory64/memory64        0
+wasm3 core/memory64/memory64-imports 0
+wasm3 core/memory64/memory_copy64   0
+wasm3 core/memory64/memory_fill64   0
+wasm3 core/memory64/memory_grow64   0
+wasm3 core/memory64/memory_init64   0
+wasm3 core/memory64/memory_redundancy64 0
+wasm3 core/memory64/memory_trap64   0
+wasm3 core/memory64/table64         0
+wasm3 core/memory64/table_copy64    0
+wasm3 core/memory64/table_copy_mixed 0
+wasm3 core/memory64/table_fill64    0
+wasm3 core/memory64/table_get64     0
+wasm3 core/memory64/table_grow64    0
+wasm3 core/memory64/table_init64    0
+wasm3 core/memory64/table_set64     0
+wasm3 core/memory64/table_size64    0
+wasm3 core/memory_grow              0
+wasm3 core/memory_redundancy        0
+wasm3 core/memory_size              0
+wasm3 core/memory_trap              0
+wasm3 core/multi-memory/address0    0
+wasm3 core/multi-memory/address1    0
+wasm3 core/multi-memory/align0      0
+wasm3 core/multi-memory/binary0     0
+wasm3 core/multi-memory/data0       0
+wasm3 core/multi-memory/data1       0
+wasm3 core/multi-memory/data_drop0  0
+wasm3 core/multi-memory/exports0    0
+wasm3 core/multi-memory/float_exprs0 0
+wasm3 core/multi-memory/float_exprs1 0
+wasm3 core/multi-memory/float_memory0 0
+wasm3 core/multi-memory/imports0    0
+wasm3 core/multi-memory/imports1    0
+wasm3 core/multi-memory/imports2    0
+wasm3 core/multi-memory/imports3    0
+wasm3 core/multi-memory/imports4    0
+wasm3 core/multi-memory/linking0    0
+wasm3 core/multi-memory/linking1    0
+wasm3 core/multi-memory/linking2    0
+wasm3 core/multi-memory/linking3    0
+wasm3 core/multi-memory/load0       0
+wasm3 core/multi-memory/load1       0
+wasm3 core/multi-memory/load2       0
+wasm3 core/multi-memory/memory-multi 0
+wasm3 core/multi-memory/memory_copy0 0
+wasm3 core/multi-memory/memory_copy1 0
+wasm3 core/multi-memory/memory_fill0 0
+wasm3 core/multi-memory/memory_grow 0
+wasm3 core/multi-memory/memory_init0 0
+wasm3 core/multi-memory/memory_size0 0
+wasm3 core/multi-memory/memory_size1 0
+wasm3 core/multi-memory/memory_size2 0
+wasm3 core/multi-memory/memory_size3 0
+wasm3 core/multi-memory/memory_size_import 0
+wasm3 core/multi-memory/memory_trap0 0
+wasm3 core/multi-memory/memory_trap1 0
+wasm3 core/multi-memory/start0      0
+wasm3 core/multi-memory/store0      0
+wasm3 core/multi-memory/store1      0
+wasm3 core/multi-memory/store2      0
+wasm3 core/multi-memory/traps0      0
+wasm3 core/names                    0
+wasm3 core/nop                      0
+wasm3 core/obsolete-keywords        11
+wasm3 core/ref                      0
+wasm3 core/ref_as_non_null          0
+wasm3 core/ref_func                 0
+wasm3 core/ref_is_null              0
+wasm3 core/relaxed-simd/i16x8_relaxed_q15mulr_s 0
+wasm3 core/relaxed-simd/i32x4_relaxed_trunc 0
+wasm3 core/relaxed-simd/i8x16_relaxed_swizzle 0
+wasm3 core/relaxed-simd/relaxed_dot_product 0
+wasm3 core/relaxed-simd/relaxed_laneselect 0
+wasm3 core/relaxed-simd/relaxed_madd_nmadd 0
+wasm3 core/relaxed-simd/relaxed_min_max 0
+wasm3 core/return                   0
+wasm3 core/return_call              0
+wasm3 core/return_call_indirect     11
+wasm3 core/return_call_ref          0
+wasm3 core/select                   0
+wasm3 core/simd/simd_address        4
+wasm3 core/simd/simd_align          34
+wasm3 core/simd/simd_bit_shift      15
+wasm3 core/simd/simd_bitwise        0
+wasm3 core/simd/simd_boolean        4
+wasm3 core/simd/simd_const          181
+wasm3 core/simd/simd_conversions    30
+wasm3 core/simd/simd_f32x4          8
+wasm3 core/simd/simd_f32x4_arith    0
+wasm3 core/simd/simd_f32x4_cmp      6
+wasm3 core/simd/simd_f32x4_pmin_pmax 8
+wasm3 core/simd/simd_f32x4_rounding 16
+wasm3 core/simd/simd_f64x2          0
+wasm3 core/simd/simd_f64x2_arith    0
+wasm3 core/simd/simd_f64x2_cmp      6
+wasm3 core/simd/simd_f64x2_pmin_pmax 8
+wasm3 core/simd/simd_f64x2_rounding 16
+wasm3 core/simd/simd_i16x8_arith    0
+wasm3 core/simd/simd_i16x8_arith2   2
+wasm3 core/simd/simd_i16x8_cmp      0
+wasm3 core/simd/simd_i16x8_extadd_pairwise_i8x16 0
+wasm3 core/simd/simd_i16x8_extmul_i8x16 0
+wasm3 core/simd/simd_i16x8_q15mulr_sat_s 0
+wasm3 core/simd/simd_i16x8_sat_arith 4
+wasm3 core/simd/simd_i32x4_arith    0
+wasm3 core/simd/simd_i32x4_arith2   12
+wasm3 core/simd/simd_i32x4_cmp      10
+wasm3 core/simd/simd_i32x4_dot_i16x8 0
+wasm3 core/simd/simd_i32x4_extadd_pairwise_i16x8 0
+wasm3 core/simd/simd_i32x4_extmul_i16x8 0
+wasm3 core/simd/simd_i32x4_trunc_sat_f32x4 0
+wasm3 core/simd/simd_i32x4_trunc_sat_f64x2 0
+wasm3 core/simd/simd_i64x2_arith    0
+wasm3 core/simd/simd_i64x2_arith2   0
+wasm3 core/simd/simd_i64x2_cmp      0
+wasm3 core/simd/simd_i64x2_extmul_i32x4 0
+wasm3 core/simd/simd_i8x16_arith    0
+wasm3 core/simd/simd_i8x16_arith2   6
+wasm3 core/simd/simd_i8x16_cmp      0
+wasm3 core/simd/simd_i8x16_sat_arith 12
+wasm3 core/simd/simd_int_to_int_extend 0
+wasm3 core/simd/simd_lane           106
+wasm3 core/simd/simd_linking        0
+wasm3 core/simd/simd_load           3
+wasm3 core/simd/simd_load16_lane    0
+wasm3 core/simd/simd_load32_lane    0
+wasm3 core/simd/simd_load64_lane    0
+wasm3 core/simd/simd_load8_lane     0
+wasm3 core/simd/simd_load_extend    6
+wasm3 core/simd/simd_load_splat     4
+wasm3 core/simd/simd_load_zero      6
+wasm3 core/simd/simd_memory-multi   0
+wasm3 core/simd/simd_select         0
+wasm3 core/simd/simd_splat          1
+wasm3 core/simd/simd_store          3
+wasm3 core/simd/simd_store16_lane   0
+wasm3 core/simd/simd_store32_lane   0
+wasm3 core/simd/simd_store64_lane   0
+wasm3 core/simd/simd_store8_lane    0
+wasm3 core/skip-stack-guard-page    0
+wasm3 core/stack                    0
+wasm3 core/start                    1
+wasm3 core/store                    7
+wasm3 core/switch                   0
+wasm3 core/table                    6
+wasm3 core/table_get                0
+wasm3 core/table_grow               0
+wasm3 core/table_set                0
+wasm3 core/table_size               0
+wasm3 core/token                    26
+wasm3 core/traps                    0
+wasm3 core/type                     2
+wasm3 core/type-equivalence         19
+wasm3 core/unreachable              0
+wasm3 core/unreached-invalid        0
+wasm3 core/unreached-valid          0
+wasm3 core/unwind                   0
+wasm3 core/utf8-custom-section-id   0
+wasm3 core/utf8-import-field        0
+wasm3 core/utf8-import-module       0
+wasm3 core/utf8-invalid-encoding    176
+wasm3 core/gc/array                 exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_copy            exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_fill            exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_init_data       exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_init_elem       exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_new_data        exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_new_elem        exclude GC: the GC proposal's own tests
+wasm3 core/gc/binary-gc             exclude GC: the GC proposal's own tests
+wasm3 core/gc/br_on_cast            exclude GC: the GC proposal's own tests
+wasm3 core/gc/br_on_cast_fail       exclude GC: the GC proposal's own tests
+wasm3 core/gc/extern                exclude GC: the GC proposal's own tests
+wasm3 core/gc/i31                   exclude GC: the GC proposal's own tests
+wasm3 core/gc/ref_cast              exclude GC: the GC proposal's own tests
+wasm3 core/gc/ref_eq                exclude GC: the GC proposal's own tests
+wasm3 core/gc/ref_test              exclude GC: the GC proposal's own tests
+wasm3 core/gc/struct                exclude GC: the GC proposal's own tests
+wasm3 core/gc/type-subtyping        exclude GC: the GC proposal's own tests
+wasm3 core/ref_null                 exclude GC: the nulls of GC's heap types and anyref
+wasm3 core/type-canon               exclude GC: canonicalization of recursive type groups
+wasm3 core/type-rec                 exclude GC: recursive type groups
+wasm3 custom/custom/custom_annot    exclude text format (P10)
+wasm3 custom/name/name_annot        exclude text format (P10)
+wasm3 custom/metadata.code.branch_hint/branch_hint 2
+wide-arithmetic core/wide-arithmetic 0
+custom-page-sizes core/custom-page-sizes/custom-page-sizes 1
+custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid 2
+custom-page-sizes core/custom-page-sizes/memory_max 0
+custom-page-sizes core/custom-page-sizes/memory_max_i64 1
+compact-imports core/compact-import-section/binary-compact-imports 0
+compact-imports core/compact-import-section/imports-compact 3

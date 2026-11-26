@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -21,7 +22,9 @@
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/validate/Subtyping.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
 namespace isoline::validate
@@ -29,11 +32,13 @@ namespace isoline::validate
 
 namespace
 {
+    using binary::AddressType;
     using binary::ConstExpr;
     using binary::ExternKind;
     using binary::Function;
     using binary::FuncType;
     using binary::GlobalType;
+    using binary::ImmediateKind;
     using binary::Instruction;
     using binary::LocalRun;
     using binary::MemoryAccess;
@@ -47,12 +52,14 @@ namespace
     using binary::TableType;
     using binary::ValueKind;
     using binary::ValueType;
+    using binary::VectorShape;
 
     /// What a check found wrong, before its caller adds where: the error, and the index it names.
     struct Fault
     {
-        ValidationErrorCode code;        ///< What went wrong.
-        std::optional<uint32_t> subject; ///< The unknown or undeclared index, if it names one.
+        ValidationErrorCode code;                ///< What went wrong.
+        std::optional<uint32_t> subject;         ///< The unknown or undeclared index, if it names one.
+        std::optional<OperandMismatch> mismatch; ///< The operands that did not match, if recorded.
     };
 
     /// The outcome of a check whose position its caller knows.
@@ -61,19 +68,19 @@ namespace
     /// @return The failure of a check with @p code, naming no index.
     [[nodiscard]] std::unexpected<Fault> fail(ValidationErrorCode code) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = std::nullopt } };
+        return std::unexpected { Fault { .code = code, .subject = std::nullopt, .mismatch = std::nullopt } };
     }
 
     /// @return The failure @p fault, passed on.
     [[nodiscard]] std::unexpected<Fault> fail(Fault fault) noexcept
     {
-        return std::unexpected { fault };
+        return std::unexpected { std::move(fault) };
     }
 
     /// @return The failure of a check with @p code about the index @p subject.
     [[nodiscard]] std::unexpected<Fault> failNaming(ValidationErrorCode code, uint32_t subject) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = subject } };
+        return std::unexpected { Fault { .code = code, .subject = subject, .mismatch = std::nullopt } };
     }
 
     /// @return Success when @p holds, else the failure @p code.
@@ -92,14 +99,22 @@ namespace
         return {};
     }
 
+    /// The error @p fault is at @p instruction of function @p function.
+    [[nodiscard]] ValidationError errorAt(Fault fault, uint32_t function, uint32_t instruction) noexcept
+    {
+        return ValidationError {
+            fault.code, function, instruction, fault.subject, std::move(fault.mismatch)
+        };
+    }
+
     /// An error outside every function body.
     [[nodiscard]] std::unexpected<ValidationError> moduleError(Fault fault) noexcept
     {
-        return std::unexpected { ValidationError { fault.code, NoFunction, NoInstruction, fault.subject } };
+        return std::unexpected { errorAt(std::move(fault), NoFunction, NoInstruction) };
     }
 
     /// Lifts a module-level check to a module-level error.
-    [[nodiscard]] std::expected<void, ValidationError> atModule(Check const& result) noexcept
+    [[nodiscard]] std::expected<void, ValidationError> atModule(Check const& result)
     {
         if (!result)
             return moduleError(result.error());
@@ -122,6 +137,7 @@ namespace
         { .opcode = Opcode::I64Const, .required = std::nullopt },
         { .opcode = Opcode::F32Const, .required = std::nullopt },
         { .opcode = Opcode::F64Const, .required = std::nullopt },
+        { .opcode = Opcode::V128Const, .required = Feature::Simd },
         { .opcode = Opcode::RefNull, .required = std::nullopt },
         { .opcode = Opcode::RefFunc, .required = std::nullopt },
         { .opcode = Opcode::GlobalGet, .required = std::nullopt },
@@ -134,40 +150,113 @@ namespace
         { .opcode = Opcode::I64Mul, .required = Feature::ExtendedConst },
     });
 
+    // --- Lanes --------------------------------------------------------------------------------
+
+    /// An instruction with a lane index immediate, and how many lanes it may name.
+    struct LaneRow
+    {
+        Opcode opcode;     ///< The instruction.
+        uint8_t laneCount; ///< Its lane index must be below this.
+    };
+
+    /// Every instruction with a lane index immediate (LaneIndex or MemArgLane).
+    constexpr auto LaneTable = std::to_array<LaneRow>({
+        { .opcode = Opcode::I8x16ExtractLaneS, .laneCount = 16 },
+        { .opcode = Opcode::I8x16ExtractLaneU, .laneCount = 16 },
+        { .opcode = Opcode::I8x16ReplaceLane, .laneCount = 16 },
+        { .opcode = Opcode::I16x8ExtractLaneS, .laneCount = 8 },
+        { .opcode = Opcode::I16x8ExtractLaneU, .laneCount = 8 },
+        { .opcode = Opcode::I16x8ReplaceLane, .laneCount = 8 },
+        { .opcode = Opcode::I32x4ExtractLane, .laneCount = 4 },
+        { .opcode = Opcode::I32x4ReplaceLane, .laneCount = 4 },
+        { .opcode = Opcode::I64x2ExtractLane, .laneCount = 2 },
+        { .opcode = Opcode::I64x2ReplaceLane, .laneCount = 2 },
+        { .opcode = Opcode::F32x4ExtractLane, .laneCount = 4 },
+        { .opcode = Opcode::F32x4ReplaceLane, .laneCount = 4 },
+        { .opcode = Opcode::F64x2ExtractLane, .laneCount = 2 },
+        { .opcode = Opcode::F64x2ReplaceLane, .laneCount = 2 },
+        { .opcode = Opcode::V128Load8Lane, .laneCount = 16 },
+        { .opcode = Opcode::V128Load16Lane, .laneCount = 8 },
+        { .opcode = Opcode::V128Load32Lane, .laneCount = 4 },
+        { .opcode = Opcode::V128Load64Lane, .laneCount = 2 },
+        { .opcode = Opcode::V128Store8Lane, .laneCount = 16 },
+        { .opcode = Opcode::V128Store16Lane, .laneCount = 8 },
+        { .opcode = Opcode::V128Store32Lane, .laneCount = 4 },
+        { .opcode = Opcode::V128Store64Lane, .laneCount = 2 },
+    });
+
+    static_assert(
+        [] {
+            auto rows = std::size_t { 0 };
+            for (auto const& info: binary::OpcodeTable)
+            {
+                auto const isLaneImmediate =
+                    info.immediate == ImmediateKind::LaneIndex || info.immediate == ImmediateKind::MemArgLane;
+                auto const row = std::ranges::find(LaneTable, info.opcode, &LaneRow::opcode);
+                if (isLaneImmediate != (row != LaneTable.end()))
+                    return false;
+                // A lane load or store moves one lane: its width times the lane count is 16 bytes.
+                if (auto const* access = binary::memoryAccessOf(info.opcode); access && isLaneImmediate)
+                    if (access->width * row->laneCount != 16)
+                        return false;
+                rows += isLaneImmediate ? 1 : 0;
+            }
+            return rows == LaneTable.size();
+        }(),
+        "LaneTable holds every lane-index instruction once, and agrees with MemoryAccessTable's widths");
+
+    /// The number of lanes a shuffle's lane indices choose from: both operands' 16 bytes.
+    constexpr auto ShuffleLaneCount = 32U;
+
+    /// Checks that @p type, if it names a concrete type, names one below @p typeCount: of the
+    /// module's types, or of those before the type it is part of.
+    [[nodiscard]] Check checkTypeIndex(ValueType const& type, std::size_t typeCount) noexcept
+    {
+        if (!binary::isConcreteRef(type))
+            return {};
+        return checkIndex(type.heap.typeIndex, typeCount, ValidationErrorCode::UnknownType);
+    }
+
     // --- Limits -------------------------------------------------------------------------------
 
-    /// The largest size a memory with 32-bit addresses may declare: 65536 pages of 64 KiB.
-    constexpr auto MaxMemoryPages = uint64_t { 65536 };
-
-    /// The largest size a table with 32-bit indices may declare.
-    constexpr auto MaxTableSize = uint64_t { 0xFFFF'FFFF };
-
     /// Checks @p limits against @p range, as the interpreter's check_limits does: both bounds first,
-    /// then their order.
+    /// then their order. A bound past @p range is @p tooLarge, naming @p boundRow, the row of the
+    /// bound its message spells (AddressBoundTable for a table, MemoryBoundTable for a memory).
     [[nodiscard]] Check checkLimits(binary::Limits const& limits,
                                     uint64_t range,
-                                    ValidationErrorCode tooLarge)
+                                    ValidationErrorCode tooLarge,
+                                    uint32_t boundRow)
     {
-        return check(limits.min <= range, tooLarge)
-            .and_then([&] { return check(!limits.max || *limits.max <= range, tooLarge); })
-            .and_then([&] {
-                return check(!limits.max || limits.min <= *limits.max,
-                             ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
-            });
+        auto const fits = (limits.min <= range) && (!limits.max || *limits.max <= range);
+        if (!fits)
+            return failNaming(tooLarge, boundRow);
+        return check(!limits.max || limits.min <= *limits.max,
+                     ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
     }
 
     [[nodiscard]] Check checkTable(TableType const& table)
     {
-        // A u32 table size cannot exceed the range, so the interpreter's "table size must be at most
-        // 2^32-1" is unreachable for the tables P1 decodes; only the order of the bounds can fail.
-        return checkLimits(
-            table.limits, MaxTableSize, ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
+        return checkLimits(table.limits,
+                           binary::maxTableSize(table),
+                           ValidationErrorCode::TableSizeMustBeAtMost,
+                           static_cast<uint32_t>(table.limits.addressType));
     }
+
+    /// The page sizes custom-page-sizes admits, as base-2 logarithms: 1 byte and 64 KiB.
+    constexpr auto ValidPageSizesLog2 = std::to_array<uint8_t>({ 0, binary::DefaultPageSizeLog2 });
 
     [[nodiscard]] Check checkMemory(MemoryType const& memory)
     {
-        return checkLimits(memory.limits, MaxMemoryPages, ValidationErrorCode::MemorySizeMustBeAtMost4GiB);
+        if (std::ranges::find(ValidPageSizesLog2, memory.pageSizeLog2) == ValidPageSizesLog2.end())
+            return fail(ValidationErrorCode::InvalidCustomPageSize);
+        return checkLimits(memory.limits,
+                           binary::maxPages(memory),
+                           ValidationErrorCode::MemorySizeMustBeAtMost,
+                           memoryBoundRow(memory.limits.addressType, memory.pageSizeLog2));
     }
+
+    /// The largest memarg offset a memory of i32 addresses admits.
+    constexpr auto MaxI32Offset = uint64_t { 0xFFFF'FFFF };
 
     // --- The context ----------------------------------------------------------------------------
 
@@ -180,8 +269,16 @@ namespace
         std::vector<TableType> tables;           ///< Every table, imports first.
         std::vector<MemoryType> memories;        ///< Every memory, imports first.
         std::vector<GlobalType> globals;         ///< Every global, imports first.
+        std::vector<uint32_t> tagTypes;          ///< The type index of every tag, imports first.
         std::size_t importedGlobalCount = 0;     ///< How many of globals are imported.
         std::vector<uint32_t> declaredFunctions; ///< The functions ref.func may name; sorted, unique.
+        std::vector<uint32_t> canonical;         ///< The canonical id of every type (canonicalTypeIds).
+
+        /// Whether @p sub matches @p super, concrete types compared by their canonical ids.
+        [[nodiscard]] bool matches(ValueType const& sub, ValueType const& super) const noexcept
+        {
+            return isSubtype(sub, super, canonical);
+        }
 
         [[nodiscard]] FuncType const& functionType(uint32_t function) const
         {
@@ -195,9 +292,11 @@ namespace
             return &tables[index];
         }
 
-        [[nodiscard]] Check memory(uint32_t index) const
+        [[nodiscard]] std::expected<MemoryType const*, Fault> memory(uint32_t index) const
         {
-            return checkIndex(index, memories.size(), ValidationErrorCode::UnknownMemory);
+            if (index >= memories.size())
+                return failNaming(ValidationErrorCode::UnknownMemory, index);
+            return &memories[index];
         }
 
         [[nodiscard]] Check function(uint32_t index) const
@@ -209,6 +308,35 @@ namespace
         {
             return checkIndex(index, module.types.size(), ValidationErrorCode::UnknownType);
         }
+
+        /// The function type of tag @p index: its params are the payload's types.
+        [[nodiscard]] std::expected<FuncType const*, Fault> tag(uint32_t index) const
+        {
+            if (index >= tagTypes.size())
+                return failNaming(ValidationErrorCode::UnknownTag, index);
+            return &module.types[tagTypes[index]];
+        }
+
+        /// Checks a tag's type: a known function type without results.
+        [[nodiscard]] Check tagType(uint32_t typeIndex) const
+        {
+            return type(typeIndex).and_then([&] {
+                return check(module.types[typeIndex].results.empty(),
+                             ValidationErrorCode::NonEmptyTagResultType);
+            });
+        }
+
+        /// Checks that @p type names a type of the module, if it names one at all.
+        [[nodiscard]] Check valueType(ValueType const& type) const
+        {
+            return checkTypeIndex(type, module.types.size());
+        }
+
+        /// The type ref.func @p function pushes: a non-null reference to its function type.
+        [[nodiscard]] ValueType functionReference(uint32_t function) const
+        {
+            return binary::concreteRef(functionTypes[function], binary::Nullable::No);
+        }
     };
 
     /// Every function index a constant expression names with ref.func.
@@ -219,13 +347,15 @@ namespace
                 out.push_back(instruction.a);
     }
 
-    /// The functions ref.func may name in a body (spec 2.0, C.refs): every function index the module
-    /// mentions outside its function bodies and its start section.
+    /// The functions ref.func may name in a body (C.refs): every function index the module mentions
+    /// outside its function bodies and its start section, table initializers included.
     [[nodiscard]] std::vector<uint32_t> declaredFunctionsOf(Module const& module)
     {
         auto declared = std::vector<uint32_t> {};
         for (auto const& global: module.globals)
             collectReferences(global.init, declared);
+        for (auto const& table: module.tables)
+            collectReferences(table.init, declared);
         for (auto const& entry: module.exports)
             if (entry.kind == ExternKind::Func)
                 declared.push_back(entry.index);
@@ -280,10 +410,11 @@ namespace
     /// A control frame of the validation algorithm.
     struct Frame
     {
-        Opcode opcode;                      ///< Block, Loop, If, Else; Block for a body's own frame.
+        Opcode opcode;                      ///< Block, Loop, If, Else, TryTable; Block for a body's own.
         std::span<ValueType const> params;  ///< The types its block starts with.
         std::span<ValueType const> results; ///< The types its block ends with.
         std::size_t height;                 ///< The operand stack height at its start.
+        std::size_t setLocalsHeight;        ///< How many locals were set at its start.
         Reachability reachability;          ///< Whether its remainder is reachable.
 
         /// The types a branch to this frame carries: a loop's are its params, any other's its results.
@@ -299,6 +430,20 @@ namespace
         std::span<ValueType const> params;
         std::span<ValueType const> results;
     };
+
+    /// (ref bot): what an Unknown operand is as a reference, a subtype of every reference type.
+    constexpr auto BottomReference = ValueType {
+        .kind = ValueKind::Ref,
+        .nullable = binary::Nullable::No,
+        .heap = { .kind = binary::AbstractHeapType::Bot },
+    };
+
+    /// @p reference without null: the type ref.as_non_null and br_on_null leave it with.
+    [[nodiscard]] constexpr ValueType nonNullOf(ValueType reference) noexcept
+    {
+        reference.nullable = binary::Nullable::No;
+        return reference;
+    }
 
     [[nodiscard]] constexpr bool isNumber(Operand const& operand) noexcept
     {
@@ -331,6 +476,7 @@ namespace
             _operands.clear();
             _frames.clear();
             _localRunEnds.clear();
+            startLocalInitialization();
             auto end = uint64_t { 0 };
             for (auto const& run: body.localRuns)
             {
@@ -379,7 +525,7 @@ namespace
         [[nodiscard]] std::expected<Operand, Fault> pop(ValueType const& expected)
         {
             return pop().and_then([&](Operand const& actual) -> std::expected<Operand, Fault> {
-                if (actual && *actual != expected)
+                if (actual && !_context.matches(*actual, expected))
                     return fail(ValidationErrorCode::TypeMismatch);
                 return actual;
             });
@@ -391,6 +537,47 @@ namespace
                 if (auto const popped = pop(type); !popped)
                     return fail(popped.error());
             return {};
+        }
+
+        /// Pops @p types at once, as valid.ml's pop does, and on a mismatch records the operands: those
+        /// required, and the top ones of the block in their place, as many as there are up to as many
+        /// as required, below which an unreachable block's polymorphic stack supplies Unknowns.
+        [[nodiscard]] Check popRecording(std::span<ValueType const> types)
+        {
+            auto const& frame = _frames.back();
+            auto const taken = std::min(types.size(), _operands.size() - frame.height);
+            auto const supplied = frame.reachability == Reachability::Unreachable ? types.size() - taken : 0;
+            auto const top = std::span { _operands }.last(taken);
+            auto const matching =
+                supplied + taken == types.size()
+                && std::ranges::equal(
+                    top, types.last(taken), [this](Operand const& actual, ValueType const& required) {
+                        return !actual || _context.matches(*actual, required);
+                    });
+            if (!matching)
+            {
+                auto mismatch = OperandMismatch { .required = { types.begin(), types.end() },
+                                                  .actual = std::vector<Operand>(supplied) };
+                mismatch.actual.insert(mismatch.actual.end(), top.begin(), top.end());
+                return fail(Fault { .code = ValidationErrorCode::TypeMismatch,
+                                    .subject = std::nullopt,
+                                    .mismatch = std::move(mismatch) });
+            }
+            _operands.resize(_operands.size() - taken);
+            return {};
+        }
+
+        /// The reference on top of the stack, which ref.as_non_null and br_on_null take, without popping
+        /// it: the reference interpreter's peek_ref. An Unknown operand, or none at all, is a (ref bot);
+        /// only a top that is no reference fails, so that an empty stack fails at the pop, after the
+        /// instruction's other checks.
+        [[nodiscard]] std::expected<ValueType, Fault> peekReference() const
+        {
+            if (_operands.size() == _frames.back().height || !_operands.back())
+                return BottomReference;
+            if (_operands.back()->kind != ValueKind::Ref)
+                return fail(ValidationErrorCode::TypeMismatch);
+            return *_operands.back();
         }
 
         /// Pops @p types and pushes back what was popped, keeping the more precise operand types.
@@ -415,6 +602,7 @@ namespace
                                       .params = signature.params,
                                       .results = signature.results,
                                       .height = _operands.size(),
+                                      .setLocalsHeight = _setLocals.size(),
                                       .reachability = Reachability::Reachable });
             pushAll(signature.params);
         }
@@ -435,6 +623,55 @@ namespace
             auto& frame = _frames.back();
             _operands.resize(frame.height);
             frame.reachability = Reachability::Unreachable;
+        }
+
+        // --- Local initialization (typed function references) ---
+        //
+        // A local of a non-defaultable type starts unset; local.set and local.tee set it until the
+        // end of the block they are in, and a block's else or end restores what was set at its
+        // start. _setLocals is the stack of the locals set in the open blocks, each block keeping
+        // its height (Frame::setLocalsHeight); _setStamps tells in O(1) whether one is set, by
+        // holding _generation for it. The stamps are sized by the highest local index set so far
+        // and never cleared between bodies: a new generation unsets all at once, so a body's cost
+        // is that of its own sets, never of the locals it declares.
+
+        void startLocalInitialization()
+        {
+            _setLocals.clear();
+            ++_generation; // 64 bits: no validator lives through 2^64 bodies, so it never wraps
+        }
+
+        /// Whether local @p index, of @p type, is set: a parameter or a local with a default always is.
+        [[nodiscard]] bool isSet(Body const& body, uint32_t index, ValueType const& type) const noexcept
+        {
+            if (index < body.params.size() || binary::isDefaultable(type))
+                return true;
+            return index < _setStamps.size() && _setStamps[index] == _generation;
+        }
+
+        /// Records @p index, a local of @p type, as set, unless it is already.
+        void setLocal(Body const& body, uint32_t index, ValueType const& type)
+        {
+            if (isSet(body, index, type))
+                return;
+            if (index >= _setStamps.size())
+                _setStamps.resize(std::size_t { index } + 1, 0);
+            _setStamps[index] = _generation;
+            _setLocals.push_back(index);
+        }
+
+        /// Unsets the locals set since @p height.
+        void restoreLocals(std::size_t height)
+        {
+            for (auto const index: std::span { _setLocals }.subspan(height))
+                _setStamps[index] = 0;
+            _setLocals.resize(height);
+        }
+
+        /// Checks that local @p index, of @p type, may be read.
+        [[nodiscard]] Check readable(Body const& body, uint32_t index, ValueType const& type) const
+        {
+            return check(isSet(body, index, type), ValidationErrorCode::UninitializedLocal);
         }
 
         // --- Lookups ---
@@ -482,7 +719,9 @@ namespace
             {
                 case binary::BlockType::Kind::Empty: return BlockSignature {};
                 case binary::BlockType::Kind::Value:
-                    return BlockSignature { .params = {}, .results = std::span { &instruction.type, 1 } };
+                    return _context.valueType(instruction.type).transform([&] {
+                        return BlockSignature { .params = {}, .results = std::span { &instruction.type, 1 } };
+                    });
                 case binary::BlockType::Kind::TypeIndex: break; // checked below the switch
             }
             return _context.type(instruction.a).transform([&] {
@@ -508,28 +747,48 @@ namespace
         {
             // MemArg::memory is in b, its alignment exponent in a.
             auto const value = ValueType { .kind = row.value };
-            return _context.memory(instruction.b)
-                .and_then([&] {
-                    return check(instruction.a <= row.naturalAlignment(),
-                                 ValidationErrorCode::AlignmentMustNotBeLarger);
-                })
-                .and_then([&]() -> Check {
-                    if (row.access == MemoryAccessKind::Store)
-                        if (auto const popped = pop(value); !popped)
+            return _context.memory(instruction.b).and_then([&](MemoryType const* memory) {
+                auto const addressType = memory->limits.addressType;
+                return check(instruction.a <= row.naturalAlignment(),
+                             ValidationErrorCode::AlignmentMustNotBeLarger)
+                    .and_then([&] {
+                        return check(addressType == AddressType::I64 || instruction.c <= MaxI32Offset,
+                                     ValidationErrorCode::OffsetOutOfRange);
+                    })
+                    .and_then([&] { return checkLanes(instruction); })
+                    .and_then([&]() -> Check {
+                        // A store pops the value it writes, and a lane access the vector it changes.
+                        if (row.access == MemoryAccessKind::Store || row.shape == VectorShape::Lane)
+                            if (auto const popped = pop(value); !popped)
+                                return fail(popped.error());
+                        if (auto const popped = pop(binary::addressValueType(addressType)); !popped)
                             return fail(popped.error());
-                    if (auto const popped = pop(binary::I32); !popped)
-                        return fail(popped.error());
-                    if (row.access == MemoryAccessKind::Load)
-                        push(value);
-                    return {};
-                });
+                        if (row.access == MemoryAccessKind::Load)
+                            push(value);
+                        return {};
+                    });
+            });
         }
 
-        /// Pops @p count i32 operands, at most three.
-        [[nodiscard]] Check popI32s(std::size_t count)
+        /// Pops the operands of a bulk instruction, @p types from the bottom of the stack up.
+        [[nodiscard]] Check popOperands(std::initializer_list<ValueType> types)
         {
-            static constexpr auto I32s = std::to_array<ValueType>({ binary::I32, binary::I32, binary::I32 });
-            return popAll(std::span { I32s }.first(count));
+            return popAll(std::span { types.begin(), types.size() });
+        }
+
+        /// The value type of a copy's count between memories or tables @p destination and @p source.
+        template <typename Entity>
+        [[nodiscard]] static ValueType copyCountOf(Entity const* destination, Entity const* source) noexcept
+        {
+            return binary::addressValueType(
+                binary::copyCountType(destination->limits.addressType, source->limits.addressType));
+        }
+
+        /// The value type of the addresses of @p memory or table.
+        template <typename Entity>
+        [[nodiscard]] static ValueType addressOf(Entity const* entity) noexcept
+        {
+            return binary::addressValueType(entity->limits.addressType);
         }
 
         [[nodiscard]] Check pushAfter(std::expected<Operand, Fault> const& popped, ValueType const& type)
@@ -540,11 +799,35 @@ namespace
             return {};
         }
 
+        /// Checks the lane immediates of @p instruction: a lane index below its LaneTable count,
+        /// or a shuffle's 16 lane indices below ShuffleLaneCount. Any other instruction has none.
+        [[nodiscard]] Check checkLanes(Instruction const& instruction) const
+        {
+            switch (binary::opcodeInfo(instruction.opcode).immediate)
+            {
+                case ImmediateKind::LaneIndex:
+                case ImmediateKind::MemArgLane: {
+                    auto const row = std::ranges::find(LaneTable, instruction.opcode, &LaneRow::opcode);
+                    return check(instruction.lane < row->laneCount, ValidationErrorCode::InvalidLaneIndex);
+                }
+                case ImmediateKind::Shuffle:
+                    return check(std::ranges::all_of(binary::v128LiteralOf(_context.module, instruction),
+                                                     [](std::byte lane) {
+                                                         return std::to_integer<unsigned>(lane)
+                                                                < ShuffleLaneCount;
+                                                     }),
+                                 ValidationErrorCode::InvalidLaneIndex);
+                default: return {};
+            }
+        }
+
         [[nodiscard]] Check step(Body const& body, Instruction const& instruction)
         {
             auto const& info = binary::opcodeInfo(instruction.opcode);
             if (info.signature != OpcodeSignature::Special)
-                return applySignature(binary::signatureInfo(info.signature));
+                return checkLanes(instruction).and_then([&] {
+                    return applySignature(binary::signatureInfo(info.signature));
+                });
             if (auto const* access = binary::memoryAccessOf(instruction.opcode))
                 return memoryAccess(*access, instruction);
             return special(body, instruction);
@@ -570,15 +853,35 @@ namespace
                             .and_then([&](Operand const&) { return popAll(signature.params); })
                             .transform([&] { pushFrame(Opcode::If, signature); });
                     });
+                case Opcode::TryTable:
+                    // As valid.ml: the block type, then each clause against the labels around the
+                    // try_table, whose own label its clauses cannot name.
+                    return blockSignature(instruction).and_then([&](BlockSignature const& signature) {
+                        return catchClauses(body, instruction)
+                            .and_then([&] { return popAll(signature.params); })
+                            .transform([&] { pushFrame(Opcode::TryTable, signature); });
+                    });
+                case Opcode::Throw:
+                    return _context.tag(instruction.a).and_then([this](FuncType const* type) {
+                        return popRecording(type->params).transform([this] { markUnreachable(); });
+                    });
+                case Opcode::ThrowRef:
+                    return pop(binary::ExnRef).transform([this](Operand const&) { markUnreachable(); });
                 case Opcode::Else:
                     return popFrame().transform([this](Frame const& frame) {
+                        restoreLocals(frame.setLocalsHeight);
                         pushFrame(Opcode::Else,
                                   BlockSignature { .params = frame.params, .results = frame.results });
                     });
                 case Opcode::End:
                     return popFrame().and_then([this](Frame const& frame) -> Check {
+                        restoreLocals(frame.setLocalsHeight);
                         // An if without else passes its params through the missing else branch.
-                        if (frame.opcode == Opcode::If && !std::ranges::equal(frame.params, frame.results))
+                        if (frame.opcode == Opcode::If
+                            && !std::ranges::equal(
+                                frame.params, frame.results, [this](auto const& param, auto const& result) {
+                                    return _context.matches(param, result);
+                                }))
                             return fail(ValidationErrorCode::TypeMismatch);
                         pushAll(frame.results);
                         return {};
@@ -598,6 +901,32 @@ namespace
                             });
                         });
                     });
+                case Opcode::BrOnNull:
+                    // As valid.ml: the reference peeked, the label looked up, then the operands popped.
+                    return peekReference().and_then([&](ValueType const& reference) {
+                        return label(instruction.a).and_then([&](Frame const* frame) {
+                            return pop()
+                                .and_then([&](Operand const&) { return popAll(frame->labelTypes()); })
+                                .transform([&] {
+                                    pushAll(frame->labelTypes());
+                                    push(nonNullOf(reference));
+                                });
+                        });
+                    });
+                case Opcode::BrOnNonNull:
+                    // As valid.ml: the label first, whose last type must be a reference; the operand
+                    // is then popped as that type admitting null, and the branch carries it non-null.
+                    return label(instruction.a).and_then([&](Frame const* frame) -> Check {
+                        auto const types = frame->labelTypes();
+                        if (types.empty() || types.back().kind != ValueKind::Ref)
+                            return fail(ValidationErrorCode::TypeMismatch);
+                        auto const fallingThrough = types.first(types.size() - 1);
+                        auto nullable = types.back();
+                        nullable.nullable = binary::Nullable::Yes;
+                        return pop(nullable)
+                            .and_then([&](Operand const&) { return popAll(fallingThrough); })
+                            .transform([&] { pushAll(fallingThrough); });
+                    });
                 case Opcode::BrTable: return brTable(body, instruction);
                 case Opcode::Return: return popAll(body.results).transform([this] { markUnreachable(); });
 
@@ -606,15 +935,35 @@ namespace
                         return call(_context.functionType(instruction.a));
                     });
                 case Opcode::CallIndirect:
-                    return _context.table(instruction.b)
-                        .and_then([&](TableType const* table) {
-                            return _context.type(instruction.a).and_then([table] {
-                                return check(table->element == binary::FuncRef,
-                                             ValidationErrorCode::TypeMismatch);
-                            });
-                        })
-                        .and_then([this] { return pop(binary::I32); })
+                    return indirectTable(instruction).and_then([&](TableType const* table) {
+                        return pop(addressOf(table)).and_then([&](Operand const&) {
+                            return call(_context.module.types[instruction.a]);
+                        });
+                    });
+
+                case Opcode::CallRef:
+                    return _context.type(instruction.a)
+                        .and_then(
+                            [&] { return pop(binary::concreteRef(instruction.a, binary::Nullable::Yes)); })
                         .and_then([&](Operand const&) { return call(_context.module.types[instruction.a]); });
+
+                // The tail forms, as valid.ml: what a call checks of its immediates, then the callee's
+                // results against the function's, then the call's operands popped, and the stack
+                // polymorphic afterwards.
+                case Opcode::ReturnCall:
+                    return _context.function(instruction.a).and_then([&] {
+                        return tailCall(body, _context.functionType(instruction.a), std::nullopt);
+                    });
+                case Opcode::ReturnCallIndirect:
+                    return indirectTable(instruction).and_then([&](TableType const* table) {
+                        return tailCall(body, _context.module.types[instruction.a], addressOf(table));
+                    });
+                case Opcode::ReturnCallRef:
+                    return _context.type(instruction.a).and_then([&] {
+                        return tailCall(body,
+                                        _context.module.types[instruction.a],
+                                        binary::concreteRef(instruction.a, binary::Nullable::Yes));
+                    });
 
                 case Opcode::Drop: return pop().transform([](Operand const&) {});
                 case Opcode::Select: return select();
@@ -623,22 +972,26 @@ namespace
                     if (types.size() != 1)
                         return fail(ValidationErrorCode::InvalidResultArity);
                     auto const& type = types.front();
-                    return pop(binary::I32)
+                    return _context.valueType(type)
+                        .and_then([this] { return pop(binary::I32); })
                         .and_then([&](Operand const&) { return pop(type); })
                         .and_then([&](Operand const&) { return pushAfter(pop(type), type); });
                 }
 
                 case Opcode::LocalGet:
-                    return local(body, instruction.a).transform([this](ValueType const& type) {
-                        push(type);
+                    return local(body, instruction.a).and_then([&](ValueType const& type) {
+                        return readable(body, instruction.a, type).transform([&] { push(type); });
                     });
                 case Opcode::LocalSet:
-                    return local(body, instruction.a).and_then([this](ValueType const& type) {
-                        return pop(type).transform([](Operand const&) {});
+                    return local(body, instruction.a).and_then([&](ValueType const& type) {
+                        return pop(type).transform(
+                            [&](Operand const&) { setLocal(body, instruction.a, type); });
                     });
                 case Opcode::LocalTee:
-                    return local(body, instruction.a).and_then([this](ValueType const& type) {
-                        return pushAfter(pop(type), type);
+                    return local(body, instruction.a).and_then([&](ValueType const& type) {
+                        return pushAfter(pop(type), type).transform([&] {
+                            setLocal(body, instruction.a, type);
+                        });
                     });
                 case Opcode::GlobalGet:
                     return global(body, instruction.a).transform([this](GlobalType const* type) {
@@ -647,80 +1000,101 @@ namespace
                 case Opcode::GlobalSet:
                     return global(body, instruction.a).and_then([this](GlobalType const* type) -> Check {
                         if (type->mutability != Mutability::Var)
-                            return fail(ValidationErrorCode::GlobalIsImmutable);
+                            return fail(ValidationErrorCode::ImmutableGlobal);
                         return pop(type->type).transform([](Operand const&) {});
                     });
 
                 case Opcode::TableGet:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pushAfter(pop(binary::I32), table->element);
+                        return pushAfter(pop(addressOf(table)), table->element);
                     });
                 case Opcode::TableSet:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pop(table->element).and_then([this](Operand const&) { return popI32s(1); });
+                        return popOperands({ addressOf(table), table->element });
                     });
                 case Opcode::TableSize:
-                    return _context.table(instruction.a).transform([this](TableType const*) {
-                        push(binary::I32);
+                    return _context.table(instruction.a).transform([this](TableType const* table) {
+                        push(addressOf(table));
                     });
                 case Opcode::TableGrow:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pop(binary::I32)
-                            .and_then([&](Operand const&) { return pop(table->element); })
-                            .transform([this](Operand const&) { push(binary::I32); });
+                        return popOperands({ table->element, addressOf(table) }).transform([&] {
+                            push(addressOf(table));
+                        });
                     });
                 case Opcode::TableFill:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pop(binary::I32)
-                            .and_then([&](Operand const&) { return pop(table->element); })
-                            .and_then([this](Operand const&) { return popI32s(1); });
+                        return popOperands({ addressOf(table), table->element, addressOf(table) });
                     });
                 case Opcode::TableCopy:
-                    // a is the destination, b the source.
+                    // a is the destination, b the source; the count is i64 only if both are.
                     return _context.table(instruction.a).and_then([&](TableType const* destination) {
                         return _context.table(instruction.b).and_then([&](TableType const* source) {
-                            return check(destination->element == source->element,
+                            return check(_context.matches(source->element, destination->element),
                                          ValidationErrorCode::TypeMismatch)
-                                .and_then([this] { return popI32s(3); });
+                                .and_then([&] {
+                                    return popOperands({ addressOf(destination),
+                                                         addressOf(source),
+                                                         copyCountOf(destination, source) });
+                                });
                         });
                     });
                 case Opcode::TableInit:
                     // a is the element segment, b the table; the interpreter looks the table up first.
                     return _context.table(instruction.b).and_then([&](TableType const* table) {
                         return elem(instruction.a).and_then([&] {
-                            return check(table->element == _context.module.elements[instruction.a].type,
+                            return check(_context.matches(_context.module.elements[instruction.a].type,
+                                                          table->element),
                                          ValidationErrorCode::TypeMismatch)
-                                .and_then([this] { return popI32s(3); });
+                                .and_then([&] {
+                                    return popOperands({ addressOf(table), binary::I32, binary::I32 });
+                                });
                         });
                     });
                 case Opcode::ElemDrop: return elem(instruction.a);
 
                 case Opcode::MemorySize:
-                    return _context.memory(instruction.a).transform([this] { push(binary::I32); });
+                    return _context.memory(instruction.a).transform([this](MemoryType const* memory) {
+                        push(addressOf(memory));
+                    });
                 case Opcode::MemoryGrow:
-                    return _context.memory(instruction.a).and_then([this] {
-                        return pushAfter(pop(binary::I32), binary::I32);
+                    return _context.memory(instruction.a).and_then([this](MemoryType const* memory) {
+                        return pushAfter(pop(addressOf(memory)), addressOf(memory));
                     });
                 case Opcode::MemoryFill:
-                    return _context.memory(instruction.a).and_then([this] { return popI32s(3); });
+                    return _context.memory(instruction.a).and_then([this](MemoryType const* memory) {
+                        return popOperands({ addressOf(memory), binary::I32, addressOf(memory) });
+                    });
                 case Opcode::MemoryCopy:
-                    return _context.memory(instruction.a)
-                        .and_then([&] { return _context.memory(instruction.b); })
-                        .and_then([this] { return popI32s(3); });
+                    // a is the destination, b the source; the count is i64 only if both are.
+                    return _context.memory(instruction.a).and_then([&](MemoryType const* destination) {
+                        return _context.memory(instruction.b).and_then([&](MemoryType const* source) {
+                            return popOperands({ addressOf(destination),
+                                                 addressOf(source),
+                                                 copyCountOf(destination, source) });
+                        });
+                    });
                 case Opcode::MemoryInit:
                     // a is the data segment, b the memory; the interpreter looks the memory up first.
-                    return _context.memory(instruction.b)
-                        .and_then([&] { return data(instruction.a); })
-                        .and_then([this] { return popI32s(3); });
+                    return _context.memory(instruction.b).and_then([&](MemoryType const* memory) {
+                        return data(instruction.a).and_then([&] {
+                            return popOperands({ addressOf(memory), binary::I32, binary::I32 });
+                        });
+                    });
                 case Opcode::DataDrop: return data(instruction.a);
 
-                case Opcode::RefNull: push(instruction.type); return {};
+                case Opcode::RefNull:
+                    return _context.valueType(instruction.type).transform([&] { push(instruction.type); });
                 case Opcode::RefIsNull:
                     return pop().and_then([this](Operand const& operand) -> Check {
                         if (!isReference(operand))
                             return fail(ValidationErrorCode::TypeMismatch);
                         push(binary::I32);
                         return {};
+                    });
+                case Opcode::RefAsNonNull:
+                    return peekReference().and_then([this](ValueType const& reference) {
+                        return pop().transform([&](Operand const&) { push(nonNullOf(reference)); });
                     });
                 case Opcode::RefFunc:
                     return _context.function(instruction.a)
@@ -730,17 +1104,87 @@ namespace
                                                           instruction.a) };
                             return Check {};
                         })
-                        .transform([this] { push(binary::FuncRef); });
+                        .transform([&] { push(_context.functionReference(instruction.a)); });
 
-                default: break;
+                default: break; // uncovered(special-default)
             }
+            // uncovered-begin(special-default)
             // Every Special opcode has a case above or a row in MemoryAccessTable.
             core::todo(binary::opcodeInfo(instruction.opcode).text);
         }
+        // uncovered-end(special-default)
 
         [[nodiscard]] Check call(FuncType const& type)
         {
             return popAll(type.params).transform([&] { pushAll(type.results); });
+        }
+
+        /// The table call_indirect and return_call_indirect name: known, of functions, and the type
+        /// they name known too.
+        [[nodiscard]] std::expected<TableType const*, Fault> indirectTable(
+            Instruction const& instruction) const
+        {
+            return _context.table(instruction.b)
+                .and_then([&](TableType const* table) -> std::expected<TableType const*, Fault> {
+                    return _context.type(instruction.a)
+                        .and_then([this, table] {
+                            return check(_context.matches(table->element, binary::FuncRef),
+                                         ValidationErrorCode::TypeMismatch);
+                        })
+                        .transform([table] { return table; });
+                });
+        }
+
+        /// Types a tail call of @p type from @p body: its results must match the function's, then
+        /// @p callee, the operand naming the callee if any, is popped, and the parameters beneath it.
+        [[nodiscard]] Check tailCall(Body const& body, FuncType const& type, std::optional<ValueType> callee)
+        {
+            auto const returnable = std::ranges::equal(
+                type.results, body.results, [this](auto const& result, auto const& expected) {
+                    return _context.matches(result, expected);
+                });
+            return check(returnable, ValidationErrorCode::TypeMismatch)
+                .and_then([&]() -> Check {
+                    if (!callee)
+                        return {};
+                    return pop(*callee).transform([](Operand const&) {});
+                })
+                .and_then([&] { return popAll(type.params); })
+                .transform([this] { markUnreachable(); });
+        }
+
+        /// Checks the catch clauses of try_table @p instruction: each one's tag is known, and what it
+        /// hands its label matches the label's types: the tag's params for catch, then the exnref,
+        /// (ref exn), for catch_ref; nothing for catch_all, and the exnref for catch_all_ref.
+        [[nodiscard]] Check catchClauses(Body const& body, Instruction const& instruction)
+        {
+            constexpr auto CaughtReference = binary::ValueType {
+                .kind = ValueKind::Ref,
+                .nullable = binary::Nullable::No,
+                .heap = { .kind = binary::AbstractHeapType::Exn },
+            };
+            for (auto const& clause: binary::catchClausesOf(body.sideTables, instruction))
+            {
+                _handed.clear();
+                if (binary::catchesByTag(clause.kind))
+                {
+                    auto const type = _context.tag(clause.tag);
+                    if (!type)
+                        return fail(type.error());
+                    _handed.assign((*type)->params.begin(), (*type)->params.end());
+                }
+                if (binary::handsReference(clause.kind))
+                    _handed.push_back(CaughtReference);
+                auto const target = label(clause.label);
+                if (!target)
+                    return fail(target.error());
+                auto const types = (*target)->labelTypes();
+                if (!std::ranges::equal(_handed, types, [this](auto const& handed, auto const& required) {
+                        return _context.matches(handed, required);
+                    }))
+                    return fail(ValidationErrorCode::TypeMismatch);
+            }
+            return {};
         }
 
         [[nodiscard]] Check select()
@@ -795,6 +1239,10 @@ namespace
         std::vector<Frame> _frames;
         std::vector<uint64_t> _localRunEnds; ///< Per local run, the declared-local index past its end.
         std::vector<Operand> _restored;      ///< Scratch for popAndRestore.
+        std::vector<ValueType> _handed;      ///< Scratch for catchClauses: what a clause hands its label.
+        std::vector<uint32_t> _setLocals;    ///< The non-defaultable locals set in the open blocks.
+        std::vector<uint64_t> _setStamps;    ///< Per local index, _generation while it is set.
+        uint64_t _generation = 0;            ///< The stamp of the body being validated; never 0.
     };
 
     // --- The module ---------------------------------------------------------------------------
@@ -810,19 +1258,23 @@ namespace
                        .tables = {},
                        .memories = {},
                        .globals = {},
+                       .tagTypes = {},
                        .importedGlobalCount = 0,
-                       .declaredFunctions = declaredFunctionsOf(module) },
+                       .declaredFunctions = declaredFunctionsOf(module),
+                       .canonical = {} },
             _bodies { _context }
         {
         }
 
         [[nodiscard]] std::expected<void, ValidationError> validate()
         {
-            return checkImports()
+            return checkTypeSection()
+                .and_then([this] { return checkImports(); })
+                .and_then([this] { return checkTags(); })
                 .and_then([this] { return checkFunctionTypes(); })
                 .and_then([this] { return checkTypes(); })
-                .and_then([this] { return checkGlobals(); })
                 .and_then([this] { return checkTablesAndMemories(); })
+                .and_then([this] { return checkGlobals(); })
                 .and_then([this] { return checkElements(); })
                 .and_then([this] { return checkData(); })
                 .and_then([this] { return checkBodies(); })
@@ -833,6 +1285,26 @@ namespace
 
       private:
         [[nodiscard]] Module const& module() const noexcept { return _context.module; }
+
+        /// Checks that each type names only the types before it, as a type section without rec
+        /// groups must, then finds every type's canonical id.
+        [[nodiscard]] std::expected<void, ValidationError> checkTypeSection()
+        {
+            for (auto const [index, type]: core::views::enumerate(module().types))
+            {
+                auto const before = [index](std::span<ValueType const> types) -> Check {
+                    for (auto const& valueType: types)
+                        if (auto const result = checkTypeIndex(valueType, index); !result)
+                            return result;
+                    return {};
+                };
+                if (auto const result = before(type.params).and_then([&] { return before(type.results); });
+                    !result)
+                    return moduleError(result.error());
+            }
+            _context.canonical = binary::canonicalTypeIds(module().types);
+            return {};
+        }
 
         [[nodiscard]] std::expected<void, ValidationError> checkImports()
         {
@@ -846,7 +1318,9 @@ namespace
                         _context.functionTypes.push_back(import.typeIndex);
                         break;
                     case ExternKind::Table:
-                        result = checkTable(import.table);
+                        result = _context.valueType(import.table.element).and_then([&] {
+                            return checkTable(import.table);
+                        });
                         _context.tables.push_back(import.table);
                         break;
                     case ExternKind::Memory:
@@ -854,13 +1328,29 @@ namespace
                         _context.memories.push_back(import.memory);
                         break;
                     case ExternKind::Global:
+                        result = _context.valueType(import.global.type);
                         _context.globals.push_back(import.global);
                         ++_context.importedGlobalCount;
                         break;
-                    case ExternKind::Tag: result = fail(ValidationErrorCode::UnknownTag); break;
+                    case ExternKind::Tag:
+                        result = _context.tagType(import.typeIndex);
+                        _context.tagTypes.push_back(import.typeIndex);
+                        break;
                 }
                 if (!result)
                     return moduleError(result.error());
+            }
+            return {};
+        }
+
+        /// Checks the defined tags, after the imported ones as valid.ml does, before the functions.
+        [[nodiscard]] std::expected<void, ValidationError> checkTags()
+        {
+            for (auto const& tag: module().tags)
+            {
+                if (auto const result = _context.tagType(tag.typeIndex); !result)
+                    return moduleError(result.error());
+                _context.tagTypes.push_back(tag.typeIndex);
             }
             return {};
         }
@@ -875,7 +1365,8 @@ namespace
             }
             for (auto const& global: module().globals)
                 _context.globals.push_back(global.type);
-            _context.tables.insert(_context.tables.end(), module().tables.begin(), module().tables.end());
+            for (auto const& table: module().tables)
+                _context.tables.push_back(table.type);
             _context.memories.insert(
                 _context.memories.end(), module().memories.begin(), module().memories.end());
             return {};
@@ -922,15 +1413,30 @@ namespace
         [[nodiscard]] std::expected<void, ValidationError> checkGlobals()
         {
             for (auto const& global: module().globals)
-                if (auto const result = checkConstant(global.init, global.type.type); !result)
+                if (auto const result = _context.valueType(global.type.type).and_then([&] {
+                        return checkConstant(global.init, global.type.type);
+                    });
+                    !result)
                     return moduleError(result.error());
             return {};
         }
 
-        [[nodiscard]] std::expected<void, ValidationError> checkTablesAndMemories() const
+        /// Checks a defined table: its type, and that its slots start with a value of its element
+        /// type: its initializer's, or the null, which a non-null element type has none of.
+        [[nodiscard]] Check checkDefinedTable(binary::Table const& table)
+        {
+            auto const& element = table.type.element;
+            return _context.valueType(element).and_then([&] { return checkTable(table.type); }).and_then([&] {
+                if (table.init.empty())
+                    return check(binary::isDefaultable(element), ValidationErrorCode::TypeMismatch);
+                return checkConstant(table.init, element);
+            });
+        }
+
+        [[nodiscard]] std::expected<void, ValidationError> checkTablesAndMemories()
         {
             for (auto const& table: module().tables)
-                if (auto const result = checkTable(table); !result)
+                if (auto const result = checkDefinedTable(table); !result)
                     return moduleError(result.error());
             for (auto const& memory: module().memories)
                 if (auto const result = checkMemory(memory); !result)
@@ -940,16 +1446,18 @@ namespace
 
         [[nodiscard]] Check checkElement(binary::ElementSegment const& segment)
         {
+            if (auto const result = _context.valueType(segment.type); !result)
+                return result;
             if (auto const* indices = std::get_if<std::vector<uint32_t>>(&segment.items))
             {
-                // Each index stands for (ref.func index): a funcref.
+                // Each index stands for (ref.func index): a reference to the function's type.
                 for (auto const index: *indices)
-                    if (auto const result = _context.function(index); !result)
+                    if (auto const result = _context.function(index).and_then([&] {
+                            return check(_context.matches(_context.functionReference(index), segment.type),
+                                         ValidationErrorCode::TypeMismatch);
+                        });
+                        !result)
                         return result;
-                if (auto const result =
-                        check(segment.type == binary::FuncRef, ValidationErrorCode::TypeMismatch);
-                    !result)
-                    return result;
             }
             else
             {
@@ -960,9 +1468,11 @@ namespace
             if (segment.mode != SegmentMode::Active)
                 return {};
             return _context.table(segment.table).and_then([&](TableType const* table) {
-                return checkConstant(segment.offset, binary::I32).and_then([&] {
-                    return check(table->element == segment.type, ValidationErrorCode::TypeMismatch);
-                });
+                return checkConstant(segment.offset, binary::addressValueType(table->limits.addressType))
+                    .and_then([&] {
+                        return check(_context.matches(segment.type, table->element),
+                                     ValidationErrorCode::TypeMismatch);
+                    });
             });
         }
 
@@ -980,8 +1490,9 @@ namespace
             {
                 if (segment.mode != SegmentMode::Active)
                     continue;
-                auto const result = _context.memory(segment.memory).and_then([&] {
-                    return checkConstant(segment.offset, binary::I32);
+                auto const result = _context.memory(segment.memory).and_then([&](MemoryType const* memory) {
+                    return checkConstant(segment.offset,
+                                         binary::addressValueType(memory->limits.addressType));
                 });
                 if (!result)
                     return moduleError(result.error());
@@ -996,6 +1507,9 @@ namespace
             {
                 auto const functionIndex = static_cast<uint32_t>(importedFunctions + index);
                 auto const& type = _context.functionType(functionIndex);
+                for (auto const& run: function.locals)
+                    if (auto const result = _context.valueType(run.type); !result)
+                        return std::unexpected { errorAt(result.error(), functionIndex, NoInstruction) };
                 auto const body = Body { .instructions = function.body,
                                          .sideTables = function,
                                          .params = type.params,
@@ -1003,10 +1517,8 @@ namespace
                                          .results = type.results,
                                          .globals = _context.globals };
                 if (auto const result = _bodies.validate(body); !result)
-                    return std::unexpected { ValidationError { result.error().fault.code,
-                                                               functionIndex,
-                                                               result.error().instruction,
-                                                               result.error().fault.subject } };
+                    return std::unexpected { errorAt(
+                        result.error().fault, functionIndex, result.error().instruction) };
             }
             return {};
         }
@@ -1028,13 +1540,14 @@ namespace
             {
                 case ExternKind::Func: return _context.function(entry.index);
                 case ExternKind::Table: return _context.table(entry.index).transform([](TableType const*) {});
-                case ExternKind::Memory: return _context.memory(entry.index);
+                case ExternKind::Memory:
+                    return _context.memory(entry.index).transform([](MemoryType const*) {});
                 case ExternKind::Global:
                     return checkIndex(
                         entry.index, _context.globals.size(), ValidationErrorCode::UnknownGlobal);
-                case ExternKind::Tag: break; // failed below the switch
+                case ExternKind::Tag: break; // checked below the switch
             }
-            return fail(ValidationErrorCode::UnknownTag);
+            return checkIndex(entry.index, _context.tagTypes.size(), ValidationErrorCode::UnknownTag);
         }
 
         /// The index of the first export, in declaration order, whose name an earlier one has.
@@ -1098,6 +1611,8 @@ namespace
 
 std::expected<void, ValidationError> validateModule(binary::Module const& module, FeatureSet const& features)
 {
+    // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
+    Require(features.checkPrerequisites().has_value());
     return ModuleValidator { module, features }.validate();
 }
 

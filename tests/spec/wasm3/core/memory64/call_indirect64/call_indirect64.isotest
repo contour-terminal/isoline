@@ -1,0 +1,2 @@
+module call_indirect64.0.wasm
+assert_return invoke 747970652d6933322d743634 - -> i32:132

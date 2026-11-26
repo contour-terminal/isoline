@@ -1,0 +1,2 @@
+module binary_leb128_64.0.wasm
+assert_malformed binary_leb128_64.1.wasm 696e746567657220746f6f206c61726765

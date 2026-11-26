@@ -23,6 +23,9 @@ enum class ImmediateKind : uint8_t
     LabelTable,    ///< A vector of u32 label indices and a default label (br_table).
     FunctionIndex, ///< A u32 function index.
     CallIndirect,  ///< A u32 type index and a u32 table index.
+    TypeIndex,     ///< A u32 type index (call_ref).
+    TagIndex,      ///< A u32 tag index (throw).
+    TryTable,      ///< A block type, then a vector of catch clauses (try_table).
     LocalIndex,    ///< A u32 local index.
     GlobalIndex,   ///< A u32 global index.
     TableIndex,    ///< A u32 table index.
@@ -40,13 +43,18 @@ enum class ImmediateKind : uint8_t
     F64Const,      ///< A little-endian 64-bit float.
     HeapType,      ///< A heap type (ref.null).
     SelectTypes,   ///< A vector of value types (typed select).
+    V128Const,     ///< 16 raw bytes: the vector, lowest lane byte first (v128.const).
+    Shuffle,       ///< 16 lane index bytes, each below 32 (i8x16.shuffle).
+    LaneIndex,     ///< One lane index byte (extract_lane, replace_lane).
+    MemArgLane,    ///< A memory argument as MemArg, then one lane index byte (load and store lane).
 };
 
 /// The operand and result types of an opcode whose typing is fixed, for the validator.
 ///
-/// An enumerator reads `<params>To<result>`: I32I32ToI32 pops two i32 and pushes one, ToF32 pushes
-/// an f32 and pops nothing. Special opcodes take code to type: control, parametric, variable,
-/// table, memory and reference instructions. Every enumerator is a row of SignatureTable, in order.
+/// An enumerator reads `<params>To<results>`: I32I32ToI32 pops two i32 and pushes one, ToF32 pushes
+/// an f32 and pops nothing, I64I64ToI64I64 pops two i64 and pushes two. Special opcodes take code to type:
+/// control, parametric, variable, table, memory and reference instructions. Every enumerator is a row of
+/// SignatureTable, in order.
 enum class OpcodeSignature : uint8_t
 {
     Special, ///< Typed by code, not by SignatureTable.
@@ -78,10 +86,28 @@ enum class OpcodeSignature : uint8_t
     F32F32ToF32,
     F64F64ToI32,
     F64F64ToF64,
+    I64I64ToI64I64,       ///< i64.mul_wide_s and _u: two i64 to a 128-bit {low, high} pair.
+    I64I64I64I64ToI64I64, ///< i64.add128 and sub128: two {low, high} pairs to one.
+    ToV128,               ///< v128.const.
+    V128ToV128,           ///< Lane-wise unary operators and conversions.
+    V128V128ToV128,       ///< Lane-wise binary operators, comparisons, shuffle and swizzle.
+    V128V128V128ToV128,   ///< v128.bitselect.
+    V128ToI32,            ///< Tests (any_true, all_true, bitmask) and the i8, i16 and i32 extract_lane.
+    V128ToI64,            ///< i64x2.extract_lane.
+    V128ToF32,            ///< f32x4.extract_lane.
+    V128ToF64,            ///< f64x2.extract_lane.
+    I32ToV128,            ///< The i8, i16 and i32 splats.
+    I64ToV128,            ///< i64x2.splat.
+    F32ToV128,            ///< f32x4.splat.
+    F64ToV128,            ///< f64x2.splat.
+    V128I32ToV128,        ///< Shifts, and the i8, i16 and i32 replace_lane.
+    V128I64ToV128,        ///< i64x2.replace_lane.
+    V128F32ToV128,        ///< f32x4.replace_lane.
+    V128F64ToV128,        ///< f64x2.replace_lane.
 };
 
 /// The last OpcodeSignature enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastOpcodeSignature = OpcodeSignature::F64F64ToF64;
+inline constexpr auto LastOpcodeSignature = OpcodeSignature::V128F64ToV128;
 
 /// One row of SignatureTable: the value kinds an OpcodeSignature pops and pushes.
 ///
@@ -89,11 +115,11 @@ inline constexpr auto LastOpcodeSignature = OpcodeSignature::F64F64ToF64;
 /// paramKinds() and resultKinds() view the used part.
 struct SignatureRow
 {
-    OpcodeSignature signature;          ///< The signature this row describes; equal to its index.
-    std::array<ValueKind, 2> params {}; ///< The operand kinds, bottom of the stack first.
-    uint8_t paramCount = 0;             ///< How many of params are used.
-    ValueKind result = ValueKind::I32;  ///< The result kind, when resultCount is 1.
-    uint8_t resultCount = 0;            ///< 0 or 1: whether the opcode pushes a result.
+    OpcodeSignature signature;           ///< The signature this row describes; equal to its index.
+    std::array<ValueKind, 4> params {};  ///< The operand kinds, bottom of the stack first.
+    uint8_t paramCount = 0;              ///< How many of params are used.
+    std::array<ValueKind, 2> results {}; ///< The result kinds, in the order they are pushed.
+    uint8_t resultCount = 0;             ///< How many of results are used.
 
     /// The operand kinds, bottom of the stack first.
     /// @return The first paramCount entries of params.
@@ -102,11 +128,11 @@ struct SignatureRow
         return std::span { params }.first(paramCount);
     }
 
-    /// The result kinds.
-    /// @return result, or nothing when resultCount is 0.
+    /// The result kinds, in the order they are pushed.
+    /// @return The first resultCount entries of results.
     [[nodiscard]] constexpr std::span<ValueKind const> resultKinds() const noexcept
     {
-        return std::span { &result, resultCount };
+        return std::span { results }.first(resultCount);
     }
 };
 
@@ -117,9 +143,11 @@ namespace detail
                                                   ValueKind param,
                                                   ValueKind result) noexcept
     {
-        return SignatureRow {
-            .signature = signature, .params = { param }, .paramCount = 1, .result = result, .resultCount = 1
-        };
+        return SignatureRow { .signature = signature,
+                              .params = { param },
+                              .paramCount = 1,
+                              .results = { result },
+                              .resultCount = 1 };
     }
 
     /// The row of a signature popping two @p param and pushing one @p result.
@@ -130,7 +158,32 @@ namespace detail
         return SignatureRow { .signature = signature,
                               .params = { param, param },
                               .paramCount = 2,
-                              .result = result,
+                              .results = { result },
+                              .resultCount = 1 };
+    }
+
+    /// The row of a signature popping @p first, then @p second, and pushing one @p result.
+    [[nodiscard]] consteval SignatureRow mixedRow(OpcodeSignature signature,
+                                                  ValueKind first,
+                                                  ValueKind second,
+                                                  ValueKind result) noexcept
+    {
+        return SignatureRow { .signature = signature,
+                              .params = { first, second },
+                              .paramCount = 2,
+                              .results = { result },
+                              .resultCount = 1 };
+    }
+
+    /// The row of a signature popping three @p param and pushing one @p result.
+    [[nodiscard]] consteval SignatureRow ternaryRow(OpcodeSignature signature,
+                                                    ValueKind param,
+                                                    ValueKind result) noexcept
+    {
+        return SignatureRow { .signature = signature,
+                              .params = { param, param, param },
+                              .paramCount = 3,
+                              .results = { result },
                               .resultCount = 1 };
     }
 
@@ -138,8 +191,19 @@ namespace detail
     [[nodiscard]] consteval SignatureRow nullaryRow(OpcodeSignature signature, ValueKind result) noexcept
     {
         return SignatureRow {
-            .signature = signature, .params = {}, .paramCount = 0, .result = result, .resultCount = 1
+            .signature = signature, .params = {}, .paramCount = 0, .results = { result }, .resultCount = 1
         };
+    }
+
+    /// The row of a wide-arithmetic signature popping @p paramCount i64 and pushing two: a 128-bit
+    /// value's low and high halves.
+    [[nodiscard]] consteval SignatureRow wideRow(OpcodeSignature signature, uint8_t paramCount) noexcept
+    {
+        return SignatureRow { .signature = signature,
+                              .params = { ValueKind::I64, ValueKind::I64, ValueKind::I64, ValueKind::I64 },
+                              .paramCount = paramCount,
+                              .results = { ValueKind::I64, ValueKind::I64 },
+                              .resultCount = 2 };
     }
 } // namespace detail
 
@@ -174,6 +238,24 @@ inline constexpr auto SignatureTable = std::to_array<SignatureRow>({
     detail::binaryRow(OpcodeSignature::F32F32ToF32, ValueKind::F32, ValueKind::F32),
     detail::binaryRow(OpcodeSignature::F64F64ToI32, ValueKind::F64, ValueKind::I32),
     detail::binaryRow(OpcodeSignature::F64F64ToF64, ValueKind::F64, ValueKind::F64),
+    detail::wideRow(OpcodeSignature::I64I64ToI64I64, 2),
+    detail::wideRow(OpcodeSignature::I64I64I64I64ToI64I64, 4),
+    detail::nullaryRow(OpcodeSignature::ToV128, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::V128ToV128, ValueKind::V128, ValueKind::V128),
+    detail::binaryRow(OpcodeSignature::V128V128ToV128, ValueKind::V128, ValueKind::V128),
+    detail::ternaryRow(OpcodeSignature::V128V128V128ToV128, ValueKind::V128, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::V128ToI32, ValueKind::V128, ValueKind::I32),
+    detail::unaryRow(OpcodeSignature::V128ToI64, ValueKind::V128, ValueKind::I64),
+    detail::unaryRow(OpcodeSignature::V128ToF32, ValueKind::V128, ValueKind::F32),
+    detail::unaryRow(OpcodeSignature::V128ToF64, ValueKind::V128, ValueKind::F64),
+    detail::unaryRow(OpcodeSignature::I32ToV128, ValueKind::I32, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::I64ToV128, ValueKind::I64, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::F32ToV128, ValueKind::F32, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::F64ToV128, ValueKind::F64, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128I32ToV128, ValueKind::V128, ValueKind::I32, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128I64ToV128, ValueKind::V128, ValueKind::I64, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128F32ToV128, ValueKind::V128, ValueKind::F32, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128F64ToV128, ValueKind::V128, ValueKind::F64, ValueKind::V128),
 });
 
 static_assert(
@@ -199,9 +281,8 @@ static_assert(
 
 /// Every instruction Isoline decodes, one enumerator per row of Opcodes.def, in its order.
 ///
-/// P1's 201 rows fit a byte; the SIMD rows will not, and the compiler rejects an enumerator past
-/// 255, so the base type widens to uint16_t with them.
-enum class Opcode : uint8_t
+/// The 471 rows do not fit a byte, so the base type is uint16_t.
+enum class Opcode : uint16_t
 {
 #define ISOLINE_OPCODE(Name, Prefix, Code, Text, Immediate, Signature, Proposal) Name,
 #include <isoline/binary/Opcodes.def>
@@ -222,15 +303,47 @@ struct OpcodeInfo
     ImmediateKind immediate;   ///< What follows it in the binary format.
     OpcodeSignature signature; ///< Its fixed operand and result types, or Special.
 
-    /// The proposal that introduced it, which must be enabled for it to decode; nullopt for the MVP.
+    /// The proposal Isoline files it under; nullopt for the MVP. Usually the one that introduced
+    /// it; return_call_ref is filed under TailCall, with a cross-requirement on typed function
+    /// references (OpcodeCrossRequirements).
     std::optional<Feature> proposal;
+
+    /// Every feature that must be enabled for it to decode: its proposal, and any proposal
+    /// OpcodeCrossRequirements names for it.
+    FeatureSet required;
 };
+
+/// A proposal an instruction builds on besides the one that introduced it.
+struct OpcodeCrossRequirement
+{
+    Opcode opcode;   ///< The instruction.
+    Feature feature; ///< The other proposal, which must be enabled for it to decode too.
+};
+
+/// Every instruction that builds on a second proposal, one row per pair. The decoder requires both,
+/// as it does an instruction's own proposal: an instruction whose operands need a disabled proposal
+/// is as unknown as one of a disabled proposal.
+///
+/// return_call_ref is tail calls' tail form of call_ref, whose operand is a typed function reference.
+inline constexpr auto OpcodeCrossRequirements = std::to_array<OpcodeCrossRequirement>({
+    { .opcode = Opcode::ReturnCallRef, .feature = Feature::TypedFunctionReferences },
+});
 
 namespace detail::proposal
 {
     /// What Opcodes.def's Proposal column names: Mvp, or a Feature enumerator, spelled bare.
     inline constexpr auto Mvp = std::optional<Feature> {};
     using enum Feature;
+
+    /// The features @p opcode needs to decode: @p proposal and its OpcodeCrossRequirements.
+    [[nodiscard]] consteval FeatureSet requiredFor(Opcode opcode, std::optional<Feature> proposal) noexcept
+    {
+        auto required = proposal ? FeatureSet::none().with(*proposal) : FeatureSet::none();
+        for (auto const& row: OpcodeCrossRequirements)
+            if (row.opcode == opcode)
+                required = required.with(row.feature);
+        return required;
+    }
 } // namespace detail::proposal
 
 /// Every instruction's information, one row per Opcode enumerator, in enumerator order.
@@ -242,7 +355,8 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
       .text = (Text),                                                            \
       .immediate = ImmediateKind::Immediate,                                     \
       .signature = OpcodeSignature::Signature,                                   \
-      .proposal = std::optional<Feature> { detail::proposal::Proposal } },
+      .proposal = std::optional<Feature> { detail::proposal::Proposal },         \
+      .required = detail::proposal::requiredFor(Opcode::Name, detail::proposal::Proposal) },
 #include <isoline/binary/Opcodes.def>
 #undef ISOLINE_OPCODE
 });
@@ -250,7 +364,10 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
-static_assert(OpcodeCount == 201, "P1 decodes every non-SIMD WebAssembly 2.0 instruction: 201 of them");
+static_assert(OpcodeCount == 471,
+              "every WebAssembly 3.0 instruction but GC's, and wide arithmetic's four: 2.0's non-SIMD "
+              "201, SIMD's 236, relaxed SIMD's 20, typed function references' four, tail calls' three "
+              "and exception handling's three");
 
 /// What the table knows about @p opcode.
 /// @param opcode The instruction to describe.

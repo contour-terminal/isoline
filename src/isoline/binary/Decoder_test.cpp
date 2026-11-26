@@ -31,6 +31,7 @@ using isoline::binary::ElementSegment;
 using isoline::binary::ExternKind;
 using isoline::binary::Function;
 using isoline::binary::FuncType;
+using isoline::binary::importModuleOf;
 using isoline::binary::Instruction;
 using isoline::binary::labelsOf;
 using isoline::binary::Limits;
@@ -365,7 +366,7 @@ TEST_CASE("Decoder.imports")
                            .build();
     auto const module = decoded(bytes);
     REQUIRE(module.imports.size() == 3);
-    CHECK(module.imports[0].module == "m");
+    CHECK(importModuleOf(module, module.imports[0]) == "m");
     CHECK(module.imports[0].name == "f");
     CHECK(module.imports[0].kind == ExternKind::Func);
     CHECK(module.imports[0].typeIndex == 0);
@@ -424,8 +425,163 @@ TEST_CASE("Decoder.limits")
           == DecodeErrorCode::IntegerTooLargeForLimits);
     auto const module = decoded(moduleOf({ 0x04, 0x05, 0x01, 0x6F, 0x01, 0x00, 0x0A }));
     REQUIRE(module.tables.size() == 1);
-    CHECK(module.tables[0].element == isoline::binary::ExternRef);
-    CHECK(module.tables[0].limits.max == 10U);
+    CHECK(module.tables[0].type.element == isoline::binary::ExternRef);
+    CHECK(module.tables[0].type.limits.max == 10U);
+}
+
+TEST_CASE("Decoder.memory64Limits")
+{
+    // Memory flags 0x05: a maximum and i64 addresses; min 1, max 2^40 as u64s.
+    auto const bytes = moduleOf({ 0x05, 0x09, 0x01, 0x05, 0x01, 0x80, 0x80, 0x80, 0x80, 0x80, 0x20 });
+    auto const module = decoded(bytes, FeatureSet::wasm3());
+    REQUIRE(module.memories.size() == 1);
+    CHECK(module.memories[0].limits.addressType == isoline::binary::AddressType::I64);
+    CHECK(module.memories[0].limits.min == 1);
+    CHECK(module.memories[0].limits.max == uint64_t { 1 } << 40);
+    // Flags 0x04: no maximum. A table64 the same way, after its element type.
+    auto const table = decoded(moduleOf({ 0x04, 0x04, 0x01, 0x70, 0x04, 0x02 }), FeatureSet::wasm3());
+    REQUIRE(table.tables.size() == 1);
+    CHECK(table.tables[0].type.limits.addressType == isoline::binary::AddressType::I64);
+    CHECK(table.tables[0].type.limits.min == 2);
+    CHECK_FALSE(table.tables[0].type.limits.max.has_value());
+    // The 3.0 grammar reads the bounds of an i32 memory as u64s too; the validator bounds them.
+    auto const wide =
+        decoded(moduleOf({ 0x05, 0x07, 0x01, 0x00, 0x80, 0x80, 0x80, 0x80, 0x10 }), FeatureSet::wasm3());
+    CHECK(wide.memories[0].limits.min == uint64_t { 1 } << 32);
+    // A bound past u64 is still too large.
+    CHECK(errorOf(moduleOf(
+                      { 0x05, 0x0D, 0x01, 0x04, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02 }),
+                  FeatureSet::wasm3())
+          == DecodeErrorCode::IntegerTooLargeForLimits);
+    // Without memory64, 0x04 and 0x05 are flags of no grammar WebAssembly 2.0 knows.
+    CHECK(errorOf(bytes) == DecodeErrorCode::LimitsFlagTooLarge);
+}
+
+TEST_CASE("Decoder.malformedLimitsFlags")
+{
+    auto const flags = [](uint8_t flag) {
+        return moduleOf({ 0x05, 0x03, 0x01, flag, 0x00 });
+    };
+    auto const memory64 = FeatureSet::wasm2().with(Feature::Memory64);
+    CHECK(errorOf(flags(0x10), memory64) == DecodeErrorCode::MalformedLimitsFlags);
+    CHECK(errorOf(flags(0x10)) == DecodeErrorCode::LimitsFlagTooLarge);
+    // Shared memories (0x02, 0x03) belong to threads, which Isoline does not decode; 0x08 is
+    // custom-page-sizes', and table flags follow the same table.
+    for (auto const flag: { 0x02, 0x03, 0x06, 0x07, 0x08 })
+        CHECK(errorOf(flags(static_cast<uint8_t>(flag)), memory64) == DecodeErrorCode::MalformedLimitsFlags);
+    CHECK(errorOf(moduleOf({ 0x04, 0x04, 0x01, 0x70, 0x08, 0x00 }), memory64)
+          == DecodeErrorCode::MalformedLimitsFlags);
+    // spec binary.wast: 3.0 reads the flags as a byte, so a LEB128 continuation is malformed.
+    CHECK(errorOf(moduleOf({ 0x05, 0x04, 0x01, 0x81, 0x00, 0x00 }), memory64)
+          == DecodeErrorCode::MalformedLimitsFlags);
+    // The section ends where the flags, the minimum or the maximum should be, in either grammar.
+    for (auto const& features: { FeatureSet::wasm2(), memory64 })
+    {
+        CHECK(errorOf(moduleOf({ 0x05, 0x01, 0x01 }), features) == DecodeErrorCode::UnexpectedEnd);
+        CHECK(errorOf(moduleOf({ 0x05, 0x02, 0x01, 0x00 }), features) == DecodeErrorCode::UnexpectedEnd);
+        CHECK(errorOf(moduleOf({ 0x05, 0x03, 0x01, 0x01, 0x00 }), features)
+              == DecodeErrorCode::UnexpectedEnd);
+    }
+    CHECK(errorOf(moduleOf({ 0x05, 0x03, 0x01, 0x05, 0x00 }), memory64) == DecodeErrorCode::UnexpectedEnd);
+    // A maximum past u64.
+    CHECK(
+        errorOf(
+            moduleOf(
+                { 0x05, 0x0E, 0x01, 0x05, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02 }),
+            memory64)
+        == DecodeErrorCode::IntegerTooLargeForLimits);
+    auto const result = decodeModule(flags(0x10), memory64);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().offset == Preamble.size() + 3);
+    CHECK(isoline::binary::specMessage(result.error()) == "malformed limits flags");
+}
+
+TEST_CASE("Decoder.pageSizeOne")
+{
+    // Memory flags 0x08: a custom page size, whose exponent follows the minimum; 2^0 = 1 byte.
+    auto const pageSizeOne = moduleOf({ 0x05, 0x04, 0x01, 0x08, 0x01, 0x00 });
+    auto const module = decoded(pageSizeOne, FeatureSet::all());
+    REQUIRE(module.memories.size() == 1);
+    CHECK(module.memories[0].pageSizeLog2 == 0);
+    CHECK(module.memories[0].limits.min == 1);
+    CHECK(isoline::binary::pageSize(module.memories[0]) == 1);
+    // Without the flag, 64 KiB pages.
+    auto const plain = decoded(moduleOf({ 0x05, 0x03, 0x01, 0x00, 0x01 }), FeatureSet::all());
+    CHECK(plain.memories[0].pageSizeLog2 == isoline::binary::DefaultPageSizeLog2);
+}
+
+TEST_CASE("Decoder.customPageSizeFlags")
+{
+    auto const all = FeatureSet::all();
+    // 0x09: a maximum, then the exponent; 0x0D: i64 addresses too, with u64 bounds.
+    auto const bounded = decoded(moduleOf({ 0x05, 0x05, 0x01, 0x09, 0x01, 0x02, 0x10 }), all);
+    CHECK(bounded.memories[0].limits.max == 2U);
+    CHECK(bounded.memories[0].pageSizeLog2 == 16);
+    auto const wide = decoded(moduleOf({ 0x05, 0x05, 0x01, 0x0D, 0x01, 0x02, 0x00 }), all);
+    CHECK(wide.memories[0].limits.addressType == isoline::binary::AddressType::I64);
+    CHECK(wide.memories[0].pageSizeLog2 == 0);
+    auto const unbounded64 = decoded(moduleOf({ 0x05, 0x04, 0x01, 0x0C, 0x01, 0x3F }), all);
+    CHECK(unbounded64.memories[0].pageSizeLog2 == 63);
+    CHECK_FALSE(unbounded64.memories[0].limits.max.has_value());
+    // A memory import reads the same memory type.
+    auto builder = ModuleBuilder {};
+    builder.importMemory("m",
+                         "mem",
+                         isoline::binary::MemoryType { .limits = Limits { .min = 3, .max = std::nullopt },
+                                                       .pageSizeLog2 = 0 });
+    auto const imported = decoded(builder.build(), all);
+    REQUIRE(imported.imports.size() == 1);
+    CHECK(imported.imports[0].memory.pageSizeLog2 == 0);
+    CHECK(imported.imports[0].memory.limits.min == 3);
+
+    // An exponent of 64 or more gives no u64 page size; spec custom-page-sizes-invalid.wast uses 65.
+    for (auto const exponent: { uint8_t { 0x40 }, uint8_t { 0x41 } })
+    {
+        auto const result = decodeModule(moduleOf({ 0x05, 0x04, 0x01, 0x08, 0x00, exponent }), all);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == DecodeErrorCode::InvalidCustomPageSize);
+        CHECK(result.error().offset == Preamble.size() + 5);
+        CHECK(isoline::binary::specMessage(result.error()) == "invalid custom page size");
+    }
+    // The exponent is a u32: one past it is too large, an end before it unexpected.
+    CHECK(errorOf(moduleOf({ 0x05, 0x08, 0x01, 0x08, 0x00, 0x80, 0x80, 0x80, 0x80, 0x10 }), all)
+          == DecodeErrorCode::IntegerTooLarge);
+    CHECK(errorOf(moduleOf({ 0x05, 0x03, 0x01, 0x08, 0x00 }), all) == DecodeErrorCode::UnexpectedEnd);
+    // A table has no page size: every flag with bit 3 is malformed there, defined or imported.
+    for (auto const flag: { 0x08, 0x09, 0x0C, 0x0D })
+    {
+        auto const byte = static_cast<uint8_t>(flag);
+        CHECK(errorOf(moduleOf({ 0x04, 0x07, 0x01, 0x70, byte, 0x00, 0x00, 0x00, 0x00 }), all)
+              == DecodeErrorCode::MalformedLimitsFlags);
+        CHECK(
+            errorOf(moduleOf({ 0x02, 0x0B, 0x01, 0x01, 'm', 0x01, 't', 0x01, 0x70, byte, 0x00, 0x00, 0x00 }),
+                    all)
+            == DecodeErrorCode::MalformedLimitsFlags);
+    }
+}
+
+TEST_CASE("Decoder.limitsFlagsNeedTheirProposal")
+{
+    auto const flags = [](uint8_t flag) {
+        return moduleOf({ 0x05, 0x05, 0x01, flag, 0x00, 0x00, 0x00 });
+    };
+    // Either proposal selects WebAssembly 3.0's grammar, in which each flag row needs its own.
+    auto const memory64 = FeatureSet::wasm3();
+    auto const pageSizes = FeatureSet::wasm2().with(Feature::CustomPageSizes);
+    for (auto const flag: { 0x08, 0x09, 0x0C, 0x0D })
+        CHECK(errorOf(flags(static_cast<uint8_t>(flag)), memory64) == DecodeErrorCode::MalformedLimitsFlags);
+    for (auto const flag: { 0x04, 0x05, 0x0C, 0x0D })
+        CHECK(errorOf(flags(static_cast<uint8_t>(flag)), pageSizes) == DecodeErrorCode::MalformedLimitsFlags);
+    CHECK(errorOf(flags(0x09), pageSizes) == std::nullopt);
+    // custom-page-sizes alone reads 3.0's bytes: the flags a byte, the bounds u64s.
+    CHECK(errorOf(moduleOf({ 0x05, 0x04, 0x01, 0x81, 0x00, 0x00 }), pageSizes)
+          == DecodeErrorCode::MalformedLimitsFlags);
+    auto const wide = decoded(moduleOf({ 0x05, 0x07, 0x01, 0x00, 0x80, 0x80, 0x80, 0x80, 0x10 }), pageSizes);
+    CHECK(wide.memories[0].limits.min == uint64_t { 1 } << 32);
+    // Neither: WebAssembly 3.0 without memory64 keeps 2.0's grammar, which memory64 widened.
+    auto const neither = FeatureSet::wasm3().without(Feature::Memory64);
+    CHECK(errorOf(flags(0x04), neither) == DecodeErrorCode::LimitsFlagTooLarge);
+    CHECK(errorOf(flags(0x08), neither) == DecodeErrorCode::LimitsFlagTooLarge);
 }
 
 TEST_CASE("Decoder.valueTypes")
@@ -478,10 +634,13 @@ TEST_CASE("Decoder.refFuncNeedsReferenceTypes")
     // Initializers whose type decodes without reference types, so the ref.func gate is what fails.
     auto const elementOffset = moduleOf({ 0x09, 0x07, 0x01, 0x00, 0xD2, 0x00, 0x0B, 0x01, 0x00 });
     CHECK(errorOf(elementOffset, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
-    CHECK_FALSE(errorOf(elementOffset, FeatureSet::none().with(Feature::ReferenceTypes)).has_value());
+    CHECK_FALSE(
+        errorOf(elementOffset, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
+            .has_value());
     auto const i32Global = moduleOf({ 0x06, 0x06, 0x01, 0x7F, 0x00, 0xD2, 0x00, 0x0B });
     CHECK(errorOf(i32Global, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
-    CHECK_FALSE(errorOf(i32Global, FeatureSet::none().with(Feature::ReferenceTypes)).has_value());
+    CHECK_FALSE(errorOf(i32Global, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
+                    .has_value());
 }
 
 TEST_CASE("Decoder.elementSegments")
@@ -514,6 +673,11 @@ TEST_CASE("Decoder.elementSegments")
     CHECK(expressionsOf(forms.elements[4]).at(0).at(0).opcode == Opcode::RefNull);
     CHECK(expressionsOf(forms.elements[4]).at(0).at(0).type == isoline::binary::ExternRef);
     CHECK(forms.elements[5].mode == SegmentMode::Declarative);
+    // Function indices are (ref func)s, as WebAssembly 3.0 types them; flag 4's expressions funcrefs.
+    CHECK(mvp.elements[0].type == isoline::binary::NonNullFuncRef);
+    CHECK(forms.elements[0].type == isoline::binary::NonNullFuncRef);
+    CHECK(forms.elements[2].type == isoline::binary::NonNullFuncRef);
+    CHECK(forms.elements[3].type == isoline::binary::FuncRef);
 
     CHECK(errorOf(moduleOf({ 0x09, 0x03, 0x01, 0x08, 0x00 }))
           == DecodeErrorCode::MalformedElementSegmentKind);
@@ -864,10 +1028,183 @@ TEST_CASE("Decoder.immediates")
     CHECK(function.body[4].a == 7);
 }
 
+TEST_CASE("Decoder.typeIndexImmediate")
+{
+    // call_ref's immediate is a u32 type index; br_on_null's and br_on_non_null's a label.
+    auto const body = std::vector<uint8_t> {
+        0x14, 0x85, 0x01, // call_ref type 133, a two-byte LEB128
+        0xD4,             // ref.as_non_null
+        0xD5, 0x02,       // br_on_null 2
+        0xD6, 0x03,       // br_on_non_null 3
+    };
+    auto const function = functionOf(functionWith(body), FeatureSet::wasm3());
+    REQUIRE(function.body.size() == 5);
+    CHECK(function.body[0].opcode == Opcode::CallRef);
+    CHECK(function.body[0].a == 133);
+    CHECK(function.body[1].opcode == Opcode::RefAsNonNull);
+    CHECK(function.body[2].opcode == Opcode::BrOnNull);
+    CHECK(function.body[2].a == 2);
+    CHECK(function.body[3].opcode == Opcode::BrOnNonNull);
+    CHECK(function.body[3].a == 3);
+
+    // A truncated index is an unexpected end, one past 32 bits an integer too large.
+    CHECK(errorOf(functionWith({ 0x14, 0x80 }), FeatureSet::wasm3()) == DecodeErrorCode::UnexpectedEnd);
+    CHECK(errorOf(functionWith({ 0x14, 0x80, 0x80, 0x80, 0x80, 0x10 }), FeatureSet::wasm3())
+          == DecodeErrorCode::IntegerTooLarge);
+    // The instructions need typed function references.
+    for (auto const opcode: { uint8_t { 0x14 }, uint8_t { 0xD4 }, uint8_t { 0xD5 }, uint8_t { 0xD6 } })
+    {
+        INFO(int { opcode });
+        CHECK(errorOf(functionWith({ opcode, 0x00 }),
+                      FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
+              == DecodeErrorCode::IllegalOpcode);
+    }
+}
+
+TEST_CASE("Decoder.tailCallsNeedTheirFeatures")
+{
+    // return_call 1, return_call_indirect type 2 table 3, return_call_ref type 4.
+    auto const function =
+        functionOf(functionWith({ 0x12, 0x01, 0x13, 0x02, 0x03, 0x15, 0x04 }), FeatureSet::wasm3());
+    REQUIRE(function.body.size() == 4);
+    CHECK(function.body[0].opcode == Opcode::ReturnCall);
+    CHECK(function.body[0].a == 1);
+    CHECK(function.body[1].opcode == Opcode::ReturnCallIndirect);
+    CHECK(function.body[1].a == 2);
+    CHECK(function.body[1].b == 3);
+    CHECK(function.body[2].opcode == Opcode::ReturnCallRef);
+    CHECK(function.body[2].a == 4);
+
+    // Each needs tail calls; return_call_ref calls through a typed reference, so it needs typed
+    // function references too.
+    struct Row
+    {
+        std::vector<uint8_t> body;
+        Feature disabled;
+    };
+    auto const rows = std::to_array<Row>({
+        { .body = { 0x12, 0x00 }, .disabled = Feature::TailCall },
+        { .body = { 0x13, 0x00, 0x00 }, .disabled = Feature::TailCall },
+        { .body = { 0x15, 0x00 }, .disabled = Feature::TailCall },
+        { .body = { 0x15, 0x00 }, .disabled = Feature::TypedFunctionReferences },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(int { row.body.front() } << " without " << static_cast<int>(row.disabled));
+        CHECK(errorOf(functionWith(row.body), FeatureSet::wasm3().without(row.disabled))
+              == DecodeErrorCode::IllegalOpcode);
+    }
+    CHECK_FALSE(
+        errorOf(functionWith({ 0x12, 0x00 }), FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
+            .has_value());
+}
+
+TEST_CASE("Decoder.v128ConstGoesToSideTable")
+{
+    // v128.const 0x00 .. 0x0F, in a global's initializer and again (0x10 .. 0x1F) in a body.
+    auto const constant = [](uint8_t first) {
+        auto bytes = std::vector<uint8_t> { 0xFD, 0x0C };
+        for (auto const index: std::views::iota(0, 16))
+            bytes.push_back(static_cast<uint8_t>(first + index));
+        return bytes;
+    };
+    auto body = constant(0x10);
+    body.push_back(0x1A); // drop
+    auto const bytes = ModuleBuilder {}
+                           .type(FuncType {})
+                           .global(isoline::binary::GlobalType { .type = isoline::binary::V128,
+                                                                 .mutability = Mutability::Const },
+                                   constant(0x00))
+                           .function(0, {}, std::move(body))
+                           .build();
+    auto const module = decoded(bytes);
+    REQUIRE(module.v128Literals.size() == 2);
+    REQUIRE(module.globals.size() == 1);
+    REQUIRE(module.code.size() == 1);
+    auto const& global = module.globals[0].init[0];
+    auto const& local = module.code[0].body[0];
+    CHECK(global.opcode == Opcode::V128Const);
+    CHECK(global.a == 0);
+    CHECK(local.opcode == Opcode::V128Const);
+    CHECK(local.a == 1);
+    auto const first = isoline::binary::v128LiteralOf(module, global);
+    auto const second = isoline::binary::v128LiteralOf(module, local);
+    CHECK(std::to_integer<int>(first[0]) == 0x00);
+    CHECK(std::to_integer<int>(first[15]) == 0x0F);
+    CHECK(std::to_integer<int>(second[0]) == 0x10);
+    CHECK(std::to_integer<int>(second[15]) == 0x1F);
+
+    // Fewer than 16 bytes left is an unexpected end.
+    CHECK(errorOf(functionWith({ 0xFD, 0x0C, 0x00, 0x01, 0x02 })) == DecodeErrorCode::UnexpectedEnd);
+}
+
+TEST_CASE("Decoder.simdImmediates")
+{
+    auto body = std::vector<uint8_t> {
+        0xFD, 0x1B, 0x03,             // i32x4.extract_lane 3
+        0xFD, 0x54, 0x00, 0x08, 0x0F, // v128.load8_lane align=0 offset=8 lane 15
+        0xFD, 0x0D,                   // i8x16.shuffle, then its 16 lane bytes
+    };
+    for (auto const lane: std::views::iota(0, 16))
+        body.push_back(static_cast<uint8_t>(31 - lane));
+    auto const function = functionOf(functionWith(std::move(body)));
+    CHECK(function.body[0].opcode == Opcode::I32x4ExtractLane);
+    CHECK(function.body[0].lane == 3);
+    CHECK(function.body[1].opcode == Opcode::V128Load8Lane);
+    CHECK(function.body[1].a == 0);
+    CHECK(function.body[1].c == 8);
+    CHECK(function.body[1].lane == 15);
+    CHECK(function.body[2].opcode == Opcode::I8x16Shuffle);
+    CHECK(function.body[2].a == 0);
+    // A lane byte is a byte, never a LEB128: 0x80 is lane 128, which validation rejects.
+    auto const wide = functionOf(functionWith({ 0xFD, 0x15, 0x80, 0x1A }));
+    CHECK(wide.body[0].lane == 0x80);
+    CHECK(wide.body[1].opcode == Opcode::Drop);
+    // The memory argument of a lane access follows MemArg's rules.
+    CHECK(errorOf(functionWith({ 0xFD, 0x54, 0x20, 0x00, 0x00 })) == DecodeErrorCode::MalformedMemopFlags);
+}
+
+TEST_CASE("Decoder.memArgOffsetIsU64WithMemory64")
+{
+    // i64.const 0, i32.load align=2 offset=2^32, drop.
+    auto const load = std::vector<uint8_t> { 0x42, 0x00, 0x28, 0x02, 0x80, 0x80, 0x80, 0x80, 0x10, 0x1A };
+    auto const function = functionOf(functionWith(load), FeatureSet::wasm3());
+    CHECK(function.body[1].c == uint64_t { 1 } << 32);
+    CHECK(errorOf(functionWith(load)) == DecodeErrorCode::IntegerTooLarge);
+}
+
 TEST_CASE("Decoder.prefixed")
 {
     auto const function = functionOf(functionWith({ 0xFC, 0x0A, 0x00, 0x00, 0xFC, 0x0B, 0x00 }));
     CHECK(opcodesOf(function.body) == std::vector { Opcode::MemoryCopy, Opcode::MemoryFill, Opcode::End });
+}
+
+TEST_CASE("Decoder.illegalOpcodeNamesItsBytes")
+{
+    // The interpreter's spelling: illegal for a byte, illegal2 for 0xFC's sub-opcodes, and its vector
+    // decoder names 0xFD's by the sub-opcode alone.
+    auto const messageOf = [](std::vector<uint8_t> body, FeatureSet const& features = FeatureSet::wasm3()) {
+        auto const result = decodeModule(functionWith(std::move(body)), features);
+        REQUIRE_FALSE(result.has_value());
+        return isoline::binary::specMessage(result.error());
+    };
+    CHECK(messageOf({ 0xFF }) == "illegal opcode ff");
+    CHECK(messageOf({ 0x06 }) == "illegal opcode 06");
+    CHECK(messageOf({ 0xFC, 0x12 }) == "illegal opcode fc 12");
+    CHECK(messageOf({ 0xFC, 0x80, 0x02 }) == "illegal opcode fc 100");
+    CHECK(messageOf({ 0xFD, 0x9A, 0x01 }) == "illegal opcode 9a");
+    // An instruction of a disabled proposal is named as an unknown one is.
+    CHECK(messageOf({ 0xFD, 0x0C }, FeatureSet::none()) == "illegal opcode 0c");
+}
+
+TEST_CASE("Decoder.subjectOfAnErrorWithoutDetail")
+{
+    // A row without a detail spells its text alone, whatever subject an error carries.
+    using isoline::binary::DecodeError;
+    CHECK(isoline::binary::specMessage(DecodeError { DecodeErrorCode::UnexpectedEnd, 0, 7 })
+          == "unexpected end of section or function");
+    CHECK(isoline::binary::specMessage(DecodeError { DecodeErrorCode::IllegalOpcode, 0 })
+          == "illegal opcode");
 }
 
 TEST_CASE("Decoder.unknownOpcode")
@@ -901,6 +1238,123 @@ TEST_CASE("Decoder.missingEnd")
     CHECK(errorOf(oneFunctionWithCode(
               { 0x0A, 0x06, 0x01, 0x04, 0x00, 0x41, 0x01, 0x1A, 0x0B, 0x03, 0x01, 0x01, 0x00 }))
           == DecodeErrorCode::SectionSizeMismatch);
+}
+
+TEST_CASE("Decoder.memargWithMemoryIndex")
+{
+    // i32.const 0, i32.load flags=0x42 (alignment 2, a memory index follows) memory 3 offset 8, drop.
+    auto const load = std::vector<uint8_t> { 0x41, 0x00, 0x28, 0x42, 0x03, 0x08, 0x1A };
+    auto const function = functionOf(functionWith(load), FeatureSet::wasm3());
+    CHECK(function.body[1].opcode == Opcode::I32Load);
+    CHECK(function.body[1].a == 2);
+    CHECK(function.body[1].b == 3);
+    CHECK(function.body[1].c == 8);
+    // Below bit 6 the memory is 0, and the alignment field takes every value below 64, which the
+    // validator bounds by the natural alignment.
+    auto const implicit =
+        functionOf(functionWith({ 0x41, 0x00, 0x28, 0x3F, 0x08, 0x1A }), FeatureSet::wasm3());
+    CHECK(implicit.body[1].a == 63);
+    CHECK(implicit.body[1].b == 0);
+    // The memory index is a u32 like any other index.
+    CHECK(errorOf(functionWith({ 0x41, 0x00, 0x28, 0x42, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x1A }),
+                  FeatureSet::wasm3())
+          == DecodeErrorCode::IntegerTooLarge);
+    // Without multi-memory the flags are 2.0's alignment exponent, below 32.
+    CHECK(errorOf(functionWith(load)) == DecodeErrorCode::MalformedMemopFlags);
+    CHECK(errorOf(functionWith(load), FeatureSet::wasm3().without(Feature::MultiMemory))
+          == DecodeErrorCode::MalformedMemopFlags);
+    // A lane access reads its memarg through the same reader: v128.load8_lane memory 2 offset 8 lane 15.
+    auto const lane =
+        functionOf(functionWith({ 0xFD, 0x54, 0x40, 0x02, 0x08, 0x0F }), FeatureSet::wasm3()).body[0];
+    CHECK(lane.opcode == Opcode::V128Load8Lane);
+    CHECK(lane.a == 0);
+    CHECK(lane.b == 2);
+    CHECK(lane.c == 8);
+    CHECK(lane.lane == 15);
+}
+
+TEST_CASE("Decoder.memoryIndexImmediates")
+{
+    auto const body = std::vector<uint8_t> {
+        0x3F, 0x03,             // memory.size 3
+        0x40, 0x04,             // memory.grow 4
+        0xFC, 0x0B, 0x05,       // memory.fill 5
+        0xFC, 0x0A, 0x06, 0x07, // memory.copy to 6, from 7
+        0xFC, 0x08, 0x00, 0x09, // memory.init data 0, memory 9
+    };
+    auto const bytes =
+        ModuleBuilder {}.type(FuncType {}).function(0, {}, body).dataCount(1).data({ 0x01, 0x00 }).build();
+    auto const function = functionOf(bytes, FeatureSet::wasm3());
+    CHECK(function.body[0].opcode == Opcode::MemorySize);
+    CHECK(function.body[0].a == 3);
+    CHECK(function.body[1].opcode == Opcode::MemoryGrow);
+    CHECK(function.body[1].a == 4);
+    CHECK(function.body[2].opcode == Opcode::MemoryFill);
+    CHECK(function.body[2].a == 5);
+    CHECK(function.body[3].opcode == Opcode::MemoryCopy);
+    CHECK(function.body[3].a == 6);
+    CHECK(function.body[3].b == 7);
+    CHECK(function.body[4].opcode == Opcode::MemoryInit);
+    CHECK(function.body[4].a == 0);
+    CHECK(function.body[4].b == 9);
+    // A memory index is a u32: 0x80 0x00 is an overlong zero, which multi-memory accepts.
+    CHECK(functionOf(functionWith({ 0x3F, 0x80, 0x00, 0x1A }), FeatureSet::wasm3()).body[0].a == 0);
+}
+
+TEST_CASE("Decoder.memopFlagsTooLarge")
+{
+    // i32.const 0, i32.load flags=0x80 (as the u32 LEB128 0x80 0x01) offset 0, drop.
+    CHECK(errorOf(functionWith({ 0x41, 0x00, 0x28, 0x80, 0x01, 0x00, 0x1A }), FeatureSet::wasm3())
+          == DecodeErrorCode::MalformedMemopFlags);
+    // The same for a lane access's memarg.
+    CHECK(errorOf(functionWith({ 0xFD, 0x54, 0x80, 0x01, 0x00, 0x00 }), FeatureSet::wasm3())
+          == DecodeErrorCode::MalformedMemopFlags);
+
+    // Each interpreter reports the flags at its own byte: 3.0 at the first, 2.0 at the last.
+    auto const offsetOfFlags = [](std::span<std::byte const> bytes) {
+        auto const load = std::to_array({ std::byte { 0x41 }, std::byte { 0x00 }, std::byte { 0x28 } });
+        return static_cast<std::size_t>(std::ranges::search(bytes, load).end() - bytes.begin());
+    };
+    auto const wide = functionWith({ 0x41, 0x00, 0x28, 0x80, 0x01, 0x00, 0x1A });
+    CHECK(decodeModule(wide, FeatureSet::wasm3()).error().offset == offsetOfFlags(wide));
+    auto const twoBytes = functionWith({ 0x41, 0x00, 0x28, 0xA0, 0x00, 0x00, 0x1A }); // 32
+    CHECK(decodeModule(twoBytes, FeatureSet::wasm2()).error().offset == offsetOfFlags(twoBytes) + 1);
+}
+
+TEST_CASE("Decoder.tooManyMemories")
+{
+    auto const importingMemories = [](uint32_t count) {
+        auto builder = ModuleBuilder {};
+        for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
+            builder.importMemory("m", "memory", Limits { .min = 0, .max = std::nullopt });
+        return builder;
+    };
+    CHECK(DecodeLimits {}.maxMemories == 100);
+    CHECK(errorOf(importingMemories(101).build(), FeatureSet::wasm3())
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(errorOf(importingMemories(100).build(), FeatureSet::wasm3()) == std::nullopt);
+    // The limit counts imports and definitions together.
+    CHECK(errorOf(importingMemories(100).memory(Limits { .min = 0, .max = std::nullopt }).build(),
+                  FeatureSet::wasm3())
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(errorOf(importingMemories(2).memory(Limits { .min = 0, .max = std::nullopt }).build(),
+                  FeatureSet::wasm3(),
+                  DecodeLimits { .maxMemories = 3 })
+          == std::nullopt);
+}
+
+TEST_CASE("Decoder.tableLimitCountsImports")
+{
+    auto const table = isoline::binary::TableType { .element = isoline::binary::FuncRef,
+                                                    .limits = Limits { .min = 0, .max = std::nullopt } };
+    auto builder = ModuleBuilder {};
+    builder.importTable("m", "t", table).importTable("m", "u", table);
+    CHECK(errorOf(builder.build(), FeatureSet::wasm2(), DecodeLimits { .maxTables = 1 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    builder.table(table);
+    CHECK(errorOf(builder.build(), FeatureSet::wasm2(), DecodeLimits { .maxTables = 2 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(errorOf(builder.build(), FeatureSet::wasm2(), DecodeLimits { .maxTables = 3 }) == std::nullopt);
 }
 
 TEST_CASE("Decoder.zeroByteExpected")
@@ -1077,7 +1531,8 @@ std::vector<uint8_t> instructionOf(isoline::binary::OpcodeInfo const& row)
     switch (row.immediate)
     {
         case ImmediateKind::None: break;
-        case ImmediateKind::BlockType: bytes.insert(bytes.end(), { 0x40, 0x0B }); break; // (empty) end
+        case ImmediateKind::BlockType: bytes.insert(bytes.end(), { 0x40, 0x0B }); break;      // (empty) end
+        case ImmediateKind::TryTable: bytes.insert(bytes.end(), { 0x40, 0x00, 0x0B }); break; // no catches
         case ImmediateKind::LabelIndex:
         case ImmediateKind::FunctionIndex:
         case ImmediateKind::LocalIndex:
@@ -1085,6 +1540,8 @@ std::vector<uint8_t> instructionOf(isoline::binary::OpcodeInfo const& row)
         case ImmediateKind::TableIndex:
         case ImmediateKind::ElemIndex:
         case ImmediateKind::DataIndex:
+        case ImmediateKind::TypeIndex:
+        case ImmediateKind::TagIndex:
         case ImmediateKind::MemoryIndex:
         case ImmediateKind::I32Const:
         case ImmediateKind::I64Const: bytes.push_back(0x00); break;
@@ -1099,6 +1556,10 @@ std::vector<uint8_t> instructionOf(isoline::binary::OpcodeInfo const& row)
         case ImmediateKind::F64Const: bytes.insert(bytes.end(), 8, 0x00); break;
         case ImmediateKind::HeapType: bytes.push_back(0x70); break;
         case ImmediateKind::SelectTypes: bytes.insert(bytes.end(), { 0x01, 0x7F }); break;
+        case ImmediateKind::V128Const:
+        case ImmediateKind::Shuffle: bytes.insert(bytes.end(), 16, 0x00); break;
+        case ImmediateKind::LaneIndex: bytes.push_back(0x00); break;
+        case ImmediateKind::MemArgLane: bytes.insert(bytes.end(), { 0x00, 0x00, 0x00 }); break;
     }
     return bytes;
 }
@@ -1125,9 +1586,25 @@ std::vector<std::byte> moduleWithInstruction(std::span<uint8_t const> instructio
 
 } // namespace
 
+TEST_CASE("Decoder.refusesAFeatureSetMissingAPrerequisite")
+{
+    // (func unreachable i8x16.relaxed_swizzle drop): in dead code the operand stack is polymorphic,
+    // so without the check this would decode and validate with no v128 ever encoded.
+    auto const bytes = functionWith({ 0x00, 0xFD, 0x80, 0x02, 0x1A });
+    auto const unclosed = FeatureSet::wasm2().with(Feature::RelaxedSimd).without(Feature::Simd);
+    auto const refused = decodeModule(bytes, unclosed);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MissingFeaturePrerequisite);
+    CHECK(refused.error().offset == 0);
+    CHECK(isoline::binary::specMessage(refused.error())
+          == "feature enabled without its prerequisite: relaxed-simd requires simd");
+    CHECK_FALSE(errorOf(bytes, FeatureSet::wasm2().with(Feature::RelaxedSimd)).has_value());
+}
+
 TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
 {
-    // Driven by the opcode table, so a row added with the wrong proposal, or none, fails here.
+    // Driven by the opcode table, so a row added with the wrong proposal, or none, fails here, and so
+    // does one whose OpcodeCrossRequirements the decoder ignores.
     using isoline::binary::ImmediateKind;
     for (auto const& row: isoline::binary::OpcodeTable)
     {
@@ -1148,7 +1625,17 @@ TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
             row.immediate == ImmediateKind::DataIndex || row.immediate == ImmediateKind::MemoryInit;
         auto const accepted = namesDataSegment ? std::optional { DecodeErrorCode::DataCountSectionRequired }
                                                : std::optional<DecodeErrorCode> {};
-        CHECK(errorOf(bytes, FeatureSet::none().with(*row.proposal)) == accepted);
+        auto const enabled = row.required.withPrerequisites();
+        CHECK(errorOf(bytes, enabled) == accepted);
+        // Every feature it requires, its proposal's and any other's, is needed: without any one of
+        // them it is unknown.
+        for (auto const& feature: isoline::FeatureTable)
+        {
+            if (!row.required.has(feature.feature))
+                continue;
+            INFO("without " << feature.name);
+            CHECK(errorOf(bytes, enabled.without(feature.feature)) == DecodeErrorCode::IllegalOpcode);
+        }
     }
 }
 
@@ -1231,4 +1718,462 @@ TEST_CASE("Decoder.everyTruncatedSectionFails")
         builder.type(FuncType {}).function(0, { isoline::binary::I32 }, { 0x41, 0x05, 0x21, 0x00, 0x01 });
         checkEveryTruncationFails(builder.build());
     }
+}
+
+TEST_CASE("Decoder.typedReferenceTypes")
+{
+    using isoline::binary::AbstractHeapType;
+    using isoline::binary::concreteRef;
+    using isoline::binary::Nullable;
+    auto const wasm3 = FeatureSet::wasm3();
+    // (type (func (param (ref 0) (ref null 1) (ref 128)) (result (ref func) (ref null func))))
+    auto const typeSection = moduleOf({ 0x01,
+                                        0x0F,
+                                        0x01,
+                                        0x60,
+                                        0x03,
+                                        0x64,
+                                        0x00,
+                                        0x63,
+                                        0x01,
+                                        0x64,
+                                        0x80,
+                                        0x01,
+                                        0x02,
+                                        0x64,
+                                        0x70,
+                                        0x63,
+                                        0x70 });
+    auto const module = decoded(typeSection, wasm3);
+    REQUIRE(module.types.size() == 1);
+    auto const& type = module.types[0];
+    CHECK(type.params
+          == std::vector {
+              concreteRef(0, Nullable::No), concreteRef(1, Nullable::Yes), concreteRef(128, Nullable::No) });
+    auto const nonNullFunc = isoline::binary::ValueType {
+        .kind = isoline::binary::ValueKind::Ref,
+        .nullable = Nullable::No,
+        .heap = { .kind = AbstractHeapType::Func },
+    };
+    CHECK(type.results == std::vector { nonNullFunc, isoline::binary::FuncRef });
+
+    // Without typed function references, 0x63 and 0x64 are no type, at the type's byte.
+    auto const refused = decodeModule(typeSection, FeatureSet::wasm2());
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MalformedReferenceType);
+    CHECK(refused.error().offset == Preamble.size() + 5);
+    // A heap type cut short is no s33, and so read as an abstract one: a byte with a continuation
+    // bit is too long a representation of the one byte that encodes those.
+    CHECK(errorOf(moduleOf({ 0x01, 0x05, 0x01, 0x60, 0x01, 0x64, 0x80 }), wasm3)
+          == DecodeErrorCode::IntegerRepresentationTooLong);
+
+    // Locals, globals and block types take them too.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .global(isoline::binary::GlobalType { .type = concreteRef(0, Nullable::Yes),
+                                              .mutability = Mutability::Var },
+                { 0xD0, 0x00 })
+        .function(0, { concreteRef(0, Nullable::Yes) }, { 0x02, 0x64, 0x00, 0x00, 0x0B });
+    auto const typed = decoded(builder.build(), wasm3);
+    CHECK(typed.globals.at(0).type.type == concreteRef(0, Nullable::Yes));
+    CHECK(localType(typed.code.at(0), 0) == concreteRef(0, Nullable::Yes));
+    CHECK(typed.code.at(0).body.at(0).blockType().value == concreteRef(0, Nullable::No));
+}
+
+TEST_CASE("Decoder.rejectsGcHeapTypes")
+{
+    // The GC heaps are no heap type without GC, after 0x63 or 0x64 or as a shorthand: any, eq, i31,
+    // struct, array, none, nofunc, noextern.
+    for (auto const code: { 0x6E, 0x6D, 0x6C, 0x6B, 0x6A, 0x71, 0x73, 0x72 })
+    {
+        auto const heap = static_cast<uint8_t>(code);
+        auto const nullable =
+            decodeModule(moduleOf({ 0x01, 0x06, 0x01, 0x60, 0x01, 0x63, heap, 0x00 }), FeatureSet::wasm3());
+        REQUIRE_FALSE(nullable.has_value());
+        CHECK(nullable.error().code == DecodeErrorCode::MalformedReferenceType);
+        CHECK(nullable.error().offset == Preamble.size() + 6); // the heap type
+        CHECK(errorOf(moduleOf({ 0x01, 0x06, 0x01, 0x60, 0x01, 0x64, heap, 0x00 }), FeatureSet::wasm3())
+              == DecodeErrorCode::MalformedReferenceType);
+        CHECK(errorOf(moduleOf({ 0x01, 0x05, 0x01, 0x60, 0x01, heap, 0x00 }), FeatureSet::all())
+              == DecodeErrorCode::MalformedReferenceType);
+    }
+    // rec, sub and the struct and array forms are GC's definitions: no function type.
+    for (auto const form: { 0x4E, 0x50, 0x4F, 0x5F, 0x5E })
+        CHECK(errorOf(moduleOf({ 0x01, 0x04, 0x01, static_cast<uint8_t>(form), 0x00, 0x00 }),
+                      FeatureSet::wasm3())
+              == DecodeErrorCode::MalformedFunctionType);
+}
+
+TEST_CASE("Decoder.exceptionReferenceShorthands")
+{
+    using isoline::binary::ExnRef;
+    using isoline::binary::NullExnRef;
+    // (func (param exnref nullexnref (ref null exn))), under exception handling only.
+    auto const bytes = moduleOf({ 0x01, 0x08, 0x01, 0x60, 0x03, 0x69, 0x74, 0x63, 0x69, 0x00 });
+    auto const module = decoded(bytes, FeatureSet::wasm3());
+    CHECK(module.types.at(0).params == std::vector { ExnRef, NullExnRef, ExnRef });
+    CHECK(errorOf(bytes, FeatureSet::wasm3().without(Feature::ExceptionHandling))
+          == DecodeErrorCode::MalformedReferenceType);
+}
+
+TEST_CASE("Decoder.refNullTakesAHeapType")
+{
+    using isoline::binary::concreteRef;
+    using isoline::binary::Nullable;
+    auto const refNull = [](uint8_t heap) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {}).function(0, {}, { 0xD0, heap, 0x1A });
+        return builder.build();
+    };
+    CHECK(decoded(refNull(0x00), FeatureSet::wasm3()).code.at(0).body.at(0).type
+          == concreteRef(0, Nullable::Yes));
+    CHECK(decoded(refNull(0x70), FeatureSet::wasm3()).code.at(0).body.at(0).type == isoline::binary::FuncRef);
+    CHECK(decoded(refNull(0x69), FeatureSet::wasm3()).code.at(0).body.at(0).type == isoline::binary::ExnRef);
+    CHECK(decoded(refNull(0x6F), FeatureSet::wasm2()).code.at(0).body.at(0).type
+          == isoline::binary::ExternRef);
+    // A type index needs typed function references; exn exception handling; nofunc is GC's.
+    CHECK(errorOf(refNull(0x00), FeatureSet::wasm2()) == DecodeErrorCode::MalformedReferenceType);
+    CHECK(errorOf(refNull(0x69), FeatureSet::wasm3().without(Feature::ExceptionHandling))
+          == DecodeErrorCode::MalformedReferenceType);
+    CHECK(errorOf(refNull(0x73), FeatureSet::wasm3()) == DecodeErrorCode::MalformedReferenceType);
+}
+
+TEST_CASE("Decoder.tableInitializer")
+{
+    using isoline::binary::AbstractHeapType;
+    using isoline::binary::Nullable;
+    auto const nonNullFunc = isoline::binary::ValueType {
+        .kind = isoline::binary::ValueKind::Ref,
+        .nullable = Nullable::No,
+        .heap = { .kind = AbstractHeapType::Func },
+    };
+    auto const one = Limits { .min = 1, .max = std::nullopt };
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .function(0, {}, {})
+        .table(isoline::binary::TableType { .element = nonNullFunc, .limits = one }, { 0xD2, 0x00 })
+        .table(isoline::binary::TableType { .element = isoline::binary::FuncRef, .limits = one });
+    auto const module = decoded(builder.build(), FeatureSet::wasm3());
+    REQUIRE(module.tables.size() == 2);
+    CHECK(module.tables[0].type.element == nonNullFunc);
+    REQUIRE(module.tables[0].init.size() == 2);
+    CHECK(module.tables[0].init[0].opcode == Opcode::RefFunc);
+    CHECK(module.tables[1].init.empty()); // its slots start as null
+
+    // 0x40 0x00 introduces the initializer form under typed function references only.
+    auto const withInit = moduleOf({ 0x04, 0x09, 0x01, 0x40, 0x00, 0x70, 0x00, 0x01, 0xD0, 0x70, 0x0B });
+    CHECK(errorOf(withInit, FeatureSet::wasm3()) == std::nullopt);
+    auto const refused = decodeModule(withInit, FeatureSet::wasm2());
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MalformedReferenceType);
+    CHECK(refused.error().offset == Preamble.size() + 3);
+    // As in the interpreter, which tries the plain form when the initializer form fails, any error
+    // after 0x40 is a malformed reference type at 0x40: here the zero byte is missing.
+    auto const noZero = decodeModule(moduleOf({ 0x04, 0x08, 0x01, 0x40, 0x70, 0x00, 0x01, 0xD0, 0x70, 0x0B }),
+                                     FeatureSet::wasm3());
+    REQUIRE_FALSE(noZero.has_value());
+    CHECK(noZero.error().code == DecodeErrorCode::MalformedReferenceType);
+    CHECK(noZero.error().offset == Preamble.size() + 3);
+}
+
+TEST_CASE("Decoder.functionReferencesNeedReferenceTypes")
+{
+    // FeatureRow::prerequisites: typed function references build on reference types (3.0's
+    // function-references Overview), which build on bulk memory.
+    auto const unclosed =
+        FeatureSet::wasm2().with(Feature::TypedFunctionReferences).without(Feature::ReferenceTypes);
+    auto const refused = decodeModule(moduleOf({}), unclosed);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MissingFeaturePrerequisite);
+    CHECK(isoline::binary::specMessage(refused.error())
+          == "feature enabled without its prerequisite: function-references requires reference-types");
+    CHECK(errorOf(moduleOf({}), FeatureSet::wasm2().with(Feature::TypedFunctionReferences)) == std::nullopt);
+}
+
+TEST_CASE("Decoder.tagSectionOrder")
+{
+    // Type [] -> [], a memory, a tag of type 0, an i32 global: the tag section (13) sits between
+    // the memory (5) and the global (6) sections.
+    auto const features = FeatureSet::wasm3();
+    auto const ordered = moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type
+                                    0x05, 0x03, 0x01, 0x00, 0x01,       // memory
+                                    0x0D, 0x03, 0x01, 0x00, 0x00,       // tag
+                                    0x06, 0x06, 0x01, 0x7F, 0x00, 0x41, 0x00, 0x0B });
+    auto const module = decoded(ordered, features);
+    REQUIRE(module.tags.size() == 1);
+    CHECK(module.tags[0].typeIndex == 0);
+
+    auto const afterGlobal = moduleOf({ 0x01,
+                                        0x04,
+                                        0x01,
+                                        0x60,
+                                        0x00,
+                                        0x00,
+                                        0x06,
+                                        0x06,
+                                        0x01,
+                                        0x7F,
+                                        0x00,
+                                        0x41,
+                                        0x00,
+                                        0x0B,
+                                        0x0D,
+                                        0x03,
+                                        0x01,
+                                        0x00,
+                                        0x00 });
+    CHECK(errorOf(afterGlobal, features) == DecodeErrorCode::SectionOutOfOrder);
+    auto const beforeMemory = moduleOf(
+        { 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x0D, 0x03, 0x01, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01 });
+    CHECK(errorOf(beforeMemory, features) == DecodeErrorCode::SectionOutOfOrder);
+
+    // Without exception handling the section id is unknown.
+    auto const tagOnly = moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x0D, 0x03, 0x01, 0x00, 0x00 });
+    CHECK(errorOf(tagOnly, features.without(Feature::ExceptionHandling))
+          == DecodeErrorCode::MalformedSectionId);
+    // A tag's attribute byte must be 0, an exception.
+    auto const attribute = moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x0D, 0x03, 0x01, 0x01, 0x00 });
+    CHECK(errorOf(attribute, features) == DecodeErrorCode::ZeroByteExpected);
+    // The tag section's entries are bounded.
+    CHECK(errorOf(tagOnly, features, DecodeLimits { .maxTags = 0 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+}
+
+TEST_CASE("Decoder.tagImportsAndExports")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .importTag("m", "t", 0)
+        .tag(0)
+        .exportEntity("t", ExternKind::Tag, 1);
+    auto const bytes = builder.build();
+    auto const module = decoded(bytes, FeatureSet::wasm3());
+    REQUIRE(module.imports.size() == 1);
+    CHECK(module.imports[0].kind == ExternKind::Tag);
+    CHECK(module.imports[0].typeIndex == 0);
+    CHECK(module.importedCount(ExternKind::Tag) == 1);
+    REQUIRE(module.exports.size() == 1);
+    CHECK(module.exports[0].kind == ExternKind::Tag);
+    CHECK(module.exports[0].index == 1);
+    // Kind byte 4 is a tag only with exception handling.
+    auto const without = FeatureSet::wasm3().without(Feature::ExceptionHandling);
+    auto imported = ModuleBuilder {};
+    imported.type(FuncType {}).importTag("m", "t", 0);
+    CHECK(errorOf(imported.build(), without) == DecodeErrorCode::MalformedImportKind);
+    auto exported = ModuleBuilder {};
+    exported.exportEntity("t", ExternKind::Tag, 0);
+    CHECK(errorOf(exported.build(), without) == DecodeErrorCode::MalformedExportKind);
+}
+
+TEST_CASE("Decoder.tryTableClauses")
+{
+    using isoline::binary::CatchClause;
+    using isoline::binary::catchClausesOf;
+    using isoline::binary::CatchKind;
+    auto const features = FeatureSet::wasm3();
+    // try_table (result i32) (catch 0 0) (catch_ref 1 1) (catch_all 2) (catch_all_ref 3) throw 0 end,
+    // then a second try_table without clauses, whose run is empty.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, { 0x1F, 0x7F, 0x04, 0x00, 0x00, 0x00, 0x01,
+                                                0x01, 0x01, 0x02, 0x02, 0x03, 0x03, 0x08,
+                                                0x00, 0x0B, 0x1A, 0x1F, 0x40, 0x00, 0x0B });
+    auto const bytes = builder.build();
+    auto const module = decoded(bytes, features);
+    auto const& function = module.code.at(0);
+    REQUIRE(function.body.size() >= 6);
+    auto const& tryTable = function.body[0];
+    CHECK(tryTable.opcode == Opcode::TryTable);
+    CHECK(tryTable.blockType().kind == isoline::binary::BlockType::Kind::Value);
+    CHECK(tryTable.endIndex == 2);
+    CHECK(function.body[1].opcode == Opcode::Throw);
+    CHECK(function.body[1].a == 0);
+    CHECK(std::ranges::equal(catchClausesOf(function, tryTable),
+                             std::to_array<CatchClause>({
+                                 { .kind = CatchKind::Catch, .tag = 0, .label = 0 },
+                                 { .kind = CatchKind::CatchRef, .tag = 1, .label = 1 },
+                                 { .kind = CatchKind::CatchAll, .tag = 0, .label = 2 },
+                                 { .kind = CatchKind::CatchAllRef, .tag = 0, .label = 3 },
+                             })));
+    CHECK(function.body[4].opcode == Opcode::TryTable);
+    CHECK(function.body[4].endIndex == 5);
+    CHECK(catchClausesOf(function, function.body[4]).empty());
+
+    // The clauses of one try_table are bounded.
+    auto twoClauses = ModuleBuilder {};
+    twoClauses.type(FuncType {}).function(0, {}, { 0x1F, 0x40, 0x02, 0x02, 0x00, 0x02, 0x00, 0x0B });
+    auto const twoClausesBytes = twoClauses.build();
+    CHECK(errorOf(twoClausesBytes, features, DecodeLimits { .maxCatchClauses = 2 }) == std::nullopt);
+    CHECK(errorOf(twoClausesBytes, features, DecodeLimits { .maxCatchClauses = 1 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(DecodeLimits {}.maxCatchClauses == 65'520);
+
+    // A body that ends inside a clause runs out.
+    auto const cut = moduleOf({ 0x01,
+                                0x04,
+                                0x01,
+                                0x60,
+                                0x00,
+                                0x00, // type
+                                0x03,
+                                0x02,
+                                0x01,
+                                0x00, // function
+                                0x0A,
+                                0x06,
+                                0x01,
+                                0x04,
+                                0x00,
+                                0x1F,
+                                0x40,
+                                0x01 });
+    CHECK(errorOf(cut, features) == DecodeErrorCode::UnexpectedEnd);
+
+    // A clause kind above 3 is malformed, at its byte.
+    auto malformed = ModuleBuilder {};
+    malformed.type(FuncType {}).function(0, {}, { 0x1F, 0x40, 0x01, 0x04, 0x00, 0x0B });
+    auto const malformedBytes = malformed.build();
+    auto const result = decodeModule(malformedBytes, features);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == DecodeErrorCode::MalformedCatchClause);
+    CHECK(isoline::binary::specMessage(result.error()) == "malformed catch clause");
+}
+
+namespace
+{
+
+/// The features the compact import tests decode with: 3.0 and the compact import section.
+FeatureSet compactImportFeatures()
+{
+    return FeatureSet::wasm3().with(Feature::CompactImports);
+}
+
+/// A module whose only section is an import section of @p payload, after one type `[] -> []`.
+std::vector<std::byte> importingModule(std::vector<uint8_t> payload)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).rawSection(2, std::move(payload));
+    return builder.build();
+}
+
+} // namespace
+
+TEST_CASE("Decoder.compactImportsByItem")
+{
+    // "env" "" 0x7F [("a", func 0), ("b", global i32)]
+    auto const bytes = importingModule(
+        { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7F, 0x02, 0x01, 'a', 0x00, 0x00, 0x01, 'b', 0x03, 0x7F, 0x00 });
+    auto const module = decoded(bytes, compactImportFeatures());
+    REQUIRE(module.imports.size() == 2);
+    CHECK(importModuleOf(module, module.imports[0]) == "env");
+    CHECK(module.imports[0].name == "a");
+    CHECK(module.imports[0].kind == ExternKind::Func);
+    CHECK(module.imports[0].typeIndex == 0);
+    CHECK(importModuleOf(module, module.imports[1]) == "env");
+    CHECK(module.imports[1].name == "b");
+    CHECK(module.imports[1].kind == ExternKind::Global);
+    CHECK(module.imports[1].global.type == isoline::binary::I32);
+    CHECK(module.imports[1].global.mutability == Mutability::Const);
+
+    // Without the proposal the discriminator is no import kind.
+    CHECK(errorOf(bytes, FeatureSet::wasm3()) == DecodeErrorCode::MalformedImportKind);
+}
+
+TEST_CASE("Decoder.compactImportsByType")
+{
+    // "env" "" 0x7E (global i32) ["x", "y", "z"]
+    auto const bytes = importingModule(
+        { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7E, 0x03, 0x7F, 0x00, 0x03, 0x01, 'x', 0x01, 'y', 0x01, 'z' });
+    auto const module = decoded(bytes, compactImportFeatures());
+    REQUIRE(module.imports.size() == 3);
+    CHECK(module.importModules.size() == 1);
+    auto const names = std::to_array<std::string_view>({ "x", "y", "z" });
+    for (auto const index: std::views::iota(std::size_t { 0 }, names.size()))
+    {
+        auto const& import = module.imports[index];
+        // Every item names the entry's one module name; none holds a copy.
+        CHECK(import.moduleIndex == 0);
+        CHECK(importModuleOf(module, import) == "env");
+        CHECK(import.name == names[index]);
+        CHECK(import.kind == ExternKind::Global);
+        CHECK(import.global.type == isoline::binary::I32);
+    }
+    CHECK(errorOf(bytes, FeatureSet::wasm3()) == DecodeErrorCode::MalformedImportKind);
+
+    // The discriminator only follows an empty item name; after another it is malformed.
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x01, 'b', 0x7E, 0x03, 0x7F, 0x00, 0x01, 0x01, 'x' }),
+                  compactImportFeatures())
+          == DecodeErrorCode::MalformedImportKind);
+    // A group's extern types are read as a single import's are.
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00, 0x7E, 0x05, 0x01, 0x01, 'x' }),
+                  compactImportFeatures())
+          == DecodeErrorCode::MalformedImportKind);
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00, 0x7F, 0x01, 0x01, 'x', 0x05 }),
+                  compactImportFeatures())
+          == DecodeErrorCode::MalformedImportKind);
+    // A section that ends after the empty item name ends unexpectedly, as a single import does.
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00 }), compactImportFeatures())
+          == DecodeErrorCode::UnexpectedEnd);
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00 }), FeatureSet::wasm3())
+          == DecodeErrorCode::UnexpectedEnd);
+    // An empty item name without a discriminator is a single import.
+    auto const single = decoded(importingModule({ 0x01, 0x00, 0x00, 0x00, 0x00 }), compactImportFeatures());
+    REQUIRE(single.imports.size() == 1);
+    CHECK(single.imports[0].kind == ExternKind::Func);
+}
+
+TEST_CASE("Decoder.compactImportsCounted")
+{
+    // 0x7E with maxImports + 1 empty names: refused at the item count, before any is read.
+    auto const limit = DecodeLimits {}.maxImports;
+    CHECK(limit == 100'000);
+    auto payload = std::vector<uint8_t> { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7E, 0x03, 0x7F, 0x00 };
+    auto const countOffset = payload.size();
+    append(payload, encodeU32(limit + 1));
+    payload.insert(payload.end(), limit + 1, 0x00);
+    auto const bytes = importingModule(payload);
+    auto const result = decodeModule(bytes, compactImportFeatures());
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == DecodeErrorCode::ImplementationLimitExceeded);
+    // The module's preamble, type section (2 + 4 bytes) and import section header (1 + 3 bytes).
+    CHECK(result.error().offset == 8 + 6 + 4 + countOffset);
+
+    // The limit counts the imports of every entry: two groups of two exceed three.
+    auto const twoGroups =
+        importingModule({ 0x02, 0x01, 'a',  0x00, 0x7E, 0x00, 0x00, 0x02, 0x01, 'b', 0x01, 'c', 0x01,
+                          'a',  0x00, 0x7F, 0x02, 0x01, 'd',  0x00, 0x00, 0x01, 'e', 0x00, 0x00 });
+    CHECK(errorOf(twoGroups, compactImportFeatures(), DecodeLimits { .maxImports = 3 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(decoded(twoGroups, compactImportFeatures()).imports.size() == 4);
+
+    // A single import after a group counts towards the same limit, at its entry.
+    auto const groupThenSingle = importingModule({ 0x02,
+                                                   0x01,
+                                                   'a',
+                                                   0x00,
+                                                   0x7E,
+                                                   0x00,
+                                                   0x00,
+                                                   0x02,
+                                                   0x01,
+                                                   'b',
+                                                   0x01,
+                                                   'c',
+                                                   0x01,
+                                                   'a',
+                                                   0x01,
+                                                   'd',
+                                                   0x00,
+                                                   0x00 });
+    CHECK(errorOf(groupThenSingle, compactImportFeatures(), DecodeLimits { .maxImports = 2 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(decoded(groupThenSingle, compactImportFeatures()).imports.size() == 3);
+
+    // Each memory a 0x7E group expands to counts towards maxMemories.
+    auto const memories = importingModule(
+        { 0x01, 0x01, 'm', 0x00, 0x7E, 0x02, 0x00, 0x00, 0x03, 0x01, 'x', 0x01, 'y', 0x01, 'z' });
+    auto const refused = decodeModule(memories, compactImportFeatures(), DecodeLimits { .maxMemories = 2 });
+    REQUIRE(!refused);
+    CHECK(refused.error().code == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(refused.error().offset == memories.size() - 2); // the third item, 0x01 'z'
+    CHECK(errorOf(memories, compactImportFeatures(), DecodeLimits { .maxMemories = 3 }) == std::nullopt);
 }

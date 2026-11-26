@@ -1,0 +1,97 @@
+module exports.0.wasm
+module exports.1.wasm
+module exports.2.wasm
+module exports.3.wasm
+module exports.4.wasm
+module exports.5.wasm
+module exports.6.wasm
+module exports.7.wasm
+module exports.8.wasm
+module exports.9.wasm
+module exports.10.wasm
+module exports.11.wasm 46756e63
+assert_return invoke 65 - i32:2a -> i32:2b
+assert_return invoke 65 46756e63 i32:2a -> i32:2b
+module exports.12.wasm
+module exports.13.wasm 4f7468657231
+assert_return invoke 65 46756e63 i32:2a -> i32:2b
+module exports.14.wasm
+assert_return invoke 61 - -> i32:2a
+assert_return invoke 62 - -> i32:2a
+assert_return invoke 63 - -> i32:2a
+assert_invalid exports.15.wasm 756e6b6e6f776e2066756e6374696f6e
+assert_invalid exports.16.wasm 756e6b6e6f776e2066756e6374696f6e
+assert_invalid exports.17.wasm 756e6b6e6f776e2066756e6374696f6e
+assert_invalid exports.18.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.19.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.20.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.21.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.22.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.23.wasm 6475706c6963617465206578706f7274206e616d65
+module exports.24.wasm
+module exports.25.wasm
+module exports.26.wasm
+module exports.27.wasm
+module exports.28.wasm
+module exports.29.wasm
+module exports.30.wasm
+module exports.31.wasm
+module exports.32.wasm
+module exports.33.wasm 476c6f62616c
+assert_return get 65 - -> i32:2a
+assert_return get 65 476c6f62616c -> i32:2a
+module exports.34.wasm
+module exports.35.wasm 4f7468657232
+assert_return get 65 476c6f62616c -> i32:2a
+assert_invalid exports.36.wasm 756e6b6e6f776e20676c6f62616c
+assert_invalid exports.37.wasm 756e6b6e6f776e20676c6f62616c
+assert_invalid exports.38.wasm 756e6b6e6f776e20676c6f62616c
+assert_invalid exports.39.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.40.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.41.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.42.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.43.wasm 6475706c6963617465206578706f7274206e616d65
+module exports.44.wasm
+module exports.45.wasm
+module exports.46.wasm
+module exports.47.wasm
+module exports.48.wasm
+module exports.49.wasm
+module exports.50.wasm
+module exports.51.wasm
+module exports.52.wasm
+module exports.53.wasm
+module exports.54.wasm
+module exports.55.wasm
+module exports.56.wasm
+module exports.57.wasm
+module exports.58.wasm
+assert_invalid exports.59.wasm 756e6b6e6f776e207461626c65
+assert_invalid exports.60.wasm 756e6b6e6f776e207461626c65
+assert_invalid exports.61.wasm 756e6b6e6f776e207461626c65
+assert_invalid exports.62.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.63.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.64.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.65.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.66.wasm 6475706c6963617465206578706f7274206e616d65
+module exports.67.wasm
+module exports.68.wasm
+module exports.69.wasm
+module exports.70.wasm
+module exports.71.wasm
+module exports.72.wasm
+module exports.73.wasm
+module exports.74.wasm
+module exports.75.wasm
+module exports.76.wasm
+module exports.77.wasm
+module exports.78.wasm
+module exports.79.wasm
+module exports.80.wasm
+assert_invalid exports.81.wasm 756e6b6e6f776e206d656d6f7279
+assert_invalid exports.82.wasm 756e6b6e6f776e206d656d6f7279
+assert_invalid exports.83.wasm 756e6b6e6f776e206d656d6f7279
+assert_invalid exports.84.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.85.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.86.wasm 6475706c6963617465206578706f7274206e616d65
+assert_invalid exports.87.wasm 6475706c6963617465206578706f7274206e616d65

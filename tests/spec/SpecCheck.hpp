@@ -23,6 +23,8 @@ enum class Stage : uint8_t
     Link,        ///< An import did not bind.
     Instantiate, ///< Instantiation trapped or could not allocate.
     Execute,     ///< An invocation trapped.
+    Exception,   ///< An invocation threw an exception out of the function.
+    Custom,      ///< A custom section was invalid; the module itself loaded.
 };
 
 /// The name of @p stage, for failure reports.
@@ -44,7 +46,9 @@ using CheckResult = std::expected<void, std::string>;
 ///
 /// Exact compares bits, so a NaN must match its payload; a reference compares by kind and address,
 /// a null one by the heap it is the null of. CanonicalNan matches only the canonical NaN, and
-/// ArithmeticNan any NaN with the quiet bit set, each of either sign and of its width only.
+/// ArithmeticNan any NaN with the quiet bit set, each of either sign and of its width only. Lanes
+/// applies each lane's pattern to that lane of a v128, Either matches when one alternative does, and
+/// AnyNullRef matches the null reference of any heap.
 /// @param expected The expected value or pattern.
 /// @param actual The value produced.
 /// @return Whether they match.
