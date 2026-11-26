@@ -207,15 +207,40 @@
     ],
     "testPresets": [
         {
-            "name": "isoline-test-common",
+            "name": "isoline-test-base",
             "hidden": true,
             "output": {
                 "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 900
+            }
+        },
+        {
+            "name": "isoline-test-common",
+            "hidden": true,
+            "inherits": "isoline-test-base",
+            "description": "Every test but the perf label's, which asserts wall-clock latency and runs on request only",
+            "filter": {
+                "exclude": {
+                    "label": "perf"
+                }
             }
         },
         { "name": "clang-asan", "inherits": "isoline-test-common", "configurePreset": "clang-asan" },
         { "name": "clang-tsan", "inherits": "isoline-test-common", "configurePreset": "clang-tsan" },
         { "name": "clang-release", "inherits": "isoline-test-common", "configurePreset": "clang-release" },
+        {
+            "name": "clang-release-perf",
+            "inherits": "isoline-test-base",
+            "configurePreset": "clang-release",
+            "description": "The perf label alone: the interrupt latency, measured in a release build on a quiet machine",
+            "filter": {
+                "include": {
+                    "label": "perf"
+                }
+            }
+        },
         { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },

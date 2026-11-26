@@ -18,7 +18,7 @@ add_executable(isoline_isotest_test IsotestReader_test.cpp SpecCheck_test.cpp Sp
 target_link_libraries(isoline_isotest_test PRIVATE isoline_isotest Catch2::Catch2WithMain)
 isoline_apply_target_policy(isoline_isotest_test TEST)
 add_test(NAME isoline_isotest_test COMMAND isoline_isotest_test)
-set_tests_properties(isoline_isotest_test PROPERTIES LABELS unit)
+set_tests_properties(isoline_isotest_test PROPERTIES LABELS unit TIMEOUT 600)
 
 # The feature set each suite source runs with: the 3.0 release its own standard, a proposal's suite
 # every feature Isoline knows, as its tests build on 3.0.

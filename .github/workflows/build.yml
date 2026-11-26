@@ -23,6 +23,7 @@ jobs:
   linux-clang-asan:
     name: Linux Clang (ASan + UBSan, clang-tidy)
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
@@ -43,8 +44,9 @@ jobs:
         run: ctest --preset clang-asan --output-on-failure
 
   linux-clang-tsan:
-    name: Linux Clang (TSan, clang-tidy)
+    name: Linux Clang (TSan)
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
@@ -52,12 +54,13 @@ jobs:
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh "$LLVM_VERSION"
-          sudo apt-get install -qy "clang-tidy-$LLVM_VERSION" ninja-build
+          sudo apt-get install -qy ninja-build
       - name: Configure
+        # clang-tidy runs in the ASan job already.
         run: >
           cmake --preset clang-tsan
           -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
-          -DISOLINE_CLANG_TIDY_EXE="/usr/bin/clang-tidy-$LLVM_VERSION"
+          -DISOLINE_CLANG_TIDY=OFF
           -DISOLINE_FETCH_DEPS=ON
       - name: Build
         run: cmake --build --preset clang-tsan
@@ -70,6 +73,7 @@ jobs:
   linux-gcc:
     name: Linux GCC
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Install GCC ${{ env.GCC_VERSION }} and Ninja
@@ -86,6 +90,7 @@ jobs:
   linux-clang-coverage:
     name: Linux Clang (coverage)
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
@@ -142,6 +147,7 @@ jobs:
   macos-clang:
     name: macOS Apple Clang
     runs-on: macos-15
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Install Ninja
@@ -156,6 +162,7 @@ jobs:
   windows-msvc:
     name: Windows MSVC
     runs-on: windows-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: Enter the MSVC developer environment
@@ -172,6 +179,7 @@ jobs:
   clang-format:
     name: clang-format
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install clang-format ${{ env.LLVM_VERSION }}
@@ -192,6 +200,7 @@ jobs:
   vendor-check:
     name: Vendored core-cpp matches its MANIFEST
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Check vendor/core-cpp

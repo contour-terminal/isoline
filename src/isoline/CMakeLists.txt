@@ -69,5 +69,6 @@ if(ISOLINE_TESTING)
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_test TEST)
     add_test(NAME isoline_test COMMAND isoline_test)
-    set_tests_properties(isoline_test PROPERTIES LABELS unit)
+    # A bound, so a test that would hang (an interrupt test whose poll went missing) fails instead.
+    set_tests_properties(isoline_test PROPERTIES LABELS unit TIMEOUT 600)
 endif()
