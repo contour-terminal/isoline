@@ -125,6 +125,7 @@ isoline_apply_target_policy(isoline_core)
 # After the policy: the native features' flags follow the warning set (cmake/IsolineLanguageFeatures.cmake).
 isoline_apply_language_features(isoline_core)
 
+add_subdirectory(numerics)
 add_subdirectory(text)
 add_subdirectory(cli)
 

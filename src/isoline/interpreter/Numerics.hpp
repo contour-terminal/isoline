@@ -7,6 +7,7 @@
 #include <span>
 
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/numerics/Float.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
@@ -90,9 +91,9 @@ enum class NumericShape : uint8_t
 [[nodiscard]] std::array<uint64_t, 2> applyWide(binary::Opcode opcode,
                                                 std::span<uint64_t const> operands) noexcept;
 
-/// The canonical NaN of f32 (spec 4.3.3): quiet, with no other payload bit; positive.
-inline constexpr auto CanonicalNanF32 = uint32_t { 0x7FC0'0000 };
-/// The canonical NaN of f64: quiet, with no other payload bit; positive.
-inline constexpr auto CanonicalNanF64 = uint64_t { 0x7FF8'0000'0000'0000 };
+/// The canonical NaN of f32 (spec 4.3.3), which the float kernels produce.
+using numerics::CanonicalNanF32;
+/// The canonical NaN of f64, which the float kernels produce.
+using numerics::CanonicalNanF64;
 
 } // namespace isoline::interpreter

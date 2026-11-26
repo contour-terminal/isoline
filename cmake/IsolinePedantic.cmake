@@ -70,6 +70,22 @@ set(_isolineMsvcCWarnings
     /W4
     /utf-8)
 
+# Floating-point contraction: off for every Isoline target, so that no compiler fuses a multiply and
+# an add into one fused multiply-add (one rounding instead of two). WebAssembly's f32 and f64
+# arithmetic is one correctly rounded operation per instruction, and the shared float kernels
+# (src/isoline/numerics/Float.hpp) are that operation; GCC contracts by default (-ffp-contract=fast)
+# wherever the target has an FMA instruction (arm64, s390x, x86-64 with -mfma), Clang within an
+# expression (-ffp-contract=on). One row per front end, applied unprobed, as a dropped flag would
+# be a silent semantic change:
+#  - GCC and Clang: -ffp-contract=off.
+#  - MSVC: /fp:precise, its default, named explicitly; since Visual Studio 2022 17.0 it generates no
+#    contractions (only /fp:contract or /fp:fast does).
+#  - clang-cl: /fp:precise is Clang's -ffp-model=precise there, which contracts within an expression,
+#    so the GCC-style flag follows it, passed through /clang:.
+set(_isolineGnuStyleFloatPolicy -ffp-contract=off)
+set(_isolineMsvcFloatPolicy /fp:precise)
+set(_isolineClangClFloatPolicy /fp:precise /clang:-ffp-contract=off)
+
 ## @brief Appends to @p outVar each flag of the remaining arguments the @p language compiler accepts.
 function(_isoline_supported_flags outVar language)
     set(accepted "")
@@ -98,11 +114,17 @@ set(ISOLINE_TEST_COMPILE_OPTIONS "")
 if(MSVC)
     _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX ${_isolineMsvcWarnings})
     _isoline_supported_flags(ISOLINE_C_WARNINGS C ${_isolineMsvcCWarnings})
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        list(APPEND ISOLINE_COMPILE_OPTIONS ${_isolineClangClFloatPolicy})
+    else()
+        list(APPEND ISOLINE_COMPILE_OPTIONS ${_isolineMsvcFloatPolicy})
+    endif()
     if(ISOLINE_WERROR)
         list(APPEND ISOLINE_COMPILE_OPTIONS /WX)
     endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX -fdiagnostics-color=always ${_isolineGnuStyleWarnings})
+    list(APPEND ISOLINE_COMPILE_OPTIONS ${_isolineGnuStyleFloatPolicy})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX ${_isolineGccOverrides})
     endif()
