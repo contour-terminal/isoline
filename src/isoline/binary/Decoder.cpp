@@ -634,6 +634,17 @@ namespace
 
         [[nodiscard]] std::expected<Locals, DecodeError> readLocals();
 
+        /// The first feature of @p required, in FeatureTable order, that the decoder's set lacks.
+        [[nodiscard]] std::optional<Feature> firstMissingFeature(FeatureSet required) const noexcept
+        {
+            auto const missing = std::ranges::find_if(FeatureTable, [&](FeatureRow const& row) {
+                return required.has(row.feature) && !_features.has(row.feature);
+            });
+            if (missing == FeatureTable.end())
+                return std::nullopt;
+            return missing->feature;
+        }
+
         [[nodiscard]] bool enabled(std::optional<Feature> required) const noexcept
         {
             return !required || _features.has(*required);
@@ -1215,10 +1226,16 @@ namespace
             code = *subOpcode;
         }
         auto const opcode = lookupOpcode(prefix, code);
-        // An instruction of a disabled proposal is as unknown as one of no proposal at all.
-        if (!opcode || !_features.includes(opcodeInfo(*opcode).required))
+        if (!opcode)
             return std::unexpected { DecodeError {
                 DecodeErrorCode::IllegalOpcode, opcodeOffset, illegalOpcodeSubject(prefix, code) } };
+        // An instruction of a disabled proposal is refused as the interpreter refuses an unknown one, but
+        // names the feature that would decode it, so an embedder knows what to enable.
+        if (auto const missing = firstMissingFeature(opcodeInfo(*opcode).required))
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::FeatureNotEnabled,
+                opcodeOffset,
+                disabledFeatureSubject(illegalOpcodeSubject(prefix, code), *missing) } };
 
         auto instruction = Instruction { .opcode = *opcode };
         return readImmediates(instruction, sink).transform([&] { return instruction; });

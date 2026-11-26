@@ -9,10 +9,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <string>
@@ -21,6 +23,8 @@
 
 #include "AllocationCounter.hpp"
 #include <isoline/Features.hpp>
+#include <isoline/api/Engine.hpp>
+#include <isoline/api/Module.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
@@ -42,7 +46,9 @@ using isoline::binary::ValueType;
 using isoline::binary::testing::encodeName;
 using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
+using isoline::testing::AllocationLimit;
 using isoline::testing::AllocationScope;
+using isoline::testing::RefusalException;
 
 namespace
 {
@@ -110,6 +116,32 @@ void checkLinear(std::vector<std::byte> const& bytes, FeatureSet features, Insta
     REQUIRE(instance.has_value());
     CAPTURE(budget, storeBytes);
     CHECK(storeBytes <= budget);
+}
+
+/// Loads @p bytes through an api::Engine of @p features, which describes the module's imports and
+/// exports as well, and checks that loading and describing held no more than the bound for a module of
+/// their size.
+void checkEngineLoadLinear(std::vector<std::byte> const& bytes, FeatureSet features)
+{
+    auto const budget = budgetOf(bytes);
+    auto const engine = isoline::api::Engine { isoline::api::EngineConfig { .features = features } };
+    auto const scope = AllocationScope {};
+    auto const module = engine.load(bytes);
+    auto const loadBytes = scope.peakBytes();
+    REQUIRE(module.has_value());
+    CAPTURE(bytes.size(), budget, loadBytes);
+    CHECK(loadBytes <= budget);
+}
+
+/// A module of @p count function imports, all of one type of @p params i32 params, each from the
+/// module "" named "": four input bytes per import.
+std::vector<std::byte> manyFunctionImports(std::size_t params, uint32_t count)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = std::vector<ValueType>(params, I32), .results = {} });
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
+        builder.importFunction("", "", 0);
+    return builder.build();
 }
 
 /// Appends @p bytes to @p out.
@@ -253,6 +285,70 @@ TEST_CASE("MemoryBounds.multiValueCallsAreRefusedEarly")
     auto const* const error = std::get_if<isoline::validate::ValidationError>(&loaded.error());
     REQUIRE(error != nullptr);
     CHECK(error->code == isoline::validate::ValidationErrorCode::OperandStackLimitExceeded);
+}
+
+TEST_CASE("MemoryBounds.loadDescribesWithoutCopying")
+{
+    // An engine's module describes every import and export by pointing into the decoded module. A 64 KiB
+    // module name for 8192 one-byte items, copied per description, would be 512 MiB.
+    checkEngineLoadLinear(compactImportGroup(std::size_t { 64 } * 1024, 8192),
+                          FeatureSet::wasm3().with(Feature::CompactImports));
+    // 100'000 imports of one 1000-param type: a copy of the type per description would be about 1.6 GB.
+    checkEngineLoadLinear(manyFunctionImports(1000, 100'000), FeatureSet::wasm3());
+}
+
+TEST_CASE("MemoryBounds.loadReportsHostMemoryExhaustion")
+{
+    // Every budget from nothing up to what loading needs: each load either succeeds or reports the host
+    // out of memory, and none throws through Engine::load or ends the process in a noexcept frame.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { I32 }, .results = {} });
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, uint32_t { 200 }))
+        builder.importFunction("host", "f", 0);
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, uint32_t { 200 }))
+        builder.function(0, {}, { 0x20, 0x00, 0x1A }); // local.get 0; drop
+    builder.exportFunction("first", 200);
+    auto const bytes = builder.build();
+    auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+
+    auto refusals = 0;
+    auto loadedWithin = std::optional<std::size_t> {};
+    // Budgets 1/64 apart (32 bytes at least), so every allocation of the load is refused at some step.
+    for (auto budget = std::size_t { 0 }; budget <= std::size_t { 64 } << 20;
+         budget += std::max(std::size_t { 32 }, budget / 64))
+    {
+        auto const result = [&] {
+            auto const limit = AllocationLimit { budget };
+            return engine.load(bytes);
+        }();
+        if (result.has_value())
+        {
+            loadedWithin = budget;
+            break;
+        }
+        CAPTURE(budget);
+        CHECK(std::holds_alternative<isoline::api::HostMemoryExhausted>(result.error()));
+        ++refusals;
+    }
+    CAPTURE(refusals);
+    CHECK(refusals > 0);
+    CHECK(loadedWithin.has_value());
+}
+
+TEST_CASE("MemoryBounds.loadReportsAContainerPastItsSizeAsHostMemoryExhaustion")
+{
+    // A container asked for more than its max_size() throws std::length_error, not std::bad_alloc: it
+    // is a memory refusal all the same, reported as one, never a throw out of a noexcept Engine::load.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { I32 }, .results = {} }).function(0, {}, { 0x20, 0x00, 0x1A });
+    auto const bytes = builder.build();
+    auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+    auto const result = [&] {
+        auto const limit = AllocationLimit { 0, RefusalException::LengthError };
+        return engine.load(bytes);
+    }();
+    REQUIRE_FALSE(result.has_value());
+    CHECK(std::holds_alternative<isoline::api::HostMemoryExhausted>(result.error()));
 }
 
 TEST_CASE("MemoryBounds.throwLoopReclaimsItsPayloads")

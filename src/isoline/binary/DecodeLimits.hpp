@@ -44,6 +44,9 @@ struct DecodeLimits
     /// is refused although valid. Only bodies that pile up many multi-value results before consuming
     /// them approach the cap; compiled code stays far below it.
     uint32_t maxOperandsPerInstruction = 4;
+
+    /// Two sets of limits are equal when every limit is.
+    bool operator==(DecodeLimits const&) const = default;
 };
 
 } // namespace isoline::binary

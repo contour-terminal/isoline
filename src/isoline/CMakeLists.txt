@@ -33,6 +33,8 @@ add_library(isoline::core ALIAS isoline_core)
 target_sources(isoline_core
     PRIVATE
         Version.cpp
+        api/Engine.cpp
+        api/Module.cpp
         binary/BranchHints.cpp
         binary/ByteReader.cpp
         binary/Decoder.cpp
@@ -55,6 +57,9 @@ target_sources(isoline_core
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
         FILES
             Features.hpp
+            api/Engine.hpp
+            api/EngineIdentity.hpp
+            api/Module.hpp
             binary/BranchHints.hpp
             binary/ByteReader.hpp
             binary/DecodeError.hpp

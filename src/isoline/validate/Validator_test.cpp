@@ -158,7 +158,7 @@ TEST_CASE("Validator.wideNeedsTwoResults")
         functionOf(FuncType { .params = { I64, I64 }, .results = { I64, I64 } }, mulWideU).build();
     auto const decoded = decodeModule(bytes, FeatureSet::wasm3());
     REQUIRE_FALSE(decoded.has_value());
-    CHECK(decoded.error().code == DecodeErrorCode::IllegalOpcode);
+    CHECK(decoded.error().code == DecodeErrorCode::FeatureNotEnabled);
 }
 
 TEST_CASE("Validator.unreachablePolymorphic")

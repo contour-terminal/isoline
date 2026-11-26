@@ -643,10 +643,12 @@ TEST_CASE("Decoder.globals")
     CHECK(module.globals[1].type.mutability == Mutability::Var);
     CHECK(module.globals[1].init[0].c == 0x3FF0'0000'0000'0000);
 
-    // spec binary.wast: an init expression missing its end reads the next section as an opcode.
+    // spec binary.wast: an init expression missing its end reads the next section as an opcode, here
+    // throw_ref (0x0A), whose proposal WebAssembly 2.0 lacks; the message is "illegal opcode 0a" all the
+    // same.
     CHECK(errorOf(moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03, 0x02, 0x01, 0x00, 0x06, 0x05,
                              0x01, 0x7F, 0x00, 0x41, 0x00, 0x0A, 0x04, 0x01, 0x02, 0x00, 0x0B }))
-          == DecodeErrorCode::IllegalOpcode);
+          == DecodeErrorCode::FeatureNotEnabled);
     // ref.func belongs to reference types.
     auto const refFunc = moduleOf({ 0x06, 0x06, 0x01, 0x70, 0x00, 0xD2, 0x00, 0x0B });
     CHECK_FALSE(errorOf(refFunc).has_value());
@@ -657,12 +659,12 @@ TEST_CASE("Decoder.refFuncNeedsReferenceTypes")
 {
     // Initializers whose type decodes without reference types, so the ref.func gate is what fails.
     auto const elementOffset = moduleOf({ 0x09, 0x07, 0x01, 0x00, 0xD2, 0x00, 0x0B, 0x01, 0x00 });
-    CHECK(errorOf(elementOffset, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+    CHECK(errorOf(elementOffset, FeatureSet::none()) == DecodeErrorCode::FeatureNotEnabled);
     CHECK_FALSE(
         errorOf(elementOffset, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
             .has_value());
     auto const i32Global = moduleOf({ 0x06, 0x06, 0x01, 0x7F, 0x00, 0xD2, 0x00, 0x0B });
-    CHECK(errorOf(i32Global, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+    CHECK(errorOf(i32Global, FeatureSet::none()) == DecodeErrorCode::FeatureNotEnabled);
     CHECK_FALSE(errorOf(i32Global, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
                     .has_value());
 }
@@ -1081,7 +1083,7 @@ TEST_CASE("Decoder.typeIndexImmediate")
         INFO(int { opcode });
         CHECK(errorOf(functionWith({ opcode, 0x00 }),
                       FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
-              == DecodeErrorCode::IllegalOpcode);
+              == DecodeErrorCode::FeatureNotEnabled);
     }
 }
 
@@ -1116,7 +1118,7 @@ TEST_CASE("Decoder.tailCallsNeedTheirFeatures")
     {
         INFO(int { row.body.front() } << " without " << static_cast<int>(row.disabled));
         CHECK(errorOf(functionWith(row.body), FeatureSet::wasm3().without(row.disabled))
-              == DecodeErrorCode::IllegalOpcode);
+              == DecodeErrorCode::FeatureNotEnabled);
     }
     CHECK_FALSE(
         errorOf(functionWith({ 0x12, 0x00 }), FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
@@ -1217,8 +1219,38 @@ TEST_CASE("Decoder.illegalOpcodeNamesItsBytes")
     CHECK(messageOf({ 0xFC, 0x12 }) == "illegal opcode fc 12");
     CHECK(messageOf({ 0xFC, 0x80, 0x02 }) == "illegal opcode fc 100");
     CHECK(messageOf({ 0xFD, 0x9A, 0x01 }) == "illegal opcode 9a");
-    // An instruction of a disabled proposal is named as an unknown one is.
-    CHECK(messageOf({ 0xFD, 0x0C }, FeatureSet::none()) == "illegal opcode 0c");
+    // An instruction of a disabled proposal is named as an unknown one is, then its feature.
+    CHECK(messageOf({ 0xFD, 0x0C }, FeatureSet::none()) == "illegal opcode 0c (simd not enabled)");
+}
+
+TEST_CASE("Decoder.disabledFeatureIsNamed")
+{
+    using isoline::binary::disabledFeature;
+    using isoline::binary::isImplementationLimit;
+    // v128.const without SIMD: the feature that would decode it, at the opcode.
+    auto const simd = decodeModule(functionWith({ 0xFD, 0x0C }), FeatureSet::wasm2().without(Feature::Simd));
+    REQUIRE_FALSE(simd.has_value());
+    CHECK(simd.error().code == DecodeErrorCode::FeatureNotEnabled);
+    CHECK(disabledFeature(simd.error()) == Feature::Simd);
+    CHECK_FALSE(isImplementationLimit(simd.error().code));
+    // return_call_ref needs typed function references beside tail calls: the first one missing, in
+    // FeatureTable order, is named.
+    auto const tailCall = decodeModule(functionWith({ 0x15, 0x00 }), FeatureSet::wasm2());
+    REQUIRE_FALSE(tailCall.has_value());
+    CHECK(disabledFeature(tailCall.error()) == Feature::TailCall);
+    auto const typedRefs =
+        decodeModule(functionWith({ 0x15, 0x00 }), FeatureSet::wasm2().with(Feature::TailCall));
+    REQUIRE_FALSE(typedRefs.has_value());
+    CHECK(disabledFeature(typedRefs.error()) == Feature::TypedFunctionReferences);
+    // An opcode of no proposal names none.
+    auto const unknown = decodeModule(functionWith({ 0x06 }), FeatureSet::wasm3());
+    REQUIRE_FALSE(unknown.has_value());
+    CHECK(unknown.error().code == DecodeErrorCode::IllegalOpcode);
+    CHECK_FALSE(disabledFeature(unknown.error()).has_value());
+    // An error without its subject names nothing, nor does its message.
+    auto const bare = isoline::binary::DecodeError { DecodeErrorCode::FeatureNotEnabled, 0 };
+    CHECK_FALSE(disabledFeature(bare).has_value());
+    CHECK(isoline::binary::specMessage(bare) == "illegal opcode");
 }
 
 TEST_CASE("Decoder.subjectOfAnErrorWithoutDetail")
@@ -1422,7 +1454,7 @@ TEST_CASE("Decoder.featureGated")
     {
         auto const bytes = functionWith(row.body);
         INFO("first opcode byte " << int { row.body[0] });
-        CHECK(errorOf(bytes, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+        CHECK(errorOf(bytes, FeatureSet::none()) == DecodeErrorCode::FeatureNotEnabled);
         CHECK_FALSE(
             errorOf(bytes, FeatureSet::none().with(row.feature).with(Feature::BulkMemory)).has_value());
     }
@@ -1642,7 +1674,7 @@ TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
             CHECK_FALSE(errorOf(bytes, FeatureSet::none()).has_value());
             continue;
         }
-        CHECK(errorOf(bytes, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+        CHECK(errorOf(bytes, FeatureSet::none()) == DecodeErrorCode::FeatureNotEnabled);
         // Accepted with its proposal: code naming a data segment then gets as far as wanting the
         // data count section, which this module lacks.
         auto const namesDataSegment =
@@ -1658,7 +1690,7 @@ TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
             if (!row.required.has(feature.feature))
                 continue;
             INFO("without " << feature.name);
-            CHECK(errorOf(bytes, enabled.without(feature.feature)) == DecodeErrorCode::IllegalOpcode);
+            CHECK(errorOf(bytes, enabled.without(feature.feature)) == DecodeErrorCode::FeatureNotEnabled);
         }
     }
 }
