@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -31,6 +32,7 @@
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
 #include <isoline/fastinterpreter/testing/HostileModules.hpp>
+#include <isoline/fastinterpreter/testing/Lowering.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/runtime/testing/ContractViolation.hpp>
@@ -43,7 +45,6 @@ using isoline::binary::GlobalType;
 using isoline::binary::HeapType;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
-using isoline::binary::OpcodeTable;
 using isoline::binary::ValueKind;
 using isoline::binary::ValueType;
 using isoline::binary::testing::Bytes;
@@ -56,28 +57,30 @@ using isoline::binary::testing::localSet;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::binary::testing::unreachable;
 using isoline::fastinterpreter::bodyUnits;
-using isoline::fastinterpreter::codeBoundWords;
+using isoline::fastinterpreter::Continuation;
+using isoline::fastinterpreter::continuationAfter;
 using isoline::fastinterpreter::CountingArena;
 using isoline::fastinterpreter::describe;
 using isoline::fastinterpreter::Dispatch;
-using isoline::fastinterpreter::FunctionOverheadWords;
 using isoline::fastinterpreter::LocalInit;
 using isoline::fastinterpreter::lower;
-using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::LoweringConfig;
 using isoline::fastinterpreter::LoweringError;
 using isoline::fastinterpreter::LoweringFailure;
 using isoline::fastinterpreter::loweringReservation;
-using isoline::fastinterpreter::loweringRow;
-using isoline::fastinterpreter::LoweringRows;
 using isoline::fastinterpreter::MaxFrameSlots;
-using isoline::fastinterpreter::MaxWordsPerBodyUnit;
 using isoline::fastinterpreter::NoFunction;
 using isoline::fastinterpreter::nullSlots;
-using isoline::fastinterpreter::OperationForm;
-using isoline::fastinterpreter::operationRow;
 using isoline::fastinterpreter::Word;
 using isoline::fastinterpreter::WorkPerBodyUnit;
+using isoline::fastinterpreter::testing::arenaOf;
+using isoline::fastinterpreter::testing::DefaultBudget;
+using isoline::fastinterpreter::testing::functionOf;
+using isoline::fastinterpreter::testing::listingOf;
+using isoline::fastinterpreter::testing::lowered;
+using isoline::fastinterpreter::testing::loweredWithinTheBounds;
+using isoline::fastinterpreter::testing::op;
+using isoline::fastinterpreter::testing::validated;
 using isoline::runtime::ExecutionMode;
 using isoline::validate::ValidatedModule;
 
@@ -86,64 +89,6 @@ namespace runtime = isoline::runtime;
 
 namespace
 {
-
-/// The compile budget the lowering tests run under unless they test the budget: P4's default.
-constexpr auto DefaultBudget = uint64_t { 256 } * 1024 * 1024;
-
-/// An instruction of no immediates.
-[[nodiscard]] Bytes op(uint8_t opcode)
-{
-    return { opcode };
-}
-
-/// An instruction of one u32 immediate.
-[[nodiscard]] Bytes op(uint8_t opcode, uint32_t immediate)
-{
-    return code({ { opcode }, encodeU32(immediate) });
-}
-
-/// The bytes of a function of @p params to @p results, declaring @p locals, with body @p body.
-[[nodiscard]] ModuleBuilder functionOf(std::vector<ValueType> params,
-                                       std::vector<ValueType> results,
-                                       std::vector<ValueType> locals,
-                                       Bytes body)
-{
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType { .params = std::move(params), .results = std::move(results) });
-    builder.function(0, std::move(locals), std::move(body));
-    return builder;
-}
-
-/// @p builder's module, decoded and validated with every feature.
-[[nodiscard]] std::shared_ptr<ValidatedModule const> validated(ModuleBuilder const& builder)
-{
-    auto result = ValidatedModule::load(builder.build(), FeatureSet::all(), DecodeLimits {});
-    REQUIRE(result.has_value());
-    return *result;
-}
-
-/// A counting arena of @p budget bytes over the global heap.
-[[nodiscard]] std::shared_ptr<CountingArena> arenaOf(uint64_t budget = DefaultBudget)
-{
-    return std::make_shared<CountingArena>(budget, *std::pmr::new_delete_resource());
-}
-
-/// @p module lowered with @p config under the default budget.
-[[nodiscard]] std::shared_ptr<LoweredModule const> lowered(
-    std::shared_ptr<ValidatedModule const> const& module, LoweringConfig const& config = {})
-{
-    auto result = lower(*module, config, arenaOf());
-    REQUIRE(result.has_value());
-    return *result;
-}
-
-/// The listing of the first function of @p builder's module.
-[[nodiscard]] std::string listingOf(ModuleBuilder const& builder, LoweringConfig const& config = {})
-{
-    auto const module = lowered(validated(builder), config);
-    REQUIRE_FALSE(module->functions().empty());
-    return describe(module->functions().front());
-}
 
 /// A memory resource the host has no memory for: every allocation throws.
 class ExhaustedResource final: public std::pmr::memory_resource
@@ -184,67 +129,6 @@ class RefusingResource final: public std::pmr::memory_resource
     std::size_t _allowed;
     std::size_t _allocations = 0;
 };
-
-/// The value types of a signature's kinds.
-[[nodiscard]] std::vector<ValueType> typesOf(std::span<ValueKind const> kinds)
-{
-    auto types = std::vector<ValueType> {};
-    for (auto const kind: kinds)
-        types.push_back(ValueType { .kind = kind });
-    return types;
-}
-
-/// The binary encoding of @p opcode, with no immediates.
-[[nodiscard]] Bytes encodingOf(Opcode opcode)
-{
-    auto const& info = binary::opcodeInfo(opcode);
-    if (info.prefix == binary::NoPrefix)
-        return { static_cast<uint8_t>(info.code) };
-    return code({ { info.prefix }, encodeU32(info.code) });
-}
-
-/// @p builder's module lowered under the default budget, checked against every published bound: its
-/// code per function and in all, its work, what the arena kept and its peak.
-///
-/// The budget is the module's reservations, room for the exact copy of the largest function's code (at most
-/// its code bound), and @p temporaries, the allowance for the abstract stack, the forwarding chains and the
-/// locals' runs: a lowering that allocates past that is refused, not merely measured.
-[[nodiscard]] std::shared_ptr<LoweredModule const> loweredWithinTheBounds(ModuleBuilder const& builder,
-                                                                          uint64_t temporaries)
-{
-    auto const module = validated(builder);
-    auto const& source = module->module();
-    auto budget = temporaries;
-    auto largestCode = uint64_t { 0 };
-    for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(source.code.size())))
-    {
-        budget += loweringReservation(source, index);
-        largestCode = std::max(largestCode, codeBoundWords(source.code[index]) * sizeof(Word));
-    }
-    budget += largestCode;
-    auto const arena = arenaOf(budget);
-    auto const result = lower(*module, LoweringConfig {}, arena);
-    if (!result)
-        UNSCOPED_INFO("refused at " << result.error().codeIndex << ": " << result.error().requested
-                                    << " bytes of " << result.error().limit << ", peak " << arena->peak());
-    REQUIRE(result.has_value());
-    auto const& lowered = **result;
-    auto reservations = uint64_t { 0 };
-    auto codeWords = uint64_t { 0 };
-    for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(source.code.size())))
-    {
-        reservations += loweringReservation(source, index);
-        codeWords += lowered.functions()[index].code.size();
-        CHECK(lowered.functions()[index].code.size() <= codeBoundWords(source.code[index]));
-    }
-    auto const& stats = lowered.stats();
-    CHECK(codeWords
-          <= (stats.bodyUnits * MaxWordsPerBodyUnit) + (source.code.size() * FunctionOverheadWords));
-    CHECK(lowered.loweredBytes() <= reservations);
-    CHECK(stats.work <= WorkPerBodyUnit * stats.bodyUnits);
-    CHECK(arena->peak() <= arena->budget());
-    return *result;
-}
 
 } // namespace
 
@@ -652,7 +536,8 @@ TEST_CASE("Lowering.refusesWhenTheHostHasNoMemory")
     auto const result = lower(*module, LoweringConfig {}, arena);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().reason == LoweringFailure::HostMemory);
-    CHECK(result.error().codeIndex == 0);
+    // The first allocation is the module's table of its types' slots, which no function owns.
+    CHECK(result.error().codeIndex == NoFunction);
     CHECK(arena->charged() == 0);
 }
 
@@ -731,37 +616,442 @@ TEST_CASE("Lowering.hostileShapesStayLinear")
     }
 }
 
-TEST_CASE("LoweringTable.everyTableRowLowersToItsOperation")
+namespace
 {
-    // One function per Unary, Binary and BinaryImmediate row, over params of its operand types: the
-    // listing names the row's operation, and a folding row's twin when its right operand is a constant.
-    for (auto const& row: LoweringRows)
+
+/// A block, loop or if (@p opcode) of block type @p blockType around @p body.
+[[nodiscard]] Bytes blockOf(uint8_t opcode, uint8_t blockType, Bytes const& body)
+{
+    return code({ { opcode, blockType }, body, { 0x0B } });
+}
+
+/// @p builder with a second function type, index 1, which a block names.
+[[nodiscard]] ModuleBuilder withBlockType(ModuleBuilder builder, FuncType type)
+{
+    builder.type(std::move(type));
+    return builder;
+}
+
+/// How many lines of @p listing start with @p text and a space.
+[[nodiscard]] std::size_t linesStartingWith(std::string_view listing, std::string_view text)
+{
+    auto count = std::size_t { 0 };
+    for (auto const line: std::views::split(listing, '\n'))
+        if (std::string_view { line }.starts_with(std::format("{} ", text)))
+            ++count;
+    return count;
+}
+
+/// The compile budget's allowance for the temporaries of the hostile control-flow shapes: their stacks
+/// of blocks and values take less than half of it.
+constexpr auto ControlTemporaries = uint64_t { 32 } * 1024 * 1024;
+
+} // namespace
+
+TEST_CASE("Lowering.fusesCompareAndBranch")
+{
+    SECTION("a loop counting down: the comparison with its constant and the br_if are one operation")
     {
-        if (row.form == OperationForm::Special)
-            continue;
-        auto const& info = binary::opcodeInfo(row.opcode);
-        INFO(info.text);
-        auto const& signature = binary::signatureInfo(info.signature);
-        auto const params = typesOf(signature.paramKinds());
-        auto const results = typesOf(signature.resultKinds());
-        auto const unary = row.form == OperationForm::Unary;
-        auto const body = unary ? code({ localGet(0), encodingOf(row.opcode) })
-                                : code({ localGet(0), localGet(1), encodingOf(row.opcode) });
-        auto const expected =
-            unary ? std::format("{} s1, s0\nreturn s1\n", operationRow(row.operation).text)
-                  : std::format("{} s2, s0, s1\nreturn s2\n", operationRow(row.operation).text);
-        CHECK(listingOf(functionOf(params, results, {}, body)) == expected);
-        CHECK(loweringRow(row.opcode) == row);
-        if (row.form != OperationForm::BinaryImmediate)
-            continue;
-        auto const constant = params[1].kind == ValueKind::I32 ? i32Const(5) : code({ { 0x42 }, { 0x05 } });
-        CHECK(listingOf(
-                  functionOf(params, results, {}, code({ localGet(0), constant, encodingOf(row.opcode) })))
-              == std::format("{} s2, s0, #5\nreturn s2\n", operationRow(row.immediate).text));
+        auto const countDown = functionOf({ binary::I32 },
+                                          {},
+                                          {},
+                                          blockOf(0x03,
+                                                  0x40,
+                                                  code({ localGet(0),
+                                                         i32Const(1),
+                                                         op(0x6B),
+                                                         localSet(0),
+                                                         localGet(0),
+                                                         i32Const(0),
+                                                         op(0x47),
+                                                         op(0x0D, 0) })));
+        CHECK(listingOf(countDown)
+              == "i32.sub.imm s1, s0, #1\nmove64 s0, s1\ni32.ne.imm.br_if.loop s0, #0 → @0\nreturn s1\n");
     }
-    // An opcode without a row is Special, which a later part of lowering handles.
-    CHECK(loweringRow(Opcode::Block).form == OperationForm::Special);
-    CHECK(OpcodeTable.size() == isoline::fastinterpreter::LoweringTable.size());
+    SECTION("not where the br_if moves its values: the comparison's result is its condition")
+    {
+        // The block's result is one slot above its slot, past a value below it.
+        auto const moving = functionOf({ binary::I32, binary::I32 },
+                                       {},
+                                       {},
+                                       code({ blockOf(0x02,
+                                                      0x7F,
+                                                      code({ localGet(0),
+                                                             localGet(1),
+                                                             localGet(0),
+                                                             localGet(1),
+                                                             op(0x46),
+                                                             op(0x0D, 0),
+                                                             op(0x0C, 0) })),
+                                              drop() }));
+        CHECK(listingOf(moving)
+              == "i32.eq s4, s0, s1\nmove64 s3, s1\nmove64 s2, s0\nbr_if.move s4, s2, s3, #1 → @16\n"
+                 "move.range s2, s3, #1\njump → @16\nreturn s2\n");
+    }
+}
+
+TEST_CASE("Lowering.everyLoopTransferPolls")
+{
+    // Each transfer of control to a loop label is its polling twin, or a br_table record of LoopPoll::Yes;
+    // to a block label it is not.
+    SECTION("br")
+    {
+        CHECK(listingOf(functionOf({}, {}, {}, blockOf(0x03, 0x40, op(0x0C, 0))))
+              == "jump.loop → @0\nreturn s0\n");
+        CHECK(listingOf(functionOf({}, {}, {}, blockOf(0x02, 0x40, op(0x0C, 0))))
+              == "jump → @2\nreturn s0\n");
+    }
+    SECTION("br_if")
+    {
+        auto const body = code({ localGet(0), op(0x0D, 0) });
+        CHECK(listingOf(functionOf({ binary::I32 }, {}, {}, blockOf(0x03, 0x40, body)))
+              == "br_if.loop s0 → @0\nreturn s1\n");
+        CHECK(listingOf(functionOf({ binary::I32 }, {}, {}, blockOf(0x02, 0x40, body)))
+              == "br_if s0 → @3\nreturn s1\n");
+    }
+    SECTION("a br_table record")
+    {
+        // Labels 0 (the loop), 1 (the block) and the default, 1.
+        auto const table = code({ localGet(0), { 0x0E, 0x02, 0x00, 0x01, 0x01 } });
+        CHECK(listingOf(functionOf({ binary::I32 }, {}, {}, blockOf(0x02, 0x40, blockOf(0x03, 0x40, table))))
+              == "br_table s0, s1, #0, #2 → @0.loop s1, @10 s1, @10 s1\nreturn s1\n");
+    }
+    SECTION("a fused comparison")
+    {
+        auto const body = code({ localGet(0), op(0x45), op(0x0D, 0) });
+        CHECK(listingOf(functionOf({ binary::I32 }, {}, {}, blockOf(0x03, 0x40, body)))
+              == "i32.eqz.br_if.loop s0 → @0\nreturn s1\n");
+        CHECK(listingOf(functionOf({ binary::I32 }, {}, {}, blockOf(0x02, 0x40, body)))
+              == "i32.eqz.br_if s0 → @3\nreturn s1\n");
+    }
+    SECTION("br_on_null")
+    {
+        auto const body = code({ localGet(0), { 0xD5, 0x00 }, drop() });
+        CHECK(listingOf(functionOf({ binary::FuncRef }, {}, {}, blockOf(0x03, 0x40, body)))
+              == "br_on_null.loop s0 → @0\nreturn s2\n");
+        CHECK(listingOf(functionOf({ binary::FuncRef }, {}, {}, blockOf(0x02, 0x40, body)))
+              == "br_on_null s0 → @3\nreturn s2\n");
+    }
+    SECTION("br_on_non_null")
+    {
+        // The loop takes the reference as its param, which the branch carries back to it.
+        auto const looping = withBlockType(
+            functionOf(
+                { binary::FuncRef }, {}, {}, code({ localGet(0), blockOf(0x03, 0x01, { 0xD6, 0x00 }) })),
+            FuncType { .params = { binary::FuncRef }, .results = {} });
+        CHECK(listingOf(looping) == "move128 s2, s0\nbr_on_non_null.loop s2 → @2\nreturn s2\n");
+        auto const leaving = functionOf(
+            { binary::FuncRef },
+            {},
+            {},
+            code({ blockOf(0x02, 0x70, code({ localGet(0), { 0xD6, 0x00 }, localGet(0) })), drop() }));
+        CHECK(listingOf(leaving) == "move128 s2, s0\nbr_on_non_null s2 → @7\nmove128 s2, s0\nreturn s2\n");
+    }
+}
+
+TEST_CASE("Lowering.conditionalBranchesMoveTheirValuesOnce")
+{
+    // A conditional branch whose values are not in its label's slots moves them as it branches, in one
+    // operation: the condition, the label's slots, the values' slots and their count.
+    SECTION("br_if to a loop")
+    {
+        auto const module = withBlockType(functionOf({ binary::I32 },
+                                                     {},
+                                                     {},
+                                                     code({ localGet(0),
+                                                            blockOf(0x03,
+                                                                    0x01,
+                                                                    code({ localGet(0),
+                                                                           localGet(0),
+                                                                           localGet(0),
+                                                                           op(0x0D, 0),
+                                                                           drop(),
+                                                                           drop(),
+                                                                           drop() })) })),
+                                          FuncType { .params = { binary::I32 }, .results = {} });
+        CHECK(listingOf(module)
+              == "move64 s1, s0\nmove64 s3, s0\nmove64 s2, s0\nbr_if.move.loop s0, s1, s3, #1 → @2\nreturn "
+                 "s1\n");
+    }
+    SECTION("br_on_null to a block and to a loop")
+    {
+        auto const leaving = functionOf(
+            { binary::I32, binary::FuncRef },
+            {},
+            {},
+            code({ blockOf(
+                       0x02,
+                       0x7F,
+                       code({ localGet(0), localGet(0), localGet(1), { 0xD5, 0x00 }, drop(), op(0x0C, 0) })),
+                   drop() }));
+        CHECK(listingOf(leaving)
+              == "move64 s4, s0\nmove64 s3, s0\nbr_on_null.move s1, s3, s4, #1 → @13\nmove.range s3, s4, #1\n"
+                 "jump → @13\nreturn s3\n");
+        auto const looping = withBlockType(functionOf({ binary::I32, binary::FuncRef },
+                                                      {},
+                                                      {},
+                                                      code({ localGet(0),
+                                                             blockOf(0x03,
+                                                                     0x01,
+                                                                     code({ localGet(0),
+                                                                            localGet(0),
+                                                                            localGet(1),
+                                                                            { 0xD5, 0x00 },
+                                                                            drop(),
+                                                                            drop(),
+                                                                            drop(),
+                                                                            drop() })) })),
+                                           FuncType { .params = { binary::I32 }, .results = {} });
+        CHECK(listingOf(looping)
+              == "move64 s3, s0\nmove64 s5, s0\nmove64 s4, s0\nbr_on_null.move.loop s1, s3, s5, #1 → "
+                 "@2\nreturn s3\n");
+    }
+    SECTION("br_on_non_null to a block and to a loop, the reference among the values")
+    {
+        auto const leaving =
+            withBlockType(functionOf({ binary::I32, binary::FuncRef },
+                                     {},
+                                     {},
+                                     code({ blockOf(0x02,
+                                                    0x01,
+                                                    code({ localGet(0),
+                                                           localGet(0),
+                                                           localGet(1),
+                                                           { 0xD6, 0x00 },
+                                                           localGet(1),
+                                                           op(0x0C, 0) })),
+                                            drop(),
+                                            drop() })),
+                          FuncType { .params = {}, .results = { binary::I32, binary::FuncRef } });
+        CHECK(listingOf(leaving)
+              == "move128 s5, s1\nmove64 s4, s0\nmove64 s3, s0\nbr_on_non_null.move s5, s3, s4, #3 → @17\n"
+                 "move128 s5, s1\nmove.range s3, s4, #3\njump → @17\nreturn s3\n");
+        auto const looping =
+            withBlockType(functionOf({ binary::I32, binary::FuncRef },
+                                     {},
+                                     {},
+                                     code({ localGet(0),
+                                            localGet(1),
+                                            blockOf(0x03,
+                                                    0x01,
+                                                    code({ localGet(0),
+                                                           localGet(0),
+                                                           localGet(1),
+                                                           { 0xD6, 0x00 },
+                                                           drop(),
+                                                           drop(),
+                                                           drop(),
+                                                           drop() })) })),
+                          FuncType { .params = { binary::I32, binary::FuncRef }, .results = {} });
+        CHECK(listingOf(looping)
+              == "move128 s4, s1\nmove64 s3, s0\nmove128 s8, s1\nmove64 s7, s0\nmove64 s6, s0\n"
+                 "br_on_non_null.move.loop s8, s3, s7, #3 → @4\nreturn s3\n");
+    }
+}
+
+TEST_CASE("Lowering.branchMovesItsValuesOnce")
+{
+    // (block (result i32 i32) (i32.const 7) (local.get 0) (local.get 1) (br 0)): the two values are
+    // materialized, then moved down past the constant in one move.range, then the jump. The constant,
+    // dead past the br, is never materialized.
+    auto const module = withBlockType(
+        functionOf({ binary::I32, binary::I32 },
+                   {},
+                   {},
+                   code({ blockOf(0x02, 0x01, code({ i32Const(7), localGet(0), localGet(1), op(0x0C, 0) })),
+                          drop(),
+                          drop() })),
+        FuncType { .params = {}, .results = { binary::I32, binary::I32 } });
+    auto const listing = listingOf(module);
+    CHECK(listing == "move64 s4, s1\nmove64 s3, s0\nmove.range s2, s3, #2\njump → @9\nreturn s2\n");
+    CHECK(linesStartingWith(listing, "move.range") == 1);
+}
+
+TEST_CASE("Lowering.blockBoundariesMaterialize")
+{
+    // A loop's start follows the moves of the entries below it, so no iteration copies a local again
+    // that the loop body changed; a block's end has its results in their slots.
+    auto const counting = FuncType { .params = { binary::I32 }, .results = { binary::I32 } };
+    auto const body = [](uint8_t opcode) {
+        return code({ localGet(0), blockOf(opcode, 0x01, code({ i32Const(1), op(0x6A) })) });
+    };
+    CHECK(listingOf(withBlockType(functionOf({ binary::I32 }, { binary::I32 }, {}, body(0x02)), counting))
+          == "move64 s1, s0\ni32.add.imm s1, s1, #1\nreturn s1\n");
+    CHECK(listingOf(withBlockType(functionOf({ binary::I32 }, { binary::I32 }, {}, body(0x03)), counting))
+          == "move64 s1, s0\ni32.add.imm s1, s1, #1\nreturn s1\n");
+    SECTION("an if without else keeps its params as its results")
+    {
+        auto const unchanged = withBlockType(
+            functionOf(
+                { binary::I32 },
+                { binary::I32 },
+                {},
+                code({ localGet(0), localGet(0), blockOf(0x04, 0x01, code({ i32Const(1), op(0x6A) })) })),
+            counting);
+        CHECK(listingOf(unchanged) == "move64 s1, s0\nif s0 → @8\ni32.add.imm s1, s1, #1\nreturn s1\n");
+    }
+    SECTION("an else starts from the if's params again")
+    {
+        auto const branches = withBlockType(functionOf({ binary::I32 },
+                                                       { binary::I32 },
+                                                       {},
+                                                       code({ localGet(0),
+                                                              localGet(0),
+                                                              { 0x04, 0x01 },
+                                                              i32Const(1),
+                                                              op(0x6A),
+                                                              op(0x05),
+                                                              i32Const(2),
+                                                              op(0x6A),
+                                                              op(0x0B) })),
+                                            counting);
+        CHECK(listingOf(branches)
+              == "move64 s1, s0\nif s0 → @10\ni32.add.imm s1, s1, #1\njump → @13\ni32.add.imm s1, s1, "
+                 "#2\nreturn s1\n");
+    }
+    SECTION("a br_if to the function's body returns at its end")
+    {
+        auto const early =
+            functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), localGet(0), op(0x0D, 0) }));
+        CHECK(listingOf(early) == "move64 s1, s0\nbr_if s0 → @5\nreturn s1\n");
+    }
+}
+
+TEST_CASE("Lowering.deadCodeAfterEveryTerminator")
+{
+    // Inside a block, each terminator and then code that would emit (const64, move64): what follows the
+    // terminator up to the block's end emits nothing, so the listing is the one without it.
+    struct Row
+    {
+        Opcode opcode;
+        Bytes terminator;
+    };
+    auto const rows = std::to_array<Row>({
+        { .opcode = Opcode::Unreachable, .terminator = unreachable() },
+        { .opcode = Opcode::Br, .terminator = op(0x0C, 0) },
+        { .opcode = Opcode::BrTable, .terminator = code({ localGet(0), { 0x0E, 0x00, 0x00 } }) },
+        { .opcode = Opcode::Return, .terminator = op(0x0F) },
+    });
+    auto const dead = code({ i32Const(5), localSet(0), localGet(0), localSet(1) });
+    for (auto const& row: rows)
+    {
+        INFO(binary::opcodeInfo(row.opcode).text);
+        auto const with = functionOf(
+            { binary::I32, binary::I32 }, {}, {}, blockOf(0x02, 0x40, code({ row.terminator, dead })));
+        auto const without =
+            functionOf({ binary::I32, binary::I32 }, {}, {}, blockOf(0x02, 0x40, row.terminator));
+        CHECK(listingOf(with) == listingOf(without));
+        CHECK(continuationAfter(row.opcode) == Continuation::Dead);
+    }
+    SECTION("the instructions whose lowering later tasks add are terminators of the same table")
+    {
+        // return_call, return_call_indirect and return_call_ref (Task 9), throw and throw_ref (Task 13):
+        // their own lowering is not written yet, but what follows them is skipped by this one table.
+        for (auto const opcode: { Opcode::ReturnCall,
+                                  Opcode::ReturnCallIndirect,
+                                  Opcode::ReturnCallRef,
+                                  Opcode::Throw,
+                                  Opcode::ThrowRef })
+        {
+            INFO(binary::opcodeInfo(opcode).text);
+            CHECK(continuationAfter(opcode) == Continuation::Dead);
+        }
+        CHECK(isoline::fastinterpreter::Terminators.size() == rows.size() + 5);
+    }
+    SECTION("no other instruction is one")
+    {
+        for (auto const opcode:
+             { Opcode::BrIf, Opcode::BrOnNull, Opcode::BrOnNonNull, Opcode::If, Opcode::Call })
+            CHECK(continuationAfter(opcode) == Continuation::Next);
+    }
+    SECTION("a then branch's dead code ends at its else, and nested blocks in dead code are skipped")
+    {
+        auto const branches = functionOf({ binary::I32 },
+                                         {},
+                                         {},
+                                         code({ localGet(0),
+                                                { 0x04, 0x40 },
+                                                op(0x0C, 0),
+                                                blockOf(0x02, 0x40, code({ i32Const(5), localSet(0) })),
+                                                i32Const(5),
+                                                localSet(0),
+                                                op(0x05),
+                                                i32Const(6),
+                                                localSet(0),
+                                                op(0x0B) }));
+        CHECK(listingOf(branches) == "if s0 → @5\njump → @8\nconst64 s0, #6\nreturn s1\n");
+    }
+}
+
+TEST_CASE("Lowering.deepNestingIsIterative")
+{
+    // Under the memory caps: 100'000 nested blocks, loops and ifs, each with a br 0. A lowering that
+    // recurses overflows its stack; one that walks the open blocks at each branch fails the work bound
+    // already at the small depth.
+    namespace hostile = isoline::fastinterpreter::testing;
+    for (auto const depth: { uint32_t { 1'000 }, uint32_t { 100'000 } })
+    {
+        DYNAMIC_SECTION("depth " << depth)
+        {
+            auto const blocks =
+                loweredWithinTheBounds(hostile::nestedBlocks(depth, 0x02), ControlTemporaries);
+            // A jump per block and the return.
+            CHECK(blocks->functions()[0].code.size() == (std::size_t { depth } * 2) + 2);
+            auto const loops = loweredWithinTheBounds(hostile::nestedBlocks(depth, 0x03), ControlTemporaries);
+            CHECK(loops->functions()[0].code.size() == (std::size_t { depth } * 2) + 2);
+            auto const ifs = loweredWithinTheBounds(hostile::nestedBlocks(depth, 0x04), ControlTemporaries);
+            // An if and the jumps of both branches per if, and the return.
+            CHECK(ifs->functions()[0].code.size() == (std::size_t { depth } * 7) + 2);
+        }
+    }
+}
+
+TEST_CASE("Lowering.multiValueBranchesStayLinear")
+{
+    // Under the memory caps: values carried by many branches, a br_table to many labels of 1'000 values,
+    // and many blocks of 1'000 params re-entered after dead code. The code and the work stay within their
+    // bounds per body unit: one move per branch, never one per value. Each shape has a small size, at
+    // which a lowering per value already fails.
+    namespace hostile = isoline::fastinterpreter::testing;
+    SECTION("1'000 values, carried by br_ifs")
+    {
+        // Not 1M br_ifs: the validator pops and pushes a label's 1'000 types at every br_if, as the spec's
+        // algorithm does, which takes 2·10⁹ steps and seven minutes under ASan before lowering starts (it
+        // passes, measured once). The code size is exact at both sizes, so one move per value fails at the
+        // small one already.
+        for (auto const branches: { uint32_t { 10'000 }, uint32_t { 100'000 } })
+        {
+            auto const module =
+                loweredWithinTheBounds(hostile::branchesWithValues(1'000, branches), ControlTemporaries);
+            // The constants once, the one below the values too, then per br_if its condition and one
+            // moving branch, then the br's move and jump, and the return.
+            CHECK(module->functions()[0].code.size()
+                  == (std::size_t { 1'001 } * 3) + (std::size_t { branches } * 7) + 3 + 2 + 2);
+        }
+    }
+    SECTION("1'000 values, carried by a br_table of 65'520 labels")
+    {
+        for (auto const labels: { uint32_t { 1'000 }, uint32_t { 65'520 } })
+        {
+            auto const module =
+                loweredWithinTheBounds(hostile::branchTableWithValues(1'000, labels), ControlTemporaries);
+            CHECK(module->functions()[0].code.size()
+                  == (std::size_t { 1'000 } * 3) + 3 + 4
+                         + ((std::size_t { labels } + 1)
+                            * std::size_t { isoline::fastinterpreter::BranchTableEntryWords })
+                         + 2);
+        }
+    }
+    SECTION("blocks and ifs of 1'000 params, re-entered after their dead code")
+    {
+        for (auto const count: { uint32_t { 1'000 }, uint32_t { 20'000 } })
+        {
+            std::ignore =
+                loweredWithinTheBounds(hostile::reenteredBlocks(1'000, count, 0x02), ControlTemporaries);
+            std::ignore =
+                loweredWithinTheBounds(hostile::reenteredBlocks(1'000, count, 0x04), ControlTemporaries);
+        }
+    }
 }
 
 // The contract tests below end the process at a failed Require, so they are hidden from the unit run:

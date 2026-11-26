@@ -40,18 +40,20 @@ enum class OperationForm : uint8_t
     Move,            ///< A destination and its source: a slot, a run of slots, or an immediate.
     Load,            ///< A destination slot, an address slot and the memory argument.
     Store,           ///< An address slot, a value slot and the memory argument.
-    Branch,          ///< A target code offset, and for a conditional branch its condition slot.
-    BranchTable,     ///< An index slot, the values' run, and one fixed-size record per label.
-    Call,            ///< The callee and the base slot of its arguments, which becomes its frame.
-    Bulk,            ///< The operand slots of a bulk memory or table operation and its indices.
-    Special,         ///< A layout of its own, which the operation documents.
+    Branch,      ///< Its condition's slots, if any, and immediates, the last of them the target code offset.
+    BranchMove,  ///< A condition slot, the destination and source slots of the values it moves when it
+                 ///< branches, and the target code offset with the values' slot count (BranchTargetMask).
+    BranchTable, ///< An index slot, the values' run, and one fixed-size record per label.
+    Call,        ///< The callee and the base slot of its arguments, which becomes its frame.
+    Bulk,        ///< The operand slots of a bulk memory or table operation and its indices.
+    Special,     ///< A layout of its own, which the operation documents.
 };
 
 /// Every operation lowered code holds, one enumerator per row of Operations.def, in its order.
 ///
-/// The base type is the smallest that holds every row; an enumerator that outgrows it is a build error,
-/// and the row that adds it widens it.
-enum class OperationId : uint8_t
+/// The base type is the smallest that holds every row (more than 256 since the fused branches and their
+/// loop twins); an enumerator that outgrows it is a build error, and the row that adds it widens it.
+enum class OperationId : uint16_t
 {
 #define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates) Name,
 #include <isoline/fastinterpreter/Operations.def>
@@ -119,12 +121,23 @@ static_assert(detail::operationRowsInIdOrder(), "OperationTable holds one row pe
 }
 
 /// Whether a transfer of control polls the interrupt: one that goes to a loop label does, as a loop
-/// back-edge (runtime::PollSite::LoopBackEdge). Decided once, when the code is lowered.
+/// back-edge (runtime::PollSite::LoopBackEdge), through the executor's runtime::PollGate. Decided once,
+/// when the code is lowered.
 enum class LoopPoll : uint8_t
 {
     No,  ///< A forward transfer, to a block, if or try_table label, or the function's end.
     Yes, ///< A transfer to a loop label.
 };
+
+/// The bits of a branch's target word that hold the target, a word offset in the function's code. The high
+/// 32 bits hold the values' slot count of a BranchMove operation and the destination slot of a br_table
+/// record, and are zero otherwise.
+inline constexpr auto BranchTargetMask = Word { 0xFFFF'FFFF };
+
+/// The code words of one label's record of a br_table, which follow the operation's own words, one record
+/// per label and the default last: the target (BranchTargetMask) with the destination slot of the label's
+/// values in the high 32 bits, then the LoopPoll.
+inline constexpr auto BranchTableEntryWords = uint32_t { 2 };
 
 /// The parent of a root OperandNode, and a SiteRecord's operands when the stack below it is empty.
 inline constexpr auto NoNode = std::numeric_limits<uint32_t>::max();
@@ -207,10 +220,12 @@ struct LocalInitRun
 
 /// The most code words lowering emits per decoded body unit (bodyUnits()), amortized over the function.
 ///
-/// Every operation is a fixed number of words (OperationRow::words), value moves (MoveRange)
-/// included; a br_table adds one fixed-size record per label, each label a unit of its own. An operation
-/// larger than its unit's share, such as the MoveRange of a branch or a constant materialized late, is
-/// charged to the units that pushed the values it handles, each at most once. So a function's code is at most
+/// Every operation is a fixed number of words (OperationRow::words), at most this many, value moves
+/// (MoveRange) included; a br_table adds one record of BranchTableEntryWords per label, each label a unit of
+/// its own. What a unit emits beyond its own operation is charged to another unit, each at most once: a
+/// value materialized late (a Const64 or a move, at most three words) to the local.get or constant that
+/// pushed it, which emits nothing itself; the MoveRange before a br's jump to the else or end its dead code
+/// runs to, which emits nothing after dead code. So a function's code is at most
 /// bodyUnits() × MaxWordsPerBodyUnit + FunctionOverheadWords words in total, though not at every single unit.
 inline constexpr auto MaxWordsPerBodyUnit = uint64_t { 4 };
 
@@ -229,13 +244,16 @@ namespace detail
 
 static_assert(detail::everyOperationFitsAUnit(),
               "an operation larger than MaxWordsPerBodyUnit breaks the bound on lowered code");
+static_assert(BranchTableEntryWords <= MaxWordsPerBodyUnit,
+              "a br_table record larger than its label's share breaks the bound on lowered code");
 
 /// What lowering a module took: the measures its published bounds are stated in.
 struct LoweringStats
 {
     uint64_t bodyUnits = 0; ///< The decoded body units of every function (bodyUnits()), summed.
-    /// The abstract operand stack entries lowering touched: each push, pop and materialization one. At
-    /// most WorkPerBodyUnit per body unit, so lowering's time is linear in the module.
+    /// The abstract operand stack entries lowering touched: each push, pop and materialization one, a run
+    /// of a block's values pushed at once one too. At most WorkPerBodyUnit per body unit, so lowering's
+    /// time is linear in the module.
     uint64_t work = 0;
 
     /// Whether both record the same measures.

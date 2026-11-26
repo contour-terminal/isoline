@@ -79,6 +79,17 @@ inline constexpr auto LoweringRows = std::to_array<LoweringRow>({
     // Lowered by code: what the abstract operand stack forwards, folds or moves.
     detail::specialRow(binary::Opcode::Unreachable, OperationId::Unreachable),
     detail::specialRow(binary::Opcode::Nop, OperationId::Nop),
+    // Control flow: a block or loop emits nothing, an else the jump over its branch, the function's end its
+    // return; each branch names its operation to a block label, whose loop twin it emits to a loop label.
+    detail::specialRow(binary::Opcode::Block, OperationId::Nop),
+    detail::specialRow(binary::Opcode::Loop, OperationId::Nop),
+    detail::specialRow(binary::Opcode::If, OperationId::If),
+    detail::specialRow(binary::Opcode::Else, OperationId::Jump),
+    detail::specialRow(binary::Opcode::Br, OperationId::Jump),
+    detail::specialRow(binary::Opcode::BrIf, OperationId::BrIf),
+    detail::specialRow(binary::Opcode::BrTable, OperationId::BrTable),
+    detail::specialRow(binary::Opcode::BrOnNull, OperationId::BrOnNull),
+    detail::specialRow(binary::Opcode::BrOnNonNull, OperationId::BrOnNonNull),
     detail::specialRow(binary::Opcode::End, OperationId::Return),
     detail::specialRow(binary::Opcode::Return, OperationId::Return),
     detail::specialRow(binary::Opcode::Drop, OperationId::Nop),
@@ -290,6 +301,275 @@ inline constexpr auto LoweringTable = detail::spreadLoweringRows();
 [[nodiscard]] constexpr LoweringRow const& loweringRow(binary::Opcode opcode) noexcept
 {
     return LoweringTable[std::to_underlying(opcode)];
+}
+
+/// A comparison fused with the br_if or if that consumes its result: one operation for both.
+///
+/// Lowering fuses an i32 or i64 comparison, or eqz, with the br_if or if right after it, unless the br_if
+/// must move its label's values, which only BranchMove operations do. A Binary comparison whose right
+/// operand is a constant fuses into `immediate`, as its LoweringRow folds it.
+struct FusionRow
+{
+    binary::Opcode compare;    ///< The comparison.
+    binary::Opcode branch;     ///< The branch consuming its result: br_if or if.
+    OperationId fused;         ///< The fused operation, to a block label (or, for if, its else or end).
+    OperationId fusedLoop;     ///< Its twin to a loop label, which polls; `fused` again for if, whose
+                               ///< target is never a loop's.
+    OperationId immediate;     ///< The fused operation of a constant right operand; `fused` for eqz.
+    OperationId immediateLoop; ///< Its loop twin; `fusedLoop` for eqz, `immediate` for if.
+
+    /// Whether both rows fuse alike.
+    [[nodiscard]] constexpr bool operator==(FusionRow const&) const = default;
+};
+
+namespace detail
+{
+    /// The fusion of eqz with @p branch.
+    [[nodiscard]] consteval FusionRow unaryFusion(binary::Opcode compare,
+                                                  binary::Opcode branch,
+                                                  OperationId fused,
+                                                  OperationId fusedLoop) noexcept
+    {
+        return { .compare = compare,
+                 .branch = branch,
+                 .fused = fused,
+                 .fusedLoop = fusedLoop,
+                 .immediate = fused,
+                 .immediateLoop = fusedLoop };
+    }
+
+    /// The fusion of a two-operand comparison with @p branch.
+    [[nodiscard]] consteval FusionRow binaryFusion(binary::Opcode compare,
+                                                   binary::Opcode branch,
+                                                   OperationId fused,
+                                                   OperationId fusedLoop,
+                                                   OperationId immediate,
+                                                   OperationId immediateLoop) noexcept
+    {
+        return { .compare = compare,
+                 .branch = branch,
+                 .fused = fused,
+                 .fusedLoop = fusedLoop,
+                 .immediate = immediate,
+                 .immediateLoop = immediateLoop };
+    }
+} // namespace detail
+
+/// Every fusion of a comparison and a branch, one row each.
+// clang-format off
+inline constexpr auto FusionTable = std::to_array<FusionRow>({
+    detail::unaryFusion(binary::Opcode::I32Eqz, binary::Opcode::BrIf, OperationId::I32EqzBrIf, OperationId::I32EqzBrIfLoop),
+    detail::unaryFusion(binary::Opcode::I32Eqz, binary::Opcode::If, OperationId::I32EqzIf, OperationId::I32EqzIf),
+    detail::binaryFusion(binary::Opcode::I32Eq, binary::Opcode::BrIf, OperationId::I32EqBrIf, OperationId::I32EqBrIfLoop, OperationId::I32EqImmediateBrIf, OperationId::I32EqImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32Eq, binary::Opcode::If, OperationId::I32EqIf, OperationId::I32EqIf, OperationId::I32EqImmediateIf, OperationId::I32EqImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32Ne, binary::Opcode::BrIf, OperationId::I32NeBrIf, OperationId::I32NeBrIfLoop, OperationId::I32NeImmediateBrIf, OperationId::I32NeImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32Ne, binary::Opcode::If, OperationId::I32NeIf, OperationId::I32NeIf, OperationId::I32NeImmediateIf, OperationId::I32NeImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32LtS, binary::Opcode::BrIf, OperationId::I32LtSBrIf, OperationId::I32LtSBrIfLoop, OperationId::I32LtSImmediateBrIf, OperationId::I32LtSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32LtS, binary::Opcode::If, OperationId::I32LtSIf, OperationId::I32LtSIf, OperationId::I32LtSImmediateIf, OperationId::I32LtSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32LtU, binary::Opcode::BrIf, OperationId::I32LtUBrIf, OperationId::I32LtUBrIfLoop, OperationId::I32LtUImmediateBrIf, OperationId::I32LtUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32LtU, binary::Opcode::If, OperationId::I32LtUIf, OperationId::I32LtUIf, OperationId::I32LtUImmediateIf, OperationId::I32LtUImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32GtS, binary::Opcode::BrIf, OperationId::I32GtSBrIf, OperationId::I32GtSBrIfLoop, OperationId::I32GtSImmediateBrIf, OperationId::I32GtSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32GtS, binary::Opcode::If, OperationId::I32GtSIf, OperationId::I32GtSIf, OperationId::I32GtSImmediateIf, OperationId::I32GtSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32GtU, binary::Opcode::BrIf, OperationId::I32GtUBrIf, OperationId::I32GtUBrIfLoop, OperationId::I32GtUImmediateBrIf, OperationId::I32GtUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32GtU, binary::Opcode::If, OperationId::I32GtUIf, OperationId::I32GtUIf, OperationId::I32GtUImmediateIf, OperationId::I32GtUImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32LeS, binary::Opcode::BrIf, OperationId::I32LeSBrIf, OperationId::I32LeSBrIfLoop, OperationId::I32LeSImmediateBrIf, OperationId::I32LeSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32LeS, binary::Opcode::If, OperationId::I32LeSIf, OperationId::I32LeSIf, OperationId::I32LeSImmediateIf, OperationId::I32LeSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32LeU, binary::Opcode::BrIf, OperationId::I32LeUBrIf, OperationId::I32LeUBrIfLoop, OperationId::I32LeUImmediateBrIf, OperationId::I32LeUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32LeU, binary::Opcode::If, OperationId::I32LeUIf, OperationId::I32LeUIf, OperationId::I32LeUImmediateIf, OperationId::I32LeUImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32GeS, binary::Opcode::BrIf, OperationId::I32GeSBrIf, OperationId::I32GeSBrIfLoop, OperationId::I32GeSImmediateBrIf, OperationId::I32GeSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32GeS, binary::Opcode::If, OperationId::I32GeSIf, OperationId::I32GeSIf, OperationId::I32GeSImmediateIf, OperationId::I32GeSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I32GeU, binary::Opcode::BrIf, OperationId::I32GeUBrIf, OperationId::I32GeUBrIfLoop, OperationId::I32GeUImmediateBrIf, OperationId::I32GeUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I32GeU, binary::Opcode::If, OperationId::I32GeUIf, OperationId::I32GeUIf, OperationId::I32GeUImmediateIf, OperationId::I32GeUImmediateIf),
+    detail::unaryFusion(binary::Opcode::I64Eqz, binary::Opcode::BrIf, OperationId::I64EqzBrIf, OperationId::I64EqzBrIfLoop),
+    detail::unaryFusion(binary::Opcode::I64Eqz, binary::Opcode::If, OperationId::I64EqzIf, OperationId::I64EqzIf),
+    detail::binaryFusion(binary::Opcode::I64Eq, binary::Opcode::BrIf, OperationId::I64EqBrIf, OperationId::I64EqBrIfLoop, OperationId::I64EqImmediateBrIf, OperationId::I64EqImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64Eq, binary::Opcode::If, OperationId::I64EqIf, OperationId::I64EqIf, OperationId::I64EqImmediateIf, OperationId::I64EqImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64Ne, binary::Opcode::BrIf, OperationId::I64NeBrIf, OperationId::I64NeBrIfLoop, OperationId::I64NeImmediateBrIf, OperationId::I64NeImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64Ne, binary::Opcode::If, OperationId::I64NeIf, OperationId::I64NeIf, OperationId::I64NeImmediateIf, OperationId::I64NeImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64LtS, binary::Opcode::BrIf, OperationId::I64LtSBrIf, OperationId::I64LtSBrIfLoop, OperationId::I64LtSImmediateBrIf, OperationId::I64LtSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64LtS, binary::Opcode::If, OperationId::I64LtSIf, OperationId::I64LtSIf, OperationId::I64LtSImmediateIf, OperationId::I64LtSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64LtU, binary::Opcode::BrIf, OperationId::I64LtUBrIf, OperationId::I64LtUBrIfLoop, OperationId::I64LtUImmediateBrIf, OperationId::I64LtUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64LtU, binary::Opcode::If, OperationId::I64LtUIf, OperationId::I64LtUIf, OperationId::I64LtUImmediateIf, OperationId::I64LtUImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64GtS, binary::Opcode::BrIf, OperationId::I64GtSBrIf, OperationId::I64GtSBrIfLoop, OperationId::I64GtSImmediateBrIf, OperationId::I64GtSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64GtS, binary::Opcode::If, OperationId::I64GtSIf, OperationId::I64GtSIf, OperationId::I64GtSImmediateIf, OperationId::I64GtSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64GtU, binary::Opcode::BrIf, OperationId::I64GtUBrIf, OperationId::I64GtUBrIfLoop, OperationId::I64GtUImmediateBrIf, OperationId::I64GtUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64GtU, binary::Opcode::If, OperationId::I64GtUIf, OperationId::I64GtUIf, OperationId::I64GtUImmediateIf, OperationId::I64GtUImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64LeS, binary::Opcode::BrIf, OperationId::I64LeSBrIf, OperationId::I64LeSBrIfLoop, OperationId::I64LeSImmediateBrIf, OperationId::I64LeSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64LeS, binary::Opcode::If, OperationId::I64LeSIf, OperationId::I64LeSIf, OperationId::I64LeSImmediateIf, OperationId::I64LeSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64LeU, binary::Opcode::BrIf, OperationId::I64LeUBrIf, OperationId::I64LeUBrIfLoop, OperationId::I64LeUImmediateBrIf, OperationId::I64LeUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64LeU, binary::Opcode::If, OperationId::I64LeUIf, OperationId::I64LeUIf, OperationId::I64LeUImmediateIf, OperationId::I64LeUImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64GeS, binary::Opcode::BrIf, OperationId::I64GeSBrIf, OperationId::I64GeSBrIfLoop, OperationId::I64GeSImmediateBrIf, OperationId::I64GeSImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64GeS, binary::Opcode::If, OperationId::I64GeSIf, OperationId::I64GeSIf, OperationId::I64GeSImmediateIf, OperationId::I64GeSImmediateIf),
+    detail::binaryFusion(binary::Opcode::I64GeU, binary::Opcode::BrIf, OperationId::I64GeUBrIf, OperationId::I64GeUBrIfLoop, OperationId::I64GeUImmediateBrIf, OperationId::I64GeUImmediateBrIfLoop),
+    detail::binaryFusion(binary::Opcode::I64GeU, binary::Opcode::If, OperationId::I64GeUIf, OperationId::I64GeUIf, OperationId::I64GeUImmediateIf, OperationId::I64GeUImmediateIf),
+});
+// clang-format on
+
+/// The index of a FusionTable row in FusionIndex, where there is none.
+inline constexpr auto NoFusion = uint16_t { 0xFFFF };
+
+namespace detail
+{
+    /// The branches a comparison fuses with, by their index in FusionIndex.
+    inline constexpr auto FusedBranches =
+        std::to_array<binary::Opcode>({ binary::Opcode::BrIf, binary::Opcode::If });
+
+    /// FusionTable spread over every comparison opcode, once per FusedBranches entry: the row's index, or
+    /// NoFusion.
+    [[nodiscard]] consteval std::array<std::array<uint16_t, binary::OpcodeCount>, FusedBranches.size()>
+    spreadFusionRows() noexcept
+    {
+        auto index = std::array<std::array<uint16_t, binary::OpcodeCount>, FusedBranches.size()> {};
+        for (auto& branch: index)
+            branch.fill(NoFusion);
+        for (auto const row: std::views::iota(std::size_t { 0 }, FusionTable.size()))
+        {
+            auto const& fusion = FusionTable[row];
+            auto const branch = std::ranges::find(FusedBranches, fusion.branch) - FusedBranches.begin();
+            index[static_cast<std::size_t>(branch)][std::to_underlying(fusion.compare)] =
+                static_cast<uint16_t>(row);
+        }
+        return index;
+    }
+
+    /// Whether every row fuses a comparison the table lowers with a branch it fuses, once, into operations
+    /// of the comparison's operands and a target, and an if's twins are its plain operations.
+    [[nodiscard]] consteval bool fusionRowsAreWellFormed() noexcept
+    {
+        auto pairs = std::array<std::array<bool, binary::OpcodeCount>, FusedBranches.size()> {};
+        return std::ranges::all_of(FusionTable, [&pairs](FusionRow const& row) {
+            auto const branch = std::ranges::find(FusedBranches, row.branch);
+            if (branch == FusedBranches.end())
+                return false;
+            auto& seen = pairs[static_cast<std::size_t>(branch - FusedBranches.begin())];
+            if (std::exchange(seen[std::to_underlying(row.compare)], true))
+                return false;
+            auto const& lowering = LoweringTable[std::to_underlying(row.compare)];
+            auto const operands = lowering.form == OperationForm::Unary ? 1U : 2U;
+            auto const fits = [](OperationId operation, uint32_t slots, uint32_t immediates) {
+                auto const& operationInfo = operationRow(operation);
+                return operationInfo.form == OperationForm::Branch && operationInfo.slots == slots
+                       && operationInfo.immediates == immediates;
+            };
+            // An immediate form reads the left operand's slot and carries the right one: eqz has none.
+            auto const immediateImmediates = operands == 1 ? 1U : 2U;
+            auto const loopTwinsAreRight =
+                row.branch != binary::Opcode::If
+                || (row.fusedLoop == row.fused && row.immediateLoop == row.immediate);
+            auto const eqzTwinsAreRight =
+                operands == 2 || (row.immediate == row.fused && row.immediateLoop == row.fusedLoop);
+            return (lowering.form == OperationForm::Unary || lowering.form == OperationForm::BinaryImmediate)
+                   && fits(row.fused, operands, 1) && fits(row.fusedLoop, operands, 1)
+                   && fits(row.immediate, 1, immediateImmediates)
+                   && fits(row.immediateLoop, 1, immediateImmediates) && loopTwinsAreRight
+                   && eqzTwinsAreRight;
+        });
+    }
+
+    /// FusionRow indices by branch and comparison.
+    inline constexpr auto FusionIndex = spreadFusionRows();
+} // namespace detail
+
+static_assert(detail::fusionRowsAreWellFormed(), "a fusion row names an operation of another shape");
+
+/// The fusion of @p compare with the @p branch right after it.
+/// @param compare The comparison.
+/// @param branch The instruction after it.
+/// @return Its FusionTable row, or null where the two do not fuse.
+[[nodiscard]] constexpr FusionRow const* fusionOf(binary::Opcode compare, binary::Opcode branch) noexcept
+{
+    auto const kind = std::ranges::find(detail::FusedBranches, branch);
+    if (kind == detail::FusedBranches.end())
+        return nullptr;
+    auto const row = detail::FusionIndex[static_cast<std::size_t>(kind - detail::FusedBranches.begin())]
+                                        [std::to_underlying(compare)];
+    return row == NoFusion ? nullptr : &FusionTable[row];
+}
+
+/// The operations of a conditional branch, one per kind of label and of value move.
+///
+/// Which one lowering emits is data: the loop twins poll (LoopPoll::Yes), and the Move forms move the
+/// label's values when the branch is taken, where they do not sit in the label's slots already.
+struct ConditionalBranchRow
+{
+    binary::Opcode opcode;  ///< The branch.
+    OperationId branch;     ///< To a block label, its values in place.
+    OperationId branchLoop; ///< To a loop label, its values in place.
+    OperationId move;       ///< To a block label, moving its values.
+    OperationId moveLoop;   ///< To a loop label, moving its values.
+};
+
+/// Every conditional branch, one row each.
+inline constexpr auto ConditionalBranchTable = std::to_array<ConditionalBranchRow>({
+    { .opcode = binary::Opcode::BrIf,
+      .branch = OperationId::BrIf,
+      .branchLoop = OperationId::BrIfLoop,
+      .move = OperationId::BrIfMove,
+      .moveLoop = OperationId::BrIfMoveLoop },
+    { .opcode = binary::Opcode::BrOnNull,
+      .branch = OperationId::BrOnNull,
+      .branchLoop = OperationId::BrOnNullLoop,
+      .move = OperationId::BrOnNullMove,
+      .moveLoop = OperationId::BrOnNullMoveLoop },
+    { .opcode = binary::Opcode::BrOnNonNull,
+      .branch = OperationId::BrOnNonNull,
+      .branchLoop = OperationId::BrOnNonNullLoop,
+      .move = OperationId::BrOnNonNullMove,
+      .moveLoop = OperationId::BrOnNonNullMoveLoop },
+});
+
+/// The conditional branch @p opcode's operations.
+/// @param opcode br_if, br_on_null or br_on_non_null (checked by the caller: a row exists).
+/// @return Its row of ConditionalBranchTable, or null.
+[[nodiscard]] constexpr ConditionalBranchRow const* conditionalBranchOf(binary::Opcode opcode) noexcept
+{
+    auto const row = std::ranges::find(ConditionalBranchTable, opcode, &ConditionalBranchRow::opcode);
+    return row == ConditionalBranchTable.end() ? nullptr : &*row;
+}
+
+/// What follows an instruction in its block.
+enum class Continuation : uint8_t
+{
+    Next, ///< The next instruction may run.
+    Dead, ///< Nothing up to the block's else or end runs: lowering skips it.
+};
+
+/// The instructions after which the rest of their block is dead code, which lowering skips up to the
+/// matching else or end: those that trap, branch away or leave the function unconditionally.
+inline constexpr auto Terminators = std::to_array<binary::Opcode>({
+    binary::Opcode::Unreachable,
+    binary::Opcode::Br,
+    binary::Opcode::BrTable,
+    binary::Opcode::Return,
+    binary::Opcode::ReturnCall,
+    binary::Opcode::ReturnCallIndirect,
+    binary::Opcode::ReturnCallRef,
+    binary::Opcode::Throw,
+    binary::Opcode::ThrowRef,
+});
+
+namespace detail
+{
+    /// Terminators spread over every opcode.
+    [[nodiscard]] consteval std::array<Continuation, binary::OpcodeCount> spreadTerminators() noexcept
+    {
+        auto table = std::array<Continuation, binary::OpcodeCount> {};
+        table.fill(Continuation::Next);
+        for (auto const opcode: Terminators)
+            table[std::to_underlying(opcode)] = Continuation::Dead;
+        return table;
+    }
+
+    /// The continuation of every opcode.
+    inline constexpr auto ContinuationTable = spreadTerminators();
+} // namespace detail
+
+/// What follows @p opcode in its block.
+/// @param opcode The instruction.
+/// @return Dead for a Terminators entry, Next otherwise.
+[[nodiscard]] constexpr Continuation continuationAfter(binary::Opcode opcode) noexcept
+{
+    return detail::ContinuationTable[std::to_underlying(opcode)];
 }
 
 } // namespace isoline::fastinterpreter
