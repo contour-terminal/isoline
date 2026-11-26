@@ -1,0 +1,20 @@
+assert_invalid start.0.wasm 756e6b6e6f776e2066756e6374696f6e
+assert_invalid start.1.wasm 73746172742066756e6374696f6e
+assert_invalid start.2.wasm 73746172742066756e6374696f6e
+module start.3.wasm
+assert_return invoke 676574 - -> i32:44
+invoke 696e63 - ->
+assert_return invoke 676574 - -> i32:45
+invoke 696e63 - ->
+assert_return invoke 676574 - -> i32:46
+module start.4.wasm
+assert_return invoke 676574 - -> i32:44
+invoke 696e63 - ->
+assert_return invoke 676574 - -> i32:45
+invoke 696e63 - ->
+assert_return invoke 676574 - -> i32:46
+module start.5.wasm
+module start.6.wasm
+module start.7.wasm
+assert_uninstantiable start.8.wasm 756e726561636861626c65
+skip 6173736572745f6d616c666f726d6564206f6620612074657874206d6f64756c65202877617374206c696e652031303329

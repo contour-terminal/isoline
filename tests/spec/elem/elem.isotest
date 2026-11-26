@@ -1,0 +1,98 @@
+module elem.0.wasm
+module elem.1.wasm
+module elem.2.wasm
+module elem.3.wasm
+module elem.4.wasm
+module elem.5.wasm
+module elem.6.wasm
+module elem.7.wasm
+module elem.8.wasm
+assert_return invoke 63616c6c2d37 - -> i32:41
+assert_return invoke 63616c6c2d39 - -> i32:42
+module elem.9.wasm
+assert_return invoke 63616c6c2d37 - -> i32:41
+assert_return invoke 63616c6c2d39 - -> i32:42
+assert_invalid elem.10.wasm 756e6b6e6f776e20676c6f62616c
+assert_invalid elem.11.wasm 756e6b6e6f776e20676c6f62616c
+module elem.12.wasm
+module elem.13.wasm
+module elem.14.wasm
+module elem.15.wasm
+module elem.16.wasm
+module elem.17.wasm
+module elem.18.wasm
+module elem.19.wasm
+module elem.20.wasm
+module elem.21.wasm
+assert_uninstantiable elem.22.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.23.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.24.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.25.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.26.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.27.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.28.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.29.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.30.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.31.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.32.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_uninstantiable elem.33.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+module elem.34.wasm
+assert_trap invoke 696e6974 - -> 6f7574206f6620626f756e6473207461626c6520616363657373
+module elem.35.wasm
+assert_trap invoke 696e6974 - -> 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_invalid elem.36.wasm 756e6b6e6f776e207461626c65
+assert_invalid elem.37.wasm 74797065206d69736d61746368
+assert_invalid elem.38.wasm 74797065206d69736d61746368
+assert_invalid elem.39.wasm 74797065206d69736d61746368
+assert_invalid elem.40.wasm 74797065206d69736d61746368
+assert_invalid elem.41.wasm 74797065206d69736d61746368
+assert_invalid elem.42.wasm 74797065206d69736d61746368
+assert_invalid elem.43.wasm 636f6e7374616e742065787072657373696f6e207265717569726564
+assert_invalid elem.44.wasm 636f6e7374616e742065787072657373696f6e207265717569726564
+assert_invalid elem.45.wasm 636f6e7374616e742065787072657373696f6e207265717569726564
+assert_invalid elem.46.wasm 636f6e7374616e742065787072657373696f6e207265717569726564
+assert_invalid elem.47.wasm 636f6e7374616e742065787072657373696f6e207265717569726564
+assert_invalid elem.48.wasm 756e6b6e6f776e20676c6f62616c2030
+assert_invalid elem.49.wasm 756e6b6e6f776e20676c6f62616c2031
+assert_invalid elem.50.wasm 636f6e7374616e742065787072657373696f6e207265717569726564
+assert_invalid elem.51.wasm 74797065206d69736d61746368
+assert_invalid elem.52.wasm 74797065206d69736d61746368
+assert_invalid elem.53.wasm 74797065206d69736d61746368
+assert_invalid elem.54.wasm 74797065206d69736d61746368
+assert_invalid elem.55.wasm 636f6e7374616e742065787072657373696f6e207265717569726564
+module elem.56.wasm
+assert_return invoke 63616c6c2d6f7665727772697474656e - -> i32:42
+module elem.57.wasm
+assert_return invoke 63616c6c2d6f7665727772697474656e2d656c656d656e74 - -> i32:42
+module elem.58.wasm 6d6f64756c6531
+register 6d6f64756c6531 6d6f64756c6531
+assert_trap invoke 63616c6c2d37 6d6f64756c6531 -> 756e696e697469616c697a656420656c656d656e74
+assert_return invoke 63616c6c2d38 6d6f64756c6531 -> i32:41
+assert_return invoke 63616c6c2d39 6d6f64756c6531 -> i32:42
+module elem.59.wasm 6d6f64756c6532
+assert_return invoke 63616c6c2d37 6d6f64756c6531 -> i32:43
+assert_return invoke 63616c6c2d38 6d6f64756c6531 -> i32:44
+assert_return invoke 63616c6c2d39 6d6f64756c6531 -> i32:42
+module elem.60.wasm 6d6f64756c6533
+assert_return invoke 63616c6c2d37 6d6f64756c6531 -> i32:43
+assert_return invoke 63616c6c2d38 6d6f64756c6531 -> i32:45
+assert_return invoke 63616c6c2d39 6d6f64756c6531 -> i32:46
+assert_invalid elem.61.wasm 74797065206d69736d61746368
+assert_invalid elem.62.wasm 74797065206d69736d61746368
+assert_invalid elem.63.wasm 74797065206d69736d61746368
+assert_invalid elem.64.wasm 74797065206d69736d61746368
+module elem.65.wasm 6d
+register 6578706f72746572 6d
+assert_return invoke 676574 6d i32:0 -> ref.null:extern
+assert_return invoke 676574 6d i32:1 -> ref.null:extern
+assert_return invoke 736574 6d i32:0 ref.extern:42 ->
+assert_return invoke 736574 6d i32:1 ref.extern:137 ->
+assert_return invoke 676574 6d i32:0 -> ref.extern:42
+assert_return invoke 676574 6d i32:1 -> ref.extern:137
+module elem.66.wasm
+assert_return invoke 676574 6d i32:0 -> ref.null:extern
+assert_return invoke 676574 6d i32:1 -> ref.extern:137
+module elem.67.wasm 6d6f64756c6534
+register 6d6f64756c6534 6d6f64756c6534
+module elem.68.wasm
+assert_return invoke 63616c6c5f696d706f727465645f656c656d - -> i32:2a

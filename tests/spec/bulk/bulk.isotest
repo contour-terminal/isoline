@@ -1,0 +1,117 @@
+module bulk.0.wasm
+module bulk.1.wasm
+module bulk.2.wasm
+invoke 66696c6c - i32:1 i32:ff i32:3 ->
+assert_return invoke 6c6f6164385f75 - i32:0 -> i32:0
+assert_return invoke 6c6f6164385f75 - i32:1 -> i32:ff
+assert_return invoke 6c6f6164385f75 - i32:2 -> i32:ff
+assert_return invoke 6c6f6164385f75 - i32:3 -> i32:ff
+assert_return invoke 6c6f6164385f75 - i32:4 -> i32:0
+invoke 66696c6c - i32:0 i32:bbaa i32:2 ->
+assert_return invoke 6c6f6164385f75 - i32:0 -> i32:aa
+assert_return invoke 6c6f6164385f75 - i32:1 -> i32:aa
+invoke 66696c6c - i32:0 i32:0 i32:10000 ->
+assert_trap invoke 66696c6c - i32:ff00 i32:1 i32:101 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 6c6f6164385f75 - i32:ff00 -> i32:0
+assert_return invoke 6c6f6164385f75 - i32:ffff -> i32:0
+invoke 66696c6c - i32:10000 i32:0 i32:0 ->
+assert_trap invoke 66696c6c - i32:10001 i32:0 i32:0 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module bulk.3.wasm
+invoke 636f7079 - i32:a i32:0 i32:4 ->
+assert_return invoke 6c6f6164385f75 - i32:9 -> i32:0
+assert_return invoke 6c6f6164385f75 - i32:a -> i32:aa
+assert_return invoke 6c6f6164385f75 - i32:b -> i32:bb
+assert_return invoke 6c6f6164385f75 - i32:c -> i32:cc
+assert_return invoke 6c6f6164385f75 - i32:d -> i32:dd
+assert_return invoke 6c6f6164385f75 - i32:e -> i32:0
+invoke 636f7079 - i32:8 i32:a i32:4 ->
+assert_return invoke 6c6f6164385f75 - i32:8 -> i32:aa
+assert_return invoke 6c6f6164385f75 - i32:9 -> i32:bb
+assert_return invoke 6c6f6164385f75 - i32:a -> i32:cc
+assert_return invoke 6c6f6164385f75 - i32:b -> i32:dd
+assert_return invoke 6c6f6164385f75 - i32:c -> i32:cc
+assert_return invoke 6c6f6164385f75 - i32:d -> i32:dd
+invoke 636f7079 - i32:a i32:7 i32:6 ->
+assert_return invoke 6c6f6164385f75 - i32:a -> i32:0
+assert_return invoke 6c6f6164385f75 - i32:b -> i32:aa
+assert_return invoke 6c6f6164385f75 - i32:c -> i32:bb
+assert_return invoke 6c6f6164385f75 - i32:d -> i32:cc
+assert_return invoke 6c6f6164385f75 - i32:e -> i32:dd
+assert_return invoke 6c6f6164385f75 - i32:f -> i32:cc
+assert_return invoke 6c6f6164385f75 - i32:10 -> i32:0
+invoke 636f7079 - i32:ff00 i32:0 i32:100 ->
+invoke 636f7079 - i32:fe00 i32:ff00 i32:100 ->
+invoke 636f7079 - i32:10000 i32:0 i32:0 ->
+invoke 636f7079 - i32:0 i32:10000 i32:0 ->
+assert_trap invoke 636f7079 - i32:10001 i32:0 i32:0 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_trap invoke 636f7079 - i32:0 i32:10001 i32:0 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module bulk.4.wasm
+invoke 696e6974 - i32:0 i32:1 i32:2 ->
+assert_return invoke 6c6f6164385f75 - i32:0 -> i32:bb
+assert_return invoke 6c6f6164385f75 - i32:1 -> i32:cc
+assert_return invoke 6c6f6164385f75 - i32:2 -> i32:0
+invoke 696e6974 - i32:fffc i32:0 i32:4 ->
+assert_trap invoke 696e6974 - i32:fffe i32:0 i32:3 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 6c6f6164385f75 - i32:fffe -> i32:cc
+assert_return invoke 6c6f6164385f75 - i32:ffff -> i32:dd
+invoke 696e6974 - i32:10000 i32:0 i32:0 ->
+invoke 696e6974 - i32:0 i32:4 i32:0 ->
+assert_trap invoke 696e6974 - i32:10001 i32:0 i32:0 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_trap invoke 696e6974 - i32:0 i32:5 i32:0 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module bulk.5.wasm
+invoke 696e69745f70617373697665 - i32:1 ->
+invoke 64726f705f70617373697665 - ->
+invoke 64726f705f70617373697665 - ->
+assert_return invoke 696e69745f70617373697665 - i32:0 ->
+assert_trap invoke 696e69745f70617373697665 - i32:1 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+invoke 696e69745f70617373697665 - i32:0 ->
+invoke 64726f705f616374697665 - ->
+assert_return invoke 696e69745f616374697665 - i32:0 ->
+assert_trap invoke 696e69745f616374697665 - i32:1 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+invoke 696e69745f616374697665 - i32:0 ->
+module bulk.6.wasm
+module bulk.7.wasm
+module bulk.8.wasm
+assert_trap invoke 696e6974 - i32:2 i32:0 i32:2 -> 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_trap invoke 63616c6c - i32:2 -> 756e696e697469616c697a656420656c656d656e742032
+invoke 696e6974 - i32:0 i32:1 i32:2 ->
+assert_return invoke 63616c6c - i32:0 -> i32:1
+assert_return invoke 63616c6c - i32:1 -> i32:0
+assert_trap invoke 63616c6c - i32:2 -> 756e696e697469616c697a656420656c656d656e74
+invoke 696e6974 - i32:1 i32:2 i32:2 ->
+invoke 696e6974 - i32:3 i32:0 i32:0 ->
+invoke 696e6974 - i32:0 i32:4 i32:0 ->
+assert_trap invoke 696e6974 - i32:4 i32:0 i32:0 -> 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_trap invoke 696e6974 - i32:0 i32:5 i32:0 -> 6f7574206f6620626f756e6473207461626c6520616363657373
+module bulk.9.wasm
+invoke 696e69745f70617373697665 - i32:1 ->
+invoke 64726f705f70617373697665 - ->
+invoke 64726f705f70617373697665 - ->
+assert_return invoke 696e69745f70617373697665 - i32:0 ->
+assert_trap invoke 696e69745f70617373697665 - i32:1 -> 6f7574206f6620626f756e6473207461626c6520616363657373
+invoke 696e69745f70617373697665 - i32:0 ->
+invoke 64726f705f616374697665 - ->
+assert_return invoke 696e69745f616374697665 - i32:0 ->
+assert_trap invoke 696e69745f616374697665 - i32:1 -> 6f7574206f6620626f756e6473207461626c6520616363657373
+invoke 696e69745f616374697665 - i32:0 ->
+module bulk.10.wasm
+module bulk.11.wasm
+module bulk.12.wasm
+invoke 636f7079 - i32:3 i32:0 i32:3 ->
+assert_return invoke 63616c6c - i32:3 -> i32:0
+assert_return invoke 63616c6c - i32:4 -> i32:1
+assert_return invoke 63616c6c - i32:5 -> i32:2
+invoke 636f7079 - i32:0 i32:1 i32:3 ->
+assert_return invoke 63616c6c - i32:0 -> i32:1
+assert_return invoke 63616c6c - i32:1 -> i32:2
+assert_return invoke 63616c6c - i32:2 -> i32:0
+invoke 636f7079 - i32:2 i32:0 i32:3 ->
+assert_return invoke 63616c6c - i32:2 -> i32:1
+assert_return invoke 63616c6c - i32:3 -> i32:2
+assert_return invoke 63616c6c - i32:4 -> i32:0
+invoke 636f7079 - i32:6 i32:8 i32:2 ->
+invoke 636f7079 - i32:8 i32:6 i32:2 ->
+invoke 636f7079 - i32:a i32:0 i32:0 ->
+invoke 636f7079 - i32:0 i32:a i32:0 ->
+assert_trap invoke 636f7079 - i32:b i32:0 i32:0 -> 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_trap invoke 636f7079 - i32:0 i32:b i32:0 -> 6f7574206f6620626f756e6473207461626c6520616363657373
