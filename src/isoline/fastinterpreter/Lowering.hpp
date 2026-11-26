@@ -19,13 +19,16 @@ namespace isoline::fastinterpreter
 /// The most abstract operand stack entries lowering touches per decoded body unit (bodyUnits()),
 /// amortized over the function: LoweringStats::work is at most this many times its bodyUnits.
 ///
-/// Work is counted per entry: its push, its pop and its materialization, each once. An instruction pushes
-/// at most one entry (local.tee pops one and pushes it again, a push of its own), and every pop, the
-/// results return and end pop included, and every materialization is of an entry some instruction
-/// pushed: 1 + 1 + 1. Laying out a frame, O(params + local runs + results) per function, is not counted:
-/// local runs are body units, and the params and results are bounded by the type section's limits
-/// (binary::DecodeLimits::maxParams, maxResults).
-inline constexpr auto WorkPerBodyUnit = uint64_t { 3 };
+/// Work is counted per touch: each push, each pop of one value, each removal or shrink of an entry when
+/// dead code is cut away, and each materialization. An instruction pushes at most one entry, a run of a
+/// block's values included, and that entry is materialized and removed at most once each: 3, charged to
+/// the instruction that pushed it. It also pops at most three values one by one (select, the ternary
+/// operations), which may come from a run no single push paid for: 3 more. A block's else or end shrinks
+/// at most one run, within the end's own 3. Laying out a frame, O(params + local runs + results) per
+/// function, and a type's slots, once per module, are not counted: local runs are body units, and the
+/// params and results are bounded by the type section's limits (binary::DecodeLimits::maxParams,
+/// maxResults). Neither are the visits of the index list and the forwarding chains, at most one per push.
+inline constexpr auto WorkPerBodyUnit = uint64_t { 6 };
 
 /// The most slots a frame may have: slot operands are 32 bits wide.
 inline constexpr auto MaxFrameSlots = uint64_t { std::numeric_limits<uint32_t>::max() };
@@ -43,6 +46,9 @@ enum class LoweringFailure : uint8_t
     /// A function's frame needs more slots than MaxFrameSlots, which only decode limits raised past
     /// their defaults admit.
     FrameSlots,
+    /// A function's code may need more words than a 32-bit branch target reaches, which only a body
+    /// limit raised past a gigabyte admits (binary::DecodeLimits::maxFunctionBodySize).
+    CodeWords,
 };
 
 /// How a module is lowered: fixed for its code, which records both.
