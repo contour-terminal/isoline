@@ -47,9 +47,12 @@ enum class NumericShape : uint8_t
 ///
 /// Float add, sub, mul and div are computed by the host in round-to-nearest; a NaN result becomes
 /// the positive canonical NaN. They assume the default floating-point environment: round-to-nearest
-/// set, and subnormals neither flushed to zero nor treated as zero (no FTZ or DAZ). min and max work on bits:
-/// any NaN operand gives the canonical NaN. Precondition (checked): numericShape(opcode) is Binary, and both
-/// operands are of its type.
+/// set, and subnormals neither flushed to zero nor treated as zero (no FTZ or DAZ). Every invocation
+/// of guest code establishes it (runtime::FloatEnvironmentScope, opened by runtime::InvocationScope),
+/// and so does every return from a host function (runtime::HostCallScope); on targets without a
+/// control-register row (runtime::hostFloatControlLayout()) only the rounding mode is pinned. min and max
+/// work on bits: any NaN operand gives the canonical NaN. Precondition (checked): numericShape(opcode) is
+/// Binary, and both operands are of its type.
 /// @param opcode The instruction.
 /// @param lhs The first operand, the lower on the stack.
 /// @param rhs The second operand, the top of the stack.

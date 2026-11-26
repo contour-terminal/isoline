@@ -21,6 +21,7 @@
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -624,6 +625,7 @@ HostCallScope::HostCallScope(Store& store) noexcept: _store { &store }
 HostCallScope::~HostCallScope()
 {
     --_store->_hostCalls;
+    establishFloatDefaults();
 }
 
 } // namespace isoline::runtime

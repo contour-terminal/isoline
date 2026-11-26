@@ -4,6 +4,31 @@
 configure_file(VersionConfig.hpp.in "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp" @ONLY)
 
 add_library(isoline_core STATIC)
+
+# The floating-point control register's row of the target (runtime/FloatEnvironment.hpp): exactly one
+# per build, chosen here from the compiler's target architecture (its predefined macros, so cross and
+# Visual Studio -A builds choose right), so that no source selects it with #ifdef. MSVC has no inline
+# assembly for arm64's FPCR and defines no __aarch64__, so it takes the portable row there; so does a
+# build for several architectures at once, where one object serves them all.
+include(CheckCXXSymbolExists)
+list(LENGTH CMAKE_OSX_ARCHITECTURES isolineOsxArchitectureCount)
+if(isolineOsxArchitectureCount GREATER 1)
+    message(STATUS "[isoline] several target architectures (${CMAKE_OSX_ARCHITECTURES}): portable float control row")
+    set(isolineFloatControl runtime/FloatControlPortable.cpp)
+else()
+    check_cxx_symbol_exists(__x86_64__ "" ISOLINE_TARGET_X86_64_GNU)
+    check_cxx_symbol_exists(_M_X64 "" ISOLINE_TARGET_X86_64_MSVC)
+    check_cxx_symbol_exists(_M_ARM64EC "" ISOLINE_TARGET_ARM64EC)
+    check_cxx_symbol_exists(__aarch64__ "" ISOLINE_TARGET_ARM64_GNU)
+    if((ISOLINE_TARGET_X86_64_GNU OR ISOLINE_TARGET_X86_64_MSVC) AND NOT ISOLINE_TARGET_ARM64EC)
+        set(isolineFloatControl runtime/FloatControlX86_64.cpp)
+    elseif(ISOLINE_TARGET_ARM64_GNU)
+        set(isolineFloatControl runtime/FloatControlArm64.cpp)
+    else()
+        set(isolineFloatControl runtime/FloatControlPortable.cpp)
+    endif()
+endif()
+message(STATUS "[isoline] float control row: ${isolineFloatControl}")
 add_library(isoline::core ALIAS isoline_core)
 target_sources(isoline_core
     PRIVATE
@@ -16,6 +41,8 @@ target_sources(isoline_core
         interpreter/Numerics.cpp
         interpreter/ReferenceInterpreter.cpp
         interpreter/Simd.cpp
+        ${isolineFloatControl}
+        runtime/FloatEnvironment.cpp
         runtime/HostFunction.cpp
         runtime/Instantiate.cpp
         runtime/LinearMemory.cpp
@@ -42,6 +69,7 @@ target_sources(isoline_core
             interpreter/ReferenceInterpreter.hpp
             interpreter/Simd.hpp
             runtime/Abrupt.hpp
+            runtime/FloatEnvironment.hpp
             runtime/HostFunction.hpp
             runtime/Instantiate.hpp
             runtime/Interrupt.hpp

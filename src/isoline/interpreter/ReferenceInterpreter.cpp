@@ -385,7 +385,8 @@ namespace
         /// not of its type, or a thrown exception the store does not hold, is a HostFailure. It polls
         /// at HostReturn whatever the host returned, and an interrupt replaces that outcome: a host
         /// that absorbed a nested Interrupted cannot extend the call. Its frame's static cost
-        /// (runtime::hostFrameCost()) is charged while it runs, whatever it returns.
+        /// (runtime::hostFrameCost()) is charged while it runs, whatever it returns. Once it returns, its
+        /// HostCallScope re-establishes the IEEE floating-point defaults it may have changed.
         /// @param function The host function.
         /// @param caller The instance whose code called it; nullopt when the embedder did.
         [[nodiscard]] Step callHost(FunctionInstance const& function, std::optional<uint32_t> caller)
@@ -1202,7 +1203,8 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
                                                          std::span<Value const> args,
                                                          std::span<Value> results)
 {
-    // Float results are the spec's only in the default floating-point environment.
+    // Float results are the spec's only in the default floating-point environment, which the
+    // invocation's scope establishes (runtime::FloatEnvironmentScope).
     assert(std::fegetround() == FE_TONEAREST);
     // The invocation's scope, its nesting limit and its step budget, is the entry's to open.
     Require(store.invocationDepth() > 0);

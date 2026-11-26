@@ -18,6 +18,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
@@ -561,7 +562,9 @@ class RefusalScope
 /// Scopes one invocation of guest code on a store, for as long as it lives: what every entry into
 /// guest code opens, runtime::invokeChecked() and runtime::instantiate() (for its whole run, its start
 /// function nested in it). It counts the invocation (Store::invocationDepth()), and the outermost one
-/// starts a fresh step budget (StoreLimits::maxSteps) that the invocations nested in it share.
+/// starts a fresh step budget (StoreLimits::maxSteps) that the invocations nested in it share. It
+/// pins the floating-point environment to the IEEE defaults (FloatEnvironmentScope), nested ones
+/// too, since a host function may change the environment and then re-enter.
 class InvocationScope
 {
   public:
@@ -580,10 +583,13 @@ class InvocationScope
 
   private:
     Store* _store;
+    FloatEnvironmentScope _floatEnvironment; ///< The IEEE defaults, for as long as the invocation runs.
 };
 
 /// Counts a host function call in progress on a store (Store::hostCallsInProgress()) for as long as it
-/// lives: what an executor opens around every host function it runs.
+/// lives: what an executor opens around every host function it runs. When the host function returns,
+/// it re-establishes the IEEE floating-point defaults (establishFloatDefaults()), so that a host that
+/// changed the environment cannot change the results of the guest code that called it.
 class HostCallScope
 {
   public:
@@ -591,7 +597,7 @@ class HostCallScope
     /// @param store The store; must outlive the scope.
     explicit HostCallScope(Store& store) noexcept;
 
-    /// Gives the count back.
+    /// Gives the count back, and re-establishes the floating-point defaults.
     ~HostCallScope();
 
     HostCallScope(HostCallScope const&) = delete;

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -28,6 +29,7 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Interrupt.hpp>
@@ -35,6 +37,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/FloatEnvironment.hpp>
 #include <isoline/runtime/testing/PollCounter.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/Validator.hpp>
@@ -68,10 +71,12 @@ using isoline::runtime::Abrupt;
 using isoline::runtime::ExternValue;
 using isoline::runtime::F32;
 using isoline::runtime::FuncAddr;
+using isoline::runtime::governedBits;
 using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::HostContext;
 using isoline::runtime::HostFailure;
 using isoline::runtime::HostFailureKind;
+using isoline::runtime::hostFloatControlLayout;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::IPollObserver;
@@ -86,6 +91,8 @@ using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::Value;
 using isoline::runtime::ValueMismatch;
+using isoline::runtime::testing::departFromIeeeDefaults;
+using isoline::runtime::testing::HostFloatEnvironment;
 using isoline::runtime::testing::InterruptWatchdog;
 using isoline::runtime::testing::PollCounter;
 using isoline::runtime::testing::PollTrigger;
@@ -3102,6 +3109,58 @@ TEST_CASE("ReferenceInterpreter.tailCallReleasesTheCallerFirst")
     CHECK(harness.validated().frameCost(1) == 5);
     CHECK(harness.invoke(0).has_value());
     CHECK(harness.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.hostChangeOfTheFloatEnvironmentDoesNotLeak")
+{
+    // Host h (function 0) rounds upward and flushes subnormals, then re-enters f32.add (function 1)
+    // with its own operands; function 2 calls h and then adds its arguments.
+    constexpr auto One = uint32_t { 0x3F80'0000 };
+    constexpr auto Tiny = uint32_t { 0x3080'0000 }; // 2^-30: 1 + Tiny rounds to 1, upward to the next float.
+    constexpr auto Subnormal = uint32_t { 0x0000'0001 };
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeF32, TypeF32 }, { TypeF32 }))
+        .importFunction("env", "h", 0)
+        .function(1, {}, code({ localGet(0), localGet(1), { 0x92 } }))           // f32.add
+        .function(1, {}, code({ call(0), localGet(0), localGet(1), { 0x92 } })); // h; f32.add
+    auto const host = HostFloatEnvironment {};
+    auto const embedderControl = isoline::runtime::readFloatControl();
+    auto nested = std::vector<uint32_t> {};
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  departFromIeeeDefaults();
+                                  for (auto const& [lhs, rhs]:
+                                       { std::pair { One, Tiny }, std::pair { Subnormal, Subnormal } })
+                                  {
+                                      auto const args = std::array<Value, 2> { F32 { lhs }, F32 { rhs } };
+                                      auto results = std::array<Value, 1> {};
+                                      if (auto const added = context.invoke(self->function(1), args, results);
+                                          !added)
+                                          return added;
+                                      nested.push_back(std::get<F32>(results[0]).bits);
+                                  }
+                                  return {};
+                              });
+        },
+    };
+    self = &harness;
+
+    // The re-entered guest runs under the defaults, and so does its caller once h has returned.
+    CHECK(harness.result(2, { F32 { One }, F32 { Tiny } }) == Value { F32 { One } });
+    CHECK(harness.result(2, { F32 { Subnormal }, F32 { Subnormal } }) == Value { F32 { 2 * Subnormal } });
+    CHECK(nested == std::vector { One, 2 * Subnormal, One, 2 * Subnormal });
+
+    // What h did to the environment ends with the embedder's call.
+    CHECK(std::fegetround() == FE_TONEAREST);
+    CHECK(governedBits(hostFloatControlLayout(), isoline::runtime::readFloatControl())
+          == governedBits(hostFloatControlLayout(), embedderControl));
 }
 
 TEST_CASE("Interpreter.uninitializedTypedLocalNamesItsTypeId")

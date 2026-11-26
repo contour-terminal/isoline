@@ -39,8 +39,10 @@ namespace isoline::interpreter
 ///
 /// Floats follow Numerics: where the spec allows a set of NaNs, the result is the canonical NaN.
 /// Float results assume the default floating-point environment: round-to-nearest, with subnormals
-/// neither flushed to zero nor treated as zero (no FTZ or DAZ). An embedder that changes it must
-/// restore it before invoking; debug builds check the rounding mode on entry.
+/// neither flushed to zero nor treated as zero (no FTZ or DAZ). The embedder need not provide it: every
+/// invocation pins it (runtime::InvocationScope's FloatEnvironmentScope) and restores the embedder's on
+/// exit, and every return from a host function re-establishes it (runtime::HostCallScope). Debug builds
+/// check the rounding mode on entry.
 class ReferenceInterpreter final: public runtime::ICodeExecutor
 {
   public:
