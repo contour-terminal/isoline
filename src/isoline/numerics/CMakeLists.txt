@@ -7,5 +7,6 @@ target_sources(isoline_core
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES
+            CanonicalNan.hpp
             Float.hpp
             Integer.hpp)

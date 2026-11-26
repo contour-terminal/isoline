@@ -6,9 +6,12 @@
 // boxed runtime::Value and no dispatch. A NaN result of arithmetic is the positive canonical NaN, so
 // every executor that evaluates float instructions through them produces the same bits.
 //
-// Host arithmetic (add, sub, mul, div, sqrt) must be one correctly rounded operation each: the
-// targets that include this header compile with floating-point contraction off (a row of
-// cmake/IsolinePedantic.cmake), so that no multiply and add are fused into one rounding.
+// Host arithmetic (add, sub, mul, div, sqrt) must be one correctly rounded operation each: Isoline's
+// targets compile with floating-point contraction off (a row of cmake/IsolinePedantic.cmake, which
+// refuses a compiler it has no row for), so that no multiply and add are fused into one rounding.
+//
+// Inside isoline::numerics, sqrt, ceil, floor, trunc and copysign name the kernels below, which
+// shadow <cmath>'s; the C library is called as std:: here, always.
 
 #include <bit>
 #include <cfloat>
@@ -19,6 +22,7 @@
 #include <ranges>
 #include <type_traits>
 
+#include <isoline/numerics/CanonicalNan.hpp>
 #include <isoline/numerics/Integer.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -31,11 +35,6 @@ static_assert(FLT_EVAL_METHOD == 0, "the float kernels need floats evaluated in 
 
 namespace isoline::numerics
 {
-
-/// The canonical NaN of f32 (spec 4.3.3): quiet, with no other payload bit; positive.
-inline constexpr auto CanonicalNanF32 = uint32_t { 0x7FC0'0000 };
-/// The canonical NaN of f64: quiet, with no other payload bit; positive.
-inline constexpr auto CanonicalNanF64 = uint64_t { 0x7FF8'0000'0000'0000 };
 
 // --- Float formats ------------------------------------------------------------------------
 
@@ -279,11 +278,15 @@ template <typename Box>
     return arithmeticResult<Box>(toHost(lhs) / toHost(rhs));
 }
 
-/// Whether @p value is +0 or -0.
-[[nodiscard]] constexpr bool isZero(auto value) noexcept
+namespace detail
 {
-    return magnitudeOf(value) == 0;
-}
+    /// Whether @p value is +0 or -0.
+    template <typename Box>
+    [[nodiscard]] constexpr bool isZero(Box value) noexcept
+    {
+        return magnitudeOf(value) == 0;
+    }
+} // namespace detail
 
 /// min: a NaN operand gives the canonical NaN, and -0 is below +0.
 template <typename Box>
@@ -291,7 +294,7 @@ template <typename Box>
 {
     if (isNan(lhs) || isNan(rhs))
         return Box { FloatFormat<Box>::CanonicalNan };
-    if (isZero(lhs) && isZero(rhs))
+    if (detail::isZero(lhs) && detail::isZero(rhs))
         return Box { static_cast<FloatBits<Box>>(lhs.bits | rhs.bits) };
     return toHost(lhs) < toHost(rhs) ? lhs : rhs;
 }
@@ -302,7 +305,7 @@ template <typename Box>
 {
     if (isNan(lhs) || isNan(rhs))
         return Box { FloatFormat<Box>::CanonicalNan };
-    if (isZero(lhs) && isZero(rhs))
+    if (detail::isZero(lhs) && detail::isZero(rhs))
         return Box { static_cast<FloatBits<Box>>(lhs.bits & rhs.bits) };
     return toHost(lhs) > toHost(rhs) ? lhs : rhs;
 }
@@ -351,29 +354,33 @@ template <typename Box>
 
 // --- Conversions to and from floats (spec 4.3.4) ------------------------------------------
 
-/// 2 to the power of @p exponent, exactly.
-[[nodiscard]] consteval double powerOfTwo(int exponent) noexcept
+namespace detail
 {
-    auto result = 1.0;
-    for ([[maybe_unused]] auto const _: std::views::iota(0, exponent))
-        result *= 2.0;
-    return result;
-}
+    /// 2 to the power of @p exponent, exactly.
+    [[nodiscard]] consteval double powerOfTwo(int exponent) noexcept
+    {
+        auto result = 1.0;
+        for ([[maybe_unused]] auto const _: std::views::iota(0, exponent))
+            result *= 2.0;
+        return result;
+    }
 
-/// The range of @p Int, as the exact doubles min and max + 1: every bound is 0 or a power of 2.
-template <typename Int>
-struct IntRange
-{
-    static constexpr double Min = std::is_signed_v<Int> ? -powerOfTwo(std::numeric_limits<Int>::digits) : 0.0;
-    static constexpr double MaxPlusOne = powerOfTwo(std::numeric_limits<Int>::digits);
-};
+    /// The range of @p Int, as the exact doubles min and max + 1: every bound is 0 or a power of 2.
+    template <typename Int>
+    struct IntRange
+    {
+        static constexpr double Min =
+            std::is_signed_v<Int> ? -powerOfTwo(std::numeric_limits<Int>::digits) : 0.0;
+        static constexpr double MaxPlusOne = powerOfTwo(std::numeric_limits<Int>::digits);
+    };
 
-/// A non-NaN float as a host double; exact, as binary64 holds every binary32 value.
-template <typename Box>
-[[nodiscard]] constexpr double toDouble(Box value) noexcept
-{
-    return static_cast<double>(toHost(value));
-}
+    /// A non-NaN float as a host double; exact, as binary64 holds every binary32 value.
+    template <typename Box>
+    [[nodiscard]] constexpr double toDouble(Box value) noexcept
+    {
+        return static_cast<double>(toHost(value));
+    }
+} // namespace detail
 
 /// trunc_s and trunc_u: a NaN traps as an invalid conversion, a value whose integral part
 /// @p Int cannot hold as an overflow.
@@ -382,8 +389,8 @@ template <typename To, typename Int, typename From>
 {
     if (isNan(value))
         return runtime::trap(runtime::TrapCode::InvalidConversionToInteger);
-    auto const integral = std::trunc(toDouble(value));
-    if (integral < IntRange<Int>::Min || integral >= IntRange<Int>::MaxPlusOne)
+    auto const integral = std::trunc(detail::toDouble(value));
+    if (integral < detail::IntRange<Int>::Min || integral >= detail::IntRange<Int>::MaxPlusOne)
         return runtime::trap(runtime::TrapCode::IntegerOverflow);
     return To { static_cast<BitsOf<To>>(static_cast<Int>(integral)) };
 }
@@ -394,10 +401,10 @@ template <typename To, typename Int, typename From>
 {
     if (isNan(value))
         return To {};
-    auto const integral = std::trunc(toDouble(value));
-    if (integral < IntRange<Int>::Min)
+    auto const integral = std::trunc(detail::toDouble(value));
+    if (integral < detail::IntRange<Int>::Min)
         return To { static_cast<BitsOf<To>>(std::numeric_limits<Int>::min()) };
-    if (integral >= IntRange<Int>::MaxPlusOne)
+    if (integral >= detail::IntRange<Int>::MaxPlusOne)
         return To { static_cast<BitsOf<To>>(std::numeric_limits<Int>::max()) };
     return To { static_cast<BitsOf<To>>(static_cast<Int>(integral)) };
 }
@@ -462,7 +469,7 @@ template <typename To, typename Int, typename From>
 {
     if (isNan(value))
         return runtime::F64 { CanonicalNanF64 };
-    return runtime::F64 { std::bit_cast<uint64_t>(toDouble(value)) };
+    return runtime::F64 { std::bit_cast<uint64_t>(detail::toDouble(value)) };
 }
 
 /// reinterpret: the same bits, as the other type of their width.

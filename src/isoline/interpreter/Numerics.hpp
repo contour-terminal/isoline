@@ -7,7 +7,7 @@
 #include <span>
 
 #include <isoline/binary/Opcode.hpp>
-#include <isoline/numerics/Float.hpp>
+#include <isoline/numerics/CanonicalNan.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
