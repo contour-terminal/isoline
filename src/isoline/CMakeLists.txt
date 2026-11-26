@@ -11,6 +11,7 @@ target_sources(isoline_core
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
         FILES
+            Features.hpp
             Version.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
