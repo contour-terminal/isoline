@@ -181,10 +181,12 @@ Store::Store(StoreLimits limits, StoreServices services):
     _allocator { &services.allocator },
     _requiredGuardBytes { services.requiredGuardBytes },
     _pollObserver { services.pollObserver },
+    _roundingMode { services.roundingMode },
     _interrupter { std::make_shared<Interrupter>() },
     _limits { limits },
     _growthRecord {}
 {
+    Require(_roundingMode != nullptr);
 }
 
 TypeId Store::internType(binary::FuncType type)
@@ -744,7 +746,8 @@ GrowthRecord const& RefusalScope::record() const noexcept
     return _store->_growthRecord;
 }
 
-InvocationScope::InvocationScope(Store& store) noexcept: _store { &store }
+InvocationScope::InvocationScope(Store& store) noexcept:
+    _store { &store }, _floatEnvironment { *store._roundingMode }
 {
     Require(_store->checkInvocationNesting().has_value());
     // The outermost invocation's budget is fresh; nested ones share it.
@@ -766,7 +769,7 @@ HostCallScope::HostCallScope(Store& store) noexcept: _store { &store }
 HostCallScope::~HostCallScope()
 {
     --_store->_hostCalls;
-    establishFloatDefaults();
+    establishFloatDefaults(*_store->_roundingMode);
 }
 
 ExceptionRootsRegistration::ExceptionRootsRegistration(Store& store, IExceptionRoots const& roots) noexcept:

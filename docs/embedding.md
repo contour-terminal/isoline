@@ -321,15 +321,19 @@ subnormals there changes subnormal results.
 
 - What is restored is the host's *control* state, its rounding mode and the bits of its control register
   the target's row governs. The sticky exception flags are status, not control: the guest's operations
-  may raise them, as the host's own would, and they stay raised after the call, also where the C
-  library's `fesetround()` rewrites the whole register (wine's ucrtbase clears the flags; the register is
-  read before it and written after). A host that reads them clears them before the call.
+  may raise them, as the host's own would, and they stay raised after the call. Where switching the
+  rounding mode back (at the call's end, or when a host function returns) goes through a C library whose
+  `fesetround()` rewrites the whole register, flags included (wine's ucrtbase clears them), only the
+  x86-64 row carries them across: its flags are in MXCSR, which is read before the switch and written
+  after it. On arm64 the flags are in FPSR, which the scopes do not touch, and the portable row has no
+  register: there the flags stay raised only because the C library leaves them alone, as glibc's and
+  Microsoft's do. A host that reads them clears them before the call.
 - x86-64 pins MXCSR (rounding, FTZ, DAZ, exception masks), and arm64 FPCR (rounding, FZ, FZ16, default
   NaN, trap enables, and FEAT_AFP's FIZ, AH and NEP). Every other target, and a build for several architectures at once, takes the portable row,
   which pins only the rounding mode, through `<cfenv>`: flushing to zero cannot be controlled there.
 - MSVC on arm64 takes the portable row too, as MSVC has no inline assembly for FPCR, so FZ, AH, FIZ and
-  NEP are not pinned there yet. That is a known follow-up, which must land before Windows arm64 runs
-  compiled code.
+  NEP are not pinned there yet, and nothing carries the FPSR flags across a flag-clearing C library. That
+  is a known follow-up, which must land before Windows arm64 runs compiled code.
 - The environment belongs to a thread. An executor that resumes guest code on another thread (none does
   today) must establish the defaults there too.
 

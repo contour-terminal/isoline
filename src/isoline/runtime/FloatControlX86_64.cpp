@@ -15,12 +15,15 @@ namespace
     constexpr auto Flushes = FloatControlWord { (1U << 15U) | (1U << 6U) };
     /// MXCSR's exception masks (bits 7-12), all set: no float operation traps.
     constexpr auto ExceptionMasks = FloatControlWord { 0b11'1111U << 7U };
+    /// MXCSR's sticky exception flags (bits 0-5).
+    constexpr auto ExceptionFlags = FloatControlWord { 0b11'1111U };
 
     constexpr auto Layout = FloatControlLayout {
         .cleared = RoundingControl | Flushes,
         .set = ExceptionMasks,
         .flushes = Flushes,
         .traps = ExceptionMasks,
+        .flags = ExceptionFlags,
     };
 } // namespace
 

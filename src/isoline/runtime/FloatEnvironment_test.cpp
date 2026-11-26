@@ -3,7 +3,9 @@
 
 #include <cfenv>
 #include <cstdint>
+#include <expected>
 #include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -34,6 +36,8 @@ using isoline::runtime::governedBits;
 using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::hostFloatControlLayout;
 using isoline::runtime::ieeeDefaults;
+using isoline::runtime::IRoundingMode;
+using isoline::runtime::libraryRoundingMode;
 using isoline::runtime::readFloatControl;
 using isoline::runtime::Store;
 using isoline::runtime::V128;
@@ -142,6 +146,7 @@ TEST_CASE("FloatEnvironment.layoutRowIsConsistent")
     CHECK((ieeeDefaults(layout, flushing) & layout.set) == layout.set);
     CHECK(ieeeDefaults(layout, ieeeDefaults(layout, flushing)) == ieeeDefaults(layout, flushing));
     CHECK((layout.traps & ~(layout.cleared | layout.set)) == 0);
+    CHECK((layout.flags & (layout.cleared | layout.set)) == 0);
 }
 
 TEST_CASE("FloatEnvironment.scopeRestoresTheHostEnvironment")
@@ -150,12 +155,12 @@ TEST_CASE("FloatEnvironment.scopeRestoresTheHostEnvironment")
     departFromIeeeDefaults();
     auto const departed = readFloatControl();
     {
-        auto const scope = FloatEnvironmentScope {};
+        auto const scope = FloatEnvironmentScope { libraryRoundingMode() };
         CHECK(std::fegetround() == FE_TONEAREST);
         CHECK(governed(readFloatControl()) == governed(ieeeDefaults(hostFloatControlLayout(), departed)));
         {
             // Nested: the defaults stay, and so does the outer scope's restore.
-            auto const nested = FloatEnvironmentScope {};
+            auto const nested = FloatEnvironmentScope { libraryRoundingMode() };
             CHECK(std::fegetround() == FE_TONEAREST);
         }
         CHECK(std::fegetround() == FE_TONEAREST);
@@ -173,11 +178,24 @@ TEST_CASE("FloatEnvironment.scopeRestoresAFlushingHost")
     auto const flushing = readFloatControl();
     CHECK(((flushing & hostFloatControlLayout().flushes) != 0) == (hostFloatControlLayout().flushes != 0));
     {
-        auto const scope = FloatEnvironmentScope {};
+        auto const scope = FloatEnvironmentScope { libraryRoundingMode() };
         CHECK((readFloatControl() & hostFloatControlLayout().flushes) == 0);
     }
     CHECK(std::fegetround() == FE_TONEAREST);
     CHECK(governed(readFloatControl()) == governed(flushing));
+}
+
+TEST_CASE("FloatEnvironment.defaultsAreReestablishedOverAFlushingHost")
+{
+    // What a host function's return does (runtime::HostCallScope): a host that left the rounding mode
+    // at nearest but flushes subnormals gets the register's defaults written back all the same.
+    auto const host = HostFloatEnvironment {};
+    isoline::runtime::writeFloatControl(readFloatControl() | hostFloatControlLayout().flushes);
+    auto const flushing = readFloatControl();
+    isoline::runtime::establishFloatDefaults(libraryRoundingMode());
+    CHECK(std::fegetround() == FE_TONEAREST);
+    CHECK((readFloatControl() & hostFloatControlLayout().flushes) == 0);
+    CHECK(governed(readFloatControl()) == governed(ieeeDefaults(hostFloatControlLayout(), flushing)));
 }
 
 TEST_CASE("FloatEnvironment.scopeLeavesTheDefaultsAlone")
@@ -185,7 +203,7 @@ TEST_CASE("FloatEnvironment.scopeLeavesTheDefaultsAlone")
     auto const host = HostFloatEnvironment {};
     auto const before = readFloatControl();
     {
-        auto const scope = FloatEnvironmentScope {};
+        auto const scope = FloatEnvironmentScope { libraryRoundingMode() };
         CHECK(governed(readFloatControl()) == governed(before));
     }
     CHECK(std::fegetround() == FE_TONEAREST);
@@ -225,8 +243,11 @@ TEST_CASE("FloatEnvironment.guestFlagsStayRaised")
         departFromIeeeDefaults();
     }
     std::feclearexcept(FE_ALL_EXCEPT);
-    CHECK(module.add(Largest, Largest) == Infinity);
-    CHECK(std::fetestexcept(FE_OVERFLOW) != 0);
+    // Read the flags before the assertions, whose own machinery is no part of what is tested.
+    auto const sum = module.add(Largest, Largest);
+    auto const overflowed = std::fetestexcept(FE_OVERFLOW) != 0;
+    CHECK(sum == Infinity);
+    CHECK(overflowed);
 }
 
 TEST_CASE("FloatEnvironment.hostTrapsDoNotReachTheGuest")
@@ -242,4 +263,110 @@ TEST_CASE("FloatEnvironment.hostTrapsDoNotReachTheGuest")
         // No float operation runs here until the host's environment is back.
     }
     CHECK(quotient == CanonicalNan);
+}
+
+namespace
+{
+
+/// A C library whose fesetround() rewrites the whole control register, its sticky exception flags
+/// cleared, as wine's ucrtbase does: what glibc and Microsoft's own leave alone.
+class FlagClearingRoundingMode final: public IRoundingMode
+{
+  public:
+    [[nodiscard]] int get() const noexcept override { return std::fegetround(); }
+
+    void set(int mode) noexcept override
+    {
+        std::fesetround(mode);
+        std::feclearexcept(FE_ALL_EXCEPT);
+    }
+};
+
+/// A store on FlagClearingRoundingMode with one instance: "add" (f32, f32) -> f32, and
+/// "add-then-host", which adds and then calls a host function that rounds upward.
+class FlagClearingModule
+{
+  public:
+    FlagClearingModule():
+        _store { {}, isoline::runtime::StoreServices { .allocator = _allocator, .roundingMode = &_rounding } }
+    {
+        constexpr auto TypeF32 = isoline::binary::F32;
+        auto const host = _store.addHostFunction(
+            FuncType {},
+            isoline::runtime::makeHostFunction(
+                [](isoline::runtime::HostContext&,
+                   std::span<Value const>,
+                   std::span<Value>) noexcept -> std::expected<void, isoline::runtime::Abrupt> {
+                    // A host that keeps the flags its own fesetround() might clear: only the store's switch
+                    // back, through its rounding mode, is under test.
+                    auto flags = std::fexcept_t {};
+                    std::fegetexceptflag(&flags, FE_ALL_EXCEPT);
+                    std::fesetround(FE_UPWARD);
+                    std::fesetexceptflag(&flags, FE_ALL_EXCEPT);
+                    return {};
+                }));
+        REQUIRE(host.has_value());
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {})
+            .type(FuncType { .params = { TypeF32, TypeF32 }, .results = { TypeF32 } })
+            .importFunction("env", "round-upward", 0)
+            .function(1, {}, code({ localGet(0), localGet(1), { 0x92 } }))                  // f32.add
+            .function(1, {}, code({ localGet(0), localGet(1), { 0x92 }, { 0x10, 0x00 } })); // f32.add; call 0
+        auto validated = isoline::validate::ValidatedModule::load(
+            builder.build(), isoline::FeatureSet::all(), isoline::binary::DecodeLimits {});
+        REQUIRE(validated.has_value());
+        auto const imports = std::vector { isoline::runtime::ExternValue {
+            .kind = isoline::binary::ExternKind::Func, .address = *host } };
+        auto const address =
+            isoline::runtime::instantiate(_store, _interpreter, std::move(*validated), imports);
+        REQUIRE(address.has_value());
+        _address = *address;
+    }
+
+    /// Calls function @p index (1: add, 2: add then the host function) with @p lhs and @p rhs.
+    /// @return The sum's bits.
+    [[nodiscard]] uint32_t call(uint32_t index, uint32_t lhs, uint32_t rhs)
+    {
+        auto const args = std::vector<Value> { F32 { lhs }, F32 { rhs } };
+        auto results = std::vector<Value>(1);
+        auto const address = _store.moduleInstance(_address).functions.at(index);
+        auto const invoked = isoline::runtime::invokeChecked(_store, _interpreter, address, args, results);
+        REQUIRE(invoked.outcome.has_value());
+        return std::get<F32>(results.front()).bits;
+    }
+
+  private:
+    FlagClearingRoundingMode _rounding;
+    HeapMemoryAllocator _allocator;
+    Store _store;
+    ReferenceInterpreter _interpreter;
+    uint32_t _address = 0;
+};
+
+} // namespace
+
+TEST_CASE("FloatEnvironment.guestFlagsSurviveAFlagClearingRoundingSwitch")
+{
+    // The rounding mode is switched back after the guest ran (the invocation's end, a host function's
+    // return) by a C library that clears the flags: the guest's overflow, read from the register before
+    // the switch, is written back after it. Rows whose register holds no flags cannot do that.
+    if (hostFloatControlLayout().flags == 0)
+        SKIP("the flags are not in this row's register: they stay raised only where fesetround() keeps them");
+    auto const host = HostFloatEnvironment {};
+    auto module = FlagClearingModule {};
+    auto function = uint32_t { 0 };
+    SECTION("at the invocation's end, to the host's upward rounding")
+    {
+        std::fesetround(FE_UPWARD);
+        function = 1;
+    }
+    SECTION("at a host function's return, from its upward rounding")
+    {
+        function = 2;
+    }
+    std::feclearexcept(FE_ALL_EXCEPT);
+    auto const sum = module.call(function, Largest, Largest);
+    auto const overflowed = std::fetestexcept(FE_OVERFLOW) != 0;
+    CHECK(sum == Infinity);
+    CHECK(overflowed);
 }

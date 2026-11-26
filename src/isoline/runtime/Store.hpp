@@ -232,6 +232,10 @@ struct StoreServices
 
     /// Observes every poll (Store::poll()); none when null. Referenced, so it must outlive the store.
     IPollObserver* pollObserver = nullptr;
+
+    /// How the invocations' floating-point scopes read and set the rounding mode: the C library's,
+    /// unless a test stands in another (FloatEnvironmentScope). Referenced, so it must outlive the store.
+    IRoundingMode* roundingMode = &libraryRoundingMode();
 };
 
 /// The store: every function, table, memory, global and module instance, addressed by index.
@@ -619,6 +623,7 @@ class Store
     IMemoryAllocator* _allocator;
     uint64_t _requiredGuardBytes;
     IPollObserver* _pollObserver;
+    IRoundingMode* _roundingMode; ///< How the floating-point scopes switch the rounding mode; never null.
     std::shared_ptr<Interrupter> _interrupter;
     StoreLimits _limits;
     GrowthRecord _growthRecord;       ///< The current refusal scope's first refused grow per kind.

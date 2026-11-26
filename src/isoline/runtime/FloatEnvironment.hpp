@@ -24,6 +24,11 @@ struct FloatControlLayout
     /// The bits that, flipped from the defaults, let a float exception trap (x86-64's exception masks,
     /// arm64's trap enables), a subset of cleared or set; 0 where the target has none.
     FloatControlWord traps = 0;
+    /// The sticky exception flags the register holds (x86-64 MXCSR's bits 0-5), outside cleared and set:
+    /// the flags the scopes carry across a rounding-mode switch that clears them. 0 where the flags live
+    /// in another register (arm64's FPSR) or the row has none (portable): there they stay raised only if
+    /// the C library's fesetround() leaves them alone, as glibc's does.
+    FloatControlWord flags = 0;
 };
 
 /// The control bits of @p word that @p layout governs, the sticky exception flags and every other bit
@@ -64,8 +69,9 @@ struct FloatControlLayout
 /// FloatControlX86_64.cpp, FloatControlArm64.cpp and FloatControlPortable.cpp, from the compiler's
 /// target architecture. MSVC on arm64, and a build for several architectures at once (a universal
 /// macOS build), take the portable row: there only the rounding mode is pinned. On MSVC arm64 that
-/// leaves FPCR's FZ, AH, FIZ and NEP unpinned, a known follow-up that must land before Windows arm64
-/// runs compiled code.
+/// leaves FPCR's FZ, AH, FIZ and NEP unpinned, and FPSR's flags unprotected from a C library whose
+/// fesetround() clears them (FloatControlLayout::flags), a known follow-up that must land before Windows
+/// arm64 runs compiled code.
 /// @return The row.
 [[nodiscard]] FloatControlLayout const& hostFloatControlLayout() noexcept;
 
@@ -77,11 +83,35 @@ struct FloatControlLayout
 /// @param word The value to write.
 void writeFloatControl(FloatControlWord word) noexcept;
 
+/// The C library's rounding mode, as the floating-point scopes switch it: the seam a store is given
+/// (StoreServices::roundingMode), through which a test stands in a C library whose fesetround()
+/// rewrites the whole control register, its sticky flags included, as wine's ucrtbase does.
+class IRoundingMode
+{
+  public:
+    virtual ~IRoundingMode() = default;
+
+    /// The calling thread's rounding mode, as std::fegetround() reports it.
+    /// @return One of FE_TONEAREST, FE_UPWARD, FE_DOWNWARD and FE_TOWARDZERO.
+    [[nodiscard]] virtual int get() const noexcept = 0;
+
+    /// Sets the calling thread's rounding mode, as std::fesetround() does.
+    /// @param mode One of FE_TONEAREST, FE_UPWARD, FE_DOWNWARD and FE_TOWARDZERO.
+    virtual void set(int mode) noexcept = 0;
+};
+
+/// The C library's own: std::fegetround() and std::fesetround(). What a store uses unless its services
+/// name another.
+/// @return The one instance; it holds no state.
+[[nodiscard]] IRoundingMode& libraryRoundingMode() noexcept;
+
 /// Establishes the IEEE defaults on the calling thread: round-to-nearest-even as the C library
 /// sees it (std::fesetround()), and the control register's row (ieeeDefaults()). Writes only what
 /// differs. What an executor does when a host function returns (HostCallScope), so that a host that
-/// changed the environment cannot change the results of the guest code that called it.
-void establishFloatDefaults() noexcept;
+/// changed the environment cannot change the results of the guest code that called it. The register's
+/// flags (FloatControlLayout::flags) survive a rounding switch that clears them.
+/// @param rounding How the rounding mode is read and set.
+void establishFloatDefaults(IRoundingMode& rounding) noexcept;
 
 /// Pins the floating-point environment of the calling thread to the IEEE defaults for as long as it
 /// lives, and gives the host its own back at the end: what every invocation of guest code opens
@@ -105,7 +135,8 @@ class FloatEnvironmentScope
 {
   public:
     /// Saves the host's environment and establishes the defaults.
-    FloatEnvironmentScope() noexcept;
+    /// @param rounding How the rounding mode is read and set; must outlive the scope.
+    explicit FloatEnvironmentScope(IRoundingMode& rounding) noexcept;
 
     /// Restores the host's environment saved at construction.
     ~FloatEnvironmentScope();
@@ -116,6 +147,7 @@ class FloatEnvironmentScope
     FloatEnvironmentScope& operator=(FloatEnvironmentScope&&) = delete;
 
   private:
+    IRoundingMode* _rounding;      ///< How the rounding mode is read and set.
     FloatControlWord _hostControl; ///< The host's control register.
     int _hostRounding;             ///< The host's rounding mode (std::fegetround()).
 };
