@@ -44,12 +44,14 @@ LoweredModule::LoweredModule(std::shared_ptr<std::pmr::memory_resource> arena,
                              std::pmr::vector<LoweredFunction> functions,
                              Dispatch dispatch,
                              runtime::ExecutionMode mode,
-                             uint64_t loweredBytes):
+                             uint64_t loweredBytes,
+                             LoweringStats stats):
     _arena { std::move(arena) },
     _functions { std::move(functions) },
     _dispatch { dispatch },
     _mode { mode },
-    _loweredBytes { loweredBytes }
+    _loweredBytes { loweredBytes },
+    _stats { stats }
 {
     Require(allocateFrom(_arena.get(), _functions));
 }
@@ -77,6 +79,11 @@ runtime::ExecutionMode LoweredModule::mode() const noexcept
 uint64_t LoweredModule::loweredBytes() const noexcept
 {
     return _loweredBytes;
+}
+
+LoweringStats const& LoweredModule::stats() const noexcept
+{
+    return _stats;
 }
 
 } // namespace isoline::fastinterpreter

@@ -53,24 +53,43 @@ enum class OperationForm : uint8_t
 /// and the row that adds it widens it.
 enum class OperationId : uint8_t
 {
-#define ISOLINE_FAST_OPERATION(Name, Form, Words) Name,
+#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates) Name,
 #include <isoline/fastinterpreter/Operations.def>
 #undef ISOLINE_FAST_OPERATION
 };
+
+/// The code words that @p slots slot operands and @p immediates immediates take after a header word:
+/// the slot operands two to a word, then one word per immediate.
+/// @param slots The number of 32-bit slot operands.
+/// @param immediates The number of 64-bit immediates.
+/// @return The header word plus the operand words.
+[[nodiscard]] constexpr uint32_t operationWords(uint32_t slots, uint32_t immediates) noexcept
+{
+    return 1 + ((slots + 1) / 2) + immediates;
+}
 
 /// What the operation table knows about one operation.
 struct OperationRow
 {
     OperationId id;        ///< The operation; equal to the row's index in OperationTable.
-    std::string_view name; ///< Its name in listings, the enumerator's own.
+    std::string_view name; ///< The enumerator's own name.
+    std::string_view text; ///< Its name in listings.
     OperationForm form;    ///< The layout of its operands.
+    uint32_t slots;        ///< Its 32-bit slot operands, destination first, two to a code word.
+    uint32_t immediates;   ///< Its 64-bit immediates, one code word each, after the slot operands.
     uint32_t words; ///< Its fixed size in code words, header included; a br_table adds its labels' records.
 };
 
 /// Every operation, one row per OperationId enumerator, in enumerator order.
 inline constexpr auto OperationTable = std::to_array<OperationRow>({
-#define ISOLINE_FAST_OPERATION(Name, Form, Words) \
-    { .id = OperationId::Name, .name = #Name, .form = OperationForm::Form, .words = (Words) },
+#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates) \
+    { .id = OperationId::Name,                                      \
+      .name = #Name,                                                \
+      .text = (Text),                                               \
+      .form = OperationForm::Form,                                  \
+      .slots = (Slots),                                             \
+      .immediates = (Immediates),                                   \
+      .words = operationWords((Slots), (Immediates)) },
 #include <isoline/fastinterpreter/Operations.def>
 #undef ISOLINE_FAST_OPERATION
 });
@@ -198,6 +217,31 @@ inline constexpr auto MaxWordsPerBodyUnit = uint64_t { 4 };
 /// The code words lowering may emit per function beyond MaxWordsPerBodyUnit's: its entry and its return.
 inline constexpr auto FunctionOverheadWords = uint64_t { 16 };
 
+namespace detail
+{
+    /// Whether every operation of OperationTable fits the share of code one body unit may emit.
+    [[nodiscard]] consteval bool everyOperationFitsAUnit() noexcept
+    {
+        return std::ranges::all_of(OperationTable,
+                                   [](OperationRow const& row) { return row.words <= MaxWordsPerBodyUnit; });
+    }
+} // namespace detail
+
+static_assert(detail::everyOperationFitsAUnit(),
+              "an operation larger than MaxWordsPerBodyUnit breaks the bound on lowered code");
+
+/// What lowering a module took: the measures its published bounds are stated in.
+struct LoweringStats
+{
+    uint64_t bodyUnits = 0; ///< The decoded body units of every function (bodyUnits()), summed.
+    /// The abstract operand stack entries lowering touched: each push, pop and materialization one. At
+    /// most WorkPerBodyUnit per body unit, so lowering's time is linear in the module.
+    uint64_t work = 0;
+
+    /// Whether both record the same measures.
+    [[nodiscard]] bool operator==(LoweringStats const&) const = default;
+};
+
 /// The decoded body units of @p function: its instructions, br_table labels, catch clauses, typed
 /// select types and local runs, what the bound on lowered code is counted in.
 ///
@@ -261,11 +305,13 @@ class LoweredModule final: public runtime::ModuleCode
     /// @param dispatch The dispatch the code's header words are for.
     /// @param mode The execution mode the code was lowered in.
     /// @param loweredBytes What the arena charged for lowering the module.
+    /// @param stats What lowering it took.
     LoweredModule(std::shared_ptr<std::pmr::memory_resource> arena,
                   std::pmr::vector<LoweredFunction> functions,
                   Dispatch dispatch,
                   runtime::ExecutionMode mode,
-                  uint64_t loweredBytes);
+                  uint64_t loweredBytes,
+                  LoweringStats stats);
 
     /// The engine whose code this is.
     /// @return ExecutionEngine::Fast.
@@ -287,6 +333,10 @@ class LoweredModule final: public runtime::ModuleCode
     /// @return The bytes.
     [[nodiscard]] uint64_t loweredBytes() const noexcept;
 
+    /// What lowering the module took, which its bounds on work are checked against.
+    /// @return The measures.
+    [[nodiscard]] LoweringStats const& stats() const noexcept;
+
   private:
     // Declared first, so it is destroyed last: every container below allocates from it.
     std::shared_ptr<std::pmr::memory_resource> _arena;
@@ -294,6 +344,7 @@ class LoweredModule final: public runtime::ModuleCode
     Dispatch _dispatch;
     runtime::ExecutionMode _mode;
     uint64_t _loweredBytes;
+    LoweringStats _stats;
 };
 
 } // namespace isoline::fastinterpreter
