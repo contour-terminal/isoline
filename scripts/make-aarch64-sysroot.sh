@@ -17,7 +17,9 @@
 
 set -eu
 
-image="docker.io/library/debian:trixie"
+# The image is pinned by its multi-arch manifest digest (debian:trixie as of 2026-11-26), so the base
+# system is reproducible; apt-get still installs the packages current in the trixie archive.
+image="docker.io/library/debian:trixie@sha256:3cda3ca472ce45507a5109c6a3907093e24d9ae67d55954c9a07a45665dafba2"
 packages="libc6-dev libstdc++-14-dev libgcc-14-dev linux-libc-dev"
 
 refresh=no
@@ -31,10 +33,11 @@ for arg in "$@"; do
     esac
 done
 
-# What the toolchain file and the C++ build need from it: the C library and libstdc++'s headers.
+# What the toolchain file and the C++ build need from it: the C library, libstdc++'s headers, and GCC's
+# crt files and libgcc, which clang's driver finds through usr/lib/gcc.
 isComplete() {
     [ -f "$1/usr/lib/aarch64-linux-gnu/libc.so" ] && [ -d "$1/usr/include/c++/14" ] \
-        && [ -d "$1/usr/include/aarch64-linux-gnu" ]
+        && [ -d "$1/usr/include/aarch64-linux-gnu" ] && [ -d "$1/usr/lib/gcc/aarch64-linux-gnu/14" ]
 }
 
 if [ "$refresh" = no ] && isComplete "$sysroot"; then
@@ -51,7 +54,9 @@ cleanup() {
     [ -n "$container" ] && podman rm -f "$container" >/dev/null 2>&1 || true
     rm -rf "$staging"
 }
-trap cleanup EXIT INT TERM
+# POSIX sh runs an EXIT trap on exit, not on a signal: INT and TERM exit, which then runs it.
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 container=$(podman create --platform linux/arm64 "$image" \
     sh -c "apt-get update && apt-get install -y --no-install-recommends $packages")

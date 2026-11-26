@@ -42,6 +42,8 @@ set(CMAKE_CXX_COMPILER_TARGET aarch64-linux-gnu)
 set(CMAKE_LINKER_TYPE LLD)
 
 find_program(ISOLINE_QEMU_AARCH64 NAMES qemu-aarch64-static qemu-aarch64)
-if(ISOLINE_QEMU_AARCH64)
-    set(CMAKE_CROSSCOMPILING_EMULATOR "${ISOLINE_QEMU_AARCH64};-L;${ISOLINE_AARCH64_SYSROOT}")
+if(NOT ISOLINE_QEMU_AARCH64)
+    message(FATAL_ERROR "qemu-aarch64-static is not installed: the tests of an aarch64 cross build run under it "
+                        "(Fedora: dnf install qemu-user-static-aarch64; see docs/cross-compiling.md)")
 endif()
+set(CMAKE_CROSSCOMPILING_EMULATOR "${ISOLINE_QEMU_AARCH64};-L;${ISOLINE_AARCH64_SYSROOT}")

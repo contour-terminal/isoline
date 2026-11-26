@@ -49,6 +49,13 @@ _msvc_wine_pick_version(MSVC_WINE_SDK_VERSION "${MSVC_WINE_ROOT}/kits/10/lib")
 set(_msvc "${MSVC_WINE_ROOT}/vc/tools/msvc/${MSVC_WINE_TOOLSET_VERSION}")
 set(_sdkInclude "${MSVC_WINE_ROOT}/kits/10/include/${MSVC_WINE_SDK_VERSION}")
 set(_sdkLib "${MSVC_WINE_ROOT}/kits/10/lib/${MSVC_WINE_SDK_VERSION}")
+foreach(_dir IN ITEMS "${_msvc}" "${_sdkInclude}" "${_sdkLib}")
+    if(NOT IS_DIRECTORY "${_dir}")
+        message(FATAL_ERROR "${_dir} does not exist: MSVC_WINE_TOOLSET_VERSION=${MSVC_WINE_TOOLSET_VERSION} / "
+                            "MSVC_WINE_SDK_VERSION=${MSVC_WINE_SDK_VERSION} name no version installed in "
+                            "${MSVC_WINE_ROOT}")
+    endif()
+endforeach()
 
 find_program(CMAKE_C_COMPILER NAMES clang-cl REQUIRED)
 find_program(CMAKE_CXX_COMPILER NAMES clang-cl REQUIRED)
@@ -85,41 +92,56 @@ endforeach()
 # search path.
 #
 # The prefix is the build's own, never the user's default ~/.wine: MSVC_WINE_PREFIX, default
-# <build>/wineprefix. The first binary run initializes it (wineboot), under a lock so that a parallel ctest
-# does not race on it. WINEDEBUG defaults to -all, so wine's fixme lines stay out of the test output.
+# <build>/wineprefix. The first binary run initializes it (wineboot), under a lock every run takes first,
+# so that a parallel ctest does not race on it. WINEDEBUG defaults to -all, so wine's fixme lines stay out
+# of the test output.
 #
 # The emulator is a script written into the build directory, <build>/wine-run.sh, rather than an
 # `env WINEPATH=... wine` list: WINEPATH is ;-separated, and a ; inside a CMake list does not survive being
 # expanded into a custom command. It also runs a binary by hand.
 find_program(MSVC_WINE_WINE NAMES wine wine64)
-if(MSVC_WINE_WINE)
-    set(MSVC_WINE_PREFIX "${CMAKE_BINARY_DIR}/wineprefix" CACHE PATH "The wine prefix the tests run in")
-    set(_redistRoot "${MSVC_WINE_ROOT}/vc/Redist/MSVC/${MSVC_WINE_TOOLSET_VERSION}")
-    file(GLOB _redist LIST_DIRECTORIES true "${_redistRoot}/x64/*.CRT" "${_redistRoot}/debug_nonredist/x64/*.DebugCRT")
-    set(_winePath ${_redist} "${MSVC_WINE_ROOT}/kits/10/bin/${MSVC_WINE_SDK_VERSION}/x64/ucrt")
-    foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
-        list(APPEND _winePath "${_prefix}/bin")
-    endforeach()
-    list(REMOVE_DUPLICATES _winePath)
-    list(JOIN _winePath ";" _winePath)
-    file(WRITE "${CMAKE_BINARY_DIR}/wine-run.sh"
-         "#!/bin/sh\n"
-         "# Written by cmake/toolchains/windows-clangcl-cross.cmake: runs a Windows executable of this build "
-         "under wine.\n"
-         "export WINEPREFIX='${MSVC_WINE_PREFIX}'\n"
-         "export WINEDEBUG=\"\${WINEDEBUG:--all}\"\n"
-         "export WINEPATH='${_winePath}'\n"
-         "export WINEDLLOVERRIDES='msvcp140,msvcp140_1,msvcp140_2,vcruntime140,vcruntime140_1=n,b'\n"
-         "if [ ! -f \"$WINEPREFIX/system.reg\" ]; then\n"
-         "    mkdir -p \"$WINEPREFIX\"\n"
-         "    flock \"$WINEPREFIX/.init.lock\" sh -c "
-         "'[ -f \"$WINEPREFIX/system.reg\" ] || \"$0\" wineboot --init >/dev/null 2>&1' '${MSVC_WINE_WINE}'\n"
-         "fi\n"
-         "exec '${MSVC_WINE_WINE}' \"$@\"\n")
-    file(CHMOD "${CMAKE_BINARY_DIR}/wine-run.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ
-                                                             GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-    set(CMAKE_CROSSCOMPILING_EMULATOR "${CMAKE_BINARY_DIR}/wine-run.sh")
+if(NOT MSVC_WINE_WINE)
+    message(FATAL_ERROR "wine is not installed: the tests of a Windows cross build run under it "
+                        "(Fedora: dnf install wine; see docs/cross-compiling.md)")
 endif()
+set(MSVC_WINE_PREFIX "${CMAKE_BINARY_DIR}/wineprefix" CACHE PATH "The wine prefix the tests run in")
+set(_redistRoot "${MSVC_WINE_ROOT}/vc/Redist/MSVC/${MSVC_WINE_TOOLSET_VERSION}")
+file(GLOB _redist LIST_DIRECTORIES true "${_redistRoot}/x64/*.CRT" "${_redistRoot}/debug_nonredist/x64/*.DebugCRT")
+set(_winePath ${_redist} "${MSVC_WINE_ROOT}/kits/10/bin/${MSVC_WINE_SDK_VERSION}/x64/ucrt")
+foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+    list(APPEND _winePath "${_prefix}/bin")
+endforeach()
+list(REMOVE_DUPLICATES _winePath)
+list(JOIN _winePath ";" _winePath)
+
+# Quotes @p value for sh as one single-quoted word: a ' inside it becomes '\''.
+function(_msvc_wine_sh_quote outVar value)
+    string(REPLACE "'" "'\\''" value "${value}")
+    set(${outVar} "'${value}'" PARENT_SCOPE)
+endfunction()
+_msvc_wine_sh_quote(_shPrefix "${MSVC_WINE_PREFIX}")
+_msvc_wine_sh_quote(_shWinePath "${_winePath}")
+_msvc_wine_sh_quote(_shWine "${MSVC_WINE_WINE}")
+file(WRITE "${CMAKE_BINARY_DIR}/wine-run.sh"
+     "#!/bin/sh\n"
+     "# Written by cmake/toolchains/windows-clangcl-cross.cmake: runs a Windows executable of this build "
+     "under wine.\n"
+     "export WINEPREFIX=${_shPrefix}\n"
+     "export WINEDEBUG=\"\${WINEDEBUG:--all}\"\n"
+     "export WINEPATH=${_shWinePath}\n"
+     "export WINEDLLOVERRIDES='msvcp140,msvcp140_1,msvcp140_2,vcruntime140,vcruntime140_1=n,b'\n"
+     "wine=${_shWine}\n"
+     "# The first test initializes the prefix, under the lock, which every test takes first: a parallel ctest\n"
+     "# waits until the initialization is done, then sees the stamp written after it. -o keeps the lock out of\n"
+     "# the wineserver that wineboot leaves running, which would otherwise hold it for its lifetime.\n"
+     "mkdir -p \"$WINEPREFIX\"\n"
+     "export wine\n"
+     "flock -o \"$WINEPREFIX/.init.lock\" sh -c '[ -f \"$WINEPREFIX/.initialized\" ] || "
+     "{ \"$wine\" wineboot --init >/dev/null 2>&1 && touch \"$WINEPREFIX/.initialized\"; }'\n"
+     "exec \"$wine\" \"$@\"\n")
+file(CHMOD "${CMAKE_BINARY_DIR}/wine-run.sh" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ
+                                                         GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+set(CMAKE_CROSSCOMPILING_EMULATOR "${CMAKE_BINARY_DIR}/wine-run.sh")
 
 # Dependencies come from CMAKE_PREFIX_PATH / CMAKE_FIND_ROOT_PATH, never from the Linux host.
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
