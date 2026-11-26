@@ -313,8 +313,12 @@ namespace
             auto const localsBase = _locals.size();
             _locals.insert(_locals.end(), _values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
+            // A typed null local names its type by TypeId, in store form, as ref.null's does (nullOf()).
             for (auto const& run: code.locals)
-                _locals.insert(_locals.end(), run.count, runtime::defaultValue(run.type));
+                _locals.insert(_locals.end(),
+                               run.count,
+                               runtime::defaultValue(binary::mapTypeIndex(
+                                   run.type, [&](uint32_t index) { return owner.types.at(index); })));
             _frames.push_back(Frame { .instance = &owner,
                                       .code = &code,
                                       .localsBase = localsBase,

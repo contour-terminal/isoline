@@ -1899,3 +1899,23 @@ TEST_CASE("Interpreter.hostThrowsAPayloadOfItsTagsKinds")
     self = &harness;
     CHECK(harness.result(1) == Value { I64 { 42 } });
 }
+
+TEST_CASE("Interpreter.uninitializedTypedLocalNamesItsTypeId")
+{
+    // Types 0 and 1 are equal, so they share TypeId 0 and type 2 gets TypeId 1: a (ref null 2) local
+    // starts as the null of TypeId 1, as ref.null 2 does, not of type index 2.
+    using isoline::runtime::Ref;
+    auto const nullableTo2 = isoline::binary::concreteRef(2, isoline::binary::Nullable::Yes);
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .type(signature({}, { nullableTo2 }))
+        .function(3, { nullableTo2 }, code({ localGet(0) }))
+        .function(3, {}, code({ { 0xD0, 0x02 } })); // ref.null 2
+    auto harness = Harness { builder };
+    auto const local = harness.result(0);
+    REQUIRE(std::holds_alternative<Ref>(local));
+    CHECK(std::get<Ref>(local).heap.typeIndex == 1);
+    CHECK(local == harness.result(1));
+}
