@@ -100,10 +100,10 @@ target_sources(isoline_core
             runtime/HostFunction.hpp
             runtime/Instantiate.hpp
             runtime/Interrupt.hpp
-            runtime/PollGate.hpp
             runtime/Limits.hpp
             runtime/LinearMemory.hpp
             runtime/ModuleCode.hpp
+            runtime/PollGate.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp
