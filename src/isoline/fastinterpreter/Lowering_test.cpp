@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <new>
@@ -63,14 +65,17 @@ using isoline::fastinterpreter::lower;
 using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::LoweringConfig;
 using isoline::fastinterpreter::LoweringError;
+using isoline::fastinterpreter::LoweringFailure;
 using isoline::fastinterpreter::loweringReservation;
 using isoline::fastinterpreter::loweringRow;
 using isoline::fastinterpreter::LoweringRows;
+using isoline::fastinterpreter::MaxFrameSlots;
 using isoline::fastinterpreter::MaxWordsPerBodyUnit;
+using isoline::fastinterpreter::NoFunction;
 using isoline::fastinterpreter::nullSlots;
 using isoline::fastinterpreter::OperationForm;
 using isoline::fastinterpreter::operationRow;
-using isoline::fastinterpreter::RefusalReason;
+using isoline::fastinterpreter::Word;
 using isoline::fastinterpreter::WorkPerBodyUnit;
 using isoline::runtime::ExecutionMode;
 using isoline::validate::ValidatedModule;
@@ -171,14 +176,30 @@ class ExhaustedResource final: public std::pmr::memory_resource
 
 /// @p builder's module lowered under the default budget, checked against every published bound: its
 /// code per function and in all, its work, what the arena kept and its peak.
-[[nodiscard]] std::shared_ptr<LoweredModule const> loweredWithinTheBounds(ModuleBuilder const& builder)
+///
+/// The budget is the module's reservations, room for the exact copy of the largest function's code (at most
+/// its code bound), and @p temporaries, the allowance for the abstract stack, the forwarding chains and the
+/// locals' runs: a lowering that allocates past that is refused, not merely measured.
+[[nodiscard]] std::shared_ptr<LoweredModule const> loweredWithinTheBounds(ModuleBuilder const& builder,
+                                                                          uint64_t temporaries)
 {
     auto const module = validated(builder);
-    auto const arena = arenaOf();
+    auto const& source = module->module();
+    auto budget = temporaries;
+    auto largestCode = uint64_t { 0 };
+    for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(source.code.size())))
+    {
+        budget += loweringReservation(source, index);
+        largestCode = std::max(largestCode, codeBoundWords(source.code[index]) * sizeof(Word));
+    }
+    budget += largestCode;
+    auto const arena = arenaOf(budget);
     auto const result = lower(*module, LoweringConfig {}, arena);
+    if (!result)
+        UNSCOPED_INFO("refused at " << result.error().codeIndex << ": " << result.error().requested
+                                    << " bytes of " << result.error().limit << ", peak " << arena->peak());
     REQUIRE(result.has_value());
     auto const& lowered = **result;
-    auto const& source = module->module();
     auto reservations = uint64_t { 0 };
     auto codeWords = uint64_t { 0 };
     for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(source.code.size())))
@@ -321,13 +342,24 @@ TEST_CASE("Lowering.teeKeepsTheValueOnTheStack")
         CHECK(listingOf(teeConstant)
               == "const64 s0, #3\nconst64 s1, #3\ni32.add.imm s1, s1, #4\nreturn s1\n");
     }
-    SECTION("a tee of the local's own forwarder writes nothing")
+    SECTION("a tee of the local's own forwarder writes nothing, and leaves its forwarders forwarded")
     {
         auto const teeSelf = functionOf({ binary::I32 },
                                         { binary::I32, binary::I32 },
                                         {},
                                         code({ localGet(0), localGet(0), op(0x22, 0) }));
-        CHECK(listingOf(teeSelf) == "move64 s1, s0\nmove64 s2, s0\nreturn s1\n");
+        // Both moves are the return's; the tee emits none.
+        CHECK(listingOf(teeSelf) == "move64 s2, s0\nmove64 s1, s0\nreturn s1\n");
+    }
+    SECTION("a set of the local's own forwarder writes nothing, and leaves its forwarders forwarded")
+    {
+        auto const setSelf =
+            functionOf({ binary::I32 },
+                       { binary::I32 },
+                       {},
+                       code({ localGet(0), localGet(0), localSet(0), i32Const(1), localSet(0) }));
+        // The older forwarder is materialized by the second set, which changes local 0, not by the first.
+        CHECK(listingOf(setSelf) == "move64 s1, s0\nconst64 s0, #1\nreturn s1\n");
     }
 }
 
@@ -516,7 +548,7 @@ TEST_CASE("Lowering.refusesPastTheReservation")
     auto const result = lower(*module, LoweringConfig {}, arena);
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().codeIndex == 0);
-    CHECK(result.error().reason == RefusalReason::Budget);
+    CHECK(result.error().reason == LoweringFailure::Budget);
     CHECK(result.error().limit == budget);
     CHECK(result.error().requested > 0);
     CHECK(arena->peak() <= budget);
@@ -544,6 +576,45 @@ TEST_CASE("Lowering.refusalNamesTheFunction")
               .codeIndex = 1, .requested = loweringReservation(module->module(), 1), .limit = budget });
 }
 
+TEST_CASE("Lowering.aRefusedModuleTableNamesNoFunction")
+{
+    // The imported globals' types are the module's, allocated before any function is lowered.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = {} });
+    for (auto const index: std::views::iota(0, 10))
+        builder.importGlobal("host", std::format("g{}", index), GlobalType { .type = binary::I32 });
+    builder.function(0, {}, {});
+    auto const module = validated(builder);
+    auto const arena = arenaOf(16);
+    auto const result = lower(*module, LoweringConfig {}, arena);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().codeIndex == NoFunction);
+    CHECK(result.error().reason == LoweringFailure::Budget);
+    CHECK(arena->charged() == 0);
+}
+
+TEST_CASE("Lowering.refusesAFrameOfMoreSlotsThanAnOperandNames")
+{
+    // Decode limits raised past their defaults admit 2^31 v128 locals: 2^32 slots, one more than a
+    // 32-bit slot operand names. Refused before anything is reserved.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = {} });
+    builder.rawSection(3, { 0x01, 0x00 });
+    builder.rawSection(10, code({ { 0x01, 0x08, 0x01 }, encodeU32(uint32_t { 1 } << 31U), { 0x7B, 0x0B } }));
+    auto const limits = DecodeLimits { .maxLocals = std::numeric_limits<uint32_t>::max() };
+    auto loaded = ValidatedModule::load(builder.build(), FeatureSet::all(), limits);
+    REQUIRE(loaded.has_value());
+    auto const arena = arenaOf();
+    auto const result = lower(**loaded, LoweringConfig {}, arena);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error()
+          == LoweringError { .codeIndex = 0,
+                             .requested = uint64_t { 1 } << 32U,
+                             .limit = MaxFrameSlots,
+                             .reason = LoweringFailure::FrameSlots });
+    CHECK(arena->peak() == 0);
+}
+
 TEST_CASE("Lowering.refusesWhenTheHostHasNoMemory")
 {
     auto exhausted = ExhaustedResource {};
@@ -551,7 +622,7 @@ TEST_CASE("Lowering.refusesWhenTheHostHasNoMemory")
     auto const module = validated(functionOf({}, {}, {}, {}));
     auto const result = lower(*module, LoweringConfig {}, arena);
     REQUIRE_FALSE(result.has_value());
-    CHECK(result.error().reason == RefusalReason::HostMemory);
+    CHECK(result.error().reason == LoweringFailure::HostMemory);
     CHECK(result.error().codeIndex == 0);
     CHECK(arena->charged() == 0);
 }
@@ -584,14 +655,22 @@ TEST_CASE("Lowering.hostileShapesStayLinear")
     // Under the memory caps: 50'000 locals and 1M local.get/local.set over a 50'000-high stack, and a
     // 7 MB body of i32.const/drop. The code, the work and the peak stay within their published bounds.
     namespace hostile = isoline::fastinterpreter::testing;
+    // 8 MiB for the temporaries: the 50'000-entry stack, the chains and 50'000 local runs take less
+    // than 4 MiB.
+    constexpr auto Temporaries = uint64_t { 8 } * 1024 * 1024;
+    SECTION("a small forwarded stack, which a quadratic lowering already fails quickly")
+    {
+        std::ignore = loweredWithinTheBounds(hostile::forwardedStack(1'000, 2'000, 20'000), Temporaries);
+    }
     SECTION("forwarded stack")
     {
-        auto const module = loweredWithinTheBounds(hostile::forwardedStack(50'000, 50'000, 1'000'000));
+        auto const module =
+            loweredWithinTheBounds(hostile::forwardedStack(50'000, 50'000, 1'000'000), Temporaries);
         CHECK(module->functions()[0].frameSlots > 65'535);
     }
     SECTION("constants and drops")
     {
-        auto const module = loweredWithinTheBounds(hostile::constantsAndDrops(7'000'000));
+        auto const module = loweredWithinTheBounds(hostile::constantsAndDrops(7'000'000), Temporaries);
         CHECK(describe(module->functions()[0]) == "return s0\n");
     }
 }
