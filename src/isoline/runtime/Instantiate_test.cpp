@@ -217,11 +217,11 @@ TEST_CASE("Instantiate.keepsTheCode")
     CHECK(store.moduleInstance(*withoutCode).code == nullptr);
 }
 
-// The two contract tests below end the process at a failed Require, so they are hidden from the
+// The contract tests below end the process at a failed Require, so they are hidden from the
 // unit run: tests/CMakeLists.txt runs each in a process of its own and expects the Require's text
 // (isoline::runtime::testing::endAtContractViolation()).
 
-TEST_CASE("Instantiate.codeMustMatchTheExecutor", "[.contract]")
+TEST_CASE("Contract.Instantiate.codeMustMatchTheExecutor", "[.contract]")
 {
     // Code of the fast engine, run by the reference interpreter: a contract violation.
     isoline::runtime::testing::endAtContractViolation();
@@ -235,7 +235,7 @@ TEST_CASE("Instantiate.codeMustMatchTheExecutor", "[.contract]")
     FAIL("SURVIVED: instantiate accepted code of another engine");
 }
 
-TEST_CASE("Instantiate.nullCodeNeedsTheReference", "[.contract]")
+TEST_CASE("Contract.Instantiate.nullCodeNeedsTheReference", "[.contract]")
 {
     // No code, for an executor that needs some: a contract violation.
     isoline::runtime::testing::endAtContractViolation();
@@ -246,6 +246,23 @@ TEST_CASE("Instantiate.nullCodeNeedsTheReference", "[.contract]")
     auto executor = StubExecutor { ExecutionEngine::Fast };
     std::ignore = instantiate(store, executor, moduleOf(builder), {});
     FAIL("SURVIVED: instantiate ran an engine that needs code without any");
+}
+
+TEST_CASE("Contract.Instantiate.referenceCodeIsNull", "[.contract]")
+{
+    // Code that claims the reference engine, which runs the validated module itself: a contract violation.
+    isoline::runtime::testing::endAtContractViolation();
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, {});
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    std::ignore = instantiate(store,
+                              interpreter,
+                              moduleOf(builder),
+                              std::make_shared<StubCode const>(ExecutionEngine::Reference),
+                              {});
+    FAIL("SURVIVED: instantiate accepted code that claims the reference engine");
 }
 
 TEST_CASE("Instantiate.unknownImport")

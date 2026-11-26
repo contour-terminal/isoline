@@ -241,17 +241,33 @@ endif()
 
 # The contract checks of the unit tests: each case tagged [.contract] in isoline_test violates one
 # Require on purpose, which ends its process, so the unit run hides it and it runs here, alone in a
-# process. It passes on the Require's own text, so ending for any other reason fails it, as does a
-# case that survives (its FAIL names SURVIVED). The contract is the row's second item.
-foreach(contract IN ITEMS
-        "Instantiate.codeMustMatchTheExecutor|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)"
-        "Instantiate.nullCodeNeedsTheReference|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)")
-    string(REPLACE "|" ";" contractRow "${contract}")
-    list(GET contractRow 0 contractCase)
-    list(GET contractRow 1 contractText)
-    add_test(NAME contract.${contractCase} COMMAND $<TARGET_FILE:isoline_test> "${contractCase}")
-    set_tests_properties(contract.${contractCase} PROPERTIES
+# process. Their names start with "Contract.", so no wildcard over an area ("Instantiate.*") reaches
+# them. A row passes on the Require's own text, so ending for any other reason fails it, as does a
+# case that survives (its FAIL names SURVIVED). The row is the case, then the Require's condition as
+# a regular expression.
+set(isolineContractRows
+    "Contract.Instantiate.codeMustMatchTheExecutor|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)"
+    "Contract.Instantiate.nullCodeNeedsTheReference|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)"
+    "Contract.Instantiate.referenceCodeIsNull|code == nullptr \\|\\| code->engine\\(\\) != ExecutionEngine::Reference"
+    # Removed in P4 Task 14b, which wires the fast engine into the API.
+    "Contract.Engine.runsOnlyTheReferenceEngine|_config\\.engine == ExecutionEngine::Reference")
+set(isolineContractCases)
+foreach(contract IN LISTS isolineContractRows)
+    string(FIND "${contract}" "|" separator)
+    string(SUBSTRING "${contract}" 0 ${separator} contractCase)
+    math(EXPR textBegin "${separator} + 1")
+    string(SUBSTRING "${contract}" ${textBegin} -1 contractText)
+    list(APPEND isolineContractCases "${contractCase}")
+    add_test(NAME ${contractCase} COMMAND $<TARGET_FILE:isoline_test> "${contractCase}")
+    set_tests_properties(${contractCase} PROPERTIES
                          LABELS unit
                          PASS_REGULAR_EXPRESSION "Precondition failed\\. ${contractText}"
                          FAIL_REGULAR_EXPRESSION "SURVIVED")
 endforeach()
+# Every [.contract] case of isoline_test has a row above, and every row a case: a case without a row
+# would never run.
+string(REPLACE ";" "," isolineContractCaseList "${isolineContractCases}")
+add_test(NAME contract-rows-complete
+         COMMAND ${CMAKE_COMMAND} -DTEST_BINARY=$<TARGET_FILE:isoline_test> "-DEXPECTED=${isolineContractCaseList}"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckContractRows.cmake")
+set_tests_properties(contract-rows-complete PROPERTIES LABELS unit)
