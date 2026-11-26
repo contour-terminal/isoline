@@ -17,6 +17,7 @@ target_sources(isoline_core
         interpreter/ReferenceInterpreter.cpp
         interpreter/Simd.cpp
         runtime/Instantiate.cpp
+        runtime/LinearMemory.cpp
         runtime/Store.cpp
         validate/Subtyping.cpp
         validate/ValidatedModule.cpp
@@ -41,6 +42,7 @@ target_sources(isoline_core
             runtime/Abrupt.hpp
             runtime/Instantiate.hpp
             runtime/Limits.hpp
+            runtime/LinearMemory.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp

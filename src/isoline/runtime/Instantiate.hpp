@@ -142,8 +142,9 @@ class ICodeExecutor
 /// its tags) are checked against what is left of the store's limits (Store::checkInstanceDemand), so
 /// a limit refusal (LimitExceeded) leaves no instance, memory, table, type or tag behind; imported
 /// entities claim nothing. Tables and memories are allocated before the instance is added to the
-/// store, so an AllocationFailure leaves no instance behind (the tables and memories allocated before
-/// the failing one stay in the store, unreferenced). A trap from a global's initializer, an element
+/// store, so an AllocationFailure leaves no instance behind, and the tables and memories allocated
+/// before the failing one are released (Store::releaseTrailing), their bytes and elements returned to
+/// the store's budgets, so a retry gets its quota back. A trap from a global's initializer, an element
 /// segment, or later, leaves the instance in the store, as the spec's partial instantiation does.
 ///
 /// The instance keeps @p module, and its module is @p module's, sharing its ownership. Every external

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -19,9 +21,11 @@
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/ProvidedMemory.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::binary::AddressType;
@@ -36,7 +40,10 @@ using isoline::binary::TableType;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::runtime::AllocationError;
 using isoline::runtime::AllocationFailure;
+using isoline::runtime::GrowthRecord;
+using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::I32;
+using isoline::runtime::IMemoryAllocator;
 using isoline::runtime::InstanceDemand;
 using isoline::runtime::InstantiationError;
 using isoline::runtime::Limit;
@@ -44,11 +51,14 @@ using isoline::runtime::LimitExceeded;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Refusal;
+using isoline::runtime::RefusalScope;
 using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
+using isoline::runtime::StoreServices;
 using isoline::runtime::Trap;
-using isoline::runtime::UnlimitedAllocator;
 using isoline::runtime::Value;
+using isoline::runtime::testing::GrowDecision;
+using isoline::runtime::testing::ProvidedMemoryAllocator;
 
 namespace
 {
@@ -69,7 +79,15 @@ constexpr auto NullFunction = Ref { .kind = RefKind::Null, .heap = FuncRef.heap,
 class LimitedStore
 {
   public:
-    explicit LimitedStore(StoreLimits limits): _store { _allocator, limits } {}
+    /// @param limits The store's limits.
+    /// @param allocator Allocates its memories; must outlive this.
+    LimitedStore(StoreLimits limits, IMemoryAllocator& allocator):
+        _store { limits, StoreServices { .allocator = allocator } }
+    {
+    }
+
+    /// @param limits The store's limits; its memories are allocated on the heap.
+    explicit LimitedStore(StoreLimits limits): LimitedStore { limits, _heap } {}
 
     /// Decodes, validates and instantiates @p builder's module, which must be valid.
     /// @param builder The module.
@@ -87,7 +105,7 @@ class LimitedStore
     [[nodiscard]] Store& store() noexcept { return _store; }
 
   private:
-    UnlimitedAllocator _allocator;
+    HeapMemoryAllocator _heap;
     Store _store;
     isoline::interpreter::ReferenceInterpreter _interpreter;
 };
@@ -122,8 +140,8 @@ LimitExceeded limitOf(std::expected<uint32_t, InstantiationError> const& result)
 
 TEST_CASE("Store.constAccessors")
 {
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const one = Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 };
     auto const function = store.addHostFunction(
         FuncType {},
@@ -140,7 +158,7 @@ TEST_CASE("Store.constAccessors")
     auto const& view = static_cast<Store const&>(store);
     CHECK(view.function(function).isHost());
     CHECK(view.table(*table).elements.size() == 1);
-    CHECK(view.memory(*memory).bytes.size() == PageSize);
+    CHECK(view.memory(*memory).bytes().size() == PageSize);
     CHECK(view.global(global).value == Value { I32 { .bits = 7 } });
     CHECK(&view.global(global) == &store.global(global));
 }
@@ -148,8 +166,8 @@ TEST_CASE("Store.constAccessors")
 TEST_CASE("Store.addressTypesBoundGrowth")
 {
     // A guest can name sizes no host can hold; the store refuses them without allocating.
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const at64 = Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I64 };
     auto const memory = store.addMemory(MemoryType { .limits = at64 });
     auto const table = store.addTable(TableType { .element = FuncRef, .limits = at64 },
@@ -162,7 +180,7 @@ TEST_CASE("Store.addressTypesBoundGrowth")
     CHECK(store.growMemory(*memory, uint64_t { 1 } << 20) == std::unexpected { Refusal::Limit });
     CHECK(store.growTable(*table, ~uint64_t { 0 }, Ref {}) == std::unexpected { Refusal::TypeMaximum });
     CHECK(store.growTable(*table, uint64_t { 1 } << 62, Ref {}) == std::unexpected { Refusal::TypeMaximum });
-    CHECK(store.memory(*memory).bytes.size() == PageSize);
+    CHECK(store.memory(*memory).bytes().size() == PageSize);
     CHECK(store.table(*table).elements.size() == 1);
     // What the store grants, it grows by.
     CHECK(store.growMemory(*memory, 1) == 1U);
@@ -172,14 +190,14 @@ TEST_CASE("Store.addressTypesBoundGrowth")
 TEST_CASE("Store.byteGranularMemory")
 {
     // A memory of 1-byte pages holds as many bytes as pages, and grows by bytes.
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const memory =
         store.addMemory(MemoryType { .limits = Limits { .min = 3, .max = std::nullopt }, .pageSizeLog2 = 0 });
     REQUIRE(memory.has_value());
-    CHECK(store.memory(*memory).bytes.size() == 3);
+    CHECK(store.memory(*memory).bytes().size() == 3);
     CHECK(store.growMemory(*memory, 1) == 3U);
-    CHECK(store.memory(*memory).bytes.size() == 4);
+    CHECK(store.memory(*memory).bytes().size() == 4);
     // An i32 memory of 1-byte pages reaches 2^32 - 1 bytes, not 2^32.
     CHECK(store.growMemory(*memory, 0xFFFF'FFFC) == std::unexpected { Refusal::TypeMaximum });
     // With i64 addresses it reaches 2^64 - 1 pages, which no product overflows to grant: the store
@@ -191,15 +209,15 @@ TEST_CASE("Store.byteGranularMemory")
     CHECK(store.growMemory(*wide, ~uint64_t { 0 }) == std::unexpected { Refusal::Limit });
     CHECK(store.growMemory(*wide, (uint64_t { 1 } << 32) + 1) == std::unexpected { Refusal::Limit });
     CHECK(store.growMemory(*wide, 16) == 0U);
-    CHECK(store.memory(*wide).bytes.size() == 16);
+    CHECK(store.memory(*wide).bytes().size() == 16);
 }
 
 TEST_CASE("Store.internTypeHashConses")
 {
     using isoline::binary::concreteRef;
     using isoline::binary::Nullable;
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const takesI32 = store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} });
     auto const returnsI32 = store.internType(FuncType { .params = {}, .results = { isoline::binary::I32 } });
     CHECK(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }) == takesI32);
@@ -225,8 +243,8 @@ TEST_CASE("Store.internTypeHashConses")
 
 TEST_CASE("Store.findTypeDoesNotIntern")
 {
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const takesI32 = FuncType { .params = { isoline::binary::I32 }, .results = {} };
     CHECK(store.typeCount() == 0);
     CHECK(store.findType(takesI32) == std::nullopt);
@@ -245,8 +263,8 @@ TEST_CASE("Store.typeRoundTrip")
 {
     using isoline::binary::concreteRef;
     using isoline::binary::Nullable;
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const empty = FuncType {};
     auto const wide =
         FuncType { .params = { isoline::binary::I64, FuncRef }, .results = { isoline::binary::F32 } };
@@ -268,8 +286,8 @@ TEST_CASE("Store.typeRoundTrip")
 TEST_CASE("Store.tagsAreDistinct")
 {
     // Every tag added is a tag of its own, whatever its type; equal types share their TypeId.
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const type = FuncType { .params = { isoline::binary::I32 }, .results = {} };
     auto const first = store.addTag(store.internType(type));
     auto const second = store.addTag(store.internType(type));
@@ -283,8 +301,8 @@ TEST_CASE("Store.tagNamesItsTypeOnly")
     // A tag holds its TypeId and nothing else: its payload's types are read through the store, so a
     // tag of a wide type costs no more than one of an empty type.
     static_assert(sizeof(isoline::runtime::TagInstance) == sizeof(isoline::runtime::TypeId));
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const wide = FuncType { .params = std::vector(1000, isoline::binary::I32), .results = {} };
     auto const tag = store.addTag(store.internType(wide));
     CHECK(store.type(store.tag(tag).typeId) == wide);
@@ -294,14 +312,14 @@ TEST_CASE("Store.tagNamesItsTypeOnly")
 TEST_CASE("Store.exceptionLimits")
 {
     using isoline::runtime::TrapCode;
-    auto const allocator = UnlimitedAllocator {};
+    auto allocator = HeapMemoryAllocator {};
     auto const payload = [](std::size_t count) {
         return std::vector<Value>(count, I32 { .bits = 7 });
     };
 
     SECTION("the number of exceptions")
     {
-        auto store = Store { allocator, StoreLimits { .maxExceptions = 2 } };
+        auto store = Store { StoreLimits { .maxExceptions = 2 }, StoreServices { .allocator = allocator } };
         auto const tag = store.addTag(store.internType(FuncType {}));
         auto const first = store.addException(tag, {});
         REQUIRE(first.has_value());
@@ -315,7 +333,8 @@ TEST_CASE("Store.exceptionLimits")
 
     SECTION("the values of their payloads")
     {
-        auto store = Store { allocator, StoreLimits { .maxExceptionValues = 3 } };
+        auto store =
+            Store { StoreLimits { .maxExceptionValues = 3 }, StoreServices { .allocator = allocator } };
         using isoline::binary::I32;
         auto const none = store.addTag(store.internType(FuncType {}));
         auto const one = store.addTag(store.internType(FuncType { .params = { I32 }, .results = {} }));
@@ -348,15 +367,16 @@ TEST_CASE("Store.memoryLimitIsStoreWide")
 
 TEST_CASE("Store.growPastLimitIsRefused")
 {
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator, StoreLimits { .maxMemoryBytes = 2 * PageSize, .maxTableElements = 2 } };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxMemoryBytes = 2 * PageSize, .maxTableElements = 2 },
+                         StoreServices { .allocator = allocator } };
     auto const memory = store.addMemory(MemoryType { .limits = atLeast(1) });
     REQUIRE(memory.has_value());
     CHECK(store.growMemory(*memory, 1) == 1U);
     CHECK(store.growMemory(*memory, 1) == std::unexpected { Refusal::Limit });
     // Past an i32 memory's 2^16 pages: the type's reach, whatever the budget.
     CHECK(store.growMemory(*memory, uint64_t { 1 } << 40) == std::unexpected { Refusal::TypeMaximum });
-    CHECK(store.memory(*memory).bytes.size() == 2 * PageSize);
+    CHECK(store.memory(*memory).bytes().size() == 2 * PageSize);
 
     auto const table = store.addTable(TableType { .element = FuncRef, .limits = atLeast(1) }, NullFunction);
     REQUIRE(table.has_value());
@@ -407,8 +427,9 @@ TEST_CASE("Store.entityCountsAreCapped")
 
 TEST_CASE("Store.addRefusesPastTheBudgetAndTheType")
 {
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator, StoreLimits { .maxMemoryBytes = PageSize, .maxTableElements = 4 } };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxMemoryBytes = PageSize, .maxTableElements = 4 },
+                         StoreServices { .allocator = allocator } };
     CHECK(store.addMemory(MemoryType { .limits = atLeast(2) })
           == std::unexpected { AllocationError { LimitExceeded { Limit::MemoryBytes } } });
     CHECK(store.addTable(TableType { .element = FuncRef, .limits = atLeast(5) }, NullFunction)
@@ -430,8 +451,9 @@ TEST_CASE("Store.addRefusesPastTheBudgetAndTheType")
 
 TEST_CASE("Store.checkInstanceDemandCommitsNothing")
 {
-    auto const allocator = UnlimitedAllocator {};
-    auto store = Store { allocator, StoreLimits { .maxMemoryBytes = PageSize, .maxTags = 1 } };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxMemoryBytes = PageSize, .maxTags = 1 },
+                         StoreServices { .allocator = allocator } };
     auto const fitting = InstanceDemand { .memories = 1, .memoryBytes = PageSize, .tags = 1 };
     CHECK(store.checkInstanceDemand(fitting).has_value());
     CHECK(store.checkInstanceDemand(fitting).has_value());
@@ -499,4 +521,333 @@ TEST_CASE("Store.importsClaimNoBudget")
         std::vector { isoline::runtime::ExternValue { .kind = ExternKind::Memory, .address = *memory } };
     CHECK(limited.instantiate(importing, imports).has_value());
     CHECK(limitOf(limited.instantiate(moduleWithMemories(1, 0))) == LimitExceeded { Limit::Memories });
+}
+
+namespace
+{
+
+/// Limits from @p min to @p max pages or elements, of i32 addresses.
+Limits between(uint64_t min, uint64_t max)
+{
+    return Limits { .min = min, .max = max, .addressType = AddressType::I32 };
+}
+
+/// A memory of 1 to 4 pages.
+MemoryType oneToFourPages()
+{
+    return MemoryType { .limits = between(1, 4) };
+}
+
+/// The embedder's decision that grants every grow.
+GrowDecision grantAll(uint64_t /*newBytes*/)
+{
+    return GrowDecision::Grant;
+}
+
+} // namespace
+
+TEST_CASE("Store.providedMemoryGuardTooSmallIsRefused")
+{
+    auto allocator = ProvidedMemoryAllocator { 4 * PageSize, /*guardBytes=*/4'096, grantAll };
+    auto store =
+        Store { StoreLimits {}, StoreServices { .allocator = allocator, .requiredGuardBytes = PageSize } };
+    CHECK(store.addMemory(oneToFourPages())
+          == std::unexpected { AllocationError {
+              AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } } });
+    CHECK(store.memoryCount() == 0);
+
+    // The heap's memories have no guard at all.
+    auto heap = HeapMemoryAllocator {};
+    auto guarded = Store { StoreLimits {}, StoreServices { .allocator = heap, .requiredGuardBytes = 1 } };
+    CHECK(guarded.addMemory(oneToFourPages())
+          == std::unexpected { AllocationError {
+              AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } } });
+
+    // A guard as large as required is enough.
+    auto exact = ProvidedMemoryAllocator { 4 * PageSize, PageSize, grantAll };
+    auto store2 =
+        Store { StoreLimits {}, StoreServices { .allocator = exact, .requiredGuardBytes = PageSize } };
+    CHECK(store2.addMemory(oneToFourPages()).has_value());
+}
+
+TEST_CASE("Store.providedMemoryGrowthIsTheEmbeddersCall")
+{
+    auto decisions = std::vector<uint64_t> {};
+    auto allocator = ProvidedMemoryAllocator { 4 * PageSize, 0, [&](uint64_t bytes) {
+                                                  decisions.push_back(bytes);
+                                                  return bytes <= 2 * PageSize ? GrowDecision::Grant
+                                                                               : GrowDecision::Refuse;
+                                              } };
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const memory = store.addMemory(oneToFourPages());
+    REQUIRE(memory.has_value());
+    auto const* const data = store.memory(*memory).bytes().data();
+
+    CHECK(store.growMemory(*memory, 1) == 1U);
+    CHECK(decisions == std::vector { 2 * PageSize });
+    CHECK(store.memory(*memory).bytes().size() == 2 * PageSize);
+    // The embedder's memory never moves.
+    CHECK(store.memory(*memory).bytes().data() == data);
+    CHECK(store.growthRecord() == GrowthRecord {});
+
+    CHECK(store.growMemory(*memory, 1) == std::unexpected { Refusal::Embedder });
+    CHECK(decisions == std::vector { 2 * PageSize, 3 * PageSize });
+    CHECK(store.memory(*memory).bytes().size() == 2 * PageSize);
+    CHECK(store.growthRecord() == GrowthRecord { .memory = Refusal::Embedder, .table = std::nullopt });
+
+    // Past the type's maximum the store refuses without asking the embedder.
+    CHECK(store.growMemory(*memory, 3) == std::unexpected { Refusal::TypeMaximum });
+    CHECK(decisions.size() == 2);
+    // The record keeps the first refusal.
+    CHECK(store.growthRecord() == GrowthRecord { .memory = Refusal::Embedder, .table = std::nullopt });
+}
+
+namespace
+{
+
+/// An embedder's storage that refuses with whatever it is told to, documented or not: a heap memory
+/// whose every grow returns growRefusal, from an allocator whose allocate() returns allocateRefusal
+/// when one is set.
+class MisreportingAllocator final: public IMemoryAllocator
+{
+  public:
+    /// @param allocateRefusal What allocate() returns, or nullopt to allocate.
+    /// @param growRefusal What every grow() of an allocated memory returns.
+    MisreportingAllocator(std::optional<Refusal> allocateRefusal, Refusal growRefusal):
+        _allocateRefusal { allocateRefusal }, _growRefusal { growRefusal }
+    {
+    }
+
+    [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, Refusal> allocate(
+        isoline::runtime::MemoryRequest const& request) noexcept override
+    {
+        if (_allocateRefusal)
+            return std::unexpected { *_allocateRefusal };
+        return std::make_unique<Memory>(request.initialBytes, _growRefusal);
+    }
+
+  private:
+    /// A memory of a fixed size, refusing every grow.
+    class Memory final: public isoline::runtime::ILinearMemory
+    {
+      public:
+        Memory(uint64_t size, Refusal growRefusal):
+            _bytes(static_cast<std::size_t>(size)), _growRefusal { growRefusal }
+        {
+        }
+
+        [[nodiscard]] std::span<std::byte> bytes() noexcept override { return _bytes; }
+        [[nodiscard]] std::span<std::byte const> bytes() const noexcept override { return _bytes; }
+        [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
+        [[nodiscard]] std::expected<void, Refusal> grow(uint64_t) noexcept override
+        {
+            return std::unexpected { _growRefusal };
+        }
+
+      private:
+        std::vector<std::byte> _bytes;
+        Refusal _growRefusal;
+    };
+
+    std::optional<Refusal> _allocateRefusal;
+    Refusal _growRefusal;
+};
+
+} // namespace
+
+TEST_CASE("Store.storageRefusalsAreAttributedToTheEmbedder")
+{
+    // An allocator or a memory may report only its own refusals; one that claims the store's (Limit,
+    // TypeMaximum) is refusing on its own account, so it reads as the embedder's, never as a store
+    // limit the guest reached.
+    struct Row
+    {
+        Refusal reported;   ///< What the allocator or memory returns.
+        Refusal allocation; ///< What addMemory reports for it.
+        Refusal growth;     ///< What growMemory reports for it.
+    };
+    auto const rows = std::to_array<Row>({
+        { .reported = Refusal::TypeMaximum, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
+        { .reported = Refusal::Limit, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
+        { .reported = Refusal::HostMemory, .allocation = Refusal::HostMemory, .growth = Refusal::HostMemory },
+        { .reported = Refusal::Guard, .allocation = Refusal::Guard, .growth = Refusal::Embedder },
+        { .reported = Refusal::Embedder, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
+    });
+    static_assert(rows.size() == static_cast<std::size_t>(isoline::runtime::LastRefusal) + 1);
+    for (auto const& row: rows)
+    {
+        INFO("reported: " << static_cast<int>(row.reported));
+        auto refusing = MisreportingAllocator { row.reported, row.reported };
+        auto refusingStore = Store { StoreLimits {}, StoreServices { .allocator = refusing } };
+        CHECK(refusingStore.addMemory(oneToFourPages())
+              == std::unexpected { AllocationError {
+                  AllocationFailure { .kind = ExternKind::Memory, .reason = row.allocation } } });
+
+        auto growing = MisreportingAllocator { std::nullopt, row.reported };
+        auto growingStore = Store { StoreLimits {}, StoreServices { .allocator = growing } };
+        auto const memory = growingStore.addMemory(oneToFourPages());
+        REQUIRE(memory.has_value());
+        CHECK(growingStore.growMemory(*memory, 1) == std::unexpected { row.growth });
+        CHECK(growingStore.growthRecord() == GrowthRecord { .memory = row.growth, .table = std::nullopt });
+    }
+}
+
+TEST_CASE("Store.growingByNothingAsksNobody")
+{
+    // memory.grow 0 returns the size, whatever the embedder would decide, and records nothing.
+    auto decisions = std::vector<uint64_t> {};
+    auto allocator = ProvidedMemoryAllocator { 4 * PageSize, 0, [&](uint64_t bytes) {
+                                                  decisions.push_back(bytes);
+                                                  return GrowDecision::Refuse;
+                                              } };
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const memory = store.addMemory(oneToFourPages());
+    REQUIRE(memory.has_value());
+
+    CHECK(store.growMemory(*memory, 0) == 1U);
+    CHECK(decisions.empty());
+    CHECK(store.growthRecord() == GrowthRecord {});
+    CHECK(store.memory(*memory).bytes().size() == PageSize);
+}
+
+TEST_CASE("Store.growthRecordIsPerKind")
+{
+    auto allocator = ProvidedMemoryAllocator { PageSize, 0, grantAll };
+    auto store = Store { StoreLimits { .maxTableElements = 1 }, StoreServices { .allocator = allocator } };
+    auto const table = store.addTable(TableType { .element = FuncRef, .limits = atLeast(1) }, NullFunction);
+    REQUIRE(table.has_value());
+    auto const memory = store.addMemory(oneToFourPages());
+    REQUIRE(memory.has_value());
+
+    CHECK(store.growTable(*table, 1, NullFunction) == std::unexpected { Refusal::Limit });
+    CHECK(store.growthRecord() == GrowthRecord { .memory = std::nullopt, .table = Refusal::Limit });
+    // A refused table.grow does not mask a later memory refusal: past its one-page buffer.
+    CHECK(store.growMemory(*memory, 1) == std::unexpected { Refusal::Embedder });
+    CHECK(store.growthRecord() == GrowthRecord { .memory = Refusal::Embedder, .table = Refusal::Limit });
+}
+
+TEST_CASE("Store.secondProvidedMemoryIsRefused")
+{
+    auto allocator = ProvidedMemoryAllocator { 4 * PageSize, 0, grantAll };
+    auto limited = LimitedStore { StoreLimits {}, allocator };
+    auto builder = ModuleBuilder {};
+    builder.memory(oneToFourPages()).memory(oneToFourPages());
+    auto const result = limited.instantiate(builder);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error()
+          == InstantiationError {
+              AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Embedder } });
+}
+
+TEST_CASE("Store.failedInstantiationReleasesItsAllocations")
+{
+    auto allocator = ProvidedMemoryAllocator { 4 * PageSize, 0, grantAll };
+    auto limited = LimitedStore { StoreLimits { .maxTableElements = 1'024 }, allocator };
+    auto& store = limited.store();
+    auto builder = moduleWithTables({ 600 });
+    builder.memory(oneToFourPages()).memory(oneToFourPages());
+    auto const result = limited.instantiate(builder);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error()
+          == InstantiationError {
+              AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Embedder } });
+    CHECK(store.moduleInstanceCount() == 0);
+    CHECK(store.tableCount() == 0);
+    CHECK(store.memoryCount() == 0);
+
+    // The 600 elements are back in the budget: a table of all 1'024 fits.
+    CHECK(limited.instantiate(moduleWithTables({ 1'024 })).has_value());
+    CHECK(store.tableCount() == 1);
+}
+
+TEST_CASE("Store.releaseTrailingReturnsTheBudgets")
+{
+    auto limited = LimitedStore { StoreLimits { .maxMemoryBytes = 2 * PageSize, .maxTableElements = 10 } };
+    auto& store = limited.store();
+    REQUIRE(store.addMemory(MemoryType { .limits = atLeast(1) }).has_value());
+    REQUIRE(store.addTable(TableType { .element = FuncRef, .limits = atLeast(4) }, NullFunction).has_value());
+    REQUIRE(store.addMemory(MemoryType { .limits = atLeast(1) }).has_value());
+    REQUIRE(store.addTable(TableType { .element = FuncRef, .limits = atLeast(6) }, NullFunction).has_value());
+
+    store.releaseTrailing(1, 1);
+    CHECK(store.tableCount() == 1);
+    CHECK(store.memoryCount() == 1);
+    // One page and six elements are free again, and no more.
+    CHECK(store.addMemory(MemoryType { .limits = atLeast(1) }).has_value());
+    CHECK(store.addTable(TableType { .element = FuncRef, .limits = atLeast(6) }, NullFunction).has_value());
+    CHECK(store.addTable(TableType { .element = FuncRef, .limits = atLeast(1) }, NullFunction)
+          == std::unexpected { AllocationError { LimitExceeded { Limit::TableElements } } });
+
+    // Releasing nothing changes nothing.
+    store.releaseTrailing(static_cast<uint32_t>(store.tableCount()),
+                          static_cast<uint32_t>(store.memoryCount()));
+    CHECK(store.tableCount() == 2);
+}
+
+TEST_CASE("Store.memoryRequestNamesItsBounds")
+{
+    /// Allocates on the heap, and keeps the last request.
+    class RecordingAllocator final: public IMemoryAllocator
+    {
+      public:
+        [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, Refusal> allocate(
+            isoline::runtime::MemoryRequest const& request) noexcept override
+        {
+            last = request;
+            return _heap.allocate(request);
+        }
+
+        std::optional<isoline::runtime::MemoryRequest> last; ///< The last request.
+
+      private:
+        HeapMemoryAllocator _heap;
+    };
+    auto allocator = RecordingAllocator {};
+    auto store = Store { StoreLimits { .maxMemoryBytes = (3 * PageSize) + 100 },
+                         StoreServices { .allocator = allocator, .requiredGuardBytes = 0 } };
+
+    // Bounded by its type's maximum.
+    REQUIRE(store.addMemory(MemoryType { .limits = between(1, 2) }).has_value());
+    REQUIRE(allocator.last.has_value());
+    CHECK(allocator.last->initialBytes == PageSize);
+    CHECK(allocator.last->maximumBytes == 2 * PageSize);
+    CHECK(allocator.last->requiredGuardBytes == 0);
+
+    // Bounded by the store's limit, rounded down to whole pages.
+    REQUIRE(store.addMemory(MemoryType { .limits = atLeast(0) }).has_value());
+    CHECK(allocator.last->initialBytes == 0);
+    CHECK(allocator.last->maximumBytes == 3 * PageSize);
+    REQUIRE(store.addMemory(MemoryType { .limits = atLeast(0), .pageSizeLog2 = 0 }).has_value());
+    CHECK(allocator.last->maximumBytes == (3 * PageSize) + 100);
+}
+
+TEST_CASE("Store.refusalScopeRestoresTheOuterRecord")
+{
+    auto limited = LimitedStore { StoreLimits { .maxTableElements = 1 } };
+    auto& store = limited.store();
+    auto const table =
+        store.addTable(TableType { .element = FuncRef, .limits = between(1, 2) }, NullFunction);
+    REQUIRE(table.has_value());
+    auto const outerRecord = GrowthRecord { .memory = std::nullopt, .table = Refusal::Limit };
+
+    SECTION("the outer record survives a nested refusal")
+    {
+        CHECK(store.growTable(*table, 1, NullFunction) == std::unexpected { Refusal::Limit });
+        {
+            auto const inner = RefusalScope { store };
+            CHECK(store.growthRecord() == GrowthRecord {});
+            CHECK(store.growTable(*table, 5, NullFunction) == std::unexpected { Refusal::TypeMaximum });
+            CHECK(inner.record() == GrowthRecord { .memory = std::nullopt, .table = Refusal::TypeMaximum });
+        }
+        CHECK(store.growthRecord() == outerRecord);
+    }
+    SECTION("a nested refusal does not leak into an outer scope that had none")
+    {
+        {
+            auto const inner = RefusalScope { store };
+            CHECK(store.growTable(*table, 1, NullFunction) == std::unexpected { Refusal::Limit });
+            CHECK(inner.record() == outerRecord);
+        }
+        CHECK(store.growthRecord() == GrowthRecord {});
+    }
 }

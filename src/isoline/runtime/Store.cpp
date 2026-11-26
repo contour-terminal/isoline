@@ -11,14 +11,18 @@
 #include <expected>
 #include <limits>
 #include <map>
+#include <memory>
 #include <new>
 #include <optional>
+#include <ranges>
+#include <span>
 #include <utility>
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
@@ -65,43 +69,76 @@ namespace
         uint64_t unitCost; ///< What one unit charges: a page's bytes, or one element.
     };
 
-    /// Resizes @p items, which only grow, to @p units units of @p unitBytes each, new items being
-    /// @p fill, and charges the units added to @p budget; leaves both unchanged on a refusal.
-    /// @return Nothing, or why it was refused: TypeMaximum past @p limit, Limit past the budget,
-    ///         Embedder when the allocator refuses it, HostMemory when allocation fails.
-    template <typename T>
-    [[nodiscard]] std::expected<void, Refusal> resize(std::vector<T>& items,
-                                                      uint64_t units,
-                                                      uint64_t limit,
-                                                      uint64_t unitBytes,
-                                                      IMemoryAllocator const& allocator,
-                                                      T const& fill,
-                                                      Budget budget)
+    /// What growing from @p oldUnits by @p delta units charges @p budget, if it may.
+    /// @param oldUnits The current size, at most @p limit.
+    /// @param delta The units to add.
+    /// @return The charge; or TypeMaximum past @p limit, Limit past what is left of the budget.
+    [[nodiscard]] std::expected<uint64_t, Refusal> charge(uint64_t oldUnits,
+                                                          uint64_t delta,
+                                                          uint64_t limit,
+                                                          Budget const& budget) noexcept
     {
-        if (units > limit)
+        if (delta > limit - oldUnits)
             return std::unexpected { Refusal::TypeMaximum };
-        // units <= limit <= 2^64 / unitBytes, and a page's bytes are its unitBytes: nothing overflows.
-        auto const oldUnits = items.size() * sizeof(T) / unitBytes;
-        auto const added = (units - oldUnits) * budget.unitCost;
+        // delta <= limit <= 2^64 / unitCost, so nothing overflows.
+        auto const added = delta * budget.unitCost;
         if (added > budget.limit - budget.total)
             return std::unexpected { Refusal::Limit };
-        if (!allocator.mayHold(units * unitBytes))
-            return std::unexpected { Refusal::Embedder };
-        auto const count = units * unitBytes / sizeof(T);
-        if (count > items.max_size())
-            return std::unexpected { Refusal::HostMemory };
-        try
-        {
-            items.resize(static_cast<std::size_t>(count), fill);
-        }
-        catch (std::bad_alloc const&)
-        {
-            // uncovered-begin(bad-alloc)
-            return std::unexpected { Refusal::HostMemory };
-        }
-        // uncovered-end(bad-alloc)
-        budget.total += added;
-        return {};
+        return added;
+    }
+
+    /// Grows @p elements by @p delta slots holding @p fill, and charges them to @p budget; leaves
+    /// both unchanged on a refusal.
+    /// @return Nothing, or why it was refused: TypeMaximum past @p limit, Limit past the budget,
+    ///         HostMemory when allocation fails.
+    [[nodiscard]] std::expected<void, Refusal> growElements(
+        std::vector<Ref>& elements, uint64_t delta, uint64_t limit, Ref fill, Budget budget)
+    {
+        return charge(elements.size(), delta, limit, budget)
+            .and_then([&](uint64_t added) -> std::expected<void, Refusal> {
+                // Within limit, so the sum does not overflow.
+                auto const units = elements.size() + delta;
+                if (units > elements.max_size())
+                    return std::unexpected { Refusal::HostMemory };
+                try
+                {
+                    elements.resize(static_cast<std::size_t>(units), fill);
+                }
+                catch (std::bad_alloc const&)
+                {
+                    // uncovered-begin(bad-alloc)
+                    return std::unexpected { Refusal::HostMemory };
+                }
+                // uncovered-end(bad-alloc)
+                budget.total += added;
+                return {};
+            });
+    }
+
+    /// The refusals IMemoryAllocator::allocate() may report.
+    constexpr auto AllocationRefusals =
+        std::to_array({ Refusal::Embedder, Refusal::HostMemory, Refusal::Guard });
+
+    /// The refusals ILinearMemory::grow() may report.
+    constexpr auto GrowRefusals = std::to_array({ Refusal::Embedder, Refusal::HostMemory });
+
+    /// @p refusal as the embedder's allocator or memory reported it, attributed to whom it belongs:
+    /// one of @p documented stays as it is; any other (TypeMaximum, Limit) is the store's alone to
+    /// decide, so a storage claiming it is refusing on its own account, which is Embedder.
+    /// @param refusal What the allocator or the memory returned.
+    /// @param documented The refusals it is documented to return.
+    /// @return The refusal to report.
+    [[nodiscard]] constexpr Refusal embedderRefusal(Refusal refusal,
+                                                    std::span<Refusal const> documented) noexcept
+    {
+        return std::ranges::find(documented, refusal) != documented.end() ? refusal : Refusal::Embedder;
+    }
+
+    /// Records @p refusal in @p slot unless the scope recorded one of its kind already.
+    void recordFirst(std::optional<Refusal>& slot, Refusal refusal) noexcept
+    {
+        if (!slot)
+            slot = refusal;
     }
 
     /// The refusal to add a memory or a table of @p kind: a store limit as LimitExceeded of
@@ -132,8 +169,17 @@ namespace
     }
 } // namespace
 
-Store::Store(IMemoryAllocator const& allocator, StoreLimits limits):
-    _allocator { &allocator }, _limits { limits }
+MemoryInstance::MemoryInstance(binary::MemoryType type, std::unique_ptr<ILinearMemory> memory):
+    type { type }, _memory { std::move(memory) }
+{
+    Require(_memory != nullptr);
+}
+
+Store::Store(StoreLimits limits, StoreServices services):
+    _allocator { &services.allocator },
+    _requiredGuardBytes { services.requiredGuardBytes },
+    _limits { limits },
+    _growthRecord {}
 {
 }
 
@@ -202,13 +248,11 @@ std::expected<TableAddr, AllocationError> Store::addTable(binary::TableType type
     if (_tables.size() >= _limits.maxTables)
         return std::unexpected { LimitExceeded { .limit = Limit::Tables } };
     auto elements = std::vector<Ref> {};
-    return resize(elements,
-                  type.limits.min,
-                  slotLimit(type),
-                  sizeof(Ref),
-                  *_allocator,
-                  init,
-                  Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
+    return growElements(elements,
+                        type.limits.min,
+                        slotLimit(type),
+                        init,
+                        Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
         .transform_error(
             [](Refusal refusal) { return allocationError(refusal, ExternKind::Table, Limit::TableElements); })
         .transform(
@@ -221,18 +265,39 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
     if (_memories.size() >= _limits.maxMemories)
         return std::unexpected { LimitExceeded { .limit = Limit::Memories } };
     auto const pageBytes = binary::pageSize(type);
-    auto bytes = std::vector<std::byte> {};
-    return resize(bytes,
-                  type.limits.min,
-                  pageLimit(type),
-                  pageBytes,
-                  *_allocator,
-                  std::byte {},
-                  Budget { .total = _memoryBytes, .limit = _limits.maxMemoryBytes, .unitCost = pageBytes })
+    auto const pages = pageLimit(type);
+    auto const initialBytes =
+        charge(0,
+               type.limits.min,
+               pages,
+               Budget { .total = _memoryBytes, .limit = _limits.maxMemoryBytes, .unitCost = pageBytes });
+    if (!initialBytes)
+        return std::unexpected { allocationError(
+            initialBytes.error(), ExternKind::Memory, Limit::MemoryBytes) };
+    // pages * pageBytes fits a u64 (pageLimit), and the store's limit caps every memory together.
+    auto const request = MemoryRequest {
+        .type = type,
+        .initialBytes = *initialBytes,
+        .maximumBytes = std::min(pages, _limits.maxMemoryBytes / pageBytes) * pageBytes,
+        .requiredGuardBytes = _requiredGuardBytes,
+    };
+    return _allocator->allocate(request)
+        .transform_error([](Refusal refusal) { return embedderRefusal(refusal, AllocationRefusals); })
+        .and_then([&](std::unique_ptr<ILinearMemory> memory)
+                      -> std::expected<std::unique_ptr<ILinearMemory>, Refusal> {
+            // The allocator's contract, not the guest's: a memory, of the size asked for.
+            Require(memory != nullptr);
+            Require(std::as_const(*memory).bytes().size() == request.initialBytes);
+            if (memory->guardBytes() < request.requiredGuardBytes)
+                return std::unexpected { Refusal::Guard };
+            return memory;
+        })
         .transform_error(
             [](Refusal refusal) { return allocationError(refusal, ExternKind::Memory, Limit::MemoryBytes); })
-        .transform(
-            [&] { return append(_memories, MemoryInstance { .type = type, .bytes = std::move(bytes) }); });
+        .transform([&](std::unique_ptr<ILinearMemory> memory) {
+            _memoryBytes += request.initialBytes;
+            return append(_memories, MemoryInstance { type, std::move(memory) });
+        });
 }
 
 GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
@@ -313,6 +378,24 @@ std::size_t Store::tableCount() const noexcept
     return _tables.size();
 }
 
+void Store::releaseTrailing(TableAddr firstTable, MemAddr firstMemory) noexcept
+{
+    Require(firstTable <= _tables.size() && firstMemory <= _memories.size());
+    auto const tables = std::ranges::subrange { _tables.begin() + firstTable, _tables.end() };
+    for (auto const& table: tables)
+        _tableElements -= table.elements.size();
+    _tables.erase(tables.begin(), tables.end());
+    auto const memories = std::ranges::subrange { _memories.begin() + firstMemory, _memories.end() };
+    for (auto const& memory: memories)
+        _memoryBytes -= memory.bytes().size();
+    _memories.erase(memories.begin(), memories.end());
+}
+
+GrowthRecord const& Store::growthRecord() const noexcept
+{
+    return _growthRecord;
+}
+
 FunctionInstance const& Store::function(FuncAddr address) const
 {
     return at(_functions, address);
@@ -382,35 +465,58 @@ std::expected<uint64_t, Refusal> Store::growMemory(MemAddr address, uint64_t del
 {
     auto& instance = memory(address);
     auto const pageBytes = binary::pageSize(instance.type);
-    auto const oldPages = uint64_t { instance.bytes.size() / pageBytes };
-    auto const limit = pageLimit(instance.type);
-    if (deltaPages > limit - oldPages)
-        return std::unexpected { Refusal::TypeMaximum };
-    return resize(instance.bytes,
-                  oldPages + deltaPages,
-                  limit,
-                  pageBytes,
-                  *_allocator,
-                  std::byte {},
-                  Budget { .total = _memoryBytes, .limit = _limits.maxMemoryBytes, .unitCost = pageBytes })
-        .transform([oldPages] { return oldPages; });
+    auto const oldPages = uint64_t { instance.bytes().size() / pageBytes };
+    // Growing by nothing always succeeds and changes nothing, so neither the storage nor the embedder
+    // is asked, and nothing is recorded.
+    if (deltaPages == 0)
+        return oldPages;
+    auto const grown =
+        charge(oldPages,
+               deltaPages,
+               pageLimit(instance.type),
+               Budget { .total = _memoryBytes, .limit = _limits.maxMemoryBytes, .unitCost = pageBytes })
+            .and_then([&](uint64_t added) {
+                return instance.grow((oldPages + deltaPages) * pageBytes)
+                    .transform_error([](Refusal refusal) { return embedderRefusal(refusal, GrowRefusals); })
+                    .transform([&] {
+                        _memoryBytes += added;
+                        return oldPages;
+                    });
+            });
+    if (!grown)
+        recordFirst(_growthRecord.memory, grown.error());
+    return grown;
 }
 
 std::expected<uint64_t, Refusal> Store::growTable(TableAddr address, uint64_t delta, Ref init)
 {
     auto& instance = table(address);
     auto const oldSize = uint64_t { instance.elements.size() };
-    auto const limit = slotLimit(instance.type);
-    if (delta > limit - oldSize)
-        return std::unexpected { Refusal::TypeMaximum };
-    return resize(instance.elements,
-                  oldSize + delta,
-                  limit,
-                  sizeof(Ref),
-                  *_allocator,
-                  init,
-                  Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
-        .transform([oldSize] { return oldSize; });
+    auto const grown =
+        growElements(instance.elements,
+                     delta,
+                     slotLimit(instance.type),
+                     init,
+                     Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
+            .transform([oldSize] { return oldSize; });
+    if (!grown)
+        recordFirst(_growthRecord.table, grown.error());
+    return grown;
+}
+
+RefusalScope::RefusalScope(Store& store) noexcept:
+    _store { &store }, _outer { std::exchange(store._growthRecord, GrowthRecord {}) }
+{
+}
+
+RefusalScope::~RefusalScope()
+{
+    _store->_growthRecord = _outer;
+}
+
+GrowthRecord const& RefusalScope::record() const noexcept
+{
+    return _store->_growthRecord;
 }
 
 } // namespace isoline::runtime

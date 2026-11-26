@@ -72,8 +72,9 @@ namespace
                                      binary::MemoryType const& required) noexcept
     {
         return memory.type.pageSizeLog2 == required.pageSizeLog2
-               && limitsMatch(
-                   memory.bytes.size() / binary::pageSize(memory.type), memory.type.limits, required.limits);
+               && limitsMatch(memory.bytes().size() / binary::pageSize(memory.type),
+                              memory.type.limits,
+                              required.limits);
     }
 
     /// Whether @p global matches the global type @p required, in store form: its mutability exactly,
@@ -279,8 +280,9 @@ namespace
 
         /// Checks the module's demand against the store's limits, then allocates the tables and
         /// memories, into an instance not yet in the store, so an allocation failure leaves no
-        /// half-built instance registered and no type interned; then interns the types, registers
-        /// the instance and allocates the rest.
+        /// half-built instance registered and no type interned, and releases the tables and memories
+        /// it allocated (Store::releaseTrailing); then interns the types, registers the instance and
+        /// allocates the rest.
         [[nodiscard]] Step allocate()
         {
             if (auto const fits = _store.checkInstanceDemand(demand()); !fits)
@@ -298,8 +300,14 @@ namespace
                                             .exports = {} };
             for (auto const& value: _imports)
                 indexSpace(pending, value.kind).push_back(value.address);
+            auto const firstTable = static_cast<TableAddr>(_store.tableCount());
+            auto const firstMemory = static_cast<MemAddr>(_store.memoryCount());
             return allocateTables(pending)
                 .and_then([&] { return allocateMemories(pending); })
+                .or_else([&](InstantiationError const& error) -> Step {
+                    _store.releaseTrailing(firstTable, firstMemory);
+                    return std::unexpected { error };
+                })
                 .and_then([&] {
                     internTypes();
                     _address = _store.addModuleInstance(std::move(pending));
@@ -494,11 +502,11 @@ namespace
                 if (!offset)
                     return std::unexpected { offset.error() };
                 auto const source = std::span<std::byte const> { segment.bytes };
-                auto& bytes = _store.memory(instance().memories[segment.memory]).bytes;
+                auto const bytes = _store.memory(instance().memories[segment.memory]).bytes();
                 if (auto const copied = copySegment(source,
                                                     0,
                                                     source.size(),
-                                                    std::span { bytes },
+                                                    bytes,
                                                     addressOf(*offset),
                                                     TrapCode::OutOfBoundsMemoryAccess);
                     !copied)

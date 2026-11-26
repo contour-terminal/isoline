@@ -18,6 +18,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
@@ -66,11 +67,42 @@ struct TableInstance
     std::vector<Ref> elements; ///< Its slots.
 };
 
-/// A memory instance.
-struct MemoryInstance
+/// A memory instance: its type, and its storage from the store's IMemoryAllocator.
+///
+/// The storage is private, so that a const instance reads its bytes only as const, and only the store,
+/// which charges growth against its budget, grows it.
+class MemoryInstance
 {
-    binary::MemoryType type;      ///< Its type as allocated; its size is bytes.size() / pageSize(type).
-    std::vector<std::byte> bytes; ///< Its contents, a whole number of pages.
+  public:
+    /// @param type Its type as allocated.
+    /// @param memory Its storage (checked: not null).
+    MemoryInstance(binary::MemoryType type, std::unique_ptr<ILinearMemory> memory);
+
+    binary::MemoryType type; ///< Its type as allocated; its size is bytes().size() / pageSize(type).
+
+    /// Its contents, a whole number of pages; re-fetched after every grow and host call.
+    /// @return The storage's bytes.
+    [[nodiscard]] std::span<std::byte> bytes() noexcept { return _memory->bytes(); }
+
+    /// @copydoc bytes()
+    [[nodiscard]] std::span<std::byte const> bytes() const noexcept
+    {
+        return std::as_const(*_memory).bytes();
+    }
+
+  private:
+    friend class Store;
+
+    /// Grows the storage to @p newBytes, zeroed (ILinearMemory::grow()): only the store, which
+    /// charges the growth against its budget, grows a memory.
+    /// @param newBytes The new size in bytes.
+    /// @return Nothing, or the storage's refusal.
+    [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept
+    {
+        return _memory->grow(newBytes);
+    }
+
+    std::unique_ptr<ILinearMemory> _memory;
 };
 
 /// A global instance.
@@ -129,37 +161,22 @@ struct ModuleInstance
     std::vector<std::pair<std::string, ExternValue>> exports;
 };
 
-/// Decides how much memory the store may hold: the seam memory and table growth is limited by.
-class IMemoryAllocator
+/// The services a store reaches the host through, injected at construction.
+struct StoreServices
 {
-  public:
-    virtual ~IMemoryAllocator() = default;
+    /// Allocates every linear memory of the store; referenced, so it must outlive the store.
+    IMemoryAllocator& allocator;
 
-    /// Whether the store may hold @p bytes for one memory or one table.
-    /// @param bytes The size the memory or table would take, in bytes.
-    /// @return Whether the store may hold @p bytes for one memory or table.
-    [[nodiscard]] virtual bool mayHold(uint64_t bytes) const noexcept = 0;
-};
-
-/// The allocator that grants any memory or table of up to 4 GiB: every memory a 32-bit address
-/// space can reach, and every table of up to 4 GiB / sizeof(Ref) slots. Tables are charged
-/// sizeof(Ref) bytes per slot, so a table of 32-bit addresses near its 2^32 - 1 slot reach is
-/// refused.
-class UnlimitedAllocator final: public IMemoryAllocator
-{
-  public:
-    /// @param bytes The size asked for.
-    /// @return Whether @p bytes is at most 4 GiB.
-    [[nodiscard]] bool mayHold(uint64_t bytes) const noexcept override { return bytes <= FourGiB; }
-
-  private:
-    static constexpr auto FourGiB = uint64_t { 1 } << 32;
+    /// The guard region every memory must declare after its bytes (ILinearMemory::guardBytes()): a
+    /// memory with a smaller one is refused with Guard. 0 requires none, as HeapMemoryAllocator has.
+    uint64_t requiredGuardBytes = 0;
 };
 
 /// The store: every function, table, memory, global and module instance, addressed by index.
 ///
 /// Instances are never removed, and adding one never moves the others, so a reference to an
-/// instance stays valid as long as the store.
+/// instance stays valid as long as the store. The one exception is releaseTrailing(), which drops the
+/// tables and memories of an instantiation that failed before anything referred to them.
 ///
 /// Every resource a guest can claim is capped by the store's StoreLimits, fixed at construction: the
 /// counts of memories, tables, instances and tags, the bytes of all memories and the elements of all
@@ -169,9 +186,10 @@ class Store
 {
   public:
     /// Constructs an empty store.
-    /// @param allocator Decides how large a memory or table may grow; must outlive the store.
     /// @param limits What execution and the store's entities may claim.
-    explicit Store(IMemoryAllocator const& allocator, StoreLimits limits = {});
+    /// @param services What the store allocates memories through; referenced, so it must outlive the
+    ///                 store.
+    explicit Store(StoreLimits limits, StoreServices services);
 
     /// A store's instances are addressed by index and its types handed out by reference (type()),
     /// so it stays where it was constructed: it is neither copied nor moved.
@@ -232,18 +250,19 @@ class Store
     /// @param init What every slot starts with.
     /// @return Its address; LimitExceeded when the store holds StoreLimits::maxTables tables already or
     ///         its slots exceed the elements left; otherwise an AllocationFailure when its size is
-    ///         past its type's reach (TypeMaximum), the allocator refuses it (Embedder) or allocation
-    ///         fails (HostMemory).
+    ///         past its type's reach (TypeMaximum) or allocation fails (HostMemory).
     [[nodiscard]] std::expected<TableAddr, AllocationError> addTable(binary::TableType type, Ref init);
 
-    /// Adds a zeroed memory of type.limits.min pages, and charges its bytes against
-    /// StoreLimits::maxMemoryBytes.
+    /// Adds a zeroed memory of type.limits.min pages, allocated by the store's IMemoryAllocator, and
+    /// charges its bytes against StoreLimits::maxMemoryBytes.
     ///
     /// Precondition (checked): type.pageSizeLog2 is below binary::PageSizeLog2Limit, so that the page
     /// size is a u64, as the decoder guarantees for every module's memory.
     /// @param type Its type.
     /// @return Its address; LimitExceeded when the store holds StoreLimits::maxMemories memories
-    ///         already or its bytes exceed those left; otherwise an AllocationFailure, as addTable's.
+    ///         already or its bytes exceed those left; otherwise an AllocationFailure: TypeMaximum when
+    ///         its size is past its type's reach, the allocator's refusal (Embedder, HostMemory), or
+    ///         Guard when the memory's guard is smaller than StoreServices::requiredGuardBytes.
     [[nodiscard]] std::expected<MemAddr, AllocationError> addMemory(binary::MemoryType type);
 
     /// Adds a global.
@@ -298,6 +317,22 @@ class Store
     /// How many tables the store holds.
     /// @return Their count.
     [[nodiscard]] std::size_t tableCount() const noexcept;
+
+    /// Drops the tables from @p firstTable and the memories from @p firstMemory on, destroying their
+    /// storage and returning their elements and bytes to the budgets: what instantiation does when it
+    /// fails to allocate before it registers the instance, so that a retry gets its quota back.
+    ///
+    /// Precondition (checked): @p firstTable is at most tableCount() and @p firstMemory at most
+    /// memoryCount(); nothing refers to the entities dropped.
+    /// @param firstTable The first table to drop: tableCount() before the instantiation allocated.
+    /// @param firstMemory The first memory to drop: memoryCount() before the instantiation allocated.
+    void releaseTrailing(TableAddr firstTable, MemAddr firstMemory) noexcept;
+
+    /// The current refusal scope's first refused grow of each kind (growMemory(), growTable()): what
+    /// the embedder reads to learn why a memory.grow or table.grow returned -1. A RefusalScope starts
+    /// an empty record and restores the outer one when it ends.
+    /// @return The record.
+    [[nodiscard]] GrowthRecord const& growthRecord() const noexcept;
 
     /// The function at @p address. Precondition (checked): the address exists.
     /// @param address The function's address.
@@ -354,8 +389,9 @@ class Store
     /// @param address The memory's address.
     /// @param deltaPages The number of pages to add.
     /// @return The old size in pages; or, the size unchanged, why it was refused: TypeMaximum past the
-    ///         memory's maximum or its address type's reach, Limit past the store's bytes left,
-    ///         Embedder when the allocator refuses it, HostMemory when allocation fails.
+    ///         memory's maximum or its address type's reach, Limit past the store's bytes left, or the
+    ///         memory's own refusal (Embedder, HostMemory). The first refusal is recorded in
+    ///         growthRecord().memory.
     [[nodiscard]] std::expected<uint64_t, Refusal> growMemory(MemAddr address, uint64_t deltaPages);
 
     /// Grows a table by @p delta slots holding @p init, as table.grow does, and charges them against
@@ -363,12 +399,17 @@ class Store
     /// @param address The table's address.
     /// @param delta The number of slots to add.
     /// @param init What the new slots hold.
-    /// @return The old size; or, the size unchanged, why it was refused, as growMemory()'s.
+    /// @return The old size; or, the size unchanged, why it was refused: TypeMaximum, Limit or
+    ///         HostMemory, as growMemory()'s. The first refusal is recorded in growthRecord().table.
     [[nodiscard]] std::expected<uint64_t, Refusal> growTable(TableAddr address, uint64_t delta, Ref init);
 
   private:
-    IMemoryAllocator const* _allocator;
+    friend class RefusalScope;
+
+    IMemoryAllocator* _allocator;
+    uint64_t _requiredGuardBytes;
     StoreLimits _limits;
+    GrowthRecord _growthRecord;    ///< The current refusal scope's first refused grow per kind.
     uint64_t _exceptionValues = 0; ///< The payload values of every exception held.
     uint64_t _memoryBytes = 0;     ///< The bytes of every memory, charged against maxMemoryBytes.
     uint64_t _tableElements = 0;   ///< The slots of every table, charged against maxTableElements.
@@ -386,6 +427,33 @@ class Store
     std::map<binary::FuncType, TypeId> _typeIds;
     /// The interned types by TypeId, pointing at _typeIds' keys, which never move.
     std::vector<binary::FuncType const*> _types;
+};
+
+/// Scopes the store's growth record to one invocation: it saves the record, starts an empty one, and
+/// restores the saved one when it ends, so that a nested call's refused grows never leak into its
+/// caller's record and the caller's first refusal survives the nested call.
+class RefusalScope
+{
+  public:
+    /// Saves @p store's record and starts an empty one.
+    /// @param store The store; must outlive the scope.
+    explicit RefusalScope(Store& store) noexcept;
+
+    /// Restores the record saved at construction.
+    ~RefusalScope();
+
+    RefusalScope(RefusalScope const&) = delete;
+    RefusalScope(RefusalScope&&) = delete;
+    RefusalScope& operator=(RefusalScope const&) = delete;
+    RefusalScope& operator=(RefusalScope&&) = delete;
+
+    /// This scope's record: the first refused grow of each kind since it began, nested scopes' aside.
+    /// @return The store's current record.
+    [[nodiscard]] GrowthRecord const& record() const noexcept;
+
+  private:
+    Store* _store;
+    GrowthRecord _outer; ///< The record of the scope this one is nested in.
 };
 
 } // namespace isoline::runtime

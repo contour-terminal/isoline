@@ -28,6 +28,7 @@
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -61,6 +62,7 @@ using isoline::runtime::Abrupt;
 using isoline::runtime::ExternValue;
 using isoline::runtime::F32;
 using isoline::runtime::FuncAddr;
+using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::Store;
@@ -68,7 +70,6 @@ using isoline::runtime::StoreLimits;
 using isoline::runtime::Thrown;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
-using isoline::runtime::UnlimitedAllocator;
 using isoline::runtime::Value;
 
 namespace
@@ -114,7 +115,7 @@ class Harness
 
     /// Decodes, validates and instantiates @p builder's module in a store of @p limits.
     Harness(ModuleBuilder const& builder, std::vector<ExternValue> const& imports, StoreLimits limits):
-        _store { _allocator, limits }
+        _store { limits, isoline::runtime::StoreServices { .allocator = _allocator } }
     {
         instantiate(builder, imports);
     }
@@ -122,7 +123,8 @@ class Harness
     /// Creates the harness, in a store of @p limits, with host functions that @p bind adds to the
     /// store before instantiation.
     template <typename Bind>
-    Harness(ModuleBuilder const& builder, Bind&& bind, StoreLimits limits = {}): _store { _allocator, limits }
+    Harness(ModuleBuilder const& builder, Bind&& bind, StoreLimits limits = {}):
+        _store { limits, isoline::runtime::StoreServices { .allocator = _allocator } }
     {
         instantiate(builder, std::forward<Bind>(bind)(_store));
     }
@@ -192,7 +194,7 @@ class Harness
         _address = *address;
     }
 
-    UnlimitedAllocator _allocator;
+    HeapMemoryAllocator _allocator;
     Store _store;
     ReferenceInterpreter _interpreter;
     uint32_t _address = 0;
@@ -585,7 +587,7 @@ TEST_CASE("ReferenceInterpreter.bulkMemory")
     CHECK(harness.result(0) == Value { I32 { 0xABAB'ABAB } });
     CHECK(harness.trap(1) == TrapCode::OutOfBoundsMemoryAccess);
     CHECK(harness.result(2) == i32(3));
-    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes.size()
+    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes().size()
           == 3 * PageSize);
 }
 
@@ -607,7 +609,7 @@ TEST_CASE("Interpreter.byteGranularMemory")
     CHECK(harness.result(0) == i32(4));
     CHECK(harness.result(1) == i32(0));
     CHECK(harness.result(3) == i32(0));
-    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes.size()
+    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes().size()
           == 4);
 }
 

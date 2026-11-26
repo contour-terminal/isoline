@@ -45,6 +45,7 @@
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -211,7 +212,9 @@ namespace
     {
       public:
         Runner(std::filesystem::path directory, FeatureSet features):
-            _directory { std::move(directory) }, _features { features }, _store { _allocator }
+            _directory { std::move(directory) },
+            _features { features },
+            _store { runtime::StoreLimits {}, runtime::StoreServices { .allocator = _allocator } }
         {
             _registered.emplace("spectest", _store.addModuleInstance(makeSpectest(_store)));
         }
@@ -519,7 +522,7 @@ namespace
 
         std::filesystem::path _directory;
         FeatureSet _features;
-        runtime::UnlimitedAllocator _allocator;
+        runtime::HeapMemoryAllocator _allocator;
         runtime::Store _store;
         interpreter::ReferenceInterpreter _interpreter;
         std::optional<uint32_t> _current;

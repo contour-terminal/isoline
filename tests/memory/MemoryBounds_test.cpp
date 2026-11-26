@@ -26,6 +26,7 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
@@ -97,8 +98,9 @@ void checkLinear(std::vector<std::byte> const& bytes, FeatureSet features, Insta
         return;
 
     auto const module = std::move(*loaded);
-    auto const allocator = isoline::runtime::UnlimitedAllocator {};
-    auto store = isoline::runtime::Store { allocator };
+    auto allocator = isoline::runtime::HeapMemoryAllocator {};
+    auto store = isoline::runtime::Store { isoline::runtime::StoreLimits {},
+                                           isoline::runtime::StoreServices { .allocator = allocator } };
     auto interpreter = isoline::interpreter::ReferenceInterpreter {};
     auto const storeScope = AllocationScope {};
     auto const instance = isoline::runtime::instantiate(store, interpreter, module, {});

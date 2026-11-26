@@ -587,10 +587,10 @@ namespace
             auto const raw = row.access == MemoryAccessKind::Store ? rawBits(pop()) : uint64_t { 0 };
             auto& target = memory(instruction.b);
             auto const address = popAddress(target.type.limits.addressType);
-            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes.size());
+            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes().size());
             if (!effective)
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            auto const bytes = std::span { target.bytes }.subspan(*effective, width);
+            auto const bytes = target.bytes().subspan(*effective, width);
             if (row.access == MemoryAccessKind::Store)
             {
                 for (auto const index: std::views::iota(0U, width))
@@ -616,10 +616,10 @@ namespace
                               : std::array<std::byte, 16> {};
             auto& target = memory(instruction.b);
             auto const address = popAddress(target.type.limits.addressType);
-            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes.size());
+            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes().size());
             if (!effective)
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            auto const bytes = std::span { target.bytes }.subspan(*effective, width);
+            auto const bytes = target.bytes().subspan(*effective, width);
             // Where in the vector the accessed bytes sit: lane `lane` of a lane access, else the start.
             auto const offset = row.shape == VectorShape::Lane ? width * instruction.lane : std::size_t { 0 };
             auto const lanes = std::span { vector }.subspan(offset, width);
@@ -677,7 +677,8 @@ namespace
         void memorySize(Instruction const& instruction)
         {
             auto const& target = memory(instruction.a);
-            pushAddress(target.type.limits.addressType, target.bytes.size() / binary::pageSize(target.type));
+            pushAddress(target.type.limits.addressType,
+                        target.bytes().size() / binary::pageSize(target.type));
         }
 
         [[nodiscard]] Step memoryFill(Instruction const& instruction)
@@ -687,9 +688,9 @@ namespace
             auto const count = popAddress(type);
             auto const value = static_cast<std::byte>(popI32());
             auto const destination = popAddress(type);
-            if (!fits(destination, count, target.bytes.size()))
+            if (!fits(destination, count, target.bytes().size()))
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            std::ranges::fill(std::span { target.bytes }.subspan(destination, count), value);
+            std::ranges::fill(target.bytes().subspan(destination, count), value);
             return {};
         }
 
@@ -703,12 +704,13 @@ namespace
             auto const count = popAddress(countType);
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
-            if (!fits(source, count, sourceMemory.bytes.size())
-                || !fits(destination, count, destinationMemory.bytes.size()))
+            if (!fits(source, count, sourceMemory.bytes().size())
+                || !fits(destination, count, destinationMemory.bytes().size()))
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
             if (count != 0)
-                std::memmove(
-                    destinationMemory.bytes.data() + destination, sourceMemory.bytes.data() + source, count);
+                std::memmove(destinationMemory.bytes().data() + destination,
+                             sourceMemory.bytes().data() + source,
+                             count);
             return {};
         }
 
@@ -719,12 +721,8 @@ namespace
             auto const count = popI32();
             auto const source = popI32();
             auto const destination = popAddress(target.type.limits.addressType);
-            return runtime::copySegment(segment,
-                                        source,
-                                        count,
-                                        std::span { target.bytes },
-                                        destination,
-                                        TrapCode::OutOfBoundsMemoryAccess);
+            return runtime::copySegment(
+                segment, source, count, target.bytes(), destination, TrapCode::OutOfBoundsMemoryAccess);
         }
 
         // --- Tables ---

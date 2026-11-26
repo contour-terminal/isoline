@@ -22,6 +22,7 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
@@ -364,8 +365,9 @@ TEST_CASE("Opcode.everyRowDecodes")
         }
 
         // Any end of its own will do (results, a trap or an exception): only a missing case aborts.
-        auto const allocator = isoline::runtime::UnlimitedAllocator {};
-        auto store = isoline::runtime::Store { allocator };
+        auto allocator = isoline::runtime::HeapMemoryAllocator {};
+        auto store = isoline::runtime::Store { isoline::runtime::StoreLimits {},
+                                               isoline::runtime::StoreServices { .allocator = allocator } };
         auto interpreter = isoline::interpreter::ReferenceInterpreter {};
         auto const instance = isoline::runtime::instantiate(store, interpreter, std::move(*validated), {});
         REQUIRE(instance.has_value());
