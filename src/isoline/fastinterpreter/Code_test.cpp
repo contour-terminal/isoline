@@ -62,6 +62,7 @@ TEST_CASE("OperationTable.oneRowPerIdInOrder")
         CHECK(std::to_underlying(row.id) == index);
         CHECK(&operationRow(row.id) == &row);
         CHECK_FALSE(row.name.empty());
+        CHECK(row.words >= 1);
     }
     auto names = std::set<std::string_view> {};
     for (auto const& row: OperationTable)
@@ -69,21 +70,23 @@ TEST_CASE("OperationTable.oneRowPerIdInOrder")
     CHECK(OperationCount == OperationTable.size());
 
     // The operations the code model starts with, before lowering adds its own.
-    auto const first = std::to_array<std::pair<std::string_view, OperationForm>>({
-        { "Unreachable", OperationForm::Nullary },
-        { "Nop", OperationForm::Nullary },
-        { "Move64", OperationForm::Move },
-        { "Move128", OperationForm::Move },
-        { "MoveRange", OperationForm::Move },
-        { "Const64", OperationForm::Move },
-        { "Const128", OperationForm::Move },
-        { "Return", OperationForm::Special },
+    auto const first = std::to_array<std::tuple<std::string_view, OperationForm, uint32_t>>({
+        { "Unreachable", OperationForm::Nullary, 1 },
+        { "Nop", OperationForm::Nullary, 1 },
+        { "Move64", OperationForm::Move, 2 },
+        { "Move128", OperationForm::Move, 2 },
+        { "MoveRange", OperationForm::Move, 3 },
+        { "Const64", OperationForm::Move, 3 },
+        { "Const128", OperationForm::Move, 4 },
+        { "Return", OperationForm::Special, 1 },
     });
     REQUIRE(OperationTable.size() >= first.size());
     for (auto const index: std::views::iota(std::size_t { 0 }, first.size()))
     {
-        CHECK(OperationTable[index].name == first[index].first);
-        CHECK(OperationTable[index].form == first[index].second);
+        auto const& [name, form, words] = first[index];
+        CHECK(OperationTable[index].name == name);
+        CHECK(OperationTable[index].form == form);
+        CHECK(OperationTable[index].words == words);
     }
 }
 
@@ -131,6 +134,7 @@ TEST_CASE("Code.loweredModuleKeepsItsArena")
     REQUIRE(module.functions().size() == 2);
     CHECK(module.functions()[1].codeIndex == 1);
     CHECK(module.functions()[1].code.size() == 5);
+    CHECK(module.functions()[1].code[4] == Word { std::to_underlying(OperationId::Nop) });
     CHECK(module.functions()[1].code.get_allocator().resource() == resource);
 }
 
@@ -145,7 +149,11 @@ TEST_CASE("Contract.Code.everyContainerUsesTheArena", "[.contract]")
     auto other = std::pmr::monotonic_buffer_resource {};
     auto functions = std::pmr::vector<LoweredFunction>(arena.get());
     functions.push_back(functionOf(*arena, 0, 1));
-    functions.push_back(functionOf(other, 1, 1));
+    functions.push_back(functionOf(*arena, 1, 1));
+    // One container of one function, the last the check reads, allocates from elsewhere.
+    auto& catches = functions.back().catches;
+    std::destroy_at(&catches);
+    std::construct_at(&catches, &other);
     std::ignore = LoweredModule {
         std::move(arena), std::move(functions), Dispatch::Switch, ExecutionMode::Production, 0
     };

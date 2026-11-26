@@ -49,11 +49,11 @@ enum class OperationForm : uint8_t
 
 /// Every operation lowered code holds, one enumerator per row of Operations.def, in its order.
 ///
-/// The base type is the smallest that holds every row; the static_assert below names the row that
-/// outgrows it.
+/// The base type is the smallest that holds every row; an enumerator that outgrows it is a build error,
+/// and the row that adds it widens it.
 enum class OperationId : uint8_t
 {
-#define ISOLINE_FAST_OPERATION(Name, Form) Name,
+#define ISOLINE_FAST_OPERATION(Name, Form, Words) Name,
 #include <isoline/fastinterpreter/Operations.def>
 #undef ISOLINE_FAST_OPERATION
 };
@@ -64,12 +64,13 @@ struct OperationRow
     OperationId id;        ///< The operation; equal to the row's index in OperationTable.
     std::string_view name; ///< Its name in listings, the enumerator's own.
     OperationForm form;    ///< The layout of its operands.
+    uint32_t words; ///< Its fixed size in code words, header included; a br_table adds its labels' records.
 };
 
 /// Every operation, one row per OperationId enumerator, in enumerator order.
 inline constexpr auto OperationTable = std::to_array<OperationRow>({
-#define ISOLINE_FAST_OPERATION(Name, Form) \
-    { .id = OperationId::Name, .name = #Name, .form = OperationForm::Form },
+#define ISOLINE_FAST_OPERATION(Name, Form, Words) \
+    { .id = OperationId::Name, .name = #Name, .form = OperationForm::Form, .words = (Words) },
 #include <isoline/fastinterpreter/Operations.def>
 #undef ISOLINE_FAST_OPERATION
 });
@@ -89,8 +90,6 @@ namespace detail
 } // namespace detail
 
 static_assert(detail::operationRowsInIdOrder(), "OperationTable holds one row per OperationId, in order");
-static_assert(OperationCount <= std::numeric_limits<std::underlying_type_t<OperationId>>::max(),
-              "every OperationId fits its base type");
 
 /// What the table knows about @p id.
 /// @param id The operation.
@@ -187,10 +186,13 @@ struct LocalInitRun
     binary::HeapType heap {};         ///< The null's heap, as the module names it; Null runs only.
 };
 
-/// The most code words lowering emits per decoded body unit (bodyUnits()).
+/// The most code words lowering emits per decoded body unit (bodyUnits()), amortized over the function.
 ///
-/// Every operation is a fixed number of words, value moves (MoveRange) and br_table entries included,
-/// so a function's code is at most bodyUnits() × MaxWordsPerBodyUnit + FunctionOverheadWords words.
+/// Every operation is a fixed number of words (OperationRow::words), value moves (MoveRange)
+/// included; a br_table adds one fixed-size record per label, each label a unit of its own. An operation
+/// larger than its unit's share, such as the MoveRange of a branch or a constant materialized late, is
+/// charged to the units that pushed the values it handles, each at most once. So a function's code is at most
+/// bodyUnits() × MaxWordsPerBodyUnit + FunctionOverheadWords words in total, though not at every single unit.
 inline constexpr auto MaxWordsPerBodyUnit = uint64_t { 4 };
 
 /// The code words lowering may emit per function beyond MaxWordsPerBodyUnit's: its entry and its return.

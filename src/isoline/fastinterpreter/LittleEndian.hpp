@@ -43,14 +43,16 @@ template <MemoryInteger T, std::endian HostOrder = std::endian::native>
 /// Writes @p value as little-endian bytes starting at @p address: how the fast interpreter writes
 /// linear memory.
 ///
-/// The inverse of loadLittleEndian(): swapped where the host is big-endian, then copied.
+/// The inverse of loadLittleEndian(): swapped where the host is big-endian, then copied. T is never
+/// deduced from @p value, so a promoted argument (`u16 + 1`, an int) converts to T and writes exactly
+/// sizeof(T) bytes; every call names T.
 /// @tparam T The integer to write.
 /// @tparam HostOrder The host's byte order; native unless a test simulates the other.
 /// @param address The first byte; any alignment.
 /// @param value The integer.
 template <MemoryInteger T, std::endian HostOrder = std::endian::native>
     requires HostByteOrder<HostOrder>
-void storeLittleEndian(std::byte* address, T value) noexcept
+void storeLittleEndian(std::byte* address, std::type_identity_t<T> value) noexcept
 {
     if constexpr (HostOrder == std::endian::big)
         value = std::byteswap(value);
