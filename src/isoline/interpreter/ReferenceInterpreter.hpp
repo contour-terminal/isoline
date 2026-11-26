@@ -5,11 +5,10 @@
 #include <expected>
 #include <span>
 
-#include <isoline/binary/Module.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
 #include <isoline/runtime/Store.hpp>
-#include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
 namespace isoline::interpreter
@@ -48,6 +47,13 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
   public:
     ReferenceInterpreter() = default;
 
+    /// The reference engine, which runs the validated module itself: its instances hold no code.
+    /// @return ExecutionEngine::Reference.
+    [[nodiscard]] runtime::ExecutionEngine engine() const noexcept override
+    {
+        return runtime::ExecutionEngine::Reference;
+    }
+
     /// Invokes a function, as the spec's invocation does (4.5.5).
     ///
     /// Precondition (checked): an invocation is open on @p store (runtime::InvocationScope), as
@@ -68,15 +74,6 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
                                                               runtime::FuncAddr function,
                                                               std::span<runtime::Value const> args,
                                                               std::span<runtime::Value> results) override;
-
-    /// Evaluates a constant expression: the constant instructions of every value type (v128.const
-    /// included), ref.null, ref.func and global.get, and extended-const's i32 and i64 add, sub and mul.
-    /// @param store The store holding the instance.
-    /// @param moduleInstance The instance whose globals and functions the expression names.
-    /// @param expression The expression; valid for that instance's module.
-    /// @return Its value.
-    [[nodiscard]] std::expected<runtime::Value, runtime::Trap> evaluateConst(
-        runtime::Store& store, uint32_t moduleInstance, binary::ConstExpr const& expression) override;
 
   private:
     /// The Wasm frames live across every invocation in progress: a host function that invokes

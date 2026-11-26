@@ -238,3 +238,20 @@ if(UNIX AND NOT CMAKE_CROSSCOMPILING AND Python3_Interpreter_FOUND)
     set_tests_properties(cli-binary-to-terminal PROPERTIES LABELS unit
                          PASS_REGULAR_EXPRESSION "a binary is not written to a terminal")
 endif()
+
+# The contract checks of the unit tests: each case tagged [.contract] in isoline_test violates one
+# Require on purpose, which ends its process, so the unit run hides it and it runs here, alone in a
+# process. It passes on the Require's own text, so ending for any other reason fails it, as does a
+# case that survives (its FAIL names SURVIVED). The contract is the row's second item.
+foreach(contract IN ITEMS
+        "Instantiate.codeMustMatchTheExecutor|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)"
+        "Instantiate.nullCodeNeedsTheReference|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)")
+    string(REPLACE "|" ";" contractRow "${contract}")
+    list(GET contractRow 0 contractCase)
+    list(GET contractRow 1 contractText)
+    add_test(NAME contract.${contractCase} COMMAND $<TARGET_FILE:isoline_test> "${contractCase}")
+    set_tests_properties(contract.${contractCase} PROPERTIES
+                         LABELS unit
+                         PASS_REGULAR_EXPRESSION "Precondition failed\\. ${contractText}"
+                         FAIL_REGULAR_EXPRESSION "SURVIVED")
+endforeach()

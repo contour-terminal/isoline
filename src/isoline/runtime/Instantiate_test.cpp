@@ -11,6 +11,7 @@
 #include <ranges>
 #include <span>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -18,7 +19,6 @@
 #include <isoline/Features.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
-#include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
@@ -29,16 +29,17 @@
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/ContractViolation.hpp>
 #include <isoline/runtime/testing/PollCounter.hpp>
 #include <isoline/runtime/testing/ProvidedMemory.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::FeatureSet;
 using isoline::binary::AddressType;
-using isoline::binary::ConstExpr;
 using isoline::binary::ExternKind;
 using isoline::binary::FuncRef;
 using isoline::binary::FuncType;
@@ -46,12 +47,12 @@ using isoline::binary::GlobalType;
 using isoline::binary::Limits;
 using isoline::binary::MemoryType;
 using isoline::binary::Mutability;
-using isoline::binary::Opcode;
 using isoline::binary::TableType;
 using isoline::binary::testing::i32Const;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::runtime::Abrupt;
 using isoline::runtime::AllocationFailure;
+using isoline::runtime::ExecutionEngine;
 using isoline::runtime::ExternValue;
 using isoline::runtime::FuncAddr;
 using isoline::runtime::GrowthRecord;
@@ -113,11 +114,16 @@ GrowDecision grantAll(uint64_t /*newBytes*/)
     return GrowDecision::Grant;
 }
 
-/// Evaluates i32.const only, and records which functions it is asked to invoke.
+/// Records which functions it is asked to invoke, and claims to be the engine it was made for.
 class StubExecutor final: public isoline::runtime::ICodeExecutor
 {
   public:
+    /// @param engine The engine it claims to be.
+    explicit StubExecutor(ExecutionEngine engine = ExecutionEngine::Reference): _engine { engine } {}
+
     std::vector<FuncAddr> invoked; ///< Every function invoked, in order.
+
+    [[nodiscard]] ExecutionEngine engine() const noexcept override { return _engine; }
 
     [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
                                                      FuncAddr function,
@@ -128,49 +134,21 @@ class StubExecutor final: public isoline::runtime::ICodeExecutor
         return {};
     }
 
-    [[nodiscard]] std::expected<Value, Trap> evaluateConst(Store& /*store*/,
-                                                           uint32_t /*moduleInstance*/,
-                                                           ConstExpr const& expression) override
-    {
-        REQUIRE(expression.size() == 2);
-        REQUIRE(expression.front().opcode == Opcode::I32Const);
-        return I32 { .bits = static_cast<uint32_t>(expression.front().c) };
-    }
+  private:
+    ExecutionEngine _engine;
 };
 
-/// Evaluates i32.const, i64.const and ref.null like the interpreter, but traps on one evaluation.
-class TrappingExecutor final: public isoline::runtime::ICodeExecutor
+/// Code of the engine it was made for, holding nothing.
+class StubCode final: public isoline::runtime::ModuleCode
 {
   public:
-    /// @param trapAt The number of evaluations to perform before the one that traps.
-    explicit TrappingExecutor(std::size_t trapAt): _trapAt { trapAt } {}
+    /// @param engine The engine it is code of.
+    explicit StubCode(ExecutionEngine engine): _engine { engine } {}
 
-    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
-                                                     FuncAddr /*function*/,
-                                                     std::span<Value const> /*args*/,
-                                                     std::span<Value> /*results*/) override
-    {
-        return {};
-    }
-
-    [[nodiscard]] std::expected<Value, Trap> evaluateConst(Store& /*store*/,
-                                                           uint32_t /*moduleInstance*/,
-                                                           ConstExpr const& expression) override
-    {
-        if (_evaluations++ == _trapAt)
-            return std::unexpected { Trap { TrapCode::Unreachable } };
-        auto const& instruction = expression.front();
-        if (instruction.opcode == Opcode::I64Const)
-            return isoline::runtime::I64 { .bits = instruction.c };
-        if (instruction.opcode == Opcode::RefNull)
-            return Ref { .kind = RefKind::Null, .heap = FuncRef.heap, .address = 0 };
-        REQUIRE(instruction.opcode == Opcode::I32Const);
-        return I32 { .bits = static_cast<uint32_t>(instruction.c) };
-    }
+    [[nodiscard]] ExecutionEngine engine() const noexcept override { return _engine; }
 
   private:
-    std::size_t _trapAt;
-    std::size_t _evaluations = 0;
+    ExecutionEngine _engine;
 };
 
 /// Decodes and validates @p builder's module; fails the test unless it is valid.
@@ -217,6 +195,57 @@ TEST_CASE("Instantiate.keepsTheValidatedModule")
     auto const& instance = store.moduleInstance(*address);
     CHECK(instance.validated == validated);
     CHECK(instance.module.get() == &validated->module());
+}
+
+TEST_CASE("Instantiate.keepsTheCode")
+{
+    // The instance holds the code it was given, sharing its ownership; without code, it holds none.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, {});
+    auto const validated = moduleOf(builder);
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto fast = StubExecutor { ExecutionEngine::Fast };
+    auto const code = std::make_shared<StubCode const>(ExecutionEngine::Fast);
+    auto const address = instantiate(store, fast, validated, code, {});
+    REQUIRE(address.has_value());
+    CHECK(store.moduleInstance(*address).code.get() == code.get());
+
+    auto reference = StubExecutor {};
+    auto const withoutCode = instantiate(store, reference, validated, {});
+    REQUIRE(withoutCode.has_value());
+    CHECK(store.moduleInstance(*withoutCode).code == nullptr);
+}
+
+// The two contract tests below end the process at a failed Require, so they are hidden from the
+// unit run: tests/CMakeLists.txt runs each in a process of its own and expects the Require's text
+// (isoline::runtime::testing::endAtContractViolation()).
+
+TEST_CASE("Instantiate.codeMustMatchTheExecutor", "[.contract]")
+{
+    // Code of the fast engine, run by the reference interpreter: a contract violation.
+    isoline::runtime::testing::endAtContractViolation();
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, {});
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    std::ignore = instantiate(
+        store, interpreter, moduleOf(builder), std::make_shared<StubCode const>(ExecutionEngine::Fast), {});
+    FAIL("SURVIVED: instantiate accepted code of another engine");
+}
+
+TEST_CASE("Instantiate.nullCodeNeedsTheReference", "[.contract]")
+{
+    // No code, for an executor that needs some: a contract violation.
+    isoline::runtime::testing::endAtContractViolation();
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, {});
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto executor = StubExecutor { ExecutionEngine::Fast };
+    std::ignore = instantiate(store, executor, moduleOf(builder), {});
+    FAIL("SURVIVED: instantiate ran an engine that needs code without any");
 }
 
 TEST_CASE("Instantiate.unknownImport")
@@ -640,32 +669,6 @@ TEST_CASE("Instantiate.exportsResolve")
           == ExternValue { .kind = ExternKind::Memory, .address = instance.memories[0] });
 }
 
-TEST_CASE("Instantiate.constantExpressionTraps")
-{
-    // One of each constant expression instantiation evaluates, in its order: the global's
-    // initializer, the element segment's item (ref.null func), the element segment's offset, then
-    // the data segment's offset. A trap in any of them ends instantiation with that trap.
-    auto builder = ModuleBuilder {};
-    builder.table(TableType { .element = FuncRef, .limits = atLeast(1) })
-        .memory(atLeast(1))
-        .global(GlobalType { .type = isoline::binary::I32, .mutability = Mutability::Const }, i32Const(1))
-        .element({ 0x04, 0x41, 0x00, 0x0B, 0x01, 0xD0, 0x70, 0x0B })
-        .data(activeData(0, { 0x2A }));
-    auto const module = moduleOf(builder);
-    auto allocator = HeapMemoryAllocator {};
-    for (auto const trapAt: { 0U, 1U, 2U, 3U })
-    {
-        auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-        auto executor = TrappingExecutor { trapAt };
-        CAPTURE(trapAt);
-        CHECK(errorOf(instantiate(store, executor, module, {}))
-              == InstantiationError { Trap { TrapCode::Unreachable } });
-    }
-    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto executor = TrappingExecutor { 4 };
-    CHECK(instantiate(store, executor, module, {}).has_value());
-}
-
 TEST_CASE("Instantiate.tagImports")
 {
     // A tag import matches a tag of its type exactly, and binds to that very tag.
@@ -720,23 +723,18 @@ TEST_CASE("Instantiate.tagImports")
 namespace
 {
 
-/// Evaluates nothing, and ends every invocation with an uncaught exception.
+/// Ends every invocation with an uncaught exception.
 class ThrowingExecutor final: public isoline::runtime::ICodeExecutor
 {
   public:
+    [[nodiscard]] ExecutionEngine engine() const noexcept override { return ExecutionEngine::Reference; }
+
     [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
                                                      FuncAddr /*function*/,
                                                      std::span<Value const> /*args*/,
                                                      std::span<Value> /*results*/) override
     {
         return std::unexpected { Abrupt { Thrown { .exception = 3 } } };
-    }
-
-    [[nodiscard]] std::expected<Value, Trap> evaluateConst(Store& /*store*/,
-                                                           uint32_t /*moduleInstance*/,
-                                                           ConstExpr const& /*expression*/) override
-    {
-        return std::unexpected { Trap { TrapCode::Unreachable } };
     }
 };
 
@@ -762,7 +760,7 @@ TEST_CASE("Instantiate.i64DataOffset")
         .data({ 0x00, 0x42, 0x05, 0x0B, 0x01, 0x2A }); // (data (i64.const 5) "\2A")
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto executor = TrappingExecutor { std::numeric_limits<std::size_t>::max() };
+    auto executor = StubExecutor {};
     auto const result = instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {});
     REQUIRE(result.has_value());
     auto const& memory = store.memory(store.moduleInstance(*result).memories[0]);
@@ -838,8 +836,7 @@ TEST_CASE("Instantiate.memory64", "[memory]")
 {
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    // Evaluates i64.const offsets, which StubExecutor does not.
-    auto executor = TrappingExecutor { std::numeric_limits<std::size_t>::max() };
+    auto executor = StubExecutor {};
     auto const at64 = [](uint64_t min) {
         return Limits { .min = min, .max = std::nullopt, .addressType = AddressType::I64 };
     };
@@ -1023,13 +1020,6 @@ TEST_CASE("Instantiate.tableInitializer")
         CHECK(element.kind == RefKind::Func);
         CHECK(element.address == instance.functions[1]);
     }
-
-    // An initializer is evaluated like any constant expression, and a trap there ends instantiation.
-    auto trapping = ModuleBuilder {};
-    trapping.table(TableType { .element = FuncRef, .limits = atLeast(1) }, { 0xD0, 0x70 });
-    auto executor = TrappingExecutor { 0 };
-    CHECK(errorOf(instantiate(store, executor, moduleOf(trapping, FeatureSet::wasm3()), {}))
-          == InstantiationError { Trap { TrapCode::Unreachable } });
 }
 
 TEST_CASE("Instantiate.importsMatchByStoreTypes")
