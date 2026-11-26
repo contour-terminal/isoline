@@ -27,6 +27,7 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -63,14 +64,20 @@ using isoline::runtime::ExternValue;
 using isoline::runtime::F32;
 using isoline::runtime::FuncAddr;
 using isoline::runtime::HeapMemoryAllocator;
+using isoline::runtime::HostContext;
+using isoline::runtime::HostFailure;
+using isoline::runtime::HostFailureKind;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
+using isoline::runtime::makeHostFunction;
+using isoline::runtime::MismatchKind;
 using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::Thrown;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::Value;
+using isoline::runtime::ValueMismatch;
 
 namespace
 {
@@ -137,7 +144,19 @@ class Harness
     {
         auto const address = function(index);
         auto results = std::vector<Value>(_store.functionType(address).results.size());
-        return _interpreter.invoke(_store, address, args, results).transform([&] { return results; });
+        return isoline::runtime::invokeChecked(_store, _interpreter, address, args, results)
+            .outcome.transform([&] { return results; });
+    }
+
+    /// How invoking the module's function @p index ends abruptly, which it must.
+    /// @param index The function's index in the module's function index space.
+    /// @param args Its arguments.
+    /// @return How it ended.
+    Abrupt abrupt(uint32_t index, std::vector<Value> const& args = {})
+    {
+        auto const ended = outcome(index, args);
+        REQUIRE_FALSE(ended.has_value());
+        return ended.error();
     }
 
     /// Invokes the module's function @p index, which must not throw.
@@ -203,6 +222,16 @@ class Harness
 FuncType signature(std::vector<ValueType> params, std::vector<ValueType> results)
 {
     return FuncType { .params = std::move(params), .results = std::move(results) };
+}
+
+/// Adds a host function of @p type, implemented by @p function, to @p store.
+/// @return Its address.
+template <isoline::runtime::HostCallable F>
+FuncAddr addHost(Store& store, FuncType type, F function)
+{
+    auto const address = store.addHostFunction(std::move(type), makeHostFunction(std::move(function)));
+    REQUIRE(address.has_value());
+    return *address;
 }
 
 } // namespace
@@ -509,13 +538,15 @@ TEST_CASE("ReferenceInterpreter.hostCall")
     auto harness =
         Harness { builder, [&](Store& store) {
                      auto const host =
-                         store.addHostFunction(signature({ TypeI32 }, { TypeI32 }),
-                                               [&](std::span<Value const> args,
-                                                   std::span<Value> results) -> std::expected<void, Trap> {
-                                                   ++calls;
-                                                   results[0] = I32 { std::get<I32>(args[0]).bits * 2 };
-                                                   return {};
-                                               });
+                         addHost(store,
+                                 signature({ TypeI32 }, { TypeI32 }),
+                                 [&](HostContext&,
+                                     std::span<Value const> args,
+                                     std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     ++calls;
+                                     results[0] = I32 { std::get<I32>(args[0]).bits * 2 };
+                                     return {};
+                                 });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
     CHECK(harness.result(1, { i32(21) }) == i32(42));
@@ -528,11 +559,13 @@ TEST_CASE("ReferenceInterpreter.hostTrapPropagates")
     builder.type(signature({}, {})).importFunction("env", "fail", 0).function(0, {}, call(0));
     auto harness =
         Harness { builder, [](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
-                             return std::unexpected { Trap { TrapCode::HostTrap } };
-                         });
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [](HostContext&,
+                                                  std::span<Value const>,
+                                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   return std::unexpected { Trap { TrapCode::HostTrap } };
+                                               });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
     CHECK(harness.trap(1) == TrapCode::HostTrap);
@@ -733,13 +766,16 @@ TEST_CASE("ReferenceInterpreter.hostReentersWasm")
     Harness* self = nullptr;
     auto harness =
         Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
+                     auto const host = addHost(
+                         store,
                          signature({}, { TypeI32 }),
-                         [&](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                             auto const inner = self->invoke(2);
-                             if (!inner)
-                                 return std::unexpected { inner.error() };
-                             results[0] = inner->front();
+                         [&](HostContext& context,
+                             std::span<Value const>,
+                             std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                             auto inner = std::vector<Value>(1);
+                             if (auto const done = context.invoke(self->function(2), {}, inner); !done)
+                                 return done;
+                             results[0] = inner.front();
                              return {};
                          });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
@@ -801,17 +837,21 @@ TEST_CASE("ReferenceInterpreter.hostReentryIsBounded")
     auto reentries = uint32_t { 0 };
     auto harness =
         Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
-                             ++reentries;
-                             return self->invoke(1).transform([](auto const&) {});
-                         });
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [&](HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   ++reentries;
+                                                   return context.invoke(self->function(1), {}, {});
+                                               });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
     self = &harness;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
     CHECK(reentries == StoreLimits {}.maxNestedInvocations);
+    // Every host call scope ended with its abrupt exit.
+    CHECK(harness.store().hostCallsInProgress() == 0);
     // Every invocation unwound: the interpreter runs on as fresh, and hits the same bound again.
     reentries = 0;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
@@ -828,18 +868,252 @@ TEST_CASE("ReferenceInterpreter.nestedInvocationsFollowTheLimit")
     auto harness =
         Harness { builder,
                   [&](Store& store) {
-                      auto const host = store.addHostFunction(
-                          signature({}, {}),
-                          [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
-                              ++reentries;
-                              return self->invoke(1).transform([](auto const&) {});
-                          });
+                      auto const host =
+                          addHost(store,
+                                  signature({}, {}),
+                                  [&](HostContext& context,
+                                      std::span<Value const>,
+                                      std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                      ++reentries;
+                                      return context.invoke(self->function(1), {}, {});
+                                  });
                       return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                   },
                   StoreLimits { .maxNestedInvocations = 7 } };
     self = &harness;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
     CHECK(reentries == 7);
+}
+
+TEST_CASE("ReferenceInterpreter.hostTakesI64AndI32")
+{
+    // import (func (param i64 i32) (result i64)), which returns a + b; function 1 passes its own params.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64, TypeI32 }, { TypeI64 }))
+        .importFunction("env", "add", 0)
+        .function(0, {}, code({ localGet(0), localGet(1), call(0) }));
+    auto harness =
+        Harness { builder, [](Store& store) {
+                     auto const host =
+                         addHost(store,
+                                 signature({ TypeI64, TypeI32 }, { TypeI64 }),
+                                 [](HostContext&,
+                                    std::span<Value const> args,
+                                    std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     results[0] =
+                                         I64 { std::get<I64>(args[0]).bits + std::get<I32>(args[1]).bits };
+                                     return {};
+                                 });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    CHECK(harness.result(1, { I64 { 0x1'0000'0000 }, I32 { 2 } }) == Value { I64 { 0x1'0000'0002 } });
+}
+
+namespace
+{
+
+/// A module whose function 1 calls its import 0, of type [] -> [i32], implemented by @p function.
+template <isoline::runtime::HostCallable F>
+Harness callingHost(F function)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 })).importFunction("env", "host", 0).function(0, {}, call(0));
+    return Harness { builder, [&](Store& store) {
+                        auto const host = addHost(store, signature({}, { TypeI32 }), std::move(function));
+                        return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                    } };
+}
+
+} // namespace
+
+TEST_CASE("ReferenceInterpreter.hostResultOfWrongKindIsAHostFailure")
+{
+    // The host writes an f32 into its i32 result: the call ends with a host failure, not an abort.
+    auto harness = callingHost([](HostContext&,
+                                  std::span<Value const>,
+                                  std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+        results[0] = F32 {};
+        return {};
+    });
+    CHECK(harness.abrupt(1)
+          == Abrupt {
+              HostFailure { HostFailureKind::ResultMismatch, 0, ValueMismatch { MismatchKind::Kind, 0 } } });
+}
+
+TEST_CASE("ReferenceInterpreter.hostFailurePassesThrough")
+{
+    // A host's own failure ends the invocation exactly as the host reported it.
+    auto const failure =
+        HostFailure { .kind = HostFailureKind::Embedder, .code = 7, .mismatch = std::nullopt };
+    auto harness = callingHost(
+        [&](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+            return std::unexpected { Abrupt { failure } };
+        });
+    CHECK(harness.abrupt(1) == Abrupt { failure });
+}
+
+TEST_CASE("ReferenceInterpreter.forgedThrownIsAHostFailure")
+{
+    // A host throwing an exception the store never allocated is a host failure: no handler sees it.
+    auto harness = callingHost(
+        [](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+            return std::unexpected { Abrupt { Thrown { .exception = 999 } } };
+        });
+    CHECK(harness.abrupt(1)
+          == Abrupt {
+              HostFailure { .kind = HostFailureKind::ResultMismatch, .code = 0, .mismatch = std::nullopt } });
+}
+
+TEST_CASE("ReferenceInterpreter.hostReentersThroughItsContext")
+{
+    // The host finds the caller's export "inc" and invokes it through its context: inc(41) = 42.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .type(signature({ TypeI32 }, { TypeI32 }))
+        .importFunction("env", "host", 0)
+        .function(0, {}, call(0))
+        .function(1, {}, code({ localGet(0), i32Const(1), { 0x6A } })) // i32.add
+        .exportFunction("inc", 2);
+    auto caller = std::optional<uint32_t> {};
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host =
+                         addHost(store,
+                                 signature({}, { TypeI32 }),
+                                 [&](HostContext& context,
+                                     std::span<Value const>,
+                                     std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     caller = context.callerInstance();
+                                     auto const& exports =
+                                         context.store().moduleInstance(caller.value_or(0)).exports;
+                                     auto const inc = std::ranges::find(
+                                         exports, "inc", [](auto const& entry) { return entry.first; });
+                                     auto const args = std::vector<Value> { I32 { 41 } };
+                                     return context.invoke(inc->second.address, args, results);
+                                 });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    CHECK(harness.result(1) == i32(42));
+    CHECK(caller == harness.address());
+}
+
+TEST_CASE("ReferenceInterpreter.tailCalledHostSeesItsCaller")
+{
+    // A host function reached by return_call is called by the instance whose frame it replaced.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "host", 0)
+        .function(0, {}, code({ { 0x12, 0x00 } }));
+    auto caller = std::optional<uint32_t> {};
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [&](HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   caller = context.callerInstance();
+                                                   return {};
+                                               });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    REQUIRE(harness.invoke(1).has_value());
+    CHECK(caller == harness.address());
+}
+
+TEST_CASE("ReferenceInterpreter.hostWritesItsCallersMemory")
+{
+    // The host writes 42 at byte 3 of its caller's memory 0, which the caller then loads; the caller has
+    // no memory 1.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "host", 0)
+        .memory(atLeast(1))
+        .function(1, {}, code({ call(0), i32Const(3), memoryAccess(0x2D, 0, 0) })); // i32.load8_u
+    auto second = std::optional<std::span<std::byte>> { std::span<std::byte> {} };
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [&](HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   second = context.callerMemory(1);
+                                                   auto const memory = context.callerMemory(0);
+                                                   if (!memory || memory->size() < 4)
+                                                       return std::unexpected { Abrupt { HostFailure {} } };
+                                                   (*memory)[3] = std::byte { 42 };
+                                                   return {};
+                                               });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    CHECK(harness.result(1) == i32(42));
+    CHECK(second == std::nullopt);
+}
+
+TEST_CASE("ReferenceInterpreter.hostSeesTheInstanceThatCalledIt")
+{
+    // Three instances: an empty one at 0, B at 1 and A at 2. A calls B's two exports, one calling the
+    // host, one tail-calling it; the host sees B both times, not A beneath it nor 0, and writes 42 at
+    // byte 3 of B's memory, which B loads, while A's stays 0.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, isoline::runtime::StoreServices { .allocator = allocator } };
+    auto interpreter = ReferenceInterpreter {};
+    auto const load = [&](ModuleBuilder const& builder, std::vector<ExternValue> const& imports) {
+        auto validated = isoline::validate::ValidatedModule::load(
+            builder.build(), FeatureSet::all(), isoline::binary::DecodeLimits {});
+        REQUIRE(validated.has_value());
+        auto const address =
+            isoline::runtime::instantiate(store, interpreter, std::move(*validated), imports);
+        REQUIRE(address.has_value());
+        return *address;
+    };
+    auto callers = std::vector<std::optional<uint32_t>> {};
+    auto const host = addHost(store,
+                              signature({}, {}),
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  callers.push_back(context.callerInstance());
+                                  auto const memory = context.callerMemory(0);
+                                  if (!memory || memory->size() < 4)
+                                      return std::unexpected { Abrupt { HostFailure {} } };
+                                  (*memory)[3] = std::byte { 42 };
+                                  return {};
+                              });
+    REQUIRE(load(ModuleBuilder {}, {}) == 0);
+
+    auto b = ModuleBuilder {};
+    b.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "host", 0)
+        .memory(atLeast(1))
+        .function(1, {}, code({ call(0), i32Const(3), memoryAccess(0x2D, 0, 0) })) // i32.load8_u
+        .function(0, {}, code({ { 0x12, 0x00 } }))                                 // return_call 0
+        .exportFunction("viaCall", 1)
+        .exportFunction("viaTail", 2);
+    auto const bAddress = load(b, { ExternValue { .kind = ExternKind::Func, .address = host } });
+    REQUIRE(bAddress == 1);
+    auto const& bExports = store.moduleInstance(bAddress).exports;
+
+    auto a = ModuleBuilder {};
+    a.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("b", "viaTail", 0)
+        .importFunction("b", "viaCall", 1)
+        .memory(atLeast(1))
+        .function(
+            1, {}, code({ call(0), call(1), i32Const(3), memoryAccess(0x2D, 0, 0), { 0x6A } })); // + A's byte
+    auto const aAddress = load(a, { bExports.at(1).second, bExports.at(0).second });
+    REQUIRE(aAddress == 2);
+
+    auto results = std::vector<Value>(1);
+    auto const run = isoline::runtime::invokeChecked(
+        store, interpreter, store.moduleInstance(aAddress).functions.at(2), {}, results);
+    REQUIRE(run.outcome.has_value());
+    CHECK(results.front() == i32(42));
+    CHECK(callers == std::vector<std::optional<uint32_t>> { bAddress, bAddress });
 }
 
 TEST_CASE("ReferenceInterpreter.stackValuesFollowTheLimit")
@@ -852,34 +1126,6 @@ TEST_CASE("ReferenceInterpreter.stackValuesFollowTheLimit")
     CHECK(Harness { builder, {}, StoreLimits { .maxStackValues = 10 } }.trap(0)
           == TrapCode::CallStackExhausted);
     CHECK(Harness { builder }.invoke(0).has_value());
-}
-
-TEST_CASE("ReferenceInterpreter.hostExceptionUnwindsInvocationCount")
-{
-    // Function 1 calls the host; the callback throws on its first call, then re-enters forever.
-    auto builder = ModuleBuilder {};
-    builder.type(signature({}, {})).importFunction("env", "reenter", 0).function(0, {}, call(0));
-    Harness* self = nullptr;
-    auto reentries = uint32_t { 0 };
-    auto shouldThrow = true;
-    auto harness =
-        Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
-                             if (shouldThrow)
-                                 throw std::runtime_error { "host failure" };
-                             ++reentries;
-                             return self->invoke(1).transform([](auto const&) {});
-                         });
-                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
-                 } };
-    self = &harness;
-    CHECK_THROWS_AS(std::ignore = harness.invoke(1), std::runtime_error);
-    // The throwing invocation left no count behind: the full nesting bound is still available.
-    shouldThrow = false;
-    CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
-    CHECK(reentries == StoreLimits {}.maxNestedInvocations);
 }
 
 namespace
@@ -1366,28 +1612,33 @@ TEST_CASE("Interpreter.callRefOfAHostReference")
         .type(signature({}, { nonNullTo0 }))
         .importFunction("env", "callee", 1)
         .function(0, {}, code({ call(0), callRef0() }));
-    auto harness = Harness {
-        builder,
-        [](Store& store) {
-            auto const callee = store.addHostFunction(
-                signature({}, { TypeI32 }),
-                [](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                    results[0] = I32 { 7 };
-                    return {};
-                });
-            auto const typeId = store.function(callee).typeId;
-            auto const reference = Ref { .kind = RefKind::Func,
-                                         .heap = { .kind = isoline::binary::AbstractHeapType::Func },
-                                         .address = callee };
-            auto const provider = store.addHostFunction(
-                signature({}, { isoline::binary::concreteRef(typeId, isoline::binary::Nullable::No) }),
-                [reference](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                    results[0] = reference;
-                    return {};
-                });
-            return std::vector { ExternValue { .kind = ExternKind::Func, .address = provider } };
-        }
-    };
+    auto harness =
+        Harness { builder, [](Store& store) {
+                     auto const callee =
+                         addHost(store,
+                                 signature({}, { TypeI32 }),
+                                 [](HostContext&,
+                                    std::span<Value const>,
+                                    std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     results[0] = I32 { 7 };
+                                     return {};
+                                 });
+                     auto const typeId = store.function(callee).typeId;
+                     auto const reference = Ref { .kind = RefKind::Func,
+                                                  .heap = { .kind = isoline::binary::AbstractHeapType::Func },
+                                                  .address = callee };
+                     auto const provider = addHost(
+                         store,
+                         signature({},
+                                   { isoline::binary::concreteRef(typeId, isoline::binary::Nullable::No) }),
+                         [reference](HostContext&,
+                                     std::span<Value const>,
+                                     std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                             results[0] = reference;
+                             return {};
+                         });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = provider } };
+                 } };
     CHECK(harness.result(1) == i32(7));
 }
 
@@ -1457,12 +1708,15 @@ TEST_CASE("Interpreter.returnCallToHost")
         .function(0, {}, code({ i32Const(35), call(1), { 0x6A } })); // i32.add
     auto harness =
         Harness { builder, [](Store& store) {
-                     auto const seven = store.addHostFunction(
-                         signature({}, { TypeI32 }),
-                         [](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                             results[0] = I32 { 7 };
-                             return {};
-                         });
+                     auto const seven =
+                         addHost(store,
+                                 signature({}, { TypeI32 }),
+                                 [](HostContext&,
+                                    std::span<Value const>,
+                                    std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     results[0] = I32 { 7 };
+                                     return {};
+                                 });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = seven } };
                  } };
     CHECK(harness.result(1) == i32(7));
@@ -1733,17 +1987,21 @@ TEST_CASE("Interpreter.exceptionCrossesHost")
     auto ownException = false;
     auto harness =
         Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
+                     auto const host = addHost(
+                         store,
                          signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Abrupt> {
+                         [&](HostContext& context,
+                             std::span<Value const>,
+                             std::span<Value>) noexcept -> std::expected<void, Abrupt> {
                              if (!ownException)
-                                 return self->outcome(1).transform([](auto const&) {});
-                             // An exception of the host's own making, of the guest's tag.
-                             auto& own = self->store();
-                             auto const tag = own.moduleInstance(self->address()).tags.at(0);
-                             auto const exception = own.addException(tag, { i32(9) });
-                             REQUIRE(exception.has_value());
-                             return std::unexpected { Abrupt { Thrown { .exception = *exception } } };
+                                 return context.invoke(self->function(1), {}, {});
+                             // An exception of the host's own making, of the guest's tag. The embedder
+                             // calls it directly too, without a caller instance.
+                             auto const tag = context.store().moduleInstance(self->address()).tags.at(0);
+                             return context.addException(tag, { i32(9) }).and_then([](auto exception) {
+                                 return std::expected<void, Abrupt> { std::unexpected {
+                                     Abrupt { Thrown { .exception = exception } } } };
+                             });
                          });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
@@ -1805,8 +2063,8 @@ TEST_CASE("Interpreter.importedTagIsTheSameTag")
     auto harness =
         Harness { builder, [&](Store& store) {
                      // A decoy first, so that no TagAddr equals the tag index naming it.
-                     static_cast<void>(store.addTag(store.internType(signature({}, {}))));
-                     shared = store.addTag(store.internType(signature({}, {})));
+                     static_cast<void>(store.addTag(store.internType(signature({}, {}))).value());
+                     shared = store.addTag(store.internType(signature({}, {}))).value();
                      return std::vector { ExternValue { .kind = ExternKind::Tag, .address = shared } };
                  } };
     CHECK(harness.result(0) == i32(1));
@@ -1873,22 +2131,24 @@ TEST_CASE("Interpreter.hostThrowsAPayloadOfItsTagsKinds")
                          tryTable(NoResult, ClauseCatch, 0, 0),
                          call(0),
                          { 0x0B, 0x00, 0x0B, 0x1A } }));
-    Harness* self = nullptr;
     auto harness =
-        Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Abrupt> {
-                             auto& own = self->store();
-                             auto const tag = own.moduleInstance(self->address()).tags.at(0);
-                             auto const exception =
-                                 own.addException(tag, { I64 { 42 }, F32 { 0x3F80'0000 } });
-                             REQUIRE(exception.has_value());
-                             return std::unexpected { Abrupt { Thrown { .exception = *exception } } };
-                         });
+        Harness { builder, [](Store& store) {
+                     auto const host =
+                         addHost(store,
+                                 signature({}, {}),
+                                 [](HostContext& context,
+                                    std::span<Value const>,
+                                    std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                     auto const tag =
+                                         context.store().moduleInstance(*context.callerInstance()).tags.at(0);
+                                     return context.addException(tag, { I64 { 42 }, F32 { 0x3F80'0000 } })
+                                         .and_then([](auto exception) {
+                                             return std::expected<void, Abrupt> { std::unexpected {
+                                                 Abrupt { Thrown { .exception = exception } } } };
+                                         });
+                                 });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
-    self = &harness;
     CHECK(harness.result(1) == Value { I64 { 42 } });
 }
 

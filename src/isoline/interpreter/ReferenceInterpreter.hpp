@@ -22,7 +22,7 @@ namespace isoline::interpreter
 /// time, over a validated module, and favours being obviously right over being fast. Operands, locals, labels
 /// and call frames live in heap vectors: a Wasm call never recurses on the host stack, and a call deeper than
 /// the store's StoreLimits::maxCallDepth frames traps with CallStackExhausted. A host function runs
-/// synchronously, on the host stack, and may invoke Wasm again through this interpreter; each such
+/// synchronously, on the host stack, and may invoke Wasm again through its runtime::HostContext; each such
 /// nested invocation does recurse on the host stack, so at most StoreLimits::maxNestedInvocations
 /// invocations may be in progress at once, and one more traps with CallStackExhausted too, whatever
 /// the frame depth.
@@ -46,17 +46,19 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
 
     /// Invokes a function, as the spec's invocation does (4.5.5).
     ///
-    /// Precondition (checked): @p function exists, @p args are one value of each of its parameter
-    /// types' kinds (a reference's heap is not checked), and @p results has room for exactly its
-    /// results. A host function it calls must leave its results of its result types' kinds, which
-    /// is checked as well.
+    /// Precondition (checked): @p function exists, @p args are of its parameter types, reference
+    /// heaps and addresses included (runtime::checkValues()), and @p results has room for exactly its
+    /// results. runtime::invokeChecked() checks all three first and refuses a call that fails them,
+    /// so every caller but instantiation's start call goes through it. What a host function it calls
+    /// ends with is checked too (runtime::checkHostOutcome()): a result not of its type, or a thrown
+    /// exception the store does not hold, ends the invocation with a HostFailure.
     /// @param store The store holding it.
     /// @param function Its address.
     /// @param args Its arguments.
     /// @param results Receives its results.
     /// @return Nothing, or how execution ended abruptly: the trap, CallStackExhausted when
-    ///         the store's maxNestedInvocations invocations are in progress already; or Thrown, the exception
-    ///         no handler caught.
+    ///         the store's maxNestedInvocations invocations are in progress already; Thrown, the exception
+    ///         no handler caught; or the HostFailure of a host function it called.
     [[nodiscard]] std::expected<void, runtime::Abrupt> invoke(runtime::Store& store,
                                                               runtime::FuncAddr function,
                                                               std::span<runtime::Value const> args,

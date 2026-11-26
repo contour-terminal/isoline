@@ -7,7 +7,9 @@
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -24,11 +26,16 @@ using isoline::binary::Nullable;
 using isoline::binary::NullExnRef;
 using isoline::binary::ValueKind;
 using isoline::binary::ValueType;
+using isoline::runtime::Abrupt;
 using isoline::runtime::checkValues;
+using isoline::runtime::ExnAddr;
 using isoline::runtime::F32;
+using isoline::runtime::F64;
 using isoline::runtime::FuncAddr;
 using isoline::runtime::haveKinds;
 using isoline::runtime::HeapMemoryAllocator;
+using isoline::runtime::HostFailure;
+using isoline::runtime::HostFailureKind;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::MismatchKind;
@@ -37,13 +44,22 @@ using isoline::runtime::RefKind;
 using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::StoreServices;
-using isoline::runtime::Trap;
+using isoline::runtime::Thrown;
 using isoline::runtime::TypeId;
+using isoline::runtime::V128;
 using isoline::runtime::Value;
 using isoline::runtime::ValueMismatch;
 
 namespace
 {
+
+/// A host function that does nothing.
+constexpr auto NoHost =
+    [](isoline::runtime::HostContext&,
+       std::span<isoline::runtime::Value const>,
+       std::span<isoline::runtime::Value>) noexcept -> std::expected<void, isoline::runtime::Abrupt> {
+    return {};
+};
 
 /// @p items as the values a host passes.
 template <typename... Items>
@@ -113,23 +129,21 @@ std::expected<void, ValueMismatch> mismatch(MismatchKind kind, uint32_t index)
     return std::unexpected { ValueMismatch { .kind = kind, .index = index } };
 }
 
-/// A host function that does nothing.
-std::expected<void, Trap> nothing(std::span<Value const>, std::span<Value>)
-{
-    return {};
-}
-
 /// A store with a function taking an i32, one taking an i64, and an exception.
 struct CheckedStore
 {
     CheckedStore():
         store { StoreLimits {}, StoreServices { .allocator = allocator } },
-        takesI32 { store.addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
-                                         nothing) },
-        takesI64 { store.addHostFunction(FuncType { .params = { isoline::binary::I64 }, .results = {} },
-                                         nothing) },
+        takesI32 { store
+                       .addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
+                                        isoline::runtime::makeHostFunction(NoHost))
+                       .value() },
+        takesI64 { store
+                       .addHostFunction(FuncType { .params = { isoline::binary::I64 }, .results = {} },
+                                        isoline::runtime::makeHostFunction(NoHost))
+                       .value() },
         typeTakingI32 { store.function(takesI32).typeId },
-        exception { store.addException(store.addTag(store.internType(FuncType {})), {}).value() }
+        exception { store.addException(store.addTag(store.internType(FuncType {})).value(), {}).value() }
     {
     }
 
@@ -243,6 +257,12 @@ TEST_CASE("ValueCheck.hostAndExceptionReferences")
     // A host object's address is the embedder's: any is accepted, in extern only.
     CHECK(checkValues(store, values(externRef(0xFFFF'FFFF)), types(nonNullExtern)).has_value());
     CHECK(checkValues(store, values(externRef(1)), types(ExnRef)) == mismatch(MismatchKind::Heap, 0));
+    // The bottom of extern, (ref noextern), holds no host object: only null, which it refuses too.
+    auto const nonNullNoExtern = ValueType { .kind = ValueKind::Ref,
+                                             .nullable = Nullable::No,
+                                             .heap = { .kind = AbstractHeapType::NoExtern } };
+    CHECK(checkValues(store, values(externRef(1)), types(nonNullNoExtern))
+          == mismatch(MismatchKind::Heap, 0));
 
     // An exception must be live in this store: one it never allocated is foreign (carried from P2).
     CHECK(checkValues(store, values(exnRef(fixture.exception)), types(ExnRef)).has_value());
@@ -281,8 +301,47 @@ TEST_CASE("ValueCheck.exceptionPayloadsAreChecked")
     // is accepted (one of other types is a precondition violation, which hosts are kept from).
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto const function = store.addHostFunction(FuncType {}, nothing);
-    auto const tag = store.addTag(store.internType(FuncType { .params = { FuncRef }, .results = {} }));
+    auto const function =
+        store.addHostFunction(FuncType {}, isoline::runtime::makeHostFunction(NoHost)).value();
+    auto const tag =
+        store.addTag(store.internType(FuncType { .params = { FuncRef }, .results = {} })).value();
     CHECK(store.addException(tag, values(funcRef(function))).has_value());
-    CHECK(store.addException(tag, values(nullFunc())).has_value());
+    auto const last = store.addException(tag, values(nullFunc()));
+    REQUIRE(last.has_value());
+
+    // A host allocates exceptions through its context, which checks the payload instead of failing the
+    // store's precondition: a payload of another type is the host's failure, and the process lives on.
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const host =
+        store
+            .addHostFunction(
+                FuncType {},
+                isoline::runtime::makeHostFunction([tag](isoline::runtime::HostContext& context,
+                                                         std::span<Value const>,
+                                                         std::span<Value>) noexcept
+                                                       -> std::expected<void, Abrupt> {
+                    return context.addException(tag, values(externRef(1))).and_then([](ExnAddr exception) {
+                        return std::expected<void, Abrupt> { std::unexpected {
+                            Abrupt { Thrown { .exception = exception } } } };
+                    });
+                }))
+            .value();
+    CHECK(isoline::runtime::invokeChecked(store, interpreter, host, {}, {}).outcome
+          == std::unexpected { Abrupt {
+              HostFailure { .kind = HostFailureKind::ArgumentMismatch,
+                            .code = 0,
+                            .mismatch = ValueMismatch { .kind = MismatchKind::Heap, .index = 0 } } } });
+    CHECK_FALSE(store.isLiveException(*last + 1)); // nothing was allocated after it
+}
+
+TEST_CASE("ValueCheck.nanPayloadsPassThrough")
+{
+    // A float's bits are its value: a NaN of any payload, signalling ones included, is of its type.
+    auto const fixture = CheckedStore {};
+    CHECK(checkValues(fixture.store,
+                      values(F32 { 0x7FA0'0001 },
+                             F64 { 0xFFF0'0000'0000'0001 },
+                             V128 { .lanes = { 0x7FA0'0001'FFC0'0002, 0x7FF0'0000'0000'0003 } }),
+                      types(isoline::binary::F32, isoline::binary::F64, isoline::binary::V128))
+              .has_value());
 }

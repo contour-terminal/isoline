@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <variant>
 
 #include <isoline/runtime/Trap.hpp>
@@ -46,7 +47,31 @@ struct Thrown
     bool operator==(Thrown const&) const = default;
 };
 
-/// How execution ended abruptly: by a trap, or by an exception no handler caught.
-using Abrupt = std::variant<Trap, Thrown>;
+/// Why a host function failed (HostFailure).
+enum class HostFailureKind : uint8_t
+{
+    Embedder,         ///< The host function failed on its own account; HostFailure::code says why.
+    ResultMismatch,   ///< A host function's results, or the exception it threw, are not of its type.
+    ArgumentMismatch, ///< A host passed a call or an exception values not of their types, or an address
+                      ///< the store does not hold.
+};
+
+/// A host function's failure: one it reported, or one the host boundary found in what it handed over.
+/// It ends the invocation, as a trap does, and no handler catches it.
+struct HostFailure
+{
+    HostFailureKind kind = HostFailureKind::Embedder; ///< Whose failure, and of what.
+    uint32_t code = 0; ///< The embedder's own code, for Embedder; 0 for the others.
+    /// The first value that is not of its type, for a mismatch of values; nullopt for Embedder, for an
+    /// address the store does not hold, and for a thrown exception the store never allocated.
+    std::optional<ValueMismatch> mismatch;
+
+    /// Whether both are the same failure.
+    bool operator==(HostFailure const&) const = default;
+};
+
+/// How execution ended abruptly: by a trap, by an exception no handler caught, or by a host
+/// function's failure.
+using Abrupt = std::variant<Trap, Thrown, HostFailure>;
 
 } // namespace isoline::runtime

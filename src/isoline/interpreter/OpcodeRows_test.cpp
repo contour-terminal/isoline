@@ -21,6 +21,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -375,7 +376,9 @@ TEST_CASE("Opcode.everyRowDecodes")
         auto args = std::vector<isoline::runtime::Value> {};
         std::ranges::transform(fixture.params, std::back_inserter(args), isoline::runtime::defaultValue);
         auto results = std::vector<isoline::runtime::Value>(fixture.results.size());
-        std::ignore = interpreter.invoke(store, function, args, results);
+        // Its arguments are its params' defaults, so the call always enters and the row runs.
+        CHECK(isoline::runtime::invokeChecked(store, interpreter, function, args, results).entry
+              == isoline::runtime::Entry::Entered);
     }
     // Every fixture serves a row: none is left over from an instruction since removed.
     CHECK(fixtures().size() == specialRows);

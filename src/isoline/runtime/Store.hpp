@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <deque>
 #include <expected>
-#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -37,15 +36,7 @@ using GlobalAddr = uint32_t;
 /// A function type's identity in its store: equal types, of whichever modules, have one TypeId.
 using TypeId = uint32_t;
 
-/// A host function's implementation: reads its arguments, writes its results, or ends abruptly.
-///
-/// @p results arrives holding the default value of each result type, and must be left holding a
-/// value of each result type's kind: the interpreter checks that as a precondition. A host function
-/// that ends with Thrown, an exception of the store it was called from (one a Wasm function it
-/// invoked threw, or one it allocated with Store::addException), throws it in its Wasm caller, whose
-/// handlers may catch it.
-using HostCallback =
-    std::function<std::expected<void, Abrupt>(std::span<Value const> args, std::span<Value> results)>;
+class IHostFunction; // HostFunction.hpp
 
 /// A function instance: a module's function, or a host function.
 struct FunctionInstance
@@ -53,11 +44,13 @@ struct FunctionInstance
     TypeId typeId; ///< Its type's identity in the store (Store::type), which call_indirect compares.
     uint32_t moduleInstance; ///< A module function: the instance that defines it.
     uint32_t codeIndex;      ///< A module function: its index in that module's code section.
-    HostCallback host;       ///< A host function: its implementation; empty for a module function.
+    /// A host function: its implementation, shared with whoever else holds it; null for a module
+    /// function.
+    std::shared_ptr<IHostFunction> host;
 
     /// Whether this is a host function.
     /// @return Whether host is set.
-    [[nodiscard]] bool isHost() const noexcept { return static_cast<bool>(host); }
+    [[nodiscard]] bool isHost() const noexcept { return host != nullptr; }
 };
 
 /// A table instance.
@@ -206,8 +199,7 @@ class Store
     ///
     /// Precondition (checked): @p type is in store form, every concrete type index in it a TypeId of
     /// this store, as interning a module's types in type order makes them; and a new type fits the
-    /// type budget, as instantiation checks (checkInstanceDemand()) and an embedder adding host
-    /// functions must.
+    /// type budget, as instantiation checks (checkInstanceDemand()) and addHostFunction() does.
     /// @param type The type, in store form.
     /// @return Its TypeId: equal for equal types.
     [[nodiscard]] TypeId internType(binary::FuncType type);
@@ -231,11 +223,16 @@ class Store
     /// @return The type, in store form; the reference stays valid as long as the store.
     [[nodiscard]] binary::FuncType const& type(TypeId id) const;
 
-    /// Adds a host function.
-    /// @param type Its type, in store form; interned (internType(), whose budget precondition applies).
-    /// @param callback Its implementation; must not be empty.
-    /// @return Its address.
-    [[nodiscard]] FuncAddr addHostFunction(binary::FuncType type, HostCallback callback);
+    /// Adds a host function, interning its type (internType()).
+    ///
+    /// The type budget is shared with the guests' modules, which may have used most of it, so a new
+    /// type past what is left of it is refused rather than a failed precondition.
+    /// @param type Its type, in store form (checked).
+    /// @param function Its implementation; must not be null (checked).
+    /// @return Its address; LimitExceeded of Types when its type is new and its type units exceed
+    ///         those left.
+    [[nodiscard]] std::expected<FuncAddr, LimitExceeded> addHostFunction(
+        binary::FuncType type, std::shared_ptr<IHostFunction> function);
 
     /// Adds a module function.
     /// @param typeId Its type, interned already.
@@ -272,12 +269,11 @@ class Store
     [[nodiscard]] GlobalAddr addGlobal(binary::GlobalType type, Value value);
 
     /// Adds a tag.
-    ///
-    /// Precondition (checked): the store holds fewer than StoreLimits::maxTags tags, as instantiation
-    /// checks (checkInstanceDemand()).
     /// @param typeId Its type, interned already (checked).
-    /// @return Its address: a new tag, distinct from every other, whatever its type.
-    [[nodiscard]] TagAddr addTag(TypeId typeId);
+    /// @return Its address: a new tag, distinct from every other, whatever its type; LimitExceeded of
+    ///         Tags when the store holds StoreLimits::maxTags tags already, which guests' modules
+    ///         share with the embedder.
+    [[nodiscard]] std::expected<TagAddr, LimitExceeded> addTag(TypeId typeId);
 
     /// Allocates an exception, as throw does, or as a host function may to throw one.
     /// @param tag The tag it is thrown with; must exist (checked).
@@ -306,6 +302,17 @@ class Store
     /// @return Its StoreLimits.
     [[nodiscard]] StoreLimits const& limits() const noexcept;
 
+    /// How much of @p limit the store holds: what an embedder reads before adding to a budget the
+    /// guests share. The limits of one invocation (CallDepth, StackValues, NestedInvocations) are the
+    /// executor's to count while it runs; the store holds none of them, so they read 0.
+    /// @param limit The limit.
+    /// @return What the store holds of it, in the unit LimitTable names; at most its StoreLimits value.
+    [[nodiscard]] uint64_t used(Limit limit) const noexcept;
+
+    /// How many host functions are running on the store (HostCallScope), nested ones included.
+    /// @return Their count; 0 when no host function is running.
+    [[nodiscard]] uint32_t hostCallsInProgress() const noexcept;
+
     /// How many module instances the store holds.
     /// @return Their count.
     [[nodiscard]] std::size_t moduleInstanceCount() const noexcept;
@@ -327,6 +334,10 @@ class Store
     /// How many tables the store holds.
     /// @return Their count.
     [[nodiscard]] std::size_t tableCount() const noexcept;
+
+    /// How many tags the store holds: every TagAddr below it exists.
+    /// @return Their count.
+    [[nodiscard]] std::size_t tagCount() const noexcept;
 
     /// Drops the tables from @p firstTable and the memories from @p firstMemory on, destroying their
     /// storage and returning their elements and bytes to the budgets: what instantiation does when it
@@ -415,6 +426,7 @@ class Store
 
   private:
     friend class RefusalScope;
+    friend class HostCallScope;
 
     IMemoryAllocator* _allocator;
     uint64_t _requiredGuardBytes;
@@ -424,6 +436,7 @@ class Store
     uint64_t _memoryBytes = 0;     ///< The bytes of every memory, charged against maxMemoryBytes.
     uint64_t _tableElements = 0;   ///< The slots of every table, charged against maxTableElements.
     uint64_t _typeUnits = 0;       ///< The type units of every interned type, charged against maxTypes.
+    uint32_t _hostCalls = 0;       ///< The host functions running, nested ones included.
     std::deque<FunctionInstance> _functions;
     std::deque<TableInstance> _tables;
     std::deque<MemoryInstance> _memories;
@@ -464,6 +477,27 @@ class RefusalScope
   private:
     Store* _store;
     GrowthRecord _outer; ///< The record of the scope this one is nested in.
+};
+
+/// Counts a host function call in progress on a store (Store::hostCallsInProgress()) for as long as it
+/// lives: what an executor opens around every host function it runs.
+class HostCallScope
+{
+  public:
+    /// Counts one more host call on @p store.
+    /// @param store The store; must outlive the scope.
+    explicit HostCallScope(Store& store) noexcept;
+
+    /// Gives the count back.
+    ~HostCallScope();
+
+    HostCallScope(HostCallScope const&) = delete;
+    HostCallScope(HostCallScope&&) = delete;
+    HostCallScope& operator=(HostCallScope const&) = delete;
+    HostCallScope& operator=(HostCallScope&&) = delete;
+
+  private:
+    Store* _store;
 };
 
 } // namespace isoline::runtime

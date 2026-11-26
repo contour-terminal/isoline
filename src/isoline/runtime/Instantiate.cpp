@@ -338,7 +338,12 @@ namespace
         void allocateTags()
         {
             for (auto const& tag: module().tags)
-                instance().tags.push_back(_store.addTag(_types.at(tag.typeIndex)));
+            {
+                // checkInstanceDemand() found room for every tag.
+                auto const address = _store.addTag(_types.at(tag.typeIndex));
+                Require(address.has_value());
+                instance().tags.push_back(*address);
+            }
         }
 
         [[nodiscard]] Step allocateTables(ModuleInstance& pending)

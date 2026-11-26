@@ -226,13 +226,16 @@ binary::FuncType const& Store::type(TypeId id) const
     return *_types[id];
 }
 
-FuncAddr Store::addHostFunction(binary::FuncType type, HostCallback callback)
+std::expected<FuncAddr, LimitExceeded> Store::addHostFunction(binary::FuncType type,
+                                                              std::shared_ptr<IHostFunction> function)
 {
-    Require(static_cast<bool>(callback));
+    Require(function != nullptr);
+    if (!findType(type) && typeUnits(type) > _limits.maxTypes - used(Limit::Types))
+        return std::unexpected { LimitExceeded { .limit = Limit::Types } };
     auto const typeId = internType(std::move(type));
     return append(_functions,
                   FunctionInstance {
-                      .typeId = typeId, .moduleInstance = 0, .codeIndex = 0, .host = std::move(callback) });
+                      .typeId = typeId, .moduleInstance = 0, .codeIndex = 0, .host = std::move(function) });
 }
 
 FuncAddr Store::addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32_t codeIndex)
@@ -306,10 +309,11 @@ GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
     return append(_globals, GlobalInstance { .type = type, .value = value });
 }
 
-TagAddr Store::addTag(TypeId typeId)
+std::expected<TagAddr, LimitExceeded> Store::addTag(TypeId typeId)
 {
     Require(typeId < _types.size());
-    Require(_tags.size() < _limits.maxTags);
+    if (_tags.size() >= _limits.maxTags)
+        return std::unexpected { LimitExceeded { .limit = Limit::Tags } };
     return append(_tags, TagInstance { .typeId = typeId });
 }
 
@@ -337,23 +341,22 @@ std::expected<void, LimitExceeded> Store::checkInstanceDemand(InstanceDemand con
     struct Claim
     {
         Limit limit;     ///< The limit it is checked against.
-        uint64_t used;   ///< What the store holds of it.
         uint64_t demand; ///< What the instance will add.
     };
     // In Limit order, so that the first limit a demand exceeds is the one reported.
     auto const claims = std::to_array<Claim>({
-        { .limit = Limit::MemoryBytes, .used = _memoryBytes, .demand = demand.memoryBytes },
-        { .limit = Limit::TableElements, .used = _tableElements, .demand = demand.tableElements },
-        { .limit = Limit::Memories, .used = _memories.size(), .demand = demand.memories },
-        { .limit = Limit::Tables, .used = _tables.size(), .demand = demand.tables },
-        { .limit = Limit::Instances, .used = _moduleInstances.size(), .demand = 1 },
-        { .limit = Limit::Types, .used = _typeUnits, .demand = demand.typeUnits },
-        { .limit = Limit::Tags, .used = _tags.size(), .demand = demand.tags },
+        { .limit = Limit::MemoryBytes, .demand = demand.memoryBytes },
+        { .limit = Limit::TableElements, .demand = demand.tableElements },
+        { .limit = Limit::Memories, .demand = demand.memories },
+        { .limit = Limit::Tables, .demand = demand.tables },
+        { .limit = Limit::Instances, .demand = 1 },
+        { .limit = Limit::Types, .demand = demand.typeUnits },
+        { .limit = Limit::Tags, .demand = demand.tags },
     });
     for (auto const& claim: claims)
     {
-        auto const limit = limitValue(_limits, claim.limit);
-        if (claim.used > limit || claim.demand > limit - claim.used)
+        // Every running total is charged within its limit, so the difference does not wrap.
+        if (claim.demand > limitValue(_limits, claim.limit) - used(claim.limit))
             return std::unexpected { LimitExceeded { .limit = claim.limit } };
     }
     return {};
@@ -362,6 +365,54 @@ std::expected<void, LimitExceeded> Store::checkInstanceDemand(InstanceDemand con
 StoreLimits const& Store::limits() const noexcept
 {
     return _limits;
+}
+
+uint64_t Store::used(Limit limit) const noexcept
+{
+    struct Usage
+    {
+        Limit limit;                                   ///< The limit; equal to the row's index.
+        uint64_t (*held)(Store const& store) noexcept; ///< What the store holds of it.
+    };
+    // One row per Limit; an invocation's own limits are counted by the executor, not held here.
+    static constexpr auto Usages = std::to_array<Usage>({
+        { .limit = Limit::CallDepth, .held = [](Store const&) noexcept -> uint64_t { return 0; } },
+        { .limit = Limit::StackValues, .held = [](Store const&) noexcept -> uint64_t { return 0; } },
+        { .limit = Limit::NestedInvocations, .held = [](Store const&) noexcept -> uint64_t { return 0; } },
+        { .limit = Limit::MemoryBytes,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._memoryBytes; } },
+        { .limit = Limit::TableElements,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._tableElements; } },
+        { .limit = Limit::Memories,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._memories.size(); } },
+        { .limit = Limit::Tables,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._tables.size(); } },
+        { .limit = Limit::Instances,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._moduleInstances.size(); } },
+        { .limit = Limit::Exceptions,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._exceptions.size(); } },
+        { .limit = Limit::ExceptionValues,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._exceptionValues; } },
+        { .limit = Limit::Types,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._typeUnits; } },
+        { .limit = Limit::Tags,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._tags.size(); } },
+    });
+    static_assert(
+        [] {
+            auto index = std::size_t { 0 };
+            for (auto const& row: Usages)
+                if (static_cast<std::size_t>(row.limit) != index++)
+                    return false;
+            return index == static_cast<std::size_t>(LastLimit) + 1;
+        }(),
+        "Usages must hold one row per Limit, at the index of its enumerator");
+    return Usages[static_cast<std::size_t>(limit)].held(*this);
+}
+
+uint32_t Store::hostCallsInProgress() const noexcept
+{
+    return _hostCalls;
 }
 
 std::size_t Store::moduleInstanceCount() const noexcept
@@ -387,6 +438,11 @@ std::size_t Store::memoryCount() const noexcept
 std::size_t Store::tableCount() const noexcept
 {
     return _tables.size();
+}
+
+std::size_t Store::tagCount() const noexcept
+{
+    return _tags.size();
 }
 
 void Store::releaseTrailing(TableAddr firstTable, MemAddr firstMemory) noexcept
@@ -528,6 +584,16 @@ RefusalScope::~RefusalScope()
 GrowthRecord const& RefusalScope::record() const noexcept
 {
     return _store->_growthRecord;
+}
+
+HostCallScope::HostCallScope(Store& store) noexcept: _store { &store }
+{
+    ++_store->_hostCalls;
+}
+
+HostCallScope::~HostCallScope()
+{
+    --_store->_hostCalls;
 }
 
 } // namespace isoline::runtime

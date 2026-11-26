@@ -16,6 +16,7 @@ target_sources(isoline_core
         interpreter/Numerics.cpp
         interpreter/ReferenceInterpreter.cpp
         interpreter/Simd.cpp
+        runtime/HostFunction.cpp
         runtime/Instantiate.cpp
         runtime/LinearMemory.cpp
         runtime/Store.cpp
@@ -41,6 +42,7 @@ target_sources(isoline_core
             interpreter/ReferenceInterpreter.hpp
             interpreter/Simd.hpp
             runtime/Abrupt.hpp
+            runtime/HostFunction.hpp
             runtime/Instantiate.hpp
             runtime/Limits.hpp
             runtime/LinearMemory.hpp

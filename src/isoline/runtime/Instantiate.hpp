@@ -94,9 +94,10 @@ struct LinkError
 };
 
 /// Why instantiation failed: an import did not bind, the instance would exceed one of the store's
-/// limits, the store could not allocate a memory or table, initialization trapped, or the start
-/// function threw an exception it did not catch.
-using InstantiationError = std::variant<LinkError, LimitExceeded, AllocationFailure, Trap, Thrown>;
+/// limits, the store could not allocate a memory or table, initialization trapped, the start
+/// function threw an exception it did not catch, or a host function it called failed.
+using InstantiationError =
+    std::variant<LinkError, LimitExceeded, AllocationFailure, Trap, Thrown, HostFailure>;
 
 /// Executes code for instantiation: constant expressions, and the start function.
 ///

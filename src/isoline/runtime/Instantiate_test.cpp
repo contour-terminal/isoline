@@ -23,6 +23,7 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
@@ -73,6 +74,14 @@ using isoline::validate::ValidatedModule;
 
 namespace
 {
+
+/// A host function that does nothing.
+constexpr auto NoHost =
+    [](isoline::runtime::HostContext&,
+       std::span<isoline::runtime::Value const>,
+       std::span<isoline::runtime::Value>) noexcept -> std::expected<void, isoline::runtime::Abrupt> {
+    return {};
+};
 
 /// The default page size, 64 KiB.
 constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
@@ -231,22 +240,23 @@ TEST_CASE("Instantiate.incompatibleImportType")
     }
     SECTION("another function type")
     {
-        auto const host =
-            store.addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
-                                  [](auto, auto) -> std::expected<void, Trap> { return {}; });
+        auto const host = store
+                              .addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
+                                               isoline::runtime::makeHostFunction(NoHost))
+                              .value();
         auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
         CHECK(errorOf(instantiate(store, executor, module, imports)) == incompatible);
     }
     SECTION("a tag")
     {
-        auto const tag = store.addTag(store.internType(FuncType {}));
+        auto const tag = store.addTag(store.internType(FuncType {})).value();
         auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
         CHECK(errorOf(instantiate(store, executor, module, imports)) == incompatible);
     }
     SECTION("the right function type")
     {
         auto const host =
-            store.addHostFunction(FuncType {}, [](auto, auto) -> std::expected<void, Trap> { return {}; });
+            store.addHostFunction(FuncType {}, isoline::runtime::makeHostFunction(NoHost)).value();
         auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
         auto const instance = instantiate(store, executor, module, imports);
         REQUIRE(instance.has_value());
@@ -606,8 +616,7 @@ TEST_CASE("Instantiate.exportsResolve")
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto executor = StubExecutor {};
-    auto const host =
-        store.addHostFunction(FuncType {}, [](auto, auto) -> std::expected<void, Trap> { return {}; });
+    auto const host = store.addHostFunction(FuncType {}, isoline::runtime::makeHostFunction(NoHost)).value();
     auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
     auto const result = instantiate(store, executor, moduleOf(builder), imports);
     REQUIRE(result.has_value());
@@ -664,20 +673,23 @@ TEST_CASE("Instantiate.tagImports")
     auto executor = StubExecutor {};
 
     auto const other =
-        store.addTag(store.internType(FuncType { .params = { isoline::binary::F32 }, .results = {} }));
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::F32 }, .results = {} }))
+            .value();
     auto const otherImports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = other } };
     CHECK(errorOf(instantiate(store, executor, module, otherImports))
           == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
-    auto const function =
-        store.addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
-                              [](auto, auto) -> std::expected<void, Abrupt> { return {}; });
+    auto const function = store
+                              .addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
+                                               isoline::runtime::makeHostFunction(NoHost))
+                              .value();
     auto const functionImports =
         std::vector { ExternValue { .kind = ExternKind::Func, .address = function } };
     CHECK(errorOf(instantiate(store, executor, module, functionImports))
           == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
 
     auto const tag =
-        store.addTag(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }));
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }))
+            .value();
     auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
     auto const first = instantiate(store, executor, module, imports);
     REQUIRE(first.has_value());
@@ -937,7 +949,9 @@ TEST_CASE("Instantiate.typeIdentityAcrossModules")
     CHECK(store.type(bInstance.types[1]) == identity);
 
     auto results = std::vector<Value>(1);
-    REQUIRE(interpreter.invoke(store, exportOf(store, *bAddress, "call").address, {}, results).has_value());
+    REQUIRE(isoline::runtime::invokeChecked(
+                store, interpreter, exportOf(store, *bAddress, "call").address, {}, results)
+                .outcome.has_value());
     CHECK(results[0] == Value { I32 { .bits = 7 } });
 
     // A type that differs is incompatible, at import as at call_indirect.
@@ -1075,9 +1089,10 @@ TEST_CASE("Instantiate.failedInstantiationInternsNoType")
     auto allocator = ProvidedMemoryAllocator { 0, 0, grantAll };
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto executor = StubExecutor {};
-    auto const host = store.addHostFunction(
-        FuncType { .params = { isoline::binary::I64 }, .results = {} },
-        [](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> { return {}; });
+    auto const host = store
+                          .addHostFunction(FuncType { .params = { isoline::binary::I64 }, .results = {} },
+                                           isoline::runtime::makeHostFunction(NoHost))
+                          .value();
     auto const before = store.typeCount();
     auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
     auto const unlinkableModule = moduleOf(unlinkable, FeatureSet::wasm3());
@@ -1162,4 +1177,33 @@ TEST_CASE("Instantiate.importOfAnUnheldTypeMatchesNothing")
                     })
           == incompatible);
     CHECK(store.typeCount() == before);
+}
+
+TEST_CASE("Instantiate.startHostFailureFailsInstantiation")
+{
+    // A module whose start function is a host import that fails: instantiation fails with that very
+    // failure, and the host sees no caller instance, since no Wasm code called it.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).importFunction("env", "start", 0).start(0);
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const failure = isoline::runtime::HostFailure { .kind = isoline::runtime::HostFailureKind::Embedder,
+                                                         .code = 3,
+                                                         .mismatch = std::nullopt };
+    auto caller = std::optional<uint32_t> { 0 };
+    auto const host = store
+                          .addHostFunction(FuncType {},
+                                           isoline::runtime::makeHostFunction(
+                                               [&](isoline::runtime::HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   caller = context.callerInstance();
+                                                   return std::unexpected { Abrupt { failure } };
+                                               }))
+                          .value();
+    auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+    CHECK(errorOf(instantiate(store, interpreter, moduleOf(builder), imports))
+          == InstantiationError { failure });
+    CHECK(caller == std::nullopt);
 }

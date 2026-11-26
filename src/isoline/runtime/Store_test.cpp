@@ -19,6 +19,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
@@ -62,6 +63,14 @@ using isoline::runtime::testing::ProvidedMemoryAllocator;
 
 namespace
 {
+
+/// A host function that does nothing.
+constexpr auto NoHost =
+    [](isoline::runtime::HostContext&,
+       std::span<isoline::runtime::Value const>,
+       std::span<isoline::runtime::Value>) noexcept -> std::expected<void, isoline::runtime::Abrupt> {
+    return {};
+};
 
 /// The default page size, 64 KiB.
 constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
@@ -143,9 +152,8 @@ TEST_CASE("Store.constAccessors")
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const one = Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 };
-    auto const function = store.addHostFunction(
-        FuncType {},
-        [](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> { return {}; });
+    auto const function =
+        store.addHostFunction(FuncType {}, isoline::runtime::makeHostFunction(NoHost)).value();
     auto const table = store.addTable(TableType { .element = FuncRef, .limits = one },
                                       Ref { .kind = RefKind::Null, .heap = FuncRef.heap, .address = 0 });
     auto const memory = store.addMemory(MemoryType { .limits = one });
@@ -232,9 +240,10 @@ TEST_CASE("Store.internTypeHashConses")
     CHECK(store.internType(FuncType { .params = { concreteRef(takesI32, Nullable::Yes) }, .results = {} })
           != takesRef);
     // Functions intern their types.
-    auto const host = store.addHostFunction(
-        FuncType { .params = { isoline::binary::I32 }, .results = {} },
-        [](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> { return {}; });
+    auto const host = store
+                          .addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
+                                           isoline::runtime::makeHostFunction(NoHost))
+                          .value();
     CHECK(store.function(host).typeId == takesI32);
     auto const defined = store.addModuleFunction(returnsI32, 0, 0);
     CHECK(store.function(defined).typeId == returnsI32);
@@ -289,8 +298,8 @@ TEST_CASE("Store.tagsAreDistinct")
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const type = FuncType { .params = { isoline::binary::I32 }, .results = {} };
-    auto const first = store.addTag(store.internType(type));
-    auto const second = store.addTag(store.internType(type));
+    auto const first = store.addTag(store.internType(type)).value();
+    auto const second = store.addTag(store.internType(type)).value();
     CHECK(first != second);
     CHECK(store.tag(first).typeId == store.tag(second).typeId);
     CHECK(store.findType(type) == store.tag(first).typeId);
@@ -304,7 +313,7 @@ TEST_CASE("Store.tagNamesItsTypeOnly")
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto const wide = FuncType { .params = std::vector(1000, isoline::binary::I32), .results = {} };
-    auto const tag = store.addTag(store.internType(wide));
+    auto const tag = store.addTag(store.internType(wide)).value();
     CHECK(store.type(store.tag(tag).typeId) == wide);
     CHECK(store.addException(tag, std::vector<Value>(1000, I32 { .bits = 1 })).has_value());
 }
@@ -320,7 +329,7 @@ TEST_CASE("Store.exceptionLimits")
     SECTION("the number of exceptions")
     {
         auto store = Store { StoreLimits { .maxExceptions = 2 }, StoreServices { .allocator = allocator } };
-        auto const tag = store.addTag(store.internType(FuncType {}));
+        auto const tag = store.addTag(store.internType(FuncType {})).value();
         auto const first = store.addException(tag, {});
         REQUIRE(first.has_value());
         REQUIRE(store.addException(tag, {}).has_value());
@@ -336,9 +345,11 @@ TEST_CASE("Store.exceptionLimits")
         auto store =
             Store { StoreLimits { .maxExceptionValues = 3 }, StoreServices { .allocator = allocator } };
         using isoline::binary::I32;
-        auto const none = store.addTag(store.internType(FuncType {}));
-        auto const one = store.addTag(store.internType(FuncType { .params = { I32 }, .results = {} }));
-        auto const two = store.addTag(store.internType(FuncType { .params = { I32, I32 }, .results = {} }));
+        auto const none = store.addTag(store.internType(FuncType {})).value();
+        auto const one =
+            store.addTag(store.internType(FuncType { .params = { I32 }, .results = {} })).value();
+        auto const two =
+            store.addTag(store.internType(FuncType { .params = { I32, I32 }, .results = {} })).value();
         auto const first = store.addException(two, payload(2));
         REQUIRE(first.has_value());
         CHECK(store.exception(*first).payload == payload(2));
@@ -488,6 +499,77 @@ TEST_CASE("Store.typeLimitIsStoreWide")
     CHECK(limited.instantiate(wide(999)).has_value());
     CHECK(limitOf(limited.instantiate(wide(0))) == LimitExceeded { Limit::Types });
     CHECK(store.typeCount() == 1);
+}
+
+TEST_CASE("Store.hostAdditionsShareTheGuestsBudgets")
+{
+    // A guest's module takes 91 of the store's 100 type units and both its tags. The embedder's host
+    // function of a new type past what is left, and a third tag, are refused, and the process lives
+    // on; what still fits, and a type the store holds already, are added.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = std::vector(90, isoline::binary::I32), .results = {} }).tag(0).tag(0);
+    auto limited = LimitedStore { StoreLimits { .maxTypes = 100, .maxTags = 2 } };
+    auto& store = limited.store();
+    auto const instance = limited.instantiate(builder);
+    REQUIRE(instance.has_value());
+    CHECK(store.used(Limit::Types) == 91);
+    CHECK(store.used(Limit::Tags) == 2);
+
+    auto const host = isoline::runtime::makeHostFunction(NoHost);
+    auto const ofWidth = [](std::size_t params) {
+        return FuncType { .params = std::vector(params, isoline::binary::I32), .results = {} };
+    };
+    CHECK(store.addHostFunction(ofWidth(9), host) == std::unexpected { LimitExceeded { Limit::Types } });
+    CHECK(store.typeCount() == 1);
+    CHECK(store.addHostFunction(ofWidth(90), host).has_value());
+    CHECK(store.addHostFunction(ofWidth(8), host).has_value());
+    CHECK(store.used(Limit::Types) == 100);
+    CHECK(store.addHostFunction(FuncType {}, host) == std::unexpected { LimitExceeded { Limit::Types } });
+
+    auto const typeId = store.tag(store.moduleInstance(*instance).tags.at(0)).typeId;
+    CHECK(store.addTag(typeId) == std::unexpected { LimitExceeded { Limit::Tags } });
+    CHECK(store.used(Limit::Tags) == 2);
+}
+
+TEST_CASE("Store.usedReadsEveryLimit")
+{
+    // What the store holds of each limit, in that limit's unit; an invocation's own limits read 0.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    REQUIRE(store.addMemory(MemoryType { .limits = atLeast(2) }).has_value());
+    REQUIRE(store.addTable(TableType { .element = FuncRef, .limits = atLeast(3) }, NullFunction).has_value());
+    REQUIRE(store.addTable(TableType { .element = FuncRef, .limits = atLeast(4) }, NullFunction).has_value());
+    auto const tag =
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }))
+            .value();
+    REQUIRE(store.addException(tag, { I32 { .bits = 1 } }).has_value());
+    REQUIRE(store.addException(tag, { I32 { .bits = 2 } }).has_value());
+    std::ignore = store.addModuleInstance(isoline::runtime::ModuleInstance {});
+    struct Row
+    {
+        Limit limit;
+        uint64_t used;
+    };
+    auto const rows = std::to_array<Row>({
+        { .limit = Limit::CallDepth, .used = 0 },
+        { .limit = Limit::StackValues, .used = 0 },
+        { .limit = Limit::NestedInvocations, .used = 0 },
+        { .limit = Limit::MemoryBytes, .used = 2 * PageSize },
+        { .limit = Limit::TableElements, .used = 7 },
+        { .limit = Limit::Memories, .used = 1 },
+        { .limit = Limit::Tables, .used = 2 },
+        { .limit = Limit::Instances, .used = 1 },
+        { .limit = Limit::Exceptions, .used = 2 },
+        { .limit = Limit::ExceptionValues, .used = 2 },
+        { .limit = Limit::Types, .used = 2 },
+        { .limit = Limit::Tags, .used = 1 },
+    });
+    static_assert(rows.size() == static_cast<std::size_t>(isoline::runtime::LastLimit) + 1);
+    for (auto const& row: rows)
+    {
+        INFO("limit: " << static_cast<int>(row.limit));
+        CHECK(store.used(row.limit) == row.used);
+    }
 }
 
 TEST_CASE("Store.tagLimitIsStoreWide")
@@ -674,6 +756,9 @@ TEST_CASE("Store.storageRefusalsAreAttributedToTheEmbedder")
         { .reported = Refusal::Embedder, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
     });
     static_assert(rows.size() == static_cast<std::size_t>(isoline::runtime::LastRefusal) + 1);
+    // One row per refusal, each at the index of its enumerator, so none is tested twice and none left out.
+    for (auto const index: std::views::iota(std::size_t { 0 }, rows.size()))
+        CHECK(static_cast<std::size_t>(rows[index].reported) == index);
     for (auto const& row: rows)
     {
         INFO("reported: " << static_cast<int>(row.reported));

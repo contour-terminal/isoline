@@ -26,6 +26,7 @@
 #include <isoline/interpreter/Numerics.hpp>
 #include <isoline/interpreter/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -185,6 +186,7 @@ namespace
     struct Frame
     {
         ModuleInstance* instance = nullptr;     ///< The instance the function belongs to.
+        uint32_t instanceAddress = 0;           ///< That instance's address in the store.
         binary::Function const* code = nullptr; ///< Its code.
         std::size_t localsBase = 0;             ///< Its first local's index in the locals stack.
         std::size_t labelsBase = 0;             ///< The label stack's height when it began.
@@ -205,8 +207,12 @@ namespace
     {
       public:
         /// @param store The store to execute on.
+        /// @param executor What a host function it calls re-enters the guest through: the interpreter.
         /// @param depth The frames active over every invocation in progress; kept up to date.
-        Machine(Store& store, uint32_t& depth): _store { store }, _depth { depth } {}
+        Machine(Store& store, runtime::ICodeExecutor& executor, uint32_t& depth):
+            _store { store }, _executor { executor }, _depth { depth }
+        {
+        }
 
         Machine(Machine const&) = delete;
         Machine(Machine&&) = delete;
@@ -306,7 +312,7 @@ namespace
         {
             auto const& function = _store.function(address);
             if (function.isHost())
-                return callHost(function);
+                return callHost(function, callerInstance());
             if (_depth >= _store.limits().maxCallDepth || stacksExhausted())
                 return trap(TrapCode::CallStackExhausted);
 
@@ -324,6 +330,7 @@ namespace
                                runtime::defaultValue(binary::mapTypeIndex(
                                    run.type, [&](uint32_t index) { return owner.types.at(index); })));
             _frames.push_back(Frame { .instance = &owner,
+                                      .instanceAddress = function.moduleInstance,
                                       .code = &code,
                                       .localsBase = localsBase,
                                       .labelsBase = _labels.size(),
@@ -334,8 +341,21 @@ namespace
             return {};
         }
 
-        /// Runs a host function synchronously: it may grow memories and tables, and invoke Wasm.
-        [[nodiscard]] Step callHost(FunctionInstance const& function)
+        /// The instance of the current frame: the caller of a function it calls; nullopt before the
+        /// first frame, when the embedder is the caller.
+        [[nodiscard]] std::optional<uint32_t> callerInstance() const noexcept
+        {
+            if (_frames.empty())
+                return std::nullopt;
+            return _frames.back().instanceAddress;
+        }
+
+        /// Runs a host function synchronously: it may grow memories and tables, and invoke Wasm
+        /// through its context. What it ends with is checked (runtime::checkHostOutcome()): a result
+        /// not of its type, or a thrown exception the store does not hold, is a HostFailure.
+        /// @param function The host function.
+        /// @param caller The instance whose code called it; nullopt when the embedder did.
+        [[nodiscard]] Step callHost(FunctionInstance const& function, std::optional<uint32_t> caller)
         {
             auto const& type = _store.type(function.typeId);
             auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
@@ -343,15 +363,19 @@ namespace
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
             auto results = std::vector<Value>(type.results.size());
             std::ranges::transform(type.results, results.begin(), runtime::defaultValue);
-            if (auto const done = function.host(args, results); !done)
+            auto const done = [&] {
+                auto const scope = runtime::HostCallScope { _store };
+                auto context = runtime::HostContext { _store, _executor, caller };
+                return runtime::checkHostOutcome(
+                    _store, type, function.host->call(context, args, results), results);
+            }();
+            if (!done)
             {
-                // An exception it throws is thrown on in its caller.
+                // An exception it throws, one of the store's, is thrown on in its caller.
                 if (auto const* thrown = std::get_if<Thrown>(&done.error()))
                     return unwind(thrown->exception);
                 return std::unexpected { done.error() };
             }
-            // A host's results are checked as arguments are, so none outside this store enters.
-            Require(runtime::checkValues(_store, results, type.results).has_value());
             _values.insert(_values.end(), results.begin(), results.end());
             return {};
         }
@@ -376,7 +400,12 @@ namespace
         /// stacks grow; a host callee runs, and its results are the current frame's.
         [[nodiscard]] Step tailCall(FuncAddr address)
         {
+            // A host callee is called by the instance whose frame it replaces.
+            auto const caller = callerInstance();
             discardFrame(static_cast<uint32_t>(_store.functionType(address).params.size()));
+            auto const& function = _store.function(address);
+            if (function.isHost())
+                return callHost(function, caller);
             return call(address);
         }
 
@@ -399,10 +428,11 @@ namespace
         /// The function call_ref and return_call_ref call: the popped reference's.
         [[nodiscard]] std::expected<FuncAddr, Abrupt> referencedCallee(Instruction const& instruction)
         {
-            // Validation typed the reference (ref null $t), so only null is a trap. A host boundary
-            // checks the kinds of the values it passes, not yet their types (P3), so a function of
-            // another type is a checked abort here rather than a call that reads its arguments past
-            // the operand stack.
+            // Validation typed the reference (ref null $t), so only null is a trap. Every value that
+            // crosses the host boundary (arguments, host results, exception payloads) is checked
+            // against its type, reference heaps included (runtime::checkValues()), so no host can
+            // hand the guest a function of another type: the Require below is unreachable from a
+            // host argument or result, and guards the interpreter's own invariant.
             auto const reference = popRef();
             if (reference.kind == RefKind::Null)
                 return trap(TrapCode::NullFunctionReference);
@@ -1056,6 +1086,7 @@ namespace
         // uncovered-end(execute-default)
 
         Store& _store;
+        runtime::ICodeExecutor& _executor;
         uint32_t& _depth;
         std::vector<Value> _values;
         std::vector<Value> _locals;
@@ -1073,7 +1104,7 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
     assert(std::fegetround() == FE_TONEAREST);
     if (_invocations >= store.limits().maxNestedInvocations)
         return trap(TrapCode::CallStackExhausted);
-    // Unwinds on every exit, an exception thrown by a host callback included.
+    // Unwinds on every exit: host functions are noexcept, so every exit is a return.
     struct InvocationGuard
     {
         uint32_t& count;
@@ -1085,7 +1116,7 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
         ~InvocationGuard() { --count; }
     };
     auto const guard = InvocationGuard { _invocations };
-    return Machine { store, _depth }.run(function, args, results);
+    return Machine { store, *this, _depth }.run(function, args, results);
 }
 
 std::expected<Value, Trap> ReferenceInterpreter::evaluateConst(Store& store,

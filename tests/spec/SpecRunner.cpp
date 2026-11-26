@@ -43,13 +43,13 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
-#include <isoline/validate/Subtyping.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
@@ -79,29 +79,22 @@ namespace
         return Failure { .stage = Stage::Exception, .message = "uncaught exception" };
     }
 
-    /// The failure of an invocation that ended abruptly: a trap at @p stage, or an uncaught exception.
+    /// The failure of a host function: the spectest module's never fail, so it is the harness's.
+    [[nodiscard]] Failure hostFailure(runtime::HostFailure const& failure)
+    {
+        return harnessFailure(
+            std::format("host failure {} (code {})", static_cast<int>(failure.kind), failure.code));
+    }
+
+    /// The failure of an invocation that ended abruptly: a trap at @p stage, an uncaught exception, or
+    /// a host failure.
     [[nodiscard]] Failure abruptFailure(Stage stage, runtime::Abrupt const& abrupt)
     {
         if (auto const* thrown = std::get_if<runtime::Thrown>(&abrupt))
             return thrownFailure(*thrown);
+        if (auto const* failure = std::get_if<runtime::HostFailure>(&abrupt))
+            return hostFailure(*failure);
         return trapFailure(stage, std::get<runtime::Trap>(abrupt));
-    }
-
-    /// Whether @p value is of @p type: what the interpreter requires of every argument.
-    [[nodiscard]] bool hasType(Value const& value, binary::ValueType const& type)
-    {
-        switch (type.kind)
-        {
-            case binary::ValueKind::I32: return std::holds_alternative<runtime::I32>(value);
-            case binary::ValueKind::I64: return std::holds_alternative<runtime::I64>(value);
-            case binary::ValueKind::F32: return std::holds_alternative<runtime::F32>(value);
-            case binary::ValueKind::F64: return std::holds_alternative<runtime::F64>(value);
-            case binary::ValueKind::V128: return std::holds_alternative<runtime::V128>(value);
-            case binary::ValueKind::Ref: break;
-        }
-        // An argument's heap is that of the script's value, ref.null func for a (ref null $t) too.
-        auto const* const ref = std::get_if<runtime::Ref>(&value);
-        return ref && validate::topOf(ref->heap.kind) == validate::topOf(type.heap.kind);
     }
 
     [[nodiscard]] std::expected<std::vector<std::byte>, Failure> readFile(std::filesystem::path const& path)
@@ -128,10 +121,10 @@ namespace
         };
         auto instance = runtime::ModuleInstance {};
         instance.module = std::make_shared<Module const>();
-        auto const ignore = [](std::span<Value const>,
-                               std::span<Value>) -> std::expected<void, runtime::Abrupt> {
-            return {};
-        };
+        auto const ignore = runtime::makeHostFunction(
+            [](runtime::HostContext&,
+               std::span<Value const>,
+               std::span<Value>) noexcept -> std::expected<void, runtime::Abrupt> { return {}; });
         for (auto const& function: std::to_array<HostFunction>({
                  { .name = "print", .params = {} },
                  { .name = "print_i32", .params = { I32 } },
@@ -143,7 +136,7 @@ namespace
              }))
         {
             auto const address =
-                store.addHostFunction(FuncType { .params = function.params, .results = {} }, ignore);
+                store.addHostFunction(FuncType { .params = function.params, .results = {} }, ignore).value();
             instance.exports.emplace_back(std::string { function.name },
                                           ExternValue { .kind = ExternKind::Func, .address = address });
         }
@@ -393,6 +386,7 @@ namespace
                     return trapFailure(Stage::Instantiate, trap);
                 }
                 Failure operator()(runtime::Thrown const& thrown) const { return thrownFailure(thrown); }
+                Failure operator()(runtime::HostFailure const& failure) const { return hostFailure(failure); }
             };
             return std::unexpected { std::visit(Describe {}, instance.error()) };
         }
@@ -495,18 +489,16 @@ namespace
             if (target->kind != ExternKind::Func)
                 return std::unexpected { harnessFailure(std::format("'{}' is no function", action.field)) };
             auto const& type = _store.functionType(target->address);
-            if (action.args.size() != type.params.size()
-                || !std::ranges::all_of(
-                    std::views::iota(std::size_t { 0 }, type.params.size()),
-                    [&](std::size_t index) { return hasType(action.args[index], type.params[index]); }))
-                return std::unexpected { harnessFailure(
-                    std::format("arguments {} do not match '{}'", describeAll(action.args), action.field)) };
             auto results = std::vector<Value> {};
             for (auto const& resultType: type.results)
                 results.push_back(runtime::defaultValue(resultType));
-            auto const invoked = _interpreter.invoke(_store, target->address, action.args, results);
-            if (!invoked)
-                return std::unexpected { abruptFailure(Stage::Execute, invoked.error()) };
+            auto const invoked =
+                runtime::invokeChecked(_store, _interpreter, target->address, action.args, results);
+            if (invoked.entry == runtime::Entry::Refused)
+                return std::unexpected { harnessFailure(
+                    std::format("arguments {} do not match '{}'", describeAll(action.args), action.field)) };
+            if (!invoked.outcome)
+                return std::unexpected { abruptFailure(Stage::Execute, invoked.outcome.error()) };
             return results;
         }
 
