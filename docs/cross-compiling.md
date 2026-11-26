@@ -9,7 +9,8 @@ and run on the host in every tree.
 | Preset | Target | Toolchain file | Tests run under |
 |---|---|---|---|
 | `clangcl-cross-debug` | Windows x64, Debug | `cmake/toolchains/windows-clangcl-cross.cmake` | wine |
-| `clang-aarch64-cross` | Linux aarch64, RelWithDebInfo | `cmake/toolchains/aarch64-linux-gnu-clang.cmake` | `qemu-aarch64-static` |
+| `clang-aarch64-cross` | Linux aarch64, Debug | `cmake/toolchains/aarch64-linux-gnu-clang.cmake` | `qemu-aarch64-static` |
+| `clang-aarch64-cross-release` | Linux aarch64, Release | the same | `qemu-aarch64-static` |
 
 ## Windows x64: clang-cl and wine
 
@@ -54,8 +55,11 @@ QEMU_CPU=cortex-a53 ctest --preset clang-aarch64-cross
 ```
 
 The sysroot is the C and C++ development files (`libc6-dev libstdc++-14-dev libgcc-14-dev
-linux-libc-dev`) of a Debian trixie arm64 container, at `ISOLINE_AARCH64_SYSROOT` (cache or environment
-variable, default `~/.cache/isoline/sysroot-aarch64-trixie`). `QEMU_CPU` picks the emulated CPU: `max`
+linux-libc-dev`) of a Debian trixie arm64 container. The image is pinned by digest, so the base system
+is reproducible; `apt-get` still installs the packages current in the trixie archive, so a `--refresh`
+can bring newer point releases. The sysroot lives at `ISOLINE_AARCH64_SYSROOT` (cache or environment
+variable, default `~/.cache/isoline/sysroot-aarch64-trixie`). The Debug preset keeps assertions on;
+`clang-aarch64-cross-release` shows what the optimizer does with the same code. `QEMU_CPU` picks the emulated CPU: `max`
 enables every extension qemu implements, `cortex-a53` is a baseline ARMv8.0 core without them, so the
 two runs cover both sides of any feature detection.
 
