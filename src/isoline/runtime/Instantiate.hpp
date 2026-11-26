@@ -12,6 +12,7 @@
 
 #include <isoline/binary/Module.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -92,9 +93,10 @@ struct LinkError
     bool operator==(LinkError const&) const = default;
 };
 
-/// Why instantiation failed: an import did not bind, the store could not allocate a memory or table,
-/// initialization trapped, or the start function threw an exception it did not catch.
-using InstantiationError = std::variant<LinkError, AllocationFailure, Trap, Thrown>;
+/// Why instantiation failed: an import did not bind, the instance would exceed one of the store's
+/// limits, the store could not allocate a memory or table, initialization trapped, or the start
+/// function threw an exception it did not catch.
+using InstantiationError = std::variant<LinkError, LimitExceeded, AllocationFailure, Trap, Thrown>;
 
 /// Executes code for instantiation: constant expressions, and the start function.
 ///
@@ -135,9 +137,13 @@ class ICodeExecutor
 /// segments are dropped too. The first segment that is out of bounds traps; the segments before it
 /// stay written, and the instance stays in the store. Last, it runs the start function.
 ///
-/// Tables and memories are allocated before the instance is added to the store, so an
-/// AllocationFailure leaves no instance behind (the tables and memories allocated before the
-/// failing one stay in the store, unreferenced). A trap from a global's initializer, an element
+/// Before anything is allocated or interned, the instance and everything it defines (its memories and
+/// tables, by count and by their minimum bytes and elements; the types the store does not hold yet;
+/// its tags) are checked against what is left of the store's limits (Store::checkInstanceDemand), so
+/// a limit refusal (LimitExceeded) leaves no instance, memory, table, type or tag behind; imported
+/// entities claim nothing. Tables and memories are allocated before the instance is added to the
+/// store, so an AllocationFailure leaves no instance behind (the tables and memories allocated before
+/// the failing one stay in the store, unreferenced). A trap from a global's initializer, an element
 /// segment, or later, leaves the instance in the store, as the spec's partial instantiation does.
 ///
 /// The instance keeps @p module, and its module is @p module's, sharing its ownership. Every external

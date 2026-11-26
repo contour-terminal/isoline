@@ -40,6 +40,7 @@ target_sources(isoline_core
             interpreter/Simd.hpp
             runtime/Abrupt.hpp
             runtime/Instantiate.hpp
+            runtime/Limits.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp

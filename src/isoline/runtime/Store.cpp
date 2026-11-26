@@ -4,6 +4,7 @@
 #include <core/Assert.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -17,6 +18,7 @@
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
@@ -54,23 +56,40 @@ namespace
         return unitLimit(type.limits, binary::maxTableSize(type), sizeof(Ref));
     }
 
-    /// Resizes @p items to @p units units of @p unitBytes each, new items being @p fill, if the
-    /// limit and the allocator admit it and the allocation succeeds; otherwise leaves it unchanged.
-    template <typename T>
-    [[nodiscard]] std::expected<void, AllocationFailure> resize(std::vector<T>& items,
-                                                                uint64_t units,
-                                                                uint64_t limit,
-                                                                uint64_t unitBytes,
-                                                                IMemoryAllocator const& allocator,
-                                                                T const& fill,
-                                                                ExternKind kind)
+    /// What a memory's or a table's size is charged against: one of the store's running totals, the
+    /// limit it may reach, and what one unit (page or slot) charges.
+    struct Budget
     {
-        auto const failure = std::unexpected { AllocationFailure { .kind = kind } };
-        if (units > limit || !allocator.mayHold(units * unitBytes))
-            return failure;
+        uint64_t& total;   ///< The running total, never above limit.
+        uint64_t limit;    ///< The StoreLimits value it is charged against.
+        uint64_t unitCost; ///< What one unit charges: a page's bytes, or one element.
+    };
+
+    /// Resizes @p items, which only grow, to @p units units of @p unitBytes each, new items being
+    /// @p fill, and charges the units added to @p budget; leaves both unchanged on a refusal.
+    /// @return Nothing, or why it was refused: TypeMaximum past @p limit, Limit past the budget,
+    ///         Embedder when the allocator refuses it, HostMemory when allocation fails.
+    template <typename T>
+    [[nodiscard]] std::expected<void, Refusal> resize(std::vector<T>& items,
+                                                      uint64_t units,
+                                                      uint64_t limit,
+                                                      uint64_t unitBytes,
+                                                      IMemoryAllocator const& allocator,
+                                                      T const& fill,
+                                                      Budget budget)
+    {
+        if (units > limit)
+            return std::unexpected { Refusal::TypeMaximum };
+        // units <= limit <= 2^64 / unitBytes, and a page's bytes are its unitBytes: nothing overflows.
+        auto const oldUnits = items.size() * sizeof(T) / unitBytes;
+        auto const added = (units - oldUnits) * budget.unitCost;
+        if (added > budget.limit - budget.total)
+            return std::unexpected { Refusal::Limit };
+        if (!allocator.mayHold(units * unitBytes))
+            return std::unexpected { Refusal::Embedder };
         auto const count = units * unitBytes / sizeof(T);
         if (count > items.max_size())
-            return failure;
+            return std::unexpected { Refusal::HostMemory };
         try
         {
             items.resize(static_cast<std::size_t>(count), fill);
@@ -78,10 +97,20 @@ namespace
         catch (std::bad_alloc const&)
         {
             // uncovered-begin(bad-alloc)
-            return failure;
+            return std::unexpected { Refusal::HostMemory };
         }
         // uncovered-end(bad-alloc)
+        budget.total += added;
         return {};
+    }
+
+    /// The refusal to add a memory or a table of @p kind: a store limit as LimitExceeded of
+    /// @p limit, every other refusal as an AllocationFailure.
+    [[nodiscard]] AllocationError allocationError(Refusal refusal, ExternKind kind, Limit limit) noexcept
+    {
+        if (refusal == Refusal::Limit)
+            return LimitExceeded { .limit = limit };
+        return AllocationFailure { .kind = kind, .reason = refusal };
     }
 
     /// The instance at @p address of @p instances. Precondition (checked): it exists.
@@ -114,12 +143,21 @@ TypeId Store::internType(binary::FuncType type)
         return !binary::isConcreteRef(value) || value.heap.typeIndex < _types.size();
     };
     Require(std::ranges::all_of(type.params, named) && std::ranges::all_of(type.results, named));
+    if (auto const found = findType(type))
+        return *found;
     auto const next = typeCount();
     Require(next < std::numeric_limits<TypeId>::max());
-    auto const [entry, added] = _typeIds.try_emplace(std::move(type), next);
-    if (added)
-        _types.push_back(&entry->first);
-    return entry->second;
+    auto const units = typeUnits(type);
+    Require(units <= _limits.maxTypes - _typeUnits);
+    auto const entry = _typeIds.emplace(std::move(type), next).first;
+    _types.push_back(&entry->first);
+    _typeUnits += units;
+    return next;
+}
+
+uint64_t Store::typeUnits(binary::FuncType const& type) noexcept
+{
+    return 1 + uint64_t { type.params.size() } + uint64_t { type.results.size() };
 }
 
 std::optional<TypeId> Store::findType(binary::FuncType const& type) const
@@ -159,26 +197,40 @@ FuncAddr Store::addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32
             .typeId = typeId, .moduleInstance = moduleInstance, .codeIndex = codeIndex, .host = {} });
 }
 
-std::expected<TableAddr, AllocationFailure> Store::addTable(binary::TableType type, Ref init)
+std::expected<TableAddr, AllocationError> Store::addTable(binary::TableType type, Ref init)
 {
+    if (_tables.size() >= _limits.maxTables)
+        return std::unexpected { LimitExceeded { .limit = Limit::Tables } };
     auto elements = std::vector<Ref> {};
-    return resize(
-               elements, type.limits.min, slotLimit(type), sizeof(Ref), *_allocator, init, ExternKind::Table)
+    return resize(elements,
+                  type.limits.min,
+                  slotLimit(type),
+                  sizeof(Ref),
+                  *_allocator,
+                  init,
+                  Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
+        .transform_error(
+            [](Refusal refusal) { return allocationError(refusal, ExternKind::Table, Limit::TableElements); })
         .transform(
             [&] { return append(_tables, TableInstance { .type = type, .elements = std::move(elements) }); });
 }
 
-std::expected<MemAddr, AllocationFailure> Store::addMemory(binary::MemoryType type)
+std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type)
 {
     Require(type.pageSizeLog2 < binary::PageSizeLog2Limit);
+    if (_memories.size() >= _limits.maxMemories)
+        return std::unexpected { LimitExceeded { .limit = Limit::Memories } };
+    auto const pageBytes = binary::pageSize(type);
     auto bytes = std::vector<std::byte> {};
     return resize(bytes,
                   type.limits.min,
                   pageLimit(type),
-                  binary::pageSize(type),
+                  pageBytes,
                   *_allocator,
                   std::byte {},
-                  ExternKind::Memory)
+                  Budget { .total = _memoryBytes, .limit = _limits.maxMemoryBytes, .unitCost = pageBytes })
+        .transform_error(
+            [](Refusal refusal) { return allocationError(refusal, ExternKind::Memory, Limit::MemoryBytes); })
         .transform(
             [&] { return append(_memories, MemoryInstance { .type = type, .bytes = std::move(bytes) }); });
 }
@@ -191,6 +243,7 @@ GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
 TagAddr Store::addTag(TypeId typeId)
 {
     Require(typeId < _types.size());
+    Require(_tags.size() < _limits.maxTags);
     return append(_tags, TagInstance { .typeId = typeId });
 }
 
@@ -209,7 +262,55 @@ std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value>
 
 uint32_t Store::addModuleInstance(ModuleInstance instance)
 {
+    Require(_moduleInstances.size() < _limits.maxInstances);
     return append(_moduleInstances, std::move(instance));
+}
+
+std::expected<void, LimitExceeded> Store::checkInstanceDemand(InstanceDemand const& demand) const
+{
+    struct Claim
+    {
+        Limit limit;     ///< The limit it is checked against.
+        uint64_t used;   ///< What the store holds of it.
+        uint64_t demand; ///< What the instance will add.
+    };
+    // In Limit order, so that the first limit a demand exceeds is the one reported.
+    auto const claims = std::to_array<Claim>({
+        { .limit = Limit::MemoryBytes, .used = _memoryBytes, .demand = demand.memoryBytes },
+        { .limit = Limit::TableElements, .used = _tableElements, .demand = demand.tableElements },
+        { .limit = Limit::Memories, .used = _memories.size(), .demand = demand.memories },
+        { .limit = Limit::Tables, .used = _tables.size(), .demand = demand.tables },
+        { .limit = Limit::Instances, .used = _moduleInstances.size(), .demand = 1 },
+        { .limit = Limit::Types, .used = _typeUnits, .demand = demand.typeUnits },
+        { .limit = Limit::Tags, .used = _tags.size(), .demand = demand.tags },
+    });
+    for (auto const& claim: claims)
+    {
+        auto const limit = limitValue(_limits, claim.limit);
+        if (claim.used > limit || claim.demand > limit - claim.used)
+            return std::unexpected { LimitExceeded { .limit = claim.limit } };
+    }
+    return {};
+}
+
+StoreLimits const& Store::limits() const noexcept
+{
+    return _limits;
+}
+
+std::size_t Store::moduleInstanceCount() const noexcept
+{
+    return _moduleInstances.size();
+}
+
+std::size_t Store::memoryCount() const noexcept
+{
+    return _memories.size();
+}
+
+std::size_t Store::tableCount() const noexcept
+{
+    return _tables.size();
 }
 
 FunctionInstance const& Store::function(FuncAddr address) const
@@ -277,41 +378,39 @@ ModuleInstance& Store::moduleInstance(uint32_t address)
     return at(_moduleInstances, address);
 }
 
-int64_t Store::growMemory(MemAddr address, uint64_t deltaPages)
+std::expected<uint64_t, Refusal> Store::growMemory(MemAddr address, uint64_t deltaPages)
 {
     auto& instance = memory(address);
     auto const pageBytes = binary::pageSize(instance.type);
-    auto const oldPages = instance.bytes.size() / pageBytes;
+    auto const oldPages = uint64_t { instance.bytes.size() / pageBytes };
     auto const limit = pageLimit(instance.type);
     if (deltaPages > limit - oldPages)
-        return -1;
+        return std::unexpected { Refusal::TypeMaximum };
     return resize(instance.bytes,
                   oldPages + deltaPages,
                   limit,
                   pageBytes,
                   *_allocator,
                   std::byte {},
-                  ExternKind::Memory)
-        .transform([oldPages] { return static_cast<int64_t>(oldPages); })
-        .value_or(-1);
+                  Budget { .total = _memoryBytes, .limit = _limits.maxMemoryBytes, .unitCost = pageBytes })
+        .transform([oldPages] { return oldPages; });
 }
 
-int64_t Store::growTable(TableAddr address, uint64_t delta, Ref init)
+std::expected<uint64_t, Refusal> Store::growTable(TableAddr address, uint64_t delta, Ref init)
 {
     auto& instance = table(address);
     auto const oldSize = uint64_t { instance.elements.size() };
     auto const limit = slotLimit(instance.type);
     if (delta > limit - oldSize)
-        return -1;
-    return resize(
-               instance.elements, oldSize + delta, limit, sizeof(Ref), *_allocator, init, ExternKind::Table)
-        .transform([oldSize] { return static_cast<int64_t>(oldSize); })
-        .value_or(-1);
-}
-
-uint32_t Store::maxCallDepth() const noexcept
-{
-    return _limits.maxCallDepth;
+        return std::unexpected { Refusal::TypeMaximum };
+    return resize(instance.elements,
+                  oldSize + delta,
+                  limit,
+                  sizeof(Ref),
+                  *_allocator,
+                  init,
+                  Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
+        .transform([oldSize] { return oldSize; });
 }
 
 } // namespace isoline::runtime

@@ -94,10 +94,11 @@ src/isoline/interpreter/ReferenceInterpreter.hpp 100.00 -
 src/isoline/interpreter/Simd.cpp                 100.00 93.44
 src/isoline/interpreter/Simd.hpp                 100.00 66.66
 src/isoline/runtime/Abrupt.hpp                   100.00 -
-src/isoline/runtime/Instantiate.cpp              100.00 94.36
+src/isoline/runtime/Instantiate.cpp              100.00 94.73
 src/isoline/runtime/Instantiate.hpp              100.00 -
+src/isoline/runtime/Limits.hpp                   100.00 -
 src/isoline/runtime/Segment.hpp                  100.00 100.00
-src/isoline/runtime/Store.cpp                    98.93 74.57
+src/isoline/runtime/Store.cpp                    99.22 78.04
 src/isoline/runtime/Store.hpp                    100.00 -
 src/isoline/runtime/Trap.hpp                     100.00 75.00
 src/isoline/runtime/Value.hpp                    100.00 94.44

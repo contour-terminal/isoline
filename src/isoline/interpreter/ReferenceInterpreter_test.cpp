@@ -119,9 +119,10 @@ class Harness
         instantiate(builder, imports);
     }
 
-    /// Creates the harness with host functions that @p bind adds to the store before instantiation.
+    /// Creates the harness, in a store of @p limits, with host functions that @p bind adds to the
+    /// store before instantiation.
     template <typename Bind>
-    Harness(ModuleBuilder const& builder, Bind&& bind): _store { _allocator }
+    Harness(ModuleBuilder const& builder, Bind&& bind, StoreLimits limits = {}): _store { _allocator, limits }
     {
         instantiate(builder, std::forward<Bind>(bind)(_store));
     }
@@ -808,11 +809,47 @@ TEST_CASE("ReferenceInterpreter.hostReentryIsBounded")
                  } };
     self = &harness;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
-    CHECK(reentries == ReferenceInterpreter::MaxNestedInvocations);
+    CHECK(reentries == StoreLimits {}.maxNestedInvocations);
     // Every invocation unwound: the interpreter runs on as fresh, and hits the same bound again.
     reentries = 0;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
-    CHECK(reentries == ReferenceInterpreter::MaxNestedInvocations);
+    CHECK(reentries == StoreLimits {}.maxNestedInvocations);
+}
+
+TEST_CASE("ReferenceInterpreter.nestedInvocationsFollowTheLimit")
+{
+    // As hostReentryIsBounded, in a store that allows 7 invocations at once.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).importFunction("env", "reenter", 0).function(0, {}, call(0));
+    Harness* self = nullptr;
+    auto reentries = uint32_t { 0 };
+    auto harness =
+        Harness { builder,
+                  [&](Store& store) {
+                      auto const host = store.addHostFunction(
+                          signature({}, {}),
+                          [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
+                              ++reentries;
+                              return self->invoke(1).transform([](auto const&) {});
+                          });
+                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                  },
+                  StoreLimits { .maxNestedInvocations = 7 } };
+    self = &harness;
+    CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
+    CHECK(reentries == 7);
+}
+
+TEST_CASE("ReferenceInterpreter.stackValuesFollowTheLimit")
+{
+    // Function 0 holds 20 locals and calls function 1: past a store's 10 stack values, the call traps.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .function(0, std::vector<ValueType>(20, isoline::binary::I32), call(1))
+        .function(0, {}, {});
+    CHECK(Harness { builder, {}, StoreLimits { .maxStackValues = 10 } }.trap(0)
+          == TrapCode::CallStackExhausted);
+    CHECK(Harness { builder }.invoke(0).has_value());
 }
 
 TEST_CASE("ReferenceInterpreter.hostExceptionUnwindsInvocationCount")
@@ -840,7 +877,7 @@ TEST_CASE("ReferenceInterpreter.hostExceptionUnwindsInvocationCount")
     // The throwing invocation left no count behind: the full nesting bound is still available.
     shouldThrow = false;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
-    CHECK(reentries == ReferenceInterpreter::MaxNestedInvocations);
+    CHECK(reentries == StoreLimits {}.maxNestedInvocations);
 }
 
 namespace

@@ -1,0 +1,288 @@
+// SPDX-License-Identifier: Apache-2.0
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <variant>
+
+#include <isoline/binary/Types.hpp>
+
+namespace isoline::runtime
+{
+
+/// The resources a store caps, each at construction (StoreLimits) and each refused by name.
+///
+/// The enumerators are the rows of LimitTable, in the same order; adding a limit is adding an
+/// enumerator here, a field to StoreLimits and a row there.
+enum class Limit : uint8_t
+{
+    CallDepth,         ///< Wasm frames of one invocation; past it, CallStackExhausted.
+    StackValues,       ///< Operands, locals and labels of one invocation; past it, CallStackExhausted.
+    NestedInvocations, ///< Invocations in progress at once, host-nested ones included.
+    MemoryBytes,       ///< The bytes of every memory of the store together.
+    TableElements,     ///< The elements of every table of the store together.
+    Memories,          ///< The memories of the store.
+    Tables,            ///< The tables of the store.
+    Instances,         ///< The module instances of the store.
+    Exceptions,        ///< The exceptions the store holds; past it, ExceptionLimitExceeded.
+    ExceptionValues,   ///< The payload values of those exceptions together.
+    Types,             ///< The interned function types, weighted 1 + params + results each.
+    Tags,              ///< The tags of the store.
+};
+
+/// The last Limit enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastLimit = Limit::Tags;
+
+/// The limits a store keeps to, fixed at its construction: everything a guest may claim of the host's
+/// stack and memory. Every count and size here caps the whole store, all its instances together, so
+/// that a module of many memories or tables cannot multiply a per-entity cap.
+struct StoreLimits
+{
+    /// How deep Wasm calls of one invocation may nest before execution traps with CallStackExhausted.
+    uint32_t maxCallDepth = 10'000;
+
+    /// How many operands, locals and labels an invocation's stacks may hold together before a call or
+    /// a block entry traps with CallStackExhausted: about 100 MiB of values.
+    uint64_t maxStackValues = uint64_t { 1 } << 22;
+
+    /// How many invocations may be in progress at once: the outermost and those host functions nest
+    /// within it. Each nesting takes host stack (a few frames, kilobytes under sanitizers), so this
+    /// keeps Wasm → host → Wasm recursion from overflowing it; one more traps with CallStackExhausted.
+    /// 100 leaves a wide margin: under ASan an 8 MiB stack overflowed at about 240 nestings, and a
+    /// release build's nesting takes 1–2 KB.
+    uint32_t maxNestedInvocations = 100;
+
+    /// The bytes all memories of the store may hold together.
+    uint64_t maxMemoryBytes = uint64_t { 1 } << 32;
+
+    /// The elements all tables of the store may hold together.
+    uint64_t maxTableElements = 10'000'000;
+
+    /// How many memories the store may hold.
+    uint32_t maxMemories = 10'000;
+
+    /// How many tables the store may hold.
+    uint32_t maxTables = 100'000;
+
+    /// How many module instances the store may hold.
+    ///
+    /// It counts instances, not their size: an instance's functions, globals, element items and data
+    /// views are not charged, so a store may hold up to maxInstances times the largest module's
+    /// footprint. That is acceptable while instantiation is embedder-driven, as it is: the embedder
+    /// chooses which modules to instantiate, and each one's footprint is linear in its size (the
+    /// memory-bounds suite checks it). Once guests can instantiate (the component model), this must charge
+    /// size.
+    uint32_t maxInstances = 10'000;
+
+    /// How many exceptions the store may hold; a throw past it traps with ExceptionLimitExceeded. The
+    /// store does not free one yet, so this bounds what a guest that throws in a loop may claim.
+    uint32_t maxExceptions = 65'536;
+
+    /// How many payload values the exceptions together may hold; a throw past it traps with
+    /// ExceptionLimitExceeded.
+    uint64_t maxExceptionValues = uint64_t { 1 } << 20;
+
+    /// The type units the store's interned function types may take together: each type, interned once
+    /// however many modules use it, takes 1 + its params + its results, so a wide type costs what it
+    /// holds.
+    uint64_t maxTypes = 1'000'000;
+
+    /// How many tags the store may hold.
+    uint32_t maxTags = 1'000'000;
+};
+
+/// One row of LimitTable: a limit, its name and what it counts.
+struct LimitRow
+{
+    Limit limit;           ///< The limit; equal to the row's index.
+    std::string_view name; ///< Its name in a refusal's message: "memory bytes".
+    std::string_view unit; ///< What it counts: "bytes".
+    uint64_t (*value)(StoreLimits const& limits) noexcept; ///< Reads its value from a StoreLimits.
+};
+
+/// Every limit, one row each, in Limit order.
+inline constexpr auto LimitTable = std::to_array<LimitRow>({
+    { .limit = Limit::CallDepth,
+      .name = "call depth",
+      .unit = "frames",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxCallDepth; } },
+    { .limit = Limit::StackValues,
+      .name = "stack values",
+      .unit = "values",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxStackValues; } },
+    { .limit = Limit::NestedInvocations,
+      .name = "nested invocations",
+      .unit = "invocations",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxNestedInvocations; } },
+    { .limit = Limit::MemoryBytes,
+      .name = "memory bytes",
+      .unit = "bytes",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxMemoryBytes; } },
+    { .limit = Limit::TableElements,
+      .name = "table elements",
+      .unit = "elements",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTableElements; } },
+    { .limit = Limit::Memories,
+      .name = "memories",
+      .unit = "memories",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxMemories; } },
+    { .limit = Limit::Tables,
+      .name = "tables",
+      .unit = "tables",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTables; } },
+    { .limit = Limit::Instances,
+      .name = "instances",
+      .unit = "module instances",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxInstances; } },
+    { .limit = Limit::Exceptions,
+      .name = "exceptions",
+      .unit = "exceptions",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxExceptions; } },
+    { .limit = Limit::ExceptionValues,
+      .name = "exception values",
+      .unit = "values",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxExceptionValues; } },
+    { .limit = Limit::Types,
+      .name = "types",
+      .unit = "type units",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTypes; } },
+    { .limit = Limit::Tags,
+      .name = "tags",
+      .unit = "tags",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTags; } },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: LimitTable)
+        {
+            if (static_cast<std::size_t>(row.limit) != index)
+                return false;
+            ++index;
+        }
+        return index == static_cast<std::size_t>(LastLimit) + 1;
+    }(),
+    "LimitTable must hold one row per Limit, at the index of its enumerator");
+
+/// The value @p limits gives @p limit.
+/// @param limits The limits.
+/// @param limit The limit to read.
+/// @return Its value, widened to 64 bits.
+[[nodiscard]] constexpr uint64_t limitValue(StoreLimits const& limits, Limit limit) noexcept
+{
+    return LimitTable[static_cast<std::size_t>(limit)].value(limits);
+}
+
+/// Why the store refused storage: to allocate a memory or table, or to grow one.
+///
+/// The enumerators are the rows of RefusalTable, in the same order.
+enum class Refusal : uint8_t
+{
+    TypeMaximum, ///< Past the type's maximum, or what its address type can reach.
+    Limit,       ///< Past the store's limit (StoreLimits) of all memories' bytes or all tables' elements.
+    HostMemory,  ///< The host ran out of memory.
+    Guard,       ///< The embedder's memory has too small a guard region.
+    Embedder,    ///< The embedder's allocator refused it.
+};
+
+/// The last Refusal enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastRefusal = Refusal::Embedder;
+
+/// One row of RefusalTable: a refusal and how it reads.
+struct RefusalRow
+{
+    Refusal refusal;       ///< The refusal; equal to the row's index.
+    std::string_view text; ///< How it reads: "above the store's limit".
+};
+
+/// Every refusal, one row each, in Refusal order.
+inline constexpr auto RefusalTable = std::to_array<RefusalRow>({
+    { .refusal = Refusal::TypeMaximum, .text = "above the type's maximum" },
+    { .refusal = Refusal::Limit, .text = "above the store's limit" },
+    { .refusal = Refusal::HostMemory, .text = "out of host memory" },
+    { .refusal = Refusal::Guard, .text = "guard too small" },
+    { .refusal = Refusal::Embedder, .text = "refused by the embedder" },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: RefusalTable)
+        {
+            if (static_cast<std::size_t>(row.refusal) != index)
+                return false;
+            ++index;
+        }
+        return index == static_cast<std::size_t>(LastRefusal) + 1;
+    }(),
+    "RefusalTable must hold one row per Refusal, at the index of its enumerator");
+
+/// How @p refusal reads.
+/// @param refusal The refusal.
+/// @return Its row's text in RefusalTable.
+[[nodiscard]] constexpr std::string_view describe(Refusal refusal) noexcept
+{
+    return RefusalTable[static_cast<std::size_t>(refusal)].text;
+}
+
+/// A store limit an allocation or an instantiation would exceed; nothing was allocated for it.
+struct LimitExceeded
+{
+    Limit limit; ///< The limit.
+
+    /// Equal when both name the same limit.
+    bool operator==(LimitExceeded const&) const = default;
+};
+
+/// How @p exceeded reads.
+/// @param exceeded The limit exceeded.
+/// @return "<name> limit exceeded", as "memory bytes limit exceeded".
+[[nodiscard]] inline std::string describe(LimitExceeded const& exceeded)
+{
+    return std::format("{} limit exceeded", LimitTable[static_cast<std::size_t>(exceeded.limit)].name);
+}
+
+/// Why the store could not allocate a memory or a table, beyond a limit it caps.
+struct AllocationFailure
+{
+    binary::ExternKind kind; ///< Memory or Table.
+    Refusal reason;          ///< Why.
+
+    /// Equal when both name the same kind and reason.
+    bool operator==(AllocationFailure const&) const = default;
+};
+
+/// The first refused grow of a scope, per kind, for the embedder: a refused table.grow never masks a
+/// later memory refusal.
+struct GrowthRecord
+{
+    std::optional<Refusal> memory; ///< The first refused memory.grow's reason, if any.
+    std::optional<Refusal> table;  ///< The first refused table.grow's reason, if any.
+
+    /// Equal when both name the same refusals.
+    bool operator==(GrowthRecord const&) const = default;
+};
+
+/// What one instantiation will claim of the store's limits beyond the instance itself: its defined
+/// (not imported) memories and tables, their declared minimum sizes, the types it interns anew and
+/// its tags.
+struct InstanceDemand
+{
+    std::size_t memories = 0;   ///< The memories it defines.
+    std::size_t tables = 0;     ///< The tables it defines.
+    uint64_t memoryBytes = 0;   ///< Their minimum bytes together, saturated at 2^64 - 1.
+    uint64_t tableElements = 0; ///< Their minimum elements together, saturated at 2^64 - 1.
+    uint64_t typeUnits = 0;     ///< The type units of the types the store does not hold yet.
+    std::size_t tags = 0;       ///< The tags it defines.
+};
+
+/// Why the store did not allocate a memory or a table: a limit it caps, or another refusal.
+using AllocationError = std::variant<LimitExceeded, AllocationFailure>;
+
+} // namespace isoline::runtime

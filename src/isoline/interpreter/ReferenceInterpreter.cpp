@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -70,16 +71,9 @@ namespace
     /// or the exception no handler of the invocation caught.
     using Step = std::expected<void, Abrupt>;
 
-    /// How many entries (operands, locals and labels, over all frames) the stacks may hold before
-    /// a call or a block entry traps with CallStackExhausted, as the spec lets an implementation do
-    /// when a resource runs out. Store::maxCallDepth() alone would let deep calls of functions with
-    /// many locals (up to the decoder's 50000 each), or with a call inside many nested blocks (one
-    /// label each per frame), claim gigabytes; this bounds the stacks to about 100 MiB.
-    ///
-    /// The budget is checked before each call and each block entry, so the stacks may overshoot it
-    /// by what one step adds: one function's parameters and locals, or the operands one frame
-    /// pushes between two block entries. Both are bounded by the decoder's limits on one function.
-    constexpr auto MaxStackValues = std::size_t { 1 } << 22;
+    /// What memory.grow and table.grow push when the store refuses: -1, as an address of either type
+    /// reads it.
+    constexpr auto RefusedGrowth = std::numeric_limits<uint64_t>::max();
 
     /// A trap that names an index: call_indirect's table element, an i32 index zero-extended.
     ///
@@ -288,10 +282,19 @@ namespace
                           _values.end() - static_cast<std::ptrdiff_t>(arity));
         }
 
-        /// Whether the operand, locals and label stacks together hold MaxStackValues entries.
+        /// Whether the operand, locals and label stacks together hold StoreLimits::maxStackValues
+        /// entries, past which a call or a block entry traps with CallStackExhausted, as the spec lets
+        /// an implementation do when a resource runs out. maxCallDepth alone would let deep calls of
+        /// functions with many locals (up to the decoder's 50000 each), or with a call inside many
+        /// nested blocks (one label each per frame), claim gigabytes.
+        ///
+        /// The budget is checked before each call and each block entry, so the stacks may overshoot it
+        /// by what one step adds: one function's parameters and locals, or the operands one frame
+        /// pushes between two block entries. Both are bounded by the decoder's limits on one function.
         [[nodiscard]] bool stacksExhausted() const noexcept
         {
-            return _values.size() + _locals.size() + _labels.size() >= MaxStackValues;
+            return uint64_t { _values.size() + _locals.size() + _labels.size() }
+                   >= _store.limits().maxStackValues;
         }
 
         // --- Calls ---
@@ -303,7 +306,7 @@ namespace
             auto const& function = _store.function(address);
             if (function.isHost())
                 return callHost(function);
-            if (_depth >= _store.maxCallDepth() || stacksExhausted())
+            if (_depth >= _store.limits().maxCallDepth || stacksExhausted())
                 return trap(TrapCode::CallStackExhausted);
 
             auto& owner = _store.moduleInstance(function.moduleInstance);
@@ -421,7 +424,7 @@ namespace
         }
 
         /// Enters a block, loop, if or try_table whose operands are on the stack; traps with
-        /// CallStackExhausted when the stacks hold MaxStackValues entries already.
+        /// CallStackExhausted when the stacks hold StoreLimits::maxStackValues entries already.
         [[nodiscard]] Step enter(Instruction const& instruction, LabelKind kind)
         {
             if (stacksExhausted())
@@ -668,7 +671,7 @@ namespace
             auto const address = instance().memories.at(instruction.a);
             auto const type = _store.memory(address).type.limits.addressType;
             auto const delta = popAddress(type);
-            pushAddress(type, static_cast<uint64_t>(_store.growMemory(address, delta)));
+            pushAddress(type, _store.growMemory(address, delta).value_or(RefusedGrowth));
         }
 
         void memorySize(Instruction const& instruction)
@@ -764,7 +767,7 @@ namespace
             auto const type = _store.table(address).type.limits.addressType;
             auto const delta = popAddress(type);
             auto const init = popRef();
-            pushAddress(type, static_cast<uint64_t>(_store.growTable(address, delta, init)));
+            pushAddress(type, _store.growTable(address, delta, init).value_or(RefusedGrowth));
         }
 
         [[nodiscard]] Step tableFill(Instruction const& instruction)
@@ -1068,7 +1071,7 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
 {
     // Float results are the spec's only in the default floating-point environment.
     assert(std::fegetround() == FE_TONEAREST);
-    if (_invocations >= MaxNestedInvocations)
+    if (_invocations >= store.limits().maxNestedInvocations)
         return trap(TrapCode::CallStackExhausted);
     // Unwinds on every exit, an exception thrown by a host callback included.
     struct InvocationGuard

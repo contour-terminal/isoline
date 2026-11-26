@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -20,6 +21,7 @@
 #include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -101,6 +103,24 @@ namespace
         return instance.tags;
     }
 
+    /// @p a + @p b, or 2^64 - 1 when that overflows.
+    [[nodiscard]] constexpr uint64_t saturatingAdd(uint64_t a, uint64_t b) noexcept
+    {
+        return b > std::numeric_limits<uint64_t>::max() - a ? std::numeric_limits<uint64_t>::max() : a + b;
+    }
+
+    /// @p a * @p b, or 2^64 - 1 when that overflows. Precondition: @p b is not zero.
+    [[nodiscard]] constexpr uint64_t saturatingMultiply(uint64_t a, uint64_t b) noexcept
+    {
+        return a > std::numeric_limits<uint64_t>::max() / b ? std::numeric_limits<uint64_t>::max() : a * b;
+    }
+
+    /// A store's refusal to allocate, as the instantiation error it is.
+    [[nodiscard]] InstantiationError instantiationError(AllocationError const& error) noexcept
+    {
+        return std::visit([](auto const& refusal) { return InstantiationError { refusal }; }, error);
+    }
+
     /// The address or offset a constant expression of an address type evaluated to.
     [[nodiscard]] uint64_t addressOf(Value const& value) noexcept
     {
@@ -163,7 +183,10 @@ namespace
                 else if (auto const found = _store.findType(storeForm(type)))
                     _types.push_back(*found);
                 else
+                {
                     _types.push_back(next++);
+                    _newTypeUnits += Store::typeUnits(type);
+                }
             }
         }
 
@@ -236,11 +259,32 @@ namespace
 
         // --- Allocation ---
 
-        /// Allocates the tables and memories first, into an instance not yet in the store, so an
-        /// allocation failure leaves no half-built instance registered and no type interned; then
-        /// interns the types, registers the instance and allocates the rest.
+        /// What the module's own entities claim of the store's limits: its defined memories and
+        /// tables with their minimum sizes, the types the store does not hold yet, and its tags.
+        [[nodiscard]] InstanceDemand demand() const noexcept
+        {
+            auto demand = InstanceDemand { .memories = module().memories.size(),
+                                           .tables = module().tables.size(),
+                                           .memoryBytes = 0,
+                                           .tableElements = 0,
+                                           .typeUnits = _newTypeUnits,
+                                           .tags = module().tags.size() };
+            for (auto const& memory: module().memories)
+                demand.memoryBytes = saturatingAdd(
+                    demand.memoryBytes, saturatingMultiply(memory.limits.min, binary::pageSize(memory)));
+            for (auto const& table: module().tables)
+                demand.tableElements = saturatingAdd(demand.tableElements, table.type.limits.min);
+            return demand;
+        }
+
+        /// Checks the module's demand against the store's limits, then allocates the tables and
+        /// memories, into an instance not yet in the store, so an allocation failure leaves no
+        /// half-built instance registered and no type interned; then interns the types, registers
+        /// the instance and allocates the rest.
         [[nodiscard]] Step allocate()
         {
+            if (auto const fits = _store.checkInstanceDemand(demand()); !fits)
+                return std::unexpected { fits.error() };
             auto pending = ModuleInstance { .validated = _validated,
                                             .module = _module,
                                             .types = _types,
@@ -297,7 +341,7 @@ namespace
                 auto const address = _store.addTable(
                     type, Ref { .kind = RefKind::Null, .heap = type.element.heap, .address = 0 });
                 if (!address)
-                    return std::unexpected { address.error() };
+                    return std::unexpected { instantiationError(address.error()) };
                 pending.tables.push_back(*address);
             }
             return {};
@@ -309,7 +353,7 @@ namespace
             {
                 auto const address = _store.addMemory(type);
                 if (!address)
-                    return std::unexpected { address.error() };
+                    return std::unexpected { instantiationError(address.error()) };
                 pending.memories.push_back(*address);
             }
             return {};
@@ -485,6 +529,7 @@ namespace
         std::shared_ptr<Module const> _module; ///< _validated's module.
         std::span<ExternValue const> _imports;
         std::vector<TypeId> _types; ///< The TypeId of each of the module's types, by type index.
+        uint64_t _newTypeUnits = 0; ///< The type units of the types the store does not hold yet.
         uint32_t _address = 0;
     };
 } // namespace

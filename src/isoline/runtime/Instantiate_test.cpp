@@ -24,6 +24,7 @@
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -50,10 +51,13 @@ using isoline::runtime::FuncAddr;
 using isoline::runtime::I32;
 using isoline::runtime::IMemoryAllocator;
 using isoline::runtime::InstantiationError;
+using isoline::runtime::Limit;
+using isoline::runtime::LimitExceeded;
 using isoline::runtime::LinkError;
 using isoline::runtime::LinkErrorCode;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
+using isoline::runtime::Refusal;
 using isoline::runtime::Store;
 using isoline::runtime::Thrown;
 using isoline::runtime::Trap;
@@ -280,7 +284,7 @@ TEST_CASE("Instantiate.memoryLimitsSubtyping")
     SECTION("the current size counts, not the allocated minimum")
     {
         auto const imports = provided(atLeast(1));
-        REQUIRE(store.growMemory(imports.front().address, 1) == 1);
+        REQUIRE(store.growMemory(imports.front().address, 1) == 1U);
         CHECK(instantiate(store, executor, importing(atLeast(2)), imports).has_value());
     }
 }
@@ -485,7 +489,8 @@ TEST_CASE("Instantiate.memoryAllocationRefused")
     auto store = Store { allocator };
     auto executor = StubExecutor {};
     CHECK(errorOf(instantiate(store, executor, moduleOf(builder), {}))
-          == InstantiationError { AllocationFailure { .kind = ExternKind::Memory } });
+          == InstantiationError {
+              AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Embedder } });
 }
 
 TEST_CASE("Instantiate.tableAllocationRefused")
@@ -496,7 +501,8 @@ TEST_CASE("Instantiate.tableAllocationRefused")
     auto store = Store { allocator };
     auto executor = StubExecutor {};
     CHECK(errorOf(instantiate(store, executor, moduleOf(builder), {}))
-          == InstantiationError { AllocationFailure { .kind = ExternKind::Table } });
+          == InstantiationError {
+              AllocationFailure { .kind = ExternKind::Table, .reason = Refusal::Embedder } });
 
     // The failed instantiation registered no instance: the next one takes the first address.
     auto const next = instantiate(store, executor, moduleOf(ModuleBuilder {}), {});
@@ -524,12 +530,13 @@ TEST_CASE("Instantiate.memoryGrowToFourGiB")
     REQUIRE(memory.has_value());
     allocator.asked.clear();
 
-    // Growing to exactly 65536 pages, the reach of a 32-bit address, asks the allocator for 4 GiB.
-    CHECK(store.growMemory(*memory, 65'535) == -1);
+    // Growing to exactly 65536 pages, the reach of a 32-bit address and the store's default limit, asks
+    // the allocator for 4 GiB.
+    CHECK(store.growMemory(*memory, 65'535) == std::unexpected { Refusal::Embedder });
     CHECK(allocator.asked == std::vector { 65'536 * PageSize });
 
     // One page further is beyond the reach, and refused without asking.
-    CHECK(store.growMemory(*memory, 65'536) == -1);
+    CHECK(store.growMemory(*memory, 65'536) == std::unexpected { Refusal::TypeMaximum });
     CHECK(allocator.asked.size() == 1);
 
     // The unlimited allocator would grant exactly those 4 GiB, and not a byte more.
@@ -545,12 +552,12 @@ TEST_CASE("Instantiate.memoryGrowFailureReturnsMinusOne")
     auto const memory = store.addMemory(MemoryType { .limits = atLeast(1) });
     REQUIRE(memory.has_value());
 
-    CHECK(store.growMemory(*memory, 5) == -1);
+    CHECK(store.growMemory(*memory, 5) == std::unexpected { Refusal::Embedder });
     CHECK(store.memory(*memory).bytes.size() == PageSize);
-    CHECK(store.growMemory(*memory, 0) == 1);
-    CHECK(store.growMemory(*memory, 1) == 1);
+    CHECK(store.growMemory(*memory, 0) == 1U);
+    CHECK(store.growMemory(*memory, 1) == 1U);
     CHECK(store.memory(*memory).bytes.size() == 2 * PageSize);
-    CHECK(store.growMemory(*memory, 1) == -1);
+    CHECK(store.growMemory(*memory, 1) == std::unexpected { Refusal::Embedder });
 
     SECTION("above the maximum")
     {
@@ -558,9 +565,10 @@ TEST_CASE("Instantiate.memoryGrowFailureReturnsMinusOne")
         auto bounded = Store { unlimited };
         auto const address = bounded.addMemory(MemoryType { .limits = between(1, 2) });
         REQUIRE(address.has_value());
-        CHECK(bounded.growMemory(*address, 2) == -1);
-        CHECK(bounded.growMemory(*address, 1) == 1);
-        CHECK(bounded.growMemory(*address, std::numeric_limits<uint64_t>::max()) == -1);
+        CHECK(bounded.growMemory(*address, 2) == std::unexpected { Refusal::TypeMaximum });
+        CHECK(bounded.growMemory(*address, 1) == 1U);
+        CHECK(bounded.growMemory(*address, std::numeric_limits<uint64_t>::max())
+              == std::unexpected { Refusal::TypeMaximum });
     }
     SECTION("beyond what a vector can hold")
     {
@@ -570,11 +578,14 @@ TEST_CASE("Instantiate.memoryGrowFailureReturnsMinusOne")
             [[nodiscard]] bool mayHold(uint64_t /*bytes*/) const noexcept override { return true; }
         };
         auto const unbounded = Unbounded {};
-        auto huge = Store { unbounded };
+        auto huge = Store { unbounded,
+                            isoline::runtime::StoreLimits { .maxMemoryBytes =
+                                                                std::numeric_limits<uint64_t>::max() } };
         auto const address = huge.addMemory(MemoryType {
             .limits = Limits { .min = 0, .max = std::nullopt, .addressType = AddressType::I64 } });
         REQUIRE(address.has_value());
-        CHECK(huge.growMemory(*address, (uint64_t { 1 } << 47) + 1) == -1);
+        CHECK(huge.growMemory(*address, (uint64_t { 1 } << 47) + 1)
+              == std::unexpected { Refusal::HostMemory });
         CHECK(huge.memory(*address).bytes.empty());
     }
 }
@@ -586,8 +597,8 @@ TEST_CASE("Instantiate.tableGrow")
     auto const table = store.addTable(TableType { .element = FuncRef, .limits = between(1, 3) }, Ref {});
     REQUIRE(table.has_value());
     auto const init = Ref { .kind = RefKind::Func, .heap = FuncRef.heap, .address = 7 };
-    CHECK(store.growTable(*table, 3, init) == -1);
-    CHECK(store.growTable(*table, 2, init) == 1);
+    CHECK(store.growTable(*table, 3, init) == std::unexpected { Refusal::TypeMaximum });
+    CHECK(store.growTable(*table, 2, init) == 1U);
     auto const& elements = store.table(*table).elements;
     REQUIRE(elements.size() == 3);
     CHECK(elements[0].kind == RefKind::Null);
@@ -778,7 +789,8 @@ TEST_CASE("Instantiate.specMessages")
     using isoline::runtime::specMessage;
     CHECK(specMessage(LinkErrorCode::UnknownImport) == "unknown import");
     CHECK(specMessage(LinkErrorCode::IncompatibleImportType) == "incompatible import type");
-    CHECK(specMessage(AllocationFailure { .kind = ExternKind::Memory }) == "out of memory");
+    CHECK(specMessage(AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::HostMemory })
+          == "out of memory");
 }
 
 TEST_CASE("Instantiate.pageSizeMustMatch")
@@ -851,17 +863,33 @@ TEST_CASE("Instantiate.memory64")
         CHECK(errorOf(instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {}))
               == InstantiationError { Trap { TrapCode::OutOfBoundsMemoryAccess } });
     }
-    SECTION("a guest asks for more than the allocator grants")
+    SECTION("a guest asks for more than the store holds")
     {
         // 2^40 pages is a valid memory64 minimum, and 64 PiB; the store refuses before allocating.
         auto builder = ModuleBuilder {};
         builder.memory(at64(uint64_t { 1 } << 40));
         CHECK(errorOf(instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {}))
-              == InstantiationError { AllocationFailure { .kind = ExternKind::Memory } });
+              == InstantiationError { LimitExceeded { Limit::MemoryBytes } });
         auto table = ModuleBuilder {};
         table.table(TableType { .element = FuncRef, .limits = at64(uint64_t { 1 } << 62) });
         CHECK(errorOf(instantiate(store, executor, moduleOf(table, FeatureSet::wasm3()), {}))
-              == InstantiationError { AllocationFailure { .kind = ExternKind::Table } });
+              == InstantiationError { LimitExceeded { Limit::TableElements } });
+    }
+    SECTION("a demand past 2^64 saturates")
+    {
+        // Two memories of 2^48 pages, 2^64 bytes each, and two tables of 2^63 elements: each sum
+        // overflows a u64, and is refused rather than wrapped below the budget.
+        auto memories = ModuleBuilder {};
+        memories.memory(at64(uint64_t { 1 } << 48)).memory(at64(uint64_t { 1 } << 48));
+        CHECK(errorOf(instantiate(store, executor, moduleOf(memories, FeatureSet::wasm3()), {}))
+              == InstantiationError { LimitExceeded { Limit::MemoryBytes } });
+        auto tables = ModuleBuilder {};
+        tables.table(TableType { .element = FuncRef, .limits = at64(uint64_t { 1 } << 63) })
+            .table(TableType { .element = FuncRef, .limits = at64(uint64_t { 1 } << 63) });
+        CHECK(errorOf(instantiate(store, executor, moduleOf(tables, FeatureSet::wasm3()), {}))
+              == InstantiationError { LimitExceeded { Limit::TableElements } });
+        CHECK(store.memoryCount() == 0);
+        CHECK(store.tableCount() == 0);
     }
 }
 
@@ -1070,7 +1098,8 @@ TEST_CASE("Instantiate.failedInstantiationInternsNoType")
         CHECK(errorOf(instantiate(store, executor, unlinkableModule, imports))
               == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
         CHECK(errorOf(instantiate(store, executor, unallocatableModule, {}))
-              == InstantiationError { AllocationFailure { .kind = ExternKind::Table } });
+              == InstantiationError {
+                  AllocationFailure { .kind = ExternKind::Table, .reason = Refusal::Embedder } });
         CHECK(store.typeCount() == before);
     }
 

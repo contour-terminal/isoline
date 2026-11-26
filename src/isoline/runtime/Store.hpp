@@ -17,6 +17,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
@@ -96,23 +97,6 @@ struct ExceptionInstance
     std::vector<Value> payload; ///< The tag's params' values, in order.
 };
 
-/// The limits a store's execution keeps to: what a guest may claim of the host's stack and memory
-/// besides its memories and tables.
-struct StoreLimits
-{
-    /// How deep calls may nest before execution traps with CallStackExhausted.
-    uint32_t maxCallDepth = 10'000;
-
-    /// How many exceptions the store may hold; a throw past it traps with ExceptionLimitExceeded. The
-    /// store never frees one (reclaiming unreferenced ones is P3's), so this bounds what a guest
-    /// that throws in a loop may claim.
-    uint32_t maxExceptions = 65'536;
-
-    /// How many payload values the exceptions together may hold; a throw past it traps with
-    /// ExceptionLimitExceeded.
-    uint64_t maxExceptionValues = uint64_t { 1 } << 20;
-};
-
 /// An external value: an entity of the store an import binds to or an export names.
 struct ExternValue
 {
@@ -172,24 +156,21 @@ class UnlimitedAllocator final: public IMemoryAllocator
     static constexpr auto FourGiB = uint64_t { 1 } << 32;
 };
 
-/// Why the store could not allocate a memory or a table.
-struct AllocationFailure
-{
-    binary::ExternKind kind; ///< Memory or Table.
-
-    bool operator==(AllocationFailure const&) const = default;
-};
-
 /// The store: every function, table, memory, global and module instance, addressed by index.
 ///
 /// Instances are never removed, and adding one never moves the others, so a reference to an
 /// instance stays valid as long as the store.
+///
+/// Every resource a guest can claim is capped by the store's StoreLimits, fixed at construction: the
+/// counts of memories, tables, instances and tags, the bytes of all memories and the elements of all
+/// tables together, and the type units of the interned types. The store keeps running totals, which
+/// allocation and growth charge.
 class Store
 {
   public:
     /// Constructs an empty store.
     /// @param allocator Decides how large a memory or table may grow; must outlive the store.
-    /// @param limits The call depth and the exceptions execution may reach.
+    /// @param limits What execution and the store's entities may claim.
     explicit Store(IMemoryAllocator const& allocator, StoreLimits limits = {});
 
     /// A store's instances are addressed by index and its types handed out by reference (type()),
@@ -202,10 +183,13 @@ class Store
 
     /// Interns a function type: the TypeId of the type equal to it, added if there is none. A type
     /// added gets the next TypeId, typeCount() before the call, so that instantiation can tell the
-    /// TypeIds a module's types will get before it interns them.
+    /// TypeIds a module's types will get before it interns them, and charges its typeUnits() against
+    /// StoreLimits::maxTypes.
     ///
     /// Precondition (checked): @p type is in store form, every concrete type index in it a TypeId of
-    /// this store, as interning a module's types in type order makes them.
+    /// this store, as interning a module's types in type order makes them; and a new type fits the
+    /// type budget, as instantiation checks (checkInstanceDemand()) and an embedder adding host
+    /// functions must.
     /// @param type The type, in store form.
     /// @return Its TypeId: equal for equal types.
     [[nodiscard]] TypeId internType(binary::FuncType type);
@@ -219,13 +203,18 @@ class Store
     /// @return The number of interned types.
     [[nodiscard]] TypeId typeCount() const noexcept;
 
+    /// What interning @p type anew charges against StoreLimits::maxTypes.
+    /// @param type The type.
+    /// @return 1 + its params + its results.
+    [[nodiscard]] static uint64_t typeUnits(binary::FuncType const& type) noexcept;
+
     /// The type with TypeId @p id. Precondition (checked): it exists.
     /// @param id The type's identity.
     /// @return The type, in store form; the reference stays valid as long as the store.
     [[nodiscard]] binary::FuncType const& type(TypeId id) const;
 
     /// Adds a host function.
-    /// @param type Its type, in store form; interned (internType()).
+    /// @param type Its type, in store form; interned (internType(), whose budget precondition applies).
     /// @param callback Its implementation; must not be empty.
     /// @return Its address.
     [[nodiscard]] FuncAddr addHostFunction(binary::FuncType type, HostCallback callback);
@@ -237,19 +226,25 @@ class Store
     /// @return Its address.
     [[nodiscard]] FuncAddr addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32_t codeIndex);
 
-    /// Adds a table of type.limits.min slots, each holding @p init.
+    /// Adds a table of type.limits.min slots, each holding @p init, and charges them against
+    /// StoreLimits::maxTableElements.
     /// @param type Its type.
     /// @param init What every slot starts with.
-    /// @return Its address, or the failure when the allocator refuses its size or allocation fails.
-    [[nodiscard]] std::expected<TableAddr, AllocationFailure> addTable(binary::TableType type, Ref init);
+    /// @return Its address; LimitExceeded when the store holds StoreLimits::maxTables tables already or
+    ///         its slots exceed the elements left; otherwise an AllocationFailure when its size is
+    ///         past its type's reach (TypeMaximum), the allocator refuses it (Embedder) or allocation
+    ///         fails (HostMemory).
+    [[nodiscard]] std::expected<TableAddr, AllocationError> addTable(binary::TableType type, Ref init);
 
-    /// Adds a zeroed memory of type.limits.min pages.
+    /// Adds a zeroed memory of type.limits.min pages, and charges its bytes against
+    /// StoreLimits::maxMemoryBytes.
     ///
     /// Precondition (checked): type.pageSizeLog2 is below binary::PageSizeLog2Limit, so that the page
     /// size is a u64, as the decoder guarantees for every module's memory.
     /// @param type Its type.
-    /// @return Its address, or the failure when the allocator refuses its size or allocation fails.
-    [[nodiscard]] std::expected<MemAddr, AllocationFailure> addMemory(binary::MemoryType type);
+    /// @return Its address; LimitExceeded when the store holds StoreLimits::maxMemories memories
+    ///         already or its bytes exceed those left; otherwise an AllocationFailure, as addTable's.
+    [[nodiscard]] std::expected<MemAddr, AllocationError> addMemory(binary::MemoryType type);
 
     /// Adds a global.
     /// @param type Its type.
@@ -258,6 +253,9 @@ class Store
     [[nodiscard]] GlobalAddr addGlobal(binary::GlobalType type, Value value);
 
     /// Adds a tag.
+    ///
+    /// Precondition (checked): the store holds fewer than StoreLimits::maxTags tags, as instantiation
+    /// checks (checkInstanceDemand()).
     /// @param typeId Its type, interned already (checked).
     /// @return Its address: a new tag, distinct from every other, whatever its type.
     [[nodiscard]] TagAddr addTag(TypeId typeId);
@@ -270,9 +268,36 @@ class Store
     [[nodiscard]] std::expected<ExnAddr, Trap> addException(TagAddr tag, std::vector<Value> payload);
 
     /// Adds a module instance.
+    ///
+    /// Precondition (checked): the store holds fewer than StoreLimits::maxInstances instances, as
+    /// instantiation checks (checkInstanceDemand()).
     /// @param instance The instance; the module and its entities' addresses, as far as allocated.
     /// @return Its address.
     [[nodiscard]] uint32_t addModuleInstance(ModuleInstance instance);
+
+    /// Checks that one more module instance, and what it will allocate, fits every limit the store
+    /// caps: the instance count, the memory, table and tag counts, the memories' bytes, the tables'
+    /// elements and the type units, each against what is left of it. Charges nothing: allocating
+    /// (addMemory(), addTable(), internType(), addTag(), addModuleInstance()) does.
+    /// @param demand What the instance will claim beyond itself.
+    /// @return Nothing when it fits; otherwise the first limit, in Limit order, it would exceed.
+    [[nodiscard]] std::expected<void, LimitExceeded> checkInstanceDemand(InstanceDemand const& demand) const;
+
+    /// The limits the store was constructed with.
+    /// @return Its StoreLimits.
+    [[nodiscard]] StoreLimits const& limits() const noexcept;
+
+    /// How many module instances the store holds.
+    /// @return Their count.
+    [[nodiscard]] std::size_t moduleInstanceCount() const noexcept;
+
+    /// How many memories the store holds.
+    /// @return Their count.
+    [[nodiscard]] std::size_t memoryCount() const noexcept;
+
+    /// How many tables the store holds.
+    /// @return Their count.
+    [[nodiscard]] std::size_t tableCount() const noexcept;
 
     /// The function at @p address. Precondition (checked): the address exists.
     /// @param address The function's address.
@@ -324,30 +349,30 @@ class Store
     /// @copydoc moduleInstance(uint32_t) const
     [[nodiscard]] ModuleInstance& moduleInstance(uint32_t address);
 
-    /// Grows a memory by @p deltaPages zeroed pages, as memory.grow does.
+    /// Grows a memory by @p deltaPages zeroed pages, as memory.grow does, and charges them against
+    /// StoreLimits::maxMemoryBytes.
     /// @param address The memory's address.
     /// @param deltaPages The number of pages to add.
-    /// @return The old size in pages; or -1, the size unchanged, when the result would exceed the
-    ///         memory's maximum or its address type's reach, the allocator refuses it, or
-    ///         allocation fails.
-    [[nodiscard]] int64_t growMemory(MemAddr address, uint64_t deltaPages);
+    /// @return The old size in pages; or, the size unchanged, why it was refused: TypeMaximum past the
+    ///         memory's maximum or its address type's reach, Limit past the store's bytes left,
+    ///         Embedder when the allocator refuses it, HostMemory when allocation fails.
+    [[nodiscard]] std::expected<uint64_t, Refusal> growMemory(MemAddr address, uint64_t deltaPages);
 
-    /// Grows a table by @p delta slots holding @p init, as table.grow does.
+    /// Grows a table by @p delta slots holding @p init, as table.grow does, and charges them against
+    /// StoreLimits::maxTableElements.
     /// @param address The table's address.
     /// @param delta The number of slots to add.
     /// @param init What the new slots hold.
-    /// @return The old size; or -1, the size unchanged, when the result would exceed the table's
-    ///         maximum or its address type's reach, the allocator refuses it, or allocation fails.
-    [[nodiscard]] int64_t growTable(TableAddr address, uint64_t delta, Ref init);
-
-    /// How deep calls may nest.
-    /// @return The limit the store was constructed with.
-    [[nodiscard]] uint32_t maxCallDepth() const noexcept;
+    /// @return The old size; or, the size unchanged, why it was refused, as growMemory()'s.
+    [[nodiscard]] std::expected<uint64_t, Refusal> growTable(TableAddr address, uint64_t delta, Ref init);
 
   private:
     IMemoryAllocator const* _allocator;
     StoreLimits _limits;
     uint64_t _exceptionValues = 0; ///< The payload values of every exception held.
+    uint64_t _memoryBytes = 0;     ///< The bytes of every memory, charged against maxMemoryBytes.
+    uint64_t _tableElements = 0;   ///< The slots of every table, charged against maxTableElements.
+    uint64_t _typeUnits = 0;       ///< The type units of every interned type, charged against maxTypes.
     std::deque<FunctionInstance> _functions;
     std::deque<TableInstance> _tables;
     std::deque<MemoryInstance> _memories;

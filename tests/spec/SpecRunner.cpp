@@ -44,6 +44,7 @@
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -374,6 +375,10 @@ namespace
                 {
                     return Failure { .stage = Stage::Link,
                                      .message = std::string { runtime::specMessage(error.code) } };
+                }
+                Failure operator()(runtime::LimitExceeded const& exceeded) const
+                {
+                    return Failure { .stage = Stage::Instantiate, .message = runtime::describe(exceeded) };
                 }
                 Failure operator()(runtime::AllocationFailure const& failure) const
                 {

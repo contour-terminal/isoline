@@ -21,10 +21,11 @@ namespace isoline::interpreter
 /// (WebAssembly 3.0, chapter 4, for the proposals the decoder and validator accept) one instruction at a
 /// time, over a validated module, and favours being obviously right over being fast. Operands, locals, labels
 /// and call frames live in heap vectors: a Wasm call never recurses on the host stack, and a call deeper than
-/// Store::maxCallDepth() frames traps with CallStackExhausted. A host function runs synchronously,
-/// on the host stack, and may invoke Wasm again through this interpreter; each such nested
-/// invocation does recurse on the host stack, so at most MaxNestedInvocations invocations may be in
-/// progress at once, and one more traps with CallStackExhausted too, whatever the frame depth.
+/// the store's StoreLimits::maxCallDepth frames traps with CallStackExhausted. A host function runs
+/// synchronously, on the host stack, and may invoke Wasm again through this interpreter; each such
+/// nested invocation does recurse on the host stack, so at most StoreLimits::maxNestedInvocations
+/// invocations may be in progress at once, and one more traps with CallStackExhausted too, whatever
+/// the frame depth.
 ///
 /// An instance is not thread-safe: its depth counters belong to one thread at a time. Threads that
 /// execute concurrently each use an interpreter of their own.
@@ -41,13 +42,6 @@ namespace isoline::interpreter
 class ReferenceInterpreter final: public runtime::ICodeExecutor
 {
   public:
-    /// How many invocations may be in progress at once: the outermost, and those a host function
-    /// nests within it. Each nesting takes host stack (a few frames, kilobytes under sanitizers),
-    /// so the limit keeps Wasm → host → Wasm recursion from overflowing it. 100 leaves a wide
-    /// margin: under ASan an 8 MiB stack overflowed at about 240 nestings, and a release build's
-    /// nesting takes 1–2 KB.
-    static constexpr auto MaxNestedInvocations = uint32_t { 100 };
-
     ReferenceInterpreter() = default;
 
     /// Invokes a function, as the spec's invocation does (4.5.5).
@@ -61,7 +55,7 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
     /// @param args Its arguments.
     /// @param results Receives its results.
     /// @return Nothing, or how execution ended abruptly: the trap, CallStackExhausted when
-    ///         MaxNestedInvocations invocations are in progress already; or Thrown, the exception
+    ///         the store's maxNestedInvocations invocations are in progress already; or Thrown, the exception
     ///         no handler caught.
     [[nodiscard]] std::expected<void, runtime::Abrupt> invoke(runtime::Store& store,
                                                               runtime::FuncAddr function,
