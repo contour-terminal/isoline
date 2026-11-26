@@ -25,6 +25,7 @@
 using isoline::Feature;
 using isoline::FeatureSet;
 using isoline::binary::DecodeErrorCode;
+using isoline::binary::DecodeLimits;
 using isoline::binary::decodeModule;
 using isoline::binary::ExternKind;
 using isoline::binary::F32;
@@ -63,17 +64,18 @@ Limits between(uint64_t min, uint64_t max)
     return Limits { .min = min, .max = max, .addressType = isoline::binary::AddressType::I32 };
 }
 
-/// Decodes and validates @p builder's module; fails the test when it does not decode.
+/// Decodes and validates @p builder's module under @p limits; fails the test when it does not decode.
 std::expected<ModuleShape, ValidationError> validated(ModuleBuilder const& builder,
-                                                      FeatureSet const& features = FeatureSet::wasm2())
+                                                      FeatureSet const& features = FeatureSet::wasm2(),
+                                                      DecodeLimits const& limits = {})
 {
     auto const bytes = builder.build();
-    auto const module = decodeModule(bytes, features);
+    auto const module = decodeModule(bytes, features, limits);
     if (!module)
         UNSCOPED_INFO("decode error " << static_cast<int>(module.error().code) << " at "
                                       << module.error().offset);
     REQUIRE(module.has_value());
-    return validateModule(*module, features);
+    return validateModule(*module, features, limits);
 }
 
 /// The error validating @p builder's module reports, or nullopt when it is valid.
@@ -419,6 +421,62 @@ TEST_CASE("Validator.frameShapeOfTryTable")
     auto const shape = validated(tryTable, FeatureSet::wasm3());
     REQUIRE(shape.has_value());
     CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 2 });
+}
+
+namespace
+{
+
+/// A module of a function $f of type [] -> [i32 x 1000], and a function [] -> [] whose body is
+/// @p calls calls of $f, then unreachable.
+ModuleBuilder multiValueCalls(uint32_t calls)
+{
+    auto body = std::vector<uint8_t> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, calls))
+        body.insert(body.end(), { 0x10, 0x00 });
+    body.push_back(0x00);
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = std::vector<isoline::binary::ValueType>(1000, I32) })
+        .type(FuncType {})
+        .function(0, {}, { 0x00 })
+        .function(1, {}, std::move(body));
+    return builder;
+}
+
+} // namespace
+
+TEST_CASE("Validator.operandStackIsCapped")
+{
+    // A body's operand stack may hold maxOperandsPerInstruction operands per instruction, plus one
+    // function type's results: one call of $f fits (3 instructions: 4 x 3 + 1000 = 1012 >= 1000), the
+    // second of two does not (4 x 4 + 1000 = 1016 < 2000), and is the instruction refused.
+    auto const one = validated(multiValueCalls(1), FeatureSet::wasm3());
+    REQUIRE(one.has_value());
+    CHECK(one->functions.at(1) == FrameShape { .maxOperands = 1000, .maxLabels = 0 });
+
+    auto const two = validated(multiValueCalls(2), FeatureSet::wasm3());
+    REQUIRE_FALSE(two.has_value());
+    CHECK(two.error() == ValidationError { ValidationErrorCode::OperandStackLimitExceeded, 1, 1 });
+    CHECK(specMessage(two.error()) == "operand stack limit exceeded");
+
+    // The limit is the embedder's.
+    auto const raised = validated(
+        multiValueCalls(2), FeatureSet::wasm3(), DecodeLimits { .maxOperandsPerInstruction = 1000 });
+    REQUIRE(raised.has_value());
+    CHECK(raised->functions.at(1) == FrameShape { .maxOperands = 2000, .maxLabels = 0 });
+}
+
+TEST_CASE("Validator.operandStackSlackCoversWideLabels")
+{
+    // A label's arity may reach maxParams: in unreachable code, a loop of 5000 params pushes all of
+    // them at once, which the per-instruction share of a 5-instruction body (4 x 5 = 20) does not
+    // cover, so the slack is the wider of maxParams and maxResults (20 + 5000 >= 5000).
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .type(FuncType { .params = std::vector<isoline::binary::ValueType>(5000, I32), .results = {} })
+        .function(0, {}, { 0x00, 0x03, 0x01, 0x00, 0x0B });
+    auto const wide = validated(builder, FeatureSet::wasm3(), DecodeLimits { .maxParams = 5000 });
+    REQUIRE(wide.has_value());
+    CHECK(wide->functions.at(0) == FrameShape { .maxOperands = 5000, .maxLabels = 1 });
 }
 
 TEST_CASE("Validator.validateDeepNesting")

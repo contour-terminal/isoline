@@ -31,8 +31,8 @@ std::expected<std::shared_ptr<ValidatedModule const>, ModuleError> ValidatedModu
     using Result = std::expected<std::shared_ptr<ValidatedModule const>, ModuleError>;
     return binary::decodeModule(bytes, features, limits)
         .transform_error([](binary::DecodeError const& error) { return ModuleError { error }; })
-        .and_then([features](binary::Module module) -> Result {
-            auto shape = validateModule(module, features);
+        .and_then([features, &limits](binary::Module module) -> Result {
+            auto shape = validateModule(module, features, limits);
             if (!shape)
                 return std::unexpected { ModuleError { std::move(shape.error()) } };
             return std::make_shared<ValidatedModule const>(

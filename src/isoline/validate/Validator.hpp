@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <isoline/Features.hpp>
+#include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
@@ -56,8 +57,9 @@ struct ModuleShape
 /// (checked), as any set decodeModule accepted is.
 /// @param module The decoded module.
 /// @param features The proposals whose typing rules apply; those decodeModule accepted.
+/// @param limits The implementation limits; the validator enforces maxOperandsPerInstruction.
 /// @return The shape of each function's frame when the module is valid; otherwise the first error found.
-[[nodiscard]] std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
-                                                                         FeatureSet const& features);
+[[nodiscard]] std::expected<ModuleShape, ValidationError> validateModule(
+    binary::Module const& module, FeatureSet const& features, binary::DecodeLimits const& limits = {});
 
 } // namespace isoline::validate

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include <isoline/Features.hpp>
+#include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
@@ -265,6 +267,7 @@ namespace
     {
         Module const& module;
         FeatureSet features;
+        binary::DecodeLimits limits;             ///< The limits bodies are validated under.
         std::vector<uint32_t> functionTypes;     ///< The type index of every function, imports first.
         std::vector<TableType> tables;           ///< Every table, imports first.
         std::vector<MemoryType> memories;        ///< Every memory, imports first.
@@ -476,6 +479,7 @@ namespace
             _operands.clear();
             _frames.clear();
             _shape = FrameShape {};
+            _peakOperands = 0;
             _localRunEnds.clear();
             startLocalInitialization();
             auto end = uint64_t { 0 };
@@ -485,16 +489,32 @@ namespace
                 _localRunEnds.push_back(end);
             }
 
+            // One instruction pushes at most one function type's results or one label's arity, which
+            // a block type's params make up to maxParams, so checking after each keeps the stack within
+            // that of the cap, however many operands the body would pile up. The slack is the wider of
+            // the two, so that a valid body of few instructions and one wide label is never refused.
+            auto const& limits = _context.limits;
+            auto const slack = std::max(limits.maxParams, limits.maxResults);
+            auto const maxOperands = std::min<uint64_t>(
+                (uint64_t { limits.maxOperandsPerInstruction } * body.instructions.size()) + slack,
+                std::numeric_limits<uint32_t>::max());
             pushFrame(Opcode::Block, BlockSignature { .params = {}, .results = body.results });
             for (auto const [index, instruction]: core::views::enumerate(body.instructions))
             {
                 // The decoder resolves block structure: the final end closes the body's frame.
                 Require(!_frames.empty());
-                if (auto const result = step(body, instruction); !result)
+                auto const result = step(body, instruction).and_then([&] {
+                    return check(_peakOperands <= maxOperands,
+                                 ValidationErrorCode::OperandStackLimitExceeded);
+                });
+                if (!result)
                     return std::unexpected { BodyError { .fault = result.error(),
                                                          .instruction = static_cast<uint32_t>(index) } };
             }
             Require(_frames.empty());
+            // Checked: every step, the final end included, kept the peak within maxOperands, which
+            // fits a uint32_t.
+            _shape.maxOperands = static_cast<uint32_t>(_peakOperands);
             return _shape;
         }
 
@@ -504,7 +524,7 @@ namespace
         void push(Operand const& operand)
         {
             _operands.push_back(operand);
-            _shape.maxOperands = std::max(_shape.maxOperands, static_cast<uint32_t>(_operands.size()));
+            _peakOperands = std::max(_peakOperands, _operands.size());
         }
 
         void pushAll(std::span<ValueType const> types)
@@ -1251,6 +1271,7 @@ namespace
         std::vector<uint64_t> _setStamps;    ///< Per local index, _generation while it is set.
         uint64_t _generation = 0;            ///< The stamp of the body being validated; never 0.
         FrameShape _shape;                   ///< The high-water marks of the body being validated.
+        std::size_t _peakOperands = 0;       ///< The operand high-water mark, before it is narrowed.
     };
 
     // --- The module ---------------------------------------------------------------------------
@@ -1259,9 +1280,10 @@ namespace
     class ModuleValidator
     {
       public:
-        ModuleValidator(Module const& module, FeatureSet features):
+        ModuleValidator(Module const& module, FeatureSet features, binary::DecodeLimits const& limits):
             _context { .module = module,
                        .features = features,
+                       .limits = limits,
                        .functionTypes = {},
                        .tables = {},
                        .memories = {},
@@ -1625,11 +1647,12 @@ namespace
 } // namespace
 
 std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
-                                                           FeatureSet const& features)
+                                                           FeatureSet const& features,
+                                                           binary::DecodeLimits const& limits)
 {
     // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
     Require(features.checkPrerequisites().has_value());
-    return ModuleValidator { module, features }.validate();
+    return ModuleValidator { module, features, limits }.validate();
 }
 
 } // namespace isoline::validate

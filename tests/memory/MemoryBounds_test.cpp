@@ -15,6 +15,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "AllocationCounter.hpp"
@@ -27,6 +28,7 @@
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
+#include <isoline/validate/ValidationError.hpp>
 
 using isoline::Feature;
 using isoline::FeatureSet;
@@ -64,18 +66,33 @@ enum class Instantiation : uint8_t
     Run,  ///< Instantiate it in a fresh store as well, and bound what the store gained.
 };
 
+/// What loading or instantiating @p bytes may hold.
+std::size_t budgetOf(std::vector<std::byte> const& bytes)
+{
+    return (BytesPerModuleByte * bytes.size()) + FixedBytes;
+}
+
+/// Decodes and validates @p bytes, and checks that loading held no more than the bound for a module of
+/// their size, whether it succeeded or not.
+/// @return What loading returned.
+auto loadWithinBound(std::vector<std::byte> const& bytes, FeatureSet features)
+{
+    auto const budget = budgetOf(bytes);
+    auto const loadScope = AllocationScope {};
+    auto loaded = isoline::validate::ValidatedModule::load(bytes, features, isoline::binary::DecodeLimits {});
+    auto const loadBytes = loadScope.peakBytes();
+    CAPTURE(bytes.size(), budget, loadBytes);
+    CHECK(loadBytes <= budget);
+    return loaded;
+}
+
 /// Decodes, validates and (when asked) instantiates @p bytes, and checks that neither loading nor
 /// instantiating held more than the bound for a module of their size.
 void checkLinear(std::vector<std::byte> const& bytes, FeatureSet features, Instantiation instantiation)
 {
-    auto const budget = (BytesPerModuleByte * bytes.size()) + FixedBytes;
-
-    auto const loadScope = AllocationScope {};
-    auto loaded = isoline::validate::ValidatedModule::load(bytes, features, isoline::binary::DecodeLimits {});
-    auto const loadBytes = loadScope.peakBytes();
+    auto const budget = budgetOf(bytes);
+    auto loaded = loadWithinBound(bytes, features);
     REQUIRE(loaded.has_value());
-    CAPTURE(bytes.size(), budget, loadBytes);
-    CHECK(loadBytes <= budget);
     if (instantiation == Instantiation::Skip)
         return;
 
@@ -87,7 +104,7 @@ void checkLinear(std::vector<std::byte> const& bytes, FeatureSet features, Insta
     auto const instance = isoline::runtime::instantiate(store, interpreter, module, {});
     auto const storeBytes = storeScope.peakBytes();
     REQUIRE(instance.has_value());
-    CAPTURE(storeBytes);
+    CAPTURE(budget, storeBytes);
     CHECK(storeBytes <= budget);
 }
 
@@ -171,6 +188,21 @@ std::vector<std::byte> deepTypeChain(uint32_t depth)
     return builder.build();
 }
 
+/// A module of a function $f of type [] -> [i32 x 1000], and a function [] -> [] whose body is
+/// @p calls calls of $f: two input bytes per call, each pushing a thousand operands.
+std::vector<std::byte> multiValueCalls(uint32_t calls)
+{
+    auto body = std::vector<uint8_t> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, calls))
+        append(body, { 0x10, 0x00 }); // call $f
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = std::vector<ValueType>(1000, I32) })
+        .type(FuncType {})
+        .function(0, {}, { 0x00 })
+        .function(1, {}, std::move(body));
+    return builder.build();
+}
+
 } // namespace
 
 TEST_CASE("MemoryBounds.compactImportGroupSharesItsModuleName")
@@ -205,4 +237,16 @@ TEST_CASE("MemoryBounds.manyCatchClauses")
 TEST_CASE("MemoryBounds.deepTypeChain")
 {
     checkLinear(deepTypeChain(5000), FeatureSet::wasm3(), Instantiation::Run);
+}
+
+TEST_CASE("MemoryBounds.multiValueCallsAreRefusedEarly")
+{
+    // 4000 calls of a function of a thousand results: validated to the end, the operand stack would
+    // hold four million operands, about 64 MB. The validator refuses the body as soon as its stack
+    // outgrows maxOperandsPerInstruction per instruction.
+    auto const loaded = loadWithinBound(multiValueCalls(4000), FeatureSet::wasm3());
+    REQUIRE_FALSE(loaded.has_value());
+    auto const* const error = std::get_if<isoline::validate::ValidationError>(&loaded.error());
+    REQUIRE(error != nullptr);
+    CHECK(error->code == isoline::validate::ValidationErrorCode::OperandStackLimitExceeded);
 }

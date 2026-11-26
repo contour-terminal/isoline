@@ -13,10 +13,12 @@
 namespace isoline::binary
 {
 
-/// The implementation limits the decoder enforces (spec §9, Robustness), published so embedders
-/// know them; exceeding one is ImplementationLimitExceeded, or TooManyLocals for maxLocals.
+/// The implementation limits the decoder and the validator enforce (spec §9, Robustness), published so
+/// embedders know them; exceeding one is ImplementationLimitExceeded, or TooManyLocals for maxLocals,
+/// or the validator's OperandStackLimitExceeded for maxOperandsPerInstruction.
 ///
-/// The defaults are those the JavaScript embedding fixes, which every browser engine shares.
+/// Every default but maxOperandsPerInstruction is one the JavaScript embedding fixes, which every
+/// browser engine shares; maxOperandsPerInstruction is Isoline's own, as the JS embedding has none.
 struct DecodeLimits
 {
     uint32_t maxTypes = 1'000'000;            ///< Entries of the type section.
@@ -37,6 +39,15 @@ struct DecodeLimits
     uint32_t maxBrTableSize = 65'520;         ///< Labels of one br_table.
     /// Catch clauses of one try_table: as many as br_table may name labels, as each clause names one.
     uint32_t maxCatchClauses = 65'520;
+    /// Operands one function's operand stack may hold at once, per instruction of its body, beyond the
+    /// max(maxParams, maxResults) one instruction may push: a taller stack is refused
+    /// (OperandStackLimitExceeded) at the instruction that grows it, so validating a body holds memory
+    /// linear in its size. What counts is the stack's peak, so results consumed later count too:
+    /// `call $f; call $f; call $sink; call $sink`, of two 1000-result producers and two 1000-param
+    /// consumers, peaks at 2000 operands in 5 instructions, past the cap of 4 x 5 + 1000 = 1020, and
+    /// is refused although valid. Only bodies that pile up many multi-value results before consuming
+    /// them approach the cap; compiled code stays far below it.
+    uint32_t maxOperandsPerInstruction = 4;
 };
 
 /// Decodes a binary module.

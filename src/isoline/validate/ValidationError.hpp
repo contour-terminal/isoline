@@ -51,10 +51,11 @@ enum class ValidationErrorCode : uint8_t
     InvalidCustomPageSize,
     UninitializedLocal,
     NonEmptyTagResultType,
+    OperandStackLimitExceeded,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::NonEmptyTagResultType;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::OperandStackLimitExceeded;
 
 /// What the reference interpreter appends to an error's message.
 enum class MessageDetail : uint8_t
@@ -214,6 +215,9 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
     { .code = ValidationErrorCode::UninitializedLocal, .specMessage = "uninitialized local" },
     // Exception handling: a tag whose function type has results.
     { .code = ValidationErrorCode::NonEmptyTagResultType, .specMessage = "non-empty tag result type" },
+    // Isoline's own implementation limit, DecodeLimits::maxOperandsPerInstruction; the spec suite has
+    // no such error.
+    { .code = ValidationErrorCode::OperandStackLimitExceeded, .specMessage = "operand stack limit exceeded" },
 });
 
 static_assert(
