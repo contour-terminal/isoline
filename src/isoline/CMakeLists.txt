@@ -58,6 +58,7 @@ target_sources(isoline_core
             binary/BranchHints.hpp
             binary/ByteReader.hpp
             binary/DecodeError.hpp
+            binary/DecodeLimits.hpp
             binary/MemoryAccess.hpp
             binary/Decoder.hpp
             binary/Module.hpp
