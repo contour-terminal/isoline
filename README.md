@@ -3,12 +3,8 @@
 **A complete, fast and safe WebAssembly runtime and toolchain, written in modern C++23.**
 
 > [!WARNING]
-> **Isoline is under active development and not ready for production use.** The core language, the
-> binary decoder, the validator and the reference interpreter work today and pass the official
-> WebAssembly 3.0 spec suite; the fast interpreter, the optimizing compiler, the component model,
-> WASI 0.3 and the command-line tool are being built now. APIs, file formats and the command line will
-> change without notice until 1.0. This README describes where Isoline is going; the
-> [roadmap](#roadmap) says where it is today.
+> Isoline is under active development and not ready for production use. We are working at full pace
+> toward the first stable release. Stay tuned!
 
 ## Mission
 
