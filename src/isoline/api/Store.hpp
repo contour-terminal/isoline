@@ -210,6 +210,16 @@ class Store
     /// @return The interrupter, shared.
     [[nodiscard]] std::shared_ptr<Interrupter> const& interrupter() const noexcept;
 
+    /// How much of @p limit the store holds now: what an embedder reads to meter its guests or to
+    /// share one budget between stores. A count or size reads what the store's entities take
+    /// together; StackValues reads the frames in progress and NestedInvocations the invocations in
+    /// progress, 0 between calls; Steps reads the steps of the latest outermost call or
+    /// instantiation, the calls nested in it included, and keeps that after it ended; CallDepth reads 0,
+    /// as the executor counts it while it runs.
+    /// @param limit The limit.
+    /// @return What the store holds of it, in the unit its LimitTable row names; at most its limit.
+    [[nodiscard]] uint64_t used(Limit limit) const noexcept { return _runtime.used(limit); }
+
     /// The identity its handles carry.
     /// @return It, valid as long as the store.
     [[nodiscard]] StoreId const& id() const noexcept { return *_id; }

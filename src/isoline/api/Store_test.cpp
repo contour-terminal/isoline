@@ -49,6 +49,7 @@ using isoline::api::I64;
 using isoline::api::Imports;
 using isoline::api::Instance;
 using isoline::api::InstantiateError;
+using isoline::api::Limit;
 using isoline::api::Linkage;
 using isoline::api::LinkError;
 using isoline::api::LinkErrorCode;
@@ -359,6 +360,25 @@ TEST_CASE("Store.badArgumentIsRefusedNotAborted")
     auto results = std::array<Value, 1> {};
     REQUIRE(instance.call(exportedFunction(instance, "returns-i32"), {}, results).has_value());
     CHECK(results[0] == Value { I32 { 3 } });
+}
+
+TEST_CASE("Store.reportsWhatItHolds")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).memory(pages(1)).function(0, {}, {}).exportFunction("f", 0);
+    auto fixture = Fixture {};
+    CHECK(fixture.store.used(Limit::Memories) == 0);
+    auto const instance = fixture.instantiate(builder);
+    CHECK(fixture.store.used(Limit::Memories) == 1);
+    CHECK(fixture.store.used(Limit::MemoryBytes) == 65'536);
+    CHECK(fixture.store.used(Limit::Instances) == 1);
+    // Instantiation's one poll, on entry: its own budget.
+    CHECK(fixture.store.used(Limit::Steps) == 1);
+    REQUIRE(instance.call(exportedFunction(instance, "f"), {}, {}).has_value());
+    // A fresh budget for the call, of which the function entry took one step; kept after it ended.
+    CHECK(fixture.store.used(Limit::Steps) == 1);
+    CHECK(fixture.store.used(Limit::NestedInvocations) == 0);
+    CHECK(fixture.store.used(Limit::StackValues) == 0);
 }
 
 TEST_CASE("Store.staleHandleIsNoLaterStores")
