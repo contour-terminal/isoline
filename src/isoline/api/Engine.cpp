@@ -25,6 +25,9 @@ EngineIdentity EngineConfig::identity() const noexcept
 Engine::Engine(EngineConfig config) noexcept: _config { config }
 {
     ISOLINE_PRECONDITION(_config.features.checkPrerequisites().has_value());
+    // Only the reference engine runs code yet: a module tagged Fast would run on the reference
+    // interpreter unannounced. Removed in P4 Task 14b, which wires the fast engine in.
+    ISOLINE_PRECONDITION(_config.engine == ExecutionEngine::Reference);
 }
 
 ThreadPreparation::ThreadPreparation(std::unique_ptr<IThreadResource> resource) noexcept:
