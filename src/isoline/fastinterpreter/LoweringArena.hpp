@@ -81,6 +81,11 @@ class ILoweringArena: public std::pmr::memory_resource
     /// The last allocation the arena refused.
     /// @return It, or nullopt when the arena refused none.
     [[nodiscard]] virtual std::optional<Refusal> lastRefusal() const noexcept = 0;
+
+    /// The host's memory the arena draws on: where what owns the arena itself, the lowered module's
+    /// own record, is allocated, uncharged, as it cannot come from the arena it keeps alive.
+    /// @return The resource, which outlives the arena.
+    [[nodiscard]] virtual std::pmr::memory_resource& hostResource() const noexcept = 0;
 };
 
 /// A lowering arena that counts what it charges against a fixed budget and takes its memory from an
@@ -101,6 +106,7 @@ class CountingArena final: public ILoweringArena
     [[nodiscard]] std::expected<void, BudgetExceeded> reserve(uint64_t bytes) noexcept override;
     void release(uint64_t bytes) noexcept override;
     [[nodiscard]] std::optional<Refusal> lastRefusal() const noexcept override;
+    [[nodiscard]] std::pmr::memory_resource& hostResource() const noexcept override;
 
   private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override;

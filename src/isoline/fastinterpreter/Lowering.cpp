@@ -606,21 +606,26 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     if (!stats)
         return std::unexpected(stats.error());
     auto const loweredBytes = arena->charged() - chargedBefore;
+    // The module's own record comes from the host's memory, not the arena: it owns the arena.
+    auto const host = std::pmr::polymorphic_allocator<> { &arena->hostResource() };
+    auto resource = std::shared_ptr<std::pmr::memory_resource> { std::move(arena) };
     try
     {
-        // The module's own record comes from the host's heap, not the arena: it owns the arena.
-        return std::make_shared<LoweredModule const>(
-            std::move(arena), std::move(functions), config.dispatch, config.mode, loweredBytes, *stats);
+        return std::allocate_shared<LoweredModule const>(host,
+                                                         std::move(resource),
+                                                         std::move(functions),
+                                                         config.dispatch,
+                                                         config.mode,
+                                                         loweredBytes,
+                                                         *stats);
     }
     catch (std::bad_alloc const&)
     {
-        // uncovered-begin(module-record-host-memory)
         return std::unexpected(LoweringError { .codeIndex = NoFunction,
                                                .requested = sizeof(LoweredModule),
                                                .limit = budget,
                                                .reason = LoweringFailure::HostMemory });
     }
-    // uncovered-end(module-record-host-memory)
 }
 
 } // namespace isoline::fastinterpreter

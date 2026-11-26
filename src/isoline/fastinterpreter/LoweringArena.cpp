@@ -61,6 +61,11 @@ std::optional<Refusal> CountingArena::lastRefusal() const noexcept
     return _lastRefusal;
 }
 
+std::pmr::memory_resource& CountingArena::hostResource() const noexcept
+{
+    return *_upstream;
+}
+
 void* CountingArena::do_allocate(std::size_t bytes, std::size_t alignment)
 {
     // What the reservations cover is charged already; only the rest is new to the budget.
