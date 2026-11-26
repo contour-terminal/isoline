@@ -44,6 +44,12 @@ namespace
         switch (engine)
         {
             case ExecutionEngine::Reference: return std::make_unique<interpreter::ReferenceInterpreter>();
+            // Engine's constructor refuses the fast engine until P4 Task 14b wires it in, so no store
+            // has it; should that refusal go first, this ends the process instead of running on.
+            // uncovered-begin(fast-engine-refused)
+            case ExecutionEngine::Fast:
+                core::todo("the fast engine's executor (P4 Task 14b)");
+                // uncovered-end(fast-engine-refused)
         }
         // Every ExecutionEngine is a case above.
         core::unreachable(); // uncovered(unknown-engine)
