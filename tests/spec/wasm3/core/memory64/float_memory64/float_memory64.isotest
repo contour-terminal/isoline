@@ -1,0 +1,90 @@
+module float_memory64.0.wasm
+assert_return invoke 6933322e6c6f6164 - -> i32:7fa00000
+assert_return invoke 6633322e6c6f6164 - -> f32:7fa00000
+invoke 7265736574 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:0
+assert_return invoke 6633322e6c6f6164 - -> f32:0
+invoke 6633322e73746f7265 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:7fa00000
+assert_return invoke 6633322e6c6f6164 - -> f32:7fa00000
+invoke 7265736574 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:0
+assert_return invoke 6633322e6c6f6164 - -> f32:0
+invoke 6933322e73746f7265 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:7fa00000
+assert_return invoke 6633322e6c6f6164 - -> f32:7fa00000
+module float_memory64.1.wasm
+assert_return invoke 6936342e6c6f6164 - -> i64:7ff4000000000000
+assert_return invoke 6636342e6c6f6164 - -> f64:7ff4000000000000
+invoke 7265736574 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:0
+assert_return invoke 6636342e6c6f6164 - -> f64:0
+invoke 6636342e73746f7265 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:7ff4000000000000
+assert_return invoke 6636342e6c6f6164 - -> f64:7ff4000000000000
+invoke 7265736574 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:0
+assert_return invoke 6636342e6c6f6164 - -> f64:0
+invoke 6936342e73746f7265 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:7ff4000000000000
+assert_return invoke 6636342e6c6f6164 - -> f64:7ff4000000000000
+module float_memory64.2.wasm
+assert_return invoke 6933322e6c6f6164 - -> i32:7fa00000
+assert_return invoke 6633322e6c6f6164 - -> f32:7fa00000
+invoke 7265736574 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:0
+assert_return invoke 6633322e6c6f6164 - -> f32:0
+invoke 6633322e73746f7265 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:7fa00000
+assert_return invoke 6633322e6c6f6164 - -> f32:7fa00000
+invoke 7265736574 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:0
+assert_return invoke 6633322e6c6f6164 - -> f32:0
+invoke 6933322e73746f7265 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:7fa00000
+assert_return invoke 6633322e6c6f6164 - -> f32:7fa00000
+module float_memory64.3.wasm
+assert_return invoke 6936342e6c6f6164 - -> i64:7ff4000000000000
+assert_return invoke 6636342e6c6f6164 - -> f64:7ff4000000000000
+invoke 7265736574 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:0
+assert_return invoke 6636342e6c6f6164 - -> f64:0
+invoke 6636342e73746f7265 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:7ff4000000000000
+assert_return invoke 6636342e6c6f6164 - -> f64:7ff4000000000000
+invoke 7265736574 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:0
+assert_return invoke 6636342e6c6f6164 - -> f64:0
+invoke 6936342e73746f7265 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:7ff4000000000000
+assert_return invoke 6636342e6c6f6164 - -> f64:7ff4000000000000
+module float_memory64.4.wasm
+assert_return invoke 6933322e6c6f6164 - -> i32:7fd00001
+assert_return invoke 6633322e6c6f6164 - -> f32:7fd00001
+invoke 7265736574 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:0
+assert_return invoke 6633322e6c6f6164 - -> f32:0
+invoke 6633322e73746f7265 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:7fd00001
+assert_return invoke 6633322e6c6f6164 - -> f32:7fd00001
+invoke 7265736574 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:0
+assert_return invoke 6633322e6c6f6164 - -> f32:0
+invoke 6933322e73746f7265 - ->
+assert_return invoke 6933322e6c6f6164 - -> i32:7fd00001
+assert_return invoke 6633322e6c6f6164 - -> f32:7fd00001
+module float_memory64.5.wasm
+assert_return invoke 6936342e6c6f6164 - -> i64:7ffc000000000001
+assert_return invoke 6636342e6c6f6164 - -> f64:7ffc000000000001
+invoke 7265736574 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:0
+assert_return invoke 6636342e6c6f6164 - -> f64:0
+invoke 6636342e73746f7265 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:7ffc000000000001
+assert_return invoke 6636342e6c6f6164 - -> f64:7ffc000000000001
+invoke 7265736574 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:0
+assert_return invoke 6636342e6c6f6164 - -> f64:0
+invoke 6936342e73746f7265 - ->
+assert_return invoke 6936342e6c6f6164 - -> i64:7ffc000000000001
+assert_return invoke 6636342e6c6f6164 - -> f64:7ffc000000000001

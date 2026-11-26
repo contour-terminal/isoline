@@ -25,10 +25,10 @@ namespace isoline::validate
 /// Precondition (checked): @p module is as decodeModule produces it: every body's block structure
 /// is balanced and ends with the final end, and every br_table and typed select names a run within
 /// its function's side table. A hand-built module that breaks this ends the process through Require
-/// rather than failing validation.
+/// rather than failing validation. @p features is closed over its prerequisites (checked), as any set
+/// decodeModule accepted is.
 /// @param module The decoded module.
-/// @param features The proposals whose typing rules apply; those decodeModule accepted, so a set
-///                 closed over its prerequisites.
+/// @param features The proposals whose typing rules apply; those decodeModule accepted.
 /// @return Nothing when the module is valid; otherwise the first error found.
 [[nodiscard]] std::expected<void, ValidationError> validateModule(binary::Module const& module,
                                                                   FeatureSet const& features);

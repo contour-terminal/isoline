@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <core/Assert.hpp>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +21,7 @@ namespace isoline::binary::testing
 /// The unsigned LEB128 encoding of @p value, in its shortest form.
 /// @param value The value to encode.
 /// @return Its bytes.
-[[nodiscard]] inline std::vector<uint8_t> encodeU32(uint32_t value)
+[[nodiscard]] inline std::vector<uint8_t> encodeU64(uint64_t value)
 {
     auto bytes = std::vector<uint8_t> {};
     do
@@ -31,6 +33,14 @@ namespace isoline::binary::testing
         bytes.push_back(byte);
     } while (value != 0);
     return bytes;
+}
+
+/// The unsigned LEB128 encoding of @p value, in its shortest form.
+/// @param value The value to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeU32(uint32_t value)
+{
+    return encodeU64(value);
 }
 
 /// The binary encoding of @p name: its u32 byte length, then its bytes.
@@ -45,9 +55,9 @@ namespace isoline::binary::testing
 
 /// The one-byte encoding of a number, vector or abstract reference type.
 ///
-/// Every reference type whose heap is not Extern is encoded as funcref (0x70), whatever its
-/// nullability or heap: P1's binary format knows no other reference types.
-/// @param type The type to encode; a reference must be funcref or externref.
+/// Precondition (checked): a reference is funcref or externref, the only reference types with a
+/// one-byte encoding this builder writes; any other ends the test rather than encode as another.
+/// @param type The type to encode.
 /// @return Its byte.
 [[nodiscard]] inline uint8_t encodeValueType(ValueType const& type)
 {
@@ -58,22 +68,30 @@ namespace isoline::binary::testing
         case ValueKind::F32: return 0x7D;
         case ValueKind::F64: return 0x7C;
         case ValueKind::V128: return 0x7B;
-        case ValueKind::Ref: return type.heap.kind == AbstractHeapType::Extern ? 0x6F : 0x70;
+        case ValueKind::Ref: break;
     }
-    return 0x00;
+    Require(type == FuncRef || type == ExternRef);
+    return type == FuncRef ? 0x70 : 0x6F;
 }
 
 /// The binary encoding of @p limits: the flags byte, the minimum and, if bounded, the maximum.
-/// @param limits The limits to encode; both bounds must fit a u32.
+///
+/// The flags say whether a maximum follows (0x01) and whether the addresses are i64 (0x04, memory64);
+/// the bounds are u64s, which for values below 2^32 are the bytes of the u32s WebAssembly 2.0 reads.
+/// @param limits The limits to encode.
 /// @return Its bytes.
 [[nodiscard]] inline std::vector<uint8_t> encodeLimits(Limits const& limits)
 {
-    auto bytes = std::vector<uint8_t> { static_cast<uint8_t>(limits.max ? 0x01 : 0x00) };
-    auto const min = encodeU32(static_cast<uint32_t>(limits.min));
+    constexpr auto HasMaximum = uint8_t { 0x01 };
+    constexpr auto I64Addresses = uint8_t { 0x04 };
+    auto const flags = static_cast<uint8_t>((limits.max ? HasMaximum : 0)
+                                            | (limits.addressType == AddressType::I64 ? I64Addresses : 0));
+    auto bytes = std::vector<uint8_t> { flags };
+    auto const min = encodeU64(limits.min);
     bytes.insert(bytes.end(), min.begin(), min.end());
     if (limits.max)
     {
-        auto const max = encodeU32(static_cast<uint32_t>(*limits.max));
+        auto const max = encodeU64(*limits.max);
         bytes.insert(bytes.end(), max.begin(), max.end());
     }
     return bytes;

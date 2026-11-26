@@ -716,10 +716,10 @@ TEST_CASE("Validator.limits")
 {
     auto tooLarge = ModuleBuilder {};
     tooLarge.memory(atLeast(65537));
-    CHECK(errorOf(tooLarge) == ValidationErrorCode::MemorySizeMustBeAtMost4GiB);
+    CHECK(errorOf(tooLarge) == ValidationErrorCode::MemorySizeMustBeAtMost);
     auto tooLargeMax = ModuleBuilder {};
     tooLargeMax.memory(between(1, 65537));
-    CHECK(errorOf(tooLargeMax) == ValidationErrorCode::MemorySizeMustBeAtMost4GiB);
+    CHECK(errorOf(tooLargeMax) == ValidationErrorCode::MemorySizeMustBeAtMost);
     auto inverted = ModuleBuilder {};
     inverted.memory(between(2, 1));
     CHECK(errorOf(inverted) == ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
@@ -793,8 +793,7 @@ TEST_CASE("Validator.specMessages")
     CHECK(specMessage(ValidationErrorCode::UnknownElemSegment) == "unknown elem segment");
     CHECK(specMessage(ValidationErrorCode::AlignmentMustNotBeLarger)
           == "alignment must not be larger than natural");
-    CHECK(specMessage(ValidationErrorCode::MemorySizeMustBeAtMost4GiB)
-          == "memory size must be at most 65536 pages (4GiB)");
+    CHECK(specMessage(ValidationErrorCode::MemorySizeMustBeAtMost) == "memory size must be at most");
     CHECK(specMessage(ValidationErrorCode::UndeclaredFunctionReference) == "undeclared function reference");
 }
 
@@ -821,4 +820,202 @@ TEST_CASE("Validator.messagesNameTheUnknownIndex")
     auto exported = voidFunctionOf({});
     exported.exportEntity("m", ExternKind::Memory, 1);
     CHECK(messageOf(exported) == "unknown memory 1");
+}
+
+namespace
+{
+
+/// Limits of at least @p min pages or elements, unbounded, of i64 addresses.
+Limits atLeast64(uint64_t min)
+{
+    return Limits { .min = min, .max = std::nullopt, .addressType = isoline::binary::AddressType::I64 };
+}
+
+/// The error validating @p builder's module under WebAssembly 3.0 reports, or nullopt when it is valid.
+std::optional<ValidationErrorCode> error3Of(ModuleBuilder const& builder)
+{
+    return errorOf(builder, FeatureSet::wasm3());
+}
+
+} // namespace
+
+TEST_CASE("Validator.offsetOutOfRange")
+{
+    // i32.load offset=2^32: an offset an i32 memory cannot reach, after i32/i64.const 0.
+    auto const load = [](uint8_t constOpcode) {
+        return voidFunctionOf({ constOpcode, 0x00, 0x28, 0x02, 0x80, 0x80, 0x80, 0x80, 0x10, 0x1A });
+    };
+    auto narrow = load(0x41);
+    narrow.memory(atLeast(1));
+    CHECK(error3Of(narrow) == ValidationErrorCode::OffsetOutOfRange);
+    CHECK(specMessage(ValidationErrorCode::OffsetOutOfRange) == "offset out of range");
+    auto wide = load(0x42);
+    wide.memory(atLeast64(1));
+    CHECK(error3Of(wide) == std::nullopt);
+    // The largest offset an i32 memory reaches.
+    auto largest = voidFunctionOf({ 0x41, 0x00, 0x28, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0x1A });
+    largest.memory(atLeast(1));
+    CHECK(error3Of(largest) == std::nullopt);
+}
+
+TEST_CASE("Validator.memory64AddressType")
+{
+    auto const withMemory64 = [](std::vector<uint8_t> body) {
+        auto builder = voidFunctionOf(std::move(body));
+        builder.memory(atLeast64(1));
+        return error3Of(builder);
+    };
+    // Loads and stores take the memory's address type.
+    CHECK(withMemory64({ 0x41, 0x00, 0x28, 0x02, 0x00, 0x1A }) == ValidationErrorCode::TypeMismatch);
+    CHECK(withMemory64({ 0x42, 0x00, 0x28, 0x02, 0x00, 0x1A }) == std::nullopt);
+    CHECK(withMemory64({ 0x42, 0x00, 0x41, 0x00, 0x36, 0x02, 0x00 }) == std::nullopt);
+    CHECK(withMemory64({ 0x41, 0x00, 0x41, 0x00, 0x36, 0x02, 0x00 }) == ValidationErrorCode::TypeMismatch);
+    // A vector load too.
+    CHECK(withMemory64({ 0x42, 0x00, 0xFD, 0x00, 0x04, 0x00, 0x1A }) == std::nullopt);
+    // memory.size yields, and memory.grow takes and yields, an i64.
+    CHECK(withMemory64({ 0x3F, 0x00, 0x50, 0x1A }) == std::nullopt);
+    CHECK(withMemory64({ 0x3F, 0x00, 0x45, 0x1A }) == ValidationErrorCode::TypeMismatch);
+    CHECK(withMemory64({ 0x42, 0x01, 0x40, 0x00, 0x50, 0x1A }) == std::nullopt);
+    CHECK(withMemory64({ 0x41, 0x01, 0x40, 0x00, 0x1A }) == ValidationErrorCode::TypeMismatch);
+    // memory.fill: [i64 destination, i32 value, i64 count].
+    CHECK(withMemory64({ 0x42, 0x00, 0x41, 0x00, 0x42, 0x00, 0xFC, 0x0B, 0x00 }) == std::nullopt);
+    CHECK(withMemory64({ 0x42, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0B, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.memory64CopyAndInit")
+{
+    // Memory 0 takes i64 addresses, memory 1 i32 ones. Until the decoder reads multi-memory's memory
+    // indices, a copy between them is the decoded copy 0 0 with its source moved to memory 1.
+    auto const copy = [](std::vector<uint8_t> body, uint32_t destination, uint32_t source) {
+        auto builder = voidFunctionOf(std::move(body));
+        builder.memory(atLeast64(1)).memory(atLeast(1));
+        auto const bytes = builder.build();
+        auto module = decodeModule(bytes, FeatureSet::wasm3());
+        REQUIRE(module.has_value());
+        auto& instruction = module->code[0].body[3];
+        REQUIRE(instruction.opcode == isoline::binary::Opcode::MemoryCopy);
+        instruction.a = destination;
+        instruction.b = source;
+        auto const result = validateModule(*module, FeatureSet::wasm3());
+        return result ? std::nullopt : std::optional { result.error().code };
+    };
+    // memory.copy 0 0: every operand an i64.
+    CHECK(copy({ 0x42, 0x00, 0x42, 0x00, 0x42, 0x00, 0xFC, 0x0A, 0x00, 0x00 }, 0, 0) == std::nullopt);
+    // memory.copy 0 1: an i64 destination, an i32 source, and an i32 count, the narrower of the two.
+    CHECK(copy({ 0x42, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0A, 0x00, 0x00 }, 0, 1) == std::nullopt);
+    CHECK(copy({ 0x42, 0x00, 0x41, 0x00, 0x42, 0x00, 0xFC, 0x0A, 0x00, 0x00 }, 0, 1)
+          == ValidationErrorCode::TypeMismatch);
+    // memory.copy 1 0: an i32 destination and an i64 source.
+    CHECK(copy({ 0x41, 0x00, 0x42, 0x00, 0x41, 0x00, 0xFC, 0x0A, 0x00, 0x00 }, 1, 0) == std::nullopt);
+    CHECK(copy({ 0x42, 0x00, 0x42, 0x00, 0x41, 0x00, 0xFC, 0x0A, 0x00, 0x00 }, 1, 0)
+          == ValidationErrorCode::TypeMismatch);
+
+    // memory.init 0 0: the destination by address type, the source and count i32.
+    auto const init = [](std::vector<uint8_t> body) {
+        auto builder = voidFunctionOf(std::move(body));
+        builder.memory(atLeast64(1)).dataCount(1).data({ 0x01, 0x00 });
+        return error3Of(builder);
+    };
+    CHECK(init({ 0x42, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x08, 0x00, 0x00 }) == std::nullopt);
+    CHECK(init({ 0x42, 0x00, 0x41, 0x00, 0x42, 0x00, 0xFC, 0x08, 0x00, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(init({ 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x08, 0x00, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+    // An active data segment's offset is of its memory's address type.
+    auto active = ModuleBuilder {};
+    active.memory(atLeast64(1)).data({ 0x00, 0x42, 0x00, 0x0B, 0x00 });
+    CHECK(error3Of(active) == std::nullopt);
+    auto narrowOffset = ModuleBuilder {};
+    narrowOffset.memory(atLeast64(1)).data({ 0x00, 0x41, 0x00, 0x0B, 0x00 });
+    CHECK(error3Of(narrowOffset) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.table64AddressType")
+{
+    auto const table64 = TableType { .element = FuncRef, .limits = atLeast64(1) };
+    auto const withTable64 = [&](std::vector<uint8_t> body) {
+        auto builder = voidFunctionOf(std::move(body));
+        builder.table(table64).table(TableType { .element = FuncRef, .limits = atLeast(1) });
+        builder.element({ 0x01, 0x00, 0x00 });
+        return error3Of(builder);
+    };
+    // table.get, table.set, table.size, table.grow, table.fill on the table64.
+    CHECK(withTable64({ 0x42, 0x00, 0x25, 0x00, 0x1A }) == std::nullopt);
+    CHECK(withTable64({ 0x41, 0x00, 0x25, 0x00, 0x1A }) == ValidationErrorCode::TypeMismatch);
+    CHECK(withTable64({ 0x42, 0x00, 0xD0, 0x70, 0x26, 0x00 }) == std::nullopt);
+    CHECK(withTable64({ 0xFC, 0x10, 0x00, 0x50, 0x1A }) == std::nullopt);
+    CHECK(withTable64({ 0xD0, 0x70, 0x42, 0x01, 0xFC, 0x0F, 0x00, 0x50, 0x1A }) == std::nullopt);
+    CHECK(withTable64({ 0xD0, 0x70, 0x41, 0x01, 0xFC, 0x0F, 0x00, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(withTable64({ 0x42, 0x00, 0xD0, 0x70, 0x42, 0x01, 0xFC, 0x11, 0x00 }) == std::nullopt);
+    // table.copy 0 1: i64 destination, i32 source, i32 count; table.copy 0 0: all i64.
+    CHECK(withTable64({ 0x42, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0E, 0x00, 0x01 }) == std::nullopt);
+    CHECK(withTable64({ 0x42, 0x00, 0x42, 0x00, 0x42, 0x00, 0xFC, 0x0E, 0x00, 0x00 }) == std::nullopt);
+    CHECK(withTable64({ 0x42, 0x00, 0x42, 0x00, 0x41, 0x00, 0xFC, 0x0E, 0x00, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+    // table.init 0 0: an i64 destination, an i32 source and count.
+    CHECK(withTable64({ 0x42, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0C, 0x00, 0x00 }) == std::nullopt);
+    // call_indirect through the table64 takes an i64 index.
+    auto const call = [&](uint8_t constOpcode) {
+        auto builder = voidFunctionOf({ constOpcode, 0x00, 0x11, 0x00, 0x00 });
+        builder.table(table64);
+        return error3Of(builder);
+    };
+    CHECK(call(0x42) == std::nullopt);
+    CHECK(call(0x41) == ValidationErrorCode::TypeMismatch);
+    // An active element segment's offset is of its table's address type (flags 0: table 0).
+    auto active = ModuleBuilder {};
+    active.type(FuncType {})
+        .function(0, {}, {})
+        .table(table64)
+        .element({ 0x00, 0x42, 0x00, 0x0B, 0x01, 0x00 });
+    CHECK(error3Of(active) == std::nullopt);
+    auto narrowOffset = ModuleBuilder {};
+    narrowOffset.type(FuncType {})
+        .function(0, {}, {})
+        .table(table64)
+        .element({ 0x00, 0x41, 0x00, 0x0B, 0x01, 0x00 });
+    CHECK(error3Of(narrowOffset) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.addressTypeBounds")
+{
+    using isoline::binary::maxPages;
+    using isoline::binary::maxTableSize;
+    using isoline::binary::MemoryType;
+    CHECK(maxPages(MemoryType { .limits = atLeast(0) }) == 65'536);
+    CHECK(maxPages(MemoryType { .limits = atLeast64(0) }) == uint64_t { 1 } << 48);
+    CHECK(maxTableSize(TableType { .element = FuncRef, .limits = atLeast(0) }) == 0xFFFF'FFFF);
+    CHECK(maxTableSize(TableType { .element = FuncRef, .limits = atLeast64(0) }) == ~uint64_t { 0 });
+
+    auto const messageOf = [](ModuleBuilder const& builder) {
+        auto const result = validated(builder, FeatureSet::wasm3());
+        REQUIRE_FALSE(result.has_value());
+        return specMessage(result.error());
+    };
+    auto memory = ModuleBuilder {};
+    memory.memory(atLeast(65'537));
+    CHECK(messageOf(memory) == "memory size must be at most 2^16 pages (4 GiB) for i32");
+    auto memory64 = ModuleBuilder {};
+    memory64.memory(atLeast64((uint64_t { 1 } << 48) + 1));
+    CHECK(messageOf(memory64) == "memory size must be at most 2^48 pages (256 TiB) for i64");
+    auto full64 = ModuleBuilder {};
+    full64.memory(
+        Limits { .min = 0, .max = uint64_t { 1 } << 48, .addressType = isoline::binary::AddressType::I64 });
+    CHECK(error3Of(full64) == std::nullopt);
+    // An i32 table's u64 bounds may pass 2^32-1 in the 3.0 grammar.
+    auto table = ModuleBuilder {};
+    table.table(TableType { .element = FuncRef, .limits = atLeast(uint64_t { 1 } << 32) });
+    CHECK(messageOf(table) == "table size must be at most 2^32-1 for i32");
+    auto table64 = ModuleBuilder {};
+    table64.table(TableType { .element = FuncRef, .limits = atLeast64(~uint64_t { 0 }) });
+    CHECK(error3Of(table64) == std::nullopt);
+}
+
+TEST_CASE("Validator.subjectOfAnErrorWithoutDetail")
+{
+    // A row without a detail spells its text alone, whatever subject an error carries.
+    CHECK(specMessage(ValidationError { ValidationErrorCode::TypeMismatch, NoFunction, NoInstruction, 3 })
+          == "type mismatch");
 }

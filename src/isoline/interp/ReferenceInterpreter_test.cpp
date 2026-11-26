@@ -399,8 +399,9 @@ TEST_CASE("ReferenceInterpreter.callIndirectTrapNamesTheElement")
     };
     CHECK(messageOf(2) == "uninitialized element 2");
     CHECK(messageOf(7) == "undefined element 7");
-    // Index 0xFFFFFFFF is an index like any other; the interpreter spells it as Int32.to_string does.
-    CHECK(messageOf(-1) == "undefined element -1");
+    // Index 0xFFFFFFFF is an index like any other; the 3.0 interpreter widens it to an unsigned
+    // address and spells that as Int64.to_string does.
+    CHECK(messageOf(-1) == "undefined element 4294967295");
     CHECK(isoline::runtime::specMessage(Trap { TrapCode::Unreachable }) == "unreachable");
 }
 
@@ -1021,4 +1022,95 @@ TEST_CASE("Interpreter.vectorOperators")
     CHECK(harness.result(7) == i32(static_cast<int32_t>(0xFFFF'FF8F)));
     CHECK(harness.result(8) == v128(0x1F1F'1F1F'1F1F'1F1F, 0x0101'0101'0101'0101));
     CHECK(harness.result(9) == v128(0x4746'4544'4342'4140, 0x4F4E'4D4C'4B4A'4948));
+}
+
+namespace
+{
+
+Limits atLeast64(uint64_t min)
+{
+    return Limits { .min = min, .max = std::nullopt, .addressType = AddressType::I64 };
+}
+
+/// A load or store of @p opcode byte with alignment exponent @p align and a u64 offset @p offset.
+Bytes memoryAccess64(uint8_t opcode, uint32_t align, uint64_t offset)
+{
+    return code({ { opcode }, encodeU32(align), isoline::binary::testing::encodeU64(offset) });
+}
+
+} // namespace
+
+TEST_CASE("Interpreter.memory64EffectiveAddressOverflowTraps")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64 }, { TypeI32 }))
+        .memory(atLeast64(1))
+        .function(0, {}, code({ localGet(0), memoryAccess64(0x28, 2, 0x20) })) // i32.load offset=0x20
+        .function(0, {}, code({ localGet(0), memoryAccess64(0x28, 2, ~uint64_t { 0 }) }));
+    auto harness = Harness { builder };
+    // address + offset wraps past 2^64 to 0x10, in bounds if the sum were taken modulo 2^64.
+    CHECK(harness.trap(0, { I64 { 0xFFFF'FFFF'FFFF'FFF0 } }) == TrapCode::OutOfBoundsMemoryAccess);
+    CHECK(harness.result(0, { I64 { 8 } }) == i32(0));
+    CHECK(harness.trap(0, { I64 { PageSize - 0x20 - 3 } }) == TrapCode::OutOfBoundsMemoryAccess);
+    CHECK(harness.result(0, { I64 { PageSize - 0x20 - 4 } }) == i32(0));
+    // An offset of 2^64-1 reaches no byte of any memory.
+    CHECK(harness.trap(1, { I64 { 0 } }) == TrapCode::OutOfBoundsMemoryAccess);
+}
+
+TEST_CASE("Interpreter.memoryGrow64ReturnsI64")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64 }, { TypeI64 }))
+        .memory(Limits { .min = 1, .max = 2, .addressType = AddressType::I64 })
+        .function(0, {}, code({ localGet(0), { 0x40, 0x00 } })) // memory.grow
+        .function(0, {}, { 0x3F, 0x00 });                       // memory.size
+    auto harness = Harness { builder };
+    CHECK(harness.result(0, { I64 { 1 } }) == Value { I64 { 1 } });
+    CHECK(harness.result(1, { I64 { 0 } }) == Value { I64 { 2 } });
+    // Refused: past the maximum, and a delta whose page count passes any address.
+    CHECK(harness.result(0, { I64 { 1 } }) == Value { I64 { ~uint64_t { 0 } } });
+    CHECK(harness.result(0, { I64 { uint64_t { 1 } << 63 } }) == Value { I64 { ~uint64_t { 0 } } });
+    CHECK(harness.result(0, { I64 { 0 } }) == Value { I64 { 2 } });
+}
+
+TEST_CASE("Interpreter.table64CallIndirect")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64 }, { TypeI32 }))
+        .type(signature({}, { TypeI32 }))
+        .table(TableType { .element = FuncRef, .limits = atLeast64(2) })
+        .function(0, {}, code({ localGet(0), { 0x11, 0x01, 0x00 } })) // call_indirect type 1
+        .function(1, {}, i32Const(7))
+        .element(code({ { 0x00 }, i64Const(0), { 0x0B, 0x02, 0x01, 0x01 } }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0, { I64 { 1 } }) == i32(7));
+    auto const result = harness.invoke(0, { I64 { uint64_t { 1 } << 32 } });
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == TrapCode::UndefinedElement);
+    CHECK(result.error().subject == int64_t { 4'294'967'296 });
+    CHECK(isoline::runtime::specMessage(result.error()) == "undefined element 4294967296");
+    // The largest index is spelled signed, as Int64.to_string does.
+    auto const last = harness.invoke(0, { I64 { ~uint64_t { 0 } } });
+    REQUIRE_FALSE(last.has_value());
+    CHECK(isoline::runtime::specMessage(last.error()) == "undefined element -1");
+}
+
+TEST_CASE("Interpreter.table64Instructions")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI64 }))
+        .type(signature({ TypeI64 }, { TypeI32 }))
+        .table(TableType { .element = FuncRef, .limits = atLeast64(1) })
+        .function(0,
+                  {},
+                  code({ { 0xD0, 0x70 }, // ref.null func
+                         i64Const(2),
+                         { 0xFC, 0x0F, 0x00 },                         // table.grow 0
+                         { 0x1A },                                     // drop
+                         { 0xFC, 0x10, 0x00 } }))                      // table.size 0
+        .function(1, {}, code({ localGet(0), { 0x25, 0x00, 0xD1 } })); // table.get 0; ref.is_null
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == Value { I64 { 3 } });
+    CHECK(harness.result(1, { I64 { 2 } }) == i32(1));
+    CHECK(harness.trap(1, { I64 { uint64_t { 1 } << 32 } }) == TrapCode::OutOfBoundsTableAccess);
 }

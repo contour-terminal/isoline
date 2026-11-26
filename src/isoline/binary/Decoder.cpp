@@ -204,6 +204,57 @@ namespace
         return opcodeSubject(prefix, code);
     }
 
+    /// Which bounds a limits flag announces.
+    enum class LimitsBound : uint8_t
+    {
+        Minimum,           ///< A minimum only.
+        MinimumAndMaximum, ///< A minimum, then a maximum.
+    };
+
+    /// One limits flag byte WebAssembly 3.0 admits: what follows it, and the proposal it needs.
+    struct LimitsFlagRow
+    {
+        uint8_t flags;                   ///< The flag byte.
+        LimitsBound bound;               ///< The bounds that follow.
+        AddressType addressType;         ///< The address type of the memory or table.
+        std::optional<Feature> required; ///< The proposal that admits it; none for the MVP's flags.
+    };
+
+    /// The limits flags of tables and memories: bit 0 a maximum, bit 2 i64 addresses. Any other byte
+    /// is MalformedLimitsFlags; in WebAssembly 2.0's grammar only the first two rows exist.
+    constexpr auto LimitsFlagTable = std::to_array<LimitsFlagRow>({
+        { .flags = 0x00,
+          .bound = LimitsBound::Minimum,
+          .addressType = AddressType::I32,
+          .required = std::nullopt },
+        { .flags = 0x01,
+          .bound = LimitsBound::MinimumAndMaximum,
+          .addressType = AddressType::I32,
+          .required = std::nullopt },
+        { .flags = 0x04,
+          .bound = LimitsBound::Minimum,
+          .addressType = AddressType::I64,
+          .required = Feature::Memory64 },
+        { .flags = 0x05,
+          .bound = LimitsBound::MinimumAndMaximum,
+          .addressType = AddressType::I64,
+          .required = Feature::Memory64 },
+    });
+
+    static_assert(
+        [] {
+            auto index = uint8_t { 0 };
+            for (auto const& row: LimitsFlagTable | std::views::take(2))
+                if (row.flags != index++ || row.required)
+                    return false;
+            return true;
+        }(),
+        "LimitsFlagTable's first two rows are WebAssembly 2.0's flags 0x00 and 0x01, indexed by them");
+
+    /// The proposal whose limits grammar is WebAssembly 3.0's: memory64 brought the byte-read flags
+    /// and u64 bounds. Without it the decoder keeps 2.0's grammar, as the 2.0 suite expects.
+    constexpr auto LimitsGrammar3Feature = Feature::Memory64;
+
     /// The alignment exponents WebAssembly 2.0 admits lie below this (spec decode.ml memop).
     constexpr auto AlignmentExponentLimit = uint32_t { 32 };
 
@@ -294,7 +345,14 @@ namespace
         [[nodiscard]] std::expected<ValueType, DecodeError> readRefType();
         [[nodiscard]] std::expected<std::vector<ValueType>, DecodeError> readResultType(uint32_t limit);
         [[nodiscard]] std::expected<FuncType, DecodeError> readFuncType();
+        /// Reads a table's or memory's limits, in the grammar LimitsGrammar3Feature selects.
         [[nodiscard]] std::expected<Limits, DecodeError> readLimits();
+        /// Reads limits in WebAssembly 3.0's grammar: flags of LimitsFlagTable, u64 bounds.
+        [[nodiscard]] std::expected<Limits, DecodeError> readLimits3();
+        /// Reads the bounds @p row's flags announce, each with @p readBound.
+        template <typename ReadBound>
+        [[nodiscard]] std::expected<Limits, DecodeError> readBounds(LimitsFlagRow const& row,
+                                                                    ReadBound readBound);
         [[nodiscard]] std::expected<TableType, DecodeError> readTableType();
         [[nodiscard]] std::expected<GlobalType, DecodeError> readGlobalType();
         [[nodiscard]] std::expected<ExternKind, DecodeError> readExternKind(DecodeErrorCode malformed);
@@ -550,9 +608,10 @@ namespace
 
     std::expected<Limits, DecodeError> ModuleDecoder::readLimits()
     {
-        // Flags 0x00: a minimum; 0x01: a minimum and a maximum. Every other flag (shared memories,
-        // 64-bit addresses) belongs to a proposal P1 does not decode. WebAssembly 2.0 reads the flag
-        // as a one-bit LEB128, so a continuation bit over a valid flag is too long a representation.
+        if (_features.has(LimitsGrammar3Feature))
+            return readLimits3();
+        // WebAssembly 2.0: flags 0x00, a minimum, or 0x01, a minimum and a maximum, read as a one-bit
+        // LEB128, so a continuation bit over a valid flag is too long a representation; u32 bounds.
         auto const flagsOffset = _reader.offset();
         auto const flags = readByte();
         if (!flags)
@@ -563,20 +622,44 @@ namespace
                                                    flagsOffset + 1 } };
         if (*flags > 0x01)
             return std::unexpected { DecodeError { DecodeErrorCode::LimitsFlagTooLarge, flagsOffset } };
-        auto const readBound = [this] {
-            return _reader.readU32().transform_error([](DecodeError error) {
+        return readBounds(LimitsFlagTable[*flags], [this] { return _reader.readU32(); });
+    }
+
+    std::expected<Limits, DecodeError> ModuleDecoder::readLimits3()
+    {
+        // The flags are a byte, a row of LimitsFlagTable whose proposal is on; the bounds are u64s
+        // whatever the address type, which the validator bounds (decode.ml's `limits u64`).
+        auto const flagsOffset = _reader.offset();
+        auto const flags = readByte();
+        if (!flags)
+            return std::unexpected { flags.error() };
+        auto admitted = LimitsFlagTable | std::views::filter([this](LimitsFlagRow const& row) {
+                            return enabled(row.required);
+                        });
+        auto const row = std::ranges::find(admitted, *flags, &LimitsFlagRow::flags);
+        if (row == admitted.end())
+            return std::unexpected { DecodeError { DecodeErrorCode::MalformedLimitsFlags, flagsOffset } };
+        return readBounds(*row, [this] { return _reader.readU64(); });
+    }
+
+    template <typename ReadBound>
+    std::expected<Limits, DecodeError> ModuleDecoder::readBounds(LimitsFlagRow const& row,
+                                                                 ReadBound readBound)
+    {
+        auto const read = [&] {
+            return readBound().transform_error([](DecodeError error) {
                 if (error.code == DecodeErrorCode::IntegerTooLarge)
                     error.code = DecodeErrorCode::IntegerTooLargeForLimits;
                 return error;
             });
         };
-        auto const min = readBound();
+        auto const min = read();
         if (!min)
             return std::unexpected { min.error() };
-        auto limits = Limits { .min = *min, .max = std::nullopt, .addressType = AddressType::I32 };
-        if (*flags == 0x01)
+        auto limits = Limits { .min = *min, .max = std::nullopt, .addressType = row.addressType };
+        if (row.bound == LimitsBound::MinimumAndMaximum)
         {
-            auto const max = readBound();
+            auto const max = read();
             if (!max)
                 return std::unexpected { max.error() };
             limits.max = *max;
@@ -843,6 +926,9 @@ namespace
             return std::unexpected { DecodeError { DecodeErrorCode::MalformedMemopFlags,
                                                    _reader.offset() - 1 } };
         instruction.a = *align;
+        // A memory64 offset is a u64; the validator bounds it by the memory's address type.
+        if (_features.has(Feature::Memory64))
+            return _reader.readU64().transform([&](uint64_t offset) { instruction.c = offset; });
         return _reader.readU32().transform([&](uint32_t offset) { instruction.c = offset; });
     }
 

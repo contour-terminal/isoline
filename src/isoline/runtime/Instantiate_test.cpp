@@ -144,9 +144,9 @@ class TrappingExecutor final: public isoline::runtime::ICodeExecutor
 };
 
 /// Decodes and validates @p builder's module; fails the test unless it is valid.
-std::shared_ptr<Module const> moduleOf(ModuleBuilder const& builder)
+std::shared_ptr<Module const> moduleOf(ModuleBuilder const& builder,
+                                       FeatureSet const& features = FeatureSet::wasm2())
 {
-    auto const features = FeatureSet::wasm2();
     auto const bytes = builder.build();
     auto module = isoline::binary::decodeModule(bytes, features);
     REQUIRE(module.has_value());
@@ -702,4 +702,58 @@ TEST_CASE("Instantiate.specMessages")
     CHECK(specMessage(LinkErrorCode::UnknownImport) == "unknown import");
     CHECK(specMessage(LinkErrorCode::IncompatibleImportType) == "incompatible import type");
     CHECK(specMessage(AllocationFailure { .kind = ExternKind::Memory }) == "out of memory");
+}
+
+TEST_CASE("Instantiate.memory64")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    // Evaluates i64.const offsets, which StubExecutor does not.
+    auto executor = TrappingExecutor { std::numeric_limits<std::size_t>::max() };
+    auto const at64 = [](uint64_t min) {
+        return Limits { .min = min, .max = std::nullopt, .addressType = AddressType::I64 };
+    };
+    SECTION("an import matches by address type")
+    {
+        auto builder = ModuleBuilder {};
+        builder.importMemory("m", "mem", at64(1));
+        auto const module = moduleOf(builder, FeatureSet::wasm3());
+        auto const memory64 = store.addMemory(MemoryType { .limits = at64(1) });
+        auto const memory32 = store.addMemory(MemoryType { .limits = atLeast(1) });
+        REQUIRE(memory64.has_value());
+        REQUIRE(memory32.has_value());
+        auto const of = [](auto address) {
+            return std::vector { ExternValue { .kind = ExternKind::Memory, .address = address } };
+        };
+        CHECK(instantiate(store, executor, module, of(*memory64)).has_value());
+        CHECK(errorOf(instantiate(store, executor, module, of(*memory32)))
+              == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+    }
+    SECTION("an i64 data offset")
+    {
+        auto builder = ModuleBuilder {};
+        builder.memory(at64(1)).data({ 0x00, 0x42, 0x05, 0x0B, 0x01, 0x2A });
+        auto const result = instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {});
+        REQUIRE(result.has_value());
+        CHECK(store.memory(store.moduleInstance(*result).memories[0]).bytes[5] == std::byte { 0x2A });
+    }
+    SECTION("an i64 data offset past 2^32")
+    {
+        auto builder = ModuleBuilder {};
+        builder.memory(at64(1)).data({ 0x00, 0x42, 0x80, 0x80, 0x80, 0x80, 0x10, 0x0B, 0x01, 0x2A });
+        CHECK(errorOf(instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {}))
+              == InstantiationError { Trap { TrapCode::OutOfBoundsMemoryAccess } });
+    }
+    SECTION("a guest asks for more than the allocator grants")
+    {
+        // 2^40 pages is a valid memory64 minimum, and 64 PiB; the store refuses before allocating.
+        auto builder = ModuleBuilder {};
+        builder.memory(at64(uint64_t { 1 } << 40));
+        CHECK(errorOf(instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {}))
+              == InstantiationError { AllocationFailure { .kind = ExternKind::Memory } });
+        auto table = ModuleBuilder {};
+        table.table(TableType { .element = FuncRef, .limits = at64(uint64_t { 1 } << 62) });
+        CHECK(errorOf(instantiate(store, executor, moduleOf(table, FeatureSet::wasm3()), {}))
+              == InstantiationError { AllocationFailure { .kind = ExternKind::Table } });
+    }
 }

@@ -428,6 +428,73 @@ TEST_CASE("Decoder.limits")
     CHECK(module.tables[0].limits.max == 10U);
 }
 
+TEST_CASE("Decoder.memory64Limits")
+{
+    // Memory flags 0x05: a maximum and i64 addresses; min 1, max 2^40 as u64s.
+    auto const bytes = moduleOf({ 0x05, 0x09, 0x01, 0x05, 0x01, 0x80, 0x80, 0x80, 0x80, 0x80, 0x20 });
+    auto const module = decoded(bytes, FeatureSet::wasm3());
+    REQUIRE(module.memories.size() == 1);
+    CHECK(module.memories[0].limits.addressType == isoline::binary::AddressType::I64);
+    CHECK(module.memories[0].limits.min == 1);
+    CHECK(module.memories[0].limits.max == uint64_t { 1 } << 40);
+    // Flags 0x04: no maximum. A table64 the same way, after its element type.
+    auto const table = decoded(moduleOf({ 0x04, 0x04, 0x01, 0x70, 0x04, 0x02 }), FeatureSet::wasm3());
+    REQUIRE(table.tables.size() == 1);
+    CHECK(table.tables[0].limits.addressType == isoline::binary::AddressType::I64);
+    CHECK(table.tables[0].limits.min == 2);
+    CHECK_FALSE(table.tables[0].limits.max.has_value());
+    // The 3.0 grammar reads the bounds of an i32 memory as u64s too; the validator bounds them.
+    auto const wide =
+        decoded(moduleOf({ 0x05, 0x07, 0x01, 0x00, 0x80, 0x80, 0x80, 0x80, 0x10 }), FeatureSet::wasm3());
+    CHECK(wide.memories[0].limits.min == uint64_t { 1 } << 32);
+    // A bound past u64 is still too large.
+    CHECK(errorOf(moduleOf(
+                      { 0x05, 0x0D, 0x01, 0x04, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02 }),
+                  FeatureSet::wasm3())
+          == DecodeErrorCode::IntegerTooLargeForLimits);
+    // Without memory64, 0x04 and 0x05 are flags of no grammar WebAssembly 2.0 knows.
+    CHECK(errorOf(bytes) == DecodeErrorCode::LimitsFlagTooLarge);
+}
+
+TEST_CASE("Decoder.malformedLimitsFlags")
+{
+    auto const flags = [](uint8_t flag) {
+        return moduleOf({ 0x05, 0x03, 0x01, flag, 0x00 });
+    };
+    auto const memory64 = FeatureSet::wasm2().with(Feature::Memory64);
+    CHECK(errorOf(flags(0x10), memory64) == DecodeErrorCode::MalformedLimitsFlags);
+    CHECK(errorOf(flags(0x10)) == DecodeErrorCode::LimitsFlagTooLarge);
+    // Shared memories (0x02, 0x03) belong to threads, which Isoline does not decode; 0x08 is
+    // custom-page-sizes', and table flags follow the same table.
+    for (auto const flag: { 0x02, 0x03, 0x06, 0x07, 0x08 })
+        CHECK(errorOf(flags(static_cast<uint8_t>(flag)), memory64) == DecodeErrorCode::MalformedLimitsFlags);
+    CHECK(errorOf(moduleOf({ 0x04, 0x04, 0x01, 0x70, 0x08, 0x00 }), memory64)
+          == DecodeErrorCode::MalformedLimitsFlags);
+    // spec binary.wast: 3.0 reads the flags as a byte, so a LEB128 continuation is malformed.
+    CHECK(errorOf(moduleOf({ 0x05, 0x04, 0x01, 0x81, 0x00, 0x00 }), memory64)
+          == DecodeErrorCode::MalformedLimitsFlags);
+    // The section ends where the flags, the minimum or the maximum should be, in either grammar.
+    for (auto const& features: { FeatureSet::wasm2(), memory64 })
+    {
+        CHECK(errorOf(moduleOf({ 0x05, 0x01, 0x01 }), features) == DecodeErrorCode::UnexpectedEnd);
+        CHECK(errorOf(moduleOf({ 0x05, 0x02, 0x01, 0x00 }), features) == DecodeErrorCode::UnexpectedEnd);
+        CHECK(errorOf(moduleOf({ 0x05, 0x03, 0x01, 0x01, 0x00 }), features)
+              == DecodeErrorCode::UnexpectedEnd);
+    }
+    CHECK(errorOf(moduleOf({ 0x05, 0x03, 0x01, 0x05, 0x00 }), memory64) == DecodeErrorCode::UnexpectedEnd);
+    // A maximum past u64.
+    CHECK(
+        errorOf(
+            moduleOf(
+                { 0x05, 0x0E, 0x01, 0x05, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02 }),
+            memory64)
+        == DecodeErrorCode::IntegerTooLargeForLimits);
+    auto const result = decodeModule(flags(0x10), memory64);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().offset == Preamble.size() + 3);
+    CHECK(isoline::binary::specMessage(result.error()) == "malformed limits flags");
+}
+
 TEST_CASE("Decoder.valueTypes")
 {
     auto const typeWith = [](uint8_t type) {
@@ -932,6 +999,15 @@ TEST_CASE("Decoder.simdImmediates")
     CHECK(errorOf(functionWith({ 0xFD, 0x54, 0x20, 0x00, 0x00 })) == DecodeErrorCode::MalformedMemopFlags);
 }
 
+TEST_CASE("Decoder.memArgOffsetIsU64WithMemory64")
+{
+    // i64.const 0, i32.load align=2 offset=2^32, drop.
+    auto const load = std::vector<uint8_t> { 0x42, 0x00, 0x28, 0x02, 0x80, 0x80, 0x80, 0x80, 0x10, 0x1A };
+    auto const function = functionOf(functionWith(load), FeatureSet::wasm3());
+    CHECK(function.body[1].c == uint64_t { 1 } << 32);
+    CHECK(errorOf(functionWith(load)) == DecodeErrorCode::IntegerTooLarge);
+}
+
 TEST_CASE("Decoder.prefixed")
 {
     auto const function = functionOf(functionWith({ 0xFC, 0x0A, 0x00, 0x00, 0xFC, 0x0B, 0x00 }));
@@ -954,6 +1030,16 @@ TEST_CASE("Decoder.illegalOpcodeNamesItsBytes")
     CHECK(messageOf({ 0xFD, 0x9A, 0x01 }) == "illegal opcode 9a");
     // An instruction of a disabled proposal is named as an unknown one is.
     CHECK(messageOf({ 0xFD, 0x0C }, FeatureSet::none()) == "illegal opcode 0c");
+}
+
+TEST_CASE("Decoder.subjectOfAnErrorWithoutDetail")
+{
+    // A row without a detail spells its text alone, whatever subject an error carries.
+    using isoline::binary::DecodeError;
+    CHECK(isoline::binary::specMessage(DecodeError { DecodeErrorCode::UnexpectedEnd, 0, 7 })
+          == "unexpected end of section or function");
+    CHECK(isoline::binary::specMessage(DecodeError { DecodeErrorCode::IllegalOpcode, 0 })
+          == "illegal opcode");
 }
 
 TEST_CASE("Decoder.unknownOpcode")

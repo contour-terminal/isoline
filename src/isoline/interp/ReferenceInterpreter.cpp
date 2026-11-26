@@ -5,13 +5,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cfenv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
-#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -35,6 +35,7 @@ namespace isoline::interp
 namespace
 {
     using binary::AddressType;
+    using binary::copyCountType;
     using binary::Extension;
     using binary::Instruction;
     using binary::MemoryAccess;
@@ -73,15 +74,13 @@ namespace
     /// pushes between two block entries. Both are bounded by the decoder's limits on one function.
     constexpr auto MaxStackValues = std::size_t { 1 } << 22;
 
-    /// A trap that names an index: call_indirect's table element.
+    /// A trap that names an index: call_indirect's table element, an i32 index zero-extended.
     ///
-    /// Trap::subject is 32 bits wide because every table P1 decodes takes i32 addresses, so the index
-    /// a call_indirect pops always fits; a table64 (memory64) widens the subject rather than
-    /// truncating the index here.
+    /// The subject keeps the index's 64 bits as an int64_t, as the interpreter's Int64.to_string
+    /// spells it, so an i64 index of 2^64 - 1 reads -1.
     [[nodiscard]] std::unexpected<Trap> trapNaming(TrapCode code, uint64_t subject) noexcept
     {
-        Require(subject <= std::numeric_limits<uint32_t>::max());
-        return std::unexpected { Trap { code, static_cast<uint32_t>(subject) } };
+        return std::unexpected { Trap { code, std::bit_cast<int64_t>(subject) } };
     }
 
     // --- Values -------------------------------------------------------------------------------
@@ -150,14 +149,6 @@ namespace
     [[nodiscard]] bool haveKinds(std::span<Value const> values, std::span<binary::ValueType const> types)
     {
         return std::ranges::equal(values, types, {}, runtime::kindOf, &binary::ValueType::kind);
-    }
-
-    /// The type of a copy's length between memories or tables of address types @p destination and
-    /// @p source: i64 only when both are, as memory64 and table64 define it.
-    [[nodiscard]] constexpr AddressType copyCountType(AddressType destination, AddressType source) noexcept
-    {
-        return destination == AddressType::I64 && source == AddressType::I64 ? AddressType::I64
-                                                                             : AddressType::I32;
     }
 
     // --- Memory accesses ----------------------------------------------------------------------

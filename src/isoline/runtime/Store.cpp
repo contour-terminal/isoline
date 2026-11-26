@@ -21,7 +21,6 @@ namespace isoline::runtime
 
 namespace
 {
-    using binary::AddressType;
     using binary::ExternKind;
     using binary::Limits;
 
@@ -42,18 +41,13 @@ namespace
     /// The most pages a memory may reach.
     [[nodiscard]] constexpr uint64_t pageLimit(binary::MemoryType const& type) noexcept
     {
-        auto const reach =
-            type.limits.addressType == AddressType::I32 ? uint64_t { 1 } << 16 : uint64_t { 1 } << 48;
-        return unitLimit(type.limits, reach, PageSize);
+        return unitLimit(type.limits, binary::maxPages(type), PageSize);
     }
 
     /// The most slots a table may reach.
     [[nodiscard]] constexpr uint64_t slotLimit(binary::TableType const& type) noexcept
     {
-        auto const reach = type.limits.addressType == AddressType::I32
-                               ? uint64_t { std::numeric_limits<uint32_t>::max() }
-                               : std::numeric_limits<uint64_t>::max();
-        return unitLimit(type.limits, reach, sizeof(Ref));
+        return unitLimit(type.limits, binary::maxTableSize(type), sizeof(Ref));
     }
 
     /// Resizes @p items to @p units units of @p unitBytes each, new items being @p fill, if the

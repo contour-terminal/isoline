@@ -53,10 +53,11 @@ enum class DecodeErrorCode : uint8_t
     EndOpcodeExpected,
     MalformedMemopFlags,
     MissingFeaturePrerequisite,
+    MalformedLimitsFlags,
 };
 
 /// The last DecodeErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::MissingFeaturePrerequisite;
+inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::MalformedLimitsFlags;
 
 /// What a decode error's message appends to its row's text, from DecodeError::subject.
 enum class DecodeErrorDetail : uint8_t
@@ -138,6 +139,9 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::MissingFeaturePrerequisite,
       .specMessage = "feature enabled without its prerequisite",
       .detail = DecodeErrorDetail::FeaturePrerequisite },
+    // WebAssembly 3.0 reads the limits flags as a byte and admits only the flags of its table; 2.0's
+    // reading is LimitsFlagTooLarge's.
+    { .code = DecodeErrorCode::MalformedLimitsFlags, .specMessage = "malformed limits flags" },
 });
 
 static_assert(

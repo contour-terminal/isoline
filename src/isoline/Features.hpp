@@ -150,10 +150,10 @@ struct FeatureRow
 
 /// Every proposal Isoline knows, one row per Feature enumerator, in enumerator order.
 ///
-/// The prerequisites are those the proposals state and Wasmtime enforces at configuration: reference
-/// types extends bulk memory's segments and table instructions, relaxed SIMD and function references
-/// extend SIMD and reference types, exception handling's exnref is a reference type, and wide
-/// arithmetic's instructions return two results.
+/// The prerequisites are what each proposal builds on: reference types extends bulk memory's segments
+/// and table instructions, relaxed SIMD and function references extend SIMD and reference types,
+/// exception handling's exnref is a reference type, and wide arithmetic's instructions return two
+/// results. Isoline refuses a set that lacks one; Wasmtime v48 checks only relaxed SIMD's.
 inline constexpr auto FeatureTable = std::to_array<FeatureRow>({
     { .feature = Feature::SignExtension, .name = "sign-extension", .standard = Standard::Wasm2 },
     { .feature = Feature::NonTrappingFloatToInt,

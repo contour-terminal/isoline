@@ -150,15 +150,29 @@ namespace
                                           ExternValue { .kind = ExternKind::Global, .address = address });
         }
 
-        auto const table = store.addTable(
-            TableType { .element = FuncRef,
-                        .limits = { .min = 10, .max = 20, .addressType = AddressType::I32 } },
-            runtime::Ref { .kind = runtime::RefKind::Null, .heap = FuncRef.heap, .address = 0 });
+        struct HostTable
+        {
+            std::string_view name;
+            AddressType addressType;
+        };
+        for (auto const& table: std::to_array<HostTable>({
+                 { .name = "table", .addressType = AddressType::I32 },
+                 { .name = "table64", .addressType = AddressType::I64 },
+             }))
+        {
+            auto const address = store.addTable(
+                TableType { .element = FuncRef,
+                            .limits = { .min = 10, .max = 20, .addressType = table.addressType } },
+                runtime::Ref { .kind = runtime::RefKind::Null, .heap = FuncRef.heap, .address = 0 });
+            if (!address)
+                throw std::runtime_error { "cannot allocate a spectest table" };
+            instance.exports.emplace_back(std::string { table.name },
+                                          ExternValue { .kind = ExternKind::Table, .address = *address });
+        }
         auto const memory =
             store.addMemory(MemoryType { .limits = { .min = 1, .max = 2, .addressType = AddressType::I32 } });
-        if (!table || !memory)
-            throw std::runtime_error { "cannot allocate the spectest table or memory" };
-        instance.exports.emplace_back("table", ExternValue { .kind = ExternKind::Table, .address = *table });
+        if (!memory)
+            throw std::runtime_error { "cannot allocate the spectest memory" };
         instance.exports.emplace_back("memory",
                                       ExternValue { .kind = ExternKind::Memory, .address = *memory });
         return instance;

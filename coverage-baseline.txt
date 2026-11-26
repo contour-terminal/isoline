@@ -19,6 +19,15 @@
 # src/isoline/interp/Simd.cpp's branch entry was lowered from 92.68 to 92.00 when the float operators arrived: untrapped()'s
 # precondition, that a scalar float operator or trunc_sat lifted to a lane did not trap, adds the branch of a trap, which none of
 # them takes, as every Require's failing side is. No branch lost its coverage.
+#
+# src/isoline/interp/ReferenceInterpreter.cpp's line entry was lowered from 97.93 to 97.92, and src/isoline/runtime/Store.cpp's
+# from 98.60 to 98.55, when memory64 moved copyCountType and the address-type reaches into binary/Types.hpp (copyCountType,
+# maxPages, maxTableSize, 100 % covered): covered lines left both files, and their uncovered ones, exactly the exclusions
+# below, are now a larger share of fewer. No line lost its coverage.
+#
+# src/isoline/validate/Validator.cpp's branch entry was lowered from 97.58 to 97.33 when validateModule began to Require a
+# feature set closed over its prerequisites (FeatureSet::checkPrerequisites): the failing side of that precondition, which
+# decodeModule already refuses for any set it accepts, is the one new branch no caller takes. No branch lost its coverage.
 
 exclude src/isoline/binary/Decoder.cpp tag-import Tag import: readExternKind decodes no tag kind in P1
 exclude src/isoline/interp/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
@@ -34,24 +43,24 @@ exclude src/isoline/validate/Validator.cpp special-default a Special opcode with
 src/isoline/Features.hpp                    100.00 100.00
 src/isoline/Version.hpp                     100.00 -
 src/isoline/binary/ByteReader.cpp           100.00 98.07
-src/isoline/binary/DecodeError.hpp          100.00 -
-src/isoline/binary/Decoder.cpp              99.87 97.81
+src/isoline/binary/DecodeError.hpp          100.00 91.66
+src/isoline/binary/Decoder.cpp              99.87 97.89
 src/isoline/binary/MemoryAccess.hpp         100.00 100.00
 src/isoline/binary/Module.hpp               100.00 72.41
 src/isoline/binary/Opcode.cpp               100.00 100.00
 src/isoline/binary/Opcode.hpp               100.00 -
-src/isoline/binary/Types.hpp                100.00 -
+src/isoline/binary/Types.hpp                100.00 100.00
 src/isoline/interp/Numerics.cpp             100.00 95.90
-src/isoline/interp/ReferenceInterpreter.cpp 97.93 90.75
+src/isoline/interp/ReferenceInterpreter.cpp 97.92 92.33
 src/isoline/interp/ReferenceInterpreter.hpp 100.00 -
 src/isoline/interp/Simd.cpp                 100.00 93.44
 src/isoline/interp/Simd.hpp                 100.00 66.66
 src/isoline/runtime/Instantiate.cpp         99.23 91.86
 src/isoline/runtime/Instantiate.hpp         100.00 -
 src/isoline/runtime/Segment.hpp             100.00 100.00
-src/isoline/runtime/Store.cpp               98.60 78.26
+src/isoline/runtime/Store.cpp               98.55 78.94
 src/isoline/runtime/Store.hpp               100.00 -
 src/isoline/runtime/Trap.hpp                100.00 75.00
 src/isoline/runtime/Value.hpp               100.00 94.44
-src/isoline/validate/ValidationError.hpp    100.00 75.00
-src/isoline/validate/Validator.cpp          99.70 97.51
+src/isoline/validate/ValidationError.hpp    100.00 91.66
+src/isoline/validate/Validator.cpp          99.72 97.33

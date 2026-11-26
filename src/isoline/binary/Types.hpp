@@ -107,11 +107,46 @@ struct TableType
     Limits limits;               ///< Its size bounds, in elements.
 };
 
-/// A memory's type. Its page size is fixed at 65536 bytes in P1.
+/// A memory's type. Its page size is fixed at 65536 bytes.
 struct MemoryType
 {
     Limits limits; ///< Its size bounds, in pages.
 };
+
+/// The value type of the addresses, offsets and sizes of a memory or table of @p type.
+/// @param type The memory's or table's address type.
+/// @return I32 or I64.
+[[nodiscard]] constexpr ValueType addressValueType(AddressType type) noexcept
+{
+    return type == AddressType::I64 ? I64 : I32;
+}
+
+/// The type of a copy's count between memories or tables of address types @p destination and
+/// @p source: i64 only when both are, as memory64 and table64 define it.
+/// @param destination The address type copied to.
+/// @param source The address type copied from.
+/// @return The narrower of the two.
+[[nodiscard]] constexpr AddressType copyCountType(AddressType destination, AddressType source) noexcept
+{
+    return destination == AddressType::I64 && source == AddressType::I64 ? AddressType::I64
+                                                                         : AddressType::I32;
+}
+
+/// The most pages a memory of @p type may declare: what its address type reaches in 64 KiB pages.
+/// @param type The memory's type.
+/// @return 2^16 for i32 addresses, 2^48 for i64 ones.
+[[nodiscard]] constexpr uint64_t maxPages(MemoryType const& type) noexcept
+{
+    return type.limits.addressType == AddressType::I64 ? uint64_t { 1 } << 48 : uint64_t { 1 } << 16;
+}
+
+/// The most elements a table of @p type may declare: the largest value its address type holds.
+/// @param type The table's type.
+/// @return 2^32 - 1 for i32 addresses, 2^64 - 1 for i64 ones.
+[[nodiscard]] constexpr uint64_t maxTableSize(TableType const& type) noexcept
+{
+    return type.limits.addressType == AddressType::I64 ? ~uint64_t { 0 } : uint64_t { 0xFFFF'FFFF };
+}
 
 /// Whether a global can be assigned to.
 enum class Mutability : uint8_t

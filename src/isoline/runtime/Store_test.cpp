@@ -52,3 +52,26 @@ TEST_CASE("Store.constAccessors")
     CHECK(view.global(global).value == Value { I32 { .bits = 7 } });
     CHECK(&view.global(global) == &store.global(global));
 }
+
+TEST_CASE("Store.addressTypesBoundGrowth")
+{
+    // A guest can name sizes no host can hold; the store refuses them without allocating.
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto const at64 = Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I64 };
+    auto const memory = store.addMemory(MemoryType { .limits = at64 });
+    auto const table = store.addTable(TableType { .element = FuncRef, .limits = at64 },
+                                      Ref { .kind = RefKind::Null, .heap = FuncRef.heap, .address = 0 });
+    REQUIRE(memory.has_value());
+    REQUIRE(table.has_value());
+    // Past 2^48 pages, the memory64 reach; past what the allocator grants; past 2^64 - 1 slots.
+    CHECK(store.growMemory(*memory, uint64_t { 1 } << 48) == -1);
+    CHECK(store.growMemory(*memory, uint64_t { 1 } << 20) == -1);
+    CHECK(store.growTable(*table, ~uint64_t { 0 }, Ref {}) == -1);
+    CHECK(store.growTable(*table, uint64_t { 1 } << 62, Ref {}) == -1);
+    CHECK(store.memory(*memory).bytes.size() == PageSize);
+    CHECK(store.table(*table).elements.size() == 1);
+    // What the allocator grants, it grows by.
+    CHECK(store.growMemory(*memory, 1) == 1);
+    CHECK(store.growTable(*table, 1, Ref {}) == 1);
+}

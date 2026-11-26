@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -29,6 +30,7 @@ namespace isoline::validate
 
 namespace
 {
+    using binary::AddressType;
     using binary::ConstExpr;
     using binary::ExternKind;
     using binary::Function;
@@ -197,38 +199,33 @@ namespace
 
     // --- Limits -------------------------------------------------------------------------------
 
-    /// The largest size a memory with 32-bit addresses may declare: 65536 pages of 64 KiB.
-    constexpr auto MaxMemoryPages = uint64_t { 65536 };
-
-    /// The largest size a table with 32-bit indices may declare.
-    constexpr auto MaxTableSize = uint64_t { 0xFFFF'FFFF };
-
     /// Checks @p limits against @p range, as the interpreter's check_limits does: both bounds first,
-    /// then their order.
+    /// then their order. A bound past @p range is @p tooLarge, naming the limits' address type.
     [[nodiscard]] Check checkLimits(binary::Limits const& limits,
                                     uint64_t range,
                                     ValidationErrorCode tooLarge)
     {
-        return check(limits.min <= range, tooLarge)
-            .and_then([&] { return check(!limits.max || *limits.max <= range, tooLarge); })
-            .and_then([&] {
-                return check(!limits.max || limits.min <= *limits.max,
-                             ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
-            });
+        auto const fits = (limits.min <= range) && (!limits.max || *limits.max <= range);
+        if (!fits)
+            return failNaming(tooLarge, static_cast<uint32_t>(limits.addressType));
+        return check(!limits.max || limits.min <= *limits.max,
+                     ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
     }
 
     [[nodiscard]] Check checkTable(TableType const& table)
     {
-        // A u32 table size cannot exceed the range, so the interpreter's "table size must be at most
-        // 2^32-1" is unreachable for the tables P1 decodes; only the order of the bounds can fail.
         return checkLimits(
-            table.limits, MaxTableSize, ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
+            table.limits, binary::maxTableSize(table), ValidationErrorCode::TableSizeMustBeAtMost);
     }
 
     [[nodiscard]] Check checkMemory(MemoryType const& memory)
     {
-        return checkLimits(memory.limits, MaxMemoryPages, ValidationErrorCode::MemorySizeMustBeAtMost4GiB);
+        return checkLimits(
+            memory.limits, binary::maxPages(memory), ValidationErrorCode::MemorySizeMustBeAtMost);
     }
+
+    /// The largest memarg offset a memory of i32 addresses admits.
+    constexpr auto MaxI32Offset = uint64_t { 0xFFFF'FFFF };
 
     // --- The context ----------------------------------------------------------------------------
 
@@ -256,9 +253,11 @@ namespace
             return &tables[index];
         }
 
-        [[nodiscard]] Check memory(uint32_t index) const
+        [[nodiscard]] std::expected<MemoryType const*, Fault> memory(uint32_t index) const
         {
-            return checkIndex(index, memories.size(), ValidationErrorCode::UnknownMemory);
+            if (index >= memories.size())
+                return failNaming(ValidationErrorCode::UnknownMemory, index);
+            return &memories[index];
         }
 
         [[nodiscard]] Check function(uint32_t index) const
@@ -569,30 +568,48 @@ namespace
         {
             // MemArg::memory is in b, its alignment exponent in a.
             auto const value = ValueType { .kind = row.value };
-            return _context.memory(instruction.b)
-                .and_then([&] {
-                    return check(instruction.a <= row.naturalAlignment(),
-                                 ValidationErrorCode::AlignmentMustNotBeLarger);
-                })
-                .and_then([&] { return checkLanes(instruction); })
-                .and_then([&]() -> Check {
-                    // A store pops the value it writes, and a lane access the vector it changes.
-                    if (row.access == MemoryAccessKind::Store || row.shape == VectorShape::Lane)
-                        if (auto const popped = pop(value); !popped)
+            return _context.memory(instruction.b).and_then([&](MemoryType const* memory) {
+                auto const addressType = memory->limits.addressType;
+                return check(instruction.a <= row.naturalAlignment(),
+                             ValidationErrorCode::AlignmentMustNotBeLarger)
+                    .and_then([&] {
+                        return check(addressType == AddressType::I64 || instruction.c <= MaxI32Offset,
+                                     ValidationErrorCode::OffsetOutOfRange);
+                    })
+                    .and_then([&] { return checkLanes(instruction); })
+                    .and_then([&]() -> Check {
+                        // A store pops the value it writes, and a lane access the vector it changes.
+                        if (row.access == MemoryAccessKind::Store || row.shape == VectorShape::Lane)
+                            if (auto const popped = pop(value); !popped)
+                                return fail(popped.error());
+                        if (auto const popped = pop(binary::addressValueType(addressType)); !popped)
                             return fail(popped.error());
-                    if (auto const popped = pop(binary::I32); !popped)
-                        return fail(popped.error());
-                    if (row.access == MemoryAccessKind::Load)
-                        push(value);
-                    return {};
-                });
+                        if (row.access == MemoryAccessKind::Load)
+                            push(value);
+                        return {};
+                    });
+            });
         }
 
-        /// Pops @p count i32 operands, at most three.
-        [[nodiscard]] Check popI32s(std::size_t count)
+        /// Pops the operands of a bulk instruction, @p types from the bottom of the stack up.
+        [[nodiscard]] Check popOperands(std::initializer_list<ValueType> types)
         {
-            static constexpr auto I32s = std::to_array<ValueType>({ binary::I32, binary::I32, binary::I32 });
-            return popAll(std::span { I32s }.first(count));
+            return popAll(std::span { types.begin(), types.size() });
+        }
+
+        /// The value type of a copy's count between memories or tables @p destination and @p source.
+        template <typename Entity>
+        [[nodiscard]] static ValueType copyCountOf(Entity const* destination, Entity const* source) noexcept
+        {
+            return binary::addressValueType(
+                binary::copyCountType(destination->limits.addressType, source->limits.addressType));
+        }
+
+        /// The value type of the addresses of @p memory or table.
+        template <typename Entity>
+        [[nodiscard]] static ValueType addressOf(Entity const* entity) noexcept
+        {
+            return binary::addressValueType(entity->limits.addressType);
         }
 
         [[nodiscard]] Check pushAfter(std::expected<Operand, Fault> const& popped, ValueType const& type)
@@ -693,15 +710,16 @@ namespace
                         return call(_context.functionType(instruction.a));
                     });
                 case Opcode::CallIndirect:
-                    return _context.table(instruction.b)
-                        .and_then([&](TableType const* table) {
-                            return _context.type(instruction.a).and_then([table] {
+                    return _context.table(instruction.b).and_then([&](TableType const* table) {
+                        return _context.type(instruction.a)
+                            .and_then([table] {
                                 return check(table->element == binary::FuncRef,
                                              ValidationErrorCode::TypeMismatch);
-                            });
-                        })
-                        .and_then([this] { return pop(binary::I32); })
-                        .and_then([&](Operand const&) { return call(_context.module.types[instruction.a]); });
+                            })
+                            .and_then([&] { return pop(addressOf(table)); })
+                            .and_then(
+                                [&](Operand const&) { return call(_context.module.types[instruction.a]); });
+                    });
 
                 case Opcode::Drop: return pop().transform([](Operand const&) {});
                 case Opcode::Select: return select();
@@ -740,35 +758,37 @@ namespace
 
                 case Opcode::TableGet:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pushAfter(pop(binary::I32), table->element);
+                        return pushAfter(pop(addressOf(table)), table->element);
                     });
                 case Opcode::TableSet:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pop(table->element).and_then([this](Operand const&) { return popI32s(1); });
+                        return popOperands({ addressOf(table), table->element });
                     });
                 case Opcode::TableSize:
-                    return _context.table(instruction.a).transform([this](TableType const*) {
-                        push(binary::I32);
+                    return _context.table(instruction.a).transform([this](TableType const* table) {
+                        push(addressOf(table));
                     });
                 case Opcode::TableGrow:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pop(binary::I32)
-                            .and_then([&](Operand const&) { return pop(table->element); })
-                            .transform([this](Operand const&) { push(binary::I32); });
+                        return popOperands({ table->element, addressOf(table) }).transform([&] {
+                            push(addressOf(table));
+                        });
                     });
                 case Opcode::TableFill:
                     return _context.table(instruction.a).and_then([this](TableType const* table) {
-                        return pop(binary::I32)
-                            .and_then([&](Operand const&) { return pop(table->element); })
-                            .and_then([this](Operand const&) { return popI32s(1); });
+                        return popOperands({ addressOf(table), table->element, addressOf(table) });
                     });
                 case Opcode::TableCopy:
-                    // a is the destination, b the source.
+                    // a is the destination, b the source; the count is i64 only if both are.
                     return _context.table(instruction.a).and_then([&](TableType const* destination) {
                         return _context.table(instruction.b).and_then([&](TableType const* source) {
                             return check(destination->element == source->element,
                                          ValidationErrorCode::TypeMismatch)
-                                .and_then([this] { return popI32s(3); });
+                                .and_then([&] {
+                                    return popOperands({ addressOf(destination),
+                                                         addressOf(source),
+                                                         copyCountOf(destination, source) });
+                                });
                         });
                     });
                 case Opcode::TableInit:
@@ -777,28 +797,41 @@ namespace
                         return elem(instruction.a).and_then([&] {
                             return check(table->element == _context.module.elements[instruction.a].type,
                                          ValidationErrorCode::TypeMismatch)
-                                .and_then([this] { return popI32s(3); });
+                                .and_then([&] {
+                                    return popOperands({ addressOf(table), binary::I32, binary::I32 });
+                                });
                         });
                     });
                 case Opcode::ElemDrop: return elem(instruction.a);
 
                 case Opcode::MemorySize:
-                    return _context.memory(instruction.a).transform([this] { push(binary::I32); });
+                    return _context.memory(instruction.a).transform([this](MemoryType const* memory) {
+                        push(addressOf(memory));
+                    });
                 case Opcode::MemoryGrow:
-                    return _context.memory(instruction.a).and_then([this] {
-                        return pushAfter(pop(binary::I32), binary::I32);
+                    return _context.memory(instruction.a).and_then([this](MemoryType const* memory) {
+                        return pushAfter(pop(addressOf(memory)), addressOf(memory));
                     });
                 case Opcode::MemoryFill:
-                    return _context.memory(instruction.a).and_then([this] { return popI32s(3); });
+                    return _context.memory(instruction.a).and_then([this](MemoryType const* memory) {
+                        return popOperands({ addressOf(memory), binary::I32, addressOf(memory) });
+                    });
                 case Opcode::MemoryCopy:
-                    return _context.memory(instruction.a)
-                        .and_then([&] { return _context.memory(instruction.b); })
-                        .and_then([this] { return popI32s(3); });
+                    // a is the destination, b the source; the count is i64 only if both are.
+                    return _context.memory(instruction.a).and_then([&](MemoryType const* destination) {
+                        return _context.memory(instruction.b).and_then([&](MemoryType const* source) {
+                            return popOperands({ addressOf(destination),
+                                                 addressOf(source),
+                                                 copyCountOf(destination, source) });
+                        });
+                    });
                 case Opcode::MemoryInit:
                     // a is the data segment, b the memory; the interpreter looks the memory up first.
-                    return _context.memory(instruction.b)
-                        .and_then([&] { return data(instruction.a); })
-                        .and_then([this] { return popI32s(3); });
+                    return _context.memory(instruction.b).and_then([&](MemoryType const* memory) {
+                        return data(instruction.a).and_then([&] {
+                            return popOperands({ addressOf(memory), binary::I32, binary::I32 });
+                        });
+                    });
                 case Opcode::DataDrop: return data(instruction.a);
 
                 case Opcode::RefNull: push(instruction.type); return {};
@@ -1049,9 +1082,10 @@ namespace
             if (segment.mode != SegmentMode::Active)
                 return {};
             return _context.table(segment.table).and_then([&](TableType const* table) {
-                return checkConstant(segment.offset, binary::I32).and_then([&] {
-                    return check(table->element == segment.type, ValidationErrorCode::TypeMismatch);
-                });
+                return checkConstant(segment.offset, binary::addressValueType(table->limits.addressType))
+                    .and_then([&] {
+                        return check(table->element == segment.type, ValidationErrorCode::TypeMismatch);
+                    });
             });
         }
 
@@ -1069,8 +1103,9 @@ namespace
             {
                 if (segment.mode != SegmentMode::Active)
                     continue;
-                auto const result = _context.memory(segment.memory).and_then([&] {
-                    return checkConstant(segment.offset, binary::I32);
+                auto const result = _context.memory(segment.memory).and_then([&](MemoryType const* memory) {
+                    return checkConstant(segment.offset,
+                                         binary::addressValueType(memory->limits.addressType));
                 });
                 if (!result)
                     return moduleError(result.error());
@@ -1117,7 +1152,8 @@ namespace
             {
                 case ExternKind::Func: return _context.function(entry.index);
                 case ExternKind::Table: return _context.table(entry.index).transform([](TableType const*) {});
-                case ExternKind::Memory: return _context.memory(entry.index);
+                case ExternKind::Memory:
+                    return _context.memory(entry.index).transform([](MemoryType const*) {});
                 case ExternKind::Global:
                     return checkIndex(
                         entry.index, _context.globals.size(), ValidationErrorCode::UnknownGlobal);
@@ -1187,6 +1223,8 @@ namespace
 
 std::expected<void, ValidationError> validateModule(binary::Module const& module, FeatureSet const& features)
 {
+    // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
+    Require(features.checkPrerequisites().has_value());
     return ModuleValidator { module, features }.validate();
 }
 
