@@ -20,7 +20,7 @@
 // Adding an instruction is adding a row here: the Opcode enum, OpcodeTable and the lookup arrays
 // are all generated from it. The file has no include guard; each includer defines ISOLINE_OPCODE.
 //
-// P1 holds every non-SIMD WebAssembly 2.0 instruction.
+// It holds every non-SIMD WebAssembly 2.0 instruction and the wide-arithmetic proposal's four.
 
 // Control instructions
 ISOLINE_OPCODE(Unreachable, 0x00, 0x00, "unreachable", None, Special, Mvp)
@@ -248,3 +248,9 @@ ISOLINE_OPCODE(TableCopy, 0xFC, 14, "table.copy", TableCopy, Special, BulkMemory
 ISOLINE_OPCODE(TableGrow, 0xFC, 15, "table.grow", TableIndex, Special, ReferenceTypes)
 ISOLINE_OPCODE(TableSize, 0xFC, 16, "table.size", TableIndex, Special, ReferenceTypes)
 ISOLINE_OPCODE(TableFill, 0xFC, 17, "table.fill", TableIndex, Special, ReferenceTypes)
+
+// 0xFC 19-22: wide arithmetic
+ISOLINE_OPCODE(I64Add128, 0xFC, 19, "i64.add128", None, I64I64I64I64ToI64I64, WideArithmetic)
+ISOLINE_OPCODE(I64Sub128, 0xFC, 20, "i64.sub128", None, I64I64I64I64ToI64I64, WideArithmetic)
+ISOLINE_OPCODE(I64MulWideS, 0xFC, 21, "i64.mul_wide_s", None, I64I64ToI64I64, WideArithmetic)
+ISOLINE_OPCODE(I64MulWideU, 0xFC, 22, "i64.mul_wide_u", None, I64I64ToI64I64, WideArithmetic)

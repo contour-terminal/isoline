@@ -200,7 +200,8 @@ class Harness
   private:
     void instantiate(ModuleBuilder const& builder, std::vector<ExternValue> const& imports)
     {
-        auto const features = FeatureSet::wasm2();
+        // Every feature Isoline knows, so that a test may use any instruction it executes.
+        auto const features = FeatureSet::all();
         auto const bytes = builder.build();
         auto module = isoline::binary::decodeModule(bytes, features);
         REQUIRE(module.has_value());
@@ -243,6 +244,33 @@ TEST_CASE("ReferenceInterpreter.factorial")
     auto harness = Harness { builder };
     CHECK(harness.result(0, { I64 { 20 } }) == Value { I64 { 2432902008176640000 } });
     CHECK(harness.result(0, { I64 { 0 } }) == Value { I64 { 1 } });
+}
+
+TEST_CASE("ReferenceInterpreter.wideArithmetic")
+{
+    // Each function applies one wide instruction to its parameters and returns both halves.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64, TypeI64, TypeI64, TypeI64 }, { TypeI64, TypeI64 }))
+        .type(signature({ TypeI64, TypeI64 }, { TypeI64, TypeI64 }))
+        .function(0, {}, code({ localGet(0), localGet(1), localGet(2), localGet(3), { 0xFC, 0x13 } }))
+        .function(0, {}, code({ localGet(0), localGet(1), localGet(2), localGet(3), { 0xFC, 0x14 } }))
+        .function(1, {}, code({ localGet(0), localGet(1), { 0xFC, 0x15 } }))
+        .function(1, {}, code({ localGet(0), localGet(1), { 0xFC, 0x16 } }));
+    auto harness = Harness { builder };
+    auto const i64 = [](uint64_t bits) {
+        return Value { I64 { bits } };
+    };
+    auto const both = [&](uint64_t low, uint64_t high) {
+        return std::vector<Value> { i64(low), i64(high) };
+    };
+    // add128: (2^64 - 1) + 1 carries into the high half.
+    CHECK(harness.invoke(0, { i64(~0ULL), i64(0), i64(1), i64(0) }) == both(0, 1));
+    // sub128: 0 - 1 borrows through both halves.
+    CHECK(harness.invoke(1, { i64(0), i64(0), i64(1), i64(0) }) == both(~0ULL, ~0ULL));
+    // mul_wide_s: -1 * 2 = -2, sign-extended into the high half.
+    CHECK(harness.invoke(2, { i64(~0ULL), i64(2) }) == both(~1ULL, ~0ULL));
+    // mul_wide_u: (2^64 - 1) * 2.
+    CHECK(harness.invoke(3, { i64(~0ULL), i64(2) }) == both(~1ULL, 1));
 }
 
 TEST_CASE("ReferenceInterpreter.brTable")

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <expected>
@@ -19,6 +20,7 @@ using isoline::interp::applyBinary;
 using isoline::interp::applyCompare;
 using isoline::interp::applyTest;
 using isoline::interp::applyUnary;
+using isoline::interp::applyWide;
 using isoline::interp::CanonicalNanF32;
 using isoline::interp::CanonicalNanF64;
 using isoline::interp::NumericShape;
@@ -99,14 +101,66 @@ TEST_CASE("Numerics.everyFixedSignatureOpcodeHasARow")
             case OpcodeSignature::ToF32:
             case OpcodeSignature::ToF64: CHECK(shape == NumericShape::None); break;
             default: {
-                auto const params = isoline::binary::signatureInfo(info.signature).paramCount;
-                if (params == 1)
+                auto const& row = isoline::binary::signatureInfo(info.signature);
+                auto const params = row.paramCount;
+                if (row.resultCount == 2)
+                    CHECK(shape == NumericShape::Wide);
+                else if (params == 1)
                     CHECK((shape == NumericShape::Unary || shape == NumericShape::Test));
                 else
                     CHECK((shape == NumericShape::Binary || shape == NumericShape::Compare));
             }
         }
     }
+}
+
+TEST_CASE("Numerics.add128Carries")
+{
+    using Operands = std::array<uint64_t, 4>;
+    using Result = std::array<uint64_t, 2>;
+    CHECK(applyWide(Opcode::I64Add128, Operands { ~0ULL, 0, 1, 0 }) == Result { 0, 1 });
+    // The carry out of the high half is lost: 2^128 - 1 + 1 wraps to 0.
+    CHECK(applyWide(Opcode::I64Add128, Operands { ~0ULL, ~0ULL, 1, 0 }) == Result { 0, 0 });
+    CHECK(applyWide(Opcode::I64Add128, Operands { 1, 2, 3, 4 }) == Result { 4, 6 });
+}
+
+TEST_CASE("Numerics.sub128Borrows")
+{
+    using Operands = std::array<uint64_t, 4>;
+    using Result = std::array<uint64_t, 2>;
+    CHECK(applyWide(Opcode::I64Sub128, Operands { 0, 0, 1, 0 }) == Result { ~0ULL, ~0ULL });
+    CHECK(applyWide(Opcode::I64Sub128, Operands { 0, 1, 1, 0 }) == Result { ~0ULL, 0 });
+    CHECK(applyWide(Opcode::I64Sub128, Operands { 2, 5, 1, 2 }) == Result { 1, 3 });
+}
+
+TEST_CASE("Numerics.mulWideU")
+{
+    using Operands = std::array<uint64_t, 2>;
+    using Result = std::array<uint64_t, 2>;
+    CHECK(applyWide(Opcode::I64MulWideU, Operands { ~0ULL, 2 }) == Result { 0xFFFF'FFFF'FFFF'FFFE, 1 });
+    // (2^64 - 1)^2 = 2^128 - 2^65 + 1.
+    CHECK(applyWide(Opcode::I64MulWideU, Operands { ~0ULL, ~0ULL }) == Result { 1, 0xFFFF'FFFF'FFFF'FFFE });
+    // A cross product's high half lands in the high limb; the middle column does not carry.
+    CHECK(applyWide(Opcode::I64MulWideU, Operands { 0xFFFF'FFFF'0000'0001, 0x0000'0001'FFFF'FFFF })
+          == Result { 0x0000'0002'FFFF'FFFF, 0x0000'0001'FFFF'FFFD });
+    // (2^33 - 1)^2 = 3 * 2^64 + (2^64 - 2^34 + 1): the middle column sums to 0x2'FFFF'FFFC, so two of
+    // the high limb's three come from its carry alone.
+    CHECK(applyWide(Opcode::I64MulWideU, Operands { 0x0000'0001'FFFF'FFFF, 0x0000'0001'FFFF'FFFF })
+          == Result { 0xFFFF'FFFC'0000'0001, 3 });
+    CHECK(applyWide(Opcode::I64MulWideU, Operands { 0, ~0ULL }) == Result { 0, 0 });
+}
+
+TEST_CASE("Numerics.mulWideS")
+{
+    using Operands = std::array<uint64_t, 2>;
+    using Result = std::array<uint64_t, 2>;
+    CHECK(applyWide(Opcode::I64MulWideS, Operands { ~0ULL /* -1 */, 2 })
+          == Result { 0xFFFF'FFFF'FFFF'FFFE, ~0ULL });
+    CHECK(applyWide(Opcode::I64MulWideS, Operands { ~0ULL, ~0ULL }) == Result { 1, 0 }); // -1 * -1
+    // INT64_MIN squared is 2^126.
+    CHECK(applyWide(Opcode::I64MulWideS, Operands { 0x8000'0000'0000'0000, 0x8000'0000'0000'0000 })
+          == Result { 0, 0x4000'0000'0000'0000 });
+    CHECK(applyWide(Opcode::I64MulWideS, Operands { 3, 4 }) == Result { 12, 0 });
 }
 
 TEST_CASE("Numerics.i32DivS")

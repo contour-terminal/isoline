@@ -121,3 +121,4 @@ wasm3 core/type-canon               exclude GC: canonicalization of recursive ty
 wasm3 core/type-rec                 exclude GC: recursive type groups
 wasm3 custom/custom/custom_annot    exclude text format (P10)
 wasm3 custom/name/name_annot        exclude text format (P10)
+wide-arithmetic core/wide-arithmetic 0

@@ -652,6 +652,19 @@ namespace
             return applyCompare(opcode, lhs, rhs);
         }
 
+        /// Applies a wide-arithmetic instruction to the two or four i64 it pops and pushes the
+        /// result's low half, then its high half.
+        void wideNumeric(Opcode opcode)
+        {
+            auto const count = binary::signatureInfo(binary::opcodeInfo(opcode).signature).paramCount;
+            auto operands = std::array<uint64_t, 4> {};
+            for (auto& operand: std::span { operands }.first(count) | std::views::reverse)
+                operand = std::get<I64>(pop()).bits;
+            auto const [low, high] = applyWide(opcode, std::span { operands }.first(count));
+            push(I64 { low });
+            push(I64 { high });
+        }
+
         /// Executes a numeric instruction by its row in Numerics' table.
         [[nodiscard]] Step numeric(Opcode opcode, NumericShape shape)
         {
@@ -664,6 +677,7 @@ namespace
                 case NumericShape::Test: push(applyTest(opcode, pop())); return {};
                 case NumericShape::Binary: return binaryNumeric(opcode).transform(pushResult);
                 case NumericShape::Compare: push(compareNumeric(opcode)); return {};
+                case NumericShape::Wide: wideNumeric(opcode); return {};
                 case NumericShape::None: break; // uncovered(numeric-shape-none)
             }
             // uncovered-begin(numeric-shape-none)

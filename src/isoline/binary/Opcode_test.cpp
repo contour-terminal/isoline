@@ -44,6 +44,28 @@ TEST_CASE("Opcode.knownEncodings")
     CHECK(opcodeInfo(Opcode::Call).immediate == isoline::binary::ImmediateKind::FunctionIndex);
 }
 
+TEST_CASE("Opcode.wideEncodings")
+{
+    CHECK(lookupOpcode(0xFC, 19) == Opcode::I64Add128);
+    CHECK(lookupOpcode(0xFC, 20) == Opcode::I64Sub128);
+    CHECK(lookupOpcode(0xFC, 21) == Opcode::I64MulWideS);
+    CHECK(lookupOpcode(0xFC, 22) == Opcode::I64MulWideU);
+    CHECK(opcodeInfo(Opcode::I64MulWideU).text == "i64.mul_wide_u");
+    CHECK(opcodeInfo(Opcode::I64Add128).signature == OpcodeSignature::I64I64I64I64ToI64I64);
+    CHECK(opcodeInfo(Opcode::I64MulWideS).signature == OpcodeSignature::I64I64ToI64I64);
+
+    auto const& add128 = signatureInfo(OpcodeSignature::I64I64I64I64ToI64I64);
+    CHECK(add128.paramKinds().size() == 4);
+    CHECK(std::ranges::all_of(add128.paramKinds(), [](ValueKind kind) { return kind == ValueKind::I64; }));
+    REQUIRE(add128.resultKinds().size() == 2);
+    CHECK(add128.resultKinds()[0] == ValueKind::I64);
+    CHECK(add128.resultKinds()[1] == ValueKind::I64);
+
+    auto const& mulWide = signatureInfo(OpcodeSignature::I64I64ToI64I64);
+    CHECK(mulWide.paramKinds().size() == 2);
+    CHECK(mulWide.resultKinds().size() == 2);
+}
+
 TEST_CASE("Opcode.unknownEncodings")
 {
     CHECK_FALSE(lookupOpcode(0x00, 0x06).has_value()); // try, exception handling, is not in P1
@@ -154,7 +176,9 @@ TEST_CASE("Opcode.numericSignaturesFollowTheTextPrefix")
             continue;
         INFO(row.text);
         auto const results = signatureInfo(row.signature).resultKinds();
-        REQUIRE(results.size() == 1);
+        REQUIRE_FALSE(results.empty());
+        // A wide instruction's results are all of its prefix's type.
+        CHECK(std::ranges::all_of(results, [&](ValueKind kind) { return kind == results[0]; }));
         auto const prefixKind = std::ranges::find_if(
             prefixes, [&](PrefixRow const& prefix) { return row.text.starts_with(prefix.prefix); });
         REQUIRE(prefixKind != prefixes.end());
@@ -171,7 +195,7 @@ TEST_CASE("Opcode.numericSignaturesFollowTheTextPrefix")
 
 TEST_CASE("Opcode.encodingRanges")
 {
-    // P1's encodings, range by range: every code inside a range names an opcode, none outside does.
+    // The encodings, range by range: every code inside a range names an opcode, none outside does.
     struct EncodingRange
     {
         uint8_t prefix;
@@ -187,6 +211,7 @@ TEST_CASE("Opcode.encodingRanges")
         { .prefix = 0x00, .first = 0x41, .last = 0xC4 }, // constants and numeric instructions
         { .prefix = 0x00, .first = 0xD0, .last = 0xD2 }, // ref.null, ref.is_null, ref.func
         { .prefix = 0xFC, .first = 0, .last = 17 },      // saturating truncation, bulk memory, tables
+        { .prefix = 0xFC, .first = 19, .last = 22 },     // wide arithmetic
     });
     auto const inRange = [&](uint8_t prefix, uint32_t code) {
         return std::ranges::any_of(ranges, [&](EncodingRange const& range) {
@@ -232,6 +257,8 @@ TEST_CASE("Opcode.proposals")
         { .opcode = Opcode::I32TruncSatF32S, .proposal = Feature::NonTrappingFloatToInt },
         { .opcode = Opcode::MemoryInit, .proposal = Feature::BulkMemory },
         { .opcode = Opcode::TableCopy, .proposal = Feature::BulkMemory },
+        { .opcode = Opcode::I64Add128, .proposal = Feature::WideArithmetic },
+        { .opcode = Opcode::I64MulWideU, .proposal = Feature::WideArithmetic },
     });
     for (auto const& row: rows)
     {

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <isoline/Features.hpp>
+#include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
@@ -20,6 +21,7 @@
 
 using isoline::Feature;
 using isoline::FeatureSet;
+using isoline::binary::DecodeErrorCode;
 using isoline::binary::decodeModule;
 using isoline::binary::Export;
 using isoline::binary::ExternKind;
@@ -121,6 +123,35 @@ TEST_CASE("Validator.typeMismatch")
     CHECK(errorOf(i32FunctionOf({ 0x41, 0x00, 0x6A })) == ValidationErrorCode::TypeMismatch);
     // A value left over.
     CHECK(errorOf(voidFunctionOf({ 0x41, 0x00 })) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.wideNeedsTwoResults")
+{
+    auto const features = FeatureSet::wasm3().with(Feature::WideArithmetic);
+    auto const mulWideU = std::vector<uint8_t> { 0x20, 0x00, 0x20, 0x01, 0xFC, 0x16 };
+    auto const add128 = std::vector<uint8_t> { 0x20, 0x00, 0x20, 0x01, 0x20, 0x00, 0x20, 0x01, 0xFC, 0x13 };
+    CHECK(errorOf(functionOf(FuncType { .params = { I64, I64 }, .results = { I64 } }, mulWideU), features)
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(
+        errorOf(functionOf(FuncType { .params = { I64, I64 }, .results = { I64, I64 } }, mulWideU), features)
+        == std::nullopt);
+    CHECK(errorOf(functionOf(FuncType { .params = { I64, I64 }, .results = { I64, I64 } }, add128), features)
+          == std::nullopt);
+    // Three operands are one too few.
+    CHECK(errorOf(functionOf(FuncType { .params = { I64, I64 }, .results = { I64, I64 } },
+                             { 0x20, 0x00, 0x20, 0x01, 0x20, 0x00, 0xFC, 0x13 }),
+                  features)
+          == ValidationErrorCode::TypeMismatch);
+    // An i32 operand is not an i64.
+    CHECK(
+        errorOf(functionOf(FuncType { .params = { I64, I32 }, .results = { I64, I64 } }, mulWideU), features)
+        == ValidationErrorCode::TypeMismatch);
+    // Without the proposal the instruction does not decode.
+    auto const bytes =
+        functionOf(FuncType { .params = { I64, I64 }, .results = { I64, I64 } }, mulWideU).build();
+    auto const decoded = decodeModule(bytes, FeatureSet::wasm3());
+    REQUIRE_FALSE(decoded.has_value());
+    CHECK(decoded.error().code == DecodeErrorCode::IllegalOpcode);
 }
 
 TEST_CASE("Validator.unreachablePolymorphic")

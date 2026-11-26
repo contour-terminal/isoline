@@ -57,6 +57,9 @@ struct Instruction
     /// For block, loop and if: the form of the block type (see blockType()).
     BlockType::Kind blockKind = BlockType::Kind::Empty;
 
+    /// The lane index immediate of a SIMD lane instruction; zero for every other instruction.
+    uint8_t lane = 0;
+
     /// The first immediate: the index for LabelIndex, FunctionIndex, LocalIndex, GlobalIndex,
     /// TableIndex, ElemIndex, MemoryIndex and DataIndex; the type index for CallIndirect and for a
     /// block type of the TypeIndex form; the destination for TableCopy and MemoryCopy; the segment
@@ -95,8 +98,8 @@ static_assert(std::is_trivially_copyable_v<Instruction>, "an Instruction must ow
 
 // Every instruction takes at least one byte of input, so 40 bytes bound a decoded body at 40 times
 // its encoding: linear in what the guest supplies. 40 is what the members need once packed: the
-// 8-byte wide immediate, a 12-byte ValueType, four 4-byte fields and the two one-byte enums. Adding
-// a member must not grow it; give a rare, long immediate a side table instead.
+// 8-byte wide immediate, a 12-byte ValueType, four 4-byte fields, the two one-byte enums and the
+// lane byte. Adding a member must not grow it; give a rare, long immediate a side table instead.
 static_assert(sizeof(Instruction) <= 40, "an Instruction must stay compact");
 
 /// A run of locals of one type, as the code section declares them.

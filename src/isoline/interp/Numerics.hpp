@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <expected>
+#include <span>
 
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -19,6 +21,7 @@ enum class NumericShape : uint8_t
     Binary,  ///< Two operands of one type, one result of that type: applyBinary.
     Test,    ///< One operand, an i32 truth value (eqz): applyTest.
     Compare, ///< Two operands, an i32 truth value: applyCompare.
+    Wide,    ///< Two or four i64 operands, a 128-bit result as two i64: applyWide.
 };
 
 /// How @p opcode takes its operands.
@@ -69,6 +72,19 @@ enum class NumericShape : uint8_t
 /// @param rhs The second operand, the top of the stack.
 /// @return 1 when the relation holds, else 0.
 [[nodiscard]] runtime::I32 applyCompare(binary::Opcode opcode, runtime::Value lhs, runtime::Value rhs);
+
+/// Applies a wide-arithmetic operator: i64.add128, i64.sub128, i64.mul_wide_s or i64.mul_wide_u.
+///
+/// A 128-bit value is two i64, its low half below its high half on the stack. The results are
+/// modulo 2^128; none traps.
+/// Precondition (checked): numericShape(opcode) is Wide, and @p operands holds as many as its
+/// signature pops.
+/// @param opcode The instruction.
+/// @param operands Its operands' bits, bottom of the stack first: add128 and sub128 take
+///                 {lhs low, lhs high, rhs low, rhs high}, the multiplications {lhs, rhs}.
+/// @return The result's {low, high} halves, pushed in that order.
+[[nodiscard]] std::array<uint64_t, 2> applyWide(binary::Opcode opcode,
+                                                std::span<uint64_t const> operands) noexcept;
 
 /// The canonical NaN of f32 (spec 4.3.3): quiet, with no other payload bit; positive.
 inline constexpr auto CanonicalNanF32 = uint32_t { 0x7FC0'0000 };

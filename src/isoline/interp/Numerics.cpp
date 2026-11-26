@@ -12,7 +12,9 @@
 #include <expected>
 #include <limits>
 #include <ranges>
+#include <span>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 #include <isoline/binary/Opcode.hpp>
@@ -713,10 +715,67 @@ namespace
         return To { value.bits };
     }
 
+    // --- Wide arithmetic ----------------------------------------------------------------------
+    //
+    // 128-bit values as two 64-bit limbs, {low, high}, in plain 64-bit arithmetic: no __int128 and no
+    // intrinsic, so every compiler computes the same thing the same way.
+
+    /// A 128-bit value: its low half, then its high half.
+    using Halves = std::array<uint64_t, 2>;
+
+    /// i64.add128: the sum modulo 2^128; the carry out of the low half goes into the high one.
+    [[nodiscard]] constexpr Halves add128(Halves lhs, Halves rhs) noexcept
+    {
+        auto const low = lhs[0] + rhs[0];
+        auto const carry = low < lhs[0] ? uint64_t { 1 } : uint64_t { 0 };
+        return Halves { low, lhs[1] + rhs[1] + carry };
+    }
+
+    /// i64.sub128: the difference modulo 2^128; the borrow of the low half comes out of the high one.
+    [[nodiscard]] constexpr Halves sub128(Halves lhs, Halves rhs) noexcept
+    {
+        auto const borrow = lhs[0] < rhs[0] ? uint64_t { 1 } : uint64_t { 0 };
+        return Halves { lhs[0] - rhs[0], lhs[1] - rhs[1] - borrow };
+    }
+
+    /// i64.mul_wide_u: the full 128-bit product of two unsigned 64-bit values, by schoolbook
+    /// multiplication of their 32-bit halves, none of whose partial products overflows 64 bits.
+    [[nodiscard]] constexpr Halves mulWideU(uint64_t lhs, uint64_t rhs) noexcept
+    {
+        constexpr auto Mask = uint64_t { 0xFFFF'FFFF };
+        auto const lhsLow = lhs & Mask;
+        auto const lhsHigh = lhs >> 32U;
+        auto const rhsLow = rhs & Mask;
+        auto const rhsHigh = rhs >> 32U;
+        auto const lowLow = lhsLow * rhsLow;
+        auto const lowHigh = lhsLow * rhsHigh;
+        auto const highLow = lhsHigh * rhsLow;
+        auto const highHigh = lhsHigh * rhsHigh;
+        // The product's bits from 32 up, as far as the low product's high half and the cross terms'
+        // low halves reach them: at most 3 * (2^32 - 1), so the sum does not overflow. Its low half
+        // completes the low limb, its high half carries into the high limb.
+        auto const middle = (lowLow >> 32U) + (lowHigh & Mask) + (highLow & Mask);
+        return Halves { (middle << 32U) | (lowLow & Mask),
+                        highHigh + (lowHigh >> 32U) + (highLow >> 32U) + (middle >> 32U) };
+    }
+
+    /// i64.mul_wide_s: the full 128-bit product of two signed 64-bit values. As two's complement
+    /// x = u - 2^64 * sign(x), the signed product's high half is the unsigned one's less each
+    /// operand that the other's sign bit scales.
+    [[nodiscard]] constexpr Halves mulWideS(uint64_t lhs, uint64_t rhs) noexcept
+    {
+        auto const unsignedProduct = mulWideU(lhs, rhs);
+        auto const signBit = uint64_t { 1 } << 63U;
+        auto const lhsCorrection = (lhs & signBit) != 0 ? rhs : uint64_t { 0 };
+        auto const rhsCorrection = (rhs & signBit) != 0 ? lhs : uint64_t { 0 };
+        return Halves { unsignedProduct[0], unsignedProduct[1] - lhsCorrection - rhsCorrection };
+    }
+
     // --- The table ----------------------------------------------------------------------------
 
     using UnaryFn = Result (*)(Value);
     using BinaryFn = Result (*)(Value, Value);
+    using WideFn = Halves (*)(std::span<uint64_t const>) noexcept;
 
     /// The parameter and result types of a function pointer.
     template <typename>
@@ -786,6 +845,20 @@ namespace
         return truth(Fn(operand<typename Types::Lhs>(lhs), operand<typename Types::Rhs>(rhs)));
     }
 
+    /// Applies a 128-bit operator to its two {low, high} operands, given as four limbs.
+    template <auto Fn>
+    [[nodiscard]] Halves pairThunk(std::span<uint64_t const> operands) noexcept
+    {
+        return Fn(Halves { operands[0], operands[1] }, Halves { operands[2], operands[3] });
+    }
+
+    /// Applies a widening multiplication to its two 64-bit operands.
+    template <auto Fn>
+    [[nodiscard]] Halves productThunk(std::span<uint64_t const> operands) noexcept
+    {
+        return Fn(operands[0], operands[1]);
+    }
+
     /// One numeric instruction: how it takes its operands, and the function evaluating it.
     struct NumericRow
     {
@@ -793,6 +866,7 @@ namespace
         NumericShape shape = NumericShape::None; ///< How it takes its operands.
         UnaryFn unary = nullptr;                 ///< Unary and Test: the evaluator.
         BinaryFn binary = nullptr;               ///< Binary and Compare: the evaluator.
+        WideFn wide = nullptr;                   ///< Wide: the evaluator.
     };
 
     template <auto Fn>
@@ -817,6 +891,18 @@ namespace
     [[nodiscard]] consteval NumericRow compare(Opcode opcode) noexcept
     {
         return NumericRow { .opcode = opcode, .shape = NumericShape::Compare, .binary = &compareThunk<Fn> };
+    }
+
+    template <auto Fn>
+    [[nodiscard]] consteval NumericRow widePair(Opcode opcode) noexcept
+    {
+        return NumericRow { .opcode = opcode, .shape = NumericShape::Wide, .wide = &pairThunk<Fn> };
+    }
+
+    template <auto Fn>
+    [[nodiscard]] consteval NumericRow wideProduct(Opcode opcode) noexcept
+    {
+        return NumericRow { .opcode = opcode, .shape = NumericShape::Wide, .wide = &productThunk<Fn> };
     }
 
     /// Every numeric instruction, one row each.
@@ -962,6 +1048,11 @@ namespace
         unary<&truncSaturating<I64, uint64_t, F32>>(Opcode::I64TruncSatF32U),
         unary<&truncSaturating<I64, int64_t, F64>>(Opcode::I64TruncSatF64S),
         unary<&truncSaturating<I64, uint64_t, F64>>(Opcode::I64TruncSatF64U),
+        // wide arithmetic
+        widePair<&add128>(Opcode::I64Add128),
+        widePair<&sub128>(Opcode::I64Sub128),
+        wideProduct<&mulWideS>(Opcode::I64MulWideS),
+        wideProduct<&mulWideU>(Opcode::I64MulWideU),
     });
 
     /// NumericTable indexed by opcode, for a constant-time lookup; None for every other opcode.
@@ -972,11 +1063,18 @@ namespace
         return table;
     }();
 
-    /// The row of @p opcode. Precondition (checked): it is a numeric instruction of @p shape.
-    [[nodiscard]] NumericRow const& rowOf(Opcode opcode, NumericShape shape)
+    /// The row of @p opcode. Precondition (checked): it is a numeric instruction of @p shape, and
+    /// its signature pops @p operandCount operands. One check for both, so that every apply
+    /// function shares it.
+    [[nodiscard]] NumericRow const& rowOf(Opcode opcode, NumericShape shape, std::size_t operandCount)
     {
-        auto const& row = NumericByOpcode[static_cast<std::size_t>(opcode)];
-        Require(row.shape == shape);
+        auto const index = static_cast<std::size_t>(opcode);
+        auto const& row = NumericByOpcode[index];
+        auto const arity =
+            std::size_t { binary::signatureInfo(binary::OpcodeTable[index].signature).paramCount };
+        // The pair comparison keeps this one branch in the coverage ratchet's view; a fast
+        // interpreter should not reuse rowOf on its hot path.
+        Require((std::pair { row.shape, arity } == std::pair { shape, operandCount }));
         return row;
     }
 } // namespace
@@ -988,22 +1086,27 @@ NumericShape numericShape(Opcode opcode) noexcept
 
 std::expected<Value, Trap> applyUnary(Opcode opcode, Value operand)
 {
-    return rowOf(opcode, NumericShape::Unary).unary(operand);
+    return rowOf(opcode, NumericShape::Unary, 1).unary(operand);
 }
 
 std::expected<Value, Trap> applyBinary(Opcode opcode, Value lhs, Value rhs)
 {
-    return rowOf(opcode, NumericShape::Binary).binary(lhs, rhs);
+    return rowOf(opcode, NumericShape::Binary, 2).binary(lhs, rhs);
 }
 
 I32 applyTest(Opcode opcode, Value operand)
 {
-    return std::get<I32>(*rowOf(opcode, NumericShape::Test).unary(operand));
+    return std::get<I32>(*rowOf(opcode, NumericShape::Test, 1).unary(operand));
 }
 
 I32 applyCompare(Opcode opcode, Value lhs, Value rhs)
 {
-    return std::get<I32>(*rowOf(opcode, NumericShape::Compare).binary(lhs, rhs));
+    return std::get<I32>(*rowOf(opcode, NumericShape::Compare, 2).binary(lhs, rhs));
+}
+
+std::array<uint64_t, 2> applyWide(Opcode opcode, std::span<uint64_t const> operands) noexcept
+{
+    return rowOf(opcode, NumericShape::Wide, operands.size()).wide(operands);
 }
 
 } // namespace isoline::interp

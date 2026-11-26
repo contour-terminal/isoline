@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <type_traits>
+
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 
@@ -11,6 +13,7 @@ using isoline::binary::FuncRef;
 using isoline::binary::I32;
 using isoline::binary::I64;
 using isoline::binary::Import;
+using isoline::binary::Instruction;
 using isoline::binary::Module;
 using isoline::binary::TableType;
 using isoline::binary::ValueKind;
@@ -27,6 +30,14 @@ TEST_CASE("Module.importedCount")
     CHECK(wasm.importedCount(ExternKind::Func) == 2);
     CHECK(wasm.importedCount(ExternKind::Memory) == 1);
     CHECK(wasm.importedCount(ExternKind::Table) == 0);
+}
+
+TEST_CASE("Module.instructionStaysCompact")
+{
+    // A decoded body is bounded at 40 bytes per instruction; see the static_assert in Module.hpp.
+    CHECK(sizeof(Instruction) == 40);
+    CHECK(std::is_trivially_copyable_v<Instruction>);
+    CHECK(Instruction {}.lane == 0);
 }
 
 TEST_CASE("Types.referenceTypes")

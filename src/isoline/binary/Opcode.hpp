@@ -44,9 +44,10 @@ enum class ImmediateKind : uint8_t
 
 /// The operand and result types of an opcode whose typing is fixed, for the validator.
 ///
-/// An enumerator reads `<params>To<result>`: I32I32ToI32 pops two i32 and pushes one, ToF32 pushes
-/// an f32 and pops nothing. Special opcodes take code to type: control, parametric, variable,
-/// table, memory and reference instructions. Every enumerator is a row of SignatureTable, in order.
+/// An enumerator reads `<params>To<results>`: I32I32ToI32 pops two i32 and pushes one, ToF32 pushes
+/// an f32 and pops nothing, I64I64ToI64I64 pops two i64 and pushes two. Special opcodes take code to type:
+/// control, parametric, variable, table, memory and reference instructions. Every enumerator is a row of
+/// SignatureTable, in order.
 enum class OpcodeSignature : uint8_t
 {
     Special, ///< Typed by code, not by SignatureTable.
@@ -78,10 +79,12 @@ enum class OpcodeSignature : uint8_t
     F32F32ToF32,
     F64F64ToI32,
     F64F64ToF64,
+    I64I64ToI64I64,       ///< i64.mul_wide_s and _u: two i64 to a 128-bit {low, high} pair.
+    I64I64I64I64ToI64I64, ///< i64.add128 and sub128: two {low, high} pairs to one.
 };
 
 /// The last OpcodeSignature enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastOpcodeSignature = OpcodeSignature::F64F64ToF64;
+inline constexpr auto LastOpcodeSignature = OpcodeSignature::I64I64I64I64ToI64I64;
 
 /// One row of SignatureTable: the value kinds an OpcodeSignature pops and pushes.
 ///
@@ -89,11 +92,11 @@ inline constexpr auto LastOpcodeSignature = OpcodeSignature::F64F64ToF64;
 /// paramKinds() and resultKinds() view the used part.
 struct SignatureRow
 {
-    OpcodeSignature signature;          ///< The signature this row describes; equal to its index.
-    std::array<ValueKind, 2> params {}; ///< The operand kinds, bottom of the stack first.
-    uint8_t paramCount = 0;             ///< How many of params are used.
-    ValueKind result = ValueKind::I32;  ///< The result kind, when resultCount is 1.
-    uint8_t resultCount = 0;            ///< 0 or 1: whether the opcode pushes a result.
+    OpcodeSignature signature;           ///< The signature this row describes; equal to its index.
+    std::array<ValueKind, 4> params {};  ///< The operand kinds, bottom of the stack first.
+    uint8_t paramCount = 0;              ///< How many of params are used.
+    std::array<ValueKind, 2> results {}; ///< The result kinds, in the order they are pushed.
+    uint8_t resultCount = 0;             ///< How many of results are used.
 
     /// The operand kinds, bottom of the stack first.
     /// @return The first paramCount entries of params.
@@ -102,11 +105,11 @@ struct SignatureRow
         return std::span { params }.first(paramCount);
     }
 
-    /// The result kinds.
-    /// @return result, or nothing when resultCount is 0.
+    /// The result kinds, in the order they are pushed.
+    /// @return The first resultCount entries of results.
     [[nodiscard]] constexpr std::span<ValueKind const> resultKinds() const noexcept
     {
-        return std::span { &result, resultCount };
+        return std::span { results }.first(resultCount);
     }
 };
 
@@ -117,9 +120,11 @@ namespace detail
                                                   ValueKind param,
                                                   ValueKind result) noexcept
     {
-        return SignatureRow {
-            .signature = signature, .params = { param }, .paramCount = 1, .result = result, .resultCount = 1
-        };
+        return SignatureRow { .signature = signature,
+                              .params = { param },
+                              .paramCount = 1,
+                              .results = { result },
+                              .resultCount = 1 };
     }
 
     /// The row of a signature popping two @p param and pushing one @p result.
@@ -130,7 +135,7 @@ namespace detail
         return SignatureRow { .signature = signature,
                               .params = { param, param },
                               .paramCount = 2,
-                              .result = result,
+                              .results = { result },
                               .resultCount = 1 };
     }
 
@@ -138,8 +143,19 @@ namespace detail
     [[nodiscard]] consteval SignatureRow nullaryRow(OpcodeSignature signature, ValueKind result) noexcept
     {
         return SignatureRow {
-            .signature = signature, .params = {}, .paramCount = 0, .result = result, .resultCount = 1
+            .signature = signature, .params = {}, .paramCount = 0, .results = { result }, .resultCount = 1
         };
+    }
+
+    /// The row of a wide-arithmetic signature popping @p paramCount i64 and pushing two: a 128-bit
+    /// value's low and high halves.
+    [[nodiscard]] consteval SignatureRow wideRow(OpcodeSignature signature, uint8_t paramCount) noexcept
+    {
+        return SignatureRow { .signature = signature,
+                              .params = { ValueKind::I64, ValueKind::I64, ValueKind::I64, ValueKind::I64 },
+                              .paramCount = paramCount,
+                              .results = { ValueKind::I64, ValueKind::I64 },
+                              .resultCount = 2 };
     }
 } // namespace detail
 
@@ -174,6 +190,8 @@ inline constexpr auto SignatureTable = std::to_array<SignatureRow>({
     detail::binaryRow(OpcodeSignature::F32F32ToF32, ValueKind::F32, ValueKind::F32),
     detail::binaryRow(OpcodeSignature::F64F64ToI32, ValueKind::F64, ValueKind::I32),
     detail::binaryRow(OpcodeSignature::F64F64ToF64, ValueKind::F64, ValueKind::F64),
+    detail::wideRow(OpcodeSignature::I64I64ToI64I64, 2),
+    detail::wideRow(OpcodeSignature::I64I64I64I64ToI64I64, 4),
 });
 
 static_assert(
@@ -199,8 +217,8 @@ static_assert(
 
 /// Every instruction Isoline decodes, one enumerator per row of Opcodes.def, in its order.
 ///
-/// P1's 201 rows fit a byte; the SIMD rows will not, and the compiler rejects an enumerator past
-/// 255, so the base type widens to uint16_t with them.
+/// The 205 rows so far fit a byte; the SIMD rows will not, and the compiler rejects an enumerator
+/// past 255, so the base type widens to uint16_t with them.
 enum class Opcode : uint8_t
 {
 #define ISOLINE_OPCODE(Name, Prefix, Code, Text, Immediate, Signature, Proposal) Name,
@@ -250,7 +268,8 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
-static_assert(OpcodeCount == 201, "P1 decodes every non-SIMD WebAssembly 2.0 instruction: 201 of them");
+static_assert(OpcodeCount == 205,
+              "every non-SIMD WebAssembly 2.0 instruction (201) and the four of wide arithmetic");
 
 /// What the table knows about @p opcode.
 /// @param opcode The instruction to describe.
