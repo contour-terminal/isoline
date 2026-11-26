@@ -9,6 +9,7 @@ and run on the host in every tree.
 | Preset | Target | Toolchain file | Tests run under |
 |---|---|---|---|
 | `clangcl-cross-debug` | Windows x64, Debug | `cmake/toolchains/windows-clangcl-cross.cmake` | wine |
+| `clangcl-cross-release` | Windows x64, Release | the same | wine |
 | `clang-aarch64-cross` | Linux aarch64, Debug | `cmake/toolchains/aarch64-linux-gnu-clang.cmake` | `qemu-aarch64-static` |
 | `clang-aarch64-cross-release` | Linux aarch64, Release | the same | `qemu-aarch64-static` |
 
@@ -32,6 +33,10 @@ cmake --preset clangcl-cross-debug
 cmake --build --preset clangcl-cross-debug
 ctest --preset clangcl-cross-debug
 ```
+
+`clangcl-cross-release` builds the same with the release STL. MSVC's debug STL allocates inside
+`noexcept` container constructors, so the Debug tree leaves the memory suite's `[host-memory]` cases out
+(a refusal there terminates); the release tree runs them, the only Windows build that does.
 
 The emulator is `out/clangcl-cross-debug/wine-run.sh`, which the toolchain file writes. It runs with the
 MSVC C++ runtime (release and debug) and the UCRT on `WINEPATH`, and in a **wine prefix of the build's

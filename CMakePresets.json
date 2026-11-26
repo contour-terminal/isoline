@@ -164,6 +164,20 @@
             }
         },
         {
+            "name": "clangcl-cross-release",
+            "displayName": "Windows x64 cross (clang-cl) Release",
+            "description": "Windows x64 from Linux: clang-cl against an msvc-wine install, release STL; tests run under wine",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "release"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clangcl-cross.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
             "name": "aarch64-cross-common",
             "hidden": true,
             "description": "Linux aarch64 from an x86_64 Linux host against a Debian sysroot; tests run under qemu-user",
@@ -202,6 +216,7 @@
         { "name": "macos-clang", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
+        { "name": "clangcl-cross-release", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "configurePreset": "clang-aarch64-cross-release" }
     ],
@@ -246,6 +261,7 @@
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },
+        { "name": "clangcl-cross-release", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross-release" }
     ]

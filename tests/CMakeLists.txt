@@ -98,6 +98,12 @@ if(NOT ISOLINE_SANITIZE STREQUAL "thread")
     add_executable(isoline_memory_test memory/AllocationCounter.cpp memory/MemoryBounds_test.cpp)
     target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_memory_test TEST)
-    add_test(NAME isoline_memory_test COMMAND isoline_memory_test)
+    # The [host-memory] cases refuse allocations at every budget. MSVC's debug STL allocates a container
+    # proxy in container constructors that are noexcept, where a refusal terminates (a debug-CRT dialog
+    # under wine) before Engine::load or Store::instantiate can refuse it, so the Debug configuration of
+    # an MSVC or clang-cl build (clangcl-cross-debug, msvc-debug) leaves them out. Every other build runs
+    # them, a Windows release build included (clangcl-cross-release, under wine).
+    add_test(NAME isoline_memory_test
+        COMMAND isoline_memory_test "$<IF:$<AND:$<BOOL:${MSVC}>,$<CONFIG:Debug>>,~[host-memory],*>")
     set_tests_properties(isoline_memory_test PROPERTIES LABELS unit TIMEOUT 600)
 endif()

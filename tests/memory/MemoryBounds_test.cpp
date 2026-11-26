@@ -301,7 +301,7 @@ TEST_CASE("MemoryBounds.loadDescribesWithoutCopying")
     checkEngineLoadLinear(manyFunctionImports(1000, 100'000), FeatureSet::wasm3());
 }
 
-TEST_CASE("MemoryBounds.loadReportsHostMemoryExhaustion")
+TEST_CASE("MemoryBounds.loadReportsHostMemoryExhaustion", "[host-memory]")
 {
     // Every budget from nothing up to what loading needs: each load either succeeds or reports the host
     // out of memory, and none throws through Engine::load or ends the process in a noexcept frame.
@@ -339,7 +339,7 @@ TEST_CASE("MemoryBounds.loadReportsHostMemoryExhaustion")
     CHECK(loadedWithin.has_value());
 }
 
-TEST_CASE("MemoryBounds.loadReportsAContainerPastItsSizeAsHostMemoryExhaustion")
+TEST_CASE("MemoryBounds.loadReportsAContainerPastItsSizeAsHostMemoryExhaustion", "[host-memory]")
 {
     // A container asked for more than its max_size() throws std::length_error, not std::bad_alloc: it
     // is a memory refusal all the same, reported as one, never a throw out of a noexcept Engine::load.
@@ -355,7 +355,7 @@ TEST_CASE("MemoryBounds.loadReportsAContainerPastItsSizeAsHostMemoryExhaustion")
     CHECK(std::holds_alternative<isoline::api::HostMemoryExhausted>(result.error()));
 }
 
-TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryBeforeTheStoreChanges")
+TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryBeforeTheStoreChanges", "[host-memory]")
 {
     // Two host imports, the second of 1'000 params. Every budget below that type's size runs out while
     // the externs, the definitions' lookup and the host functions' entries (which copy their types) are
@@ -416,7 +416,7 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryBeforeTheStoreChanges")
     CHECK(runtime.functionCount() == 2);
 }
 
-TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing")
+TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing", "[host-memory]")
 {
     // A module of no imports and 300 distinct types: its first allocations are runtime::instantiate()'s
     // preparation (the TypeIds alone take 1'200 bytes). Every budget below that runs out there, before
@@ -434,12 +434,15 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing")
     REQUIRE(module.has_value());
     auto& runtime = isoline::api::testing::runtimeOf(store);
     auto const typesBefore = runtime.typeCount();
+    // Made before any budget: an empty std::map allocates its head node in some standard libraries
+    // (MSVC's), which is no part of what instantiation holds.
+    auto const imports = isoline::api::Imports {};
 
     for (auto budget = std::size_t { 0 }; budget < TypeCount * sizeof(uint32_t); budget += 8)
     {
         auto const result = [&] {
             auto const limit = AllocationLimit { budget };
-            return store.instantiate(*module, isoline::api::Imports {});
+            return store.instantiate(*module, imports);
         }();
         CAPTURE(budget);
         REQUIRE_FALSE(result.has_value());
@@ -450,12 +453,12 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing")
     // A container asked past its max_size() there is refused alike.
     auto const pastMaxSize = [&] {
         auto const limit = AllocationLimit { 0, RefusalException::LengthError };
-        return store.instantiate(*module, isoline::api::Imports {});
+        return store.instantiate(*module, imports);
     }();
     REQUIRE_FALSE(pastMaxSize.has_value());
     CHECK(pastMaxSize.error() == InstantiateError { HostMemoryExhausted {} });
     CHECK(runtime.typeCount() == typesBefore);
-    CHECK(store.instantiate(*module, isoline::api::Imports {}).has_value());
+    CHECK(store.instantiate(*module, imports).has_value());
     CHECK(runtime.typeCount() == typesBefore + TypeCount);
 }
 
