@@ -1,0 +1,7 @@
+Isoline
+Copyright 2026 The Isoline Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes core-cpp (vendor/core-cpp), Copyright 2026 The core-cpp Authors, licensed under the
+Apache License, Version 2.0; see vendor/core-cpp/LICENSE and vendor/core-cpp/NOTICE.

@@ -1,0 +1,24 @@
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+
+[*.md]
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_size = 2
+
+# The verbatim core-cpp copy is checked against its MANIFEST, not against this file.
+[vendor/**]
+indent_style = unset
+indent_size = unset
+insert_final_newline = unset
+end_of_line = unset
+charset = unset
+trim_trailing_whitespace = unset

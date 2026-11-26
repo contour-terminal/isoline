@@ -1,0 +1,7 @@
+module stack.0.wasm
+assert_return invoke 6661632d65787072 - i64:19 -> i64:619fb0907bc00000
+assert_return invoke 6661632d737461636b - i64:19 -> i64:619fb0907bc00000
+assert_return invoke 6661632d6d69786564 - i64:19 -> i64:619fb0907bc00000
+assert_return invoke 6e6f742d71756974652d612d74726565 - -> i32:3
+assert_return invoke 6e6f742d71756974652d612d74726565 - -> i32:9
+module stack.1.wasm

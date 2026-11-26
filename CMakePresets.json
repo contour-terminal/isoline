@@ -1,0 +1,156 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "isoline-common",
+            "hidden": true,
+            "description": "Settings every developer and CI configuration shares",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/${presetName}",
+            "cacheVariables": {
+                "ISOLINE_TESTING": "ON",
+                "ISOLINE_WERROR": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "release",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "not-windows",
+            "hidden": true,
+            "condition": {
+                "type": "notEquals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "clang-common",
+            "hidden": true,
+            "inherits": [
+                "isoline-common",
+                "not-windows"
+            ],
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "clang++",
+                "ISOLINE_CLANG_TIDY": "ON"
+            }
+        },
+        {
+            "name": "clang-asan",
+            "displayName": "Clang Debug + ASan/UBSan",
+            "inherits": [
+                "clang-common",
+                "debug"
+            ],
+            "cacheVariables": {
+                "ISOLINE_SANITIZE": "address"
+            }
+        },
+        {
+            "name": "clang-release",
+            "displayName": "Clang Release",
+            "inherits": [
+                "clang-common",
+                "release"
+            ]
+        },
+        {
+            "name": "clang-coverage",
+            "displayName": "Clang Debug + source-based coverage",
+            "inherits": [
+                "clang-common",
+                "debug"
+            ],
+            "cacheVariables": {
+                "ISOLINE_COVERAGE": "ON"
+            }
+        },
+        {
+            "name": "gcc-debug",
+            "displayName": "GCC Debug",
+            "inherits": [
+                "isoline-common",
+                "not-windows",
+                "debug"
+            ],
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++"
+            }
+        },
+        {
+            "name": "macos-clang",
+            "displayName": "Apple Clang Debug",
+            "inherits": [
+                "isoline-common",
+                "debug"
+            ],
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            },
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "c++",
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
+            "name": "msvc-debug",
+            "displayName": "MSVC Debug",
+            "description": "MSVC (64-bit); run from a Developer Command Prompt",
+            "inherits": [
+                "isoline-common",
+                "debug"
+            ],
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            },
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "cl",
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "clang-asan", "configurePreset": "clang-asan" },
+        { "name": "clang-release", "configurePreset": "clang-release" },
+        { "name": "clang-coverage", "configurePreset": "clang-coverage" },
+        { "name": "gcc-debug", "configurePreset": "gcc-debug" },
+        { "name": "macos-clang", "configurePreset": "macos-clang" },
+        { "name": "msvc-debug", "configurePreset": "msvc-debug" }
+    ],
+    "testPresets": [
+        {
+            "name": "isoline-test-common",
+            "hidden": true,
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        { "name": "clang-asan", "inherits": "isoline-test-common", "configurePreset": "clang-asan" },
+        { "name": "clang-release", "inherits": "isoline-test-common", "configurePreset": "clang-release" },
+        { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
+        { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
+        { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
+        { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" }
+    ]
+}

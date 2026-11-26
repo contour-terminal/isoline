@@ -1,0 +1,100 @@
+module memory_fill.0.wasm
+invoke 74657374 - ->
+assert_return invoke 636865636b52616e6765 - i32:0 i32:ff00 i32:0 -> i32:ffffffff
+assert_return invoke 636865636b52616e6765 - i32:ff00 i32:10000 i32:55 -> i32:ffffffff
+module memory_fill.1.wasm
+assert_trap invoke 74657374 - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module memory_fill.2.wasm
+assert_trap invoke 74657374 - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module memory_fill.3.wasm
+invoke 74657374 - ->
+assert_return invoke 636865636b52616e6765 - i32:0 i32:10000 i32:0 -> i32:ffffffff
+module memory_fill.4.wasm
+invoke 74657374 - ->
+module memory_fill.5.wasm
+assert_trap invoke 74657374 - -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module memory_fill.6.wasm
+invoke 74657374 - ->
+assert_return invoke 636865636b52616e6765 - i32:0 i32:1 i32:0 -> i32:ffffffff
+assert_return invoke 636865636b52616e6765 - i32:1 i32:ffff i32:aa -> i32:ffffffff
+assert_return invoke 636865636b52616e6765 - i32:ffff i32:10000 i32:0 -> i32:ffffffff
+module memory_fill.7.wasm
+invoke 74657374 - ->
+assert_return invoke 636865636b52616e6765 - i32:0 i32:12 i32:0 -> i32:ffffffff
+assert_return invoke 636865636b52616e6765 - i32:12 i32:15 i32:55 -> i32:ffffffff
+assert_return invoke 636865636b52616e6765 - i32:15 i32:19 i32:aa -> i32:ffffffff
+assert_return invoke 636865636b52616e6765 - i32:19 i32:1c i32:55 -> i32:ffffffff
+assert_return invoke 636865636b52616e6765 - i32:1c i32:10000 i32:0 -> i32:ffffffff
+assert_invalid memory_fill.8.wasm 756e6b6e6f776e206d656d6f72792030
+assert_invalid memory_fill.9.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.10.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.11.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.12.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.13.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.14.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.15.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.16.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.17.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.18.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.19.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.20.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.21.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.22.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.23.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.24.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.25.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.26.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.27.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.28.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.29.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.30.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.31.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.32.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.33.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.34.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.35.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.36.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.37.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.38.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.39.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.40.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.41.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.42.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.43.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.44.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.45.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.46.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.47.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.48.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.49.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.50.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.51.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.52.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.53.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.54.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.55.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.56.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.57.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.58.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.59.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.60.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.61.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.62.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.63.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.64.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.65.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.66.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.67.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.68.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.69.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.70.wasm 74797065206d69736d61746368
+assert_invalid memory_fill.71.wasm 74797065206d69736d61746368
+module memory_fill.72.wasm
+assert_trap invoke 72756e - i32:ff00 i32:25 i32:200 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 636865636b52616e6765 - i32:0 i32:1 i32:0 -> i32:ffffffff
+module memory_fill.73.wasm
+assert_trap invoke 72756e - i32:feff i32:25 i32:202 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 636865636b52616e6765 - i32:0 i32:1 i32:0 -> i32:ffffffff
+module memory_fill.74.wasm
+assert_trap invoke 72756e - i32:feff i32:25 i32:ffffffff -> 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 636865636b52616e6765 - i32:0 i32:1 i32:0 -> i32:ffffffff

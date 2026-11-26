@@ -1,0 +1,45 @@
+# Isoline's coverage ratchet: per file under src/isoline/, the line and branch coverage (in %) that
+# the tests reach, which scripts/coverage-check.py holds every change to. Raise an entry with
+# `scripts/coverage-check.py <coverage.json> coverage-baseline.txt --update`; it never lowers one.
+#
+# Every source line a test can reach is covered. The lines below are the exceptions, each with why
+# no valid input reaches it. They are failed preconditions (a Require or core::todo that a validated
+# module never trips), and the Tag cases of ExternKind, which Wasm 2.0 has no use for.
+#
+# src/isoline/binary/Decoder.cpp:856 Tag import: readExternKind decodes no tag kind in P1
+# src/isoline/interp/ReferenceInterpreter.cpp:121 rawBits of a vector or reference: a validated body pops a number there
+# src/isoline/interp/ReferenceInterpreter.cpp:135-139 numberOf a vector or reference kind: loads and stores have number kinds only
+# src/isoline/interp/ReferenceInterpreter.cpp:665-668 numeric() of a non-numeric opcode: execute() dispatches only table rows here
+# src/isoline/interp/ReferenceInterpreter.cpp:757-761 an opcode without a case or table row: validation admits none
+# src/isoline/interp/ReferenceInterpreter.cpp:826 a trapping constant operator: extended-const's add, sub and mul never trap
+# src/isoline/interp/ReferenceInterpreter.cpp:831-832 a constant expression without end: the decoder ends every expression with one
+# src/isoline/runtime/Instantiate.cpp:84-86 the Tag index space: a tag import fails to link first, and validation rejects tag exports
+# src/isoline/runtime/Store.cpp:82-83 std::bad_alloc from a table or memory: IMemoryAllocator only decides whether a size may be allocated, it does not allocate, so no test double can make the std::vector allocation fail (P3's embedder-provided memory replaces this path)
+# src/isoline/validate/Validator.cpp:735-739 a Special opcode without a case: every one has a case or a MemoryAccessTable row
+#
+# src/isoline/runtime/Instantiate.cpp's branch entry was lowered from 92.12 to 91.86 when its segment bounds checks moved into
+# runtime/Segment.hpp (100 % covered): four covered branches left the file, and its ten uncovered ones, the contract checks and Tag
+# cases named above, are now a larger share of fewer. No branch lost its coverage.
+
+src/isoline/Features.hpp                    100.00 100.00
+src/isoline/Version.hpp                     100.00 -
+src/isoline/binary/ByteReader.cpp           100.00 98.07
+src/isoline/binary/DecodeError.hpp          100.00 -
+src/isoline/binary/Decoder.cpp              99.87 97.76
+src/isoline/binary/MemoryAccess.hpp         100.00 100.00
+src/isoline/binary/Module.hpp               100.00 73.68
+src/isoline/binary/Opcode.cpp               100.00 100.00
+src/isoline/binary/Opcode.hpp               100.00 -
+src/isoline/binary/Types.hpp                100.00 -
+src/isoline/interp/Numerics.cpp             100.00 95.61
+src/isoline/interp/ReferenceInterpreter.cpp 97.53 89.56
+src/isoline/interp/ReferenceInterpreter.hpp 100.00 -
+src/isoline/runtime/Instantiate.cpp         99.23 91.86
+src/isoline/runtime/Instantiate.hpp         100.00 -
+src/isoline/runtime/Segment.hpp             100.00 100.00
+src/isoline/runtime/Store.cpp               98.60 78.26
+src/isoline/runtime/Store.hpp               100.00 -
+src/isoline/runtime/Trap.hpp                100.00 75.00
+src/isoline/runtime/Value.hpp               100.00 92.85
+src/isoline/validate/ValidationError.hpp    100.00 75.00
+src/isoline/validate/Validator.cpp          99.69 96.30

@@ -1,0 +1,3 @@
+module ref_null.0.wasm
+assert_return invoke 65787465726e726566 - -> ref.null:extern
+assert_return invoke 66756e63726566 - -> ref.null:func
