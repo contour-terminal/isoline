@@ -25,11 +25,13 @@
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/PollCounter.hpp>
 #include <isoline/runtime/testing/ProvidedMemory.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
@@ -58,6 +60,7 @@ using isoline::runtime::Limit;
 using isoline::runtime::LimitExceeded;
 using isoline::runtime::LinkError;
 using isoline::runtime::LinkErrorCode;
+using isoline::runtime::PollSite;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Refusal;
@@ -69,7 +72,11 @@ using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::Value;
 using isoline::runtime::testing::GrowDecision;
+using isoline::runtime::testing::InterruptWatchdog;
+using isoline::runtime::testing::PollCounter;
+using isoline::runtime::testing::PollTrigger;
 using isoline::runtime::testing::ProvidedMemoryAllocator;
+using isoline::runtime::testing::TriggerWait;
 using isoline::validate::ValidatedModule;
 
 namespace
@@ -1206,4 +1213,154 @@ TEST_CASE("Instantiate.startHostFailureFailsInstantiation")
     CHECK(errorOf(instantiate(store, interpreter, moduleOf(builder), imports))
           == InstantiationError { failure });
     CHECK(caller == std::nullopt);
+}
+
+TEST_CASE("Instantiate.isInterruptible", "[threading]")
+{
+    auto allocator = HeapMemoryAllocator {};
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+
+    SECTION("an interrupt before instantiation instantiates nothing, and the start never runs")
+    {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {}).importFunction("env", "start", 0).memory(atLeast(1)).start(0);
+        auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+        auto started = 0;
+        auto const host =
+            store
+                .addHostFunction(FuncType {},
+                                 isoline::runtime::makeHostFunction(
+                                     [&](isoline::runtime::HostContext&,
+                                         std::span<Value const>,
+                                         std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                         ++started;
+                                         return {};
+                                     }))
+                .value();
+        auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+        store.interrupter()->interrupt();
+        CHECK(errorOf(instantiate(store, interpreter, moduleOf(builder), imports))
+              == InstantiationError { Trap { TrapCode::Interrupted } });
+        CHECK(started == 0);
+        CHECK(store.moduleInstanceCount() == 0);
+        CHECK(store.memoryCount() == 0);
+    }
+
+    SECTION("a start function that spins is stopped from another thread")
+    {
+        auto builder = ModuleBuilder {};
+        // A start that counts 2^24 rounds down: interrupted long before they run out.
+        builder.type(FuncType {})
+            .function(0,
+                      { isoline::binary::I32 },
+                      isoline::binary::testing::code(
+                          { i32Const(int32_t { 1 } << 24),
+                            { 0x21, 0x00 }, // local.set 0
+                            isoline::binary::testing::loop(
+                                isoline::binary::testing::code({ isoline::binary::testing::localGet(0),
+                                                                 i32Const(1),
+                                                                 { 0x6B, 0x22, 0x00 }, // i32.sub; local.tee 0
+                                                                 isoline::binary::testing::brIf(0) })) }))
+            .start(0);
+        auto counter = PollCounter { PollTrigger { .site = PollSite::LoopBackEdge, .ordinal = 1 } };
+        auto store =
+            Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &counter } };
+        auto watchdog = InterruptWatchdog { counter, store.interrupter() };
+        CHECK(errorOf(instantiate(store, interpreter, moduleOf(builder), {}))
+              == InstantiationError { Trap { TrapCode::Interrupted } });
+        CHECK(watchdog.finish() == TriggerWait::Triggered);
+    }
+}
+
+TEST_CASE("Instantiate.pollsElementEvaluation")
+{
+    // A passive segment of 3 x BulkPollElements items polls before each BulkPollElements of them, in
+    // either encoding.
+    constexpr auto Items = static_cast<uint32_t>(3 * isoline::runtime::BulkPollElements);
+    auto const count = isoline::binary::testing::encodeU32(Items);
+    auto indices = std::vector<uint8_t> { 0x01, 0x00 };     // passive, funcref, by function index
+    auto expressions = std::vector<uint8_t> { 0x05, 0x70 }; // passive, funcref, by expression
+    indices.insert(indices.end(), count.begin(), count.end());
+    expressions.insert(expressions.end(), count.begin(), count.end());
+    for ([[maybe_unused]] auto const item: std::views::iota(uint32_t { 0 }, Items))
+    {
+        indices.push_back(0x00);                                     // function 0
+        expressions.insert(expressions.end(), { 0xD0, 0x70, 0x0B }); // ref.null func; end
+    }
+    for (auto const& segment: { indices, expressions })
+    {
+        INFO((segment[0] == 0x01 ? "function indices" : "expressions"));
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {}).function(0, {}, {}).element(segment);
+        auto allocator = HeapMemoryAllocator {};
+        auto counter = PollCounter {};
+        auto store =
+            Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &counter } };
+        auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+        REQUIRE(instantiate(store, interpreter, moduleOf(builder), {}).has_value());
+        CHECK(counter.count(PollSite::BulkGranule) == 3);
+        CHECK(counter.count(PollSite::Instantiation) == 1);
+
+        // Interrupted at the second granule, the evaluation stops there.
+        auto interrupting = PollCounter { PollTrigger { .site = PollSite::BulkGranule, .ordinal = 2 } };
+        auto interrupted =
+            Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &interrupting } };
+        interrupting.interruptAtTrigger(interrupted.interrupter());
+        CHECK(errorOf(instantiate(interrupted, interpreter, moduleOf(builder), {}))
+              == InstantiationError { Trap { TrapCode::Interrupted } });
+        CHECK(interrupting.pollsAfterTrigger() == 0);
+    }
+}
+
+TEST_CASE("Instantiate.interruptBeforeStartRunsNoStart")
+{
+    // Interrupted at the poll before the start function, instantiation ends there: the start, a host
+    // import, never runs.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).importFunction("env", "start", 0).start(0);
+    auto allocator = HeapMemoryAllocator {};
+    auto counter = PollCounter { PollTrigger { .site = PollSite::Instantiation, .ordinal = 2 } };
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &counter } };
+    counter.interruptAtTrigger(store.interrupter());
+    auto started = 0;
+    auto const host = store
+                          .addHostFunction(FuncType {},
+                                           isoline::runtime::makeHostFunction(
+                                               [&](isoline::runtime::HostContext&,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   ++started;
+                                                   return {};
+                                               }))
+                          .value();
+    auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    CHECK(errorOf(instantiate(store, interpreter, moduleOf(builder), imports))
+          == InstantiationError { Trap { TrapCode::Interrupted } });
+    CHECK(started == 0);
+    CHECK(counter.pollsAfterTrigger() == 0);
+}
+
+TEST_CASE("Instantiate.pollsAtEntryBeforeStartAndPerDataGranule")
+{
+    // A 200'000-byte active data segment is copied in four granules; the start function adds a poll
+    // at Instantiation and one at its entry.
+    constexpr auto DataBytes = uint32_t { 200'000 };
+    auto data = std::vector<uint8_t> { 0x00 }; // active, memory 0
+    auto const offset = i32Const(0);
+    data.insert(data.end(), offset.begin(), offset.end());
+    data.push_back(0x0B);
+    auto const size = isoline::binary::testing::encodeU32(DataBytes);
+    data.insert(data.end(), size.begin(), size.end());
+    data.resize(data.size() + DataBytes, 0xAB);
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).memory(atLeast(4)).function(0, {}, {}).start(0).data(data);
+    auto allocator = HeapMemoryAllocator {};
+    auto counter = PollCounter {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &counter } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    REQUIRE(instantiate(store, interpreter, moduleOf(builder), {}).has_value());
+    CHECK(counter.count(PollSite::Instantiation) == 2);
+    CHECK(counter.count(PollSite::BulkGranule) == 4);
+    CHECK(counter.count(PollSite::FunctionEntry) == 1);
 }

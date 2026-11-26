@@ -44,6 +44,7 @@ target_sources(isoline_core
             runtime/Abrupt.hpp
             runtime/HostFunction.hpp
             runtime/Instantiate.hpp
+            runtime/Interrupt.hpp
             runtime/Limits.hpp
             runtime/LinearMemory.hpp
             runtime/Segment.hpp

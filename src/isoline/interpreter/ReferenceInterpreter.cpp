@@ -27,6 +27,7 @@
 #include <isoline/interpreter/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
+#include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -55,9 +56,11 @@ namespace
     using runtime::fits;
     using runtime::FuncAddr;
     using runtime::FunctionInstance;
+    using runtime::GranuleOrder;
     using runtime::I32;
     using runtime::I64;
     using runtime::ModuleInstance;
+    using runtime::PollSite;
     using runtime::Ref;
     using runtime::RefKind;
     using runtime::Store;
@@ -230,7 +233,7 @@ namespace
             Require(runtime::checkValues(_store, args, type.params).has_value());
             Require(results.size() == type.results.size());
             _values.assign(args.begin(), args.end());
-            if (auto const entered = call(function); !entered)
+            if (auto const entered = enterCallee(function, callerInstance()); !entered)
                 return entered;
             while (!_frames.empty())
             {
@@ -306,13 +309,36 @@ namespace
 
         // --- Calls ---
 
-        /// Calls @p address: pushes a Wasm frame, its arguments moved off the operand stack into
-        /// its locals, or runs a host function to completion.
-        [[nodiscard]] Step call(FuncAddr address)
+        /// Polls the store at @p site (Store::poll()).
+        /// @param site Where execution polls.
+        /// @return Nothing to go on, or Trap{Interrupted}.
+        [[nodiscard]] Step poll(PollSite site) noexcept
         {
+            if (auto const polled = _store.poll(site); !polled)
+                return std::unexpected { Abrupt { polled.error() } };
+            return {};
+        }
+
+        /// What a bulk operation polls before each granule (runtime::forEachGranule()).
+        [[nodiscard]] auto granulePoll() noexcept
+        {
+            return [this]() noexcept {
+                return _store.poll(PollSite::BulkGranule);
+            };
+        }
+
+        /// Enters @p address, the one routine every call, tail call and the embedder's entry go
+        /// through: polls at FunctionEntry, then pushes a Wasm frame, its arguments moved off the
+        /// operand stack into its locals, or runs a host function to completion.
+        /// @param address The callee.
+        /// @param caller The instance a host callee is called by; nullopt for the embedder.
+        [[nodiscard]] Step enterCallee(FuncAddr address, std::optional<uint32_t> caller)
+        {
+            if (auto const polled = poll(PollSite::FunctionEntry); !polled)
+                return polled;
             auto const& function = _store.function(address);
             if (function.isHost())
-                return callHost(function, callerInstance());
+                return callHost(function, caller);
             if (_depth >= _store.limits().maxCallDepth || stacksExhausted())
                 return trap(TrapCode::CallStackExhausted);
 
@@ -352,7 +378,9 @@ namespace
 
         /// Runs a host function synchronously: it may grow memories and tables, and invoke Wasm
         /// through its context. What it ends with is checked (runtime::checkHostOutcome()): a result
-        /// not of its type, or a thrown exception the store does not hold, is a HostFailure.
+        /// not of its type, or a thrown exception the store does not hold, is a HostFailure. It polls
+        /// at HostReturn whatever the host returned, and an interrupt replaces that outcome: a host
+        /// that absorbed a nested Interrupted cannot extend the call.
         /// @param function The host function.
         /// @param caller The instance whose code called it; nullopt when the embedder did.
         [[nodiscard]] Step callHost(FunctionInstance const& function, std::optional<uint32_t> caller)
@@ -369,6 +397,8 @@ namespace
                 return runtime::checkHostOutcome(
                     _store, type, function.host->call(context, args, results), results);
             }();
+            if (auto const polled = poll(PollSite::HostReturn); !polled)
+                return polled;
             if (!done)
             {
                 // An exception it throws, one of the store's, is thrown on in its caller.
@@ -395,7 +425,7 @@ namespace
             --_depth;
         }
 
-        /// Tail-calls @p address: discards the current frame but the callee's arguments, then calls
+        /// Tail-calls @p address: discards the current frame but the callee's arguments, then enters
         /// it in the frame's place. A Wasm callee's frame replaces it, so neither the depth nor the
         /// stacks grow; a host callee runs, and its results are the current frame's.
         [[nodiscard]] Step tailCall(FuncAddr address)
@@ -403,10 +433,7 @@ namespace
             // A host callee is called by the instance whose frame it replaces.
             auto const caller = callerInstance();
             discardFrame(static_cast<uint32_t>(_store.functionType(address).params.size()));
-            auto const& function = _store.function(address);
-            if (function.isHost())
-                return callHost(function, caller);
-            return call(address);
+            return enterCallee(address, caller);
         }
 
         /// The function call_indirect and return_call_indirect call: the table element the popped
@@ -473,28 +500,37 @@ namespace
             return {};
         }
 
-        /// Branches to label @p depth; the label one beyond the innermost is the function body's.
-        void branch(uint32_t depth)
+        /// Branches to label @p depth, the one routine every branching instruction and every catch
+        /// goes through: polls at LoopBackEdge when the label is a loop's. The label one beyond the
+        /// innermost is the function body's, and a branch to it returns.
+        /// @return Nothing, or Trap{Interrupted} from the poll.
+        [[nodiscard]] Step transferToLabel(uint32_t depth)
         {
             auto const labelCount = _labels.size() - frame().labelsBase;
             Require(depth <= labelCount);
             if (depth == labelCount)
             {
                 doReturn();
-                return;
+                return {};
             }
             auto const index = _labels.size() - 1 - depth;
             auto const label = _labels[index];
+            if (label.kind == LabelKind::Loop)
+            {
+                if (auto const polled = poll(PollSite::LoopBackEdge); !polled)
+                    return polled;
+            }
             keepTop(label.arity, label.height);
             _labels.resize(label.kind == LabelKind::Loop ? index + 1 : index);
             frame().pc = label.continuation;
+            return {};
         }
 
-        void branchTable(Instruction const& instruction)
+        [[nodiscard]] Step branchTable(Instruction const& instruction)
         {
             auto const labels = binary::labelsOf(*frame().code, instruction);
             auto const selector = popI32();
-            branch(selector < labels.size() - 1 ? labels[selector] : labels.back());
+            return transferToLabel(selector < labels.size() - 1 ? labels[selector] : labels.back());
         }
 
         [[nodiscard]] Step ifThen(Instruction const& instruction)
@@ -539,20 +575,35 @@ namespace
         /// clause that does, by tag (by TagAddr, so an imported tag is the tag it imports) or catching
         /// all, gets the operand stack as the try_table found it, pushes what it hands its label and
         /// branches there, as from outside the try_table.
-        /// @return Nothing once caught; Thrown when no frame of this invocation catches it.
+        ///
+        /// It polls at Unwind every runtime::UnwindPollItems labels, catch clauses and frames it
+        /// scans, so a throw past many of them stays interruptible.
+        /// @return Nothing once caught; Thrown when no frame of this invocation catches it; or
+        ///         Trap{Interrupted} from a poll.
         [[nodiscard]] Step unwind(ExnAddr exception)
         {
             auto const& thrown = _store.exception(exception);
+            auto scanned = uint64_t { 0 };
+            auto const scan = [&]() noexcept -> Step {
+                ++scanned;
+                if (scanned % runtime::UnwindPollItems != 0)
+                    return {};
+                return poll(PollSite::Unwind);
+            };
             while (!_frames.empty())
             {
                 while (_labels.size() > frame().labelsBase)
                 {
+                    if (auto const polled = scan(); !polled)
+                        return polled;
                     auto const label = _labels.back();
                     _labels.pop_back();
                     if (label.kind != LabelKind::TryTable)
                         continue;
                     for (auto const& clause: binary::catchClausesOf(*frame().code, *label.tryTable))
                     {
+                        if (auto const polled = scan(); !polled)
+                            return polled;
                         if (!catches(clause, thrown.tag))
                             continue;
                         _values.resize(label.height);
@@ -562,11 +613,12 @@ namespace
                             push(Ref { .kind = RefKind::Exn,
                                        .heap = { .kind = binary::AbstractHeapType::Exn },
                                        .address = exception });
-                        branch(clause.label);
-                        return {};
+                        return transferToLabel(clause.label);
                     }
                 }
                 // No handler in this frame: it ends, and its caller's labels are tried next.
+                if (auto const polled = scan(); !polled)
+                    return polled;
                 auto const ending = frame();
                 _values.resize(ending.valuesBase);
                 _locals.resize(ending.localsBase);
@@ -720,10 +772,18 @@ namespace
             auto const count = popAddress(type);
             auto const value = static_cast<std::byte>(popI32());
             auto const destination = popAddress(type);
-            if (!fits(destination, count, target.bytes().size()))
+            auto const bytes = target.bytes();
+            if (!fits(destination, count, bytes.size()))
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            std::ranges::fill(target.bytes().subspan(destination, count), value);
-            return {};
+            auto poll = granulePoll();
+            return runtime::forEachGranule(count,
+                                           runtime::BulkPollBytes,
+                                           GranuleOrder::Ascending,
+                                           poll,
+                                           [&](uint64_t offset, uint64_t size) {
+                                               std::ranges::fill(bytes.subspan(destination + offset, size),
+                                                                 value);
+                                           });
         }
 
         [[nodiscard]] Step memoryCopy(Instruction const& instruction)
@@ -736,14 +796,23 @@ namespace
             auto const count = popAddress(countType);
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
-            if (!fits(source, count, sourceMemory.bytes().size())
-                || !fits(destination, count, destinationMemory.bytes().size()))
+            auto const sourceBytes = sourceMemory.bytes();
+            auto const destinationBytes = destinationMemory.bytes();
+            if (!fits(source, count, sourceBytes.size())
+                || !fits(destination, count, destinationBytes.size()))
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            if (count != 0)
-                std::memmove(destinationMemory.bytes().data() + destination,
-                             sourceMemory.bytes().data() + source,
-                             count);
-            return {};
+            // Granule by granule, in the order that keeps an overlapping copy within one memory
+            // correct; memmove, as one granule may overlap itself.
+            auto poll = granulePoll();
+            return runtime::forEachGranule(count,
+                                           runtime::BulkPollBytes,
+                                           runtime::copyOrder(source, destination),
+                                           poll,
+                                           [&](uint64_t offset, uint64_t size) {
+                                               std::memmove(destinationBytes.data() + destination + offset,
+                                                            sourceBytes.data() + source + offset,
+                                                            size);
+                                           });
         }
 
         [[nodiscard]] Step memoryInit(Instruction const& instruction)
@@ -753,8 +822,13 @@ namespace
             auto const count = popI32();
             auto const source = popI32();
             auto const destination = popAddress(target.type.limits.addressType);
-            return runtime::copySegment(
-                segment, source, count, target.bytes(), destination, TrapCode::OutOfBoundsMemoryAccess);
+            return runtime::copySegment(segment,
+                                        source,
+                                        count,
+                                        target.bytes(),
+                                        destination,
+                                        TrapCode::OutOfBoundsMemoryAccess,
+                                        granulePoll());
         }
 
         // --- Tables ---
@@ -807,10 +881,18 @@ namespace
             auto const count = popAddress(type);
             auto const value = popRef();
             auto const destination = popAddress(type);
-            if (!fits(destination, count, target.elements.size()))
+            auto const elements = std::span { target.elements };
+            if (!fits(destination, count, elements.size()))
                 return trap(TrapCode::OutOfBoundsTableAccess);
-            std::ranges::fill(std::span { target.elements }.subspan(destination, count), value);
-            return {};
+            auto poll = granulePoll();
+            return runtime::forEachGranule(count,
+                                           runtime::BulkPollElements,
+                                           GranuleOrder::Ascending,
+                                           poll,
+                                           [&](uint64_t offset, uint64_t size) {
+                                               std::ranges::fill(elements.subspan(destination + offset, size),
+                                                                 value);
+                                           });
         }
 
         [[nodiscard]] Step tableCopy(Instruction const& instruction)
@@ -823,16 +905,27 @@ namespace
             auto const count = popAddress(countType);
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
-            if (!fits(source, count, sourceTable.elements.size())
-                || !fits(destination, count, destinationTable.elements.size()))
+            auto const sourceElements = std::span<Ref const> { sourceTable.elements };
+            auto const destinationElements = std::span { destinationTable.elements };
+            if (!fits(source, count, sourceElements.size())
+                || !fits(destination, count, destinationElements.size()))
                 return trap(TrapCode::OutOfBoundsTableAccess);
-            // Through a copy, as the two ranges may overlap within one table.
-            auto const slice =
-                std::vector<Ref>(sourceTable.elements.begin() + static_cast<std::ptrdiff_t>(source),
-                                 sourceTable.elements.begin() + static_cast<std::ptrdiff_t>(source + count));
-            std::ranges::copy(slice,
-                              destinationTable.elements.begin() + static_cast<std::ptrdiff_t>(destination));
-            return {};
+            // Granule by granule, in the order that keeps an overlapping copy within one table
+            // correct, and within a granule in the same direction, as it may overlap itself.
+            auto const order = runtime::copyOrder(source, destination);
+            auto poll = granulePoll();
+            return runtime::forEachGranule(
+                count, runtime::BulkPollElements, order, poll, [&](uint64_t offset, uint64_t size) {
+                    auto const from = sourceElements.subspan(source + offset, size);
+                    auto const to = destinationElements.subspan(destination + offset, size);
+                    // A copy onto itself changes nothing, and std::ranges::copy may not overlap it.
+                    if (from.data() == to.data())
+                        return;
+                    if (order == GranuleOrder::Ascending)
+                        std::ranges::copy(from, to.begin());
+                    else
+                        std::ranges::copy_backward(from, to.end());
+                });
         }
 
         [[nodiscard]] Step tableInit(Instruction const& instruction)
@@ -848,7 +941,8 @@ namespace
                                         count,
                                         std::span { target.elements },
                                         destination,
-                                        TrapCode::OutOfBoundsTableAccess);
+                                        TrapCode::OutOfBoundsTableAccess,
+                                        granulePoll());
         }
 
         // --- Dispatch ---
@@ -975,35 +1069,37 @@ namespace
                 case Opcode::Throw: return throwException(instruction);
                 case Opcode::ThrowRef: return throwReference();
                 case Opcode::End: end(); return {};
-                case Opcode::Br: branch(instruction.a); return {};
+                case Opcode::Br: return transferToLabel(instruction.a);
                 case Opcode::BrIf:
                     if (popI32() != 0)
-                        branch(instruction.a);
+                        return transferToLabel(instruction.a);
                     return {};
-                case Opcode::BrOnNull:
-                    if (auto const reference = popRef(); reference.kind == RefKind::Null)
-                        branch(instruction.a);
-                    else
-                        push(reference);
+                case Opcode::BrOnNull: {
+                    auto const reference = popRef();
+                    if (reference.kind == RefKind::Null)
+                        return transferToLabel(instruction.a);
+                    push(reference);
                     return {};
+                }
                 case Opcode::BrOnNonNull:
                     // A reference branches as its label's last value; a null falls through without it.
                     if (auto const reference = popRef(); reference.kind != RefKind::Null)
                     {
                         push(reference);
-                        branch(instruction.a);
+                        return transferToLabel(instruction.a);
                     }
                     return {};
-                case Opcode::BrTable: branchTable(instruction); return {};
+                case Opcode::BrTable: return branchTable(instruction);
                 case Opcode::Return: doReturn(); return {};
-                case Opcode::Call: return call(instance().functions.at(instruction.a));
+                case Opcode::Call:
+                    return enterCallee(instance().functions.at(instruction.a), callerInstance());
                 case Opcode::CallIndirect:
                     return indirectCallee(instruction).and_then([this](FuncAddr callee) {
-                        return call(callee);
+                        return enterCallee(callee, callerInstance());
                     });
                 case Opcode::CallRef:
                     return referencedCallee(instruction).and_then([this](FuncAddr callee) {
-                        return call(callee);
+                        return enterCallee(callee, callerInstance());
                     });
                 case Opcode::ReturnCall: return tailCall(instance().functions.at(instruction.a));
                 case Opcode::ReturnCallIndirect:

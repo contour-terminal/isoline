@@ -16,6 +16,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -163,6 +164,9 @@ struct StoreServices
     /// The guard region every memory must declare after its bytes (ILinearMemory::guardBytes()): a
     /// memory with a smaller one is refused with Guard. 0 requires none, as HeapMemoryAllocator has.
     uint64_t requiredGuardBytes = 0;
+
+    /// Observes every poll (Store::poll()); none when null. Referenced, so it must outlive the store.
+    IPollObserver* pollObserver = nullptr;
 };
 
 /// The store: every function, table, memory, global and module instance, addressed by index.
@@ -180,8 +184,8 @@ class Store
   public:
     /// Constructs an empty store.
     /// @param limits What execution and the store's entities may claim.
-    /// @param services What the store allocates memories through; referenced, so it must outlive the
-    ///                 store.
+    /// @param services What the store allocates memories through and who observes its polls;
+    ///                 referenced, so they must outlive the store.
     explicit Store(StoreLimits limits, StoreServices services);
 
     /// A store's instances are addressed by index and its types handed out by reference (type()),
@@ -313,6 +317,24 @@ class Store
     /// @return Their count; 0 when no host function is running.
     [[nodiscard]] uint32_t hostCallsInProgress() const noexcept;
 
+    /// The store's interrupt, created with it. Shared, so that a watchdog on another thread may keep
+    /// it past the store's lifetime.
+    /// @return The interrupter; never null.
+    [[nodiscard]] std::shared_ptr<Interrupter> const& interrupter() const noexcept { return _interrupter; }
+
+    /// Polls: what an executor calls at every PollSite. It notifies the poll observer, then checks
+    /// the interrupt.
+    /// @param site Where execution polls.
+    /// @return Nothing to go on; or Trap{Interrupted} once the store was interrupted.
+    [[nodiscard]] std::expected<void, Trap> poll(PollSite site) noexcept
+    {
+        if (_pollObserver != nullptr)
+            _pollObserver->onPoll(site);
+        if (_interrupter->state() == InterruptState::Interrupted)
+            return trap(TrapCode::Interrupted);
+        return {};
+    }
+
     /// How many module instances the store holds.
     /// @return Their count.
     [[nodiscard]] std::size_t moduleInstanceCount() const noexcept;
@@ -430,6 +452,8 @@ class Store
 
     IMemoryAllocator* _allocator;
     uint64_t _requiredGuardBytes;
+    IPollObserver* _pollObserver;
+    std::shared_ptr<Interrupter> _interrupter;
     StoreLimits _limits;
     GrowthRecord _growthRecord;    ///< The current refusal scope's first refused grow per kind.
     uint64_t _exceptionValues = 0; ///< The payload values of every exception held.

@@ -179,6 +179,8 @@ MemoryInstance::MemoryInstance(binary::MemoryType type, std::unique_ptr<ILinearM
 Store::Store(StoreLimits limits, StoreServices services):
     _allocator { &services.allocator },
     _requiredGuardBytes { services.requiredGuardBytes },
+    _pollObserver { services.pollObserver },
+    _interrupter { std::make_shared<Interrupter>() },
     _limits { limits },
     _growthRecord {}
 {

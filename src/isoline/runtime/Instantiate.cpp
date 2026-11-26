@@ -21,6 +21,7 @@
 #include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -148,8 +149,11 @@ namespace
             Require(_imports.size() <= _module->imports.size());
         }
 
+        /// Instantiates, polling at Instantiation first: an interrupted store instantiates nothing.
         [[nodiscard]] std::expected<uint32_t, InstantiationError> run()
         {
+            if (auto const polled = _store.poll(PollSite::Instantiation); !polled)
+                return std::unexpected { InstantiationError { polled.error() } };
             resolveTypes();
             return checkImports()
                 .and_then([this] { return allocate(); })
@@ -419,6 +423,17 @@ namespace
             return {};
         }
 
+        /// Polls at BulkGranule before every BulkPollElements items of an element segment's
+        /// evaluation, the first included, whichever their encoding.
+        /// @param item The index of the item about to be evaluated.
+        /// @return Nothing to go on, or Trap{Interrupted}.
+        [[nodiscard]] std::expected<void, Trap> pollItem(std::size_t item) noexcept
+        {
+            if (item % BulkPollElements != 0)
+                return {};
+            return _store.poll(PollSite::BulkGranule);
+        }
+
         /// The references @p segment's items evaluate to.
         [[nodiscard]] std::expected<std::vector<Ref>, Trap> referencesOf(ElementSegment const& segment)
         {
@@ -426,16 +441,22 @@ namespace
             if (auto const* indices = std::get_if<std::vector<uint32_t>>(&segment.items))
             {
                 refs.reserve(indices->size());
-                for (auto const index: *indices)
+                for (auto const [item, index]: core::views::enumerate(*indices))
+                {
+                    if (auto const polled = pollItem(item); !polled)
+                        return std::unexpected { polled.error() };
                     refs.push_back(Ref { .kind = RefKind::Func,
                                          .heap = { .kind = binary::AbstractHeapType::Func },
                                          .address = instance().functions[index] });
+                }
                 return refs;
             }
             auto const& expressions = std::get<std::vector<ConstExpr>>(segment.items);
             refs.reserve(expressions.size());
-            for (auto const& expression: expressions)
+            for (auto const [item, expression]: core::views::enumerate(expressions))
             {
+                if (auto const polled = pollItem(item); !polled)
+                    return std::unexpected { polled.error() };
                 auto const value = evaluate(expression);
                 if (!value)
                     return std::unexpected { value.error() };
@@ -464,6 +485,14 @@ namespace
 
         // --- Initialization ---
 
+        /// What a segment copy polls before each granule.
+        [[nodiscard]] auto granulePoll() noexcept
+        {
+            return [this]() noexcept {
+                return _store.poll(PollSite::BulkGranule);
+            };
+        }
+
         /// Copies each active element segment into its table, as table.init then elem.drop; drops
         /// each declarative one. Traps at the first segment out of the table's bounds.
         [[nodiscard]] Step initializeTables()
@@ -485,7 +514,8 @@ namespace
                                                         refs.size(),
                                                         std::span { elements },
                                                         addressOf(*offset),
-                                                        TrapCode::OutOfBoundsTableAccess);
+                                                        TrapCode::OutOfBoundsTableAccess,
+                                                        granulePoll());
                         !copied)
                         return std::unexpected { copied.error() };
                 }
@@ -513,7 +543,8 @@ namespace
                                                     source.size(),
                                                     bytes,
                                                     addressOf(*offset),
-                                                    TrapCode::OutOfBoundsMemoryAccess);
+                                                    TrapCode::OutOfBoundsMemoryAccess,
+                                                    granulePoll());
                     !copied)
                     return std::unexpected { copied.error() };
                 instance().data[index].reset();
@@ -525,6 +556,8 @@ namespace
         {
             if (!module().start)
                 return {};
+            if (auto const polled = _store.poll(PollSite::Instantiation); !polled)
+                return std::unexpected { InstantiationError { polled.error() } };
             auto const function = instance().functions[*module().start];
             return _executor.invoke(_store, function, {}, {}).transform_error([](Abrupt const& abrupt) {
                 return std::visit([](auto const& outcome) { return InstantiationError { outcome }; }, abrupt);
