@@ -11,6 +11,8 @@ target_sources(isoline_core
         binary/ByteReader.cpp
         binary/Decoder.cpp
         binary/Opcode.cpp
+        interp/Numerics.cpp
+        interp/ReferenceInterpreter.cpp
         runtime/Instantiate.cpp
         runtime/Store.cpp
         validate/Validator.cpp
@@ -26,6 +28,8 @@ target_sources(isoline_core
             binary/Opcode.hpp
             binary/Opcodes.def
             binary/Types.hpp
+            interp/Numerics.hpp
+            interp/ReferenceInterpreter.hpp
             runtime/Instantiate.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
