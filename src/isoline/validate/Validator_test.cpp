@@ -1590,3 +1590,59 @@ TEST_CASE("Validator.branchOnNullErrorOrder")
     CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0x1B, 0xD5, 0x00, 0x8B, 0x1A })
           == ValidationErrorCode::TypeMismatch);
 }
+
+TEST_CASE("Validator.returnCallResultMismatch")
+{
+    using isoline::binary::ValueType;
+    // Function 0, of results @p caller, tail-calls function 1, of params @p params and results @p callee.
+    auto const tailCalling = [](std::vector<ValueType> callee,
+                                std::vector<ValueType> caller = { I32 },
+                                std::vector<uint8_t> body = { 0x12, 0x01 },
+                                std::vector<ValueType> params = {}) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType { .params = {}, .results = std::move(caller) })
+            .type(FuncType { .params = std::move(params), .results = std::move(callee) })
+            .function(0, {}, std::move(body))
+            .function(1, {}, { 0x00 });
+        return errorOf(builder, FeatureSet::wasm3());
+    };
+    CHECK(tailCalling({ I32 }) == std::nullopt);
+    CHECK(tailCalling({ I64 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(tailCalling({}) == ValidationErrorCode::TypeMismatch);
+    CHECK(tailCalling({ I32, I32 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(tailCalling({}, {}) == std::nullopt);
+    // The callee's results need only be subtypes of the caller's.
+    CHECK(tailCalling({ NonNullFunc }, { FuncRef }) == std::nullopt);
+    CHECK(tailCalling({ FuncRef }, { NonNullFunc }) == ValidationErrorCode::TypeMismatch);
+    // The arguments are popped, and the stack is polymorphic afterwards: anything may follow.
+    CHECK(tailCalling({ I32 }, { I32 }, { 0x41, 0x05, 0x12, 0x01 }, { I32 }) == std::nullopt);
+    CHECK(tailCalling({ I32 }, { I32 }, { 0x12, 0x01 }, { I32 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(tailCalling({ I32 }, { I32 }, { 0x12, 0x01, 0x1A, 0x42, 0x00, 0x1A }) == std::nullopt);
+    CHECK(tailCalling({ I32 }, { I32 }, { 0x12, 0x07 }) == ValidationErrorCode::UnknownFunction);
+
+    // return_call_indirect: as call_indirect, then the same result check.
+    auto const indirect = [](std::vector<ValueType> callee, ValueType element = FuncRef) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType { .params = {}, .results = { I32 } })
+            .type(FuncType { .params = {}, .results = std::move(callee) })
+            .table(TableType { .element = element, .limits = atLeast(1) })
+            .function(0, {}, { 0x41, 0x00, 0x13, 0x01, 0x00 });
+        return errorOf(builder, FeatureSet::wasm3());
+    };
+    CHECK(indirect({ I32 }) == std::nullopt);
+    CHECK(indirect({ I64 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(indirect({ I32 }, isoline::binary::ExternRef) == ValidationErrorCode::TypeMismatch);
+
+    // return_call_ref: as call_ref, then the same result check. Type 0 is [] -> [i32].
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = { I32 } },
+                              { 0x20, 0x00, 0x15, 0x00 })
+          == std::nullopt);
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = { I64 } },
+                              { 0x20, 0x00, 0x15, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType { .params = { FuncRef }, .results = { I32 } },
+                              { 0x20, 0x00, 0x15, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType { .params = {}, .results = { I32 } }, { 0x15, 0x09 })
+          == ValidationErrorCode::UnknownType);
+}

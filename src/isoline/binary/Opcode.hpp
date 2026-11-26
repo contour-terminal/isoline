@@ -279,7 +279,7 @@ static_assert(
 
 /// Every instruction Isoline decodes, one enumerator per row of Opcodes.def, in its order.
 ///
-/// The 465 rows do not fit a byte, so the base type is uint16_t.
+/// The 468 rows do not fit a byte, so the base type is uint16_t.
 enum class Opcode : uint16_t
 {
 #define ISOLINE_OPCODE(Name, Prefix, Code, Text, Immediate, Signature, Proposal) Name,
@@ -301,15 +301,47 @@ struct OpcodeInfo
     ImmediateKind immediate;   ///< What follows it in the binary format.
     OpcodeSignature signature; ///< Its fixed operand and result types, or Special.
 
-    /// The proposal that introduced it, which must be enabled for it to decode; nullopt for the MVP.
+    /// The proposal Isoline files it under; nullopt for the MVP. Usually the one that introduced
+    /// it; return_call_ref is filed under TailCall, with a cross-requirement on typed function
+    /// references (OpcodeCrossRequirements).
     std::optional<Feature> proposal;
+
+    /// Every feature that must be enabled for it to decode: its proposal, and any proposal
+    /// OpcodeCrossRequirements names for it.
+    FeatureSet required;
 };
+
+/// A proposal an instruction builds on besides the one that introduced it.
+struct OpcodeCrossRequirement
+{
+    Opcode opcode;   ///< The instruction.
+    Feature feature; ///< The other proposal, which must be enabled for it to decode too.
+};
+
+/// Every instruction that builds on a second proposal, one row per pair. The decoder requires both,
+/// as it does an instruction's own proposal: an instruction whose operands need a disabled proposal
+/// is as unknown as one of a disabled proposal.
+///
+/// return_call_ref is tail calls' tail form of call_ref, whose operand is a typed function reference.
+inline constexpr auto OpcodeCrossRequirements = std::to_array<OpcodeCrossRequirement>({
+    { .opcode = Opcode::ReturnCallRef, .feature = Feature::TypedFunctionReferences },
+});
 
 namespace detail::proposal
 {
     /// What Opcodes.def's Proposal column names: Mvp, or a Feature enumerator, spelled bare.
     inline constexpr auto Mvp = std::optional<Feature> {};
     using enum Feature;
+
+    /// The features @p opcode needs to decode: @p proposal and its OpcodeCrossRequirements.
+    [[nodiscard]] consteval FeatureSet requiredFor(Opcode opcode, std::optional<Feature> proposal) noexcept
+    {
+        auto required = proposal ? FeatureSet::none().with(*proposal) : FeatureSet::none();
+        for (auto const& row: OpcodeCrossRequirements)
+            if (row.opcode == opcode)
+                required = required.with(row.feature);
+        return required;
+    }
 } // namespace detail::proposal
 
 /// Every instruction's information, one row per Opcode enumerator, in enumerator order.
@@ -321,7 +353,8 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
       .text = (Text),                                                            \
       .immediate = ImmediateKind::Immediate,                                     \
       .signature = OpcodeSignature::Signature,                                   \
-      .proposal = std::optional<Feature> { detail::proposal::Proposal } },
+      .proposal = std::optional<Feature> { detail::proposal::Proposal },         \
+      .required = detail::proposal::requiredFor(Opcode::Name, detail::proposal::Proposal) },
 #include <isoline/binary/Opcodes.def>
 #undef ISOLINE_OPCODE
 });
@@ -329,9 +362,9 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
-static_assert(OpcodeCount == 465,
+static_assert(OpcodeCount == 468,
               "every non-SIMD WebAssembly 2.0 instruction (201), SIMD's 236, relaxed SIMD's 20, wide "
-              "arithmetic's four and typed function references' four");
+              "arithmetic's four, typed function references' four and tail calls' three");
 
 /// What the table knows about @p opcode.
 /// @param opcode The instruction to describe.

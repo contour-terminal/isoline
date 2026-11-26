@@ -48,9 +48,9 @@ TEST_CASE("Opcode.knownEncodings")
     CHECK(opcodeInfo(Opcode::I8x16Shuffle).immediate == isoline::binary::ImmediateKind::Shuffle);
     CHECK(opcodeInfo(Opcode::V128Store64Lane).immediate == isoline::binary::ImmediateKind::MemArgLane);
     CHECK(opcodeInfo(Opcode::I16x8ExtractLaneU).immediate == isoline::binary::ImmediateKind::LaneIndex);
-    // 465 opcodes do not fit a byte.
+    // 468 opcodes do not fit a byte.
     STATIC_CHECK(std::is_same_v<std::underlying_type_t<Opcode>, uint16_t>);
-    CHECK(isoline::binary::OpcodeCount == 465);
+    CHECK(isoline::binary::OpcodeCount == 468);
 }
 
 TEST_CASE("Opcode.typedFunctionReferenceEncodings")
@@ -89,9 +89,44 @@ TEST_CASE("Opcode.typedFunctionReferenceEncodings")
         CHECK(opcodeInfo(row.opcode).immediate == row.immediate);
         CHECK(opcodeInfo(row.opcode).signature == isoline::binary::OpcodeSignature::Special);
     }
-    // 0xD3 is GC's ref.eq, and 0x15 tail calls' return_call_ref: neither is a row.
+    // 0xD3 is GC's ref.eq, which is no row.
     CHECK(lookupOpcode(0x00, 0xD3) == std::nullopt);
-    CHECK(lookupOpcode(0x00, 0x15) == std::nullopt);
+}
+
+TEST_CASE("Opcode.tailCallEncodings")
+{
+    using isoline::binary::ImmediateKind;
+    struct Row
+    {
+        uint8_t code;
+        Opcode opcode;
+        std::string_view text;
+        ImmediateKind immediate;
+    };
+    // Each takes the immediate of the call it is the tail form of.
+    auto const rows = std::to_array<Row>({
+        { .code = 0x12,
+          .opcode = Opcode::ReturnCall,
+          .text = "return_call",
+          .immediate = ImmediateKind::FunctionIndex },
+        { .code = 0x13,
+          .opcode = Opcode::ReturnCallIndirect,
+          .text = "return_call_indirect",
+          .immediate = ImmediateKind::CallIndirect },
+        { .code = 0x15,
+          .opcode = Opcode::ReturnCallRef,
+          .text = "return_call_ref",
+          .immediate = ImmediateKind::TypeIndex },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(row.text);
+        CHECK(lookupOpcode(0x00, row.code) == row.opcode);
+        CHECK(opcodeInfo(row.opcode).text == row.text);
+        CHECK(opcodeInfo(row.opcode).immediate == row.immediate);
+        CHECK(opcodeInfo(row.opcode).signature == isoline::binary::OpcodeSignature::Special);
+        CHECK(opcodeInfo(row.opcode).proposal == isoline::Feature::TailCall);
+    }
 }
 
 TEST_CASE("Opcode.relaxedEncodings")
@@ -356,8 +391,7 @@ TEST_CASE("Opcode.encodingRanges")
     };
     auto const ranges = std::to_array<EncodingRange>({
         { .prefix = 0x00, .first = 0x00, .last = 0x05 }, // unreachable .. else
-        { .prefix = 0x00, .first = 0x0B, .last = 0x11 }, // end .. call_indirect
-        { .prefix = 0x00, .first = 0x14, .last = 0x14 }, // call_ref
+        { .prefix = 0x00, .first = 0x0B, .last = 0x15 }, // end .. return_call_ref
         { .prefix = 0x00, .first = 0x1A, .last = 0x1C }, // drop, select, typed select
         { .prefix = 0x00, .first = 0x20, .last = 0x26 }, // local.get .. table.set
         { .prefix = 0x00, .first = 0x28, .last = 0x40 }, // loads, stores, memory.size, memory.grow
@@ -437,11 +471,27 @@ TEST_CASE("Opcode.proposals")
         { .opcode = Opcode::RefAsNonNull, .proposal = Feature::TypedFunctionReferences },
         { .opcode = Opcode::BrOnNull, .proposal = Feature::TypedFunctionReferences },
         { .opcode = Opcode::BrOnNonNull, .proposal = Feature::TypedFunctionReferences },
+        { .opcode = Opcode::ReturnCall, .proposal = Feature::TailCall },
+        { .opcode = Opcode::ReturnCallIndirect, .proposal = Feature::TailCall },
+        { .opcode = Opcode::ReturnCallRef, .proposal = Feature::TailCall },
     });
     for (auto const& row: rows)
     {
         INFO(opcodeInfo(row.opcode).text);
         CHECK(opcodeInfo(row.opcode).proposal == row.proposal);
+    }
+    // What an instruction needs to decode is its proposal, plus whatever else its operands build on:
+    // return_call_ref calls through a typed function reference.
+    using isoline::FeatureSet;
+    CHECK(opcodeInfo(Opcode::I32Add).required == FeatureSet::none());
+    CHECK(opcodeInfo(Opcode::CallRef).required == FeatureSet::none().with(Feature::TypedFunctionReferences));
+    CHECK(opcodeInfo(Opcode::ReturnCall).required == FeatureSet::none().with(Feature::TailCall));
+    CHECK(opcodeInfo(Opcode::ReturnCallRef).required
+          == FeatureSet::none().with(Feature::TailCall).with(Feature::TypedFunctionReferences));
+    for (auto const& row: OpcodeTable)
+    {
+        INFO(row.text);
+        CHECK((!row.proposal || row.required.has(*row.proposal)));
     }
     // Every prefixed instruction of P1 came after the MVP, whose encodings are all single bytes.
     for (auto const& row: OpcodeTable)

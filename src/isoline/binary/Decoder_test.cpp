@@ -1060,6 +1060,44 @@ TEST_CASE("Decoder.typeIndexImmediate")
     }
 }
 
+TEST_CASE("Decoder.tailCallsNeedTheirFeatures")
+{
+    // return_call 1, return_call_indirect type 2 table 3, return_call_ref type 4.
+    auto const function =
+        functionOf(functionWith({ 0x12, 0x01, 0x13, 0x02, 0x03, 0x15, 0x04 }), FeatureSet::wasm3());
+    REQUIRE(function.body.size() == 4);
+    CHECK(function.body[0].opcode == Opcode::ReturnCall);
+    CHECK(function.body[0].a == 1);
+    CHECK(function.body[1].opcode == Opcode::ReturnCallIndirect);
+    CHECK(function.body[1].a == 2);
+    CHECK(function.body[1].b == 3);
+    CHECK(function.body[2].opcode == Opcode::ReturnCallRef);
+    CHECK(function.body[2].a == 4);
+
+    // Each needs tail calls; return_call_ref calls through a typed reference, so it needs typed
+    // function references too.
+    struct Row
+    {
+        std::vector<uint8_t> body;
+        Feature disabled;
+    };
+    auto const rows = std::to_array<Row>({
+        { .body = { 0x12, 0x00 }, .disabled = Feature::TailCall },
+        { .body = { 0x13, 0x00, 0x00 }, .disabled = Feature::TailCall },
+        { .body = { 0x15, 0x00 }, .disabled = Feature::TailCall },
+        { .body = { 0x15, 0x00 }, .disabled = Feature::TypedFunctionReferences },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(int { row.body.front() } << " without " << static_cast<int>(row.disabled));
+        CHECK(errorOf(functionWith(row.body), FeatureSet::wasm3().without(row.disabled))
+              == DecodeErrorCode::IllegalOpcode);
+    }
+    CHECK_FALSE(
+        errorOf(functionWith({ 0x12, 0x00 }), FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
+            .has_value());
+}
+
 TEST_CASE("Decoder.v128ConstGoesToSideTable")
 {
     // v128.const 0x00 .. 0x0F, in a global's initializer and again (0x10 .. 0x1F) in a body.
@@ -1562,7 +1600,8 @@ TEST_CASE("Decoder.refusesAFeatureSetMissingAPrerequisite")
 
 TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
 {
-    // Driven by the opcode table, so a row added with the wrong proposal, or none, fails here.
+    // Driven by the opcode table, so a row added with the wrong proposal, or none, fails here, and so
+    // does one whose OpcodeCrossRequirements the decoder ignores.
     using isoline::binary::ImmediateKind;
     for (auto const& row: isoline::binary::OpcodeTable)
     {
@@ -1583,7 +1622,17 @@ TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
             row.immediate == ImmediateKind::DataIndex || row.immediate == ImmediateKind::MemoryInit;
         auto const accepted = namesDataSegment ? std::optional { DecodeErrorCode::DataCountSectionRequired }
                                                : std::optional<DecodeErrorCode> {};
-        CHECK(errorOf(bytes, FeatureSet::none().with(*row.proposal).withPrerequisites()) == accepted);
+        auto const enabled = row.required.withPrerequisites();
+        CHECK(errorOf(bytes, enabled) == accepted);
+        // Every feature it requires, its proposal's and any other's, is needed: without any one of
+        // them it is unknown.
+        for (auto const& feature: isoline::FeatureTable)
+        {
+            if (!row.required.has(feature.feature))
+                continue;
+            INFO("without " << feature.name);
+            CHECK(errorOf(bytes, enabled.without(feature.feature)) == DecodeErrorCode::IllegalOpcode);
+        }
     }
 }
 

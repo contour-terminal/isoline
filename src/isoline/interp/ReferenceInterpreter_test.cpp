@@ -1376,3 +1376,123 @@ TEST_CASE("Interpreter.callRefOfAHostReference")
     };
     CHECK(harness.result(1) == i32(7));
 }
+
+namespace
+{
+
+/// return_call @p index.
+Bytes returnCall(uint32_t index)
+{
+    return code({ { 0x12 }, encodeU32(index) });
+}
+
+/// A function [i64] -> [i64] counting its parameter down to 0, calling itself with @p self per step:
+/// local.get 0 i64.eqz if (result i64) i64.const 0 else <step> end, where the step, local.get 0
+/// i64.const 1 i64.sub <self>, sits inside @p blocks nested blocks of result i64.
+Bytes countDown(Bytes const& self, uint32_t blocks = 0)
+{
+    auto step = code({ localGet(0), i64Const(1), { 0x7D }, self });
+    for ([[maybe_unused]] auto const block: std::views::iota(0U, blocks))
+        step = code({ { 0x02, 0x7E }, step, { 0x0B } });
+    return code({ localGet(0), { 0x50, 0x04, 0x7E }, i64Const(0), { 0x05 }, step, { 0x0B } });
+}
+
+} // namespace
+
+TEST_CASE("Interpreter.tailCallDoesNotGrowDepth")
+{
+    // A store allowing 100 frames: a million tail calls run in one frame, where plain calls trap.
+    // The tail call sits in 5 blocks: were their labels left behind, a million calls would leave 6
+    // million, past the stacks' budget of 4 Mi entries, and trap.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64 }, { TypeI64 }))
+        .function(0, {}, countDown(returnCall(0), 5))
+        .function(0, {}, countDown(call(1)));
+    auto harness = Harness { builder, {}, 100 };
+    CHECK(harness.result(0, { I64 { 1'000'000 } }) == Value { I64 { 0 } });
+    CHECK(harness.result(1, { I64 { 98 } }) == Value { I64 { 0 } });
+    CHECK(harness.trap(1, { I64 { 100 } }) == TrapCode::CallStackExhausted);
+    // The frames given back: the depth is what it was, so the deepest plain recursion still runs.
+    CHECK(harness.result(1, { I64 { 98 } }) == Value { I64 { 0 } });
+    CHECK(harness.result(0, { I64 { 0 } }) == Value { I64 { 0 } });
+}
+
+TEST_CASE("Interpreter.tailCallKeepsLocalsBounded")
+{
+    // 50'000 locals per frame exhaust the stacks' budget after about 80 plain calls; a tail call
+    // frees the frame's locals before the callee's are pushed, so a thousand of them complete.
+    auto const locals = std::vector<ValueType>(50'000, TypeI64);
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64 }, { TypeI64 }))
+        .function(0, locals, countDown(returnCall(0)))
+        .function(0, locals, countDown(call(1)));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0, { I64 { 1'000 } }) == Value { I64 { 0 } });
+    CHECK(harness.trap(1, { I64 { 1'000 } }) == TrapCode::CallStackExhausted);
+}
+
+TEST_CASE("Interpreter.returnCallToHost")
+{
+    // Function 1 tail-calls the host import 0 over an operand of its own, and what follows the
+    // return_call never runs; function 2 calls 1 with a value beneath, which the tail call leaves in
+    // place: 1's frame returns with the host's results only.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .importFunction("env", "seven", 0)
+        .function(0, {}, code({ i32Const(99), returnCall(0), i32Const(13) }))
+        .function(0, {}, code({ i32Const(35), call(1), { 0x6A } })); // i32.add
+    auto harness =
+        Harness { builder, [](Store& store) {
+                     auto const seven = store.addHostFunction(
+                         signature({}, { TypeI32 }),
+                         [](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
+                             results[0] = I32 { 7 };
+                             return {};
+                         });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = seven } };
+                 } };
+    CHECK(harness.result(1) == i32(7));
+    CHECK(harness.result(2) == i32(42));
+}
+
+TEST_CASE("Interpreter.returnCallMovesArgumentsOverOperands")
+{
+    // Function 1 leaves 99 beneath its argument, local 0, and tail-calls the identity function 0:
+    // the callee's parameter is the local, not the 99 the frame's operands begin with.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, { TypeI32 }))
+        .function(0, {}, localGet(0))
+        .function(0, {}, code({ i32Const(99), localGet(0), returnCall(0) }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(1, { i32(5) }) == i32(5));
+}
+
+TEST_CASE("Interpreter.returnCallIndirectTrapsAsCallIndirect")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .type(signature({ TypeI32 }, { TypeI32 }))
+        .table(TableType { .element = FuncRef, .limits = atLeast(3) })
+        .function(0, {}, i32Const(7))                                 // 0: () -> i32
+        .function(1, {}, localGet(0))                                 // 1: (i32) -> i32
+        .function(1, {}, code({ localGet(0), { 0x13, 0x00, 0x00 } })) // 2: return_call_indirect type 0
+        .element(activeElements(0, { 0x00, 0x01 }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(2, { i32(0) }) == i32(7));
+    CHECK(harness.trap(2, { i32(1) }) == TrapCode::IndirectCallTypeMismatch);
+    CHECK(harness.trap(2, { i32(2) }) == TrapCode::UninitializedElement);
+    CHECK(harness.trap(2, { i32(3) }) == TrapCode::UndefinedElement);
+    auto const undefined = harness.invoke(2, { i32(3) });
+    REQUIRE_FALSE(undefined.has_value());
+    CHECK(isoline::runtime::specMessage(undefined.error()) == "undefined element 3");
+}
+
+TEST_CASE("Interpreter.returnCallRefTrapsOnNull")
+{
+    // Function 1 tail-calls its (ref null 0) argument; 2 passes it function 0, 3 a null.
+    auto harness =
+        Harness { typedReferenceModule({ code({ localGet(0), { 0x15, 0x00 } }) },
+                                       { code({ refFunc0(), call(1) }), code({ refNull0(), call(1) }) }) };
+    CHECK(harness.result(2) == i32(7));
+    CHECK(harness.trap(3) == TrapCode::NullFunctionReference);
+}

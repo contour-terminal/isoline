@@ -821,6 +821,17 @@ wasm3 core/obsolete-keywords:56: assert_malformed of a text module
 wasm3 core/obsolete-keywords:64: assert_malformed of a text module
 wasm3 core/obsolete-keywords:71: assert_malformed of a text module
 wasm3 core/obsolete-keywords:78: assert_malformed of a text module
+wasm3 core/return_call_indirect:301: assert_malformed of a text module
+wasm3 core/return_call_indirect:313: assert_malformed of a text module
+wasm3 core/return_call_indirect:325: assert_malformed of a text module
+wasm3 core/return_call_indirect:337: assert_malformed of a text module
+wasm3 core/return_call_indirect:349: assert_malformed of a text module
+wasm3 core/return_call_indirect:361: assert_malformed of a text module
+wasm3 core/return_call_indirect:373: assert_malformed of a text module
+wasm3 core/return_call_indirect:380: assert_malformed of a text module
+wasm3 core/return_call_indirect:390: assert_malformed of a text module
+wasm3 core/return_call_indirect:400: assert_malformed of a text module
+wasm3 core/return_call_indirect:412: assert_malformed of a text module
 wasm3 core/simd/simd_address:113: assert_malformed of a text module
 wasm3 core/simd/simd_address:131: assert_malformed of a text module
 wasm3 core/simd/simd_address:144: assert_invalid of a text module

@@ -866,15 +866,10 @@ namespace
                         return call(_context.functionType(instruction.a));
                     });
                 case Opcode::CallIndirect:
-                    return _context.table(instruction.b).and_then([&](TableType const* table) {
-                        return _context.type(instruction.a)
-                            .and_then([this, table] {
-                                return check(_context.matches(table->element, binary::FuncRef),
-                                             ValidationErrorCode::TypeMismatch);
-                            })
-                            .and_then([&] { return pop(addressOf(table)); })
-                            .and_then(
-                                [&](Operand const&) { return call(_context.module.types[instruction.a]); });
+                    return indirectTable(instruction).and_then([&](TableType const* table) {
+                        return pop(addressOf(table)).and_then([&](Operand const&) {
+                            return call(_context.module.types[instruction.a]);
+                        });
                     });
 
                 case Opcode::CallRef:
@@ -882,6 +877,24 @@ namespace
                         .and_then(
                             [&] { return pop(binary::concreteRef(instruction.a, binary::Nullable::Yes)); })
                         .and_then([&](Operand const&) { return call(_context.module.types[instruction.a]); });
+
+                // The tail forms, as valid.ml: what a call checks of its immediates, then the callee's
+                // results against the function's, then the call's operands popped, and the stack
+                // polymorphic afterwards.
+                case Opcode::ReturnCall:
+                    return _context.function(instruction.a).and_then([&] {
+                        return tailCall(body, _context.functionType(instruction.a), std::nullopt);
+                    });
+                case Opcode::ReturnCallIndirect:
+                    return indirectTable(instruction).and_then([&](TableType const* table) {
+                        return tailCall(body, _context.module.types[instruction.a], addressOf(table));
+                    });
+                case Opcode::ReturnCallRef:
+                    return _context.type(instruction.a).and_then([&] {
+                        return tailCall(body,
+                                        _context.module.types[instruction.a],
+                                        binary::concreteRef(instruction.a, binary::Nullable::Yes));
+                    });
 
                 case Opcode::Drop: return pop().transform([](Operand const&) {});
                 case Opcode::Select: return select();
@@ -1035,6 +1048,40 @@ namespace
         [[nodiscard]] Check call(FuncType const& type)
         {
             return popAll(type.params).transform([&] { pushAll(type.results); });
+        }
+
+        /// The table call_indirect and return_call_indirect name: known, of functions, and the type
+        /// they name known too.
+        [[nodiscard]] std::expected<TableType const*, Fault> indirectTable(
+            Instruction const& instruction) const
+        {
+            return _context.table(instruction.b)
+                .and_then([&](TableType const* table) -> std::expected<TableType const*, Fault> {
+                    return _context.type(instruction.a)
+                        .and_then([this, table] {
+                            return check(_context.matches(table->element, binary::FuncRef),
+                                         ValidationErrorCode::TypeMismatch);
+                        })
+                        .transform([table] { return table; });
+                });
+        }
+
+        /// Types a tail call of @p type from @p body: its results must match the function's, then
+        /// @p callee, the operand naming the callee if any, is popped, and the parameters beneath it.
+        [[nodiscard]] Check tailCall(Body const& body, FuncType const& type, std::optional<ValueType> callee)
+        {
+            auto const returnable = std::ranges::equal(
+                type.results, body.results, [this](auto const& result, auto const& expected) {
+                    return _context.matches(result, expected);
+                });
+            return check(returnable, ValidationErrorCode::TypeMismatch)
+                .and_then([&]() -> Check {
+                    if (!callee)
+                        return {};
+                    return pop(*callee).transform([](Operand const&) {});
+                })
+                .and_then([&] { return popAll(type.params); })
+                .transform([this] { markUnreachable(); });
         }
 
         [[nodiscard]] Check select()

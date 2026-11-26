@@ -15,13 +15,15 @@
 //            instructions.
 // Proposal   the Feature enumerator naming the proposal that introduced the instruction, which the
 //            decoder requires enabled, or Mvp for an instruction of the MVP. Every row names one, so
-//            a new row cannot decode ungated by accident.
+//            a new row cannot decode ungated by accident. An instruction that builds on a second
+//            proposal names it in Opcode.hpp's OpcodeCrossRequirements, which the decoder requires
+//            enabled too.
 //
 // Adding an instruction is adding a row here: the Opcode enum, OpcodeTable and the lookup arrays
 // are all generated from it. The file has no include guard; each includer defines ISOLINE_OPCODE.
 //
 // It holds every WebAssembly 2.0 instruction, SIMD's 236 included, relaxed SIMD's 20, the
-// wide-arithmetic proposal's four and typed function references' four.
+// wide-arithmetic proposal's four, typed function references' four and tail calls' three.
 
 // Control instructions
 ISOLINE_OPCODE(Unreachable, 0x00, 0x00, "unreachable", None, Special, Mvp)
@@ -37,7 +39,10 @@ ISOLINE_OPCODE(BrTable, 0x00, 0x0E, "br_table", LabelTable, Special, Mvp)
 ISOLINE_OPCODE(Return, 0x00, 0x0F, "return", None, Special, Mvp)
 ISOLINE_OPCODE(Call, 0x00, 0x10, "call", FunctionIndex, Special, Mvp)
 ISOLINE_OPCODE(CallIndirect, 0x00, 0x11, "call_indirect", CallIndirect, Special, Mvp)
+ISOLINE_OPCODE(ReturnCall, 0x00, 0x12, "return_call", FunctionIndex, Special, TailCall)
+ISOLINE_OPCODE(ReturnCallIndirect, 0x00, 0x13, "return_call_indirect", CallIndirect, Special, TailCall)
 ISOLINE_OPCODE(CallRef, 0x00, 0x14, "call_ref", TypeIndex, Special, TypedFunctionReferences)
+ISOLINE_OPCODE(ReturnCallRef, 0x00, 0x15, "return_call_ref", TypeIndex, Special, TailCall)
 
 // Parametric instructions
 ISOLINE_OPCODE(Drop, 0x00, 0x1A, "drop", None, Special, Mvp)

@@ -77,7 +77,7 @@ src/isoline/binary/Opcode.hpp               100.00 -
 src/isoline/binary/TypeCanon.cpp            100.00 80.00
 src/isoline/binary/Types.hpp                100.00 100.00
 src/isoline/interp/Numerics.cpp             100.00 95.90
-src/isoline/interp/ReferenceInterpreter.cpp 98.01 92.45
+src/isoline/interp/ReferenceInterpreter.cpp 98.11 92.85
 src/isoline/interp/ReferenceInterpreter.hpp 100.00 -
 src/isoline/interp/Simd.cpp                 100.00 93.44
 src/isoline/interp/Simd.hpp                 100.00 66.66
@@ -91,4 +91,4 @@ src/isoline/runtime/Value.hpp               100.00 94.44
 src/isoline/validate/Subtyping.cpp          100.00 89.65
 src/isoline/validate/Subtyping.hpp          100.00 66.66
 src/isoline/validate/ValidationError.hpp    100.00 92.85
-src/isoline/validate/Validator.cpp          99.77 97.66
+src/isoline/validate/Validator.cpp          99.78 97.71

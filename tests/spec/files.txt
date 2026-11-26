@@ -158,6 +158,9 @@ wasm3 core/relaxed-simd/relaxed_laneselect 0
 wasm3 core/relaxed-simd/relaxed_madd_nmadd 0
 wasm3 core/relaxed-simd/relaxed_min_max 0
 wasm3 core/return                   0
+wasm3 core/return_call              0
+wasm3 core/return_call_indirect     11
+wasm3 core/return_call_ref          0
 wasm3 core/select                   0
 wasm3 core/simd/simd_address        4
 wasm3 core/simd/simd_align          34

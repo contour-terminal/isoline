@@ -278,9 +278,10 @@ namespace
         void keepTop(uint32_t arity, std::size_t height)
         {
             Require(_values.size() >= height + arity);
-            auto const top = _values.end() - static_cast<std::ptrdiff_t>(arity);
-            std::move(top, _values.end(), _values.begin() + static_cast<std::ptrdiff_t>(height));
-            _values.resize(height + arity);
+            // erase, as the kept values may start where they land (nothing between them and
+            // height), which std::move's precondition forbids.
+            _values.erase(_values.begin() + static_cast<std::ptrdiff_t>(height),
+                          _values.end() - static_cast<std::ptrdiff_t>(arity));
         }
 
         /// Whether the operand, locals and label stacks together hold MaxStackValues entries.
@@ -338,17 +339,32 @@ namespace
         }
 
         /// Returns from the current frame, its results left on the operand stack.
-        void doReturn()
+        void doReturn() { discardFrame(frame().arity); }
+
+        /// Discards the current frame: its labels, its locals and its operands but the top @p keep,
+        /// which move down to where its operands began.
+        void discardFrame(uint32_t keep)
         {
             auto const ending = frame();
-            keepTop(ending.arity, ending.valuesBase);
+            keepTop(keep, ending.valuesBase);
             _labels.resize(ending.labelsBase);
             _locals.resize(ending.localsBase);
             _frames.pop_back();
             --_depth;
         }
 
-        [[nodiscard]] Step callIndirect(Instruction const& instruction)
+        /// Tail-calls @p address: discards the current frame but the callee's arguments, then calls
+        /// it in the frame's place. A Wasm callee's frame replaces it, so neither the depth nor the
+        /// stacks grow; a host callee runs, and its results are the current frame's.
+        [[nodiscard]] Step tailCall(FuncAddr address)
+        {
+            discardFrame(static_cast<uint32_t>(_store.functionType(address).params.size()));
+            return call(address);
+        }
+
+        /// The function call_indirect and return_call_indirect call: the table element the popped
+        /// index names, which must hold a function of the instruction's type.
+        [[nodiscard]] std::expected<FuncAddr, Trap> indirectCallee(Instruction const& instruction)
         {
             auto const& table = _store.table(instance().tables.at(instruction.b));
             auto const index = popAddress(table.type.limits.addressType);
@@ -359,7 +375,21 @@ namespace
                 return trapNaming(TrapCode::UninitializedElement, index);
             if (_store.function(reference.address).typeId != instance().types.at(instruction.a))
                 return trap(TrapCode::IndirectCallTypeMismatch);
-            return call(reference.address);
+            return reference.address;
+        }
+
+        /// The function call_ref and return_call_ref call: the popped reference's.
+        [[nodiscard]] std::expected<FuncAddr, Trap> referencedCallee(Instruction const& instruction)
+        {
+            // Validation typed the reference (ref null $t), so only null is a trap. A host boundary
+            // checks the kinds of the values it passes, not yet their types (P3), so a function of
+            // another type is a checked abort here rather than a call that reads its arguments past
+            // the operand stack.
+            auto const reference = popRef();
+            if (reference.kind == RefKind::Null)
+                return trap(TrapCode::NullFunctionReference);
+            Require(_store.function(reference.address).typeId == instance().types.at(instruction.a));
+            return reference.address;
         }
 
         // --- Control ---
@@ -843,18 +873,23 @@ namespace
                 case Opcode::BrTable: branchTable(instruction); return {};
                 case Opcode::Return: doReturn(); return {};
                 case Opcode::Call: return call(instance().functions.at(instruction.a));
-                case Opcode::CallIndirect: return callIndirect(instruction);
-                case Opcode::CallRef: {
-                    // Validation typed the reference (ref null $t), so only null is a trap. A host
-                    // boundary checks the kinds of the values it passes, not yet their types (P3), so a
-                    // function of another type is a checked abort here rather than a call that reads
-                    // its arguments past the operand stack.
-                    auto const reference = popRef();
-                    if (reference.kind == RefKind::Null)
-                        return trap(TrapCode::NullFunctionReference);
-                    Require(_store.function(reference.address).typeId == instance().types.at(instruction.a));
-                    return call(reference.address);
-                }
+                case Opcode::CallIndirect:
+                    return indirectCallee(instruction).and_then([this](FuncAddr callee) {
+                        return call(callee);
+                    });
+                case Opcode::CallRef:
+                    return referencedCallee(instruction).and_then([this](FuncAddr callee) {
+                        return call(callee);
+                    });
+                case Opcode::ReturnCall: return tailCall(instance().functions.at(instruction.a));
+                case Opcode::ReturnCallIndirect:
+                    return indirectCallee(instruction).and_then([this](FuncAddr callee) {
+                        return tailCall(callee);
+                    });
+                case Opcode::ReturnCallRef:
+                    return referencedCallee(instruction).and_then([this](FuncAddr callee) {
+                        return tailCall(callee);
+                    });
 
                 // Parametric
                 case Opcode::Drop: static_cast<void>(pop()); return {};

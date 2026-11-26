@@ -1090,7 +1090,7 @@ namespace
         }
         auto const opcode = lookupOpcode(prefix, code);
         // An instruction of a disabled proposal is as unknown as one of no proposal at all.
-        if (!opcode || !enabled(opcodeInfo(*opcode).proposal))
+        if (!opcode || !_features.includes(opcodeInfo(*opcode).required))
             return std::unexpected { DecodeError {
                 DecodeErrorCode::IllegalOpcode, opcodeOffset, illegalOpcodeSubject(prefix, code) } };
 
