@@ -285,6 +285,7 @@ src/isoline/runtime/Limits.hpp                   100.00 -
 src/isoline/runtime/LinearMemory.cpp             88.57 100.00
 src/isoline/runtime/LinearMemory.hpp             100.00 -
 src/isoline/runtime/ModuleCode.hpp               100.00 -
+src/isoline/runtime/PollGate.hpp                 100.00 100.00
 src/isoline/runtime/Segment.hpp                  100.00 100.00
 src/isoline/runtime/Store.cpp                    99.69 84.34
 src/isoline/runtime/Store.hpp                    100.00 94.11
