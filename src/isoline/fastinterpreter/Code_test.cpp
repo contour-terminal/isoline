@@ -26,11 +26,14 @@ using isoline::fastinterpreter::bodyUnits;
 using isoline::fastinterpreter::Dispatch;
 using isoline::fastinterpreter::LoweredFunction;
 using isoline::fastinterpreter::LoweredModule;
+using isoline::fastinterpreter::LoweringStats;
+using isoline::fastinterpreter::MaxWordsPerBodyUnit;
 using isoline::fastinterpreter::OperationCount;
 using isoline::fastinterpreter::OperationForm;
 using isoline::fastinterpreter::OperationId;
 using isoline::fastinterpreter::operationRow;
 using isoline::fastinterpreter::OperationTable;
+using isoline::fastinterpreter::operationWords;
 using isoline::fastinterpreter::Word;
 using isoline::runtime::ExecutionEngine;
 using isoline::runtime::ExecutionMode;
@@ -62,11 +65,17 @@ TEST_CASE("OperationTable.oneRowPerIdInOrder")
         CHECK(std::to_underlying(row.id) == index);
         CHECK(&operationRow(row.id) == &row);
         CHECK_FALSE(row.name.empty());
-        CHECK(row.words >= 1);
+        CHECK_FALSE(row.text.empty());
+        CHECK(row.words == operationWords(row.slots, row.immediates));
+        CHECK(row.words <= MaxWordsPerBodyUnit);
     }
     auto names = std::set<std::string_view> {};
+    auto texts = std::set<std::string_view> {};
     for (auto const& row: OperationTable)
+    {
         CHECK(names.insert(row.name).second);
+        CHECK(texts.insert(row.text).second);
+    }
     CHECK(OperationCount == OperationTable.size());
 
     // The operations the code model starts with, before lowering adds its own.
@@ -78,7 +87,7 @@ TEST_CASE("OperationTable.oneRowPerIdInOrder")
         { "MoveRange", OperationForm::Move, 3 },
         { "Const64", OperationForm::Move, 3 },
         { "Const128", OperationForm::Move, 4 },
-        { "Return", OperationForm::Special, 1 },
+        { "Return", OperationForm::Special, 2 },
     });
     REQUIRE(OperationTable.size() >= first.size());
     for (auto const index: std::views::iota(std::size_t { 0 }, first.size()))
@@ -123,14 +132,18 @@ TEST_CASE("Code.loweredModuleKeepsItsArena")
     functions.push_back(functionOf(*arena, 0, 3));
     functions.push_back(functionOf(*arena, 1, 5));
     auto const* const resource = arena.get();
-    auto const module = LoweredModule {
-        std::move(arena), std::move(functions), Dispatch::Switch, ExecutionMode::Deterministic, 1'234
-    };
+    auto const module = LoweredModule { std::move(arena),
+                                        std::move(functions),
+                                        Dispatch::Switch,
+                                        ExecutionMode::Deterministic,
+                                        1'234,
+                                        LoweringStats { .bodyUnits = 5, .work = 7 } };
 
     CHECK(module.engine() == ExecutionEngine::Fast);
     CHECK(module.dispatch() == Dispatch::Switch);
     CHECK(module.mode() == ExecutionMode::Deterministic);
     CHECK(module.loweredBytes() == 1'234);
+    CHECK(module.stats() == LoweringStats { .bodyUnits = 5, .work = 7 });
     REQUIRE(module.functions().size() == 2);
     CHECK(module.functions()[1].codeIndex == 1);
     CHECK(module.functions()[1].code.size() == 5);
@@ -155,7 +168,8 @@ TEST_CASE("Contract.Code.everyContainerUsesTheArena", "[.contract]")
     std::destroy_at(&catches);
     std::construct_at(&catches, &other);
     std::ignore = LoweredModule {
-        std::move(arena), std::move(functions), Dispatch::Switch, ExecutionMode::Production, 0
+        std::move(arena), std::move(functions), Dispatch::Switch, ExecutionMode::Production, 0,
+        LoweringStats {}
     };
     FAIL("SURVIVED: a function allocating from another resource outlives the arena check");
 }

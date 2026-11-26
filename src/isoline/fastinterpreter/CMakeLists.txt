@@ -16,6 +16,9 @@ target_sources(isoline_core
     PRIVATE
         Code.cpp
         Dispatch.cpp
+        Listing.cpp
+        Lowering.cpp
+        LoweringArena.cpp
         SlotCodec.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
@@ -23,6 +26,10 @@ target_sources(isoline_core
             Code.hpp
             Dispatch.hpp
             LittleEndian.hpp
+            Listing.hpp
+            Lowering.hpp
+            LoweringArena.hpp
+            LoweringTable.hpp
             Operations.def
             SlotCodec.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/fastinterpreter/DispatchAvailability.hpp")

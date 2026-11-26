@@ -255,6 +255,9 @@ set(isolineContractRows
     "Contract.SlotCodec.loadFromItsWidth|slots\\.size\\(\\) == width"
     "Contract.SlotCodec.nullHeapIsTheInstances|typeIndex < instanceTypes\\.size\\(\\)"
     "Contract.Code.everyContainerUsesTheArena|allocateFrom\\(_arena\\.get\\(\\), _functions\\)"
+    "Contract.LoweringArena.releaseOnlyWhatIsReserved|bytes <= _reserved"
+    "Contract.Lowering.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), config\\.dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"
+    "Contract.Listing.wholeOperations|offset \\+ row\\.words <= code\\.size\\(\\)"
     # Removed in P4 Task 14b, which wires the fast engine into the API.
     "Contract.Engine.runsOnlyTheReferenceEngine|_config\\.engine == ExecutionEngine::Reference")
 set(isolineContractCases)
