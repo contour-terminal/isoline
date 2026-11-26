@@ -102,8 +102,10 @@ struct InvocationResult
 /// The one checked entry into guest code: what the embedder, a host function (HostContext::invoke)
 /// and every test harness call. It checks that the function exists, that @p args are of its params'
 /// types (checkValues()) and that @p results has one slot per result, and only then invokes it within
-/// a RefusalScope of its own. A call that fails a check is HostFailure{ArgumentMismatch}, never a
-/// failed precondition: no guest code runs.
+/// an InvocationScope and a RefusalScope of its own: an outermost call starts a fresh step budget, a
+/// nested one shares its caller's. A call that fails a check is HostFailure{ArgumentMismatch}, never a
+/// failed precondition: no guest code runs. A call past StoreLimits::maxNestedInvocations enters and
+/// traps with CallStackExhausted.
 /// @param store The store holding the function.
 /// @param executor What executes it.
 /// @param function Its address.

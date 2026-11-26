@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <core/Assert.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -135,7 +137,9 @@ struct ExternValue
 /// A module instance: a module's entities, as store addresses in its index spaces' order.
 struct ModuleInstance
 {
-    /// The validated module it instantiates; null for a module instance the embedder assembled.
+    /// The validated module it instantiates, whose frame shapes give its functions' stack costs; null
+    /// only for a module instance the embedder assembled, which has no code (Store::addModuleInstance()
+    /// checks it).
     std::shared_ptr<validate::ValidatedModule const> validated;
     std::shared_ptr<binary::Module const> module; ///< validated's module, sharing its ownership.
     std::vector<TypeId> types;                    ///< Its type section's types, by type index.
@@ -289,7 +293,8 @@ class Store
     /// Adds a module instance.
     ///
     /// Precondition (checked): the store holds fewer than StoreLimits::maxInstances instances, as
-    /// instantiation checks (checkInstanceDemand()).
+    /// instantiation checks (checkInstanceDemand()); and the instance has a validated module, or a
+    /// module of no code, or none.
     /// @param instance The instance; the module and its entities' addresses, as far as allocated.
     /// @return Its address.
     [[nodiscard]] uint32_t addModuleInstance(ModuleInstance instance);
@@ -307,11 +312,49 @@ class Store
     [[nodiscard]] StoreLimits const& limits() const noexcept;
 
     /// How much of @p limit the store holds: what an embedder reads before adding to a budget the
-    /// guests share. The limits of one invocation (CallDepth, StackValues, NestedInvocations) are the
-    /// executor's to count while it runs; the store holds none of them, so they read 0.
+    /// guests share. StackValues reads the static costs of the frames in progress (chargeFrame()),
+    /// NestedInvocations the invocations in progress (InvocationScope), and Steps the steps the
+    /// latest outermost invocation took, which it keeps after the invocation ends. CallDepth is the
+    /// executor's to count while it runs, so it reads 0.
     /// @param limit The limit.
     /// @return What the store holds of it, in the unit LimitTable names; at most its StoreLimits value.
     [[nodiscard]] uint64_t used(Limit limit) const noexcept;
+
+    /// Charges a frame's static stack cost (StoreLimits::maxStackValues): what an executor does at
+    /// every callee entry. The charged sum is the store's, so it spans the invocations host
+    /// functions nest: re-entry cannot multiply the cap.
+    /// @param cost The frame's cost in stack values.
+    /// @return Nothing, the cost charged; or Trap{CallStackExhausted}, nothing charged, when it
+    ///         would exceed maxStackValues.
+    [[nodiscard]] std::expected<void, Trap> chargeFrame(uint64_t cost) noexcept
+    {
+        if (cost > _limits.maxStackValues - _chargedStackValues)
+            return trap(TrapCode::CallStackExhausted);
+        _chargedStackValues += cost;
+        return {};
+    }
+
+    /// Gives a frame's charge back (chargeFrame()): what an executor does at every frame's end,
+    /// however it ends. Precondition (checked): @p cost is at most what is charged.
+    /// @param cost The cost chargeFrame() charged for the frame.
+    void releaseFrame(uint64_t cost) noexcept
+    {
+        Require(cost <= _chargedStackValues);
+        _chargedStackValues -= cost;
+    }
+
+    /// The static stack costs of the frames in progress, over every invocation (chargeFrame()).
+    /// @return Their sum; 0 when no frame is in progress.
+    [[nodiscard]] uint64_t chargedStackValues() const noexcept { return _chargedStackValues; }
+
+    /// How many invocations are in progress (InvocationScope): the outermost and those nested in it.
+    /// @return Their count; 0 when none is.
+    [[nodiscard]] uint32_t invocationDepth() const noexcept { return _invocationDepth; }
+
+    /// Whether one more invocation may begin (InvocationScope): fewer than
+    /// StoreLimits::maxNestedInvocations are in progress.
+    /// @return Nothing when it may; Trap{CallStackExhausted} when it may not.
+    [[nodiscard]] std::expected<void, Trap> checkInvocationNesting() const noexcept;
 
     /// How many host functions are running on the store (HostCallScope), nested ones included.
     /// @return Their count; 0 when no host function is running.
@@ -322,16 +365,24 @@ class Store
     /// @return The interrupter; never null.
     [[nodiscard]] std::shared_ptr<Interrupter> const& interrupter() const noexcept { return _interrupter; }
 
-    /// Polls: what an executor calls at every PollSite. It notifies the poll observer, then checks
-    /// the interrupt.
+    /// Polls: what an executor calls at every PollSite. It notifies the poll observer, checks the
+    /// interrupt, then charges what the site's PollSiteTable row charges against
+    /// StoreLimits::maxSteps: at one poll, Interrupted beats StepLimitExceeded.
     /// @param site Where execution polls.
-    /// @return Nothing to go on; or Trap{Interrupted} once the store was interrupted.
+    /// @return Nothing to go on; Trap{Interrupted} once the store was interrupted; or
+    ///         Trap{StepLimitExceeded}, no step charged, when the outermost invocation took
+    ///         maxSteps steps already.
     [[nodiscard]] std::expected<void, Trap> poll(PollSite site) noexcept
     {
         if (_pollObserver != nullptr)
             _pollObserver->onPoll(site);
         if (_interrupter->state() == InterruptState::Interrupted)
             return trap(TrapCode::Interrupted);
+        if (PollSiteTable[static_cast<std::size_t>(site)].charge == StepCharge::None)
+            return {};
+        if (_steps >= _limits.maxSteps)
+            return trap(TrapCode::StepLimitExceeded);
+        ++_steps;
         return {};
     }
 
@@ -449,18 +500,22 @@ class Store
   private:
     friend class RefusalScope;
     friend class HostCallScope;
+    friend class InvocationScope;
 
     IMemoryAllocator* _allocator;
     uint64_t _requiredGuardBytes;
     IPollObserver* _pollObserver;
     std::shared_ptr<Interrupter> _interrupter;
     StoreLimits _limits;
-    GrowthRecord _growthRecord;    ///< The current refusal scope's first refused grow per kind.
-    uint64_t _exceptionValues = 0; ///< The payload values of every exception held.
-    uint64_t _memoryBytes = 0;     ///< The bytes of every memory, charged against maxMemoryBytes.
-    uint64_t _tableElements = 0;   ///< The slots of every table, charged against maxTableElements.
-    uint64_t _typeUnits = 0;       ///< The type units of every interned type, charged against maxTypes.
-    uint32_t _hostCalls = 0;       ///< The host functions running, nested ones included.
+    GrowthRecord _growthRecord;       ///< The current refusal scope's first refused grow per kind.
+    uint64_t _exceptionValues = 0;    ///< The payload values of every exception held.
+    uint64_t _memoryBytes = 0;        ///< The bytes of every memory, charged against maxMemoryBytes.
+    uint64_t _tableElements = 0;      ///< The slots of every table, charged against maxTableElements.
+    uint64_t _typeUnits = 0;          ///< The type units of every interned type, charged against maxTypes.
+    uint32_t _hostCalls = 0;          ///< The host functions running, nested ones included.
+    uint32_t _invocationDepth = 0;    ///< The invocations in progress, nested ones included.
+    uint64_t _steps = 0;              ///< The steps the latest outermost invocation took.
+    uint64_t _chargedStackValues = 0; ///< The static costs of the frames in progress.
     std::deque<FunctionInstance> _functions;
     std::deque<TableInstance> _tables;
     std::deque<MemoryInstance> _memories;
@@ -501,6 +556,30 @@ class RefusalScope
   private:
     Store* _store;
     GrowthRecord _outer; ///< The record of the scope this one is nested in.
+};
+
+/// Scopes one invocation of guest code on a store, for as long as it lives: what every entry into
+/// guest code opens, runtime::invokeChecked() and runtime::instantiate() (for its whole run, its start
+/// function nested in it). It counts the invocation (Store::invocationDepth()), and the outermost one
+/// starts a fresh step budget (StoreLimits::maxSteps) that the invocations nested in it share.
+class InvocationScope
+{
+  public:
+    /// Opens an invocation on @p store. Precondition (checked): one more may begin
+    /// (Store::checkInvocationNesting()).
+    /// @param store The store; must outlive the scope.
+    explicit InvocationScope(Store& store) noexcept;
+
+    /// Ends the invocation.
+    ~InvocationScope();
+
+    InvocationScope(InvocationScope const&) = delete;
+    InvocationScope(InvocationScope&&) = delete;
+    InvocationScope& operator=(InvocationScope const&) = delete;
+    InvocationScope& operator=(InvocationScope&&) = delete;
+
+  private:
+    Store* _store;
 };
 
 /// Counts a host function call in progress on a store (Store::hostCallsInProgress()) for as long as it

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -21,6 +22,7 @@
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -47,8 +49,10 @@ using isoline::runtime::I32;
 using isoline::runtime::IMemoryAllocator;
 using isoline::runtime::InstanceDemand;
 using isoline::runtime::InstantiationError;
+using isoline::runtime::InvocationScope;
 using isoline::runtime::Limit;
 using isoline::runtime::LimitExceeded;
+using isoline::runtime::PollSite;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Refusal;
@@ -57,6 +61,7 @@ using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::StoreServices;
 using isoline::runtime::Trap;
+using isoline::runtime::TrapCode;
 using isoline::runtime::Value;
 using isoline::runtime::testing::GrowDecision;
 using isoline::runtime::testing::ProvidedMemoryAllocator;
@@ -533,7 +538,8 @@ TEST_CASE("Store.hostAdditionsShareTheGuestsBudgets")
 
 TEST_CASE("Store.usedReadsEveryLimit")
 {
-    // What the store holds of each limit, in that limit's unit; an invocation's own limits read 0.
+    // What the store holds of each limit, in that limit's unit; with no invocation in progress, and
+    // none taken yet, the invocations' limits read 0.
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     REQUIRE(store.addMemory(MemoryType { .limits = atLeast(2) }).has_value());
@@ -563,6 +569,7 @@ TEST_CASE("Store.usedReadsEveryLimit")
         { .limit = Limit::ExceptionValues, .used = 2 },
         { .limit = Limit::Types, .used = 2 },
         { .limit = Limit::Tags, .used = 1 },
+        { .limit = Limit::Steps, .used = 0 },
     });
     static_assert(rows.size() == static_cast<std::size_t>(isoline::runtime::LastLimit) + 1);
     for (auto const& row: rows)
@@ -935,4 +942,86 @@ TEST_CASE("Store.refusalScopeRestoresTheOuterRecord")
         }
         CHECK(store.growthRecord() == GrowthRecord {});
     }
+}
+
+TEST_CASE("Store.interruptBeatsStepLimitAtOnePoll")
+{
+    // A budget of 2 steps: two polls that charge one each spend it, and the third traps. Unwind charges
+    // none, so it polls on. Once interrupted, every poll is Interrupted, the spent budget aside.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxSteps = 2 }, StoreServices { .allocator = allocator } };
+    auto const invocation = InvocationScope { store };
+    CHECK(store.poll(PollSite::FunctionEntry).has_value());
+    CHECK(store.poll(PollSite::LoopBackEdge).has_value());
+    CHECK(store.poll(PollSite::LoopBackEdge) == isoline::runtime::trap(TrapCode::StepLimitExceeded));
+    CHECK(store.poll(PollSite::Unwind).has_value());
+    CHECK(store.used(Limit::Steps) == 2);
+    store.interrupter()->interrupt();
+    CHECK(store.poll(PollSite::LoopBackEdge) == isoline::runtime::trap(TrapCode::Interrupted));
+    CHECK(store.poll(PollSite::Unwind) == isoline::runtime::trap(TrapCode::Interrupted));
+}
+
+TEST_CASE("Store.everySiteChargesWhatItsRowSays")
+{
+    // One poll per site, in a budget of exactly the sites that charge a step: all of them pass, and
+    // the count is what the table says.
+    auto charging = uint64_t { 0 };
+    for (auto const& row: isoline::runtime::PollSiteTable)
+        charging += row.charge == isoline::runtime::StepCharge::OneStep ? 1U : 0U;
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxSteps = charging }, StoreServices { .allocator = allocator } };
+    auto const invocation = InvocationScope { store };
+    for (auto const& row: isoline::runtime::PollSiteTable)
+        CHECK(store.poll(row.site).has_value());
+    CHECK(store.used(Limit::Steps) == charging);
+    CHECK(store.poll(PollSite::Unwind).has_value());
+    CHECK(store.poll(PollSite::FunctionEntry) == isoline::runtime::trap(TrapCode::StepLimitExceeded));
+}
+
+TEST_CASE("Store.stepBudgetIsTheOutermostInvocations")
+{
+    // 3 steps per outermost invocation, which the one nested in it shares; 2 invocations at once.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxNestedInvocations = 2, .maxSteps = 3 },
+                         StoreServices { .allocator = allocator } };
+    {
+        auto const outer = InvocationScope { store };
+        CHECK(store.used(Limit::NestedInvocations) == 1);
+        CHECK(store.poll(PollSite::FunctionEntry).has_value());
+        CHECK(store.poll(PollSite::FunctionEntry).has_value());
+        {
+            auto const nested = InvocationScope { store };
+            CHECK(store.invocationDepth() == 2);
+            CHECK(store.checkInvocationNesting() == isoline::runtime::trap(TrapCode::CallStackExhausted));
+            CHECK(store.poll(PollSite::FunctionEntry).has_value());
+            CHECK(store.poll(PollSite::FunctionEntry) == isoline::runtime::trap(TrapCode::StepLimitExceeded));
+        }
+        CHECK(store.poll(PollSite::FunctionEntry) == isoline::runtime::trap(TrapCode::StepLimitExceeded));
+    }
+    // The steps taken stay readable after the invocation, until the next outermost one starts afresh.
+    CHECK(store.used(Limit::NestedInvocations) == 0);
+    CHECK(store.used(Limit::Steps) == 3);
+    CHECK(store.checkInvocationNesting().has_value());
+    auto const again = InvocationScope { store };
+    CHECK(store.used(Limit::Steps) == 0);
+    CHECK(store.poll(PollSite::FunctionEntry).has_value());
+}
+
+TEST_CASE("Store.frameChargesCapTheirSum")
+{
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxStackValues = 10 }, StoreServices { .allocator = allocator } };
+    CHECK(store.chargeFrame(6).has_value());
+    // A charge past the cap charges nothing.
+    CHECK(store.chargeFrame(5) == isoline::runtime::trap(TrapCode::CallStackExhausted));
+    CHECK(store.chargedStackValues() == 6);
+    CHECK(store.chargeFrame(4).has_value());
+    CHECK(store.used(Limit::StackValues) == 10);
+    CHECK(store.chargeFrame(1) == isoline::runtime::trap(TrapCode::CallStackExhausted));
+    CHECK(store.chargeFrame(std::numeric_limits<uint64_t>::max())
+          == isoline::runtime::trap(TrapCode::CallStackExhausted));
+    store.releaseFrame(4);
+    store.releaseFrame(6);
+    CHECK(store.chargedStackValues() == 0);
+    CHECK(store.chargeFrame(10).has_value());
 }

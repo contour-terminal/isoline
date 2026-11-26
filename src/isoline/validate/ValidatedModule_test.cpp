@@ -102,3 +102,22 @@ TEST_CASE("ValidatedModule.frameShape")
     CHECK((*validated)->frameShape(0) == FrameShape { .maxOperands = 1, .maxLabels = 1 });
     CHECK((*validated)->frameShape(1) == FrameShape { .maxOperands = 2, .maxLabels = 0 });
 }
+
+TEST_CASE("ValidatedModule.frameCost")
+{
+    // params + locals + the shape's most operands and deepest labels + 1, by code index: function 0 takes
+    // 2 params, declares 3 locals and holds (block i32.const 1 drop): 2 + 3 + 1 + 1 + 1 = 8; function 1
+    // holds nothing: 0 + 0 + 0 + 0 + 1 = 1.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { isoline::binary::I32, isoline::binary::I64 }, .results = {} })
+        .type(FuncType {})
+        .function(0,
+                  { isoline::binary::I32, isoline::binary::I32, isoline::binary::F64 },
+                  { 0x02, 0x40, 0x41, 0x01, 0x1A, 0x0B })
+        .function(1, {}, {});
+    auto const validated = ValidatedModule::load(builder.build(), FeatureSet::wasm3(), DecodeLimits {});
+    REQUIRE(validated.has_value());
+    CHECK((*validated)->frameShape(0) == FrameShape { .maxOperands = 1, .maxLabels = 1 });
+    CHECK((*validated)->frameCost(0) == 8);
+    CHECK((*validated)->frameCost(1) == 1);
+}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +37,7 @@
 #include <isoline/runtime/Value.hpp>
 #include <isoline/runtime/testing/PollCounter.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
+#include <isoline/validate/Validator.hpp>
 
 using isoline::FeatureSet;
 using isoline::binary::AddressType;
@@ -73,6 +75,7 @@ using isoline::runtime::HostFailureKind;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::IPollObserver;
+using isoline::runtime::Limit;
 using isoline::runtime::makeHostFunction;
 using isoline::runtime::MismatchKind;
 using isoline::runtime::PollSite;
@@ -87,6 +90,7 @@ using isoline::runtime::testing::InterruptWatchdog;
 using isoline::runtime::testing::PollCounter;
 using isoline::runtime::testing::PollTrigger;
 using isoline::runtime::testing::TriggerWait;
+using isoline::validate::FrameShape;
 
 namespace
 {
@@ -218,6 +222,16 @@ class Harness
 
     [[nodiscard]] ReferenceInterpreter& interpreter() noexcept { return _interpreter; }
 
+    /// The validated module the harness instantiated.
+    [[nodiscard]] isoline::validate::ValidatedModule const& validated() const noexcept { return *_validated; }
+
+    /// The value of the module's global @p index.
+    /// @param index The global's index in the module's global index space.
+    [[nodiscard]] Value global(uint32_t index)
+    {
+        return _store.global(_store.moduleInstance(_address).globals.at(index)).value;
+    }
+
   private:
     void instantiate(ModuleBuilder const& builder, std::vector<ExternValue> const& imports)
     {
@@ -226,6 +240,7 @@ class Harness
         auto validated = isoline::validate::ValidatedModule::load(
             builder.build(), features, isoline::binary::DecodeLimits {});
         REQUIRE(validated.has_value());
+        _validated = *validated;
         auto const address =
             isoline::runtime::instantiate(_store, _interpreter, std::move(*validated), imports);
         REQUIRE(address.has_value());
@@ -235,6 +250,7 @@ class Harness
     HeapMemoryAllocator _allocator;
     Store _store;
     ReferenceInterpreter _interpreter;
+    std::shared_ptr<isoline::validate::ValidatedModule const> _validated;
     uint32_t _address = 0;
 };
 
@@ -491,6 +507,8 @@ TEST_CASE("ReferenceInterpreter.interpretDeepNesting")
     auto builder = ModuleBuilder {};
     builder.type(signature({}, { TypeI32 })).function(0, {}, std::move(body));
     auto harness = Harness { builder };
+    // Its 100'000 labels are within its frame's static cost, which the default stack budget allows.
+    CHECK(harness.validated().frameShape(0) == FrameShape { .maxOperands = 1, .maxLabels = Depth });
     CHECK(harness.result(0) == i32(1));
 }
 
@@ -879,11 +897,13 @@ TEST_CASE("ReferenceInterpreter.hostReentryIsBounded")
 
 TEST_CASE("ReferenceInterpreter.nestedInvocationsFollowTheLimit")
 {
-    // As hostReentryIsBounded, in a store that allows 7 invocations at once.
+    // As hostReentryIsBounded, in a store that allows 7 invocations at once, which it counts.
     auto builder = ModuleBuilder {};
     builder.type(signature({}, {})).importFunction("env", "reenter", 0).function(0, {}, call(0));
     Harness* self = nullptr;
     auto reentries = uint32_t { 0 };
+    auto deepest = uint64_t { 0 };
+    auto refused = isoline::runtime::Entry::Refused;
     auto harness =
         Harness { builder,
                   [&](Store& store) {
@@ -894,7 +914,13 @@ TEST_CASE("ReferenceInterpreter.nestedInvocationsFollowTheLimit")
                                       std::span<Value const>,
                                       std::span<Value>) noexcept -> std::expected<void, Abrupt> {
                                       ++reentries;
-                                      return context.invoke(self->function(1), {}, {});
+                                      deepest =
+                                          std::max(deepest, context.store().used(Limit::NestedInvocations));
+                                      auto const nested = isoline::runtime::invokeChecked(
+                                          self->store(), self->interpreter(), self->function(1), {}, {});
+                                      if (!nested.outcome && deepest == 7)
+                                          refused = nested.entry;
+                                      return nested.outcome;
                                   });
                       return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                   },
@@ -902,6 +928,12 @@ TEST_CASE("ReferenceInterpreter.nestedInvocationsFollowTheLimit")
     self = &harness;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
     CHECK(reentries == 7);
+    // The store counts the invocations in progress, and they all ended.
+    CHECK(harness.store().used(Limit::NestedInvocations) == 0);
+
+    CHECK(deepest == 7);
+    // The call past the limit entered, and trapped, as a call too deep does.
+    CHECK(refused == isoline::runtime::Entry::Entered);
 }
 
 TEST_CASE("ReferenceInterpreter.hostTakesI64AndI32")
@@ -2483,6 +2515,12 @@ TEST_CASE("ReferenceInterpreter.pollsAtEveryBackEdgeAndEntry")
         CHECK(harness.outcome(row.function, row.args).has_value());
         CHECK(counter.count(PollSite::LoopBackEdge) == row.backEdges);
         CHECK(counter.count(PollSite::FunctionEntry) == row.entries);
+        // A step per poll, so a budget of exactly that many steps runs the call, and one fewer traps.
+        auto const steps = row.backEdges + row.entries;
+        CHECK(harness.store().used(Limit::Steps) == steps);
+        CHECK(Harness { builder, {}, StoreLimits { .maxSteps = steps } }.outcome(row.function, row.args));
+        CHECK(Harness { builder, {}, StoreLimits { .maxSteps = steps - 1 } }.trap(row.function, row.args)
+              == TrapCode::StepLimitExceeded);
     }
 }
 
@@ -2611,6 +2649,9 @@ TEST_CASE("ReferenceInterpreter.pollsWhileUnwinding")
     auto harness = Harness { builder, {}, StoreLimits {}, &counter };
     CHECK(std::holds_alternative<Thrown>(harness.abrupt(0)));
     CHECK(counter.count(PollSite::Unwind) == 3);
+    // Unwinding charges no step: the call's one step is its entry.
+    CHECK(counter.count(PollSite::FunctionEntry) == 1);
+    CHECK(harness.store().used(Limit::Steps) == 1);
 }
 
 TEST_CASE("ReferenceInterpreter.interruptStopsALongUnwind")
@@ -2727,6 +2768,340 @@ TEST_CASE("ReferenceInterpreter.interruptStopsUnwindingPastFrames")
     counter.interruptAtTrigger(harness.store().interrupter());
     CHECK(harness.trap(0) == TrapCode::Interrupted);
     CHECK(counter.count(PollSite::Unwind) == 1);
+}
+
+namespace
+{
+
+/// global.get 0; i32.const 1; i32.add; global.set 0: counts in global 0.
+Bytes countInGlobal()
+{
+    return code({ { 0x23, 0x00 }, i32Const(1), { 0x6A }, { 0x24, 0x00 } });
+}
+
+/// A module whose global 0, a mutable i32, counts the entries of function 0, of type 0 [] -> [] and
+/// @p locals i32 locals, which counts and then calls itself.
+ModuleBuilder countingRecursion(uint32_t locals)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .global(GlobalType { .type = TypeI32, .mutability = Mutability::Var }, i32Const(0))
+        .function(0, std::vector<ValueType>(locals, TypeI32), code({ countInGlobal(), call(0) }));
+    return builder;
+}
+
+/// A countdown loop of 10 rounds in local 0, an i32 the function declares: 1 entry and 9 back-edges,
+/// so 10 steps.
+Bytes loop10()
+{
+    return code({ i32Const(10),
+                  { 0x21, 0x00 }, // local.set 0
+                  isoline::binary::testing::loop(code({ localGet(0),
+                                                        i32Const(1),
+                                                        { 0x6B, 0x22, 0x00 }, // i32.sub; local.tee 0
+                                                        isoline::binary::testing::brIf(0) })) });
+}
+
+} // namespace
+
+TEST_CASE("ReferenceInterpreter.stackLimitIsTheStaticFrameCost")
+{
+    // f has no params and 8 locals, and its body holds at most 2 operands and no labels: its frame
+    // costs 0 + 8 + 2 + 0 + 1 = 11. 100 frames charge 1'100; the 101st would exceed that.
+    auto const builder = countingRecursion(8);
+    auto harness = Harness { builder, {}, StoreLimits { .maxStackValues = 1'100 } };
+    CHECK(harness.validated().frameShape(0) == FrameShape { .maxOperands = 2, .maxLabels = 0 });
+    CHECK(harness.validated().frameCost(0) == 11);
+    CHECK(harness.trap(0) == TrapCode::CallStackExhausted);
+    CHECK(harness.global(0) == i32(100));
+    // Every frame's charge was given back.
+    CHECK(harness.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.hostMediatedRecursionHitsTheSameCap")
+{
+    // f (cost 11, as above, and function 1 here) calls host h (cost 1), which invokes f through its
+    // context and passes on whatever it ends with. Each round charges 12; with 1'000 invocations
+    // allowed, only the stack cap binds: f's 101st entry would charge 99 x 12 + 11 + 1 + 11 = 1'211.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "h", 0)
+        .global(GlobalType { .type = TypeI32, .mutability = Mutability::Var }, i32Const(0))
+        .function(0, std::vector<ValueType>(8, TypeI32), code({ countInGlobal(), call(0) }));
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  return context.invoke(self->function(1), {}, {});
+                              });
+        },
+        StoreLimits { .maxStackValues = 1'200, .maxNestedInvocations = 1'000 },
+    };
+    self = &harness;
+    CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
+    CHECK(harness.global(0) == i32(100));
+    CHECK(harness.store().chargedStackValues() == 0);
+    CHECK(harness.store().used(Limit::NestedInvocations) == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.zeroCostFramesAreCharged")
+{
+    // (func $r (call $r)) holds nothing, and still costs 1: a budget of 50 traps entering the 51st.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).function(0, {}, call(0));
+    auto counter = PollCounter {};
+    auto harness = Harness { builder, {}, StoreLimits { .maxStackValues = 50 }, &counter };
+    CHECK(harness.trap(0) == TrapCode::CallStackExhausted);
+    CHECK(counter.count(PollSite::FunctionEntry) == 51);
+    CHECK(harness.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.stepLimitIsExact")
+{
+    // 1 entry + 9 back-edges = 10 steps.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).function(0, { TypeI32 }, loop10());
+    CHECK(Harness { builder, {}, StoreLimits { .maxSteps = 10 } }.invoke(0).has_value());
+    CHECK(Harness { builder, {}, StoreLimits { .maxSteps = 9 } }.trap(0) == TrapCode::StepLimitExceeded);
+}
+
+TEST_CASE("ReferenceInterpreter.stepBudgetIsPerOutermostCall")
+{
+    // Function 1 is loop10, 10 steps; function 2 calls host h (function 0), which invokes function 1.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "h", 0)
+        .function(0, { TypeI32 }, loop10())
+        .function(0, {}, call(0));
+    Harness* self = nullptr;
+    auto const bind = [&](Store& store) {
+        return hostImport(store,
+                          [&](HostContext& context,
+                              std::span<Value const>,
+                              std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                              return context.invoke(self->function(1), {}, {});
+                          });
+    };
+
+    // Two consecutive calls of 10 steps each both fit a budget of 10.
+    auto harness = Harness { builder, bind, StoreLimits { .maxSteps = 10 } };
+    self = &harness;
+    CHECK(harness.invoke(1).has_value());
+    CHECK(harness.invoke(1).has_value());
+
+    // A host-nested call shares its caller's budget: function 2's entry, h's entry, the nested 10 and
+    // h's return take 13 steps.
+    CHECK(harness.trap(2) == TrapCode::StepLimitExceeded);
+    auto fits = Harness { builder, bind, StoreLimits { .maxSteps = 13 } };
+    self = &fits;
+    CHECK(fits.invoke(2).has_value());
+    CHECK(fits.store().used(Limit::Steps) == 13);
+    auto tooFew = Harness { builder, bind, StoreLimits { .maxSteps = 12 } };
+    self = &tooFew;
+    CHECK(tooFew.trap(2) == TrapCode::StepLimitExceeded);
+}
+
+TEST_CASE("ReferenceInterpreter.callDepthCountsAcrossInvocations")
+{
+    // maxCallDepth counts the Wasm frames of every invocation in progress, not of one: function 1 calls
+    // host h (function 0), which invokes function 2. Function 2 alone fits a depth of 1; nested in
+    // function 1's frame it is the second, so a depth of 1 refuses it and a depth of 2 lets it run.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "h", 0)
+        .function(0, {}, call(0))
+        .function(0, {}, {});
+    Harness* self = nullptr;
+    auto const bind = [&](Store& store) {
+        return hostImport(store,
+                          [&](HostContext& context,
+                              std::span<Value const>,
+                              std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                              return context.invoke(self->function(2), {}, {});
+                          });
+    };
+    auto shallow = Harness { builder, bind, StoreLimits { .maxCallDepth = 1 } };
+    self = &shallow;
+    CHECK(shallow.invoke(2).has_value());
+    CHECK(shallow.trap(1) == TrapCode::CallStackExhausted);
+    auto deep = Harness { builder, bind, StoreLimits { .maxCallDepth = 2 } };
+    self = &deep;
+    CHECK(deep.invoke(1).has_value());
+}
+
+TEST_CASE("ReferenceInterpreter.frameChargeReturnsToZero")
+{
+    // However an invocation ends, every frame's charge is given back, each in a store of its own.
+    SECTION("call stack exhausted")
+    {
+        auto builder = ModuleBuilder {};
+        builder.type(signature({}, {})).function(0, { TypeI64, TypeI64 }, call(0));
+        auto harness = Harness { builder };
+        CHECK(harness.trap(0) == TrapCode::CallStackExhausted);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+    SECTION("an uncaught throw from depth 50")
+    {
+        // f(n) = n == 0 ? throw : f(n - 1), entered with 49.
+        auto builder = ModuleBuilder {};
+        builder.type(signature({ TypeI32 }, {}))
+            .tag(0)
+            .function(0,
+                      {},
+                      code({ localGet(0),
+                             { 0x45, 0x04, 0x40 }, // i32.eqz; if
+                             i32Const(0),
+                             { 0x08, 0x00 }, // throw 0
+                             { 0x05 },       // else
+                             localGet(0),
+                             i32Const(1),
+                             { 0x6B },
+                             call(0),
+                             { 0x0B } }));
+        auto counter = PollCounter {};
+        auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+        CHECK(std::holds_alternative<Thrown>(harness.abrupt(0, { i32(49) })));
+        CHECK(counter.count(PollSite::FunctionEntry) == 50);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+    SECTION("interrupted")
+    {
+        auto builder = ModuleBuilder {};
+        builder.type(signature({}, {})).function(0, {}, call(1)).function(0, { TypeI32 }, spin());
+        auto counter = PollCounter { PollTrigger { .site = PollSite::LoopBackEdge, .ordinal = 5 } };
+        auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+        counter.interruptAtTrigger(harness.store().interrupter());
+        CHECK(harness.trap(0) == TrapCode::Interrupted);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+    SECTION("a host callee's trap")
+    {
+        auto builder = ModuleBuilder {};
+        builder.type(signature({}, {})).importFunction("env", "h", 0).function(0, {}, call(0));
+        auto harness = Harness { builder, [](Store& store) {
+                                    return hostImport(
+                                        store,
+                                        [](HostContext&,
+                                           std::span<Value const>,
+                                           std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                            return std::unexpected { Abrupt { Trap { TrapCode::HostTrap } } };
+                                        });
+                                } };
+        CHECK(harness.trap(1) == TrapCode::HostTrap);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+}
+
+TEST_CASE("ReferenceInterpreter.hostFrameIsCharged")
+{
+    // h takes an i32 and an i64 and returns an i32: its frame costs 2 + 1 + 1 = 4, charged before it
+    // runs, whether the embedder or Wasm (f, of cost 4: 1 param, 2 operands and itself) calls it.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32, TypeI64 }, { TypeI32 }))
+        .type(signature({ TypeI32 }, { TypeI32 }))
+        .importFunction("env", "h", 0)
+        .function(1, {}, code({ localGet(0), i64Const(2), call(0) }));
+    auto calls = 0;
+    auto const bind = [&](Store& store) {
+        return std::vector { ExternValue {
+            .kind = ExternKind::Func,
+            .address = addHost(store,
+                               signature({ TypeI32, TypeI64 }, { TypeI32 }),
+                               [&](HostContext&,
+                                   std::span<Value const> args,
+                                   std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                   ++calls;
+                                   results[0] = args[0];
+                                   return {};
+                               }) } };
+    };
+    CHECK(isoline::runtime::hostFrameCost(signature({ TypeI32, TypeI64 }, { TypeI32 })) == 4);
+    auto const args = std::vector<Value> { i32(7), I64 { 2 } };
+
+    auto tight = Harness { builder, bind, StoreLimits { .maxStackValues = 3 } };
+    CHECK(tight.trap(0, args) == TrapCode::CallStackExhausted);
+    CHECK(calls == 0);
+    auto exact = Harness { builder, bind, StoreLimits { .maxStackValues = 4 } };
+    CHECK(exact.result(0, args) == i32(7));
+    CHECK(calls == 1);
+
+    // Called from f, the host frame comes on top of f's 4: 7 is too few, 8 enough.
+    CHECK(Harness { builder, bind, StoreLimits { .maxStackValues = 7 } }.trap(1, { i32(5) })
+          == TrapCode::CallStackExhausted);
+    CHECK(calls == 1);
+    auto enough = Harness { builder, bind, StoreLimits { .maxStackValues = 8 } };
+    CHECK(enough.result(1, { i32(5) }) == i32(5));
+    CHECK(enough.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.callPollsBeforeDepthAndStack")
+{
+    // f (function 0, cost 1) calls g (function 1, 8 locals: cost 9). At a callee entry the poll comes
+    // first, then the depth, then the stack charge: a call refused for its stack or depth has cost its
+    // step, and a spent budget traps before either.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .function(0, {}, call(1))
+        .function(0, std::vector<ValueType>(8, TypeI32), {});
+
+    SECTION("stack")
+    {
+        auto refused = Harness { builder, {}, StoreLimits { .maxStackValues = 9, .maxSteps = 2 } };
+        CHECK(refused.trap(0) == TrapCode::CallStackExhausted);
+        CHECK(refused.store().used(Limit::Steps) == 2);
+        CHECK(Harness { builder, {}, StoreLimits { .maxStackValues = 9, .maxSteps = 1 } }.trap(0)
+              == TrapCode::StepLimitExceeded);
+        CHECK(Harness { builder, {}, StoreLimits { .maxStackValues = 10, .maxSteps = 2 } }.invoke(0));
+    }
+    SECTION("depth")
+    {
+        auto refused = Harness { builder, {}, StoreLimits { .maxCallDepth = 1, .maxSteps = 2 } };
+        CHECK(refused.trap(0) == TrapCode::CallStackExhausted);
+        CHECK(refused.store().used(Limit::Steps) == 2);
+        CHECK(Harness { builder, {}, StoreLimits { .maxCallDepth = 1, .maxSteps = 1 } }.trap(0)
+              == TrapCode::StepLimitExceeded);
+    }
+}
+
+TEST_CASE("ReferenceInterpreter.spentBudgetReplacesTheHostOutcome")
+{
+    // A host function that traps, invoked directly: its entry and its return take 2 steps. With both
+    // left, its trap is the outcome; with 1, the return's poll finds the budget spent, which replaces it.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).importFunction("env", "h", 0);
+    auto calls = 0;
+    auto const bind = [&](Store& store) {
+        return hostImport(store,
+                          [&](HostContext&,
+                              std::span<Value const>,
+                              std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                              ++calls;
+                              return std::unexpected { Abrupt { Trap { TrapCode::HostTrap } } };
+                          });
+    };
+    CHECK(Harness { builder, bind, StoreLimits { .maxSteps = 2 } }.trap(0) == TrapCode::HostTrap);
+    CHECK(calls == 1);
+    CHECK(Harness { builder, bind, StoreLimits { .maxSteps = 1 } }.trap(0) == TrapCode::StepLimitExceeded);
+    CHECK(calls == 2);
+}
+
+TEST_CASE("ReferenceInterpreter.tailCallReleasesTheCallerFirst")
+{
+    // f and g each hold 4 locals and cost 5; f return_calls g. The caller's charge is given back before
+    // the callee's is taken, so a cap of 5 holds them one after the other.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .function(0, std::vector<ValueType>(4, TypeI32), { 0x12, 0x01 }) // return_call 1
+        .function(0, std::vector<ValueType>(4, TypeI32), {});
+    auto harness = Harness { builder, {}, StoreLimits { .maxStackValues = 5 } };
+    CHECK(harness.validated().frameCost(0) == 5);
+    CHECK(harness.validated().frameCost(1) == 5);
+    CHECK(harness.invoke(0).has_value());
+    CHECK(harness.store().chargedStackValues() == 0);
 }
 
 TEST_CASE("Interpreter.uninitializedTypedLocalNamesItsTypeId")

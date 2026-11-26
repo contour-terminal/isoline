@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,8 +22,8 @@ namespace isoline::runtime
 /// enumerator here, a field to StoreLimits and a row there.
 enum class Limit : uint8_t
 {
-    CallDepth,         ///< Wasm frames of one invocation; past it, CallStackExhausted.
-    StackValues,       ///< Operands, locals and labels of one invocation; past it, CallStackExhausted.
+    CallDepth,         ///< Wasm frames in progress at once; past it, CallStackExhausted.
+    StackValues,       ///< The static costs of the frames in progress; past it, CallStackExhausted.
     NestedInvocations, ///< Invocations in progress at once, host-nested ones included.
     MemoryBytes,       ///< The bytes of every memory of the store together.
     TableElements,     ///< The elements of every table of the store together.
@@ -33,21 +34,39 @@ enum class Limit : uint8_t
     ExceptionValues,   ///< The payload values of those exceptions together.
     Types,             ///< The interned function types, weighted 1 + params + results each.
     Tags,              ///< The tags of the store.
+    Steps,             ///< The steps of the outermost invocation; past it, StepLimitExceeded.
 };
 
 /// The last Limit enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastLimit = Limit::Tags;
+inline constexpr auto LastLimit = Limit::Steps;
 
 /// The limits a store keeps to, fixed at its construction: everything a guest may claim of the host's
 /// stack and memory. Every count and size here caps the whole store, all its instances together, so
 /// that a module of many memories or tables cannot multiply a per-entity cap.
 struct StoreLimits
 {
-    /// How deep Wasm calls of one invocation may nest before execution traps with CallStackExhausted.
+    /// How many Wasm frames may be live at once before a call traps with CallStackExhausted.
+    ///
+    /// The scope is part of the cross-engine contract: the depth counts the Wasm frames of every
+    /// invocation of the store in progress, not of one. A host function that invokes Wasm again
+    /// (HostContext::invoke(), or an instantiation's start function) nests within the depth of the call
+    /// that reached it, so Wasm → host → Wasm recursion is cut at the same call in every engine. Host
+    /// frames take no depth (maxNestedInvocations bounds them).
     uint32_t maxCallDepth = 10'000;
 
-    /// How many operands, locals and labels an invocation's stacks may hold together before a call or
-    /// a block entry traps with CallStackExhausted: about 100 MiB of values.
+    /// The stack values the frames in progress may cost together, host-nested invocations' included,
+    /// before a call traps with CallStackExhausted: about 100 MiB of values.
+    ///
+    /// A Wasm frame costs validate::ValidatedModule::frameCost(), params + locals + its most operands +
+    /// its deepest label nesting + 1, and a host frame hostFrameCost(), params + results + 1: static
+    /// costs, so the call that exhausts the stack is the same in every engine (the deterministic stack
+    /// limit). The + 1 charges a frame that holds nothing, so that (func $r (call $r)) is not free.
+    ///
+    /// The order at a callee entry is part of that contract: first the FunctionEntry poll (the
+    /// interrupt, then one step), then, for a Wasm callee, the depth (maxCallDepth), then this charge.
+    /// So a call refused for its stack has cost its step, and a call that would exceed both the step
+    /// budget and the stack traps with StepLimitExceeded. A tail call gives its caller's charge back
+    /// before it charges the callee's.
     uint64_t maxStackValues = uint64_t { 1 } << 22;
 
     /// How many invocations may be in progress at once: the outermost and those host functions nest
@@ -94,7 +113,25 @@ struct StoreLimits
 
     /// How many tags the store may hold.
     uint32_t maxTags = 1'000'000;
+
+    /// How many steps the outermost invocation may take, the invocations nested in it included: one
+    /// step per poll whose PollSiteTable row charges one (StepCharge::OneStep). Poll sites are
+    /// Wasm-level places, so the same module, inputs and limits exhaust the budget at the same point
+    /// in every engine, in both execution modes. Past it, StepLimitExceeded. Every outermost
+    /// invocation, and every outermost instantiation, starts a fresh budget; an instantiation a host
+    /// function makes is nested in the call that reached the host, and shares its budget. The default is
+    /// no limit.
+    uint64_t maxSteps = std::numeric_limits<uint64_t>::max();
 };
+
+/// The static stack cost of a host function's frame, charged against StoreLimits::maxStackValues
+/// while it runs: params + results + 1.
+/// @param type The host function's type.
+/// @return Its cost in stack values.
+[[nodiscard]] constexpr uint64_t hostFrameCost(binary::FuncType const& type) noexcept
+{
+    return uint64_t { type.params.size() } + type.results.size() + 1;
+}
 
 /// One row of LimitTable: a limit, its name and what it counts.
 struct LimitRow
@@ -155,6 +192,10 @@ inline constexpr auto LimitTable = std::to_array<LimitRow>({
       .name = "tags",
       .unit = "tags",
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxTags; } },
+    { .limit = Limit::Steps,
+      .name = "steps",
+      .unit = "steps",
+      .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxSteps; } },
 });
 
 static_assert(

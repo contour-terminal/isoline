@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <ranges>
 
 #include <isoline/runtime/Limits.hpp>
@@ -32,6 +33,8 @@ TEST_CASE("Limits.tablesAreComplete")
     }
     CHECK(describe(LimitExceeded { Limit::MemoryBytes }) == "memory bytes limit exceeded");
     CHECK(describe(LimitExceeded { Limit::Types }) == "types limit exceeded");
+    CHECK(describe(LimitExceeded { Limit::Steps }) == "steps limit exceeded");
+    CHECK(LimitTable.back().limit == Limit::Steps);
     CHECK(describe(Refusal::Limit) == "above the store's limit");
     CHECK(describe(Refusal::Embedder) == "refused by the embedder");
 }
@@ -50,7 +53,8 @@ TEST_CASE("Limits.limitValueReadsEveryField")
                                       .maxExceptions = 9,
                                       .maxExceptionValues = 10,
                                       .maxTypes = 11,
-                                      .maxTags = 12 };
+                                      .maxTags = 12,
+                                      .maxSteps = 13 };
     for (auto const& row: LimitTable)
         CHECK(limitValue(limits, row.limit) == static_cast<uint64_t>(row.limit) + 1);
 }
@@ -70,4 +74,6 @@ TEST_CASE("Limits.defaults")
     CHECK(limits.maxExceptionValues == uint64_t { 1 } << 20);
     CHECK(limits.maxTypes == 1'000'000);
     CHECK(limits.maxTags == 1'000'000);
+    // No step limit: the budget is the whole range, and the docs say "unlimited".
+    CHECK(limits.maxSteps == std::numeric_limits<uint64_t>::max());
 }

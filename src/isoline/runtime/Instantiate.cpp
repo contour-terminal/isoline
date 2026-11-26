@@ -586,6 +586,12 @@ std::expected<uint32_t, InstantiationError> instantiate(
     std::shared_ptr<validate::ValidatedModule const> module,
     std::span<ExternValue const> imports)
 {
+    // One invocation, with a fresh step budget its polls charge and its start function shares, and
+    // its own refusal scope, so the start function's refused grows stay in it.
+    if (auto const nesting = store.checkInvocationNesting(); !nesting)
+        return std::unexpected { InstantiationError { nesting.error() } };
+    auto const invocation = InvocationScope { store };
+    auto const scope = RefusalScope { store };
     return Instantiation { store, executor, std::move(module), imports }.run();
 }
 

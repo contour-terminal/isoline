@@ -123,6 +123,12 @@ InvocationResult invokeChecked(Store& store,
 {
     if (auto const checked = checkCall(store, function, args, results.size()); !checked)
         return InvocationResult { .entry = Entry::Refused, .outcome = checked, .refusedGrowth = {} };
+    // Past the nesting limit the invocation counts as entered and traps, as a call too deep does.
+    if (auto const nesting = store.checkInvocationNesting(); !nesting)
+        return InvocationResult { .entry = Entry::Entered,
+                                  .outcome = std::unexpected { Abrupt { nesting.error() } },
+                                  .refusedGrowth = {} };
+    auto const invocation = InvocationScope { store };
     auto const scope = RefusalScope { store };
     // Initializers run in order, so the record is read after the invocation, while the scope holds it.
     return InvocationResult { .entry = Entry::Entered,

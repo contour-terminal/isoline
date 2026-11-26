@@ -335,6 +335,9 @@ std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value>
 uint32_t Store::addModuleInstance(ModuleInstance instance)
 {
     Require(_moduleInstances.size() < _limits.maxInstances);
+    // A function's frame cost comes from its validated module's frame shapes, so only an instance of
+    // no code may lack one.
+    Require(instance.validated != nullptr || instance.module == nullptr || instance.module->code.empty());
     return append(_moduleInstances, std::move(instance));
 }
 
@@ -376,11 +379,13 @@ uint64_t Store::used(Limit limit) const noexcept
         Limit limit;                                   ///< The limit; equal to the row's index.
         uint64_t (*held)(Store const& store) noexcept; ///< What the store holds of it.
     };
-    // One row per Limit; an invocation's own limits are counted by the executor, not held here.
+    // One row per Limit; the call depth is counted by the executor, not held here.
     static constexpr auto Usages = std::to_array<Usage>({
         { .limit = Limit::CallDepth, .held = [](Store const&) noexcept -> uint64_t { return 0; } },
-        { .limit = Limit::StackValues, .held = [](Store const&) noexcept -> uint64_t { return 0; } },
-        { .limit = Limit::NestedInvocations, .held = [](Store const&) noexcept -> uint64_t { return 0; } },
+        { .limit = Limit::StackValues,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._chargedStackValues; } },
+        { .limit = Limit::NestedInvocations,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._invocationDepth; } },
         { .limit = Limit::MemoryBytes,
           .held = [](Store const& store) noexcept -> uint64_t { return store._memoryBytes; } },
         { .limit = Limit::TableElements,
@@ -399,6 +404,8 @@ uint64_t Store::used(Limit limit) const noexcept
           .held = [](Store const& store) noexcept -> uint64_t { return store._typeUnits; } },
         { .limit = Limit::Tags,
           .held = [](Store const& store) noexcept -> uint64_t { return store._tags.size(); } },
+        { .limit = Limit::Steps,
+          .held = [](Store const& store) noexcept -> uint64_t { return store._steps; } },
     });
     static_assert(
         [] {
@@ -410,6 +417,13 @@ uint64_t Store::used(Limit limit) const noexcept
         }(),
         "Usages must hold one row per Limit, at the index of its enumerator");
     return Usages[static_cast<std::size_t>(limit)].held(*this);
+}
+
+std::expected<void, Trap> Store::checkInvocationNesting() const noexcept
+{
+    if (_invocationDepth >= _limits.maxNestedInvocations)
+        return trap(TrapCode::CallStackExhausted);
+    return {};
 }
 
 uint32_t Store::hostCallsInProgress() const noexcept
@@ -586,6 +600,20 @@ RefusalScope::~RefusalScope()
 GrowthRecord const& RefusalScope::record() const noexcept
 {
     return _store->_growthRecord;
+}
+
+InvocationScope::InvocationScope(Store& store) noexcept: _store { &store }
+{
+    Require(_store->checkInvocationNesting().has_value());
+    // The outermost invocation's budget is fresh; nested ones share it.
+    if (_store->_invocationDepth == 0)
+        _store->_steps = 0;
+    ++_store->_invocationDepth;
+}
+
+InvocationScope::~InvocationScope()
+{
+    --_store->_invocationDepth;
 }
 
 HostCallScope::HostCallScope(Store& store) noexcept: _store { &store }

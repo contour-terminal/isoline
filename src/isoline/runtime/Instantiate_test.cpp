@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -53,6 +54,7 @@ using isoline::runtime::Abrupt;
 using isoline::runtime::AllocationFailure;
 using isoline::runtime::ExternValue;
 using isoline::runtime::FuncAddr;
+using isoline::runtime::GrowthRecord;
 using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::I32;
 using isoline::runtime::InstantiationError;
@@ -788,6 +790,8 @@ TEST_CASE("Trap.specMessages")
     CHECK(specMessage(TrapCode::HostTrap) == std::string_view { "host trap" });
     CHECK(specMessage(TrapCode::NullFunctionReference) == std::string_view { "null function reference" });
     CHECK(specMessage(TrapCode::NullReference) == std::string_view { "null reference" });
+    CHECK(specMessage(TrapCode::Interrupted) == std::string_view { "interrupted" });
+    CHECK(specMessage(TrapCode::StepLimitExceeded) == std::string_view { "step limit exceeded" });
 }
 
 TEST_CASE("Instantiate.specMessages")
@@ -1341,20 +1345,30 @@ TEST_CASE("Instantiate.interruptBeforeStartRunsNoStart")
     CHECK(counter.pollsAfterTrigger() == 0);
 }
 
-TEST_CASE("Instantiate.pollsAtEntryBeforeStartAndPerDataGranule")
+namespace
 {
-    // A 200'000-byte active data segment is copied in four granules; the start function adds a poll
-    // at Instantiation and one at its entry.
-    constexpr auto DataBytes = uint32_t { 200'000 };
+
+/// The bytes of an active data segment for memory 0 at offset 0, of @p size bytes 0xAB.
+std::vector<uint8_t> activeDataOfSize(uint32_t size)
+{
     auto data = std::vector<uint8_t> { 0x00 }; // active, memory 0
     auto const offset = i32Const(0);
     data.insert(data.end(), offset.begin(), offset.end());
     data.push_back(0x0B);
-    auto const size = isoline::binary::testing::encodeU32(DataBytes);
-    data.insert(data.end(), size.begin(), size.end());
-    data.resize(data.size() + DataBytes, 0xAB);
+    auto const encodedSize = isoline::binary::testing::encodeU32(size);
+    data.insert(data.end(), encodedSize.begin(), encodedSize.end());
+    data.resize(data.size() + size, 0xAB);
+    return data;
+}
+
+} // namespace
+
+TEST_CASE("Instantiate.pollsAtEntryBeforeStartAndPerDataGranule")
+{
+    // A 200'000-byte active data segment is copied in four granules; the start function adds a poll
+    // at Instantiation and one at its entry.
     auto builder = ModuleBuilder {};
-    builder.type(FuncType {}).memory(atLeast(4)).function(0, {}, {}).start(0).data(data);
+    builder.type(FuncType {}).memory(atLeast(4)).function(0, {}, {}).start(0).data(activeDataOfSize(200'000));
     auto allocator = HeapMemoryAllocator {};
     auto counter = PollCounter {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &counter } };
@@ -1363,4 +1377,154 @@ TEST_CASE("Instantiate.pollsAtEntryBeforeStartAndPerDataGranule")
     CHECK(counter.count(PollSite::Instantiation) == 2);
     CHECK(counter.count(PollSite::BulkGranule) == 4);
     CHECK(counter.count(PollSite::FunctionEntry) == 1);
+}
+
+TEST_CASE("Instantiate.chargesAFreshStepBudget")
+{
+    // In a store of 6 steps, a call spends 5 (its entry and 4 back-edges). Instantiation then starts a
+    // fresh budget: its entry and 5 data granules take 6 steps and fit; 6 granules take 7 and do not.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxSteps = 6 }, StoreServices { .allocator = allocator } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto spender = ModuleBuilder {};
+    spender.type(FuncType {})
+        .function(
+            0,
+            { isoline::binary::I32 },
+            isoline::binary::testing::code({ i32Const(5),
+                                             { 0x21, 0x00 }, // local.set 0
+                                             isoline::binary::testing::loop(isoline::binary::testing::code(
+                                                 { isoline::binary::testing::localGet(0),
+                                                   i32Const(1),
+                                                   { 0x6B, 0x22, 0x00 }, // i32.sub; local.tee 0
+                                                   isoline::binary::testing::brIf(0) })) }));
+    auto const spending = instantiate(store, interpreter, moduleOf(spender), {});
+    REQUIRE(spending.has_value());
+    auto const function = store.moduleInstance(*spending).functions.at(0);
+    REQUIRE(isoline::runtime::invokeChecked(store, interpreter, function, {}, {}).outcome.has_value());
+    CHECK(store.used(Limit::Steps) == 5);
+
+    auto const granules = [](uint32_t count) {
+        auto builder = ModuleBuilder {};
+        builder.memory(atLeast(count))
+            .data(activeDataOfSize(static_cast<uint32_t>(count * isoline::runtime::BulkPollBytes)));
+        return moduleOf(builder);
+    };
+    CHECK(instantiate(store, interpreter, granules(5), {}).has_value());
+    CHECK(store.used(Limit::Steps) == 6);
+    CHECK(errorOf(instantiate(store, interpreter, granules(6), {}))
+          == InstantiationError { Trap { TrapCode::StepLimitExceeded } });
+}
+
+TEST_CASE("Instantiate.fromAHostFunctionSharesTheCallersBudget")
+{
+    // Only an outermost instantiation starts a fresh step budget: one a host function makes is nested
+    // in the call that reached the host, and charges that call's budget. The call costs its entry and
+    // h's entry (2), the nested instantiation its entry and 5 data granules (6), and h's return 1: 9.
+    auto builder = ModuleBuilder {};
+    builder.memory(atLeast(5))
+        .data(activeDataOfSize(static_cast<uint32_t>(5 * isoline::runtime::BulkPollBytes)));
+    auto const granules = moduleOf(builder);
+    /// What one run saw.
+    struct Run
+    {
+        std::optional<std::expected<uint32_t, InstantiationError>> nested; ///< The host's instantiation.
+        std::expected<void, Abrupt> called;                                ///< The call that reached it.
+        uint64_t steps = 0;                                                ///< The steps the call took.
+    };
+    auto const run = [&](uint64_t maxSteps) {
+        auto allocator = HeapMemoryAllocator {};
+        auto store = Store { StoreLimits { .maxSteps = maxSteps }, StoreServices { .allocator = allocator } };
+        auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+        auto result = Run {};
+        auto const host =
+            store
+                .addHostFunction(FuncType {},
+                                 isoline::runtime::makeHostFunction(
+                                     [&](isoline::runtime::HostContext&,
+                                         std::span<Value const>,
+                                         std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                         result.nested = instantiate(store, interpreter, granules, {});
+                                         return {};
+                                     }))
+                .value();
+        auto caller = ModuleBuilder {};
+        caller.type(FuncType {})
+            .importFunction("env", "h", 0)
+            .function(0, {}, isoline::binary::testing::call(0));
+        auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+        auto const calling = instantiate(store, interpreter, moduleOf(caller), imports);
+        REQUIRE(calling.has_value());
+        auto const function = store.moduleInstance(*calling).functions.at(1);
+        result.called = isoline::runtime::invokeChecked(store, interpreter, function, {}, {}).outcome;
+        result.steps = store.used(Limit::Steps);
+        return result;
+    };
+    // Within 9 steps the nested instantiation fits, and the call took them all.
+    auto const fits = run(9);
+    REQUIRE(fits.nested.has_value());
+    CHECK(fits.nested->has_value());
+    CHECK(fits.called.has_value());
+    CHECK(fits.steps == 9);
+    // 6 steps would fit a fresh budget; the 2 the caller spent leave too few.
+    auto const refused = run(6);
+    REQUIRE(refused.nested.has_value());
+    CHECK(errorOf(*refused.nested) == InstantiationError { Trap { TrapCode::StepLimitExceeded } });
+}
+
+TEST_CASE("Instantiate.startRefusalStaysInItsScope")
+{
+    // The start function's memory.grow past the memory's maximum is refused within instantiation's
+    // refusal scope: neither the store's record nor that of the next call, which grows nothing, sees it.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .memory(between(1, 1))
+        .function(
+            0,
+            {},
+            isoline::binary::testing::code(
+                { i32Const(1), isoline::binary::testing::memoryGrow(), isoline::binary::testing::drop() }))
+        .function(0, {}, {})
+        .start(0);
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const address = instantiate(store, interpreter, moduleOf(builder), {});
+    REQUIRE(address.has_value());
+    CHECK(store.growthRecord() == GrowthRecord {});
+    auto const function = store.moduleInstance(*address).functions.at(1);
+    auto const call = isoline::runtime::invokeChecked(store, interpreter, function, {}, {});
+    CHECK(call.outcome.has_value());
+    CHECK(call.refusedGrowth == GrowthRecord {});
+    CHECK(store.growthRecord() == GrowthRecord {});
+}
+
+TEST_CASE("Instantiate.isOneInvocation")
+{
+    // Instantiation counts as an invocation: a store that allows none refuses it, and its start
+    // function is nested in it.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).importFunction("env", "start", 0).start(0);
+    auto allocator = HeapMemoryAllocator {};
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto none = Store { StoreLimits { .maxNestedInvocations = 0 }, StoreServices { .allocator = allocator } };
+    CHECK(errorOf(instantiate(none, interpreter, moduleOf(builder), {}))
+          == InstantiationError { Trap { TrapCode::CallStackExhausted } });
+
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto depth = uint64_t { 0 };
+    auto const host = store
+                          .addHostFunction(FuncType {},
+                                           isoline::runtime::makeHostFunction(
+                                               [&](isoline::runtime::HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   depth = context.store().used(Limit::NestedInvocations);
+                                                   return {};
+                                               }))
+                          .value();
+    auto const imports = std::array { ExternValue { .kind = ExternKind::Func, .address = host } };
+    REQUIRE(instantiate(store, interpreter, moduleOf(builder), imports).has_value());
+    CHECK(depth == 1);
+    CHECK(store.used(Limit::NestedInvocations) == 0);
 }

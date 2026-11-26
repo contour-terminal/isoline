@@ -33,6 +33,7 @@
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/runtime/ValueCheck.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::interpreter
 {
@@ -196,6 +197,7 @@ namespace
         std::size_t valuesBase = 0;             ///< The operand stack's height when it began.
         uint32_t arity = 0;                     ///< How many results it returns.
         uint32_t pc = 0;                        ///< The index of its next instruction.
+        uint64_t cost = 0; ///< Its static stack cost, charged to the store until it ends.
     };
 
     /// The parameter and result counts of a block type.
@@ -222,8 +224,14 @@ namespace
         Machine& operator=(Machine const&) = delete;
         Machine& operator=(Machine&&) = delete;
 
-        /// Gives back the depth of the frames a trap left behind.
-        ~Machine() { _depth -= static_cast<uint32_t>(_frames.size()); }
+        /// Gives back the depth and the stack charges of the frames a trap, an uncaught exception or an
+        /// interrupt left behind.
+        ~Machine()
+        {
+            _depth -= static_cast<uint32_t>(_frames.size());
+            for (auto const& frame: _frames)
+                _store.releaseFrame(frame.cost);
+        }
 
         /// Invokes @p function with @p args and writes its results to @p results.
         [[nodiscard]] Step run(FuncAddr function, std::span<Value const> args, std::span<Value> results)
@@ -292,21 +300,6 @@ namespace
                           _values.end() - static_cast<std::ptrdiff_t>(arity));
         }
 
-        /// Whether the operand, locals and label stacks together hold StoreLimits::maxStackValues
-        /// entries, past which a call or a block entry traps with CallStackExhausted, as the spec lets
-        /// an implementation do when a resource runs out. maxCallDepth alone would let deep calls of
-        /// functions with many locals (up to the decoder's 50000 each), or with a call inside many
-        /// nested blocks (one label each per frame), claim gigabytes.
-        ///
-        /// The budget is checked before each call and each block entry, so the stacks may overshoot it
-        /// by what one step adds: one function's parameters and locals, or the operands one frame
-        /// pushes between two block entries. Both are bounded by the decoder's limits on one function.
-        [[nodiscard]] bool stacksExhausted() const noexcept
-        {
-            return uint64_t { _values.size() + _locals.size() + _labels.size() }
-                   >= _store.limits().maxStackValues;
-        }
-
         // --- Calls ---
 
         /// Polls the store at @p site (Store::poll()).
@@ -329,7 +322,13 @@ namespace
 
         /// Enters @p address, the one routine every call, tail call and the embedder's entry go
         /// through: polls at FunctionEntry, then pushes a Wasm frame, its arguments moved off the
-        /// operand stack into its locals, or runs a host function to completion.
+        /// operand stack into its locals, or runs a host function to completion. Either charges its
+        /// frame's static cost to the store first (validate::ValidatedModule::frameCost(),
+        /// runtime::hostFrameCost()), after the poll and the depth check, and traps with
+        /// CallStackExhausted when that would exceed StoreLimits::maxStackValues, as the spec lets an
+        /// implementation do when a resource runs out; so does a Wasm frame at maxCallDepth. The
+        /// validator bounds each frame's operands and labels, so the stacks never hold more than the
+        /// charged sum.
         /// @param address The callee.
         /// @param caller The instance a host callee is called by; nullopt for the embedder.
         [[nodiscard]] Step enterCallee(FuncAddr address, std::optional<uint32_t> caller)
@@ -339,12 +338,16 @@ namespace
             auto const& function = _store.function(address);
             if (function.isHost())
                 return callHost(function, caller);
-            if (_depth >= _store.limits().maxCallDepth || stacksExhausted())
+            if (_depth >= _store.limits().maxCallDepth)
                 return trap(TrapCode::CallStackExhausted);
 
             auto& owner = _store.moduleInstance(function.moduleInstance);
             auto const& code = owner.module->code.at(function.codeIndex);
             auto const& type = _store.type(function.typeId);
+            // Only an instance of no code lacks its validated module (Store::addModuleInstance()).
+            auto const cost = owner.validated->frameCost(function.codeIndex);
+            if (auto const charged = _store.chargeFrame(cost); !charged)
+                return std::unexpected { Abrupt { charged.error() } };
             auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const localsBase = _locals.size();
             _locals.insert(_locals.end(), _values.end() - paramCount, _values.end());
@@ -362,7 +365,8 @@ namespace
                                       .labelsBase = _labels.size(),
                                       .valuesBase = _values.size(),
                                       .arity = static_cast<uint32_t>(type.results.size()),
-                                      .pc = 0 });
+                                      .pc = 0,
+                                      .cost = cost });
             ++_depth;
             return {};
         }
@@ -380,12 +384,16 @@ namespace
         /// through its context. What it ends with is checked (runtime::checkHostOutcome()): a result
         /// not of its type, or a thrown exception the store does not hold, is a HostFailure. It polls
         /// at HostReturn whatever the host returned, and an interrupt replaces that outcome: a host
-        /// that absorbed a nested Interrupted cannot extend the call.
+        /// that absorbed a nested Interrupted cannot extend the call. Its frame's static cost
+        /// (runtime::hostFrameCost()) is charged while it runs, whatever it returns.
         /// @param function The host function.
         /// @param caller The instance whose code called it; nullopt when the embedder did.
         [[nodiscard]] Step callHost(FunctionInstance const& function, std::optional<uint32_t> caller)
         {
             auto const& type = _store.type(function.typeId);
+            auto const cost = runtime::hostFrameCost(type);
+            if (auto const charged = _store.chargeFrame(cost); !charged)
+                return std::unexpected { Abrupt { charged.error() } };
             auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const args = std::vector<Value>(_values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
@@ -397,6 +405,7 @@ namespace
                 return runtime::checkHostOutcome(
                     _store, type, function.host->call(context, args, results), results);
             }();
+            _store.releaseFrame(cost);
             if (auto const polled = poll(PollSite::HostReturn); !polled)
                 return polled;
             if (!done)
@@ -414,7 +423,8 @@ namespace
         void doReturn() { discardFrame(frame().arity); }
 
         /// Discards the current frame: its labels, its locals and its operands but the top @p keep,
-        /// which move down to where its operands began.
+        /// which move down to where its operands began; and gives its stack charge back. Every frame
+        /// that ends goes through here, but those a trap leaves behind (~Machine()).
         void discardFrame(uint32_t keep)
         {
             auto const ending = frame();
@@ -423,11 +433,13 @@ namespace
             _locals.resize(ending.localsBase);
             _frames.pop_back();
             --_depth;
+            _store.releaseFrame(ending.cost);
         }
 
-        /// Tail-calls @p address: discards the current frame but the callee's arguments, then enters
-        /// it in the frame's place. A Wasm callee's frame replaces it, so neither the depth nor the
-        /// stacks grow; a host callee runs, and its results are the current frame's.
+        /// Tail-calls @p address: discards the current frame but the callee's arguments, its charge
+        /// given back, then enters it in the frame's place. A Wasm callee's frame replaces it, so
+        /// neither the depth nor the stacks grow; a host callee runs, and its results are the current
+        /// frame's.
         [[nodiscard]] Step tailCall(FuncAddr address)
         {
             // A host callee is called by the instance whose frame it replaces.
@@ -482,12 +494,10 @@ namespace
                      .results = static_cast<uint32_t>(type.results.size()) };
         }
 
-        /// Enters a block, loop, if or try_table whose operands are on the stack; traps with
-        /// CallStackExhausted when the stacks hold StoreLimits::maxStackValues entries already.
-        [[nodiscard]] Step enter(Instruction const& instruction, LabelKind kind)
+        /// Enters a block, loop, if or try_table whose operands are on the stack. Its label is within
+        /// its frame's charged cost (the frame shape's deepest label nesting).
+        void enter(Instruction const& instruction, LabelKind kind)
         {
-            if (stacksExhausted())
-                return trap(TrapCode::CallStackExhausted);
             auto const arity = blockArity(instruction);
             _labels.push_back(Label {
                 .kind = kind,
@@ -497,7 +507,6 @@ namespace
                 .continuation = kind == LabelKind::Loop ? frame().pc : instruction.endIndex + 1,
                 .tryTable = kind == LabelKind::TryTable ? &instruction : nullptr,
             });
-            return {};
         }
 
         /// Branches to label @p depth, the one routine every branching instruction and every catch
@@ -536,8 +545,9 @@ namespace
         [[nodiscard]] Step ifThen(Instruction const& instruction)
         {
             auto const condition = popI32();
-            if (auto const entered = enter(instruction, LabelKind::Block); !entered || condition != 0)
-                return entered;
+            enter(instruction, LabelKind::Block);
+            if (condition != 0)
+                return {};
             // Into the else branch, or to the end, whose execution leaves the label.
             frame().pc = instruction.elseIndex == instruction.endIndex ? instruction.endIndex
                                                                        : instruction.elseIndex + 1;
@@ -619,11 +629,7 @@ namespace
                 // No handler in this frame: it ends, and its caller's labels are tried next.
                 if (auto const polled = scan(); !polled)
                     return polled;
-                auto const ending = frame();
-                _values.resize(ending.valuesBase);
-                _locals.resize(ending.localsBase);
-                _frames.pop_back();
-                --_depth;
+                discardFrame(0);
             }
             return std::unexpected { Abrupt { Thrown { .exception = exception } } };
         }
@@ -1061,11 +1067,11 @@ namespace
                 // Control
                 case Opcode::Unreachable: return trap(TrapCode::Unreachable);
                 case Opcode::Nop: return {};
-                case Opcode::Block: return enter(instruction, LabelKind::Block);
-                case Opcode::Loop: return enter(instruction, LabelKind::Loop);
+                case Opcode::Block: enter(instruction, LabelKind::Block); return {};
+                case Opcode::Loop: enter(instruction, LabelKind::Loop); return {};
                 case Opcode::If: return ifThen(instruction);
                 case Opcode::Else: frame().pc = instruction.endIndex; return {};
-                case Opcode::TryTable: return enter(instruction, LabelKind::TryTable);
+                case Opcode::TryTable: enter(instruction, LabelKind::TryTable); return {};
                 case Opcode::Throw: return throwException(instruction);
                 case Opcode::ThrowRef: return throwReference();
                 case Opcode::End: end(); return {};
@@ -1198,20 +1204,8 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
 {
     // Float results are the spec's only in the default floating-point environment.
     assert(std::fegetround() == FE_TONEAREST);
-    if (_invocations >= store.limits().maxNestedInvocations)
-        return trap(TrapCode::CallStackExhausted);
-    // Unwinds on every exit: host functions are noexcept, so every exit is a return.
-    struct InvocationGuard
-    {
-        uint32_t& count;
-        explicit InvocationGuard(uint32_t& counter): count { counter } { ++count; }
-        InvocationGuard(InvocationGuard const&) = delete;
-        InvocationGuard& operator=(InvocationGuard const&) = delete;
-        InvocationGuard(InvocationGuard&&) = delete;
-        InvocationGuard& operator=(InvocationGuard&&) = delete;
-        ~InvocationGuard() { --count; }
-    };
-    auto const guard = InvocationGuard { _invocations };
+    // The invocation's scope, its nesting limit and its step budget, is the entry's to open.
+    Require(store.invocationDepth() > 0);
     return Machine { store, *this, _depth }.run(function, args, results);
 }
 

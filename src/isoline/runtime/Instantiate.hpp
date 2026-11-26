@@ -107,7 +107,17 @@ class ICodeExecutor
   public:
     virtual ~ICodeExecutor() = default;
 
-    /// Invokes a function.
+    /// Invokes a function, within an invocation already open (InvocationScope: runtime::invokeChecked()
+    /// or runtime::instantiate() opened it; checked).
+    ///
+    /// What every engine must do, so that the limits cut off at the same point in all of them: poll
+    /// the store (Store::poll()) at every PollSiteTable site, in the order its rows state; count the call
+    /// depth (StoreLimits::maxCallDepth) across every invocation of the store in progress, so that a
+    /// host function invoking Wasm again nests within the depth of the call that reached it; charge every
+    /// frame's static cost through Store::chargeFrame() at its entry (validate::ValidatedModule::
+    /// frameCost() for a Wasm frame, hostFrameCost() for a host frame), after the FunctionEntry poll
+    /// and the maxCallDepth check, and give it back through Store::releaseFrame() however the frame
+    /// ends; and reach guest code only from here.
     /// @param store The store holding it.
     /// @param function Its address.
     /// @param args Its arguments, matching its parameter types.
@@ -147,6 +157,12 @@ class ICodeExecutor
 /// before the failing one are released (Store::releaseTrailing), their bytes and elements returned to
 /// the store's budgets, so a retry gets its quota back. A trap from a global's initializer, an element
 /// segment, or later, leaves the instance in the store, as the spec's partial instantiation does.
+///
+/// Instantiation is one invocation (InvocationScope) with a RefusalScope of its own. Its polls charge the
+/// outermost invocation's step budget: a fresh one when instantiation is the outermost, the caller's when
+/// a host function instantiates. Its start function, nested in it, shares that budget, and the start
+/// function's refused grows stay in its RefusalScope. Past StoreLimits::maxNestedInvocations it traps with
+/// CallStackExhausted.
 ///
 /// The instance keeps @p module, and its module is @p module's, sharing its ownership. Every external
 /// value in @p imports names an entity of @p store (checked), and there are no more of them than the

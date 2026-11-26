@@ -21,13 +21,15 @@ namespace isoline::interpreter
 /// (WebAssembly 3.0, chapter 4, for the proposals the decoder and validator accept) one instruction at a
 /// time, over a validated module, and favours being obviously right over being fast. Operands, locals, labels
 /// and call frames live in heap vectors: a Wasm call never recurses on the host stack, and a call deeper than
-/// the store's StoreLimits::maxCallDepth frames traps with CallStackExhausted. A host function runs
-/// synchronously, on the host stack, and may invoke Wasm again through its runtime::HostContext; each such
-/// nested invocation does recurse on the host stack, so at most StoreLimits::maxNestedInvocations
-/// invocations may be in progress at once, and one more traps with CallStackExhausted too, whatever
-/// the frame depth.
+/// the store's StoreLimits::maxCallDepth frames traps with CallStackExhausted. So does a call whose frame's
+/// static cost (validate::ValidatedModule::frameCost(), runtime::hostFrameCost()) would take the store's
+/// charged sum (runtime::Store::chargeFrame()) past StoreLimits::maxStackValues: a cost from validation, the
+/// same in every engine. A host function runs synchronously, on the host stack, and may invoke Wasm again
+/// through its runtime::HostContext; each such nested invocation does recurse on the host stack, and
+/// runtime::invokeChecked() lets at most StoreLimits::maxNestedInvocations be in progress at once. The
+/// charged sum is the store's, so nested invocations share the stack cap rather than multiply it.
 ///
-/// An instance is not thread-safe: its depth counters belong to one thread at a time. Threads that
+/// An instance is not thread-safe: its depth counter belongs to one thread at a time. Threads that
 /// execute concurrently each use an interpreter of their own.
 ///
 /// An exception unwinds the label and frame stacks in a loop, never recursing on the host stack, to
@@ -46,7 +48,9 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
 
     /// Invokes a function, as the spec's invocation does (4.5.5).
     ///
-    /// Precondition (checked): @p function exists, @p args are of its parameter types, reference
+    /// Precondition (checked): an invocation is open on @p store (runtime::InvocationScope), as
+    /// runtime::invokeChecked() and runtime::instantiate() open one; @p function exists, @p args are of
+    /// its parameter types, reference
     /// heaps and addresses included (runtime::checkValues()), and @p results has room for exactly its
     /// results. runtime::invokeChecked() checks all three first and refuses a call that fails them,
     /// so every caller but instantiation's start call goes through it. What a host function it calls
@@ -56,9 +60,8 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
     /// @param function Its address.
     /// @param args Its arguments.
     /// @param results Receives its results.
-    /// @return Nothing, or how execution ended abruptly: the trap, CallStackExhausted when
-    ///         the store's maxNestedInvocations invocations are in progress already; Thrown, the exception
-    ///         no handler caught; or the HostFailure of a host function it called.
+    /// @return Nothing, or how execution ended abruptly: the trap; Thrown, the exception no handler
+    ///         caught; or the HostFailure of a host function it called.
     [[nodiscard]] std::expected<void, runtime::Abrupt> invoke(runtime::Store& store,
                                                               runtime::FuncAddr function,
                                                               std::span<runtime::Value const> args,
@@ -77,9 +80,6 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
     /// The Wasm frames live across every invocation in progress: a host function that invokes
     /// Wasm again nests within the depth of the call that reached it.
     uint32_t _depth = 0;
-
-    /// The invocations in progress: 1 within the outermost, more within a host function's.
-    uint32_t _invocations = 0;
 };
 
 } // namespace isoline::interpreter

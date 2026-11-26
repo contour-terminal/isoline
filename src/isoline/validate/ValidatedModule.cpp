@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <ranges>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include <isoline/Features.hpp>
 #include <isoline/binary/DecodeError.hpp>
@@ -20,8 +22,33 @@
 namespace isoline::validate
 {
 
+namespace
+{
+    /// The static stack cost of each of @p module's functions (ValidatedModule::frameCost()).
+    /// @param module The module.
+    /// @param shape Its functions' frame shapes, one per code section entry (checked).
+    /// @return The costs, by code index.
+    [[nodiscard]] std::vector<uint64_t> frameCostsOf(binary::Module const& module, ModuleShape const& shape)
+    {
+        Require(shape.functions.size() == module.code.size());
+        auto costs = std::vector<uint64_t> {};
+        costs.reserve(module.code.size());
+        for (auto const index: std::views::iota(std::size_t { 0 }, module.code.size()))
+        {
+            auto const& function = module.code[index];
+            auto const& frame = shape.functions[index];
+            costs.push_back(uint64_t { module.types.at(function.typeIndex).params.size() }
+                            + function.localCount + frame.maxOperands + frame.maxLabels + 1);
+        }
+        return costs;
+    }
+} // namespace
+
 ValidatedModule::ValidatedModule(Key /*key*/, binary::Module module, FeatureSet features, ModuleShape shape):
-    _module { std::move(module) }, _features { features }, _shape { std::move(shape) }
+    _module { std::move(module) },
+    _features { features },
+    _shape { std::move(shape) },
+    _frameCosts { frameCostsOf(_module, _shape) }
 {
 }
 

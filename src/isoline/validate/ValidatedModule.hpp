@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <core/Assert.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
 #include <span>
 #include <variant>
+#include <vector>
 
 #include <isoline/Features.hpp>
 #include <isoline/binary/DecodeError.hpp>
@@ -63,6 +66,19 @@ class ValidatedModule
     /// @return Its frame shape.
     [[nodiscard]] FrameShape frameShape(uint32_t codeIndex) const;
 
+    /// The static stack cost of one of its functions' frames, computed once at load: params + locals +
+    /// its frame shape's most operands + its deepest label nesting + 1, the + 1 for the frame itself,
+    /// so that a frame holding nothing is not free. Every engine charges it at the function's entry
+    /// (runtime::Store::chargeFrame()) against StoreLimits::maxStackValues, so the call that exhausts
+    /// the stack is the same in every engine.
+    /// @param codeIndex The function's index in the code section, imports not counted (checked).
+    /// @return Its cost in stack values.
+    [[nodiscard]] uint64_t frameCost(uint32_t codeIndex) const
+    {
+        Require(codeIndex < _frameCosts.size());
+        return _frameCosts[codeIndex];
+    }
+
     /// The module of @p validated, sharing ownership with it (the aliasing constructor).
     /// @param validated The validated module (checked: not null).
     /// @return Its module, alive as long as the result or any other owner of @p validated is.
@@ -73,6 +89,7 @@ class ValidatedModule
     binary::Module _module;
     FeatureSet _features;
     ModuleShape _shape;
+    std::vector<uint64_t> _frameCosts; ///< frameCost() of each function, by code index.
 };
 
 } // namespace isoline::validate

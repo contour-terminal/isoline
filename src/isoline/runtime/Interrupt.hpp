@@ -94,7 +94,9 @@ inline constexpr auto PollSiteTable = std::to_array<PollSiteRow>({
     { .site = PollSite::FunctionEntry,
       .name = "function entry",
       .rule = "every callee entry, before its first instruction: call, call_indirect, call_ref, the "
-              "tail calls return_call*, host callees, and the embedder's entry",
+              "tail calls return_call*, host callees, and the embedder's entry; before the call depth "
+              "and the frame's stack charge are checked, so a call refused for its stack has cost its "
+              "step, and a spent step budget traps before an exhausted stack",
       .charge = StepCharge::OneStep },
     { .site = PollSite::LoopBackEdge,
       .name = "loop back-edge",
@@ -103,8 +105,8 @@ inline constexpr auto PollSiteTable = std::to_array<PollSiteRow>({
       .charge = StepCharge::OneStep },
     { .site = PollSite::HostReturn,
       .name = "host return",
-      .rule = "every return from a host function, whatever it returned; an interrupt replaces its "
-              "outcome",
+      .rule = "every return from a host function, whatever it returned; an interrupt, and then a spent "
+              "step budget, replaces its outcome",
       .charge = StepCharge::OneStep },
     { .site = PollSite::BulkGranule,
       .name = "bulk granule",
