@@ -1,6 +1,6 @@
 # Isoline
 
-**The next general-purpose WebAssembly runtime and toolchain suite — in modern C++23.**
+**A complete, fast and safe WebAssembly runtime and toolchain, written in modern C++23.**
 
 > [!WARNING]
 > **Isoline is under active development and not ready for production use.** The core language, the
@@ -12,13 +12,14 @@
 
 ## Mission
 
-Isoline is a WebAssembly runtime you can embed, ship and trust: **standards-complete, fast, safe by
-construction, and written entirely in C++23** — no Rust, no foreign toolchain, nothing in the build but a
-C++ compiler and CMake.
+Isoline aims to be the WebAssembly runtime C++ developers reach for first — and to hold its own against
+the best in any language, with Wasmtime's performance as the bar, measured and published at equal safety
+settings. It is standards-complete, safe by construction, and written entirely in C++23: no Rust, no
+foreign toolchain, nothing in the build but a C++ compiler and CMake.
 
-It aims to be for C++ what Wasmtime is for Rust: the obvious, production-grade choice for running
-WebAssembly — whether that is a plugin system in a desktop application, sandboxed extensions in a
-terminal, a serverless host, or a command-line tool that runs `.wasm` programs directly.
+Whether it is a plugin system in a desktop application, sandboxed extensions in a terminal, a serverless
+host, or a command-line tool that runs `.wasm` programs directly, Isoline is meant to be the production-grade
+choice for running WebAssembly from C++.
 
 ## Why Isoline
 
