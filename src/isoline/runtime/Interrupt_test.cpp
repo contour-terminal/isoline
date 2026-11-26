@@ -60,6 +60,8 @@ TEST_CASE("Interrupt.pollSitesPublishTheirRules")
     STATIC_CHECK(isoline::runtime::BulkPollElements
                  == isoline::runtime::BulkPollBytes / sizeof(isoline::runtime::Ref));
     STATIC_CHECK(isoline::runtime::UnwindPollItems == 4'096);
+    CHECK(ruleOf(PollSite::Sweep).contains(std::format("every {} items", isoline::runtime::SweepPollItems)));
+    STATIC_CHECK(isoline::runtime::SweepPollItems == 4'096);
 }
 
 TEST_CASE("Store.pollNotifiesThenChecksTheInterrupt")

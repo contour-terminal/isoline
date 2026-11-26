@@ -9,6 +9,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -25,6 +26,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -251,4 +253,62 @@ TEST_CASE("MemoryBounds.multiValueCallsAreRefusedEarly")
     auto const* const error = std::get_if<isoline::validate::ValidationError>(&loaded.error());
     REQUIRE(error != nullptr);
     CHECK(error->code == isoline::validate::ValidationErrorCode::OperandStackLimitExceeded);
+}
+
+TEST_CASE("MemoryBounds.throwLoopReclaimsItsPayloads")
+{
+    // 10'000 rounds of throwing a payload of 1000 i32s, caught as an exnref and dropped, in a store of
+    // 16 exceptions: the sweeps free the dropped payloads, so the loop holds about 16 of them at once,
+    // where keeping every one would be some 300 MB.
+    constexpr auto Params = std::size_t { 1000 };
+    constexpr auto Rounds = uint32_t { 10'000 };
+    constexpr auto MaxExceptions = uint32_t { 16 };
+    auto body = std::vector<uint8_t> { 0x03, 0x40, 0x02, 0x69, 0x1F, 0x40, 0x01, 0x03, 0x00 };
+    for ([[maybe_unused]] auto const param: std::views::iota(std::size_t { 0 }, Params))
+        append(body, { 0x41, 0x00 }); // i32.const 0
+    append(body,
+           { 0x08,
+             0x00,
+             0x0B,
+             0x00,
+             0x0B,
+             0x1A, // throw 0; end; unreachable; end; drop
+             0x20,
+             0x00,
+             0x41,
+             0x01,
+             0x6B,
+             0x22,
+             0x00, // local 0 -= 1
+             0x0D,
+             0x00,
+             0x0B }); // br_if 0; end
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = std::vector<ValueType>(Params, I32), .results = {} })
+        .type(FuncType { .params = { I32 }, .results = {} })
+        .tag(0)
+        .function(1, {}, std::move(body));
+    auto validated = isoline::validate::ValidatedModule::load(
+        builder.build(), FeatureSet::wasm3(), isoline::binary::DecodeLimits {});
+    REQUIRE(validated.has_value());
+    auto allocator = isoline::runtime::HeapMemoryAllocator {};
+    auto store = isoline::runtime::Store { isoline::runtime::StoreLimits { .maxExceptions = MaxExceptions },
+                                           isoline::runtime::StoreServices { .allocator = allocator } };
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto const instance = isoline::runtime::instantiate(store, interpreter, std::move(*validated), {});
+    REQUIRE(instance.has_value());
+    auto const function = store.moduleInstance(*instance).functions.at(0);
+    auto const args = std::array<isoline::runtime::Value, 1> { isoline::runtime::I32 { .bits = Rounds } };
+
+    auto const scope = AllocationScope {};
+    auto const result = isoline::runtime::invokeChecked(store, interpreter, function, args, {});
+    auto const peak = scope.peakBytes();
+    REQUIRE(result.outcome.has_value());
+    // The arena's payloads, each a vector of Params values that may hold twice what it uses, and the
+    // stacks, which hold one payload at a time.
+    auto const budget =
+        (std::size_t { MaxExceptions + 2 } * 2 * Params * sizeof(isoline::runtime::Value)) + FixedBytes;
+    CAPTURE(peak, budget);
+    CHECK(peak <= budget);
+    CHECK(store.liveExceptions() <= MaxExceptions);
 }

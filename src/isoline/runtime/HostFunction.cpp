@@ -105,6 +105,11 @@ std::expected<ExnAddr, Abrupt> HostContext::addException(TagAddr tag, std::vecto
         });
 }
 
+void HostContext::markEscaped(Value const& value) noexcept
+{
+    _store->markEscaped(value);
+}
+
 std::optional<std::span<std::byte>> HostContext::callerMemory(uint32_t index) noexcept
 {
     if (!_callerInstance)

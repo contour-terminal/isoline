@@ -63,7 +63,9 @@ class HostContext
                                                      std::span<Value const> args,
                                                      std::span<Value> results) noexcept;
 
-    /// Allocates an exception the host function may throw by returning Thrown.
+    /// Allocates an exception the host function may throw by returning Thrown. Its address is
+    /// borrowed for this host frame, as what is read through store() is: a host that keeps it longer
+    /// escapes it (markEscaped()).
     /// @param tag The tag it is thrown with.
     /// @param payload The values it carries, of the tag's params' types.
     /// @return Its address; HostFailure{ArgumentMismatch} when the tag does not exist (no mismatch) or
@@ -71,6 +73,13 @@ class HostContext
     ///         when the store's exceptions are at their limit.
     [[nodiscard]] std::expected<ExnAddr, Abrupt> addException(TagAddr tag,
                                                               std::vector<Value> payload) noexcept;
+
+    /// Escapes the exception @p value refers to (Store::markEscaped()): what a host keeps past its
+    /// frame, an exnref read through store() or returned by addException() or invoke(), it escapes,
+    /// or a later sweep may reclaim it. Exnref arguments arrive escaped already. Any other value is
+    /// left alone.
+    /// @param value The value.
+    void markEscaped(Value const& value) noexcept;
 
     /// The bytes of the caller's memory @p index, valid until the next grow or invoke: the host
     /// re-fetches them after either.

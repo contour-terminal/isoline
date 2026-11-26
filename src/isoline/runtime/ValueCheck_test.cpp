@@ -277,6 +277,22 @@ TEST_CASE("ValueCheck.hostAndExceptionReferences")
           == mismatch(MismatchKind::Heap, 0));
 }
 
+TEST_CASE("ValueCheck.reclaimedExceptionIsForeign")
+{
+    // Two exceptions nothing refers to, in a store of two: the third allocation's sweep reclaims both
+    // and reuses the lowest address, so an exnref to the other one is stale: refused, not read.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxExceptions = 2 }, StoreServices { .allocator = allocator } };
+    auto const tag = store.addTag(store.internType(FuncType {})).value();
+    auto const first = store.addException(tag, {}).value();
+    auto const second = store.addException(tag, {}).value();
+    CHECK(store.addException(tag, {}).value() == first);
+    CHECK(store.liveExceptions() == 1);
+    CHECK_FALSE(store.isLiveException(second));
+    CHECK(checkValues(store, values(exnRef(second)), types(ExnRef))
+          == mismatch(MismatchKind::ForeignReference, 0));
+}
+
 TEST_CASE("ValueCheck.kindsBeforeReferences")
 {
     auto const fixture = CheckedStore {};

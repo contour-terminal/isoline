@@ -55,10 +55,11 @@ enum class PollSite : uint8_t
     BulkGranule,   ///< Every granule of a bulk memory or table operation.
     Instantiation, ///< Instantiation's entry, and before its start function.
     Unwind,        ///< Every UnwindPollItems labels and catch clauses an exception unwinds past.
+    Sweep,         ///< Before every SweepPollItems items an exception sweep visits.
 };
 
 /// The last PollSite enumerator, for checking PollSiteTable's size.
-inline constexpr auto LastPollSite = PollSite::Unwind;
+inline constexpr auto LastPollSite = PollSite::Sweep;
 
 /// What a poll charges against the step budget (StoreLimits::maxSteps).
 enum class StepCharge : uint8_t
@@ -79,6 +80,9 @@ static_assert(BulkPollElements == 4'096,
 
 /// The labels, catch clauses and frames an exception unwinds past between two polls.
 inline constexpr auto UnwindPollItems = uint64_t { 4'096 };
+
+/// The items an exception sweep (Store::addException() on a full arena) visits between two polls.
+inline constexpr auto SweepPollItems = uint64_t { 4'096 };
 
 /// One poll site: where it is, and the limit it publishes.
 struct PollSiteRow
@@ -123,6 +127,17 @@ inline constexpr auto PollSiteTable = std::to_array<PollSiteRow>({
       .name = "unwind",
       .rule = "every 4096 labels, catch clauses and frames an exception unwinds past",
       .charge = StepCharge::None },
+    { .site = PollSite::Sweep,
+      .name = "exception sweep",
+      .rule = "before every 4096 items an exception sweep visits, the first included, when an exception "
+              "is allocated on a full arena and no host function is running; the items, in order: each "
+              "value of the payload being allocated, each global, each slot of each table of exn type, "
+              "each item of each element segment not dropped, each operand and each local of every "
+              "active frame (every one, none pruned as dead), each slot of the exception arena (which "
+              "grows to the high-water mark of slots not Free, reusing the lowest free address first), then "
+              "each payload value of each exception found reachable, once per exception; a sweep a poll "
+              "ends reclaims nothing, and the allocation ends with that poll's trap",
+      .charge = StepCharge::OneStep },
 });
 
 static_assert(

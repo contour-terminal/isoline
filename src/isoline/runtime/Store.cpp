@@ -326,11 +326,151 @@ std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value>
     // A host may allocate one, so its payload is checked as host results are, references included:
     // what a handler pushes is read by the tag's params, and no forged funcref or exnref may enter.
     Require(checkValues(*this, payload, type(_tags[tag].typeId).params).has_value());
-    if (_exceptions.size() >= _limits.maxExceptions
-        || payload.size() > _limits.maxExceptionValues - _exceptionValues)
-        return trap(TrapCode::ExceptionLimitExceeded);
-    _exceptionValues += payload.size();
-    return append(_exceptions, ExceptionInstance { .tag = tag, .payload = std::move(payload) });
+    if (!exceptionFits(payload.size()))
+    {
+        // A host function's locals are no roots: under one, the caps hold as they are.
+        if (_hostCalls == 0)
+        {
+            if (auto const swept = sweepExceptions(payload); !swept)
+                return std::unexpected { swept.error() };
+        }
+        if (!exceptionFits(payload.size()))
+            return trap(TrapCode::ExceptionLimitExceeded);
+    }
+    // The one step that may throw (bad_alloc) comes first, so that a failure changes nothing.
+    auto const values = payload.size();
+    auto entry = ExceptionEntry { .instance = { .tag = tag, .payload = std::move(payload) } };
+    auto address = ExnAddr { 0 };
+    if (_freeExceptions.empty())
+        address = append(_exceptions, std::move(entry));
+    else
+    {
+        address = _freeExceptions.back();
+        _freeExceptions.pop_back();
+        _exceptions[address] = std::move(entry);
+    }
+    _exceptionValues += values;
+    return address;
+}
+
+void Store::markEscaped(Value const& value) noexcept
+{
+    if (auto const address = exceptionOf(value); address && isLiveException(*address))
+        _exceptions[*address].slot = ExceptionSlot::Escaped;
+}
+
+std::size_t Store::liveExceptions() const noexcept
+{
+    return _exceptions.size() - _freeExceptions.size();
+}
+
+bool Store::exceptionFits(std::size_t payloadSize) const noexcept
+{
+    return liveExceptions() < _limits.maxExceptions
+           && payloadSize <= _limits.maxExceptionValues - _exceptionValues;
+}
+
+std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
+{
+    using Swept = std::expected<void, Trap>;
+    auto& worklist = _exceptionWorklist;
+    worklist.clear();
+    // Every item it visits counts, and a poll precedes every SweepPollItems of them, the first
+    // included (PollSiteTable's Sweep row): in the order the row states, which every engine follows.
+    auto visited = uint64_t { 0 };
+    auto const visit = [&]() noexcept -> Swept {
+        if (visited++ % SweepPollItems != 0)
+            return {};
+        return poll(PollSite::Sweep);
+    };
+    auto const markValue = [&worklist](Value const& value) {
+        if (auto const address = exceptionOf(value))
+            worklist.push_back(*address);
+    };
+    auto const scan = [&](auto&& items, auto const& mark) -> Swept {
+        for (auto const& item: items)
+        {
+            if (auto const polled = visit(); !polled)
+                return polled;
+            mark(item);
+        }
+        return {};
+    };
+    auto const markReference = [&markValue](Ref const& reference) {
+        markValue(reference);
+    };
+    auto const markGlobal = [&markValue](GlobalInstance const& global) {
+        markValue(global.value);
+    };
+    auto const markSlot = [&worklist, this](ExnAddr address) {
+        if (_exceptions[address].slot == ExceptionSlot::Escaped)
+            worklist.push_back(address);
+    };
+    // Only exn's hierarchy holds exnrefs, and of it only exn itself anything but null: tables of other
+    // types are skipped whole, however large they grew.
+    auto exnTables = _tables | std::views::filter([](TableInstance const& table) {
+                         return table.type.element.heap.kind == binary::AbstractHeapType::Exn;
+                     })
+                     | std::views::transform(&TableInstance::elements) | std::views::join;
+    // A segment of exnrefs has items of global.get only, and is dropped once used; the passive ones a
+    // module keeps are as long as its bytes, so they are scanned whatever their type.
+    auto keptSegments = _moduleInstances | std::views::transform(&ModuleInstance::elements) | std::views::join
+                        | std::views::filter([](auto const& kept) { return kept.has_value(); })
+                        | std::views::transform([](auto const& kept) -> auto const& { return *kept; })
+                        | std::views::join;
+    _exceptionRootRanges.clear();
+    auto const* registration = _exceptionRoots;
+    while (registration != nullptr)
+    {
+        registration->_roots->appendExceptionRoots(_exceptionRootRanges);
+        registration = registration->_next;
+    }
+    auto arena = std::views::iota(ExnAddr { 0 }, static_cast<ExnAddr>(_exceptions.size()));
+
+    // Marks the roots, then what they reach through payloads, with no recursion.
+    _exceptionMarks.assign(_exceptions.size(), 0);
+    auto const trace = [&]() -> Swept {
+        while (!worklist.empty())
+        {
+            auto const address = worklist.back();
+            worklist.pop_back();
+            Require(address < _exceptions.size() && _exceptions[address].slot != ExceptionSlot::Free);
+            if (_exceptionMarks[address] != 0)
+                continue;
+            _exceptionMarks[address] = 1;
+            if (auto const scanned = scan(_exceptions[address].instance.payload, markValue); !scanned)
+                return scanned;
+        }
+        return {};
+    };
+    auto const marked =
+        scan(pending, markValue)
+            .and_then([&] { return scan(_globals, markGlobal); })
+            .and_then([&] { return scan(exnTables, markReference); })
+            .and_then([&] { return scan(keptSegments, markReference); })
+            .and_then([&] { return scan(_exceptionRootRanges | std::views::join, markValue); })
+            .and_then([&] { return scan(arena, markSlot); })
+            .and_then(trace);
+    if (!marked)
+        return marked;
+
+    // Reclaims the rest, and lists every Free slot highest first, so that allocations reuse the lowest
+    // address first. The reservation comes first: past it, nothing may fail and lose a slot.
+    _freeExceptions.reserve(_exceptions.size());
+    _freeExceptions.clear();
+    for (auto const address: arena | std::views::reverse)
+    {
+        auto& entry = _exceptions[address];
+        if (_exceptionMarks[address] != 0)
+            continue;
+        if (entry.slot != ExceptionSlot::Free)
+        {
+            _exceptionValues -= entry.instance.payload.size();
+            entry = ExceptionEntry { .instance = {}, .slot = ExceptionSlot::Free };
+        }
+        _freeExceptions.push_back(address);
+    }
+    return {};
 }
 
 uint32_t Store::addModuleInstance(ModuleInstance instance)
@@ -398,7 +538,7 @@ uint64_t Store::used(Limit limit) const noexcept
         { .limit = Limit::Instances,
           .held = [](Store const& store) noexcept -> uint64_t { return store._moduleInstances.size(); } },
         { .limit = Limit::Exceptions,
-          .held = [](Store const& store) noexcept -> uint64_t { return store._exceptions.size(); } },
+          .held = [](Store const& store) noexcept -> uint64_t { return store.liveExceptions(); } },
         { .limit = Limit::ExceptionValues,
           .held = [](Store const& store) noexcept -> uint64_t { return store._exceptionValues; } },
         { .limit = Limit::Types,
@@ -444,7 +584,7 @@ std::size_t Store::functionCount() const noexcept
 
 bool Store::isLiveException(ExnAddr address) const noexcept
 {
-    return address < _exceptions.size();
+    return address < _exceptions.size() && _exceptions[address].slot != ExceptionSlot::Free;
 }
 
 std::size_t Store::memoryCount() const noexcept
@@ -532,7 +672,8 @@ TagInstance const& Store::tag(TagAddr address) const
 
 ExceptionInstance const& Store::exception(ExnAddr address) const
 {
-    return at(_exceptions, address);
+    Require(isLiveException(address));
+    return _exceptions[address].instance;
 }
 
 ModuleInstance const& Store::moduleInstance(uint32_t address) const
@@ -626,6 +767,24 @@ HostCallScope::~HostCallScope()
 {
     --_store->_hostCalls;
     establishFloatDefaults();
+}
+
+ExceptionRootsRegistration::ExceptionRootsRegistration(Store& store, IExceptionRoots const& roots) noexcept:
+    _store { &store }, _roots { &roots }, _next { store._exceptionRoots }
+{
+    if (_next != nullptr)
+        _next->_previous = this;
+    store._exceptionRoots = this;
+}
+
+ExceptionRootsRegistration::~ExceptionRootsRegistration()
+{
+    if (_previous != nullptr)
+        _previous->_next = _next;
+    else
+        _store->_exceptionRoots = _next;
+    if (_next != nullptr)
+        _next->_previous = _previous;
 }
 
 } // namespace isoline::runtime

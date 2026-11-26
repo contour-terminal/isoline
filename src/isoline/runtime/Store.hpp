@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <isoline/binary/Module.hpp>
@@ -41,6 +42,65 @@ using GlobalAddr = uint32_t;
 using TypeId = uint32_t;
 
 class IHostFunction; // HostFunction.hpp
+class Store;
+class ExceptionRootsRegistration;
+
+/// The exception @p value refers to.
+/// @param value The value.
+/// @return Its address when it is an exnref to an exception; nullopt for any other value, null included.
+[[nodiscard]] inline std::optional<ExnAddr> exceptionOf(Value const& value) noexcept
+{
+    if (auto const* reference = std::get_if<Ref>(&value); reference && reference->kind == RefKind::Exn)
+        return reference->address;
+    return std::nullopt;
+}
+
+/// What holds exnrefs the store cannot see: an executor's operand and locals stacks. A sweep of the
+/// exception arena (Store::addException()) scans every registered one's values
+/// (ExceptionRootsRegistration) and reclaims no exception they refer to.
+///
+/// The roots are a contract every engine reproduces, since what a sweep keeps decides whether a later
+/// throw traps, and how many items it visits decides its step charge (PollSite::Sweep): every operand
+/// and every local of every active frame, of every invocation in progress. None is pruned as dead,
+/// however an engine knows it to be.
+class IExceptionRoots
+{
+  public:
+    virtual ~IExceptionRoots() = default;
+
+    /// Appends the ranges of values the holder keeps: every operand and local of its active frames.
+    /// They must stay unchanged while the sweep runs, which no guest code does.
+    /// @param ranges Receives the ranges.
+    virtual void appendExceptionRoots(std::vector<std::span<Value const>>& ranges) const = 0;
+};
+
+/// Registers an IExceptionRoots with a store for as long as it lives, so that a sweep keeps what the
+/// holder refers to. An intrusive list node: registering allocates nothing.
+class ExceptionRootsRegistration
+{
+  public:
+    /// Registers @p roots with @p store.
+    /// @param store The store; must outlive the registration.
+    /// @param roots The holder; must outlive the registration.
+    ExceptionRootsRegistration(Store& store, IExceptionRoots const& roots) noexcept;
+
+    /// Unregisters it.
+    ~ExceptionRootsRegistration();
+
+    ExceptionRootsRegistration(ExceptionRootsRegistration const&) = delete;
+    ExceptionRootsRegistration(ExceptionRootsRegistration&&) = delete;
+    ExceptionRootsRegistration& operator=(ExceptionRootsRegistration const&) = delete;
+    ExceptionRootsRegistration& operator=(ExceptionRootsRegistration&&) = delete;
+
+  private:
+    friend class Store;
+
+    Store* _store;                 ///< The store it is registered with.
+    IExceptionRoots const* _roots; ///< The holder.
+    ExceptionRootsRegistration* _previous =
+        nullptr;                       ///< The registration before it in the store's list; non-owning.
+    ExceptionRootsRegistration* _next; ///< The registration after it; non-owning.
+};
 
 /// A function instance: a module's function, or a host function.
 struct FunctionInstance
@@ -177,8 +237,10 @@ struct StoreServices
 /// The store: every function, table, memory, global and module instance, addressed by index.
 ///
 /// Instances are never removed, and adding one never moves the others, so a reference to an
-/// instance stays valid as long as the store. The one exception is releaseTrailing(), which drops the
-/// tables and memories of an instantiation that failed before anything referred to them.
+/// instance stays valid as long as the store. There are two exceptions: releaseTrailing(), which drops
+/// the tables and memories of an instantiation that failed before anything referred to them; and the
+/// exceptions, which a sweep reclaims once nothing reaches them (addException()), their slots staying
+/// where they are.
 ///
 /// Every resource a guest can claim is capped by the store's StoreLimits, fixed at construction: the
 /// counts of memories, tables, instances and tags, the bytes of all memories and the elements of all
@@ -285,11 +347,35 @@ class Store
     [[nodiscard]] std::expected<TagAddr, LimitExceeded> addTag(TypeId typeId);
 
     /// Allocates an exception, as throw does, or as a host function may to throw one.
+    ///
+    /// When the arena is full (either cap below) and no host function is running
+    /// (hostCallsInProgress() is 0), it first sweeps: it marks every exception reachable from the
+    /// roots, through payloads, and reclaims the rest, whose addresses later allocations reuse, the
+    /// lowest first. The roots are the tables', globals' and element segments' references, the
+    /// registered IExceptionRoots (the executors' stacks), @p payload, and every escaped exception
+    /// (markEscaped()). An address the embedder keeps past the next allocation must be escaped. No
+    /// sweep runs under a host function, whose locals are no roots: there the caps hold as they are.
+    ///
+    /// A sweep polls at PollSite::Sweep before every SweepPollItems items it visits, each poll charging
+    /// a step, so it is metered and interruptible like guest code. A poll that traps abandons the
+    /// sweep before it reclaims anything: the store is as it was, the charged steps aside.
     /// @param tag The tag it is thrown with; must exist (checked).
     /// @param payload The values it carries, of the tag's params' types (checkValues(), checked).
-    /// @return Its address, or ExceptionLimitExceeded when the store holds StoreLimits::maxExceptions
-    ///         exceptions already, or their payloads would exceed StoreLimits::maxExceptionValues.
+    /// @return Its address; ExceptionLimitExceeded when the store holds StoreLimits::maxExceptions
+    ///         live exceptions, or their payloads would exceed StoreLimits::maxExceptionValues, even
+    ///         after a sweep; or Interrupted or StepLimitExceeded when a poll ended the sweep.
     [[nodiscard]] std::expected<ExnAddr, Trap> addException(TagAddr tag, std::vector<Value> payload);
+
+    /// Escapes the exception @p value refers to, when it is an exnref of a live exception: no sweep
+    /// reclaims it, nor the exceptions its payload refers to, for the rest of the store's life. What
+    /// reaches the embedder or a host past its frame is escaped, so its address can never dangle or
+    /// name another exception later. Any other value is left alone.
+    /// @param value The value.
+    void markEscaped(Value const& value) noexcept;
+
+    /// How many exceptions the store holds: allocated and not reclaimed by a sweep.
+    /// @return Their count, which StoreLimits::maxExceptions caps.
+    [[nodiscard]] std::size_t liveExceptions() const noexcept;
 
     /// Adds a module instance.
     ///
@@ -396,9 +482,10 @@ class Store
     [[nodiscard]] std::size_t functionCount() const noexcept;
 
     /// Whether @p address names an exception this store holds, which an exnref may refer to: one it
-    /// allocated (addException()). A host's address of an exception it never allocated is not.
+    /// allocated (addException()) and no sweep reclaimed. A host's address of an exception it never
+    /// allocated is not, nor is one a sweep reclaimed until an allocation reuses it.
     /// @param address The exception's address.
-    /// @return Whether it is below the arena's count.
+    /// @return Whether it is below the arena's count and not on its free list.
     [[nodiscard]] bool isLiveException(ExnAddr address) const noexcept;
 
     /// How many memories the store holds.
@@ -467,7 +554,7 @@ class Store
     /// @return The tag instance.
     [[nodiscard]] TagInstance const& tag(TagAddr address) const;
 
-    /// The exception at @p address. Precondition (checked): the address exists.
+    /// The exception at @p address. Precondition (checked): it is live (isLiveException()).
     /// @param address The exception's address.
     /// @return The exception instance.
     [[nodiscard]] ExceptionInstance const& exception(ExnAddr address) const;
@@ -502,6 +589,32 @@ class Store
     friend class RefusalScope;
     friend class HostCallScope;
     friend class InvocationScope;
+    friend class ExceptionRootsRegistration;
+
+    /// What an exception arena slot holds.
+    enum class ExceptionSlot : uint8_t
+    {
+        Held,    ///< A live exception a sweep reclaims when nothing reaches it.
+        Escaped, ///< A live exception that reached the embedder or a host: never reclaimed.
+        Free,    ///< Reclaimed, on the free list until an allocation reuses it.
+    };
+
+    /// An exception arena slot: the exception and its state, in one element, so that adding one is a
+    /// single allocation that either happens or does not.
+    struct ExceptionEntry
+    {
+        ExceptionInstance instance; ///< The exception; empty when Free.
+        ExceptionSlot slot = ExceptionSlot::Held;
+    };
+
+    /// Whether one more exception of @p payloadSize values fits within both caps.
+    [[nodiscard]] bool exceptionFits(std::size_t payloadSize) const noexcept;
+
+    /// Marks every exception reachable from the roots, @p pending included, and reclaims the rest,
+    /// polling at PollSite::Sweep before every SweepPollItems items it visits.
+    /// @param pending The payload being added, not yet in the arena.
+    /// @return Nothing once swept; the trap of the poll that abandoned it, nothing reclaimed.
+    [[nodiscard]] std::expected<void, Trap> sweepExceptions(std::span<Value const> pending);
 
     IMemoryAllocator* _allocator;
     uint64_t _requiredGuardBytes;
@@ -522,7 +635,13 @@ class Store
     std::deque<MemoryInstance> _memories;
     std::deque<GlobalInstance> _globals;
     std::deque<TagInstance> _tags;
-    std::deque<ExceptionInstance> _exceptions;
+    std::deque<ExceptionEntry> _exceptions; ///< The exception arena, by ExnAddr.
+    std::vector<ExnAddr> _freeExceptions;   ///< The Free slots, highest first: the lowest on top.
+    /// A sweep's ranges of executor values (IExceptionRoots), kept to reuse its capacity.
+    std::vector<std::span<Value const>> _exceptionRootRanges;
+    ExceptionRootsRegistration* _exceptionRoots = nullptr; ///< The registered roots' list; non-owning.
+    std::vector<uint8_t> _exceptionMarks;    ///< A sweep's mark per slot, kept to reuse its capacity.
+    std::vector<ExnAddr> _exceptionWorklist; ///< A sweep's mark stack, kept to reuse its capacity.
     std::deque<ModuleInstance> _moduleInstances;
 
     /// Every interned type and its TypeId. An ordered map, not a hash table: types are the guest's

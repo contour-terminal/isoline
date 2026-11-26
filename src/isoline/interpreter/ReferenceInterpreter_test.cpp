@@ -68,6 +68,7 @@ using isoline::binary::testing::memoryFill;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::interpreter::ReferenceInterpreter;
 using isoline::runtime::Abrupt;
+using isoline::runtime::ExnAddr;
 using isoline::runtime::ExternValue;
 using isoline::runtime::F32;
 using isoline::runtime::FuncAddr;
@@ -84,6 +85,7 @@ using isoline::runtime::Limit;
 using isoline::runtime::makeHostFunction;
 using isoline::runtime::MismatchKind;
 using isoline::runtime::PollSite;
+using isoline::runtime::Ref;
 using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::Thrown;
@@ -1941,11 +1943,13 @@ TEST_CASE("Interpreter.throwRefRethrows")
                          { 0x0B, 0x00, 0x0B },
                          { 0x0A },
                          { 0x0B, 0x00, 0x0B } }));
-    // A store of one exception: throw_ref allocates none, so one invocation fits, and a second throw
-    // does not, as the store never frees an exception.
+    // A store of one exception: throw_ref allocates none, so one invocation fits; the next one's throw
+    // finds the arena full, and its sweep reclaims the first invocation's exception, which nothing
+    // refers to any more.
     auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 1 } };
     CHECK(harness.result(0) == i32(7));
-    CHECK(harness.trap(0) == TrapCode::ExceptionLimitExceeded);
+    CHECK(harness.result(0) == i32(7));
+    CHECK(harness.store().liveExceptions() == 1);
 }
 
 TEST_CASE("Interpreter.throwRefOfNullTraps")
@@ -3161,6 +3165,387 @@ TEST_CASE("ReferenceInterpreter.hostChangeOfTheFloatEnvironmentDoesNotLeak")
     CHECK(std::fegetround() == FE_TONEAREST);
     CHECK(governedBits(hostFloatControlLayout(), isoline::runtime::readFloatControl())
           == governedBits(hostFloatControlLayout(), embedderControl));
+}
+
+namespace
+{
+
+/// The catch_ref clause's byte.
+constexpr auto ClauseCatchRef = uint8_t { 0x01 };
+
+/// exnref, as a value type.
+constexpr auto TypeExnRef = isoline::binary::ExnRef;
+
+/// block (result exnref) try_table (@p clause 0 0) @p throwing end unreachable end: what @p throwing
+/// throws, caught as an exnref; by tag 0 when @p clause is catch_ref.
+Bytes caught(Bytes const& throwing, uint8_t clause = ClauseCatchAllRef)
+{
+    return code({ { 0x02, ExnRefResult }, tryTable(NoResult, clause, 0, 0), throwing, { 0x0B, 0x00, 0x0B } });
+}
+
+/// loop: caught(@p throwing, @p clause), dropped, as many rounds as the i32 local @p counter holds.
+Bytes dropRounds(uint32_t counter, Bytes const& throwing, uint8_t clause = ClauseCatchAllRef)
+{
+    return code({ { 0x03, NoResult },
+                  caught(throwing, clause),
+                  { 0x1A }, // drop
+                  localGet(counter),
+                  i32Const(1),
+                  { 0x6B, 0x22 }, // i32.sub; local.tee
+                  encodeU32(counter),
+                  { 0x0D, 0x00, 0x0B } }); // br_if 0; end
+}
+
+/// throw $e @p payload, $e a tag of one i32 param.
+Bytes throwI32(int32_t payload)
+{
+    return code({ i32Const(payload), throwTag(0) });
+}
+
+} // namespace
+
+TEST_CASE("ReferenceInterpreter.reclaimsDroppedExceptions")
+{
+    // A million rounds of throw, catch_ref and drop in a store of 16 exceptions: every sweep reclaims
+    // the dropped ones, so the cap bounds the exceptions held at once, not the throws.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .tag(0)
+        .function(1, {}, dropRounds(0, throwTag(0), ClauseCatchRef));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.invoke(0, { i32(1'000'000) }).has_value());
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.keepsExceptionsInLocals")
+{
+    // block (result i32) try_table (catch $e 0)
+    //   caught(throw $e 42) local.set 0; 20 rounds of caught(throw $e 7) drop; local.get 0 throw_ref
+    // end unreachable end: the sweeps the rounds take keep the exception local 0 holds.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(1,
+                  { TypeExnRef, TypeI32 },
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         caught(throwI32(42)),
+                         { 0x21, 0x00 }, // local.set 0
+                         i32Const(20),
+                         { 0x21, 0x01 }, // local.set 1
+                         dropRounds(1, throwI32(7)),
+                         localGet(0),
+                         { 0x0A }, // throw_ref
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(0) == i32(42));
+}
+
+TEST_CASE("ReferenceInterpreter.keepsExceptionsInPayloads")
+{
+    // B = caught(throw $b 42); A = caught(throw $a B), kept in global 0 only; 20 rounds of throw and
+    // drop; then throw_ref A, caught by $a, hands B, whose throw_ref the outer catch $b unpacks: B
+    // survived the sweeps through A's payload.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({ TypeExnRef }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .tag(1)
+        .global(GlobalType { .type = TypeExnRef, .mutability = Mutability::Var }, { 0xD0, 0x69 })
+        .function(2,
+                  { TypeExnRef, TypeI32 },
+                  code({ caught(throwI32(42)),
+                         { 0x21, 0x00 }, // local.set 0: B
+                         caught(code({ localGet(0), throwTag(1) })),
+                         { 0x24, 0x00 },             // global.set 0: A
+                         { 0xD0, 0x69, 0x21, 0x00 }, // local 0 = ref.null exn: only A holds B
+                         i32Const(20),
+                         { 0x21, 0x01 },
+                         dropRounds(1, throwI32(7)),
+                         { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         { 0x02, ExnRefResult },
+                         tryTable(NoResult, ClauseCatch, 1, 0),
+                         { 0x23, 0x00, 0x0A }, // global.get 0; throw_ref A
+                         { 0x0B, 0x00, 0x0B },
+                         { 0x0A }, // throw_ref B
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(0) == i32(42));
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.noSweepUnderAHostFrame")
+{
+    // Function 2 calls the host, which invokes function 1: 17 rounds of throw and drop. A host's
+    // locals are no roots, so no sweep runs under it, and the 17th throw traps in a store of 16. The
+    // same rounds invoked by the embedder sweep, and succeed.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .importFunction("env", "host", 0)
+        .tag(0)
+        .function(1, {}, dropRounds(0, throwTag(0)))
+        .function(0, {}, call(0));
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context, std::span<Value const>, std::span<Value>) noexcept {
+                                  auto const args = std::array { i32(17) };
+                                  return context.invoke(self->function(1), args, {});
+                              });
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    self = &harness;
+    CHECK(harness.trap(2) == TrapCode::ExceptionLimitExceeded);
+    CHECK(harness.invoke(1, { i32(17) }).has_value());
+}
+
+TEST_CASE("ReferenceInterpreter.keepsOuterFramesExceptionsAcrossHostReentry")
+{
+    // Function 2 catches $e 42 into local 0, calls the host, which re-enters for 10 rounds of throw
+    // and drop (no sweep under it), then calls function 1 for 20 more, which sweep with function 2's
+    // frame beneath: local 0 survives both, and its throw_ref reaches the outer catch.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "host", 1)
+        .tag(0)
+        .function(0, {}, dropRounds(0, throwI32(7)))
+        .function(2,
+                  { TypeExnRef },
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         caught(throwI32(42)),
+                         { 0x21, 0x00 },
+                         call(0),
+                         i32Const(20),
+                         call(1),
+                         localGet(0),
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context, std::span<Value const>, std::span<Value>) noexcept {
+                                  auto const args = std::array { i32(10) };
+                                  return context.invoke(self->function(1), args, {});
+                              });
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    self = &harness;
+    CHECK(harness.result(2) == i32(42));
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.hostStashedExceptionSurvives")
+{
+    // Function 1 hands caught(throw $e 42) to the host, which keeps its address past its frame; 20
+    // rounds of throw and drop later, in a store of 16, the address still names that exception: an
+    // exnref argument escapes, and no sweep reclaims it or hands its slot to another.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({ TypeExnRef }, {}))
+        .type(signature({}, {}))
+        .importFunction("env", "stash", 1)
+        .tag(0)
+        .function(2, {}, code({ caught(throwI32(42)), call(0) }))
+        .function(0, {}, dropRounds(0, throwI32(7)));
+    auto stashed = std::optional<ExnAddr> {};
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return std::vector { ExternValue {
+                .kind = ExternKind::Func,
+                .address = addHost(store,
+                                   signature({ TypeExnRef }, {}),
+                                   [&](HostContext&, std::span<Value const> args, std::span<Value>) noexcept
+                                       -> std::expected<void, Abrupt> {
+                                       stashed = std::get<Ref>(args[0]).address;
+                                       return {};
+                                   }) } };
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    REQUIRE(harness.invoke(1).has_value());
+    REQUIRE(stashed.has_value());
+    REQUIRE(harness.invoke(2, { i32(20) }).has_value());
+    CHECK(harness.store().isLiveException(*stashed));
+    CHECK(harness.store().exception(*stashed).payload == std::vector { i32(42) });
+}
+
+TEST_CASE("ReferenceInterpreter.interruptStopsThrowCatchLoop", "[threading]")
+{
+    // loop $l (try_table (catch_all $l) (throw $e)): every throw's exception is dropped, so the sweeps
+    // never let the arena of 16 stop the loop; the catch's branch to the loop polls, and an interrupt
+    // from another thread ends it.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .tag(0)
+        .function(0,
+                  {},
+                  code({ { 0x03, NoResult },
+                         tryTable(NoResult, ClauseCatchAll, 0, 0),
+                         throwTag(0),
+                         { 0x0B, 0x0B } }));
+    auto counter = PollCounter { PollTrigger { .site = PollSite::LoopBackEdge, .ordinal = 1'000 } };
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 }, &counter };
+    auto watchdog = InterruptWatchdog { counter, harness.store().interrupter() };
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(watchdog.finish() == TriggerWait::Triggered);
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.hostEscapesWhatItKeeps")
+{
+    // Function 1 puts caught(throw $e 42) in global 0 and calls the host, which reads it through its
+    // read-only store, borrowed for its frame, and escapes it to keep it; the guest then clears the
+    // global, and 20 rounds of throw and drop in a store of 16 leave the kept exception alone.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, {}))
+        .importFunction("env", "keep", 1)
+        .tag(0)
+        .global(GlobalType { .type = TypeExnRef, .mutability = Mutability::Var }, { 0xD0, 0x69 })
+        .function(1,
+                  {},
+                  code({ caught(throwI32(42)),
+                         { 0x24, 0x00 }, // global.set 0
+                         call(0),
+                         { 0xD0, 0x69, 0x24, 0x00 } })) // global 0 = ref.null exn
+        .function(0, {}, dropRounds(0, throwI32(7)));
+    auto kept = std::optional<ExnAddr> {};
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  auto const& store = context.store();
+                                  auto const global =
+                                      store.moduleInstance(context.callerInstance().value()).globals.at(0);
+                                  auto const& value = store.global(global).value;
+                                  kept = std::get<Ref>(value).address;
+                                  context.markEscaped(value);
+                                  return {};
+                              });
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    REQUIRE(harness.invoke(1).has_value());
+    REQUIRE(kept.has_value());
+    REQUIRE(harness.invoke(2, { i32(20) }).has_value());
+    CHECK(harness.store().isLiveException(*kept));
+    CHECK(harness.store().exception(*kept).payload == std::vector { i32(42) });
+}
+
+TEST_CASE("ReferenceInterpreter.keepsExceptionsOnTheOperandStack")
+{
+    // block (result i32) try_table (catch $e 0)
+    //   caught(throw $e 42); i32.const 20; call $rounds; throw_ref
+    // end unreachable end: the exnref waits on the operand stack, beneath the call, while the 20
+    // rounds sweep a store of 16; it is the only reference to its exception.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(0, {}, dropRounds(0, throwI32(7)))
+        .function(1,
+                  {},
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         caught(throwI32(42)),
+                         i32Const(20),
+                         call(0),
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(1) == i32(42));
+}
+
+TEST_CASE("ReferenceInterpreter.keepsTheExceptionsOfAPayloadBeingThrown")
+{
+    // 15 rounds of throw and drop, then caught(throw $e 42), the 16th, fills the arena; throw $a takes
+    // that exnref straight off the operand stack, so while its allocation sweeps, the payload being
+    // thrown is the exnref's only reference. catch $a hands it back, and its throw_ref reaches catch $e.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({ TypeExnRef }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .tag(1)
+        .function(2,
+                  { TypeI32 },
+                  code({ i32Const(15),
+                         { 0x21, 0x00 },
+                         dropRounds(0, throwI32(7)),
+                         { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         { 0x02, ExnRefResult },
+                         tryTable(NoResult, ClauseCatch, 1, 0),
+                         caught(throwI32(42)),
+                         throwTag(1),
+                         { 0x0B, 0x00, 0x0B },
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(0) == i32(42));
+}
+
+TEST_CASE("ReferenceInterpreter.keepsAnExceptionAHostReturned")
+{
+    // The host allocates $e 42 and returns its exnref, unescaped: once pushed, the operand stack keeps
+    // it through the 20 rounds' sweeps, and its throw_ref reaches catch $e.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeExnRef }))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "make", 1)
+        .tag(0)
+        .function(0, {}, dropRounds(0, throwI32(7)))
+        .function(2,
+                  {},
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         call(0),
+                         i32Const(20),
+                         call(1),
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return std::vector { ExternValue {
+                .kind = ExternKind::Func,
+                .address = addHost(
+                    store,
+                    signature({}, { TypeExnRef }),
+                    [](HostContext& context, std::span<Value const>, std::span<Value> results) noexcept
+                        -> std::expected<void, Abrupt> {
+                        auto const tag =
+                            context.store().moduleInstance(context.callerInstance().value()).tags.at(0);
+                        return context.addException(tag, { i32(42) }).transform([&](ExnAddr exception) {
+                            results[0] = Ref { .kind = isoline::runtime::RefKind::Exn,
+                                               .heap = TypeExnRef.heap,
+                                               .address = exception };
+                        });
+                    }) } };
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    CHECK(harness.result(2) == i32(42));
+    CHECK(harness.store().liveExceptions() <= 16);
 }
 
 TEST_CASE("Interpreter.uninitializedTypedLocalNamesItsTypeId")

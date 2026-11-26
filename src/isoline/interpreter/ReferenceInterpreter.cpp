@@ -208,14 +208,18 @@ namespace
     };
 
     /// One invocation's execution: the operand, locals, label and frame stacks, all on the heap.
-    class Machine
+    ///
+    /// Its operand and locals stacks are exception roots (runtime::IExceptionRoots), registered with
+    /// the store while it lives, so that a sweep of the exception arena keeps every exception they
+    /// refer to, in its frames and in those of every invocation it is nested in.
+    class Machine final: public runtime::IExceptionRoots
     {
       public:
         /// @param store The store to execute on.
         /// @param executor What a host function it calls re-enters the guest through: the interpreter.
         /// @param depth The frames active over every invocation in progress; kept up to date.
         Machine(Store& store, runtime::ICodeExecutor& executor, uint32_t& depth):
-            _store { store }, _executor { executor }, _depth { depth }
+            _store { store }, _executor { executor }, _depth { depth }, _rootsRegistration { store, *this }
         {
         }
 
@@ -226,11 +230,19 @@ namespace
 
         /// Gives back the depth and the stack charges of the frames a trap, an uncaught exception or an
         /// interrupt left behind.
-        ~Machine()
+        ~Machine() override
         {
             _depth -= static_cast<uint32_t>(_frames.size());
             for (auto const& frame: _frames)
                 _store.releaseFrame(frame.cost);
+        }
+
+        /// Appends its operand and locals stacks: every operand and local of its active frames.
+        /// @param ranges Receives them.
+        void appendExceptionRoots(std::vector<std::span<Value const>>& ranges) const override
+        {
+            ranges.emplace_back(_values);
+            ranges.emplace_back(_locals);
         }
 
         /// Invokes @p function with @p args and writes its results to @p results.
@@ -398,6 +410,9 @@ namespace
             auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const args = std::vector<Value>(_values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
+            // An exnref handed to a host may be kept past its frame: it escapes, never reclaimed.
+            for (auto const& arg: args)
+                _store.markEscaped(arg);
             auto results = std::vector<Value>(type.results.size());
             std::ranges::transform(type.results, results.begin(), runtime::defaultValue);
             auto const done = [&] {
@@ -1195,6 +1210,7 @@ namespace
         std::vector<Value> _locals;
         std::vector<Label> _labels;
         std::vector<Frame> _frames;
+        runtime::ExceptionRootsRegistration _rootsRegistration; ///< Last, so that it ends first.
     };
 } // namespace
 

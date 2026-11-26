@@ -98,8 +98,9 @@ struct StoreLimits
     /// size.
     uint32_t maxInstances = 10'000;
 
-    /// How many exceptions the store may hold; a throw past it traps with ExceptionLimitExceeded. The
-    /// store does not free one yet, so this bounds what a guest that throws in a loop may claim.
+    /// How many exceptions the store may hold at once; a throw past it traps with ExceptionLimitExceeded.
+    /// An allocation on a full arena first sweeps it (PollSite::ExceptionSweep) and reclaims what no
+    /// root reaches; escaped exceptions are never reclaimed, so this bounds those a guest may pin.
     uint32_t maxExceptions = 65'536;
 
     /// How many payload values the exceptions together may hold; a throw past it traps with

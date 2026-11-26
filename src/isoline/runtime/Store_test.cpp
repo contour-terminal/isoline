@@ -28,6 +28,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/PollCounter.hpp>
 #include <isoline/runtime/testing/ProvidedMemory.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
@@ -323,6 +324,55 @@ TEST_CASE("Store.tagNamesItsTypeOnly")
     CHECK(store.addException(tag, std::vector<Value>(1000, I32 { .bits = 1 })).has_value());
 }
 
+namespace
+{
+
+/// An exnref to the exception at @p address.
+Ref exnRef(isoline::runtime::ExnAddr address)
+{
+    return Ref { .kind = RefKind::Exn, .heap = isoline::binary::ExnRef.heap, .address = address };
+}
+
+/// Exception roots of the values it holds, as an executor's stacks are.
+class HeldRoots final: public isoline::runtime::IExceptionRoots
+{
+  public:
+    /// @param held The values it keeps.
+    explicit HeldRoots(std::vector<Value> held): _held { std::move(held) } {}
+
+    void appendExceptionRoots(std::vector<std::span<Value const>>& ranges) const override
+    {
+        ranges.emplace_back(_held);
+    }
+
+  private:
+    std::vector<Value> _held;
+};
+
+/// A store of 16 exceptions and a tag of one i32 param.
+struct ExceptionArena
+{
+    ExceptionArena():
+        store { StoreLimits { .maxExceptions = 16 }, StoreServices { .allocator = allocator } },
+        tag { store.addTag(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }))
+                  .value() }
+    {
+    }
+
+    /// Allocates @p rounds exceptions, each dropped at once; every allocation must succeed.
+    void dropRounds(int rounds)
+    {
+        for ([[maybe_unused]] auto const round: std::views::iota(0, rounds))
+            REQUIRE(store.addException(tag, { I32 { .bits = 7 } }).has_value());
+    }
+
+    HeapMemoryAllocator allocator;
+    Store store;
+    isoline::runtime::TagAddr tag;
+};
+
+} // namespace
+
 TEST_CASE("Store.exceptionLimits")
 {
     using isoline::runtime::TrapCode;
@@ -335,9 +385,13 @@ TEST_CASE("Store.exceptionLimits")
     {
         auto store = Store { StoreLimits { .maxExceptions = 2 }, StoreServices { .allocator = allocator } };
         auto const tag = store.addTag(store.internType(FuncType {})).value();
+        // Escaped, so that the sweep a full arena takes reclaims neither.
         auto const first = store.addException(tag, {});
         REQUIRE(first.has_value());
-        REQUIRE(store.addException(tag, {}).has_value());
+        store.markEscaped(exnRef(*first));
+        auto const second = store.addException(tag, {});
+        REQUIRE(second.has_value());
+        store.markEscaped(exnRef(*second));
         auto const third = store.addException(tag, {});
         REQUIRE_FALSE(third.has_value());
         CHECK(third.error() == Trap { TrapCode::ExceptionLimitExceeded });
@@ -355,14 +409,213 @@ TEST_CASE("Store.exceptionLimits")
             store.addTag(store.internType(FuncType { .params = { I32 }, .results = {} })).value();
         auto const two =
             store.addTag(store.internType(FuncType { .params = { I32, I32 }, .results = {} })).value();
-        auto const first = store.addException(two, payload(2));
+        // Each escaped, so that no sweep reclaims it.
+        auto const add = [&](isoline::runtime::TagAddr tag, std::size_t count) {
+            auto const added = store.addException(tag, payload(count));
+            if (added)
+                store.markEscaped(exnRef(*added));
+            return added;
+        };
+        auto const first = add(two, 2);
         REQUIRE(first.has_value());
         CHECK(store.exception(*first).payload == payload(2));
-        CHECK(store.addException(two, payload(2)).error() == Trap { TrapCode::ExceptionLimitExceeded });
-        CHECK(store.addException(one, payload(1)).has_value());
-        CHECK(store.addException(none, {}).has_value());
-        CHECK_FALSE(store.addException(one, payload(1)).has_value());
+        CHECK(add(two, 2).error() == Trap { TrapCode::ExceptionLimitExceeded });
+        CHECK(add(one, 1).has_value());
+        CHECK(add(none, 0).has_value());
+        CHECK_FALSE(add(one, 1).has_value());
     }
+}
+
+TEST_CASE("Store.escapedExceptionsAreKept")
+{
+    // An escaped exception survives the sweeps of 20 rounds of drops in a store of 16, its payload
+    // intact; the dropped ones are reclaimed, so the arena never traps.
+    auto arena = ExceptionArena {};
+    auto& store = arena.store;
+    auto const kept = store.addException(arena.tag, { I32 { .bits = 42 } }).value();
+    store.markEscaped(exnRef(kept));
+    arena.dropRounds(20);
+    CHECK(store.isLiveException(kept));
+    CHECK(store.exception(kept).payload == std::vector<Value> { I32 { .bits = 42 } });
+    CHECK(store.liveExceptions() <= 16);
+    CHECK(store.used(Limit::Exceptions) == store.liveExceptions());
+    // Marking anything but a live exnref changes nothing.
+    store.markEscaped(I32 { .bits = 1 });
+    store.markEscaped(exnRef(1'000));
+}
+
+TEST_CASE("Store.sweepKeepsItsRoots")
+{
+    // What a registered root, a table, a global, an element segment or an escaped exception's payload
+    // refers to survives 20 rounds of drops; what nothing refers to is reclaimed and its address
+    // reused, lowest first.
+    auto arena = ExceptionArena {};
+    auto& store = arena.store;
+    auto const exnTag =
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::ExnRef }, .results = {} }))
+            .value();
+    auto const rooted = store.addException(arena.tag, { I32 { .bits = 1 } }).value();
+    auto const tabled = store.addException(arena.tag, { I32 { .bits = 2 } }).value();
+    auto const globaled = store.addException(arena.tag, { I32 { .bits = 3 } }).value();
+    auto const inPayload = store.addException(arena.tag, { I32 { .bits = 4 } }).value();
+    auto const carrier = store.addException(exnTag, { exnRef(inPayload) }).value();
+    store.markEscaped(exnRef(carrier));
+    auto const table = store.addTable(TableType { .element = isoline::binary::ExnRef, .limits = atLeast(1) },
+                                      exnRef(tabled));
+    REQUIRE(table.has_value());
+    std::ignore = store.addGlobal(
+        GlobalType { .type = isoline::binary::ExnRef, .mutability = Mutability::Var }, exnRef(globaled));
+    auto const segmented = store.addException(arena.tag, { I32 { .bits = 5 } }).value();
+    auto segments = isoline::runtime::ModuleInstance {};
+    segments.elements = { std::nullopt, std::vector { exnRef(segmented) } };
+    std::ignore = store.addModuleInstance(std::move(segments));
+    auto const roots =
+        HeldRoots { { exnRef(rooted), I32 { .bits = 9 }, exnRef(rooted) } }; // twice: marked once
+    auto const none = HeldRoots { {} };
+    // Three registrations, the rooted one in the middle of the store's list, which ends first.
+    using isoline::runtime::ExceptionRootsRegistration;
+    auto oldest = std::optional<ExceptionRootsRegistration> {};
+    oldest.emplace(store, none);
+    auto middle = std::optional<ExceptionRootsRegistration> {};
+    middle.emplace(store, roots);
+    auto const newest = ExceptionRootsRegistration { store, none };
+    arena.dropRounds(20);
+    for (auto const& [address, bits]: std::to_array<std::pair<isoline::runtime::ExnAddr, uint32_t>>(
+             { { rooted, 1 }, { tabled, 2 }, { globaled, 3 }, { inPayload, 4 }, { segmented, 5 } }))
+    {
+        CAPTURE(address);
+        REQUIRE(store.isLiveException(address));
+        CHECK(store.exception(address).payload == std::vector<Value> { I32 { .bits = bits } });
+    }
+    middle.reset();
+    oldest.reset();
+    // Unregistered, the root no longer keeps its exception: the next full arena reclaims it, and the
+    // lowest address, its own, goes to the next exception.
+    arena.dropRounds(16);
+    REQUIRE(store.isLiveException(rooted));
+    CHECK(store.exception(rooted).payload == std::vector<Value> { I32 { .bits = 7 } });
+    CHECK(store.exception(carrier).payload == std::vector<Value> { exnRef(inPayload) });
+}
+
+namespace
+{
+
+/// A store of 2 exceptions whose sweep visits 3 × SweepPollItems + 2 items: the slots of a null exnref
+/// table of 3 × 4096, and the 2 arena slots, holding exceptions nothing refers to.
+struct MeteredSweep
+{
+    /// The polls the sweep takes: before items 0, 4096, 8192 and 12'288.
+    static constexpr auto Polls = uint64_t { 4 };
+
+    /// @param maxSteps The store's step budget.
+    /// @param trigger Where its poll counter triggers; none when nullopt.
+    explicit MeteredSweep(uint64_t maxSteps,
+                          std::optional<isoline::runtime::testing::PollTrigger> trigger = {}):
+        counter { trigger },
+        store { StoreLimits { .maxExceptions = 2, .maxSteps = maxSteps },
+                StoreServices { .allocator = allocator, .pollObserver = &counter } },
+        tag { store.addTag(store.internType(FuncType {})).value() }
+    {
+        auto const nullExn =
+            Ref { .kind = RefKind::Null, .heap = isoline::binary::ExnRef.heap, .address = 0 };
+        REQUIRE(store
+                    .addTable(TableType { .element = isoline::binary::ExnRef,
+                                          .limits = atLeast(3 * isoline::runtime::SweepPollItems) },
+                              nullExn)
+                    .has_value());
+        REQUIRE(store.addException(tag, {}).has_value());
+        REQUIRE(store.addException(tag, {}).has_value());
+    }
+
+    HeapMemoryAllocator allocator;
+    isoline::runtime::testing::PollCounter counter;
+    Store store;
+    isoline::runtime::TagAddr tag;
+};
+
+} // namespace
+
+TEST_CASE("Store.sweepChargesItsItems")
+{
+    // 12'290 items: a poll before every 4096 of them, the first included, each charging a step.
+    auto sweep = MeteredSweep { std::numeric_limits<uint64_t>::max() };
+    auto& store = sweep.store;
+    auto const invocation = InvocationScope { store };
+    REQUIRE(store.used(Limit::Steps) == 0);
+    REQUIRE(store.addException(sweep.tag, {}).has_value());
+    CHECK(sweep.counter.count(PollSite::Sweep) == MeteredSweep::Polls);
+    CHECK(store.used(Limit::Steps) == MeteredSweep::Polls);
+    CHECK(store.liveExceptions() == 1);
+}
+
+TEST_CASE("Store.interruptEndsASweepWithinOneGranule")
+{
+    // Raised at the second poll, which observes it: the sweep ends there, reclaims nothing, and the
+    // allocation reports Interrupted.
+    auto sweep =
+        MeteredSweep { std::numeric_limits<uint64_t>::max(),
+                       isoline::runtime::testing::PollTrigger { .site = PollSite::Sweep, .ordinal = 2 } };
+    auto& store = sweep.store;
+    sweep.counter.interruptAtTrigger(store.interrupter());
+    auto const added = store.addException(sweep.tag, {});
+    REQUIRE_FALSE(added.has_value());
+    CHECK(added.error() == Trap { TrapCode::Interrupted });
+    CHECK(sweep.counter.count(PollSite::Sweep) == 2);
+    CHECK(sweep.counter.pollsAfterTrigger() == 0);
+    CHECK(store.liveExceptions() == 2);
+    CHECK(store.isLiveException(0));
+    CHECK(store.isLiveException(1));
+}
+
+TEST_CASE("Store.abandonedSweepLeavesTheStoreUsable")
+{
+    // A budget of exactly the sweep's 4 steps, one of them spent: its last poll traps, and it reclaims
+    // nothing. The next invocation's fresh budget lets the same sweep finish, and the allocation take
+    // the lowest address it reclaimed.
+    auto sweep = MeteredSweep { MeteredSweep::Polls };
+    auto& store = sweep.store;
+    {
+        auto const invocation = InvocationScope { store };
+        REQUIRE(store.poll(PollSite::FunctionEntry).has_value());
+        auto const added = store.addException(sweep.tag, {});
+        REQUIRE_FALSE(added.has_value());
+        CHECK(added.error() == Trap { TrapCode::StepLimitExceeded });
+        CHECK(store.liveExceptions() == 2);
+        CHECK(store.isLiveException(0));
+        CHECK(store.isLiveException(1));
+    }
+    auto const invocation = InvocationScope { store };
+    auto const added = store.addException(sweep.tag, {});
+    REQUIRE(added.has_value());
+    CHECK(*added == 0);
+    CHECK(store.used(Limit::Steps) == MeteredSweep::Polls);
+    CHECK(store.liveExceptions() == 1);
+    CHECK_FALSE(store.isLiveException(1));
+}
+
+TEST_CASE("Store.sweepAbandonedWhileTracingReclaimsNothing")
+{
+    // An escaped exception of 5000 values in a store of 2: the third allocation's sweep visits the 2
+    // arena slots, then traces those values; its second poll, before item 4096, comes while tracing,
+    // past a budget of one step. Nothing is reclaimed, the unescaped exception included.
+    auto allocator = HeapMemoryAllocator {};
+    auto store =
+        Store { StoreLimits { .maxExceptions = 2, .maxSteps = 1 }, StoreServices { .allocator = allocator } };
+    auto const wide = store
+                          .addTag(store.internType(
+                              FuncType { .params = std::vector(5000, isoline::binary::I32), .results = {} }))
+                          .value();
+    auto const empty = store.addTag(store.internType(FuncType {})).value();
+    auto const escaped = store.addException(wide, std::vector<Value>(5000, I32 { .bits = 3 })).value();
+    store.markEscaped(exnRef(escaped));
+    auto const dropped = store.addException(empty, {}).value();
+    auto const invocation = InvocationScope { store };
+    auto const added = store.addException(empty, {});
+    REQUIRE_FALSE(added.has_value());
+    CHECK(added.error() == Trap { TrapCode::StepLimitExceeded });
+    CHECK(store.liveExceptions() == 2);
+    CHECK(store.isLiveException(dropped));
+    CHECK(store.exception(escaped).payload.size() == 5000);
 }
 
 TEST_CASE("Store.memoryLimitIsStoreWide")

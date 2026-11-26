@@ -47,8 +47,8 @@ class PollCounter final: public IPollObserver
     PollCounter() = default;
 
     /// A counter that triggers at @p trigger.
-    /// @param trigger The poll it triggers at.
-    explicit PollCounter(PollTrigger trigger) noexcept: _trigger { trigger } {}
+    /// @param trigger The poll it triggers at; none never triggers, as the default counter.
+    explicit PollCounter(std::optional<PollTrigger> trigger) noexcept: _trigger { trigger } {}
 
     /// Interrupts @p interrupter, on the executing thread, at the trigger. An attach-style call after
     /// construction, as the wiring is cyclic: the store that owns the interrupter is constructed with
