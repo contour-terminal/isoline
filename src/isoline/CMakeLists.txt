@@ -127,6 +127,7 @@ isoline_apply_target_policy(isoline_core)
 isoline_apply_language_features(isoline_core)
 
 add_subdirectory(numerics)
+add_subdirectory(fastinterpreter)
 add_subdirectory(text)
 add_subdirectory(cli)
 

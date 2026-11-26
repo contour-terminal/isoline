@@ -689,6 +689,10 @@ set(isolineContractRows
     "Contract.Instantiate.referenceCodeIsNull|code == nullptr \\|\\| code->engine\\(\\) != ExecutionEngine::Reference"
     "Contract.PollGate.observedPollNeedsTheStoresCountdown|stepsLeft == reload\\(\\)"
     "Contract.PollGate.commitWithinTheBudget|stepsLeft <= _maxSteps"
+    "Contract.SlotCodec.storeIntoItsWidth|slots\\.size\\(\\) == width"
+    "Contract.SlotCodec.loadFromItsWidth|slots\\.size\\(\\) == width"
+    "Contract.SlotCodec.nullHeapIsTheInstances|heap\\.typeIndex < instanceTypes\\.size\\(\\)"
+    "Contract.Code.everyContainerUsesTheArena|allocateFrom\\(_arena\\.get\\(\\), _functions\\)"
     # Removed in P4 Task 14b, which wires the fast engine into the API.
     "Contract.Engine.runsOnlyTheReferenceEngine|_config\\.engine == ExecutionEngine::Reference")
 set(isolineContractCases)
