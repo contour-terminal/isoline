@@ -476,7 +476,7 @@ namespace
         [[nodiscard]] Step throwException(Instruction const& instruction)
         {
             auto const tag = instance().tags.at(instruction.a);
-            auto const count = static_cast<std::ptrdiff_t>(_store.tag(tag).type.params.size());
+            auto const count = static_cast<std::ptrdiff_t>(_store.type(_store.tag(tag).typeId).params.size());
             auto payload = std::vector<Value>(_values.end() - count, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(count));
             auto const exception = _store.addException(tag, std::move(payload));

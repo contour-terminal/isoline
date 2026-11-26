@@ -189,12 +189,24 @@ TEST_CASE("Store.tagsAreDistinct")
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
     auto const type = FuncType { .params = { isoline::binary::I32 }, .results = {} };
-    auto const first = store.addTag(type);
-    auto const second = store.addTag(type);
+    auto const first = store.addTag(store.internType(type));
+    auto const second = store.addTag(store.internType(type));
     CHECK(first != second);
     CHECK(store.tag(first).typeId == store.tag(second).typeId);
-    CHECK(store.tag(first).type == type);
     CHECK(store.findType(type) == store.tag(first).typeId);
+}
+
+TEST_CASE("Store.tagNamesItsTypeOnly")
+{
+    // A tag holds its TypeId and nothing else: its payload's types are read through the store, so a
+    // tag of a wide type costs no more than one of an empty type.
+    static_assert(sizeof(isoline::runtime::TagInstance) == sizeof(isoline::runtime::TypeId));
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto const wide = FuncType { .params = std::vector(1000, isoline::binary::I32), .results = {} };
+    auto const tag = store.addTag(store.internType(wide));
+    CHECK(store.type(store.tag(tag).typeId) == wide);
+    CHECK(store.addException(tag, std::vector<Value>(1000, I32 { .bits = 1 })).has_value());
 }
 
 TEST_CASE("Store.exceptionLimits")
@@ -209,7 +221,7 @@ TEST_CASE("Store.exceptionLimits")
     SECTION("the number of exceptions")
     {
         auto store = Store { allocator, StoreLimits { .maxExceptions = 2 } };
-        auto const tag = store.addTag(FuncType {});
+        auto const tag = store.addTag(store.internType(FuncType {}));
         auto const first = store.addException(tag, {});
         REQUIRE(first.has_value());
         REQUIRE(store.addException(tag, {}).has_value());
@@ -224,9 +236,9 @@ TEST_CASE("Store.exceptionLimits")
     {
         auto store = Store { allocator, StoreLimits { .maxExceptionValues = 3 } };
         using isoline::binary::I32;
-        auto const none = store.addTag(FuncType {});
-        auto const one = store.addTag(FuncType { .params = { I32 }, .results = {} });
-        auto const two = store.addTag(FuncType { .params = { I32, I32 }, .results = {} });
+        auto const none = store.addTag(store.internType(FuncType {}));
+        auto const one = store.addTag(store.internType(FuncType { .params = { I32 }, .results = {} }));
+        auto const two = store.addTag(store.internType(FuncType { .params = { I32, I32 }, .results = {} }));
         auto const first = store.addException(two, payload(2));
         REQUIRE(first.has_value());
         CHECK(store.exception(*first).payload == payload(2));

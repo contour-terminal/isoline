@@ -20,10 +20,10 @@ namespace isoline::validate
 /// unreachable. Both stacks live on the heap and the algorithm never recurses, so the nesting depth
 /// of the input costs memory linear in it, not native stack.
 ///
-/// Module-level checks follow the reference interpreter's order (types, imports, tags, functions,
-/// result arities, tables and memories, globals, element and data segments, bodies, start, exports,
-/// then the memory count), so a module with several faults reports the one the interpreter reports
-/// first.
+/// Module-level checks run in Isoline's own order (types, imports, tags, functions, result arities,
+/// tables and memories, globals, element and data segments, bodies, start, exports, then the memory
+/// count). Where that differs from the reference interpreter's, the first error reported for a module
+/// with several faults can differ.
 ///
 /// Precondition (checked): @p module is as decodeModule produces it: every body's block structure
 /// is balanced and ends with the final end; every br_table, typed select and try_table names a run

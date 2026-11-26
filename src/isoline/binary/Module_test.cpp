@@ -24,12 +24,23 @@ TEST_CASE("Module.importedCount")
     auto wasm = Module {};
     CHECK(wasm.importedCount(ExternKind::Func) == 0);
 
-    wasm.imports.push_back(Import { .module = "env", .name = "f", .kind = ExternKind::Func });
-    wasm.imports.push_back(Import { .module = "env", .name = "m", .kind = ExternKind::Memory });
-    wasm.imports.push_back(Import { .module = "env", .name = "g", .kind = ExternKind::Func });
+    wasm.importModules.emplace_back("env");
+    wasm.imports.push_back(Import { .moduleIndex = 0, .name = "f", .kind = ExternKind::Func });
+    wasm.imports.push_back(Import { .moduleIndex = 0, .name = "m", .kind = ExternKind::Memory });
+    wasm.imports.push_back(Import { .moduleIndex = 0, .name = "g", .kind = ExternKind::Func });
     CHECK(wasm.importedCount(ExternKind::Func) == 2);
     CHECK(wasm.importedCount(ExternKind::Memory) == 1);
     CHECK(wasm.importedCount(ExternKind::Table) == 0);
+}
+
+TEST_CASE("Module.importModuleOf")
+{
+    auto wasm = Module {};
+    wasm.importModules = { "env", "wasi" };
+    wasm.imports.push_back(Import { .moduleIndex = 1, .name = "f", .kind = ExternKind::Func });
+    wasm.imports.push_back(Import { .moduleIndex = 0, .name = "g", .kind = ExternKind::Func });
+    CHECK(importModuleOf(wasm, wasm.imports[0]) == "wasi");
+    CHECK(importModuleOf(wasm, wasm.imports[1]) == "env");
 }
 
 TEST_CASE("Module.instructionStaysCompact")

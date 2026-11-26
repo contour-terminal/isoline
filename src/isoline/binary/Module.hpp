@@ -10,6 +10,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -269,9 +270,13 @@ struct Tag
 };
 
 /// An import: what it names, and the type the importer requires of it.
+///
+/// Its module name is held once per import entry, in Module::importModules, and named here by index:
+/// a compact import group gives all its items one module name, which a copy per item would make cost
+/// memory of the name's length times the item count (importModuleOf() reads it).
 struct Import
 {
-    std::string module;                 ///< The module name.
+    uint32_t moduleIndex = 0;           ///< The module name's index in Module::importModules.
     std::string name;                   ///< The field name.
     ExternKind kind = ExternKind::Func; ///< What is imported; selects the field below that applies.
     uint32_t typeIndex = 0;             ///< Func (and Tag): the function type's index.
@@ -346,20 +351,21 @@ struct CustomSection
 /// A decoded module: every section's contents, in index-space order.
 struct Module
 {
-    std::vector<FuncType> types;          ///< The type section.
-    std::vector<Import> imports;          ///< The import section.
-    std::vector<uint32_t> functions;      ///< The function section: the type index per defined function.
-    std::vector<Table> tables;            ///< The table section: defined tables.
-    std::vector<MemoryType> memories;     ///< The memory section: defined memories.
-    std::vector<Tag> tags;                ///< The tag section: defined tags.
-    std::vector<Global> globals;          ///< The global section: defined globals.
-    std::vector<Export> exports;          ///< The export section.
-    std::optional<uint32_t> start;        ///< The start section: the start function's index, if any.
-    std::vector<ElementSegment> elements; ///< The element section.
-    std::optional<uint32_t> dataCount;    ///< The data count section, if present.
-    std::vector<Function> code;           ///< The code section: one entry per defined function.
-    std::vector<DataSegment> data;        ///< The data section.
-    std::vector<CustomSection> customs;   ///< Every custom section, in module order.
+    std::vector<FuncType> types;            ///< The type section.
+    std::vector<Import> imports;            ///< The import section.
+    std::vector<std::string> importModules; ///< The import entries' module names (Import::moduleIndex).
+    std::vector<uint32_t> functions;        ///< The function section: the type index per defined function.
+    std::vector<Table> tables;              ///< The table section: defined tables.
+    std::vector<MemoryType> memories;       ///< The memory section: defined memories.
+    std::vector<Tag> tags;                  ///< The tag section: defined tags.
+    std::vector<Global> globals;            ///< The global section: defined globals.
+    std::vector<Export> exports;            ///< The export section.
+    std::optional<uint32_t> start;          ///< The start section: the start function's index, if any.
+    std::vector<ElementSegment> elements;   ///< The element section.
+    std::optional<uint32_t> dataCount;      ///< The data count section, if present.
+    std::vector<Function> code;             ///< The code section: one entry per defined function.
+    std::vector<DataSegment> data;          ///< The data section.
+    std::vector<CustomSection> customs;     ///< Every custom section, in module order.
 
     /// The 16 immediate bytes of every v128.const and i8x16.shuffle, in the order the decoder read
     /// them, constant expressions included; such an instruction's Instruction::a indexes this.
@@ -383,6 +389,19 @@ struct Module
             std::ranges::count_if(imports, [kind](Import const& entry) { return entry.kind == kind; }));
     }
 };
+
+/// The module name of one of @p module's imports.
+///
+/// Precondition (checked): @p import is one of @p module's, so its module index lies within
+/// Module::importModules.
+/// @param module The module that declares @p import.
+/// @param import One of its imports.
+/// @return The name of the module it imports from; valid as long as @p module.
+[[nodiscard]] inline std::string_view importModuleOf(Module const& module, Import const& import) noexcept
+{
+    Require(import.moduleIndex < module.importModules.size());
+    return module.importModules[import.moduleIndex];
+}
 
 /// The 16 immediate bytes of a v128.const or i8x16.shuffle of @p module: a v128.const's vector,
 /// lowest lane byte first, or a shuffle's 16 lane indices.

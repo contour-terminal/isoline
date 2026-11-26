@@ -79,10 +79,13 @@ struct GlobalInstance
 };
 
 /// A tag instance: what marks an exception, and the types of the payload it carries.
+///
+/// It names its type by TypeId only, as a FunctionInstance does: Store::type() reads the type, whose
+/// params are the payload's types. A copy per tag would make a module of many tags of one wide type
+/// cost the store memory of the tag count times the type's size.
 struct TagInstance
 {
-    binary::FuncType type; ///< Its type, in store form; its params are the payload's types.
-    TypeId typeId = 0;     ///< Its type's identity in the store, which an import of it must name.
+    TypeId typeId = 0; ///< Its type's identity in the store, which an import of it must name.
 };
 
 /// An exception instance: what throw allocates, and an exnref refers to.
@@ -252,9 +255,9 @@ class Store
     [[nodiscard]] GlobalAddr addGlobal(binary::GlobalType type, Value value);
 
     /// Adds a tag.
-    /// @param type Its type, in store form; interned (internType()).
+    /// @param typeId Its type, interned already (checked).
     /// @return Its address: a new tag, distinct from every other, whatever its type.
-    [[nodiscard]] TagAddr addTag(binary::FuncType type);
+    [[nodiscard]] TagAddr addTag(TypeId typeId);
 
     /// Allocates an exception, as throw does, or as a host function may to throw one.
     /// @param tag The tag it is thrown with; must exist (checked).

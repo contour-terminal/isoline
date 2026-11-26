@@ -188,10 +188,10 @@ GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
     return append(_globals, GlobalInstance { .type = type, .value = value });
 }
 
-TagAddr Store::addTag(binary::FuncType type)
+TagAddr Store::addTag(TypeId typeId)
 {
-    auto const typeId = internType(type);
-    return append(_tags, TagInstance { .type = std::move(type), .typeId = typeId });
+    Require(typeId < _types.size());
+    return append(_tags, TagInstance { .typeId = typeId });
 }
 
 std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value> payload)
@@ -199,7 +199,7 @@ std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value>
     Require(tag < _tags.size());
     // A host may allocate one, so its payload is checked as host results are: what a handler pushes
     // is read by the tag's params.
-    Require(haveKinds(payload, _tags[tag].type.params));
+    Require(haveKinds(payload, type(_tags[tag].typeId).params));
     if (_exceptions.size() >= _limits.maxExceptions
         || payload.size() > _limits.maxExceptionValues - _exceptionValues)
         return trap(TrapCode::ExceptionLimitExceeded);

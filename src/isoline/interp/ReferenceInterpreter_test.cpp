@@ -1813,8 +1813,8 @@ TEST_CASE("Interpreter.importedTagIsTheSameTag")
     auto harness =
         Harness { builder, [&](Store& store) {
                      // A decoy first, so that no TagAddr equals the tag index naming it.
-                     static_cast<void>(store.addTag(signature({}, {})));
-                     shared = store.addTag(signature({}, {}));
+                     static_cast<void>(store.addTag(store.internType(signature({}, {}))));
+                     shared = store.addTag(store.internType(signature({}, {})));
                      return std::vector { ExternValue { .kind = ExternKind::Tag, .address = shared } };
                  } };
     CHECK(harness.result(0) == i32(1));

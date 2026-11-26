@@ -324,7 +324,7 @@ namespace
             auto resolved = std::vector<ExternValue> {};
             for (auto const& import: module.imports)
             {
-                auto const exporter = _registered.find(import.module);
+                auto const exporter = _registered.find(binary::importModuleOf(module, import));
                 auto const value =
                     exporter == _registered.end() ? std::nullopt : exportOf(exporter->second, import.name);
                 if (!value)

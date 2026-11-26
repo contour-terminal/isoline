@@ -498,16 +498,17 @@ namespace
         [[nodiscard]] std::expected<void, DecodeError> codeSection();
         [[nodiscard]] std::expected<void, DecodeError> dataSection();
 
-        /// Reads the rest of a compact import entry from the module it names.
-        using ImportGroupDecoder = std::expected<void, DecodeError> (ModuleDecoder::*)(std::string const&);
+        /// Reads the rest of a compact import entry, whose items all import from the module name at
+        /// the given index of Module::importModules.
+        using ImportGroupDecoder = std::expected<void, DecodeError> (ModuleDecoder::*)(uint32_t);
 
         // The compact import group decoders, one per row of CompactImportGroupings.
-        /// Reads the rest of a 0x7F entry from @p module: a vector of item names, each with its
-        /// extern type.
-        [[nodiscard]] std::expected<void, DecodeError> readNamedTypesGroup(std::string const& module);
-        /// Reads the rest of a 0x7E entry from @p module: one extern type, then a vector of item
-        /// names that all import it.
-        [[nodiscard]] std::expected<void, DecodeError> readSharedTypeGroup(std::string const& module);
+        /// Reads the rest of a 0x7F entry from the module @p moduleIndex names: a vector of item names, each
+        /// with its extern type.
+        [[nodiscard]] std::expected<void, DecodeError> readNamedTypesGroup(uint32_t moduleIndex);
+        /// Reads the rest of a 0x7E entry from the module @p moduleIndex names: one extern type, then a
+        /// vector of item names that all import it.
+        [[nodiscard]] std::expected<void, DecodeError> readSharedTypeGroup(uint32_t moduleIndex);
 
       private:
         [[nodiscard]] std::expected<void, DecodeError> preamble();
@@ -1410,16 +1411,19 @@ namespace
         auto name = readName();
         if (!name)
             return std::unexpected { name.error() };
+        // One copy of the module name per entry, however many items a compact group gives it.
+        auto const moduleIndex = static_cast<uint32_t>(_module.importModules.size());
+        _module.importModules.push_back(std::move(*module));
         if (auto const group = readImportGrouping(*name))
-            return (this->**group)(*module);
+            return (this->**group)(moduleIndex);
         return readExternType().and_then([&](Import&& import) {
-            import.module = std::move(*module);
+            import.moduleIndex = moduleIndex;
             import.name = std::move(*name);
             return appendImport(std::move(import), entryOffset);
         });
     }
 
-    std::expected<void, DecodeError> ModuleDecoder::readNamedTypesGroup(std::string const& module)
+    std::expected<void, DecodeError> ModuleDecoder::readNamedTypesGroup(uint32_t moduleIndex)
     {
         auto const count = readImportGroupCount();
         if (!count)
@@ -1431,7 +1435,7 @@ namespace
             if (!name)
                 return std::unexpected { name.error() };
             auto appended = readExternType().and_then([&](Import&& import) {
-                import.module = module;
+                import.moduleIndex = moduleIndex;
                 import.name = std::move(*name);
                 return appendImport(std::move(import), itemOffset);
             });
@@ -1441,7 +1445,7 @@ namespace
         return {};
     }
 
-    std::expected<void, DecodeError> ModuleDecoder::readSharedTypeGroup(std::string const& module)
+    std::expected<void, DecodeError> ModuleDecoder::readSharedTypeGroup(uint32_t moduleIndex)
     {
         auto const shared = readExternType();
         if (!shared)
@@ -1454,7 +1458,7 @@ namespace
             auto const itemOffset = _reader.offset();
             auto appended = readName().and_then([&](std::string&& name) {
                 auto import = *shared;
-                import.module = module;
+                import.moduleIndex = moduleIndex;
                 import.name = std::move(name);
                 return appendImport(std::move(import), itemOffset);
             });

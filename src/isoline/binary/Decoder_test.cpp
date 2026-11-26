@@ -31,6 +31,7 @@ using isoline::binary::ElementSegment;
 using isoline::binary::ExternKind;
 using isoline::binary::Function;
 using isoline::binary::FuncType;
+using isoline::binary::importModuleOf;
 using isoline::binary::Instruction;
 using isoline::binary::labelsOf;
 using isoline::binary::Limits;
@@ -365,7 +366,7 @@ TEST_CASE("Decoder.imports")
                            .build();
     auto const module = decoded(bytes);
     REQUIRE(module.imports.size() == 3);
-    CHECK(module.imports[0].module == "m");
+    CHECK(importModuleOf(module, module.imports[0]) == "m");
     CHECK(module.imports[0].name == "f");
     CHECK(module.imports[0].kind == ExternKind::Func);
     CHECK(module.imports[0].typeIndex == 0);
@@ -2063,11 +2064,11 @@ TEST_CASE("Decoder.compactImportsByItem")
         { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7F, 0x02, 0x01, 'a', 0x00, 0x00, 0x01, 'b', 0x03, 0x7F, 0x00 });
     auto const module = decoded(bytes, compactImportFeatures());
     REQUIRE(module.imports.size() == 2);
-    CHECK(module.imports[0].module == "env");
+    CHECK(importModuleOf(module, module.imports[0]) == "env");
     CHECK(module.imports[0].name == "a");
     CHECK(module.imports[0].kind == ExternKind::Func);
     CHECK(module.imports[0].typeIndex == 0);
-    CHECK(module.imports[1].module == "env");
+    CHECK(importModuleOf(module, module.imports[1]) == "env");
     CHECK(module.imports[1].name == "b");
     CHECK(module.imports[1].kind == ExternKind::Global);
     CHECK(module.imports[1].global.type == isoline::binary::I32);
@@ -2084,11 +2085,14 @@ TEST_CASE("Decoder.compactImportsByType")
         { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7E, 0x03, 0x7F, 0x00, 0x03, 0x01, 'x', 0x01, 'y', 0x01, 'z' });
     auto const module = decoded(bytes, compactImportFeatures());
     REQUIRE(module.imports.size() == 3);
+    CHECK(module.importModules.size() == 1);
     auto const names = std::to_array<std::string_view>({ "x", "y", "z" });
     for (auto const index: std::views::iota(std::size_t { 0 }, names.size()))
     {
         auto const& import = module.imports[index];
-        CHECK(import.module == "env");
+        // Every item names the entry's one module name; none holds a copy.
+        CHECK(import.moduleIndex == 0);
+        CHECK(importModuleOf(module, import) == "env");
         CHECK(import.name == names[index]);
         CHECK(import.kind == ExternKind::Global);
         CHECK(import.global.type == isoline::binary::I32);

@@ -74,3 +74,12 @@ if(Python3_Interpreter_FOUND)
              COMMAND Python3::Interpreter -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance_test.py")
     set_tests_properties(check-conformance-selftest PROPERTIES LABELS lint)
 endif()
+
+# The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced
+# global operator new (AllocationCounter.cpp). The replacement is program-wide, hence a binary of its
+# own.
+add_executable(isoline_memory_test memory/AllocationCounter.cpp memory/MemoryBounds_test.cpp)
+target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
+isoline_apply_target_policy(isoline_memory_test TEST)
+add_test(NAME isoline_memory_test COMMAND isoline_memory_test)
+set_tests_properties(isoline_memory_test PROPERTIES LABELS unit)

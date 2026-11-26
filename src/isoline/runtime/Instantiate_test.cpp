@@ -227,7 +227,7 @@ TEST_CASE("Instantiate.incompatibleImportType")
     }
     SECTION("a tag")
     {
-        auto const tag = store.addTag(FuncType {});
+        auto const tag = store.addTag(store.internType(FuncType {}));
         auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
         CHECK(errorOf(instantiate(store, executor, module, imports)) == incompatible);
     }
@@ -655,7 +655,8 @@ TEST_CASE("Instantiate.tagImports")
     auto store = Store { allocator };
     auto executor = StubExecutor {};
 
-    auto const other = store.addTag(FuncType { .params = { isoline::binary::F32 }, .results = {} });
+    auto const other =
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::F32 }, .results = {} }));
     auto const otherImports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = other } };
     CHECK(errorOf(instantiate(store, executor, module, otherImports))
           == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
@@ -667,7 +668,8 @@ TEST_CASE("Instantiate.tagImports")
     CHECK(errorOf(instantiate(store, executor, module, functionImports))
           == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
 
-    auto const tag = store.addTag(FuncType { .params = { isoline::binary::I32 }, .results = {} });
+    auto const tag =
+        store.addTag(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }));
     auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
     auto const first = instantiate(store, executor, module, imports);
     REQUIRE(first.has_value());

@@ -281,7 +281,7 @@ namespace
         void allocateTags()
         {
             for (auto const& tag: module().tags)
-                instance().tags.push_back(_store.addTag(storeForm(module().types.at(tag.typeIndex))));
+                instance().tags.push_back(_store.addTag(_types.at(tag.typeIndex)));
         }
 
         [[nodiscard]] Step allocateTables(ModuleInstance& pending)
