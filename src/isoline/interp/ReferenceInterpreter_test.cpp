@@ -169,7 +169,7 @@ class Harness
     std::expected<std::vector<Value>, Trap> invoke(uint32_t index, std::vector<Value> const& args = {})
     {
         auto const address = function(index);
-        auto results = std::vector<Value>(_store.function(address).type.results.size());
+        auto results = std::vector<Value>(_store.functionType(address).results.size());
         return _interpreter.invoke(_store, address, args, results).transform([&] { return results; });
     }
 
@@ -1251,4 +1251,128 @@ TEST_CASE("Interpreter.copyBetweenMixedAddressMemories")
     CHECK(harness.result(0) == i32(0x0403'0201));
     CHECK(harness.result(1) == i32(0x0403'0201));
     CHECK(harness.trap(2) == TrapCode::OutOfBoundsMemoryAccess);
+}
+
+namespace
+{
+
+/// A module of typed function references: type 0 is [] -> [i32], type 1 [(ref null 0)] -> [i32].
+/// Function 0 returns 7 and is declared for ref.func; functions 1 and 2 are of type 1, and functions
+/// from 3 on of type 0, with @p bodies of type 1 and then of type 0.
+ModuleBuilder typedReferenceModule(std::initializer_list<Bytes> takingAReference,
+                                   std::initializer_list<Bytes> returningI32)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .type(signature({ isoline::binary::concreteRef(0, isoline::binary::Nullable::Yes) }, { TypeI32 }))
+        .function(0, {}, i32Const(7));
+    for (auto const& body: takingAReference)
+        builder.function(1, {}, body);
+    for (auto const& body: returningI32)
+        builder.function(0, {}, body);
+    builder.element({ 0x03, 0x00, 0x01, 0x00 }); // declares function 0
+    return builder;
+}
+
+/// ref.null 0: a null (ref null 0).
+Bytes refNull0()
+{
+    return { 0xD0, 0x00 };
+}
+
+/// ref.func 0.
+Bytes refFunc0()
+{
+    return { 0xD2, 0x00 };
+}
+
+/// call_ref 0.
+Bytes callRef0()
+{
+    return { 0x14, 0x00 };
+}
+
+} // namespace
+
+TEST_CASE("Interpreter.callRefNullTraps")
+{
+    auto harness =
+        Harness { typedReferenceModule({ code({ localGet(0), callRef0() }) },
+                                       { code({ refFunc0(), call(1) }), code({ refNull0(), call(1) }) }) };
+    CHECK(harness.result(2) == i32(7));
+    CHECK(harness.trap(3) == TrapCode::NullFunctionReference);
+    CHECK(harness.invoke(3).error() == Trap { TrapCode::NullFunctionReference });
+}
+
+TEST_CASE("Interpreter.refAsNonNullTraps")
+{
+    auto harness = Harness { typedReferenceModule(
+        {}, { code({ refFunc0(), { 0xD4 }, callRef0() }), code({ refNull0(), { 0xD4 }, callRef0() }) }) };
+    CHECK(harness.result(1) == i32(7));
+    CHECK(harness.trap(2) == TrapCode::NullReference);
+}
+
+TEST_CASE("Interpreter.brOnNullBranches")
+{
+    // block (result i32) i32.const 42 local.get 0 br_on_null 0 call_ref 0 i32.add end: a null branches
+    // with the 42 beneath it; a function falls through with the reference, which call_ref calls.
+    auto harness = Harness { typedReferenceModule(
+        { code({ { 0x02, 0x7F }, i32Const(42), localGet(0), { 0xD5, 0x00 }, callRef0(), { 0x6A, 0x0B } }) },
+        { code({ refNull0(), call(1) }), code({ refFunc0(), call(1) }) }) };
+    CHECK(harness.result(2) == i32(42));
+    CHECK(harness.result(3) == i32(49));
+}
+
+TEST_CASE("Interpreter.brOnNonNullBranches")
+{
+    // block (result (ref 0)) local.get 0 br_on_non_null 0 i32.const -1 return end call_ref 0: a
+    // function branches with the reference; a null falls through without it.
+    auto harness =
+        Harness { typedReferenceModule({ code({ { 0x02, 0x64, 0x00 },
+                                                localGet(0),
+                                                { 0xD6, 0x00 },
+                                                i32Const(-1),
+                                                { 0x0F, 0x0B },
+                                                callRef0() }) },
+                                       { code({ refNull0(), call(1) }), code({ refFunc0(), call(1) }) }) };
+    CHECK(harness.result(2) == i32(-1));
+    CHECK(harness.result(3) == i32(7));
+}
+
+TEST_CASE("Interpreter.callRefOfAHostReference")
+{
+    // A host function hands the guest a (ref 0) to another host function, which call_ref calls. The
+    // reference's function must have type 0: one of another type is a checked abort (Require), which
+    // P3's typed host boundary turns into an error before it reaches the guest.
+    using isoline::runtime::Ref;
+    using isoline::runtime::RefKind;
+    auto const nonNullTo0 = isoline::binary::concreteRef(0, isoline::binary::Nullable::No);
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .type(signature({}, { nonNullTo0 }))
+        .importFunction("env", "callee", 1)
+        .function(0, {}, code({ call(0), callRef0() }));
+    auto harness = Harness {
+        builder,
+        [](Store& store) {
+            auto const callee = store.addHostFunction(
+                signature({}, { TypeI32 }),
+                [](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
+                    results[0] = I32 { 7 };
+                    return {};
+                });
+            auto const typeId = store.function(callee).typeId;
+            auto const reference = Ref { .kind = RefKind::Func,
+                                         .heap = { .kind = isoline::binary::AbstractHeapType::Func },
+                                         .address = callee };
+            auto const provider = store.addHostFunction(
+                signature({}, { isoline::binary::concreteRef(typeId, isoline::binary::Nullable::No) }),
+                [reference](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
+                    results[0] = reference;
+                    return {};
+                });
+            return std::vector { ExternValue { .kind = ExternKind::Func, .address = provider } };
+        }
+    };
+    CHECK(harness.result(1) == i32(7));
 }

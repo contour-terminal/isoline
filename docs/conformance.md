@@ -74,6 +74,10 @@ message>`; a command skipped because it uses a cut module names its root, `(root
 
 <!-- exclusions:begin -->
 ```text
+wasm3 core/data:89: constant expression required: global.get of locally defined global
+wasm3 core/data:90: constant expression required: global.get of locally defined global
+wasm3 core/elem:178: constant expression required: global.get of locally defined global
+wasm3 core/elem:182: constant expression required: global.get of locally defined global
 wasm3 core/gc/array: GC: the GC proposal's own tests
 wasm3 core/gc/array_copy: GC: the GC proposal's own tests
 wasm3 core/gc/array_fill: GC: the GC proposal's own tests
@@ -91,8 +95,35 @@ wasm3 core/gc/ref_eq: GC: the GC proposal's own tests
 wasm3 core/gc/ref_test: GC: the GC proposal's own tests
 wasm3 core/gc/struct: GC: the GC proposal's own tests
 wasm3 core/gc/type-subtyping: GC: the GC proposal's own tests
+wasm3 core/global:373: constant expression required: global.get of locally defined global
+wasm3 core/global:374: constant expression required: global.get of locally defined global
+wasm3 core/global:634: constant expression required: global.get of locally defined global
+wasm3 core/global:659: constant expression required: global.get of locally defined global (root wast line 634)
+wasm3 core/global:660: constant expression required: global.get of locally defined global (root wast line 634)
+wasm3 core/global:661: constant expression required: global.get of locally defined global (root wast line 634)
+wasm3 core/global:663: constant expression required: global.get of locally defined global (root wast line 634)
+wasm3 core/global:664: constant expression required: global.get of locally defined global (root wast line 634)
 wasm3 core/ref_null: GC: the nulls of GC's heap types and anyref
 wasm3 core/type-canon: GC: canonicalization of recursive type groups
+wasm3 core/type-equivalence:30: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:38: unknown type 0: type index out of bounds because the GC proposal is disabled
+wasm3 core/type-equivalence:49: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:136: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:156: rec group usage requires `gc` proposal to be enabled (root wast line 136)
+wasm3 core/type-equivalence:161: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:188: rec group usage requires `gc` proposal to be enabled (root wast line 161)
+wasm3 core/type-equivalence:233: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:237: rec group usage requires `gc` proposal to be enabled (root wast line 233)
+wasm3 core/type-equivalence:238: rec group usage requires `gc` proposal to be enabled (root wast line 233)
+wasm3 core/type-equivalence:246: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:256: rec group usage requires `gc` proposal to be enabled (root wast line 246)
+wasm3 core/type-equivalence:257: rec group usage requires `gc` proposal to be enabled (root wast line 246)
+wasm3 core/type-equivalence:268: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:278: rec group usage requires `gc` proposal to be enabled (root wast line 268)
+wasm3 core/type-equivalence:279: rec group usage requires `gc` proposal to be enabled (root wast line 268)
+wasm3 core/type-equivalence:290: rec group usage requires `gc` proposal to be enabled
+wasm3 core/type-equivalence:307: rec group usage requires `gc` proposal to be enabled (root wast line 290)
+wasm3 core/type-equivalence:308: rec group usage requires `gc` proposal to be enabled (root wast line 290)
 wasm3 core/type-rec: GC: recursive type groups
 wasm3 custom/custom/custom_annot: text format (P10)
 wasm3 custom/name/name_annot: text format (P10)
@@ -112,32 +143,6 @@ custom-page-sizes core/custom-page-sizes/custom-page-sizes:113: assert_malformed
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:3: assert_malformed of a text module
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:8: assert_malformed of a text module
 custom-page-sizes core/custom-page-sizes/memory_max_i64:28: assert_malformed of a text module
-wasm2 core/func:448: assert_malformed of a text module
-wasm2 core/func:560: assert_malformed of a text module
-wasm2 core/func:567: assert_malformed of a text module
-wasm2 core/func:574: assert_malformed of a text module
-wasm2 core/func:581: assert_malformed of a text module
-wasm2 core/func:588: assert_malformed of a text module
-wasm2 core/func:595: assert_malformed of a text module
-wasm2 core/func:602: assert_malformed of a text module
-wasm2 core/func:609: assert_malformed of a text module
-wasm2 core/func:616: assert_malformed of a text module
-wasm2 core/func:623: assert_malformed of a text module
-wasm2 core/func:917: assert_malformed of a text module
-wasm2 core/func:921: assert_malformed of a text module
-wasm2 core/func:925: assert_malformed of a text module
-wasm2 core/func:929: assert_malformed of a text module
-wasm2 core/func:933: assert_malformed of a text module
-wasm2 core/func:937: assert_malformed of a text module
-wasm2 core/func:943: assert_malformed of a text module
-wasm2 core/func:947: assert_malformed of a text module
-wasm2 core/func:951: assert_malformed of a text module
-wasm2 core/func:956: assert_malformed of a text module
-wasm2 core/func:958: assert_malformed of a text module
-wasm2 core/func:960: assert_malformed of a text module
-wasm2 core/global:622: assert_malformed of a text module
-wasm2 core/global:626: assert_malformed of a text module
-wasm2 core/global:630: assert_malformed of a text module
 wasm2 core/imports:584: assert_malformed of a text module
 wasm2 core/imports:588: assert_malformed of a text module
 wasm2 core/imports:592: assert_malformed of a text module
@@ -154,12 +159,6 @@ wasm2 core/imports:635: assert_malformed of a text module
 wasm2 core/imports:639: assert_malformed of a text module
 wasm2 core/imports:643: assert_malformed of a text module
 wasm2 core/imports:647: assert_malformed of a text module
-wasm2 core/table:28: assert_malformed of a text module
-wasm2 core/table:32: assert_malformed of a text module
-wasm2 core/table:36: assert_malformed of a text module
-wasm2 core/table:43: assert_malformed of a text module
-wasm2 core/table:47: assert_malformed of a text module
-wasm2 core/table:51: assert_malformed of a text module
 wasm2 core/utf8-invalid-encoding:1: assert_malformed of a text module
 wasm2 core/utf8-invalid-encoding:2: assert_malformed of a text module
 wasm2 core/utf8-invalid-encoding:3: assert_malformed of a text module
@@ -641,6 +640,32 @@ wasm3 core/float_literals:533: assert_malformed of a text module
 wasm3 core/float_literals:537: assert_malformed of a text module
 wasm3 core/float_literals:541: assert_malformed of a text module
 wasm3 core/float_literals:545: assert_malformed of a text module
+wasm3 core/func:448: assert_malformed of a text module
+wasm3 core/func:560: assert_malformed of a text module
+wasm3 core/func:567: assert_malformed of a text module
+wasm3 core/func:574: assert_malformed of a text module
+wasm3 core/func:581: assert_malformed of a text module
+wasm3 core/func:588: assert_malformed of a text module
+wasm3 core/func:595: assert_malformed of a text module
+wasm3 core/func:602: assert_malformed of a text module
+wasm3 core/func:609: assert_malformed of a text module
+wasm3 core/func:616: assert_malformed of a text module
+wasm3 core/func:623: assert_malformed of a text module
+wasm3 core/func:938: assert_malformed of a text module
+wasm3 core/func:942: assert_malformed of a text module
+wasm3 core/func:946: assert_malformed of a text module
+wasm3 core/func:950: assert_malformed of a text module
+wasm3 core/func:954: assert_malformed of a text module
+wasm3 core/func:958: assert_malformed of a text module
+wasm3 core/func:965: assert_malformed of a text module
+wasm3 core/func:969: assert_malformed of a text module
+wasm3 core/func:973: assert_malformed of a text module
+wasm3 core/func:978: assert_malformed of a text module
+wasm3 core/func:982: assert_malformed of a text module
+wasm3 core/func:986: assert_malformed of a text module
+wasm3 core/global:686: assert_malformed of a text module
+wasm3 core/global:693: assert_malformed of a text module
+wasm3 core/global:700: assert_malformed of a text module
 wasm3 core/i32:979: assert_malformed of a text module
 wasm3 core/i32:983: assert_malformed of a text module
 wasm3 core/i64:488: assert_malformed of a text module
@@ -1315,6 +1340,12 @@ wasm3 core/store:81: assert_malformed of a text module
 wasm3 core/store:88: assert_malformed of a text module
 wasm3 core/store:96: assert_malformed of a text module
 wasm3 core/store:103: assert_malformed of a text module
+wasm3 core/table:36: assert_invalid of a text module
+wasm3 core/table:40: assert_invalid of a text module
+wasm3 core/table:44: assert_invalid of a text module
+wasm3 core/table:147: assert_malformed of a text module
+wasm3 core/table:154: assert_malformed of a text module
+wasm3 core/table:161: assert_malformed of a text module
 wasm3 core/token:4: assert_malformed of a text module
 wasm3 core/token:8: assert_malformed of a text module
 wasm3 core/token:86: assert_malformed of a text module

@@ -9,7 +9,9 @@
 #include <deque>
 #include <expected>
 #include <limits>
+#include <map>
 #include <new>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -104,21 +106,55 @@ Store::Store(IMemoryAllocator const& allocator, uint32_t maxCallDepth):
 {
 }
 
+TypeId Store::internType(binary::FuncType type)
+{
+    auto const named = [this](binary::ValueType const& value) {
+        return !binary::isConcreteRef(value) || value.heap.typeIndex < _types.size();
+    };
+    Require(std::ranges::all_of(type.params, named) && std::ranges::all_of(type.results, named));
+    auto const next = typeCount();
+    Require(next < std::numeric_limits<TypeId>::max());
+    auto const [entry, added] = _typeIds.try_emplace(std::move(type), next);
+    if (added)
+        _types.push_back(&entry->first);
+    return entry->second;
+}
+
+std::optional<TypeId> Store::findType(binary::FuncType const& type) const
+{
+    auto const entry = _typeIds.find(type);
+    if (entry == _typeIds.end())
+        return std::nullopt;
+    return entry->second;
+}
+
+TypeId Store::typeCount() const noexcept
+{
+    return static_cast<TypeId>(_types.size());
+}
+
+binary::FuncType const& Store::type(TypeId id) const
+{
+    Require(id < _types.size());
+    return *_types[id];
+}
+
 FuncAddr Store::addHostFunction(binary::FuncType type, HostCallback callback)
 {
     Require(static_cast<bool>(callback));
-    return append(
-        _functions,
-        FunctionInstance {
-            .type = std::move(type), .moduleInstance = 0, .codeIndex = 0, .host = std::move(callback) });
+    auto const typeId = internType(std::move(type));
+    return append(_functions,
+                  FunctionInstance {
+                      .typeId = typeId, .moduleInstance = 0, .codeIndex = 0, .host = std::move(callback) });
 }
 
-FuncAddr Store::addModuleFunction(binary::FuncType type, uint32_t moduleInstance, uint32_t codeIndex)
+FuncAddr Store::addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32_t codeIndex)
 {
+    Require(typeId < _types.size());
     return append(
         _functions,
         FunctionInstance {
-            .type = std::move(type), .moduleInstance = moduleInstance, .codeIndex = codeIndex, .host = {} });
+            .typeId = typeId, .moduleInstance = moduleInstance, .codeIndex = codeIndex, .host = {} });
 }
 
 std::expected<TableAddr, AllocationFailure> Store::addTable(binary::TableType type, Ref init)
@@ -163,6 +199,11 @@ FunctionInstance const& Store::function(FuncAddr address) const
 FunctionInstance& Store::function(FuncAddr address)
 {
     return at(_functions, address);
+}
+
+binary::FuncType const& Store::functionType(FuncAddr address) const
+{
+    return type(function(address).typeId);
 }
 
 TableInstance const& Store::table(TableAddr address) const

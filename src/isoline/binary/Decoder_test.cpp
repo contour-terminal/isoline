@@ -424,8 +424,8 @@ TEST_CASE("Decoder.limits")
           == DecodeErrorCode::IntegerTooLargeForLimits);
     auto const module = decoded(moduleOf({ 0x04, 0x05, 0x01, 0x6F, 0x01, 0x00, 0x0A }));
     REQUIRE(module.tables.size() == 1);
-    CHECK(module.tables[0].element == isoline::binary::ExternRef);
-    CHECK(module.tables[0].limits.max == 10U);
+    CHECK(module.tables[0].type.element == isoline::binary::ExternRef);
+    CHECK(module.tables[0].type.limits.max == 10U);
 }
 
 TEST_CASE("Decoder.memory64Limits")
@@ -440,9 +440,9 @@ TEST_CASE("Decoder.memory64Limits")
     // Flags 0x04: no maximum. A table64 the same way, after its element type.
     auto const table = decoded(moduleOf({ 0x04, 0x04, 0x01, 0x70, 0x04, 0x02 }), FeatureSet::wasm3());
     REQUIRE(table.tables.size() == 1);
-    CHECK(table.tables[0].limits.addressType == isoline::binary::AddressType::I64);
-    CHECK(table.tables[0].limits.min == 2);
-    CHECK_FALSE(table.tables[0].limits.max.has_value());
+    CHECK(table.tables[0].type.limits.addressType == isoline::binary::AddressType::I64);
+    CHECK(table.tables[0].type.limits.min == 2);
+    CHECK_FALSE(table.tables[0].type.limits.max.has_value());
     // The 3.0 grammar reads the bounds of an i32 memory as u64s too; the validator bounds them.
     auto const wide =
         decoded(moduleOf({ 0x05, 0x07, 0x01, 0x00, 0x80, 0x80, 0x80, 0x80, 0x10 }), FeatureSet::wasm3());
@@ -672,6 +672,11 @@ TEST_CASE("Decoder.elementSegments")
     CHECK(expressionsOf(forms.elements[4]).at(0).at(0).opcode == Opcode::RefNull);
     CHECK(expressionsOf(forms.elements[4]).at(0).at(0).type == isoline::binary::ExternRef);
     CHECK(forms.elements[5].mode == SegmentMode::Declarative);
+    // Function indices are (ref func)s, as WebAssembly 3.0 types them; flag 4's expressions funcrefs.
+    CHECK(mvp.elements[0].type == isoline::binary::NonNullFuncRef);
+    CHECK(forms.elements[0].type == isoline::binary::NonNullFuncRef);
+    CHECK(forms.elements[2].type == isoline::binary::NonNullFuncRef);
+    CHECK(forms.elements[3].type == isoline::binary::FuncRef);
 
     CHECK(errorOf(moduleOf({ 0x09, 0x03, 0x01, 0x08, 0x00 }))
           == DecodeErrorCode::MalformedElementSegmentKind);
@@ -1020,6 +1025,39 @@ TEST_CASE("Decoder.immediates")
     CHECK(function.body[3].type == isoline::binary::ExternRef);
     CHECK(function.body[4].opcode == Opcode::LocalGet);
     CHECK(function.body[4].a == 7);
+}
+
+TEST_CASE("Decoder.typeIndexImmediate")
+{
+    // call_ref's immediate is a u32 type index; br_on_null's and br_on_non_null's a label.
+    auto const body = std::vector<uint8_t> {
+        0x14, 0x85, 0x01, // call_ref type 133, a two-byte LEB128
+        0xD4,             // ref.as_non_null
+        0xD5, 0x02,       // br_on_null 2
+        0xD6, 0x03,       // br_on_non_null 3
+    };
+    auto const function = functionOf(functionWith(body), FeatureSet::wasm3());
+    REQUIRE(function.body.size() == 5);
+    CHECK(function.body[0].opcode == Opcode::CallRef);
+    CHECK(function.body[0].a == 133);
+    CHECK(function.body[1].opcode == Opcode::RefAsNonNull);
+    CHECK(function.body[2].opcode == Opcode::BrOnNull);
+    CHECK(function.body[2].a == 2);
+    CHECK(function.body[3].opcode == Opcode::BrOnNonNull);
+    CHECK(function.body[3].a == 3);
+
+    // A truncated index is an unexpected end, one past 32 bits an integer too large.
+    CHECK(errorOf(functionWith({ 0x14, 0x80 }), FeatureSet::wasm3()) == DecodeErrorCode::UnexpectedEnd);
+    CHECK(errorOf(functionWith({ 0x14, 0x80, 0x80, 0x80, 0x80, 0x10 }), FeatureSet::wasm3())
+          == DecodeErrorCode::IntegerTooLarge);
+    // The instructions need typed function references.
+    for (auto const opcode: { uint8_t { 0x14 }, uint8_t { 0xD4 }, uint8_t { 0xD5 }, uint8_t { 0xD6 } })
+    {
+        INFO(int { opcode });
+        CHECK(errorOf(functionWith({ opcode, 0x00 }),
+                      FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
+              == DecodeErrorCode::IllegalOpcode);
+    }
 }
 
 TEST_CASE("Decoder.v128ConstGoesToSideTable")
@@ -1462,6 +1500,7 @@ std::vector<uint8_t> instructionOf(isoline::binary::OpcodeInfo const& row)
         case ImmediateKind::TableIndex:
         case ImmediateKind::ElemIndex:
         case ImmediateKind::DataIndex:
+        case ImmediateKind::TypeIndex:
         case ImmediateKind::MemoryIndex:
         case ImmediateKind::I32Const:
         case ImmediateKind::I64Const: bytes.push_back(0x00); break;
@@ -1627,4 +1666,174 @@ TEST_CASE("Decoder.everyTruncatedSectionFails")
         builder.type(FuncType {}).function(0, { isoline::binary::I32 }, { 0x41, 0x05, 0x21, 0x00, 0x01 });
         checkEveryTruncationFails(builder.build());
     }
+}
+
+TEST_CASE("Decoder.typedReferenceTypes")
+{
+    using isoline::binary::AbstractHeapType;
+    using isoline::binary::concreteRef;
+    using isoline::binary::Nullable;
+    auto const wasm3 = FeatureSet::wasm3();
+    // (type (func (param (ref 0) (ref null 1) (ref 128)) (result (ref func) (ref null func))))
+    auto const typeSection = moduleOf({ 0x01,
+                                        0x0F,
+                                        0x01,
+                                        0x60,
+                                        0x03,
+                                        0x64,
+                                        0x00,
+                                        0x63,
+                                        0x01,
+                                        0x64,
+                                        0x80,
+                                        0x01,
+                                        0x02,
+                                        0x64,
+                                        0x70,
+                                        0x63,
+                                        0x70 });
+    auto const module = decoded(typeSection, wasm3);
+    REQUIRE(module.types.size() == 1);
+    auto const& type = module.types[0];
+    CHECK(type.params
+          == std::vector {
+              concreteRef(0, Nullable::No), concreteRef(1, Nullable::Yes), concreteRef(128, Nullable::No) });
+    auto const nonNullFunc = isoline::binary::ValueType {
+        .kind = isoline::binary::ValueKind::Ref,
+        .nullable = Nullable::No,
+        .heap = { .kind = AbstractHeapType::Func },
+    };
+    CHECK(type.results == std::vector { nonNullFunc, isoline::binary::FuncRef });
+
+    // Without typed function references, 0x63 and 0x64 are no type, at the type's byte.
+    auto const refused = decodeModule(typeSection, FeatureSet::wasm2());
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MalformedReferenceType);
+    CHECK(refused.error().offset == Preamble.size() + 5);
+    // A heap type cut short is no s33, and so read as an abstract one: a byte with a continuation
+    // bit is too long a representation of the one byte that encodes those.
+    CHECK(errorOf(moduleOf({ 0x01, 0x05, 0x01, 0x60, 0x01, 0x64, 0x80 }), wasm3)
+          == DecodeErrorCode::IntegerRepresentationTooLong);
+
+    // Locals, globals and block types take them too.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .global(isoline::binary::GlobalType { .type = concreteRef(0, Nullable::Yes),
+                                              .mutability = Mutability::Var },
+                { 0xD0, 0x00 })
+        .function(0, { concreteRef(0, Nullable::Yes) }, { 0x02, 0x64, 0x00, 0x00, 0x0B });
+    auto const typed = decoded(builder.build(), wasm3);
+    CHECK(typed.globals.at(0).type.type == concreteRef(0, Nullable::Yes));
+    CHECK(localType(typed.code.at(0), 0) == concreteRef(0, Nullable::Yes));
+    CHECK(typed.code.at(0).body.at(0).blockType().value == concreteRef(0, Nullable::No));
+}
+
+TEST_CASE("Decoder.rejectsGcHeapTypes")
+{
+    // The GC heaps are no heap type without GC, after 0x63 or 0x64 or as a shorthand: any, eq, i31,
+    // struct, array, none, nofunc, noextern.
+    for (auto const code: { 0x6E, 0x6D, 0x6C, 0x6B, 0x6A, 0x71, 0x73, 0x72 })
+    {
+        auto const heap = static_cast<uint8_t>(code);
+        auto const nullable =
+            decodeModule(moduleOf({ 0x01, 0x06, 0x01, 0x60, 0x01, 0x63, heap, 0x00 }), FeatureSet::wasm3());
+        REQUIRE_FALSE(nullable.has_value());
+        CHECK(nullable.error().code == DecodeErrorCode::MalformedReferenceType);
+        CHECK(nullable.error().offset == Preamble.size() + 6); // the heap type
+        CHECK(errorOf(moduleOf({ 0x01, 0x06, 0x01, 0x60, 0x01, 0x64, heap, 0x00 }), FeatureSet::wasm3())
+              == DecodeErrorCode::MalformedReferenceType);
+        CHECK(errorOf(moduleOf({ 0x01, 0x05, 0x01, 0x60, 0x01, heap, 0x00 }), FeatureSet::all())
+              == DecodeErrorCode::MalformedReferenceType);
+    }
+    // rec, sub and the struct and array forms are GC's definitions: no function type.
+    for (auto const form: { 0x4E, 0x50, 0x4F, 0x5F, 0x5E })
+        CHECK(errorOf(moduleOf({ 0x01, 0x04, 0x01, static_cast<uint8_t>(form), 0x00, 0x00 }),
+                      FeatureSet::wasm3())
+              == DecodeErrorCode::MalformedFunctionType);
+}
+
+TEST_CASE("Decoder.exceptionReferenceShorthands")
+{
+    using isoline::binary::ExnRef;
+    using isoline::binary::NullExnRef;
+    // (func (param exnref nullexnref (ref null exn))), under exception handling only.
+    auto const bytes = moduleOf({ 0x01, 0x08, 0x01, 0x60, 0x03, 0x69, 0x74, 0x63, 0x69, 0x00 });
+    auto const module = decoded(bytes, FeatureSet::wasm3());
+    CHECK(module.types.at(0).params == std::vector { ExnRef, NullExnRef, ExnRef });
+    CHECK(errorOf(bytes, FeatureSet::wasm3().without(Feature::ExceptionHandling))
+          == DecodeErrorCode::MalformedReferenceType);
+}
+
+TEST_CASE("Decoder.refNullTakesAHeapType")
+{
+    using isoline::binary::concreteRef;
+    using isoline::binary::Nullable;
+    auto const refNull = [](uint8_t heap) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {}).function(0, {}, { 0xD0, heap, 0x1A });
+        return builder.build();
+    };
+    CHECK(decoded(refNull(0x00), FeatureSet::wasm3()).code.at(0).body.at(0).type
+          == concreteRef(0, Nullable::Yes));
+    CHECK(decoded(refNull(0x70), FeatureSet::wasm3()).code.at(0).body.at(0).type == isoline::binary::FuncRef);
+    CHECK(decoded(refNull(0x69), FeatureSet::wasm3()).code.at(0).body.at(0).type == isoline::binary::ExnRef);
+    CHECK(decoded(refNull(0x6F), FeatureSet::wasm2()).code.at(0).body.at(0).type
+          == isoline::binary::ExternRef);
+    // A type index needs typed function references; exn exception handling; nofunc is GC's.
+    CHECK(errorOf(refNull(0x00), FeatureSet::wasm2()) == DecodeErrorCode::MalformedReferenceType);
+    CHECK(errorOf(refNull(0x69), FeatureSet::wasm3().without(Feature::ExceptionHandling))
+          == DecodeErrorCode::MalformedReferenceType);
+    CHECK(errorOf(refNull(0x73), FeatureSet::wasm3()) == DecodeErrorCode::MalformedReferenceType);
+}
+
+TEST_CASE("Decoder.tableInitializer")
+{
+    using isoline::binary::AbstractHeapType;
+    using isoline::binary::Nullable;
+    auto const nonNullFunc = isoline::binary::ValueType {
+        .kind = isoline::binary::ValueKind::Ref,
+        .nullable = Nullable::No,
+        .heap = { .kind = AbstractHeapType::Func },
+    };
+    auto const one = Limits { .min = 1, .max = std::nullopt };
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .function(0, {}, {})
+        .table(isoline::binary::TableType { .element = nonNullFunc, .limits = one }, { 0xD2, 0x00 })
+        .table(isoline::binary::TableType { .element = isoline::binary::FuncRef, .limits = one });
+    auto const module = decoded(builder.build(), FeatureSet::wasm3());
+    REQUIRE(module.tables.size() == 2);
+    CHECK(module.tables[0].type.element == nonNullFunc);
+    REQUIRE(module.tables[0].init.size() == 2);
+    CHECK(module.tables[0].init[0].opcode == Opcode::RefFunc);
+    CHECK(module.tables[1].init.empty()); // its slots start as null
+
+    // 0x40 0x00 introduces the initializer form under typed function references only.
+    auto const withInit = moduleOf({ 0x04, 0x09, 0x01, 0x40, 0x00, 0x70, 0x00, 0x01, 0xD0, 0x70, 0x0B });
+    CHECK(errorOf(withInit, FeatureSet::wasm3()) == std::nullopt);
+    auto const refused = decodeModule(withInit, FeatureSet::wasm2());
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MalformedReferenceType);
+    CHECK(refused.error().offset == Preamble.size() + 3);
+    // As in the interpreter, which tries the plain form when the initializer form fails, any error
+    // after 0x40 is a malformed reference type at 0x40: here the zero byte is missing.
+    auto const noZero = decodeModule(moduleOf({ 0x04, 0x08, 0x01, 0x40, 0x70, 0x00, 0x01, 0xD0, 0x70, 0x0B }),
+                                     FeatureSet::wasm3());
+    REQUIRE_FALSE(noZero.has_value());
+    CHECK(noZero.error().code == DecodeErrorCode::MalformedReferenceType);
+    CHECK(noZero.error().offset == Preamble.size() + 3);
+}
+
+TEST_CASE("Decoder.functionReferencesNeedReferenceTypes")
+{
+    // FeatureRow::prerequisites: typed function references build on reference types (3.0's
+    // function-references Overview), which build on bulk memory.
+    auto const unclosed =
+        FeatureSet::wasm2().with(Feature::TypedFunctionReferences).without(Feature::ReferenceTypes);
+    auto const refused = decodeModule(moduleOf({}), unclosed);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MissingFeaturePrerequisite);
+    CHECK(isoline::binary::specMessage(refused.error())
+          == "feature enabled without its prerequisite: function-references requires reference-types");
+    CHECK(errorOf(moduleOf({}), FeatureSet::wasm2().with(Feature::TypedFunctionReferences)) == std::nullopt);
 }

@@ -6,6 +6,7 @@
 #include <deque>
 #include <expected>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -29,6 +30,8 @@ using TableAddr = uint32_t;
 using MemAddr = uint32_t;
 /// The address of a global instance in its store.
 using GlobalAddr = uint32_t;
+/// A function type's identity in its store: equal types, of whichever modules, have one TypeId.
+using TypeId = uint32_t;
 
 /// A host function's implementation: reads its arguments, writes its results, or traps.
 ///
@@ -40,7 +43,7 @@ using HostCallback =
 /// A function instance: a module's function, or a host function.
 struct FunctionInstance
 {
-    binary::FuncType type;   ///< Its type.
+    TypeId typeId; ///< Its type's identity in the store (Store::type), which call_indirect compares.
     uint32_t moduleInstance; ///< A module function: the instance that defines it.
     uint32_t codeIndex;      ///< A module function: its index in that module's code section.
     HostCallback host;       ///< A host function: its implementation; empty for a module function.
@@ -84,6 +87,7 @@ struct ExternValue
 struct ModuleInstance
 {
     std::shared_ptr<binary::Module const> module; ///< The module it instantiates; owns code and data.
+    std::vector<TypeId> types;                    ///< Its type section's types, by type index.
     std::vector<FuncAddr> functions;              ///< The function index space: imports first.
     std::vector<TableAddr> tables;                ///< The table index space: imports first.
     std::vector<MemAddr> memories;                ///< The memory index space: imports first.
@@ -146,20 +150,50 @@ class Store
     /// @param maxCallDepth How deep calls may nest before execution traps with CallStackExhausted.
     explicit Store(IMemoryAllocator const& allocator, uint32_t maxCallDepth = 10'000);
 
+    /// A store's instances are addressed by index and its types handed out by reference (type()),
+    /// so it stays where it was constructed: it is neither copied nor moved.
+    Store(Store const&) = delete;
+    Store(Store&&) = delete;
+    Store& operator=(Store const&) = delete;
+    Store& operator=(Store&&) = delete;
+    ~Store() = default;
+
+    /// Interns a function type: the TypeId of the type equal to it, added if there is none. A type
+    /// added gets the next TypeId, typeCount() before the call, so that instantiation can tell the
+    /// TypeIds a module's types will get before it interns them.
+    ///
+    /// Precondition (checked): @p type is in store form, every concrete type index in it a TypeId of
+    /// this store, as interning a module's types in type order makes them.
+    /// @param type The type, in store form.
+    /// @return Its TypeId: equal for equal types.
+    [[nodiscard]] TypeId internType(binary::FuncType type);
+
+    /// Looks a function type up without interning it.
+    /// @param type The type, in store form.
+    /// @return Its TypeId, or nullopt when no equal type is interned.
+    [[nodiscard]] std::optional<TypeId> findType(binary::FuncType const& type) const;
+
+    /// How many types are interned: the TypeId the next new type gets.
+    /// @return The number of interned types.
+    [[nodiscard]] TypeId typeCount() const noexcept;
+
+    /// The type with TypeId @p id. Precondition (checked): it exists.
+    /// @param id The type's identity.
+    /// @return The type, in store form; the reference stays valid as long as the store.
+    [[nodiscard]] binary::FuncType const& type(TypeId id) const;
+
     /// Adds a host function.
-    /// @param type Its type.
+    /// @param type Its type, in store form; interned (internType()).
     /// @param callback Its implementation; must not be empty.
     /// @return Its address.
     [[nodiscard]] FuncAddr addHostFunction(binary::FuncType type, HostCallback callback);
 
     /// Adds a module function.
-    /// @param type Its type.
+    /// @param typeId Its type, interned already.
     /// @param moduleInstance The instance that defines it.
     /// @param codeIndex Its index in that module's code section.
     /// @return Its address.
-    [[nodiscard]] FuncAddr addModuleFunction(binary::FuncType type,
-                                             uint32_t moduleInstance,
-                                             uint32_t codeIndex);
+    [[nodiscard]] FuncAddr addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32_t codeIndex);
 
     /// Adds a table of type.limits.min slots, each holding @p init.
     /// @param type Its type.
@@ -192,6 +226,11 @@ class Store
     [[nodiscard]] FunctionInstance const& function(FuncAddr address) const;
     /// @copydoc function(FuncAddr) const
     [[nodiscard]] FunctionInstance& function(FuncAddr address);
+
+    /// The type of the function at @p address. Precondition (checked): the address exists.
+    /// @param address The function's address.
+    /// @return Its type, in store form.
+    [[nodiscard]] binary::FuncType const& functionType(FuncAddr address) const;
 
     /// The table at @p address. Precondition (checked): the address exists.
     /// @param address The table's address.
@@ -249,6 +288,12 @@ class Store
     std::deque<MemoryInstance> _memories;
     std::deque<GlobalInstance> _globals;
     std::deque<ModuleInstance> _moduleInstances;
+
+    /// Every interned type and its TypeId. An ordered map, not a hash table: types are the guest's
+    /// to choose, and a lookup costs O(log n) comparisons whatever they are.
+    std::map<binary::FuncType, TypeId> _typeIds;
+    /// The interned types by TypeId, pointing at _typeIds' keys, which never move.
+    std::vector<binary::FuncType const*> _types;
 };
 
 } // namespace isoline::runtime

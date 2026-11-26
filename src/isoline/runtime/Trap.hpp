@@ -28,6 +28,8 @@ enum class TrapCode : uint8_t
     UndefinedElement,
     UninitializedElement,
     IndirectCallTypeMismatch,
+    NullFunctionReference,
+    NullReference,
     CallStackExhausted,
     HostTrap,
 };
@@ -64,6 +66,9 @@ inline constexpr auto TrapTable = std::to_array<TrapRow>({
       .specMessage = "uninitialized element",
       .detail = TrapDetail::Index },
     { .code = TrapCode::IndirectCallTypeMismatch, .specMessage = "indirect call type mismatch" },
+    // call_ref's, and ref.as_non_null's.
+    { .code = TrapCode::NullFunctionReference, .specMessage = "null function reference" },
+    { .code = TrapCode::NullReference, .specMessage = "null reference" },
     { .code = TrapCode::CallStackExhausted, .specMessage = "call stack exhausted" },
     { .code = TrapCode::HostTrap, .specMessage = "host trap" },
 });

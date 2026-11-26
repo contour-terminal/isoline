@@ -11,11 +11,13 @@ target_sources(isoline_core
         binary/ByteReader.cpp
         binary/Decoder.cpp
         binary/Opcode.cpp
+        binary/TypeCanon.cpp
         interp/Numerics.cpp
         interp/ReferenceInterpreter.cpp
         interp/Simd.cpp
         runtime/Instantiate.cpp
         runtime/Store.cpp
+        validate/Subtyping.cpp
         validate/Validator.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
@@ -28,6 +30,7 @@ target_sources(isoline_core
             binary/Module.hpp
             binary/Opcode.hpp
             binary/Opcodes.def
+            binary/TypeCanon.hpp
             binary/Types.hpp
             interp/Numerics.hpp
             interp/ReferenceInterpreter.hpp
@@ -37,6 +40,7 @@ target_sources(isoline_core
             runtime/Store.hpp
             runtime/Trap.hpp
             runtime/Value.hpp
+            validate/Subtyping.hpp
             validate/ValidationError.hpp
             validate/Validator.hpp
             Version.hpp

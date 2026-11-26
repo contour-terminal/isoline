@@ -4,7 +4,10 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <ranges>
 #include <span>
+#include <tuple>
+#include <vector>
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -106,4 +109,75 @@ TEST_CASE("Store.byteGranularMemory")
     CHECK(store.growMemory(*wide, (uint64_t { 1 } << 32) + 1) == -1);
     CHECK(store.growMemory(*wide, 16) == 0);
     CHECK(store.memory(*wide).bytes.size() == 16);
+}
+
+TEST_CASE("Store.internTypeHashConses")
+{
+    using isoline::binary::concreteRef;
+    using isoline::binary::Nullable;
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto const takesI32 = store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} });
+    auto const returnsI32 = store.internType(FuncType { .params = {}, .results = { isoline::binary::I32 } });
+    CHECK(store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} }) == takesI32);
+    CHECK(returnsI32 != takesI32);
+    // A type naming another names it by its TypeId, so two such types are equal when the ids are.
+    auto const takesRef =
+        store.internType(FuncType { .params = { concreteRef(takesI32, Nullable::No) }, .results = {} });
+    CHECK(store.internType(FuncType { .params = { concreteRef(takesI32, Nullable::No) }, .results = {} })
+          == takesRef);
+    CHECK(store.internType(FuncType { .params = { concreteRef(returnsI32, Nullable::No) }, .results = {} })
+          != takesRef);
+    CHECK(store.internType(FuncType { .params = { concreteRef(takesI32, Nullable::Yes) }, .results = {} })
+          != takesRef);
+    // Functions intern their types.
+    auto const host = store.addHostFunction(
+        FuncType { .params = { isoline::binary::I32 }, .results = {} },
+        [](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> { return {}; });
+    CHECK(store.function(host).typeId == takesI32);
+    auto const defined = store.addModuleFunction(returnsI32, 0, 0);
+    CHECK(store.function(defined).typeId == returnsI32);
+    CHECK(store.functionType(host) == FuncType { .params = { isoline::binary::I32 }, .results = {} });
+}
+
+TEST_CASE("Store.findTypeDoesNotIntern")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto const takesI32 = FuncType { .params = { isoline::binary::I32 }, .results = {} };
+    CHECK(store.typeCount() == 0);
+    CHECK(store.findType(takesI32) == std::nullopt);
+    CHECK(store.typeCount() == 0);
+    // A new type gets the next TypeId, typeCount() before it, and is found from then on.
+    auto const id = store.internType(takesI32);
+    CHECK(id == 0);
+    CHECK(store.typeCount() == 1);
+    CHECK(store.findType(takesI32) == id);
+    CHECK(store.internType(FuncType {}) == 1);
+    CHECK(store.internType(takesI32) == id);
+    CHECK(store.typeCount() == 2);
+}
+
+TEST_CASE("Store.typeRoundTrip")
+{
+    using isoline::binary::concreteRef;
+    using isoline::binary::Nullable;
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto const empty = FuncType {};
+    auto const wide =
+        FuncType { .params = { isoline::binary::I64, FuncRef }, .results = { isoline::binary::F32 } };
+    auto const emptyId = store.internType(empty);
+    auto const wideId = store.internType(wide);
+    auto const typed = FuncType { .params = { concreteRef(wideId, Nullable::Yes) }, .results = {} };
+    auto const typedId = store.internType(typed);
+    CHECK(store.type(emptyId) == empty);
+    CHECK(store.type(wideId) == wide);
+    CHECK(store.type(typedId) == typed);
+    // A reference stays valid as the store interns more.
+    auto const& kept = store.type(wideId);
+    for (auto const count: std::views::iota(uint32_t { 0 }, uint32_t { 100 }))
+        std::ignore =
+            store.internType(FuncType { .params = std::vector(count, isoline::binary::I32), .results = {} });
+    CHECK(kept == wide);
 }

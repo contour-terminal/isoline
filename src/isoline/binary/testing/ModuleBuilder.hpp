@@ -4,6 +4,7 @@
 #include <core/Assert.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -53,25 +54,78 @@ namespace isoline::binary::testing
     return bytes;
 }
 
-/// The one-byte encoding of a number, vector or abstract reference type.
-///
-/// Precondition (checked): a reference is funcref or externref, the only reference types with a
-/// one-byte encoding this builder writes; any other ends the test rather than encode as another.
+/// The signed LEB128 encoding of @p value, in its shortest form.
+/// @param value The value to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeS64(int64_t value)
+{
+    constexpr auto SignBit = uint8_t { 0x40 };
+    auto bytes = std::vector<uint8_t> {};
+    while (true)
+    {
+        auto const byte = static_cast<uint8_t>(static_cast<uint64_t>(value) & 0x7Fu);
+        value >>= 7; // arithmetic: the sign is kept
+        auto const done = (value == 0 && (byte & SignBit) == 0) || (value == -1 && (byte & SignBit) != 0);
+        bytes.push_back(done ? byte : static_cast<uint8_t>(byte | 0x80u));
+        if (done)
+            return bytes;
+    }
+}
+
+/// The one-byte code of every abstract heap type, as heap types and the reference shorthands
+/// write it; the decoder refuses those of GC (nofunc, noextern), which tests may still encode.
+struct AbstractHeapCode
+{
+    AbstractHeapType kind; ///< The abstract heap type.
+    uint8_t code;          ///< Its byte, an s7.
+};
+
+/// Every abstract heap type's code.
+inline constexpr auto AbstractHeapCodes = std::to_array<AbstractHeapCode>({
+    { .kind = AbstractHeapType::Func, .code = 0x70 },
+    { .kind = AbstractHeapType::Extern, .code = 0x6F },
+    { .kind = AbstractHeapType::Exn, .code = 0x69 },
+    { .kind = AbstractHeapType::NoFunc, .code = 0x73 },
+    { .kind = AbstractHeapType::NoExtern, .code = 0x72 },
+    { .kind = AbstractHeapType::NoExn, .code = 0x74 },
+});
+
+/// The encoding of @p heap: a concrete type index as a non-negative s33, an abstract heap by its code.
+/// @param heap The heap type to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeHeapType(HeapType const& heap)
+{
+    if (heap.kind == AbstractHeapType::Concrete)
+        return encodeS64(heap.typeIndex);
+    auto const row = std::ranges::find(AbstractHeapCodes, heap.kind, &AbstractHeapCode::kind);
+    Require(row != AbstractHeapCodes.end());
+    return { row->code };
+}
+
+/// The encoding of a value type: one byte for a number, a vector, or a nullable reference to an
+/// abstract heap (the shorthands funcref, externref, exnref and nullexnref, and those of GC); 0x63
+/// (nullable) or 0x64 (non-null) and the heap type for any other reference.
 /// @param type The type to encode.
-/// @return Its byte.
-[[nodiscard]] inline uint8_t encodeValueType(ValueType const& type)
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeValueType(ValueType const& type)
 {
     switch (type.kind)
     {
-        case ValueKind::I32: return 0x7F;
-        case ValueKind::I64: return 0x7E;
-        case ValueKind::F32: return 0x7D;
-        case ValueKind::F64: return 0x7C;
-        case ValueKind::V128: return 0x7B;
+        case ValueKind::I32: return { 0x7F };
+        case ValueKind::I64: return { 0x7E };
+        case ValueKind::F32: return { 0x7D };
+        case ValueKind::F64: return { 0x7C };
+        case ValueKind::V128: return { 0x7B };
         case ValueKind::Ref: break;
     }
-    Require(type == FuncRef || type == ExternRef);
-    return type == FuncRef ? 0x70 : 0x6F;
+    constexpr auto NullableRef = uint8_t { 0x63 };
+    constexpr auto NonNullRef = uint8_t { 0x64 };
+    if (type.nullable == Nullable::Yes && type.heap.kind != AbstractHeapType::Concrete)
+        return encodeHeapType(type.heap);
+    auto bytes = std::vector<uint8_t> { type.nullable == Nullable::Yes ? NullableRef : NonNullRef };
+    auto const heap = encodeHeapType(type.heap);
+    bytes.insert(bytes.end(), heap.begin(), heap.end());
+    return bytes;
 }
 
 /// The binary encoding of @p limits: the flags byte, the minimum and, if bounded, the maximum.
@@ -165,7 +219,7 @@ class ModuleBuilder
     ModuleBuilder& importTable(std::string_view module, std::string_view name, TableType const& type)
     {
         auto entry = importHeader(module, name, 0x01);
-        entry.push_back(encodeValueType(type.element));
+        append(entry, encodeValueType(type.element));
         append(entry, encodeLimits(type.limits));
         _imports.push_back(std::move(entry));
         return *this;
@@ -213,7 +267,26 @@ class ModuleBuilder
     /// @return This builder.
     ModuleBuilder& table(TableType const& type)
     {
-        _tables.push_back(type);
+        auto entry = encodeValueType(type.element);
+        append(entry, encodeLimits(type.limits));
+        _tables.push_back(std::move(entry));
+        return *this;
+    }
+
+    /// Appends a table with an initializer to the table section, in typed function references'
+    /// form: 0x40 0x00, the table type, then the expression every slot starts with.
+    /// @param type Its element type and size bounds.
+    /// @param initWithoutEnd Its initializer's instructions; build() appends the final end.
+    /// @return This builder.
+    ModuleBuilder& table(TableType const& type, std::vector<uint8_t> initWithoutEnd)
+    {
+        constexpr auto TableWithInitializer = uint8_t { 0x40 };
+        auto entry = std::vector<uint8_t> { TableWithInitializer, 0x00 };
+        append(entry, encodeValueType(type.element));
+        append(entry, encodeLimits(type.limits));
+        append(entry, initWithoutEnd);
+        entry.push_back(0x0B); // end
+        _tables.push_back(std::move(entry));
         return *this;
     }
 
@@ -319,7 +392,7 @@ class ModuleBuilder
         appendSection(bytes, TypeSectionId, typeSection());
         appendSection(bytes, ImportSectionId, entriesOf(_imports));
         appendSection(bytes, FunctionSectionId, functionSection());
-        appendSection(bytes, TableSectionId, tableSection());
+        appendSection(bytes, TableSectionId, entriesOf(_tables));
         appendSection(bytes, MemorySectionId, memorySection());
         appendSection(bytes, GlobalSectionId, entriesOf(_globals));
         appendSection(bytes, ExportSectionId, exportSection());
@@ -395,7 +468,7 @@ class ModuleBuilder
 
     static void appendGlobalType(std::vector<uint8_t>& out, GlobalType const& type)
     {
-        out.push_back(encodeValueType(type.type));
+        append(out, encodeValueType(type.type));
         out.push_back(type.mutability == Mutability::Var ? 0x01 : 0x00);
     }
 
@@ -422,7 +495,7 @@ class ModuleBuilder
     {
         append(out, encodeU32(static_cast<uint32_t>(types.size())));
         for (auto const& type: types)
-            out.push_back(encodeValueType(type));
+            append(out, encodeValueType(type));
     }
 
     [[nodiscard]] Entries typeSection() const
@@ -442,17 +515,6 @@ class ModuleBuilder
         auto entries = Entries { .count = static_cast<uint32_t>(_functions.size()), .bytes = {} };
         for (auto const& function: _functions)
             append(entries.bytes, encodeU32(function.typeIndex));
-        return entries;
-    }
-
-    [[nodiscard]] Entries tableSection() const
-    {
-        auto entries = Entries { .count = static_cast<uint32_t>(_tables.size()), .bytes = {} };
-        for (auto const& type: _tables)
-        {
-            entries.bytes.push_back(encodeValueType(type.element));
-            append(entries.bytes, encodeLimits(type.limits));
-        }
         return entries;
     }
 
@@ -493,7 +555,7 @@ class ModuleBuilder
             for (auto const& [count, type]: runs)
             {
                 append(code, encodeU32(count));
-                code.push_back(encodeValueType(type));
+                append(code, encodeValueType(type));
             }
             append(code, function.body);
             code.push_back(0x0B); // end
@@ -506,7 +568,7 @@ class ModuleBuilder
     std::vector<FuncType> _types;
     std::vector<std::vector<uint8_t>> _imports;
     std::vector<FunctionEntry> _functions;
-    std::vector<TableType> _tables;
+    std::vector<std::vector<uint8_t>> _tables;
     std::vector<MemoryType> _memories;
     std::vector<std::vector<uint8_t>> _globals;
     std::vector<ExportEntry> _exports;

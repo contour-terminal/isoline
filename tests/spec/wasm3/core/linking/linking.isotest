@@ -1,0 +1,163 @@
+module linking.0.wasm 4d66
+register 4d66 4d66
+module linking.1.wasm 4e66
+assert_return invoke 63616c6c 4d66 -> i32:2
+assert_return invoke 4d662e63616c6c 4e66 -> i32:2
+assert_return invoke 63616c6c 4e66 -> i32:3
+assert_return invoke 63616c6c204d662e63616c6c 4e66 -> i32:2
+module linking.2.wasm
+register 72656578706f72745f66
+assert_unlinkable linking.3.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.4.wasm 696e636f6d70617469626c6520696d706f72742074797065
+module linking.5.wasm 4d67
+register 4d67 4d67
+module linking.6.wasm 4e67
+assert_return get 676c6f62 4d67 -> i32:2a
+assert_return get 4d672e676c6f62 4e67 -> i32:2a
+assert_return get 676c6f62 4e67 -> i32:2b
+assert_return invoke 676574 4d67 -> i32:2a
+assert_return invoke 4d672e676574 4e67 -> i32:2a
+assert_return invoke 676574 4e67 -> i32:2b
+assert_return get 6d75745f676c6f62 4d67 -> i32:8e
+assert_return get 4d672e6d75745f676c6f62 4e67 -> i32:8e
+assert_return invoke 6765745f6d7574 4d67 -> i32:8e
+assert_return invoke 4d672e6765745f6d7574 4e67 -> i32:8e
+assert_return invoke 7365745f6d7574 4d67 i32:f1 ->
+assert_return get 6d75745f676c6f62 4d67 -> i32:f1
+assert_return get 4d672e6d75745f676c6f62 4e67 -> i32:f1
+assert_return invoke 6765745f6d7574 4d67 -> i32:f1
+assert_return invoke 4d672e6765745f6d7574 4e67 -> i32:f1
+assert_unlinkable linking.7.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.8.wasm 696e636f6d70617469626c6520696d706f72742074797065
+module linking.9.wasm 4d7265665f6578
+register 4d7265665f6578 4d7265665f6578
+module linking.10.wasm 4d7265665f696d
+assert_unlinkable linking.11.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.12.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.13.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.14.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.15.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.16.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.17.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.18.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.19.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.20.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.21.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.22.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.23.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.24.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.25.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.26.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.27.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.28.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.29.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.30.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.31.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.32.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.33.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.34.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.35.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.36.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.37.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.38.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.39.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.40.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.41.wasm 696e636f6d70617469626c6520696d706f72742074797065
+module linking.42.wasm 4d74
+register 4d74 4d74
+module linking.43.wasm 4e74
+assert_return invoke 63616c6c 4d74 i32:2 -> i32:4
+assert_return invoke 4d742e63616c6c 4e74 i32:2 -> i32:4
+assert_return invoke 63616c6c 4e74 i32:2 -> i32:5
+assert_return invoke 63616c6c204d742e63616c6c 4e74 i32:2 -> i32:4
+assert_trap invoke 63616c6c 4d74 i32:1 -> 756e696e697469616c697a656420656c656d656e74
+assert_trap invoke 4d742e63616c6c 4e74 i32:1 -> 756e696e697469616c697a656420656c656d656e74
+assert_return invoke 63616c6c 4e74 i32:1 -> i32:5
+assert_trap invoke 63616c6c204d742e63616c6c 4e74 i32:1 -> 756e696e697469616c697a656420656c656d656e74
+assert_trap invoke 63616c6c 4d74 i32:0 -> 756e696e697469616c697a656420656c656d656e74
+assert_trap invoke 4d742e63616c6c 4e74 i32:0 -> 756e696e697469616c697a656420656c656d656e74
+assert_return invoke 63616c6c 4e74 i32:0 -> i32:5
+assert_trap invoke 63616c6c204d742e63616c6c 4e74 i32:0 -> 756e696e697469616c697a656420656c656d656e74
+assert_trap invoke 63616c6c 4d74 i32:14 -> 756e646566696e656420656c656d656e74
+assert_trap invoke 4d742e63616c6c 4e74 i32:14 -> 756e646566696e656420656c656d656e74
+assert_trap invoke 63616c6c 4e74 i32:7 -> 756e646566696e656420656c656d656e74
+assert_trap invoke 63616c6c204d742e63616c6c 4e74 i32:14 -> 756e646566696e656420656c656d656e74
+assert_return invoke 63616c6c 4e74 i32:3 -> i32:fffffffc
+assert_trap invoke 63616c6c 4e74 i32:4 -> 696e6469726563742063616c6c2074797065206d69736d61746368
+module linking.44.wasm 4f74
+assert_return invoke 63616c6c 4d74 i32:3 -> i32:4
+assert_return invoke 4d742e63616c6c 4e74 i32:3 -> i32:4
+assert_return invoke 63616c6c204d742e63616c6c 4e74 i32:3 -> i32:4
+assert_return invoke 63616c6c 4f74 i32:3 -> i32:4
+assert_return invoke 63616c6c 4d74 i32:2 -> i32:fffffffc
+assert_return invoke 4d742e63616c6c 4e74 i32:2 -> i32:fffffffc
+assert_return invoke 63616c6c 4e74 i32:2 -> i32:5
+assert_return invoke 63616c6c204d742e63616c6c 4e74 i32:2 -> i32:fffffffc
+assert_return invoke 63616c6c 4f74 i32:2 -> i32:fffffffc
+assert_return invoke 63616c6c 4d74 i32:1 -> i32:6
+assert_return invoke 4d742e63616c6c 4e74 i32:1 -> i32:6
+assert_return invoke 63616c6c 4e74 i32:1 -> i32:5
+assert_return invoke 63616c6c204d742e63616c6c 4e74 i32:1 -> i32:6
+assert_return invoke 63616c6c 4f74 i32:1 -> i32:6
+assert_trap invoke 63616c6c 4d74 i32:0 -> 756e696e697469616c697a656420656c656d656e74
+assert_trap invoke 4d742e63616c6c 4e74 i32:0 -> 756e696e697469616c697a656420656c656d656e74
+assert_return invoke 63616c6c 4e74 i32:0 -> i32:5
+assert_trap invoke 63616c6c204d742e63616c6c 4e74 i32:0 -> 756e696e697469616c697a656420656c656d656e74
+assert_trap invoke 63616c6c 4f74 i32:0 -> 756e696e697469616c697a656420656c656d656e74
+assert_trap invoke 63616c6c 4f74 i32:14 -> 756e646566696e656420656c656d656e74
+module linking.45.wasm
+module linking.46.wasm 4731
+register 4731 4731
+module linking.47.wasm 4732
+assert_return get 67 4732 -> i32:5
+assert_uninstantiable linking.48.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_unlinkable linking.49.wasm 756e6b6e6f776e20696d706f7274
+assert_trap invoke 63616c6c 4d74 i32:7 -> 756e696e697469616c697a656420656c656d656e74
+assert_uninstantiable linking.50.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_return invoke 63616c6c 4d74 i32:7 -> i32:0
+assert_trap invoke 63616c6c 4d74 i32:8 -> 756e696e697469616c697a656420656c656d656e74
+assert_uninstantiable linking.51.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 63616c6c 4d74 i32:7 -> i32:0
+module linking.52.wasm 4d7461626c655f6578
+register 4d7461626c655f6578 4d7461626c655f6578
+module linking.53.wasm
+assert_unlinkable linking.54.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.55.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.56.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.57.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.58.wasm 696e636f6d70617469626c6520696d706f72742074797065
+assert_unlinkable linking.59.wasm 696e636f6d70617469626c6520696d706f72742074797065
+module linking.60.wasm 4d6d
+register 4d6d 4d6d
+module linking.61.wasm 4e6d
+assert_return invoke 6c6f6164 4d6d i32:c -> i32:2
+assert_return invoke 4d6d2e6c6f6164 4e6d i32:c -> i32:2
+assert_return invoke 6c6f6164 4e6d i32:c -> i32:f2
+module linking.62.wasm 4f6d
+assert_return invoke 6c6f6164 4d6d i32:c -> i32:a7
+assert_return invoke 4d6d2e6c6f6164 4e6d i32:c -> i32:a7
+assert_return invoke 6c6f6164 4e6d i32:c -> i32:f2
+assert_return invoke 6c6f6164 4f6d i32:c -> i32:a7
+module linking.63.wasm
+assert_uninstantiable linking.64.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373
+module linking.65.wasm 506d
+assert_return invoke 67726f77 506d i32:0 -> i32:1
+assert_return invoke 67726f77 506d i32:2 -> i32:1
+assert_return invoke 67726f77 506d i32:0 -> i32:3
+assert_return invoke 67726f77 506d i32:1 -> i32:3
+assert_return invoke 67726f77 506d i32:1 -> i32:4
+assert_return invoke 67726f77 506d i32:0 -> i32:5
+assert_return invoke 67726f77 506d i32:1 -> i32:ffffffff
+assert_return invoke 67726f77 506d i32:0 -> i32:5
+assert_unlinkable linking.66.wasm 756e6b6e6f776e20696d706f7274
+assert_return invoke 6c6f6164 4d6d i32:0 -> i32:0
+assert_uninstantiable linking.67.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 6c6f6164 4d6d i32:0 -> i32:61
+assert_return invoke 6c6f6164 4d6d i32:4fff6 -> i32:0
+assert_uninstantiable linking.68.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_return invoke 6c6f6164 4d6d i32:0 -> i32:61
+module linking.69.wasm 4d73
+register 4d73 4d73
+assert_uninstantiable linking.70.wasm 756e726561636861626c65
+assert_return invoke 676574206d656d6f72795b305d 4d73 -> i32:68
+assert_return invoke 676574207461626c655b305d 4d73 -> i32:dead

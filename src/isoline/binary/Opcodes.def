@@ -20,8 +20,8 @@
 // Adding an instruction is adding a row here: the Opcode enum, OpcodeTable and the lookup arrays
 // are all generated from it. The file has no include guard; each includer defines ISOLINE_OPCODE.
 //
-// It holds every WebAssembly 2.0 instruction, SIMD's 236 included, relaxed SIMD's 20 and the
-// wide-arithmetic proposal's four.
+// It holds every WebAssembly 2.0 instruction, SIMD's 236 included, relaxed SIMD's 20, the
+// wide-arithmetic proposal's four and typed function references' four.
 
 // Control instructions
 ISOLINE_OPCODE(Unreachable, 0x00, 0x00, "unreachable", None, Special, Mvp)
@@ -37,6 +37,7 @@ ISOLINE_OPCODE(BrTable, 0x00, 0x0E, "br_table", LabelTable, Special, Mvp)
 ISOLINE_OPCODE(Return, 0x00, 0x0F, "return", None, Special, Mvp)
 ISOLINE_OPCODE(Call, 0x00, 0x10, "call", FunctionIndex, Special, Mvp)
 ISOLINE_OPCODE(CallIndirect, 0x00, 0x11, "call_indirect", CallIndirect, Special, Mvp)
+ISOLINE_OPCODE(CallRef, 0x00, 0x14, "call_ref", TypeIndex, Special, TypedFunctionReferences)
 
 // Parametric instructions
 ISOLINE_OPCODE(Drop, 0x00, 0x1A, "drop", None, Special, Mvp)
@@ -227,6 +228,9 @@ ISOLINE_OPCODE(I64Extend32S, 0x00, 0xC4, "i64.extend32_s", None, I64ToI64, SignE
 ISOLINE_OPCODE(RefNull, 0x00, 0xD0, "ref.null", HeapType, Special, ReferenceTypes)
 ISOLINE_OPCODE(RefIsNull, 0x00, 0xD1, "ref.is_null", None, Special, ReferenceTypes)
 ISOLINE_OPCODE(RefFunc, 0x00, 0xD2, "ref.func", FunctionIndex, Special, ReferenceTypes)
+ISOLINE_OPCODE(RefAsNonNull, 0x00, 0xD4, "ref.as_non_null", None, Special, TypedFunctionReferences)
+ISOLINE_OPCODE(BrOnNull, 0x00, 0xD5, "br_on_null", LabelIndex, Special, TypedFunctionReferences)
+ISOLINE_OPCODE(BrOnNonNull, 0x00, 0xD6, "br_on_non_null", LabelIndex, Special, TypedFunctionReferences)
 
 // 0xFC 0-7: saturating truncations
 ISOLINE_OPCODE(I32TruncSatF32S, 0xFC, 0, "i32.trunc_sat_f32_s", None, F32ToI32, NonTrappingFloatToInt)

@@ -22,7 +22,9 @@
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/validate/Subtyping.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
 namespace isoline::validate
@@ -197,6 +199,15 @@ namespace
     /// The number of lanes a shuffle's lane indices choose from: both operands' 16 bytes.
     constexpr auto ShuffleLaneCount = 32U;
 
+    /// Checks that @p type, if it names a concrete type, names one below @p typeCount: of the
+    /// module's types, or of those before the type it is part of.
+    [[nodiscard]] Check checkTypeIndex(ValueType const& type, std::size_t typeCount) noexcept
+    {
+        if (!binary::isConcreteRef(type))
+            return {};
+        return checkIndex(type.heap.typeIndex, typeCount, ValidationErrorCode::UnknownType);
+    }
+
     // --- Limits -------------------------------------------------------------------------------
 
     /// Checks @p limits against @p range, as the interpreter's check_limits does: both bounds first,
@@ -251,6 +262,13 @@ namespace
         std::vector<GlobalType> globals;         ///< Every global, imports first.
         std::size_t importedGlobalCount = 0;     ///< How many of globals are imported.
         std::vector<uint32_t> declaredFunctions; ///< The functions ref.func may name; sorted, unique.
+        std::vector<uint32_t> canonical;         ///< The canonical id of every type (canonicalTypeIds).
+
+        /// Whether @p sub matches @p super, concrete types compared by their canonical ids.
+        [[nodiscard]] bool matches(ValueType const& sub, ValueType const& super) const noexcept
+        {
+            return isSubtype(sub, super, canonical);
+        }
 
         [[nodiscard]] FuncType const& functionType(uint32_t function) const
         {
@@ -280,6 +298,18 @@ namespace
         {
             return checkIndex(index, module.types.size(), ValidationErrorCode::UnknownType);
         }
+
+        /// Checks that @p type names a type of the module, if it names one at all.
+        [[nodiscard]] Check valueType(ValueType const& type) const
+        {
+            return checkTypeIndex(type, module.types.size());
+        }
+
+        /// The type ref.func @p function pushes: a non-null reference to its function type.
+        [[nodiscard]] ValueType functionReference(uint32_t function) const
+        {
+            return binary::concreteRef(functionTypes[function], binary::Nullable::No);
+        }
     };
 
     /// Every function index a constant expression names with ref.func.
@@ -290,13 +320,15 @@ namespace
                 out.push_back(instruction.a);
     }
 
-    /// The functions ref.func may name in a body (spec 2.0, C.refs): every function index the module
-    /// mentions outside its function bodies and its start section.
+    /// The functions ref.func may name in a body (C.refs): every function index the module mentions
+    /// outside its function bodies and its start section, table initializers included.
     [[nodiscard]] std::vector<uint32_t> declaredFunctionsOf(Module const& module)
     {
         auto declared = std::vector<uint32_t> {};
         for (auto const& global: module.globals)
             collectReferences(global.init, declared);
+        for (auto const& table: module.tables)
+            collectReferences(table.init, declared);
         for (auto const& entry: module.exports)
             if (entry.kind == ExternKind::Func)
                 declared.push_back(entry.index);
@@ -355,6 +387,7 @@ namespace
         std::span<ValueType const> params;  ///< The types its block starts with.
         std::span<ValueType const> results; ///< The types its block ends with.
         std::size_t height;                 ///< The operand stack height at its start.
+        std::size_t setLocalsHeight;        ///< How many locals were set at its start.
         Reachability reachability;          ///< Whether its remainder is reachable.
 
         /// The types a branch to this frame carries: a loop's are its params, any other's its results.
@@ -370,6 +403,20 @@ namespace
         std::span<ValueType const> params;
         std::span<ValueType const> results;
     };
+
+    /// (ref bot): what an Unknown operand is as a reference, a subtype of every reference type.
+    constexpr auto BottomReference = ValueType {
+        .kind = ValueKind::Ref,
+        .nullable = binary::Nullable::No,
+        .heap = { .kind = binary::AbstractHeapType::Bot },
+    };
+
+    /// @p reference without null: the type ref.as_non_null and br_on_null leave it with.
+    [[nodiscard]] constexpr ValueType nonNullOf(ValueType reference) noexcept
+    {
+        reference.nullable = binary::Nullable::No;
+        return reference;
+    }
 
     [[nodiscard]] constexpr bool isNumber(Operand const& operand) noexcept
     {
@@ -402,6 +449,7 @@ namespace
             _operands.clear();
             _frames.clear();
             _localRunEnds.clear();
+            startLocalInitialization();
             auto end = uint64_t { 0 };
             for (auto const& run: body.localRuns)
             {
@@ -450,7 +498,7 @@ namespace
         [[nodiscard]] std::expected<Operand, Fault> pop(ValueType const& expected)
         {
             return pop().and_then([&](Operand const& actual) -> std::expected<Operand, Fault> {
-                if (actual && *actual != expected)
+                if (actual && !_context.matches(*actual, expected))
                     return fail(ValidationErrorCode::TypeMismatch);
                 return actual;
             });
@@ -462,6 +510,19 @@ namespace
                 if (auto const popped = pop(type); !popped)
                     return fail(popped.error());
             return {};
+        }
+
+        /// The reference on top of the stack, which ref.as_non_null and br_on_null take, without popping
+        /// it: the reference interpreter's peek_ref. An Unknown operand, or none at all, is a (ref bot);
+        /// only a top that is no reference fails, so that an empty stack fails at the pop, after the
+        /// instruction's other checks.
+        [[nodiscard]] std::expected<ValueType, Fault> peekReference() const
+        {
+            if (_operands.size() == _frames.back().height || !_operands.back())
+                return BottomReference;
+            if (_operands.back()->kind != ValueKind::Ref)
+                return fail(ValidationErrorCode::TypeMismatch);
+            return *_operands.back();
         }
 
         /// Pops @p types and pushes back what was popped, keeping the more precise operand types.
@@ -486,6 +547,7 @@ namespace
                                       .params = signature.params,
                                       .results = signature.results,
                                       .height = _operands.size(),
+                                      .setLocalsHeight = _setLocals.size(),
                                       .reachability = Reachability::Reachable });
             pushAll(signature.params);
         }
@@ -506,6 +568,55 @@ namespace
             auto& frame = _frames.back();
             _operands.resize(frame.height);
             frame.reachability = Reachability::Unreachable;
+        }
+
+        // --- Local initialization (typed function references) ---
+        //
+        // A local of a non-defaultable type starts unset; local.set and local.tee set it until the
+        // end of the block they are in, and a block's else or end restores what was set at its
+        // start. _setLocals is the stack of the locals set in the open blocks, each block keeping
+        // its height (Frame::setLocalsHeight); _setStamps tells in O(1) whether one is set, by
+        // holding _generation for it. The stamps are sized by the highest local index set so far
+        // and never cleared between bodies: a new generation unsets all at once, so a body's cost
+        // is that of its own sets, never of the locals it declares.
+
+        void startLocalInitialization()
+        {
+            _setLocals.clear();
+            ++_generation; // 64 bits: no validator lives through 2^64 bodies, so it never wraps
+        }
+
+        /// Whether local @p index, of @p type, is set: a parameter or a local with a default always is.
+        [[nodiscard]] bool isSet(Body const& body, uint32_t index, ValueType const& type) const noexcept
+        {
+            if (index < body.params.size() || binary::isDefaultable(type))
+                return true;
+            return index < _setStamps.size() && _setStamps[index] == _generation;
+        }
+
+        /// Records @p index, a local of @p type, as set, unless it is already.
+        void setLocal(Body const& body, uint32_t index, ValueType const& type)
+        {
+            if (isSet(body, index, type))
+                return;
+            if (index >= _setStamps.size())
+                _setStamps.resize(std::size_t { index } + 1, 0);
+            _setStamps[index] = _generation;
+            _setLocals.push_back(index);
+        }
+
+        /// Unsets the locals set since @p height.
+        void restoreLocals(std::size_t height)
+        {
+            for (auto const index: std::span { _setLocals }.subspan(height))
+                _setStamps[index] = 0;
+            _setLocals.resize(height);
+        }
+
+        /// Checks that local @p index, of @p type, may be read.
+        [[nodiscard]] Check readable(Body const& body, uint32_t index, ValueType const& type) const
+        {
+            return check(isSet(body, index, type), ValidationErrorCode::UninitializedLocal);
         }
 
         // --- Lookups ---
@@ -553,7 +664,9 @@ namespace
             {
                 case binary::BlockType::Kind::Empty: return BlockSignature {};
                 case binary::BlockType::Kind::Value:
-                    return BlockSignature { .params = {}, .results = std::span { &instruction.type, 1 } };
+                    return _context.valueType(instruction.type).transform([&] {
+                        return BlockSignature { .params = {}, .results = std::span { &instruction.type, 1 } };
+                    });
                 case binary::BlockType::Kind::TypeIndex: break; // checked below the switch
             }
             return _context.type(instruction.a).transform([&] {
@@ -687,13 +800,19 @@ namespace
                     });
                 case Opcode::Else:
                     return popFrame().transform([this](Frame const& frame) {
+                        restoreLocals(frame.setLocalsHeight);
                         pushFrame(Opcode::Else,
                                   BlockSignature { .params = frame.params, .results = frame.results });
                     });
                 case Opcode::End:
                     return popFrame().and_then([this](Frame const& frame) -> Check {
+                        restoreLocals(frame.setLocalsHeight);
                         // An if without else passes its params through the missing else branch.
-                        if (frame.opcode == Opcode::If && !std::ranges::equal(frame.params, frame.results))
+                        if (frame.opcode == Opcode::If
+                            && !std::ranges::equal(
+                                frame.params, frame.results, [this](auto const& param, auto const& result) {
+                                    return _context.matches(param, result);
+                                }))
                             return fail(ValidationErrorCode::TypeMismatch);
                         pushAll(frame.results);
                         return {};
@@ -713,6 +832,32 @@ namespace
                             });
                         });
                     });
+                case Opcode::BrOnNull:
+                    // As valid.ml: the reference peeked, the label looked up, then the operands popped.
+                    return peekReference().and_then([&](ValueType const& reference) {
+                        return label(instruction.a).and_then([&](Frame const* frame) {
+                            return pop()
+                                .and_then([&](Operand const&) { return popAll(frame->labelTypes()); })
+                                .transform([&] {
+                                    pushAll(frame->labelTypes());
+                                    push(nonNullOf(reference));
+                                });
+                        });
+                    });
+                case Opcode::BrOnNonNull:
+                    // As valid.ml: the label first, whose last type must be a reference; the operand
+                    // is then popped as that type admitting null, and the branch carries it non-null.
+                    return label(instruction.a).and_then([&](Frame const* frame) -> Check {
+                        auto const types = frame->labelTypes();
+                        if (types.empty() || types.back().kind != ValueKind::Ref)
+                            return fail(ValidationErrorCode::TypeMismatch);
+                        auto const fallingThrough = types.first(types.size() - 1);
+                        auto nullable = types.back();
+                        nullable.nullable = binary::Nullable::Yes;
+                        return pop(nullable)
+                            .and_then([&](Operand const&) { return popAll(fallingThrough); })
+                            .transform([&] { pushAll(fallingThrough); });
+                    });
                 case Opcode::BrTable: return brTable(body, instruction);
                 case Opcode::Return: return popAll(body.results).transform([this] { markUnreachable(); });
 
@@ -723,14 +868,20 @@ namespace
                 case Opcode::CallIndirect:
                     return _context.table(instruction.b).and_then([&](TableType const* table) {
                         return _context.type(instruction.a)
-                            .and_then([table] {
-                                return check(table->element == binary::FuncRef,
+                            .and_then([this, table] {
+                                return check(_context.matches(table->element, binary::FuncRef),
                                              ValidationErrorCode::TypeMismatch);
                             })
                             .and_then([&] { return pop(addressOf(table)); })
                             .and_then(
                                 [&](Operand const&) { return call(_context.module.types[instruction.a]); });
                     });
+
+                case Opcode::CallRef:
+                    return _context.type(instruction.a)
+                        .and_then(
+                            [&] { return pop(binary::concreteRef(instruction.a, binary::Nullable::Yes)); })
+                        .and_then([&](Operand const&) { return call(_context.module.types[instruction.a]); });
 
                 case Opcode::Drop: return pop().transform([](Operand const&) {});
                 case Opcode::Select: return select();
@@ -739,22 +890,26 @@ namespace
                     if (types.size() != 1)
                         return fail(ValidationErrorCode::InvalidResultArity);
                     auto const& type = types.front();
-                    return pop(binary::I32)
+                    return _context.valueType(type)
+                        .and_then([this] { return pop(binary::I32); })
                         .and_then([&](Operand const&) { return pop(type); })
                         .and_then([&](Operand const&) { return pushAfter(pop(type), type); });
                 }
 
                 case Opcode::LocalGet:
-                    return local(body, instruction.a).transform([this](ValueType const& type) {
-                        push(type);
+                    return local(body, instruction.a).and_then([&](ValueType const& type) {
+                        return readable(body, instruction.a, type).transform([&] { push(type); });
                     });
                 case Opcode::LocalSet:
-                    return local(body, instruction.a).and_then([this](ValueType const& type) {
-                        return pop(type).transform([](Operand const&) {});
+                    return local(body, instruction.a).and_then([&](ValueType const& type) {
+                        return pop(type).transform(
+                            [&](Operand const&) { setLocal(body, instruction.a, type); });
                     });
                 case Opcode::LocalTee:
-                    return local(body, instruction.a).and_then([this](ValueType const& type) {
-                        return pushAfter(pop(type), type);
+                    return local(body, instruction.a).and_then([&](ValueType const& type) {
+                        return pushAfter(pop(type), type).transform([&] {
+                            setLocal(body, instruction.a, type);
+                        });
                     });
                 case Opcode::GlobalGet:
                     return global(body, instruction.a).transform([this](GlobalType const* type) {
@@ -763,7 +918,7 @@ namespace
                 case Opcode::GlobalSet:
                     return global(body, instruction.a).and_then([this](GlobalType const* type) -> Check {
                         if (type->mutability != Mutability::Var)
-                            return fail(ValidationErrorCode::GlobalIsImmutable);
+                            return fail(ValidationErrorCode::ImmutableGlobal);
                         return pop(type->type).transform([](Operand const&) {});
                     });
 
@@ -793,7 +948,7 @@ namespace
                     // a is the destination, b the source; the count is i64 only if both are.
                     return _context.table(instruction.a).and_then([&](TableType const* destination) {
                         return _context.table(instruction.b).and_then([&](TableType const* source) {
-                            return check(destination->element == source->element,
+                            return check(_context.matches(source->element, destination->element),
                                          ValidationErrorCode::TypeMismatch)
                                 .and_then([&] {
                                     return popOperands({ addressOf(destination),
@@ -806,7 +961,8 @@ namespace
                     // a is the element segment, b the table; the interpreter looks the table up first.
                     return _context.table(instruction.b).and_then([&](TableType const* table) {
                         return elem(instruction.a).and_then([&] {
-                            return check(table->element == _context.module.elements[instruction.a].type,
+                            return check(_context.matches(_context.module.elements[instruction.a].type,
+                                                          table->element),
                                          ValidationErrorCode::TypeMismatch)
                                 .and_then([&] {
                                     return popOperands({ addressOf(table), binary::I32, binary::I32 });
@@ -845,13 +1001,18 @@ namespace
                     });
                 case Opcode::DataDrop: return data(instruction.a);
 
-                case Opcode::RefNull: push(instruction.type); return {};
+                case Opcode::RefNull:
+                    return _context.valueType(instruction.type).transform([&] { push(instruction.type); });
                 case Opcode::RefIsNull:
                     return pop().and_then([this](Operand const& operand) -> Check {
                         if (!isReference(operand))
                             return fail(ValidationErrorCode::TypeMismatch);
                         push(binary::I32);
                         return {};
+                    });
+                case Opcode::RefAsNonNull:
+                    return peekReference().and_then([this](ValueType const& reference) {
+                        return pop().transform([&](Operand const&) { push(nonNullOf(reference)); });
                     });
                 case Opcode::RefFunc:
                     return _context.function(instruction.a)
@@ -861,7 +1022,7 @@ namespace
                                                           instruction.a) };
                             return Check {};
                         })
-                        .transform([this] { push(binary::FuncRef); });
+                        .transform([&] { push(_context.functionReference(instruction.a)); });
 
                 default: break; // uncovered(special-default)
             }
@@ -928,6 +1089,9 @@ namespace
         std::vector<Frame> _frames;
         std::vector<uint64_t> _localRunEnds; ///< Per local run, the declared-local index past its end.
         std::vector<Operand> _restored;      ///< Scratch for popAndRestore.
+        std::vector<uint32_t> _setLocals;    ///< The non-defaultable locals set in the open blocks.
+        std::vector<uint64_t> _setStamps;    ///< Per local index, _generation while it is set.
+        uint64_t _generation = 0;            ///< The stamp of the body being validated; never 0.
     };
 
     // --- The module ---------------------------------------------------------------------------
@@ -944,18 +1108,20 @@ namespace
                        .memories = {},
                        .globals = {},
                        .importedGlobalCount = 0,
-                       .declaredFunctions = declaredFunctionsOf(module) },
+                       .declaredFunctions = declaredFunctionsOf(module),
+                       .canonical = {} },
             _bodies { _context }
         {
         }
 
         [[nodiscard]] std::expected<void, ValidationError> validate()
         {
-            return checkImports()
+            return checkTypeSection()
+                .and_then([this] { return checkImports(); })
                 .and_then([this] { return checkFunctionTypes(); })
                 .and_then([this] { return checkTypes(); })
-                .and_then([this] { return checkGlobals(); })
                 .and_then([this] { return checkTablesAndMemories(); })
+                .and_then([this] { return checkGlobals(); })
                 .and_then([this] { return checkElements(); })
                 .and_then([this] { return checkData(); })
                 .and_then([this] { return checkBodies(); })
@@ -966,6 +1132,26 @@ namespace
 
       private:
         [[nodiscard]] Module const& module() const noexcept { return _context.module; }
+
+        /// Checks that each type names only the types before it, as a type section without rec
+        /// groups must, then finds every type's canonical id.
+        [[nodiscard]] std::expected<void, ValidationError> checkTypeSection()
+        {
+            for (auto const [index, type]: core::views::enumerate(module().types))
+            {
+                auto const before = [index](std::span<ValueType const> types) -> Check {
+                    for (auto const& valueType: types)
+                        if (auto const result = checkTypeIndex(valueType, index); !result)
+                            return result;
+                    return {};
+                };
+                if (auto const result = before(type.params).and_then([&] { return before(type.results); });
+                    !result)
+                    return moduleError(result.error());
+            }
+            _context.canonical = binary::canonicalTypeIds(module().types);
+            return {};
+        }
 
         [[nodiscard]] std::expected<void, ValidationError> checkImports()
         {
@@ -979,7 +1165,9 @@ namespace
                         _context.functionTypes.push_back(import.typeIndex);
                         break;
                     case ExternKind::Table:
-                        result = checkTable(import.table);
+                        result = _context.valueType(import.table.element).and_then([&] {
+                            return checkTable(import.table);
+                        });
                         _context.tables.push_back(import.table);
                         break;
                     case ExternKind::Memory:
@@ -987,6 +1175,7 @@ namespace
                         _context.memories.push_back(import.memory);
                         break;
                     case ExternKind::Global:
+                        result = _context.valueType(import.global.type);
                         _context.globals.push_back(import.global);
                         ++_context.importedGlobalCount;
                         break;
@@ -1008,7 +1197,8 @@ namespace
             }
             for (auto const& global: module().globals)
                 _context.globals.push_back(global.type);
-            _context.tables.insert(_context.tables.end(), module().tables.begin(), module().tables.end());
+            for (auto const& table: module().tables)
+                _context.tables.push_back(table.type);
             _context.memories.insert(
                 _context.memories.end(), module().memories.begin(), module().memories.end());
             return {};
@@ -1055,15 +1245,30 @@ namespace
         [[nodiscard]] std::expected<void, ValidationError> checkGlobals()
         {
             for (auto const& global: module().globals)
-                if (auto const result = checkConstant(global.init, global.type.type); !result)
+                if (auto const result = _context.valueType(global.type.type).and_then([&] {
+                        return checkConstant(global.init, global.type.type);
+                    });
+                    !result)
                     return moduleError(result.error());
             return {};
         }
 
-        [[nodiscard]] std::expected<void, ValidationError> checkTablesAndMemories() const
+        /// Checks a defined table: its type, and that its slots start with a value of its element
+        /// type: its initializer's, or the null, which a non-null element type has none of.
+        [[nodiscard]] Check checkDefinedTable(binary::Table const& table)
+        {
+            auto const& element = table.type.element;
+            return _context.valueType(element).and_then([&] { return checkTable(table.type); }).and_then([&] {
+                if (table.init.empty())
+                    return check(binary::isDefaultable(element), ValidationErrorCode::TypeMismatch);
+                return checkConstant(table.init, element);
+            });
+        }
+
+        [[nodiscard]] std::expected<void, ValidationError> checkTablesAndMemories()
         {
             for (auto const& table: module().tables)
-                if (auto const result = checkTable(table); !result)
+                if (auto const result = checkDefinedTable(table); !result)
                     return moduleError(result.error());
             for (auto const& memory: module().memories)
                 if (auto const result = checkMemory(memory); !result)
@@ -1073,16 +1278,18 @@ namespace
 
         [[nodiscard]] Check checkElement(binary::ElementSegment const& segment)
         {
+            if (auto const result = _context.valueType(segment.type); !result)
+                return result;
             if (auto const* indices = std::get_if<std::vector<uint32_t>>(&segment.items))
             {
-                // Each index stands for (ref.func index): a funcref.
+                // Each index stands for (ref.func index): a reference to the function's type.
                 for (auto const index: *indices)
-                    if (auto const result = _context.function(index); !result)
+                    if (auto const result = _context.function(index).and_then([&] {
+                            return check(_context.matches(_context.functionReference(index), segment.type),
+                                         ValidationErrorCode::TypeMismatch);
+                        });
+                        !result)
                         return result;
-                if (auto const result =
-                        check(segment.type == binary::FuncRef, ValidationErrorCode::TypeMismatch);
-                    !result)
-                    return result;
             }
             else
             {
@@ -1095,7 +1302,8 @@ namespace
             return _context.table(segment.table).and_then([&](TableType const* table) {
                 return checkConstant(segment.offset, binary::addressValueType(table->limits.addressType))
                     .and_then([&] {
-                        return check(table->element == segment.type, ValidationErrorCode::TypeMismatch);
+                        return check(_context.matches(segment.type, table->element),
+                                     ValidationErrorCode::TypeMismatch);
                     });
             });
         }
@@ -1131,6 +1339,10 @@ namespace
             {
                 auto const functionIndex = static_cast<uint32_t>(importedFunctions + index);
                 auto const& type = _context.functionType(functionIndex);
+                for (auto const& run: function.locals)
+                    if (auto const result = _context.valueType(run.type); !result)
+                        return std::unexpected { ValidationError {
+                            result.error().code, functionIndex, NoInstruction, result.error().subject } };
                 auto const body = Body { .instructions = function.body,
                                          .sideTables = function,
                                          .params = type.params,

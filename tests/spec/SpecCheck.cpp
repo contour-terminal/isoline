@@ -15,6 +15,7 @@
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/validate/Subtyping.hpp>
 
 namespace isoline::spectest
 {
@@ -186,11 +187,12 @@ bool matches(ExpectedValue const& expected, Value const& actual)
     auto const* const expectedRef = std::get_if<runtime::Ref>(&expected.value);
     if (!expectedRef || !actualRef)
         return expected.value == actual;
-    // A reference is compared by what it refers to; a null one by the heap it is the null of.
+    // A reference is compared by what it refers to; a null one by the hierarchy of the heap it is
+    // the null of, as the suite writes the null of a function type (ref null $t) as ref.null func.
     if (expectedRef->kind != actualRef->kind)
         return false;
     if (expectedRef->kind == runtime::RefKind::Null)
-        return expectedRef->heap.kind == actualRef->heap.kind;
+        return validate::topOf(expectedRef->heap.kind) == validate::topOf(actualRef->heap.kind);
     return expectedRef->address == actualRef->address;
 }
 
@@ -231,7 +233,8 @@ std::string describe(Value const& value)
         }
         std::string operator()(runtime::Ref const& v) const
         {
-            auto const* const heap = v.heap.kind == binary::AbstractHeapType::Extern ? "extern" : "func";
+            auto const* const heap =
+                validate::topOf(v.heap.kind) == binary::AbstractHeapType::Extern ? "extern" : "func";
             if (v.kind == runtime::RefKind::Null)
                 return std::format("ref.null:{}", heap);
             return std::format("ref.{}:{}", heap, v.address);

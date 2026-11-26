@@ -101,10 +101,13 @@ namespace
         }
     }
 
-    /// The null reference ref.null @p instruction pushes.
-    [[nodiscard]] Value nullOf(Instruction const& instruction) noexcept
+    /// The null reference ref.null @p instruction of @p instance pushes, its heap in store form: a
+    /// concrete type is named by its TypeId.
+    [[nodiscard]] Value nullOf(ModuleInstance const& instance, Instruction const& instruction)
     {
-        return Ref { .kind = RefKind::Null, .heap = instruction.type.heap, .address = 0 };
+        auto const type =
+            binary::mapTypeIndex(instruction.type, [&](uint32_t index) { return instance.types.at(index); });
+        return Ref { .kind = RefKind::Null, .heap = type.heap, .address = 0 };
     }
 
     /// The reference ref.func pushes for function @p index of @p instance.
@@ -218,7 +221,7 @@ namespace
         /// Invokes @p function with @p args and writes its results to @p results.
         [[nodiscard]] Step run(FuncAddr function, std::span<Value const> args, std::span<Value> results)
         {
-            auto const& type = _store.function(function).type;
+            auto const& type = _store.functionType(function);
             Require(haveKinds(args, type.params));
             Require(results.size() == type.results.size());
             _values.assign(args.begin(), args.end());
@@ -300,7 +303,8 @@ namespace
 
             auto& owner = _store.moduleInstance(function.moduleInstance);
             auto const& code = owner.module->code.at(function.codeIndex);
-            auto const paramCount = static_cast<std::ptrdiff_t>(function.type.params.size());
+            auto const& type = _store.type(function.typeId);
+            auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const localsBase = _locals.size();
             _locals.insert(_locals.end(), _values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
@@ -311,7 +315,7 @@ namespace
                                       .localsBase = localsBase,
                                       .labelsBase = _labels.size(),
                                       .valuesBase = _values.size(),
-                                      .arity = static_cast<uint32_t>(function.type.results.size()),
+                                      .arity = static_cast<uint32_t>(type.results.size()),
                                       .pc = 0 });
             ++_depth;
             return {};
@@ -320,14 +324,15 @@ namespace
         /// Runs a host function synchronously: it may grow memories and tables, and invoke Wasm.
         [[nodiscard]] Step callHost(FunctionInstance const& function)
         {
-            auto const paramCount = static_cast<std::ptrdiff_t>(function.type.params.size());
+            auto const& type = _store.type(function.typeId);
+            auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const args = std::vector<Value>(_values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
-            auto results = std::vector<Value>(function.type.results.size());
-            std::ranges::transform(function.type.results, results.begin(), runtime::defaultValue);
+            auto results = std::vector<Value>(type.results.size());
+            std::ranges::transform(type.results, results.begin(), runtime::defaultValue);
             if (auto const done = function.host(args, results); !done)
                 return done;
-            Require(haveKinds(results, function.type.results));
+            Require(haveKinds(results, type.results));
             _values.insert(_values.end(), results.begin(), results.end());
             return {};
         }
@@ -352,7 +357,7 @@ namespace
             auto const reference = table.elements[index];
             if (reference.kind == RefKind::Null)
                 return trapNaming(TrapCode::UninitializedElement, index);
-            if (_store.function(reference.address).type != instance().module->types.at(instruction.a))
+            if (_store.function(reference.address).typeId != instance().types.at(instruction.a))
                 return trap(TrapCode::IndirectCallTypeMismatch);
             return call(reference.address);
         }
@@ -821,10 +826,35 @@ namespace
                     if (popI32() != 0)
                         branch(instruction.a);
                     return {};
+                case Opcode::BrOnNull:
+                    if (auto const reference = popRef(); reference.kind == RefKind::Null)
+                        branch(instruction.a);
+                    else
+                        push(reference);
+                    return {};
+                case Opcode::BrOnNonNull:
+                    // A reference branches as its label's last value; a null falls through without it.
+                    if (auto const reference = popRef(); reference.kind != RefKind::Null)
+                    {
+                        push(reference);
+                        branch(instruction.a);
+                    }
+                    return {};
                 case Opcode::BrTable: branchTable(instruction); return {};
                 case Opcode::Return: doReturn(); return {};
                 case Opcode::Call: return call(instance().functions.at(instruction.a));
                 case Opcode::CallIndirect: return callIndirect(instruction);
+                case Opcode::CallRef: {
+                    // Validation typed the reference (ref null $t), so only null is a trap. A host
+                    // boundary checks the kinds of the values it passes, not yet their types (P3), so a
+                    // function of another type is a checked abort here rather than a call that reads
+                    // its arguments past the operand stack.
+                    auto const reference = popRef();
+                    if (reference.kind == RefKind::Null)
+                        return trap(TrapCode::NullFunctionReference);
+                    Require(_store.function(reference.address).typeId == instance().types.at(instruction.a));
+                    return call(reference.address);
+                }
 
                 // Parametric
                 case Opcode::Drop: static_cast<void>(pop()); return {};
@@ -875,9 +905,14 @@ namespace
                 case Opcode::DataDrop: instance().data.at(instruction.a).reset(); return {};
 
                 // References
-                case Opcode::RefNull: push(nullOf(instruction)); return {};
+                case Opcode::RefNull: push(nullOf(instance(), instruction)); return {};
                 case Opcode::RefIsNull: push(I32 { popRef().kind == RefKind::Null ? 1U : 0U }); return {};
                 case Opcode::RefFunc: push(functionReference(instance(), instruction.a)); return {};
+                case Opcode::RefAsNonNull:
+                    // A non-null reference stays where it is, only its static type narrowed.
+                    if (std::get<Ref>(_values.back()).kind == RefKind::Null)
+                        return trap(TrapCode::NullReference);
+                    return {};
 
                 // Vectors
                 case Opcode::I8x16Shuffle: shuffleBytes(instruction); return {};
@@ -944,7 +979,7 @@ std::expected<Value, Trap> ReferenceInterpreter::evaluateConst(Store& store,
             case Opcode::GlobalGet:
                 stack.push_back(store.global(instance.globals.at(instruction.a)).value);
                 break;
-            case Opcode::RefNull: stack.push_back(nullOf(instruction)); break;
+            case Opcode::RefNull: stack.push_back(nullOf(instance, instruction)); break;
             case Opcode::RefFunc: stack.push_back(functionReference(instance, instruction.a)); break;
             default: {
                 // Extended-const's i32 and i64 add, sub and mul.

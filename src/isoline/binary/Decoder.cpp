@@ -50,16 +50,53 @@ namespace
     /// The bit of a signed LEB128 byte that says another byte follows.
     constexpr auto LebContinuation = uint8_t { 0x80 };
 
+    /// Whether a type byte is a whole type, or the start of a reference whose heap type follows.
+    enum class TypeForm : uint8_t
+    {
+        Complete,    ///< The byte is the type.
+        HeapFollows, ///< A heap type follows; the row's type gives the reference's nullability.
+    };
+
     /// One encoding of a type byte: the byte, the type it stands for, and the proposal it needs.
     struct TypeEncoding
     {
-        uint8_t byte;                    ///< The byte, an s7 in the binary grammar.
-        ValueType type;                  ///< The type it encodes.
-        std::optional<Feature> required; ///< The proposal that introduced it, unless it is MVP.
+        uint8_t byte;                       ///< The byte, an s7 in the binary grammar.
+        ValueType type;                     ///< The type it encodes; its heap read on for HeapFollows.
+        std::optional<Feature> required;    ///< The proposal that introduced it, unless it is MVP.
+        TypeForm form = TypeForm::Complete; ///< Whether a heap type follows.
     };
 
-    /// Every value type P1 decodes.
-    constexpr auto ValueTypeEncodings = std::to_array<TypeEncoding>({
+    /// The reference types WebAssembly 3.0 adds beyond funcref and externref, wherever a reference
+    /// type may stand: exception handling's shorthands, and typed function references' (ref ht) and
+    /// (ref null ht), whose heap type follows. The GC proposal's shorthands are no type here.
+    constexpr auto Wasm3ReferenceEncodings = std::to_array<TypeEncoding>({
+        { .byte = 0x69, .type = ExnRef, .required = Feature::ExceptionHandling },
+        { .byte = 0x74, .type = NullExnRef, .required = Feature::ExceptionHandling },
+        { .byte = 0x64,
+          .type = ValueType { .kind = ValueKind::Ref, .nullable = Nullable::No },
+          .required = Feature::TypedFunctionReferences,
+          .form = TypeForm::HeapFollows },
+        { .byte = 0x63,
+          .type = ValueType { .kind = ValueKind::Ref, .nullable = Nullable::Yes },
+          .required = Feature::TypedFunctionReferences,
+          .form = TypeForm::HeapFollows },
+    });
+
+    /// @p head followed by Wasm3ReferenceEncodings; for the tables below, at compile time only.
+    template <std::size_t N>
+    [[nodiscard]] consteval auto withWasm3References(std::array<TypeEncoding, N> const& head) noexcept
+    {
+        auto all = std::array<TypeEncoding, N + Wasm3ReferenceEncodings.size()> {};
+        auto out = all.begin();
+        for (auto const& row: head)
+            *out++ = row;
+        for (auto const& row: Wasm3ReferenceEncodings)
+            *out++ = row;
+        return all;
+    }
+
+    /// Every value type decoded.
+    constexpr auto ValueTypeEncodings = withWasm3References(std::to_array<TypeEncoding>({
         { .byte = 0x7F, .type = I32, .required = std::nullopt },
         { .byte = 0x7E, .type = I64, .required = std::nullopt },
         { .byte = 0x7D, .type = F32, .required = std::nullopt },
@@ -67,14 +104,36 @@ namespace
         { .byte = 0x7B, .type = V128, .required = Feature::Simd },
         { .byte = 0x70, .type = FuncRef, .required = Feature::ReferenceTypes },
         { .byte = 0x6F, .type = ExternRef, .required = Feature::ReferenceTypes },
-    });
+    }));
 
-    /// Every reference type P1 decodes where only a reference type may stand: funcref was a table's
+    /// Every reference type decoded where only a reference type may stand: funcref was a table's
     /// element type in the MVP already.
-    constexpr auto RefTypeEncodings = std::to_array<TypeEncoding>({
+    constexpr auto RefTypeEncodings = withWasm3References(std::to_array<TypeEncoding>({
         { .byte = 0x70, .type = FuncRef, .required = std::nullopt },
         { .byte = 0x6F, .type = ExternRef, .required = Feature::ReferenceTypes },
+    }));
+
+    /// One abstract heap type's code, as ref.null and a (ref ht) or (ref null ht) give it.
+    struct HeapEncoding
+    {
+        uint8_t byte;                    ///< The code, an s7: a negative s33.
+        AbstractHeapType kind;           ///< The abstract heap type it names.
+        std::optional<Feature> required; ///< The proposal that introduced it, unless it is MVP.
+    };
+
+    /// Every abstract heap type decoded: func and extern, and exception handling's exn and noexn. The
+    /// GC heaps (any, eq, i31, struct, array, none, nofunc, noextern) are malformed without GC, as
+    /// the pinned wasm-tools has them.
+    constexpr auto AbstractHeapEncodings = std::to_array<HeapEncoding>({
+        { .byte = 0x70, .kind = AbstractHeapType::Func, .required = std::nullopt },
+        { .byte = 0x6F, .kind = AbstractHeapType::Extern, .required = Feature::ReferenceTypes },
+        { .byte = 0x69, .kind = AbstractHeapType::Exn, .required = Feature::ExceptionHandling },
+        { .byte = 0x74, .kind = AbstractHeapType::NoExn, .required = Feature::ExceptionHandling },
     });
+
+    /// The byte that announces a table with an initializer (typed function references), followed
+    /// by a zero byte, the table type and the initializer.
+    constexpr auto TableWithInitializer = uint8_t { 0x40 };
 
     /// What an import, or an export, names, by its kind byte.
     constexpr auto ExternKinds = std::to_array<ExternKind>({
@@ -94,8 +153,8 @@ namespace
     /// How an element segment encodes the type of its items.
     enum class ElementTypeEncoding : uint8_t
     {
-        Implicit, ///< Not encoded: funcref.
-        ElemKind, ///< An element kind byte, of which 0x00 (funcref) is the only one.
+        Implicit, ///< Not encoded: (ref func) for function indices, funcref for expressions.
+        ElemKind, ///< An element kind byte, of which 0x00 (ref func) is the only one.
         RefType,  ///< A reference type.
     };
 
@@ -438,6 +497,9 @@ namespace
         [[nodiscard]] std::expected<uint8_t, DecodeError> readTypeByte();
         [[nodiscard]] std::expected<ValueType, DecodeError> readTypeFrom(
             std::span<TypeEncoding const> encodings);
+        /// Reads a heap type: a non-negative s33 type index under typed function references, or
+        /// an abstract heap's code; anything else is a malformed reference type at its start.
+        [[nodiscard]] std::expected<HeapType, DecodeError> readHeapType();
         [[nodiscard]] std::expected<ValueType, DecodeError> readValueType();
         [[nodiscard]] std::expected<ValueType, DecodeError> readRefType();
         [[nodiscard]] std::expected<std::vector<ValueType>, DecodeError> readResultType(uint32_t limit);
@@ -455,6 +517,8 @@ namespace
         [[nodiscard]] std::expected<Limits, DecodeError> readBounds(LimitsFlagRow const& row,
                                                                     ReadBound readBound);
         [[nodiscard]] std::expected<TableType, DecodeError> readTableType();
+        /// Reads a table section entry: a table type, or 0x40 0x00, a table type and its initializer.
+        [[nodiscard]] std::expected<Table, DecodeError> readTable();
         [[nodiscard]] std::expected<GlobalType, DecodeError> readGlobalType();
         [[nodiscard]] std::expected<ExternKind, DecodeError> readExternKind(DecodeErrorCode malformed);
         [[nodiscard]] std::expected<Import, DecodeError> readImport();
@@ -679,7 +743,41 @@ namespace
             if (encoding == encodings.end() || !enabled(encoding->required))
                 return std::unexpected { DecodeError { DecodeErrorCode::MalformedReferenceType,
                                                        typeOffset } };
-            return encoding->type;
+            if (encoding->form == TypeForm::Complete)
+                return encoding->type;
+            return readHeapType().transform([&](HeapType const& heap) {
+                auto type = encoding->type;
+                type.heap = heap;
+                return type;
+            });
+        });
+    }
+
+    std::expected<HeapType, DecodeError> ModuleDecoder::readHeapType()
+    {
+        // The interpreter tries a type index first, then an abstract heap's one-byte code, each from
+        // the heap type's start, and reports the second's error.
+        auto const heapOffset = _reader.offset();
+        if (_features.has(Feature::TypedFunctionReferences))
+        {
+            auto probe = _reader;
+            // An s33 type index from 2^31 to 2^32 - 1 decodes here and fails validation as an unknown
+            // type: the reference interpreter wraps the s33 to an i32 and calls it malformed, wasm-tools an
+            // implementation limit. No module can have that many types (DecodeLimits::maxTypes), so no
+            // valid module changes meaning, and no imported assertion tells the two apart.
+            if (auto const index = probe.readS33(); index && *index >= 0)
+            {
+                _reader = probe;
+                return HeapType { .kind = AbstractHeapType::Concrete,
+                                  .typeIndex = static_cast<uint32_t>(*index) };
+            }
+        }
+        return readTypeByte().and_then([&](uint8_t byte) -> std::expected<HeapType, DecodeError> {
+            auto const encoding = std::ranges::find(AbstractHeapEncodings, byte, &HeapEncoding::byte);
+            if (encoding == AbstractHeapEncodings.end() || !enabled(encoding->required))
+                return std::unexpected { DecodeError { DecodeErrorCode::MalformedReferenceType,
+                                                       heapOffset } };
+            return HeapType { .kind = encoding->kind, .typeIndex = 0 };
         });
     }
 
@@ -810,6 +908,27 @@ namespace
         return readLimits(LimitsOf::Table).transform([&](EncodedLimits const& encoded) {
             return TableType { .element = *element, .limits = encoded.limits };
         });
+    }
+
+    std::expected<Table, DecodeError> ModuleDecoder::readTable()
+    {
+        if (!_features.has(Feature::TypedFunctionReferences) || peekByte() != TableWithInitializer)
+            return readTableType().transform(
+                [](TableType const& type) { return Table { .type = type, .init = {} }; });
+        // The interpreter reads this form first and, when it fails, the plain one from the same
+        // start, whose error it reports: 0x40 is no reference type.
+        auto const formOffset = _reader.offset();
+        std::ignore = readByte(); // TableWithInitializer, peeked
+        auto table = expectZeroByte()
+                         .and_then([this] { return readTableType(); })
+                         .and_then([this](TableType const& type) {
+                             return readConstExpr().transform([&](ConstExpr&& init) {
+                                 return Table { .type = type, .init = std::move(init) };
+                             });
+                         });
+        if (!table)
+            return std::unexpected { DecodeError { DecodeErrorCode::MalformedReferenceType, formOffset } };
+        return table;
     }
 
     std::expected<MemoryType, DecodeError> ModuleDecoder::readMemoryType()
@@ -992,7 +1111,8 @@ namespace
             case ImmediateKind::GlobalIndex:
             case ImmediateKind::TableIndex:
             case ImmediateKind::ElemIndex:
-            case ImmediateKind::DataIndex: return readIndex(instruction.a);
+            case ImmediateKind::DataIndex:
+            case ImmediateKind::TypeIndex: return readIndex(instruction.a);
             case ImmediateKind::CallIndirect:
                 // Before reference types the table index is the reserved zero byte, as memory
                 // indices are before multi-memory; an overlong zero is malformed there.
@@ -1048,7 +1168,9 @@ namespace
                 return _reader.readFixedU64().transform([&](uint64_t bits) { instruction.c = bits; });
             case ImmediateKind::HeapType: break; // read below the switch
         }
-        return readRefType().transform([&](ValueType const& type) { instruction.type = type; });
+        return readHeapType().transform([&](HeapType const& heap) {
+            instruction.type = ValueType { .kind = ValueKind::Ref, .nullable = Nullable::Yes, .heap = heap };
+        });
     }
 
     std::expected<void, DecodeError> ModuleDecoder::readBlockType(Instruction& instruction)
@@ -1059,6 +1181,10 @@ namespace
         if (_features.has(Feature::MultiValue))
         {
             auto probe = _reader;
+            // An s33 type index from 2^31 to 2^32 - 1 decodes here and fails validation as an unknown
+            // type: the reference interpreter wraps the s33 to an i32 and calls it malformed, wasm-tools an
+            // implementation limit. No module can have that many types (DecodeLimits::maxTypes), so no
+            // valid module changes meaning, and no imported assertion tells the two apart.
             if (auto const index = probe.readS33(); index && *index >= 0)
             {
                 _reader = probe;
@@ -1195,9 +1321,8 @@ namespace
     std::expected<void, DecodeError> ModuleDecoder::tableSection()
     {
         // countImport keeps the imports within the limit, so what is left of it cannot underflow.
-        return readVector(_limits.maxTables - _importedTables, _module.tables, [this](uint32_t) {
-            return readTableType();
-        });
+        return readVector(
+            _limits.maxTables - _importedTables, _module.tables, [this](uint32_t) { return readTable(); });
     }
 
     std::expected<void, DecodeError> ModuleDecoder::memorySection()
@@ -1250,6 +1375,9 @@ namespace
                 return std::unexpected { offset.error() };
             segment.offset = std::move(*offset);
         }
+        // Function indices are (ref func)s, as WebAssembly 3.0 types them; a funcref in 2.0, of
+        // which (ref func) is a subtype, so the one type serves both.
+        segment.type = form.items == ItemEncoding::FunctionIndices ? NonNullFuncRef : FuncRef;
         switch (form.type)
         {
             case ElementTypeEncoding::Implicit: break;

@@ -48,9 +48,50 @@ TEST_CASE("Opcode.knownEncodings")
     CHECK(opcodeInfo(Opcode::I8x16Shuffle).immediate == isoline::binary::ImmediateKind::Shuffle);
     CHECK(opcodeInfo(Opcode::V128Store64Lane).immediate == isoline::binary::ImmediateKind::MemArgLane);
     CHECK(opcodeInfo(Opcode::I16x8ExtractLaneU).immediate == isoline::binary::ImmediateKind::LaneIndex);
-    // 461 opcodes do not fit a byte.
+    // 465 opcodes do not fit a byte.
     STATIC_CHECK(std::is_same_v<std::underlying_type_t<Opcode>, uint16_t>);
-    CHECK(isoline::binary::OpcodeCount == 461);
+    CHECK(isoline::binary::OpcodeCount == 465);
+}
+
+TEST_CASE("Opcode.typedFunctionReferenceEncodings")
+{
+    using isoline::binary::ImmediateKind;
+    struct Row
+    {
+        uint8_t code;
+        Opcode opcode;
+        std::string_view text;
+        ImmediateKind immediate;
+    };
+    auto const rows = std::to_array<Row>({
+        { .code = 0x14,
+          .opcode = Opcode::CallRef,
+          .text = "call_ref",
+          .immediate = ImmediateKind::TypeIndex },
+        { .code = 0xD4,
+          .opcode = Opcode::RefAsNonNull,
+          .text = "ref.as_non_null",
+          .immediate = ImmediateKind::None },
+        { .code = 0xD5,
+          .opcode = Opcode::BrOnNull,
+          .text = "br_on_null",
+          .immediate = ImmediateKind::LabelIndex },
+        { .code = 0xD6,
+          .opcode = Opcode::BrOnNonNull,
+          .text = "br_on_non_null",
+          .immediate = ImmediateKind::LabelIndex },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(row.text);
+        CHECK(lookupOpcode(0x00, row.code) == row.opcode);
+        CHECK(opcodeInfo(row.opcode).text == row.text);
+        CHECK(opcodeInfo(row.opcode).immediate == row.immediate);
+        CHECK(opcodeInfo(row.opcode).signature == isoline::binary::OpcodeSignature::Special);
+    }
+    // 0xD3 is GC's ref.eq, and 0x15 tail calls' return_call_ref: neither is a row.
+    CHECK(lookupOpcode(0x00, 0xD3) == std::nullopt);
+    CHECK(lookupOpcode(0x00, 0x15) == std::nullopt);
 }
 
 TEST_CASE("Opcode.relaxedEncodings")
@@ -316,11 +357,13 @@ TEST_CASE("Opcode.encodingRanges")
     auto const ranges = std::to_array<EncodingRange>({
         { .prefix = 0x00, .first = 0x00, .last = 0x05 }, // unreachable .. else
         { .prefix = 0x00, .first = 0x0B, .last = 0x11 }, // end .. call_indirect
+        { .prefix = 0x00, .first = 0x14, .last = 0x14 }, // call_ref
         { .prefix = 0x00, .first = 0x1A, .last = 0x1C }, // drop, select, typed select
         { .prefix = 0x00, .first = 0x20, .last = 0x26 }, // local.get .. table.set
         { .prefix = 0x00, .first = 0x28, .last = 0x40 }, // loads, stores, memory.size, memory.grow
         { .prefix = 0x00, .first = 0x41, .last = 0xC4 }, // constants and numeric instructions
         { .prefix = 0x00, .first = 0xD0, .last = 0xD2 }, // ref.null, ref.is_null, ref.func
+        { .prefix = 0x00, .first = 0xD4, .last = 0xD6 }, // ref.as_non_null, br_on_null, br_on_non_null
         { .prefix = 0xFC, .first = 0, .last = 17 },      // saturating truncation, bulk memory, tables
         { .prefix = 0xFC, .first = 19, .last = 22 },     // wide arithmetic
         // SIMD: 0xFD 0x00 .. 0xFF, but for the gaps the proposal left
@@ -390,6 +433,10 @@ TEST_CASE("Opcode.proposals")
         { .opcode = Opcode::F64x2ConvertLowI32x4U, .proposal = Feature::Simd },
         { .opcode = Opcode::I8x16RelaxedSwizzle, .proposal = Feature::RelaxedSimd },
         { .opcode = Opcode::I32x4RelaxedDotI8x16I7x16AddS, .proposal = Feature::RelaxedSimd },
+        { .opcode = Opcode::CallRef, .proposal = Feature::TypedFunctionReferences },
+        { .opcode = Opcode::RefAsNonNull, .proposal = Feature::TypedFunctionReferences },
+        { .opcode = Opcode::BrOnNull, .proposal = Feature::TypedFunctionReferences },
+        { .opcode = Opcode::BrOnNonNull, .proposal = Feature::TypedFunctionReferences },
     });
     for (auto const& row: rows)
     {

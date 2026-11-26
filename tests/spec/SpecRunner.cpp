@@ -45,6 +45,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/validate/Subtyping.hpp>
 #include <isoline/validate/ValidationError.hpp>
 #include <isoline/validate/Validator.hpp>
 
@@ -79,8 +80,9 @@ namespace
             case binary::ValueKind::V128: return std::holds_alternative<runtime::V128>(value);
             case binary::ValueKind::Ref: break;
         }
+        // An argument's heap is that of the script's value, ref.null func for a (ref null $t) too.
         auto const* const ref = std::get_if<runtime::Ref>(&value);
-        return ref && ref->heap.kind == type.heap.kind;
+        return ref && validate::topOf(ref->heap.kind) == validate::topOf(type.heap.kind);
     }
 
     [[nodiscard]] std::expected<std::vector<std::byte>, Failure> readFile(std::filesystem::path const& path)
@@ -429,7 +431,7 @@ namespace
 
             if (target->kind != ExternKind::Func)
                 return std::unexpected { harnessFailure(std::format("'{}' is no function", action.field)) };
-            auto const& type = _store.function(target->address).type;
+            auto const& type = _store.functionType(target->address);
             if (action.args.size() != type.params.size()
                 || !std::ranges::all_of(
                     std::views::iota(std::size_t { 0 }, type.params.size()),

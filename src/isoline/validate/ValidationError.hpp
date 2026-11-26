@@ -32,7 +32,7 @@ enum class ValidationErrorCode : uint8_t
     UnknownElemSegment,
     UnknownDataSegment,
     InvalidResultArity,
-    GlobalIsImmutable,
+    ImmutableGlobal,
     ConstantExpressionRequired,
     DuplicateExportName,
     MultipleMemories,
@@ -47,10 +47,11 @@ enum class ValidationErrorCode : uint8_t
     OffsetOutOfRange,
     TableSizeMustBeAtMost,
     InvalidCustomPageSize,
+    UninitializedLocal,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::InvalidCustomPageSize;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::UninitializedLocal;
 
 /// What the reference interpreter appends to an error's message.
 enum class MessageDetail : uint8_t
@@ -168,7 +169,8 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
       .specMessage = "unknown data segment",
       .detail = MessageDetail::Index },
     { .code = ValidationErrorCode::InvalidResultArity, .specMessage = "invalid result arity" },
-    { .code = ValidationErrorCode::GlobalIsImmutable, .specMessage = "global is immutable" },
+    // WebAssembly 3.0's wording; 2.0's was "global is immutable".
+    { .code = ValidationErrorCode::ImmutableGlobal, .specMessage = "immutable global" },
     { .code = ValidationErrorCode::ConstantExpressionRequired,
       .specMessage = "constant expression required" },
     { .code = ValidationErrorCode::DuplicateExportName, .specMessage = "duplicate export name" },
@@ -199,6 +201,9 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
       .detail = MessageDetail::TableBound },
     // custom-page-sizes: a page size other than 1 byte or 64 KiB.
     { .code = ValidationErrorCode::InvalidCustomPageSize, .specMessage = "invalid custom page size" },
+    // Typed function references: local.get of a local of a non-defaultable type no local.set or
+    // local.tee of the same or an enclosing block has set yet.
+    { .code = ValidationErrorCode::UninitializedLocal, .specMessage = "uninitialized local" },
 });
 
 static_assert(

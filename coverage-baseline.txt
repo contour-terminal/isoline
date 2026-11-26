@@ -32,6 +32,27 @@
 # src/isoline/runtime/Store.cpp's branch entry was lowered from 78.94 to 77.27 when custom page sizes arrived: addMemory's
 # precondition, that a memory type's page size exponent is below 64 so that its page size is a u64, adds the branch of a larger
 # one, which the decoder never produces and no valid host passes, as every Require's failing side is. No branch lost its coverage.
+#
+# src/isoline/runtime/Store.cpp's branch entry was lowered from 77.27 to 73.91 when the store began to intern function types:
+# internType's preconditions, that the type is in store form (each concrete type index a TypeId already interned) and that a
+# TypeId is left to give it, type()'s, that the TypeId exists, and addModuleFunction's, that its TypeId is interned, add the
+# branches of their failing sides, which instantiation, interning a module's validated types in type order, never takes, as every
+# Require's failing side is; the test of a concrete reference moved to binary::isConcreteRef in binary/Types.hpp (100 % covered).
+# No branch lost its coverage.
+#
+# src/isoline/binary/TypeCanon.cpp's branch entry was lowered from 92.30 to 80.00, src/isoline/interp/ReferenceInterpreter.cpp's
+# from 92.37 to 92.33 and src/isoline/validate/Validator.cpp's from 97.57 to 97.56 when the test of a concrete reference and the
+# rewrite of its type index moved into binary::isConcreteRef and binary::mapTypeIndex(es) in binary/Types.hpp (100 % covered):
+# covered branches left the files, and their untaken ones, the failing sides of Require, are a larger share of fewer.
+# src/isoline/runtime/Instantiate.cpp's was lowered from 92.46 to 91.83 for the same move, and for internTypes()'s precondition,
+# that each type is interned at the TypeId resolveTypes() predicted for it, whose failing side no instantiation takes. No branch
+# lost its coverage.
+#
+# src/isoline/interp/ReferenceInterpreter.cpp's branch entry was lowered from 92.67 to 92.45 when call_ref began to Require that
+# the function it calls has the type validation gave its reference: the failing side, which only a host passing a function of
+# another type in a typed reference could take until P3 types the host boundary, is the one new branch no test takes.
+# src/isoline/validate/Subtyping.hpp's branch entry (new, 66.66) is topOf()'s precondition that its heap is not bot, whose
+# failing side no caller takes. No branch lost its coverage.
 
 exclude src/isoline/binary/Decoder.cpp tag-import Tag import: readExternKind decodes no tag kind in P1
 exclude src/isoline/interp/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
@@ -48,23 +69,26 @@ src/isoline/Features.hpp                    100.00 100.00
 src/isoline/Version.hpp                     100.00 -
 src/isoline/binary/ByteReader.cpp           100.00 98.07
 src/isoline/binary/DecodeError.hpp          100.00 91.66
-src/isoline/binary/Decoder.cpp              99.88 98.07
+src/isoline/binary/Decoder.cpp              99.89 98.20
 src/isoline/binary/MemoryAccess.hpp         100.00 100.00
 src/isoline/binary/Module.hpp               100.00 72.41
 src/isoline/binary/Opcode.cpp               100.00 100.00
 src/isoline/binary/Opcode.hpp               100.00 -
+src/isoline/binary/TypeCanon.cpp            100.00 80.00
 src/isoline/binary/Types.hpp                100.00 100.00
 src/isoline/interp/Numerics.cpp             100.00 95.90
-src/isoline/interp/ReferenceInterpreter.cpp 97.92 92.33
+src/isoline/interp/ReferenceInterpreter.cpp 98.01 92.45
 src/isoline/interp/ReferenceInterpreter.hpp 100.00 -
 src/isoline/interp/Simd.cpp                 100.00 93.44
 src/isoline/interp/Simd.hpp                 100.00 66.66
-src/isoline/runtime/Instantiate.cpp         99.24 92.12
+src/isoline/runtime/Instantiate.cpp         99.38 91.83
 src/isoline/runtime/Instantiate.hpp         100.00 -
 src/isoline/runtime/Segment.hpp             100.00 100.00
-src/isoline/runtime/Store.cpp               98.56 77.27
+src/isoline/runtime/Store.cpp               98.81 73.91
 src/isoline/runtime/Store.hpp               100.00 -
 src/isoline/runtime/Trap.hpp                100.00 75.00
 src/isoline/runtime/Value.hpp               100.00 94.44
+src/isoline/validate/Subtyping.cpp          100.00 89.65
+src/isoline/validate/Subtyping.hpp          100.00 66.66
 src/isoline/validate/ValidationError.hpp    100.00 92.85
-src/isoline/validate/Validator.cpp          99.72 97.34
+src/isoline/validate/Validator.cpp          99.77 97.66

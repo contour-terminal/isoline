@@ -219,6 +219,16 @@ struct Global
     ConstExpr init;  ///< Its initializer.
 };
 
+/// A defined table: its type, and what its slots start with.
+struct Table
+{
+    TableType type; ///< Its element type and size bounds.
+
+    /// The expression every slot starts with, as typed function references' table section may give
+    /// one; empty for a table without, whose slots start as the null of its element type.
+    ConstExpr init;
+};
+
 /// How a segment is used.
 enum class SegmentMode : uint8_t
 {
@@ -233,7 +243,7 @@ struct ElementSegment
     SegmentMode mode = SegmentMode::Passive; ///< How it is used.
     uint32_t table = 0;                      ///< Active: the table it initializes.
     ConstExpr offset;                        ///< Active: the table offset it starts at.
-    ValueType type = FuncRef;                ///< The reference type of its items.
+    ValueType type = FuncRef;                ///< The reference type of its items; (ref func) for indices.
 
     /// Its items, as the binary encodes them: function indices, each standing for the expression
     /// (ref.func index), or constant expressions. Indices are kept as indices, since expanding
@@ -263,7 +273,7 @@ struct Module
     std::vector<FuncType> types;          ///< The type section.
     std::vector<Import> imports;          ///< The import section.
     std::vector<uint32_t> functions;      ///< The function section: the type index per defined function.
-    std::vector<TableType> tables;        ///< The table section: defined tables.
+    std::vector<Table> tables;            ///< The table section: defined tables.
     std::vector<MemoryType> memories;     ///< The memory section: defined memories.
     std::vector<Global> globals;          ///< The global section: defined globals.
     std::vector<Export> exports;          ///< The export section.

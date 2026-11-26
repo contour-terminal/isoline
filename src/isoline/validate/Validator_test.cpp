@@ -38,6 +38,7 @@ using isoline::binary::Limits;
 using isoline::binary::MemoryType;
 using isoline::binary::Mutability;
 using isoline::binary::TableType;
+using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::validate::NoFunction;
 using isoline::validate::NoInstruction;
@@ -325,7 +326,7 @@ TEST_CASE("Validator.immutableGlobal")
         .global(GlobalType { .type = I32, .mutability = Mutability::Const }, { 0x41, 0x00 })
         .global(GlobalType { .type = I32, .mutability = Mutability::Var }, { 0x41, 0x00 })
         .function(0, {}, { 0x41, 0x01, 0x24, 0x00 });
-    CHECK(errorOf(builder) == ValidationErrorCode::GlobalIsImmutable);
+    CHECK(errorOf(builder) == ValidationErrorCode::ImmutableGlobal);
 
     auto mutableOne = ModuleBuilder {};
     mutableOne.type(FuncType {})
@@ -911,6 +912,9 @@ TEST_CASE("Validator.specMessages")
           == "alignment must not be larger than natural");
     CHECK(specMessage(ValidationErrorCode::MemorySizeMustBeAtMost) == "memory size must be at most");
     CHECK(specMessage(ValidationErrorCode::UndeclaredFunctionReference) == "undeclared function reference");
+    // WebAssembly 3.0's wording, which the 3.0 suite asserts.
+    CHECK(specMessage(ValidationErrorCode::ImmutableGlobal) == "immutable global");
+    CHECK(specMessage(ValidationErrorCode::UninitializedLocal) == "uninitialized local");
 }
 
 TEST_CASE("Validator.messagesNameTheUnknownIndex")
@@ -1134,4 +1138,455 @@ TEST_CASE("Validator.subjectOfAnErrorWithoutDetail")
     // A row without a detail spells its text alone, whatever subject an error carries.
     CHECK(specMessage(ValidationError { ValidationErrorCode::TypeMismatch, NoFunction, NoInstruction, 3 })
           == "type mismatch");
+}
+
+namespace
+{
+
+/// (ref $index): a non-null reference to the module's type @p index.
+isoline::binary::ValueType refTo(uint32_t index)
+{
+    return isoline::binary::concreteRef(index, isoline::binary::Nullable::No);
+}
+
+/// (ref null $index): a nullable reference to the module's type @p index.
+isoline::binary::ValueType refNullTo(uint32_t index)
+{
+    return isoline::binary::concreteRef(index, isoline::binary::Nullable::Yes);
+}
+
+/// (ref func): a non-null reference to any function.
+constexpr auto NonNullFunc = isoline::binary::ValueType {
+    .kind = isoline::binary::ValueKind::Ref,
+    .nullable = isoline::binary::Nullable::No,
+    .heap = { .kind = isoline::binary::AbstractHeapType::Func },
+};
+
+} // namespace
+
+TEST_CASE("Validator.selfReferenceIsUnknownType")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    // Without rec groups a type may only name the types before it.
+    auto self = ModuleBuilder {};
+    self.type(FuncType { .params = { refNullTo(0) }, .results = {} });
+    auto const result = validated(self, wasm3);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error()
+          == ValidationError { ValidationErrorCode::UnknownType, NoFunction, NoInstruction, 0 });
+    auto forward = ModuleBuilder {};
+    forward.type(FuncType { .params = {}, .results = { refTo(1) } }).type(FuncType {});
+    CHECK(errorOf(forward, wasm3) == ValidationErrorCode::UnknownType);
+    auto backward = ModuleBuilder {};
+    backward.type(FuncType {}).type(FuncType { .params = {}, .results = { refTo(0) } });
+    CHECK(errorOf(backward, wasm3) == std::nullopt);
+}
+
+TEST_CASE("Validator.unknownTypeInValueTypes")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    auto const subjectOf = [&](ModuleBuilder const& builder) {
+        auto const result = validated(builder, wasm3);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == ValidationErrorCode::UnknownType);
+        return result.error().subject;
+    };
+    // A local, a block type, a typed select, ref.null.
+    CHECK(subjectOf(functionOf(FuncType {}, {}, { refNullTo(3) })) == 3U);
+    CHECK(subjectOf(voidFunctionOf({ 0x02, 0x63, 0x04, 0x00, 0x0B, 0x1A })) == 4U);
+    CHECK(subjectOf(voidFunctionOf({ 0x00, 0x1C, 0x01, 0x63, 0x05, 0x1A })) == 5U);
+    CHECK(subjectOf(voidFunctionOf({ 0xD0, 0x06, 0x1A })) == 6U);
+    // A global, an imported global, a table, an imported table, an element segment.
+    auto global = ModuleBuilder {};
+    global.global(GlobalType { .type = refNullTo(7), .mutability = Mutability::Const }, { 0xD0, 0x07 });
+    CHECK(subjectOf(global) == 7U);
+    auto importedGlobal = ModuleBuilder {};
+    importedGlobal.importGlobal(
+        "m", "g", GlobalType { .type = refNullTo(8), .mutability = Mutability::Const });
+    CHECK(subjectOf(importedGlobal) == 8U);
+    auto table = ModuleBuilder {};
+    table.table(TableType { .element = refNullTo(9), .limits = atLeast(1) });
+    CHECK(subjectOf(table) == 9U);
+    auto importedTable = ModuleBuilder {};
+    importedTable.importTable("m", "t", TableType { .element = refNullTo(10), .limits = atLeast(1) });
+    CHECK(subjectOf(importedTable) == 10U);
+    auto segment = ModuleBuilder {};
+    segment.element({ 0x05, 0x63, 0x0B, 0x00 }); // passive, (ref null 11), no items
+    CHECK(subjectOf(segment) == 11U);
+}
+
+TEST_CASE("Validator.uninitializedLocal")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    // local 0 is (ref func), which has no default; function 0 is exported, so ref.func may name it.
+    auto const withLocal = [&](std::vector<uint8_t> body) {
+        auto builder = functionOf(FuncType {}, std::move(body), { NonNullFunc });
+        builder.exportFunction("f", 0);
+        return errorOf(builder, wasm3);
+    };
+    auto const set = std::vector<uint8_t> { 0xD2, 0x00, 0x21, 0x00 }; // ref.func 0, local.set 0
+    auto const get = std::vector<uint8_t> { 0x20, 0x00, 0x1A };       // local.get 0, drop
+    auto const join = [](std::initializer_list<std::vector<uint8_t>> parts) {
+        auto bytes = std::vector<uint8_t> {};
+        for (auto const& part: parts)
+            bytes.insert(bytes.end(), part.begin(), part.end());
+        return bytes;
+    };
+
+    auto const unset = validated(functionOf(FuncType {}, get, { NonNullFunc }), wasm3);
+    REQUIRE_FALSE(unset.has_value());
+    CHECK(unset.error() == ValidationError { ValidationErrorCode::UninitializedLocal, 0, 0 });
+    CHECK(specMessage(unset.error()) == "uninitialized local");
+    CHECK(withLocal(join({ set, get })) == std::nullopt);
+    // local.tee sets it too.
+    CHECK(withLocal(join({ { 0xD2, 0x00, 0x22, 0x00, 0x1A }, get })) == std::nullopt);
+    // A set in a block lasts to the block's end, and no further.
+    CHECK(withLocal(join({ { 0x02, 0x40 }, set, get, { 0x0B } })) == std::nullopt);
+    CHECK(withLocal(join({ { 0x02, 0x40 }, set, { 0x0B }, get })) == ValidationErrorCode::UninitializedLocal);
+    CHECK(withLocal(join({ { 0x03, 0x40 }, set, { 0x0B }, get })) == ValidationErrorCode::UninitializedLocal);
+    // A set before a block holds within it, and within the blocks nested in it.
+    CHECK(withLocal(join({ set, { 0x02, 0x40, 0x02, 0x40 }, get, { 0x0B, 0x0B }, get })) == std::nullopt);
+    // An if's then branch does not set it for the else branch, nor after the if.
+    auto const inThen = join({ { 0x41, 0x01, 0x04, 0x40 }, set, { 0x05 }, get, { 0x0B } });
+    CHECK(withLocal(inThen) == ValidationErrorCode::UninitializedLocal);
+    CHECK(withLocal(join({ { 0x41, 0x01, 0x04, 0x40 }, set, { 0x05 }, set, { 0x0B }, get }))
+          == ValidationErrorCode::UninitializedLocal);
+    // Unreachable code is checked all the same.
+    CHECK(withLocal(join({ { 0x00 }, get })) == ValidationErrorCode::UninitializedLocal);
+    // Parameters and nullable locals are always set.
+    CHECK(errorOf(functionOf(FuncType { .params = { NonNullFunc }, .results = {} }, get), wasm3)
+          == std::nullopt);
+    CHECK(errorOf(functionOf(FuncType {}, get, { refNullTo(0) }), wasm3) == std::nullopt);
+}
+
+TEST_CASE("Validator.uninitializedLocalAmongManyLocals")
+{
+    // 50 000 locals without a default cost one run, and setting the last leaves the others unset.
+    auto const wasm3 = FeatureSet::wasm3();
+    auto const last = encodeU32(49'999);
+    auto body = std::vector<uint8_t> { 0xD2, 0x00, 0x21 };
+    body.insert(body.end(), last.begin(), last.end());
+    body.push_back(0x20);
+    body.insert(body.end(), last.begin(), last.end());
+    body.push_back(0x1A);
+    auto valid = functionOf(FuncType {}, body, std::vector(50'000, NonNullFunc));
+    valid.exportFunction("f", 0);
+    CHECK(errorOf(valid, wasm3) == std::nullopt);
+    body.insert(body.end(), { 0x20, 0x00, 0x1A });
+    auto invalid = functionOf(FuncType {}, body, std::vector(50'000, NonNullFunc));
+    invalid.exportFunction("f", 0);
+    CHECK(errorOf(invalid, wasm3) == ValidationErrorCode::UninitializedLocal);
+    // The state is per function: a later function starts with its locals unset again.
+    auto twice = ModuleBuilder {};
+    twice.type(FuncType {})
+        .function(0, { NonNullFunc }, { 0xD2, 0x00, 0x21, 0x00, 0x20, 0x00, 0x1A })
+        .function(0, { NonNullFunc }, { 0x20, 0x00, 0x1A })
+        .exportFunction("f", 0);
+    auto const result = validated(twice, wasm3);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error() == ValidationError { ValidationErrorCode::UninitializedLocal, 1, 0 });
+}
+
+TEST_CASE("Validator.refFuncIsTyped")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    // Types 0 and 1 are equal; type 2 takes an i32. ref.func 0 is a (ref 0), so a (ref 1) too.
+    auto const returning = [&](isoline::binary::ValueType result) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {})
+            .type(FuncType {})
+            .type(FuncType { .params = { I32 }, .results = {} })
+            .type(FuncType { .params = {}, .results = { result } })
+            .function(0, {}, {})
+            .function(3, {}, { 0xD2, 0x00 })
+            .exportFunction("f", 0);
+        return errorOf(builder, wasm3);
+    };
+    CHECK(returning(refTo(0)) == std::nullopt);
+    CHECK(returning(refTo(1)) == std::nullopt);
+    CHECK(returning(refNullTo(1)) == std::nullopt);
+    CHECK(returning(FuncRef) == std::nullopt);
+    CHECK(returning(NonNullFunc) == std::nullopt);
+    CHECK(returning(refTo(2)) == ValidationErrorCode::TypeMismatch);
+    CHECK(returning(isoline::binary::ExternRef) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.subtypingAtEveryPop")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    auto const passes = [&](isoline::binary::ValueType from, isoline::binary::ValueType to) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {})
+            .type(FuncType { .params = { from }, .results = { to } })
+            .function(1, {}, { 0x20, 0x00 });
+        return errorOf(builder, wasm3);
+    };
+    CHECK(passes(refNullTo(0), FuncRef) == std::nullopt);
+    CHECK(passes(refTo(0), refNullTo(0)) == std::nullopt);
+    CHECK(passes(FuncRef, refNullTo(0)) == ValidationErrorCode::TypeMismatch);
+    CHECK(passes(refNullTo(0), refTo(0)) == ValidationErrorCode::TypeMismatch);
+
+    // A call's arguments, a global.set, a branch's operands, an if without else.
+    auto calls = ModuleBuilder {};
+    calls.type(FuncType {})
+        .type(FuncType { .params = { FuncRef }, .results = {} })
+        .type(FuncType { .params = { refTo(0) }, .results = {} })
+        .function(1, {}, {})
+        .function(2, {}, { 0x20, 0x00, 0x10, 0x00 }) // call 0 with a (ref 0) for a funcref
+        .global(GlobalType { .type = FuncRef, .mutability = Mutability::Var }, { 0xD0, 0x70 })
+        .function(2, {}, { 0x20, 0x00, 0x24, 0x00 }); // global.set 0
+    CHECK(errorOf(calls, wasm3) == std::nullopt);
+    auto branch = ModuleBuilder {};
+    branch.type(FuncType {})
+        .type(FuncType { .params = { refTo(0) }, .results = { FuncRef } })
+        .type(FuncType { .params = { refTo(0) }, .results = { refNullTo(0) } })
+        // block (result funcref) local.get 0 br 0 end
+        .function(1, {}, { 0x02, 0x70, 0x20, 0x00, 0x0C, 0x00, 0x0B })
+        // local.get 0 i32.const 1 if (type 2) end: the absent else passes (ref 0) on as (ref null 0)
+        .function(1, {}, { 0x20, 0x00, 0x41, 0x01, 0x04, 0x02, 0x0B });
+    CHECK(errorOf(branch, wasm3) == std::nullopt);
+}
+
+TEST_CASE("Validator.tablesOfTypedReferences")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    auto const tableWith = [&](isoline::binary::ValueType element, std::optional<std::vector<uint8_t>> init) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {}).function(0, {}, {}).exportFunction("f", 0);
+        if (init)
+            builder.table(TableType { .element = element, .limits = atLeast(1) }, *init);
+        else
+            builder.table(TableType { .element = element, .limits = atLeast(1) });
+        return errorOf(builder, wasm3);
+    };
+    // A table of non-null references needs an initializer, whose value its slots start with.
+    CHECK(tableWith(NonNullFunc, std::nullopt) == ValidationErrorCode::TypeMismatch);
+    CHECK(tableWith(refTo(0), std::nullopt) == ValidationErrorCode::TypeMismatch);
+    CHECK(tableWith(NonNullFunc, std::vector<uint8_t> { 0xD2, 0x00 }) == std::nullopt);
+    CHECK(tableWith(refTo(0), std::vector<uint8_t> { 0xD2, 0x00 }) == std::nullopt);
+    CHECK(tableWith(refNullTo(0), std::nullopt) == std::nullopt);
+    CHECK(tableWith(refTo(0), std::vector<uint8_t> { 0xD0, 0x00 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(tableWith(FuncRef, std::vector<uint8_t> { 0xD0, 0x6F }) == ValidationErrorCode::TypeMismatch);
+    CHECK(tableWith(FuncRef, std::vector<uint8_t> { 0x41, 0x00 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(tableWith(FuncRef, std::vector<uint8_t> { 0x01 })
+          == ValidationErrorCode::ConstantExpressionRequired);
+
+    // call_indirect takes any table of function references; an element segment of (ref func) items
+    // fills a funcref table.
+    auto typed = ModuleBuilder {};
+    typed.type(FuncType {})
+        .table(TableType { .element = refNullTo(0), .limits = atLeast(1) })
+        .table(TableType { .element = FuncRef, .limits = atLeast(1) })
+        .function(0, {}, { 0x41, 0x00, 0x11, 0x00, 0x00 })
+        .element({ 0x06, 0x01, 0x41, 0x00, 0x0B, 0x64, 0x70, 0x01, 0xD2, 0x00, 0x0B }); // table 1
+    CHECK(errorOf(typed, wasm3) == std::nullopt);
+    // table.copy from a (ref null 0) table to a funcref one, not back.
+    auto copy = ModuleBuilder {};
+    copy.type(FuncType {})
+        .table(TableType { .element = FuncRef, .limits = atLeast(1) })
+        .table(TableType { .element = refNullTo(0), .limits = atLeast(1) })
+        .function(0, {}, { 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0E, 0x00, 0x01 });
+    CHECK(errorOf(copy, wasm3) == std::nullopt);
+    auto copyBack = ModuleBuilder {};
+    copyBack.type(FuncType {})
+        .table(TableType { .element = FuncRef, .limits = atLeast(1) })
+        .table(TableType { .element = refNullTo(0), .limits = atLeast(1) })
+        .function(0, {}, { 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0E, 0x01, 0x00 });
+    CHECK(errorOf(copyBack, wasm3) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.functionIndicesAreNonNullFuncRefs")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    // spec elem.wast: a segment of function indices fills a table of (ref func), as table.init from
+    // it does; a ref.func in a table initializer declares its function for the bodies.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .table(TableType { .element = NonNullFunc, .limits = atLeast(1) }, { 0xD2, 0x00 })
+        .element({ 0x00, 0x41, 0x00, 0x0B, 0x01, 0x00 }) // active, table 0, func 0
+        .element({ 0x01, 0x00, 0x01, 0x00 })             // passive, elemkind func, func 0
+        .function(0, {}, { 0x41, 0x00, 0x41, 0x00, 0x41, 0x01, 0xFC, 0x0C, 0x01, 0x00 }) // table.init 1 0
+        .function(0, {}, { 0xD2, 0x00, 0x1A });                                          // ref.func 0
+    CHECK(errorOf(builder, wasm3) == std::nullopt);
+    // An expression segment of flag 4 is a funcref one, which no (ref func) table takes.
+    auto nullable = ModuleBuilder {};
+    nullable.type(FuncType {})
+        .table(TableType { .element = NonNullFunc, .limits = atLeast(1) }, { 0xD2, 0x00 })
+        .element({ 0x04, 0x41, 0x00, 0x0B, 0x01, 0xD2, 0x00, 0x0B })
+        .function(0, {}, {});
+    CHECK(errorOf(nullable, wasm3) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.tablesBeforeGlobals")
+{
+    // As 3.0's check_module: a module with an invalid table and an invalid global reports the table.
+    auto builder = ModuleBuilder {};
+    builder.table(TableType { .element = NonNullFunc, .limits = atLeast(1) })
+        .global(GlobalType { .type = I32, .mutability = Mutability::Const }, { 0x01 });
+    CHECK(errorOf(builder, FeatureSet::wasm3()) == ValidationErrorCode::TypeMismatch);
+    auto globalOnly = ModuleBuilder {};
+    globalOnly.global(GlobalType { .type = I32, .mutability = Mutability::Const }, { 0x01 });
+    CHECK(errorOf(globalOnly, FeatureSet::wasm3()) == ValidationErrorCode::ConstantExpressionRequired);
+}
+
+namespace
+{
+
+/// A module whose type 0 is [] -> [i32], type 1 [i32] -> [] and type 2 @p type, and whose one
+/// function, of type 2, has @p locals and the body @p body, validated under WebAssembly 3.0.
+std::optional<ValidationErrorCode> typedReferenceCheck(FuncType type,
+                                                       std::vector<uint8_t> body,
+                                                       std::vector<isoline::binary::ValueType> locals = {})
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = { I32 } })
+        .type(FuncType { .params = { I32 }, .results = {} })
+        .type(std::move(type))
+        .function(2, std::move(locals), std::move(body));
+    return errorOf(builder, FeatureSet::wasm3());
+}
+
+} // namespace
+
+TEST_CASE("Validator.brOnNonNullNeedsRefLabel")
+{
+    // br_on_non_null 0 in a block whose label carries @p label, on a (ref null 0) parameter.
+    auto const branching = [](uint8_t label) {
+        return typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = {} },
+                                   { 0x02, label, 0x20, 0x00, 0xD6, 0x00, 0x00, 0x0B, 0x1A });
+    };
+    CHECK(branching(0x7F) == ValidationErrorCode::TypeMismatch); // i32
+    CHECK(branching(0x6F) == ValidationErrorCode::TypeMismatch); // externref
+    CHECK(branching(0x70) == std::nullopt);                      // funcref, a supertype of (ref 0)
+    // A label with no types has no last one to carry the reference.
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = {} },
+                              { 0x02, 0x40, 0x20, 0x00, 0xD6, 0x00, 0x00, 0x0B })
+          == ValidationErrorCode::TypeMismatch);
+    // (ref 0) exactly: block (result (ref 0)) local.get 0 br_on_non_null 0 unreachable end drop.
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = {} },
+                              { 0x02, 0x64, 0x00, 0x20, 0x00, 0xD6, 0x00, 0x00, 0x0B, 0x1A })
+          == std::nullopt);
+    // Unreachable code still needs a reference label: the bottom operand is a (ref bot).
+    CHECK(typedReferenceCheck(FuncType {}, { 0x02, 0x7F, 0x00, 0xD6, 0x00, 0x00, 0x0B, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x02, 0x6F, 0x00, 0xD6, 0x00, 0x00, 0x0B, 0x1A })
+          == std::nullopt);
+    // It falls through with the label's other types, the reference consumed.
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = {} },
+                              { 0x02, 0x70, 0x20, 0x00, 0xD6, 0x00, 0x1A, 0x00, 0x0B, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType { .params = { I32 }, .results = {} }, { 0x20, 0x00, 0xD6, 0x00 })
+          == ValidationErrorCode::TypeMismatch); // the label is the body's, which carries nothing
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = {} },
+                              { 0x20, 0x00, 0xD6, 0x01 })
+          == ValidationErrorCode::UnknownLabel);
+}
+
+TEST_CASE("Validator.callRef")
+{
+    // call_ref 0 calls a [] -> [i32] through a (ref null 0).
+    auto const calling = [](isoline::binary::ValueType operand, std::vector<uint8_t> call = { 0x14, 0x00 }) {
+        auto body = std::vector<uint8_t> { 0x20, 0x00 };
+        body.insert(body.end(), call.begin(), call.end());
+        return typedReferenceCheck(FuncType { .params = { operand }, .results = { I32 } }, std::move(body));
+    };
+    CHECK(calling(refNullTo(0)) == std::nullopt);
+    CHECK(calling(refTo(0)) == std::nullopt);
+    CHECK(calling(refNullTo(1)) == ValidationErrorCode::TypeMismatch); // type 1 takes a parameter
+    CHECK(calling(FuncRef) == ValidationErrorCode::TypeMismatch);      // not known to be a (ref null 0)
+    CHECK(calling(I32) == ValidationErrorCode::TypeMismatch);
+    CHECK(calling(refNullTo(0), { 0x14, 0x03 }) == ValidationErrorCode::UnknownType);
+    // Its parameters below the reference, its results pushed.
+    CHECK(typedReferenceCheck(FuncType { .params = { I32, refNullTo(1) }, .results = { I32 } },
+                              { 0x20, 0x00, 0x20, 0x01, 0x14, 0x01, 0x1A, 0x41, 0x00 })
+          == ValidationErrorCode::TypeMismatch); // type 1 returns nothing to drop
+    CHECK(typedReferenceCheck(FuncType { .params = { I32, refNullTo(1) }, .results = {} },
+                              { 0x20, 0x00, 0x20, 0x01, 0x14, 0x01 })
+          == std::nullopt);
+    CHECK(typedReferenceCheck(FuncType { .params = { I32, refNullTo(1) }, .results = {} },
+                              { 0x20, 0x01, 0x14, 0x01 })
+          == ValidationErrorCode::TypeMismatch); // no i32 argument
+    // In unreachable code the operands are bottom, but the results are still typed.
+    CHECK(calling(I32, { 0x00, 0x14, 0x00 }) == std::nullopt);
+    CHECK(typedReferenceCheck(FuncType { .params = {}, .results = { I64 } }, { 0x00, 0x14, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.refAsNonNull")
+{
+    auto const converting = [](isoline::binary::ValueType operand, isoline::binary::ValueType result) {
+        return typedReferenceCheck(FuncType { .params = { operand }, .results = { result } },
+                                   { 0x20, 0x00, 0xD4 });
+    };
+    CHECK(converting(refNullTo(0), refTo(0)) == std::nullopt);
+    CHECK(converting(FuncRef, NonNullFunc) == std::nullopt);
+    CHECK(converting(refNullTo(0), NonNullFunc) == std::nullopt);
+    CHECK(converting(refNullTo(0), I32) == ValidationErrorCode::TypeMismatch);
+    CHECK(converting(I32, I32) == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType {}, { 0xD4, 0x1A })
+          == ValidationErrorCode::TypeMismatch); // nothing to pop
+    // On the polymorphic stack it yields a (ref bot): any reference, but no number.
+    CHECK(typedReferenceCheck(FuncType { .params = {}, .results = { refTo(0) } }, { 0x00, 0xD4 })
+          == std::nullopt);
+    CHECK(typedReferenceCheck(FuncType { .params = {}, .results = { isoline::binary::ExternRef } },
+                              { 0x00, 0xD4 })
+          == std::nullopt);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0xD4, 0x8B, 0x1A }) == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0xD4, 0x1B, 0x1A }) == ValidationErrorCode::TypeMismatch);
+    // A non-defaultable local set from it is initialized.
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = { I32 } },
+                              { 0x20, 0x00, 0xD4, 0x21, 0x01, 0x20, 0x01, 0x14, 0x00 },
+                              { refTo(0) })
+          == std::nullopt);
+}
+
+TEST_CASE("Validator.brOnNull")
+{
+    // block (result i32) i32.const 1 local.get 0 br_on_null 0 <then> end
+    auto const branching = [](isoline::binary::ValueType operand, std::vector<uint8_t> then) {
+        auto body = std::vector<uint8_t> { 0x02, 0x7F, 0x41, 0x01, 0x20, 0x00, 0xD5, 0x00 };
+        body.insert(body.end(), then.begin(), then.end());
+        body.push_back(0x0B);
+        return typedReferenceCheck(FuncType { .params = { operand }, .results = { I32 } }, std::move(body));
+    };
+    // The reference falls through non-null, above the label's operands.
+    CHECK(branching(refNullTo(0), { 0x14, 0x00, 0x6A }) == std::nullopt);
+    CHECK(branching(FuncRef, { 0x1A }) == std::nullopt);
+    CHECK(branching(isoline::binary::ExternRef, { 0x1A }) == std::nullopt);
+    CHECK(branching(refNullTo(0), {}) == ValidationErrorCode::TypeMismatch);
+    CHECK(branching(I32, { 0x1A }) == ValidationErrorCode::TypeMismatch);
+    // The branch carries the label's types.
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = { I32 } },
+                              { 0x02, 0x7F, 0x20, 0x00, 0xD5, 0x00, 0x14, 0x00, 0x0B })
+          == ValidationErrorCode::TypeMismatch);
+    // Its non-null result is a (ref 0), which a non-defaultable local takes.
+    CHECK(typedReferenceCheck(FuncType { .params = { refNullTo(0) }, .results = {} },
+                              { 0x20, 0x00, 0xD5, 0x00, 0x21, 0x01 },
+                              { refTo(0) })
+          == std::nullopt);
+    // In unreachable code: a (ref bot) falls through, which is no number.
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0xD5, 0x00, 0x1A }) == std::nullopt);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0xD5, 0x00, 0x8B, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0xD5, 0x01 }) == ValidationErrorCode::UnknownLabel);
+}
+
+TEST_CASE("Validator.branchOnNullErrorOrder")
+{
+    // The first error is the reference interpreter's. br_on_null peeks: an empty stack is a (ref bot),
+    // so an unknown label fails first, and only a top that is no reference fails before the label.
+    CHECK(typedReferenceCheck(FuncType {}, { 0xD5, 0x05 }) == ValidationErrorCode::UnknownLabel);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x41, 0x00, 0xD5, 0x05 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType {}, { 0xD5, 0x00 }) == ValidationErrorCode::TypeMismatch);
+    // br_on_non_null looks its label up before it touches the stack.
+    CHECK(typedReferenceCheck(FuncType {}, { 0x41, 0x00, 0xD6, 0x05 }) == ValidationErrorCode::UnknownLabel);
+    CHECK(typedReferenceCheck(FuncType {}, { 0xD6, 0x05 }) == ValidationErrorCode::UnknownLabel);
+    // ref.as_non_null on an empty stack fails at its pop.
+    CHECK(typedReferenceCheck(FuncType {}, { 0xD4, 0x1A }) == ValidationErrorCode::TypeMismatch);
+    // An Unknown operand on the stack, an untyped select's in unreachable code, is a (ref bot) too.
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0x1B, 0xD4, 0x1A }) == std::nullopt);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0x1B, 0xD4, 0x8B, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(typedReferenceCheck(FuncType {}, { 0x00, 0x1B, 0xD5, 0x00, 0x8B, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
 }

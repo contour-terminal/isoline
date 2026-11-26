@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <compare>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -35,16 +36,24 @@ enum class AbstractHeapType : uint8_t
     NoFunc,
     NoExtern,
     NoExn,
+    /// The bottom of every hierarchy, 3.0's bot: the heap of what ref.as_non_null, br_on_null and
+    /// br_on_non_null take from the polymorphic stack of unreachable code. Only validation produces
+    /// it; it is never decoded, and no value has it.
+    Bot,
     Concrete, ///< A defined type, named by HeapType::typeIndex.
 };
 
 /// A heap type: an abstract heap, or a type index when the kind is Concrete.
+///
+/// In a module, a concrete type index indexes its type section; in the store (runtime::Store), it is
+/// a TypeId, which every module's equal types share. Types order and compare member by member, an
+/// abstract heap's typeIndex being 0 always, so that equal types are equal values.
 struct HeapType
 {
     AbstractHeapType kind = AbstractHeapType::Func; ///< The abstract heap, or Concrete.
-    uint32_t typeIndex = 0;                         ///< The type index; meaningful only for Concrete.
+    uint32_t typeIndex = 0;                         ///< The type index; 0 unless the kind is Concrete.
 
-    bool operator==(HeapType const&) const = default;
+    auto operator<=>(HeapType const&) const = default;
 };
 
 /// A value type. Only references use nullable and heap; number and vector types leave them default.
@@ -54,7 +63,7 @@ struct ValueType
     Nullable nullable = Nullable::Yes; ///< Whether a reference admits null; Ref only.
     HeapType heap {};                  ///< The heap a reference points into; Ref only.
 
-    bool operator==(ValueType const&) const = default;
+    auto operator<=>(ValueType const&) const = default;
 };
 
 /// The 32-bit integer type.
@@ -75,6 +84,60 @@ inline constexpr auto FuncRef = ValueType { .kind = ValueKind::Ref,
 inline constexpr auto ExternRef = ValueType { .kind = ValueKind::Ref,
                                               .nullable = Nullable::Yes,
                                               .heap = { .kind = AbstractHeapType::Extern } };
+/// (ref func): a non-null reference to any function, the type of an element segment's function indices.
+inline constexpr auto NonNullFuncRef = ValueType { .kind = ValueKind::Ref,
+                                                   .nullable = Nullable::No,
+                                                   .heap = { .kind = AbstractHeapType::Func } };
+/// exnref: a nullable reference to any exception.
+inline constexpr auto ExnRef = ValueType { .kind = ValueKind::Ref,
+                                           .nullable = Nullable::Yes,
+                                           .heap = { .kind = AbstractHeapType::Exn } };
+/// nullexnref: the type of the null exception reference only.
+inline constexpr auto NullExnRef = ValueType { .kind = ValueKind::Ref,
+                                               .nullable = Nullable::Yes,
+                                               .heap = { .kind = AbstractHeapType::NoExn } };
+
+/// A reference to the concrete type at @p typeIndex: (ref $t) or (ref null $t).
+/// @param typeIndex The type's index (a TypeId in the store).
+/// @param nullable Whether the reference admits null.
+/// @return The reference type.
+[[nodiscard]] constexpr ValueType concreteRef(uint32_t typeIndex, Nullable nullable) noexcept
+{
+    return ValueType { .kind = ValueKind::Ref,
+                       .nullable = nullable,
+                       .heap = { .kind = AbstractHeapType::Concrete, .typeIndex = typeIndex } };
+}
+
+/// Whether @p type is a reference to a concrete type, (ref $t) or (ref null $t): the one form of value
+/// type that names a type index.
+/// @param type The type.
+/// @return Whether its heap is Concrete.
+[[nodiscard]] constexpr bool isConcreteRef(ValueType const& type) noexcept
+{
+    return type.kind == ValueKind::Ref && type.heap.kind == AbstractHeapType::Concrete;
+}
+
+/// @p type with its concrete type index, if it names one, replaced by @p map(index): how a module's
+/// type indices become canonical ids or a store's TypeIds.
+/// @param type The type.
+/// @param map Maps a type index to the index or id that replaces it.
+/// @return The type, rewritten.
+template <typename Map>
+[[nodiscard]] constexpr ValueType mapTypeIndex(ValueType type, Map const& map)
+{
+    if (isConcreteRef(type))
+        type.heap.typeIndex = map(type.heap.typeIndex);
+    return type;
+}
+
+/// Whether a value of @p type has a default: every number and vector type and every nullable
+/// reference does; a non-null reference does not, so a local of it starts uninitialized.
+/// @param type The type.
+/// @return Whether it is defaultable.
+[[nodiscard]] constexpr bool isDefaultable(ValueType const& type) noexcept
+{
+    return type.kind != ValueKind::Ref || type.nullable == Nullable::Yes;
+}
 
 /// A function type: what a function takes and what it returns.
 struct FuncType
@@ -82,8 +145,22 @@ struct FuncType
     std::vector<ValueType> params;  ///< The parameter types, in order.
     std::vector<ValueType> results; ///< The result types, in order.
 
-    bool operator==(FuncType const&) const = default;
+    auto operator<=>(FuncType const&) const = default;
 };
+
+/// @p type with every concrete type index of its params and results replaced by @p map(index).
+/// @param type The function type.
+/// @param map Maps a type index to the index or id that replaces it.
+/// @return The type, rewritten.
+template <typename Map>
+[[nodiscard]] FuncType mapTypeIndices(FuncType type, Map const& map)
+{
+    for (auto& param: type.params)
+        param = mapTypeIndex(param, map);
+    for (auto& result: type.results)
+        result = mapTypeIndex(result, map);
+    return type;
+}
 
 /// The type of the addresses a memory or table is indexed with (memory64 and table64 use I64).
 enum class AddressType : uint8_t

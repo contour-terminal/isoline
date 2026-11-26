@@ -203,3 +203,18 @@ TEST_CASE("SpecCheck.newStages")
     auto const trap = Failure { .stage = Stage::Execute, .message = "unreachable" };
     CHECK_FALSE(checkFailure(Stage::Exception, "", trap).has_value());
 }
+
+TEST_CASE("SpecCheck.nullOfAConcreteTypeIsANullFunc")
+{
+    // The suite writes the null of a function type (ref null $t) as ref.null func: a null matches the
+    // expected null of the top of its heap's hierarchy.
+    auto const nullFunc = Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 };
+    auto const nullOfType =
+        Ref { .kind = RefKind::Null,
+              .heap = { .kind = isoline::binary::AbstractHeapType::Concrete, .typeIndex = 3 },
+              .address = 0 };
+    CHECK(matches(exactly(nullFunc), nullOfType));
+    CHECK_FALSE(
+        matches(exactly(Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 }), nullOfType));
+    CHECK(describeAll(std::vector<Value> { nullOfType }) == "ref.null:func");
+}
