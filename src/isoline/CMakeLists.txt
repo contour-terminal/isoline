@@ -154,6 +154,9 @@ if(ISOLINE_TESTING)
     list(FILTER isolineTestSources EXCLUDE REGEX "/posix/[^/]*_test\\.cpp$")
     # The C API's C++ tests link the C library, so they are a binary of their own (src/isoline/c/).
     list(FILTER isolineTestSources EXCLUDE REGEX "^${CMAKE_CURRENT_SOURCE_DIR}/c/")
+    # The component model's tests are a binary of their own (component/CMakeLists.txt), as isoline_core
+    # links no component code.
+    list(FILTER isolineTestSources EXCLUDE REGEX "/component/")
     if(UNIX)
         file(GLOB_RECURSE isolinePosixTestSources CONFIGURE_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/*/posix/*_test.cpp")
@@ -254,3 +257,6 @@ if(ISOLINE_TESTING)
         HEADER_TARGETS isoline_core isoline_text isoline_cli
         EXCLUDE ${isolineDeclarationContractsExcludes})
 endif()
+
+# The component model, on isoline_core.
+add_subdirectory(component)

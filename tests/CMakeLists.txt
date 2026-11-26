@@ -598,14 +598,15 @@ if(ISOLINE_MODULE_LINT_CLANG)
     set_tests_properties(compare-module-surface-selftest PROPERTIES LABELS lint TIMEOUT 300 SKIP_RETURN_CODE 77)
 endif()
 
-# The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced
-# global operator new (AllocationCounter.cpp). The replacement is program-wide, hence a binary of its
-# own. TSan's runtime defines operator new itself, not replaceably, so a TSan build leaves it out; the
-# bounds hold under every other build.
+# The memory bounds: what decoding a module or a component, and instantiating a module, may hold,
+# measured by a replaced global operator new (AllocationCounter.cpp). The replacement is program-wide,
+# hence a binary of its own. TSan's runtime defines operator new itself, not replaceably, so a TSan
+# build leaves it out; the bounds hold under every other build.
 if(NOT ISOLINE_SANITIZE STREQUAL "thread")
     add_executable(isoline_memory_test
-                   memory/AllocationCounter.cpp memory/AmplifyingModules.cpp memory/MemoryBounds_test.cpp)
-    target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
+                   memory/AllocationCounter.cpp memory/AmplifyingModules.cpp memory/ComponentMemory_test.cpp
+                   memory/MemoryBounds_test.cpp)
+    target_link_libraries(isoline_memory_test PRIVATE isoline::core isoline::component Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_memory_test TEST)
     # The [host-memory] cases refuse allocations at every budget. MSVC's debug STL allocates a container
     # proxy in container constructors that are noexcept, where a refusal terminates (a debug-CRT dialog

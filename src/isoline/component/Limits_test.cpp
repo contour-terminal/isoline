@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: Apache-2.0
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstddef>
+#include <cstdint>
+#include <set>
+#include <string_view>
+
+#include <isoline/component/Limits.hpp>
+
+using isoline::component::ComponentLimit;
+using isoline::component::ComponentLimitCount;
+using isoline::component::ComponentLimits;
+using isoline::component::limitMessage;
+using isoline::component::LimitTable;
+using isoline::component::limitValue;
+
+TEST_CASE("Limits.tableCoversEveryLimit")
+{
+    CHECK(LimitTable.size() == ComponentLimitCount);
+    auto index = std::size_t { 0 };
+    auto names = std::set<std::string_view> {};
+    for (auto const& row: LimitTable)
+    {
+        CHECK(static_cast<std::size_t>(row.limit) == index);
+        CHECK_FALSE(row.name.empty());
+        CHECK_FALSE(row.rule.empty());
+        CHECK_FALSE(row.message.empty());
+        names.insert(row.name);
+        ++index;
+    }
+    CHECK(names.size() == ComponentLimitCount);
+}
+
+TEST_CASE("Limits.valuesReadTheirField")
+{
+    // Each row reads its own field: a set of limits that differ in every field tells them apart.
+    auto limits = ComponentLimits {};
+    limits.maxComponentBytes = 1;
+    limits.maxNesting = 2;
+    limits.maxTypeDepth = 3;
+    limits.maxTypeSize = 4;
+    limits.maxTypes = 5;
+    limits.maxDefinitions = 6;
+    limits.maxNameBytes = 7;
+    limits.maxCoreInstances = 8;
+    limits.maxComponentInstances = 9;
+    limits.maxInstantiationSteps = 10;
+    limits.maxResourceTypes = 11;
+    limits.maxHandles = 12;
+    limits.maxLiveValueBytes = 13;
+    for (auto const& row: LimitTable)
+        CHECK(limitValue(limits, row.limit) == static_cast<uint64_t>(row.limit) + 1);
+
+    CHECK(limitValue(ComponentLimits {}, ComponentLimit::ComponentBytes) == uint64_t { 256 } << 20);
+    CHECK(limitValue(ComponentLimits {}, ComponentLimit::Nesting) == 100);
+}
+
+TEST_CASE("Limits.messages")
+{
+    // wasm-tools' wording, at its own limit.
+    CHECK(limitMessage(ComponentLimit::TypeSize, ComponentLimits {}.maxTypeSize)
+          == "effective type size exceeds the limit of 1000000");
+    CHECK(limitMessage(ComponentLimit::NameBytes, 100'000) == "string size out of bounds");
+    CHECK(limitMessage(ComponentLimit::TypeDepth, 100) == "type nesting is too deep");
+    // Isoline's own name the value they are given.
+    CHECK(limitMessage(ComponentLimit::Nesting, 3) == "nesting exceeds the limit of 3 levels");
+}
