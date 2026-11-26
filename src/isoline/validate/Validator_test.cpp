@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <optional>
 #include <ranges>
 #include <string_view>
@@ -354,6 +355,137 @@ TEST_CASE("Validator.alignment")
     // A load with no memory, checked before the alignment.
     CHECK(errorOf(voidFunctionOf({ 0x41, 0x00, 0x28, 0x03, 0x00, 0x1A }))
           == ValidationErrorCode::UnknownMemory);
+}
+
+namespace
+{
+
+/// v128.const of 16 zero bytes.
+std::vector<uint8_t> v128Zero()
+{
+    auto bytes = std::vector<uint8_t> { 0xFD, 0x0C };
+    bytes.insert(bytes.end(), 16, 0x00);
+    return bytes;
+}
+
+/// @p first, then each of @p rest, concatenated.
+std::vector<uint8_t> concat(std::vector<uint8_t> first, std::initializer_list<std::vector<uint8_t>> rest)
+{
+    for (auto const& piece: rest)
+        first.insert(first.end(), piece.begin(), piece.end());
+    return first;
+}
+
+/// A module with one page of memory and one function [] -> [] whose body is @p body.
+ModuleBuilder withMemory(std::vector<uint8_t> body)
+{
+    auto builder = voidFunctionOf(std::move(body));
+    builder.memory(atLeast(1));
+    return builder;
+}
+
+} // namespace
+
+TEST_CASE("Validator.invalidLaneIndex")
+{
+    // i32x4.extract_lane 4: an i32x4 has lanes 0 .. 3.
+    CHECK(errorOf(voidFunctionOf(concat(v128Zero(), { { 0xFD, 0x1B, 0x04, 0x1A } })))
+          == ValidationErrorCode::InvalidLaneIndex);
+    CHECK(errorOf(voidFunctionOf(concat(v128Zero(), { { 0xFD, 0x1B, 0x03, 0x1A } }))) == std::nullopt);
+    // The lane is checked before the operands: on an empty stack, the lane is still the error.
+    CHECK(errorOf(voidFunctionOf({ 0xFD, 0x1B, 0x04, 0x1A })) == ValidationErrorCode::InvalidLaneIndex);
+    // i8x16.replace_lane 16, and 15.
+    CHECK(errorOf(voidFunctionOf(concat(v128Zero(), { { 0x41, 0x00, 0xFD, 0x17, 0x10, 0x1A } })))
+          == ValidationErrorCode::InvalidLaneIndex);
+    CHECK(errorOf(voidFunctionOf(concat(v128Zero(), { { 0x41, 0x00, 0xFD, 0x17, 0x0F, 0x1A } })))
+          == std::nullopt);
+    // f64x2.extract_lane 2.
+    CHECK(errorOf(voidFunctionOf(concat(v128Zero(), { { 0xFD, 0x21, 0x02, 0x1A } })))
+          == ValidationErrorCode::InvalidLaneIndex);
+
+    // i8x16.shuffle chooses among 32 bytes: lane 32 is one too many, 31 the last.
+    auto const shuffleWith = [](uint8_t lane) {
+        auto shuffle = std::vector<uint8_t> { 0xFD, 0x0D };
+        shuffle.insert(shuffle.end(), 15, 0x00);
+        shuffle.push_back(lane);
+        return concat(v128Zero(), { v128Zero(), shuffle, { 0x1A } });
+    };
+    CHECK(errorOf(voidFunctionOf(shuffleWith(32))) == ValidationErrorCode::InvalidLaneIndex);
+    CHECK(errorOf(voidFunctionOf(shuffleWith(0xFF))) == ValidationErrorCode::InvalidLaneIndex);
+    CHECK(errorOf(voidFunctionOf(shuffleWith(31))) == std::nullopt);
+
+    // v128.load32_lane 4 and v128.store64_lane 2, after their memory arguments.
+    CHECK(errorOf(withMemory(concat({ 0x41, 0x00 }, { v128Zero(), { 0xFD, 0x56, 0x02, 0x00, 0x04, 0x1A } })))
+          == ValidationErrorCode::InvalidLaneIndex);
+    CHECK(errorOf(withMemory(concat({ 0x41, 0x00 }, { v128Zero(), { 0xFD, 0x56, 0x02, 0x00, 0x03, 0x1A } })))
+          == std::nullopt);
+    CHECK(errorOf(withMemory(concat({ 0x41, 0x00 }, { v128Zero(), { 0xFD, 0x5B, 0x03, 0x00, 0x02 } })))
+          == ValidationErrorCode::InvalidLaneIndex);
+    CHECK(errorOf(withMemory(concat({ 0x41, 0x00 }, { v128Zero(), { 0xFD, 0x5B, 0x03, 0x00, 0x01 } })))
+          == std::nullopt);
+    // The memory is checked first, then the alignment, then the lane.
+    CHECK(errorOf(
+              voidFunctionOf(concat({ 0x41, 0x00 }, { v128Zero(), { 0xFD, 0x56, 0x03, 0x00, 0x04, 0x1A } })))
+          == ValidationErrorCode::UnknownMemory);
+    CHECK(errorOf(withMemory(concat({ 0x41, 0x00 }, { v128Zero(), { 0xFD, 0x56, 0x03, 0x00, 0x04, 0x1A } })))
+          == ValidationErrorCode::AlignmentMustNotBeLarger);
+    CHECK(specMessage(ValidationErrorCode::InvalidLaneIndex) == "invalid lane index");
+}
+
+TEST_CASE("Validator.vectorMemoryAccess")
+{
+    // The natural alignment of each access is its width: 16, 8, 4, 2 and 1 bytes.
+    struct Case
+    {
+        uint8_t code;
+        uint32_t naturalAlignment;
+    };
+    for (auto const& testCase: { Case { 0x00, 4 },   // v128.load
+                                 Case { 0x01, 3 },   // v128.load8x8_s
+                                 Case { 0x07, 0 },   // v128.load8_splat
+                                 Case { 0x08, 1 },   // v128.load16_splat
+                                 Case { 0x5C, 2 },   // v128.load32_zero
+                                 Case { 0x5D, 3 } }) // v128.load64_zero
+    {
+        INFO("code " << int { testCase.code });
+        auto const load = [&](uint32_t align) {
+            return withMemory({ 0x41, 0x00, 0xFD, testCase.code, static_cast<uint8_t>(align), 0x00, 0x1A });
+        };
+        CHECK(errorOf(load(testCase.naturalAlignment)) == std::nullopt);
+        CHECK(errorOf(load(testCase.naturalAlignment + 1)) == ValidationErrorCode::AlignmentMustNotBeLarger);
+    }
+    // v128.store pops a v128 and an i32 address; an i32 value is a mismatch.
+    CHECK(errorOf(withMemory(concat({ 0x41, 0x00 }, { v128Zero(), { 0xFD, 0x0B, 0x04, 0x00 } })))
+          == std::nullopt);
+    CHECK(errorOf(withMemory({ 0x41, 0x00, 0x41, 0x00, 0xFD, 0x0B, 0x04, 0x00 }))
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(errorOf(withMemory({ 0x41, 0x00, 0xFD, 0x0B, 0x05, 0x00 }))
+          == ValidationErrorCode::AlignmentMustNotBeLarger);
+    // A lane load pops the vector it changes and pushes it back; without it, the i32 address is
+    // popped as the vector, a type mismatch.
+    CHECK(errorOf(withMemory({ 0x41, 0x00, 0xFD, 0x54, 0x00, 0x00, 0x00, 0x1A }))
+          == ValidationErrorCode::TypeMismatch);
+    // A load yields a v128, not an i32.
+    auto i32Result = i32FunctionOf({ 0x41, 0x00, 0xFD, 0x00, 0x04, 0x00 });
+    i32Result.memory(atLeast(1));
+    CHECK(errorOf(i32Result) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.v128Constant")
+{
+    // v128.const is a constant expression.
+    auto builder = ModuleBuilder {};
+    builder.global(GlobalType { .type = isoline::binary::V128, .mutability = Mutability::Const }, v128Zero());
+    CHECK(errorOf(builder) == std::nullopt);
+    // Of type v128, so not an i32 global's initializer.
+    auto mismatch = ModuleBuilder {};
+    mismatch.global(GlobalType { .type = I32, .mutability = Mutability::Const }, v128Zero());
+    CHECK(errorOf(mismatch) == ValidationErrorCode::TypeMismatch);
+    // A SIMD operator is not constant.
+    auto notConstant = ModuleBuilder {};
+    notConstant.global(GlobalType { .type = isoline::binary::V128, .mutability = Mutability::Const },
+                       concat(v128Zero(), { { 0xFD, 0x4D } }));
+    CHECK(errorOf(notConstant) == ValidationErrorCode::ConstantExpressionRequired);
 }
 
 TEST_CASE("Validator.memoryInstructions")

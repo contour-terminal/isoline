@@ -34,6 +34,7 @@ namespace
     using binary::Function;
     using binary::FuncType;
     using binary::GlobalType;
+    using binary::ImmediateKind;
     using binary::Instruction;
     using binary::LocalRun;
     using binary::MemoryAccess;
@@ -47,6 +48,7 @@ namespace
     using binary::TableType;
     using binary::ValueKind;
     using binary::ValueType;
+    using binary::VectorShape;
 
     /// What a check found wrong, before its caller adds where: the error, and the index it names.
     struct Fault
@@ -122,6 +124,7 @@ namespace
         { .opcode = Opcode::I64Const, .required = std::nullopt },
         { .opcode = Opcode::F32Const, .required = std::nullopt },
         { .opcode = Opcode::F64Const, .required = std::nullopt },
+        { .opcode = Opcode::V128Const, .required = Feature::Simd },
         { .opcode = Opcode::RefNull, .required = std::nullopt },
         { .opcode = Opcode::RefFunc, .required = std::nullopt },
         { .opcode = Opcode::GlobalGet, .required = std::nullopt },
@@ -133,6 +136,64 @@ namespace
         { .opcode = Opcode::I64Sub, .required = Feature::ExtendedConst },
         { .opcode = Opcode::I64Mul, .required = Feature::ExtendedConst },
     });
+
+    // --- Lanes --------------------------------------------------------------------------------
+
+    /// An instruction with a lane index immediate, and how many lanes it may name.
+    struct LaneRow
+    {
+        Opcode opcode;     ///< The instruction.
+        uint8_t laneCount; ///< Its lane index must be below this.
+    };
+
+    /// Every instruction with a lane index immediate (LaneIndex or MemArgLane).
+    constexpr auto LaneTable = std::to_array<LaneRow>({
+        { .opcode = Opcode::I8x16ExtractLaneS, .laneCount = 16 },
+        { .opcode = Opcode::I8x16ExtractLaneU, .laneCount = 16 },
+        { .opcode = Opcode::I8x16ReplaceLane, .laneCount = 16 },
+        { .opcode = Opcode::I16x8ExtractLaneS, .laneCount = 8 },
+        { .opcode = Opcode::I16x8ExtractLaneU, .laneCount = 8 },
+        { .opcode = Opcode::I16x8ReplaceLane, .laneCount = 8 },
+        { .opcode = Opcode::I32x4ExtractLane, .laneCount = 4 },
+        { .opcode = Opcode::I32x4ReplaceLane, .laneCount = 4 },
+        { .opcode = Opcode::I64x2ExtractLane, .laneCount = 2 },
+        { .opcode = Opcode::I64x2ReplaceLane, .laneCount = 2 },
+        { .opcode = Opcode::F32x4ExtractLane, .laneCount = 4 },
+        { .opcode = Opcode::F32x4ReplaceLane, .laneCount = 4 },
+        { .opcode = Opcode::F64x2ExtractLane, .laneCount = 2 },
+        { .opcode = Opcode::F64x2ReplaceLane, .laneCount = 2 },
+        { .opcode = Opcode::V128Load8Lane, .laneCount = 16 },
+        { .opcode = Opcode::V128Load16Lane, .laneCount = 8 },
+        { .opcode = Opcode::V128Load32Lane, .laneCount = 4 },
+        { .opcode = Opcode::V128Load64Lane, .laneCount = 2 },
+        { .opcode = Opcode::V128Store8Lane, .laneCount = 16 },
+        { .opcode = Opcode::V128Store16Lane, .laneCount = 8 },
+        { .opcode = Opcode::V128Store32Lane, .laneCount = 4 },
+        { .opcode = Opcode::V128Store64Lane, .laneCount = 2 },
+    });
+
+    static_assert(
+        [] {
+            auto rows = std::size_t { 0 };
+            for (auto const& info: binary::OpcodeTable)
+            {
+                auto const isLaneImmediate =
+                    info.immediate == ImmediateKind::LaneIndex || info.immediate == ImmediateKind::MemArgLane;
+                auto const row = std::ranges::find(LaneTable, info.opcode, &LaneRow::opcode);
+                if (isLaneImmediate != (row != LaneTable.end()))
+                    return false;
+                // A lane load or store moves one lane: its width times the lane count is 16 bytes.
+                if (auto const* access = binary::memoryAccessOf(info.opcode); access && isLaneImmediate)
+                    if (access->width * row->laneCount != 16)
+                        return false;
+                rows += isLaneImmediate ? 1 : 0;
+            }
+            return rows == LaneTable.size();
+        }(),
+        "LaneTable holds every lane-index instruction once, and agrees with MemoryAccessTable's widths");
+
+    /// The number of lanes a shuffle's lane indices choose from: both operands' 16 bytes.
+    constexpr auto ShuffleLaneCount = 32U;
 
     // --- Limits -------------------------------------------------------------------------------
 
@@ -513,8 +574,10 @@ namespace
                     return check(instruction.a <= row.naturalAlignment(),
                                  ValidationErrorCode::AlignmentMustNotBeLarger);
                 })
+                .and_then([&] { return checkLanes(instruction); })
                 .and_then([&]() -> Check {
-                    if (row.access == MemoryAccessKind::Store)
+                    // A store pops the value it writes, and a lane access the vector it changes.
+                    if (row.access == MemoryAccessKind::Store || row.shape == VectorShape::Lane)
                         if (auto const popped = pop(value); !popped)
                             return fail(popped.error());
                     if (auto const popped = pop(binary::I32); !popped)
@@ -540,11 +603,35 @@ namespace
             return {};
         }
 
+        /// Checks the lane immediates of @p instruction: a lane index below its LaneTable count,
+        /// or a shuffle's 16 lane indices below ShuffleLaneCount. Any other instruction has none.
+        [[nodiscard]] Check checkLanes(Instruction const& instruction) const
+        {
+            switch (binary::opcodeInfo(instruction.opcode).immediate)
+            {
+                case ImmediateKind::LaneIndex:
+                case ImmediateKind::MemArgLane: {
+                    auto const row = std::ranges::find(LaneTable, instruction.opcode, &LaneRow::opcode);
+                    return check(instruction.lane < row->laneCount, ValidationErrorCode::InvalidLaneIndex);
+                }
+                case ImmediateKind::Shuffle:
+                    return check(std::ranges::all_of(binary::v128LiteralOf(_context.module, instruction),
+                                                     [](std::byte lane) {
+                                                         return std::to_integer<unsigned>(lane)
+                                                                < ShuffleLaneCount;
+                                                     }),
+                                 ValidationErrorCode::InvalidLaneIndex);
+                default: return {};
+            }
+        }
+
         [[nodiscard]] Check step(Body const& body, Instruction const& instruction)
         {
             auto const& info = binary::opcodeInfo(instruction.opcode);
             if (info.signature != OpcodeSignature::Special)
-                return applySignature(binary::signatureInfo(info.signature));
+                return checkLanes(instruction).and_then([&] {
+                    return applySignature(binary::signatureInfo(info.signature));
+                });
             if (auto const* access = binary::memoryAccessOf(instruction.opcode))
                 return memoryAccess(*access, instruction);
             return special(body, instruction);

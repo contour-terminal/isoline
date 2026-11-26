@@ -11,11 +11,19 @@
 # src/isoline/runtime/Instantiate.cpp's branch entry was lowered from 92.12 to 91.86 when its segment bounds checks moved into
 # runtime/Segment.hpp (100 % covered): four covered branches left the file, and its ten uncovered ones, the contract checks and Tag
 # cases the exclusions name, are now a larger share of fewer. No branch lost its coverage.
+#
+# src/isoline/binary/Module.hpp's branch entry was lowered from 73.68 to 72.41 when v128LiteralOf arrived: its precondition, that the
+# instruction is a v128.const or an i8x16.shuffle, adds the branch of both comparisons failing, which no valid caller takes, as
+# every Require's failing side is. No branch lost its coverage.
+#
+# src/isoline/interp/Simd.cpp's branch entry was lowered from 92.68 to 92.00 when the float operators arrived: untrapped()'s
+# precondition, that a scalar float operator or trunc_sat lifted to a lane did not trap, adds the branch of a trap, which none of
+# them takes, as every Require's failing side is. No branch lost its coverage.
 
 exclude src/isoline/binary/Decoder.cpp tag-import Tag import: readExternKind decodes no tag kind in P1
 exclude src/isoline/interp/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
-exclude src/isoline/interp/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: validation admits none
-exclude src/isoline/interp/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: loads and stores have number kinds only
+exclude src/isoline/interp/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Numerics.everyFixedSignatureOpcodeHasARow and Simd.everyFixedSignatureSimdOpcodeHasARow prove only the Numerics and Simd table rows; a Special opcode relies on execute()'s switch having its case, which no test lists out (Task 17's Opcode.everyRowDecodes walks every row)
+exclude src/isoline/interp/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
 exclude src/isoline/interp/ReferenceInterpreter.cpp numeric-shape-none numeric() of a non-numeric opcode: execute() dispatches only table rows here
 exclude src/isoline/interp/ReferenceInterpreter.cpp raw-bits rawBits of a vector or reference: a validated body pops a number there
 exclude src/isoline/interp/ReferenceInterpreter.cpp trapping-constant a trapping constant operator: extended-const's add, sub and mul never trap
@@ -27,21 +35,23 @@ src/isoline/Features.hpp                    100.00 100.00
 src/isoline/Version.hpp                     100.00 -
 src/isoline/binary/ByteReader.cpp           100.00 98.07
 src/isoline/binary/DecodeError.hpp          100.00 -
-src/isoline/binary/Decoder.cpp              99.87 97.76
+src/isoline/binary/Decoder.cpp              99.87 97.81
 src/isoline/binary/MemoryAccess.hpp         100.00 100.00
-src/isoline/binary/Module.hpp               100.00 73.68
+src/isoline/binary/Module.hpp               100.00 72.41
 src/isoline/binary/Opcode.cpp               100.00 100.00
 src/isoline/binary/Opcode.hpp               100.00 -
 src/isoline/binary/Types.hpp                100.00 -
 src/isoline/interp/Numerics.cpp             100.00 95.90
-src/isoline/interp/ReferenceInterpreter.cpp 97.57 89.71
+src/isoline/interp/ReferenceInterpreter.cpp 97.93 90.75
 src/isoline/interp/ReferenceInterpreter.hpp 100.00 -
+src/isoline/interp/Simd.cpp                 100.00 92.00
+src/isoline/interp/Simd.hpp                 100.00 66.66
 src/isoline/runtime/Instantiate.cpp         99.23 91.86
 src/isoline/runtime/Instantiate.hpp         100.00 -
 src/isoline/runtime/Segment.hpp             100.00 100.00
 src/isoline/runtime/Store.cpp               98.60 78.26
 src/isoline/runtime/Store.hpp               100.00 -
 src/isoline/runtime/Trap.hpp                100.00 75.00
-src/isoline/runtime/Value.hpp               100.00 92.85
+src/isoline/runtime/Value.hpp               100.00 94.44
 src/isoline/validate/ValidationError.hpp    100.00 75.00
-src/isoline/validate/Validator.cpp          99.69 96.30
+src/isoline/validate/Validator.cpp          99.70 97.51

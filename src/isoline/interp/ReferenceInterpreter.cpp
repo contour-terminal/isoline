@@ -23,6 +23,7 @@
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/interp/Numerics.hpp>
+#include <isoline/interp/Simd.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -40,6 +41,7 @@ namespace
     using binary::MemoryAccessKind;
     using binary::Opcode;
     using binary::ValueKind;
+    using binary::VectorShape;
     using runtime::F32;
     using runtime::F64;
     using runtime::fits;
@@ -54,6 +56,7 @@ namespace
     using runtime::Trap;
     using runtime::trap;
     using runtime::TrapCode;
+    using runtime::V128;
     using runtime::Value;
 
     /// The outcome of executing one instruction: nothing, or the trap execution ends with.
@@ -83,8 +86,10 @@ namespace
 
     // --- Values -------------------------------------------------------------------------------
 
-    /// The value of a constant instruction (i32/i64/f32/f64.const), or nullopt for any other.
-    [[nodiscard]] std::optional<Value> constantOf(Instruction const& instruction) noexcept
+    /// The value of a constant instruction (i32/i64/f32/f64/v128.const) of @p module, or nullopt
+    /// for any other.
+    [[nodiscard]] std::optional<Value> constantOf(binary::Module const& module,
+                                                  Instruction const& instruction) noexcept
     {
         switch (instruction.opcode)
         {
@@ -92,6 +97,7 @@ namespace
             case Opcode::I64Const: return I64 { instruction.c };
             case Opcode::F32Const: return F32 { static_cast<uint32_t>(instruction.c) };
             case Opcode::F64Const: return F64 { instruction.c };
+            case Opcode::V128Const: return runtime::v128FromBytes(binary::v128LiteralOf(module, instruction));
             default: return std::nullopt;
         }
     }
@@ -458,6 +464,8 @@ namespace
         /// whatever the host's byte order, and the memory's bytes are fetched afresh.
         [[nodiscard]] Step accessMemory(MemoryAccess const& row, Instruction const& instruction)
         {
+            if (row.value == ValueKind::V128)
+                return accessVector(row, instruction);
             auto const width = uint32_t { row.width };
             auto const raw = row.access == MemoryAccessKind::Store ? rawBits(pop()) : uint64_t { 0 };
             auto& target = memory(instruction.b);
@@ -477,6 +485,68 @@ namespace
                 loaded |= uint64_t { std::to_integer<uint8_t>(bytes[index]) } << (8U * index);
             push(numberOf(row.value, widen(loaded, width, row.extension)));
             return {};
+        }
+
+        /// Executes a v128 load or store, as accessMemory does a scalar one: the vector is
+        /// composed from, or decomposed into, its little-endian bytes (v128FromBytes, v128ToBytes),
+        /// and the row's shape says which of them the memory's bytes are.
+        [[nodiscard]] Step accessVector(MemoryAccess const& row, Instruction const& instruction)
+        {
+            auto const width = std::size_t { row.width };
+            // A store's value, or the vector a lane access changes; the operand above the address.
+            auto vector = row.access == MemoryAccessKind::Store || row.shape == VectorShape::Lane
+                              ? runtime::v128ToBytes(std::get<V128>(pop()))
+                              : std::array<std::byte, 16> {};
+            auto& target = memory(instruction.b);
+            auto const address = popAddress(target.type.limits.addressType);
+            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes.size());
+            if (!effective)
+                return trap(TrapCode::OutOfBoundsMemoryAccess);
+            auto const bytes = std::span { target.bytes }.subspan(*effective, width);
+            // Where in the vector the accessed bytes sit: lane `lane` of a lane access, else the start.
+            auto const offset = row.shape == VectorShape::Lane ? width * instruction.lane : std::size_t { 0 };
+            auto const lanes = std::span { vector }.subspan(offset, width);
+            if (row.access == MemoryAccessKind::Store)
+            {
+                std::ranges::copy(lanes, bytes.begin());
+                return {};
+            }
+            std::ranges::copy(bytes, lanes.begin());
+            switch (row.shape)
+            {
+                case VectorShape::Extend8x8:
+                case VectorShape::Extend16x4:
+                case VectorShape::Extend32x2: vector = widenLanes(row, bytes); break;
+                case VectorShape::Splat:
+                    for (auto const lane: std::views::iota(std::size_t { 1 }, vector.size() / width))
+                        std::ranges::copy(bytes, std::span { vector }.subspan(lane * width, width).begin());
+                    break;
+                case VectorShape::Whole:
+                case VectorShape::Zero:
+                case VectorShape::Lane: break;
+            }
+            push(runtime::v128FromBytes(vector));
+            return {};
+        }
+
+        /// The bytes of the vector a widening load of @p row yields from the 8 bytes @p bytes: each
+        /// lane of memoryLaneWidth() bytes widened, per the row's extension, to twice its width.
+        [[nodiscard]] static std::array<std::byte, 16> widenLanes(MemoryAccess const& row,
+                                                                  std::span<std::byte const> bytes) noexcept
+        {
+            auto const laneWidth = row.memoryLaneWidth();
+            auto result = std::array<std::byte, 16> {};
+            for (auto const lane: std::views::iota(0U, row.width / laneWidth))
+            {
+                auto raw = uint64_t { 0 };
+                for (auto const index: std::views::iota(0U, laneWidth))
+                    raw |= uint64_t { std::to_integer<uint8_t>(bytes[(lane * laneWidth) + index]) }
+                           << (8U * index);
+                auto const widened = widen(raw, laneWidth, row.extension);
+                for (auto const index: std::views::iota(0U, 2 * laneWidth))
+                    result[(lane * 2 * laneWidth) + index] = static_cast<std::byte>(widened >> (8U * index));
+            }
+            return result;
         }
 
         void memoryGrow(Instruction const& instruction)
@@ -665,6 +735,47 @@ namespace
             push(I64 { high });
         }
 
+        [[nodiscard]] V128 popV128() { return std::get<V128>(pop()); }
+
+        /// Evaluates a SIMD operator by its row in Simd's table on the operands its signature pops.
+        /// @return Its result, for the caller to push.
+        [[nodiscard]] Value simd(Instruction const& instruction, SimdShape shape)
+        {
+            auto const opcode = instruction.opcode;
+            auto const count = binary::signatureInfo(binary::opcodeInfo(opcode).signature).paramCount;
+            auto operands = std::array<Value, 3> {};
+            for (auto& operand: std::span { operands }.first(count) | std::views::reverse)
+                operand = pop();
+            auto const vector = [&](std::size_t index) {
+                return std::get<V128>(operands[index]);
+            };
+            switch (shape)
+            {
+                case SimdShape::Binary: return applySimdBinary(opcode, vector(0), vector(1));
+                case SimdShape::Ternary: return applySimdTernary(opcode, vector(0), vector(1), vector(2));
+                case SimdShape::Test: return applySimdTest(opcode, vector(0));
+                case SimdShape::Shift:
+                    return applySimdShift(opcode, vector(0), std::get<I32>(operands[1]).bits);
+                case SimdShape::Splat: return splat(opcode, operands[0]);
+                case SimdShape::ExtractLane: return extractLane(opcode, vector(0), instruction.lane);
+                case SimdShape::ReplaceLane:
+                    return replaceLane(opcode, vector(0), instruction.lane, operands[1]);
+                case SimdShape::Unary:
+                case SimdShape::None: break;
+            }
+            // Unary. None never comes here, as execute() passes table rows only; were it to,
+            // applySimdUnary's precondition check would stop it.
+            return applySimdUnary(opcode, vector(0));
+        }
+
+        /// Executes i8x16.shuffle on the two vectors it pops.
+        void shuffleBytes(Instruction const& instruction)
+        {
+            auto const b = popV128();
+            auto const a = popV128();
+            push(interp::shuffle(a, b, binary::v128LiteralOf(*instance().module, instruction)));
+        }
+
         /// Executes a numeric instruction by its row in Numerics' table.
         [[nodiscard]] Step numeric(Opcode opcode, NumericShape shape)
         {
@@ -691,9 +802,14 @@ namespace
             auto const opcode = instruction.opcode;
             if (auto const shape = numericShape(opcode); shape != NumericShape::None)
                 return numeric(opcode, shape);
+            if (auto const shape = simdShape(opcode); shape != SimdShape::None)
+            {
+                push(simd(instruction, shape));
+                return {};
+            }
             if (auto const* row = binary::memoryAccessOf(opcode))
                 return accessMemory(*row, instruction);
-            if (auto const constant = constantOf(instruction))
+            if (auto const constant = constantOf(*instance().module, instruction))
             {
                 push(*constant);
                 return {};
@@ -772,10 +888,15 @@ namespace
                 case Opcode::RefIsNull: push(I32 { popRef().kind == RefKind::Null ? 1U : 0U }); return {};
                 case Opcode::RefFunc: push(functionReference(instance(), instruction.a)); return {};
 
+                // Vectors
+                case Opcode::I8x16Shuffle: shuffleBytes(instruction); return {};
+
                 default: break; // uncovered(execute-default)
             }
             // uncovered-begin(execute-default)
-            // Every instruction a validated Wasm 2.0 body holds has a case above or a table row.
+            // Every instruction validation admits has a case above or a table row, which
+            // Numerics.everyFixedSignatureOpcodeHasARow and Simd.everyFixedSignatureSimdOpcodeHasARow
+            // hold the Numerics and Simd tables to.
             core::todo(binary::opcodeInfo(opcode).text);
         }
         // uncovered-end(execute-default)
@@ -821,7 +942,7 @@ std::expected<Value, Trap> ReferenceInterpreter::evaluateConst(Store& store,
     auto stack = std::vector<Value> {};
     for (auto const& instruction: expression)
     {
-        if (auto const constant = constantOf(instruction))
+        if (auto const constant = constantOf(*instance.module, instruction))
         {
             stack.push_back(*constant);
             continue;

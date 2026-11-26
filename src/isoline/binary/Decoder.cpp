@@ -301,6 +301,10 @@ namespace
                                                                       CodeSink sink);
         [[nodiscard]] std::expected<void, DecodeError> readBlockType(Instruction& instruction);
         [[nodiscard]] std::expected<void, DecodeError> readMemArg(Instruction& instruction);
+        /// Reads 16 raw bytes into Module::v128Literals and points @p instruction's a at them.
+        [[nodiscard]] std::expected<void, DecodeError> readV128Literal(Instruction& instruction);
+        /// Reads a lane index byte into @p instruction's lane.
+        [[nodiscard]] std::expected<void, DecodeError> readLane(Instruction& instruction);
         [[nodiscard]] std::expected<ElementSegment, DecodeError> readElementSegment();
         [[nodiscard]] std::expected<DataSegment, DecodeError> readDataSegment();
         [[nodiscard]] std::expected<Function, DecodeError> readFunction(uint32_t index);
@@ -762,6 +766,12 @@ namespace
                     });
             }
             case ImmediateKind::MemArg: return readMemArg(instruction);
+            // The shared memarg reader first, so every rule of a memory argument holds here too.
+            case ImmediateKind::MemArgLane:
+                return readMemArg(instruction).and_then([&] { return readLane(instruction); });
+            case ImmediateKind::LaneIndex: return readLane(instruction);
+            case ImmediateKind::V128Const:
+            case ImmediateKind::Shuffle: return readV128Literal(instruction);
             case ImmediateKind::MemoryIndex: return expectZeroByte();
             case ImmediateKind::MemoryCopy:
                 return expectZeroByte().and_then([this] { return expectZeroByte(); });
@@ -821,6 +831,20 @@ namespace
                                                    _reader.offset() - 1 } };
         instruction.a = *align;
         return _reader.readU32().transform([&](uint32_t offset) { instruction.c = offset; });
+    }
+
+    std::expected<void, DecodeError> ModuleDecoder::readV128Literal(Instruction& instruction)
+    {
+        return _reader.readBytes(16).transform([&](std::span<std::byte const> bytes) {
+            auto& literal = _module.v128Literals.emplace_back();
+            std::ranges::copy(bytes, literal.begin());
+            instruction.a = static_cast<uint32_t>(_module.v128Literals.size() - 1);
+        });
+    }
+
+    std::expected<void, DecodeError> ModuleDecoder::readLane(Instruction& instruction)
+    {
+        return readByte().transform([&](uint8_t lane) { instruction.lane = lane; });
     }
 
     std::expected<Import, DecodeError> ModuleDecoder::readImport()

@@ -8,6 +8,7 @@
 #include <limits>
 #include <variant>
 
+#include <isoline/Features.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/interp/Numerics.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -92,6 +93,12 @@ TEST_CASE("Numerics.everyFixedSignatureOpcodeHasARow")
     {
         INFO(info.text);
         auto const shape = numericShape(info.opcode);
+        // A SIMD instruction is Simd's to evaluate, not Numerics'.
+        if (info.proposal == isoline::Feature::Simd)
+        {
+            CHECK(shape == NumericShape::None);
+            continue;
+        }
         switch (info.signature)
         {
             case OpcodeSignature::Special:

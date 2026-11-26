@@ -9,6 +9,7 @@
 #include <ranges>
 #include <set>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include <isoline/Features.hpp>
@@ -42,6 +43,14 @@ TEST_CASE("Opcode.knownEncodings")
     CHECK(lookupOpcode(0x00, 0xD2) == Opcode::RefFunc);
     CHECK(opcodeInfo(Opcode::I32Add).text == "i32.add");
     CHECK(opcodeInfo(Opcode::Call).immediate == isoline::binary::ImmediateKind::FunctionIndex);
+    CHECK(lookupOpcode(0xFD, 0x0C) == Opcode::V128Const);
+    CHECK(lookupOpcode(0xFD, 0xFF) == Opcode::F64x2ConvertLowI32x4U);
+    CHECK(opcodeInfo(Opcode::I8x16Shuffle).immediate == isoline::binary::ImmediateKind::Shuffle);
+    CHECK(opcodeInfo(Opcode::V128Store64Lane).immediate == isoline::binary::ImmediateKind::MemArgLane);
+    CHECK(opcodeInfo(Opcode::I16x8ExtractLaneU).immediate == isoline::binary::ImmediateKind::LaneIndex);
+    // 441 opcodes do not fit a byte.
+    STATIC_CHECK(std::is_same_v<std::underlying_type_t<Opcode>, uint16_t>);
+    CHECK(isoline::binary::OpcodeCount == 441);
 }
 
 TEST_CASE("Opcode.wideEncodings")
@@ -73,8 +82,9 @@ TEST_CASE("Opcode.unknownEncodings")
     CHECK_FALSE(lookupOpcode(0x00, 0xFC).has_value()); // a prefix is not an opcode of its own
     CHECK_FALSE(lookupOpcode(0x00, 0x100).has_value());
     CHECK_FALSE(lookupOpcode(0xFC, 0xFFFF'FFFF).has_value());
-    CHECK_FALSE(lookupOpcode(0xFD, 0).has_value()); // SIMD is not in P1
-    CHECK_FALSE(lookupOpcode(0xFB, 0).has_value()); // not a prefix
+    CHECK_FALSE(lookupOpcode(0xFD, 0x9A).has_value());  // a gap in the SIMD encodings
+    CHECK_FALSE(lookupOpcode(0xFD, 0x100).has_value()); // past the last SIMD encoding
+    CHECK_FALSE(lookupOpcode(0xFB, 0).has_value());     // not a prefix
 }
 
 TEST_CASE("Opcode.tableHasNoDuplicates")
@@ -172,7 +182,9 @@ TEST_CASE("Opcode.numericSignaturesFollowTheTextPrefix")
     });
     for (auto const& row: OpcodeTable)
     {
-        if (row.signature == OpcodeSignature::Special || row.signature == OpcodeSignature::None)
+        // SIMD's shape prefixes (i8x16. …) name lanes, not a value type; Opcode.simdSignatures checks those.
+        if (row.signature == OpcodeSignature::Special || row.signature == OpcodeSignature::None
+            || row.proposal == isoline::Feature::Simd)
             continue;
         INFO(row.text);
         auto const results = signatureInfo(row.signature).resultKinds();
@@ -191,6 +203,68 @@ TEST_CASE("Opcode.numericSignaturesFollowTheTextPrefix")
             CHECK(params[0] == prefixKind->kind);
         }
     }
+}
+
+TEST_CASE("Opcode.simdSignatures")
+{
+    // Every SIMD instruction of fixed type yields a v128, except tests and extract_lane, which yield
+    // the i32 or lane scalar; every one but v128.const and the splats pops a v128 first.
+    auto count = std::size_t { 0 };
+    for (auto const& row: OpcodeTable)
+    {
+        if (row.proposal != isoline::Feature::Simd)
+            continue;
+        INFO(row.text);
+        ++count;
+        CHECK(row.prefix == 0xFD);
+        if (row.signature == OpcodeSignature::Special)
+        {
+            // Only the memory accesses are typed by code.
+            CHECK((row.immediate == isoline::binary::ImmediateKind::MemArg
+                   || row.immediate == isoline::binary::ImmediateKind::MemArgLane));
+            continue;
+        }
+        auto const& signature = signatureInfo(row.signature);
+        REQUIRE(signature.resultKinds().size() == 1);
+        auto const yieldsScalar = row.text.contains("extract_lane") || row.text.ends_with("_true")
+                                  || row.text.ends_with(".bitmask");
+        CHECK((signature.resultKinds()[0] == ValueKind::V128) != yieldsScalar);
+        auto const params = signature.paramKinds();
+        auto const takesScalar = row.text.ends_with(".splat") || row.text == "v128.const";
+        CHECK((params.empty() || params[0] != ValueKind::V128) == takesScalar);
+    }
+    CHECK(count == 236);
+
+    struct SignatureCase
+    {
+        Opcode opcode;
+        OpcodeSignature signature;
+    };
+    auto const cases = std::to_array<SignatureCase>({
+        { .opcode = Opcode::V128Const, .signature = OpcodeSignature::ToV128 },
+        { .opcode = Opcode::I8x16Shuffle, .signature = OpcodeSignature::V128V128ToV128 },
+        { .opcode = Opcode::V128Bitselect, .signature = OpcodeSignature::V128V128V128ToV128 },
+        { .opcode = Opcode::I64x2ExtractLane, .signature = OpcodeSignature::V128ToI64 },
+        { .opcode = Opcode::F32x4ExtractLane, .signature = OpcodeSignature::V128ToF32 },
+        { .opcode = Opcode::F64x2ReplaceLane, .signature = OpcodeSignature::V128F64ToV128 },
+        { .opcode = Opcode::I64x2ReplaceLane, .signature = OpcodeSignature::V128I64ToV128 },
+        { .opcode = Opcode::I64x2Shl, .signature = OpcodeSignature::V128I32ToV128 },
+        { .opcode = Opcode::F64x2Splat, .signature = OpcodeSignature::F64ToV128 },
+        { .opcode = Opcode::I64x2Splat, .signature = OpcodeSignature::I64ToV128 },
+        { .opcode = Opcode::I8x16Bitmask, .signature = OpcodeSignature::V128ToI32 },
+        { .opcode = Opcode::V128Not, .signature = OpcodeSignature::V128ToV128 },
+        { .opcode = Opcode::V128Load8Lane, .signature = OpcodeSignature::Special },
+    });
+    for (auto const& testCase: cases)
+    {
+        INFO(opcodeInfo(testCase.opcode).text);
+        CHECK(opcodeInfo(testCase.opcode).signature == testCase.signature);
+    }
+    auto const& replace = signatureInfo(OpcodeSignature::V128F32ToV128);
+    REQUIRE(replace.paramKinds().size() == 2);
+    CHECK(replace.paramKinds()[0] == ValueKind::V128);
+    CHECK(replace.paramKinds()[1] == ValueKind::F32);
+    CHECK(signatureInfo(OpcodeSignature::V128V128V128ToV128).paramKinds().size() == 3);
 }
 
 TEST_CASE("Opcode.encodingRanges")
@@ -212,6 +286,20 @@ TEST_CASE("Opcode.encodingRanges")
         { .prefix = 0x00, .first = 0xD0, .last = 0xD2 }, // ref.null, ref.is_null, ref.func
         { .prefix = 0xFC, .first = 0, .last = 17 },      // saturating truncation, bulk memory, tables
         { .prefix = 0xFC, .first = 19, .last = 22 },     // wide arithmetic
+        // SIMD: 0xFD 0x00 .. 0xFF, but for the gaps the proposal left
+        { .prefix = 0xFD, .first = 0x00, .last = 0x99 },
+        { .prefix = 0xFD, .first = 0x9B, .last = 0xA1 },
+        { .prefix = 0xFD, .first = 0xA3, .last = 0xA4 },
+        { .prefix = 0xFD, .first = 0xA7, .last = 0xAE },
+        { .prefix = 0xFD, .first = 0xB1, .last = 0xB1 },
+        { .prefix = 0xFD, .first = 0xB5, .last = 0xBA },
+        { .prefix = 0xFD, .first = 0xBC, .last = 0xC1 },
+        { .prefix = 0xFD, .first = 0xC3, .last = 0xC4 },
+        { .prefix = 0xFD, .first = 0xC7, .last = 0xCE },
+        { .prefix = 0xFD, .first = 0xD1, .last = 0xD1 },
+        { .prefix = 0xFD, .first = 0xD5, .last = 0xE1 },
+        { .prefix = 0xFD, .first = 0xE3, .last = 0xED },
+        { .prefix = 0xFD, .first = 0xEF, .last = 0xFF },
     });
     auto const inRange = [&](uint8_t prefix, uint32_t code) {
         return std::ranges::any_of(ranges, [&](EncodingRange const& range) {
@@ -224,8 +312,8 @@ TEST_CASE("Opcode.encodingRanges")
         expectedCount += range.last - range.first + 1;
     CHECK(expectedCount == isoline::binary::OpcodeCount);
 
-    // Every code of both prefixes up to one past the largest in use, plus the u32 extreme.
-    for (auto const prefix: { uint8_t { 0x00 }, uint8_t { 0xFC } })
+    // Every code of each prefix up to one past the largest in use, plus the u32 extreme.
+    for (auto const prefix: { uint8_t { 0x00 }, uint8_t { 0xFC }, uint8_t { 0xFD } })
     {
         for (auto const code: std::views::iota(uint32_t { 0 }, uint32_t { 0x101 }))
         {
@@ -259,6 +347,9 @@ TEST_CASE("Opcode.proposals")
         { .opcode = Opcode::TableCopy, .proposal = Feature::BulkMemory },
         { .opcode = Opcode::I64Add128, .proposal = Feature::WideArithmetic },
         { .opcode = Opcode::I64MulWideU, .proposal = Feature::WideArithmetic },
+        { .opcode = Opcode::V128Load, .proposal = Feature::Simd },
+        { .opcode = Opcode::I8x16Shuffle, .proposal = Feature::Simd },
+        { .opcode = Opcode::F64x2ConvertLowI32x4U, .proposal = Feature::Simd },
     });
     for (auto const& row: rows)
     {

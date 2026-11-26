@@ -864,6 +864,71 @@ TEST_CASE("Decoder.immediates")
     CHECK(function.body[4].a == 7);
 }
 
+TEST_CASE("Decoder.v128ConstGoesToSideTable")
+{
+    // v128.const 0x00 .. 0x0F, in a global's initializer and again (0x10 .. 0x1F) in a body.
+    auto const constant = [](uint8_t first) {
+        auto bytes = std::vector<uint8_t> { 0xFD, 0x0C };
+        for (auto const index: std::views::iota(0, 16))
+            bytes.push_back(static_cast<uint8_t>(first + index));
+        return bytes;
+    };
+    auto body = constant(0x10);
+    body.push_back(0x1A); // drop
+    auto const bytes = ModuleBuilder {}
+                           .type(FuncType {})
+                           .global(isoline::binary::GlobalType { .type = isoline::binary::V128,
+                                                                 .mutability = Mutability::Const },
+                                   constant(0x00))
+                           .function(0, {}, std::move(body))
+                           .build();
+    auto const module = decoded(bytes);
+    REQUIRE(module.v128Literals.size() == 2);
+    REQUIRE(module.globals.size() == 1);
+    REQUIRE(module.code.size() == 1);
+    auto const& global = module.globals[0].init[0];
+    auto const& local = module.code[0].body[0];
+    CHECK(global.opcode == Opcode::V128Const);
+    CHECK(global.a == 0);
+    CHECK(local.opcode == Opcode::V128Const);
+    CHECK(local.a == 1);
+    auto const first = isoline::binary::v128LiteralOf(module, global);
+    auto const second = isoline::binary::v128LiteralOf(module, local);
+    CHECK(std::to_integer<int>(first[0]) == 0x00);
+    CHECK(std::to_integer<int>(first[15]) == 0x0F);
+    CHECK(std::to_integer<int>(second[0]) == 0x10);
+    CHECK(std::to_integer<int>(second[15]) == 0x1F);
+
+    // Fewer than 16 bytes left is an unexpected end.
+    CHECK(errorOf(functionWith({ 0xFD, 0x0C, 0x00, 0x01, 0x02 })) == DecodeErrorCode::UnexpectedEnd);
+}
+
+TEST_CASE("Decoder.simdImmediates")
+{
+    auto body = std::vector<uint8_t> {
+        0xFD, 0x1B, 0x03,             // i32x4.extract_lane 3
+        0xFD, 0x54, 0x00, 0x08, 0x0F, // v128.load8_lane align=0 offset=8 lane 15
+        0xFD, 0x0D,                   // i8x16.shuffle, then its 16 lane bytes
+    };
+    for (auto const lane: std::views::iota(0, 16))
+        body.push_back(static_cast<uint8_t>(31 - lane));
+    auto const function = functionOf(functionWith(std::move(body)));
+    CHECK(function.body[0].opcode == Opcode::I32x4ExtractLane);
+    CHECK(function.body[0].lane == 3);
+    CHECK(function.body[1].opcode == Opcode::V128Load8Lane);
+    CHECK(function.body[1].a == 0);
+    CHECK(function.body[1].c == 8);
+    CHECK(function.body[1].lane == 15);
+    CHECK(function.body[2].opcode == Opcode::I8x16Shuffle);
+    CHECK(function.body[2].a == 0);
+    // A lane byte is a byte, never a LEB128: 0x80 is lane 128, which validation rejects.
+    auto const wide = functionOf(functionWith({ 0xFD, 0x15, 0x80, 0x1A }));
+    CHECK(wide.body[0].lane == 0x80);
+    CHECK(wide.body[1].opcode == Opcode::Drop);
+    // The memory argument of a lane access follows MemArg's rules.
+    CHECK(errorOf(functionWith({ 0xFD, 0x54, 0x20, 0x00, 0x00 })) == DecodeErrorCode::MalformedMemopFlags);
+}
+
 TEST_CASE("Decoder.prefixed")
 {
     auto const function = functionOf(functionWith({ 0xFC, 0x0A, 0x00, 0x00, 0xFC, 0x0B, 0x00 }));
@@ -1099,6 +1164,10 @@ std::vector<uint8_t> instructionOf(isoline::binary::OpcodeInfo const& row)
         case ImmediateKind::F64Const: bytes.insert(bytes.end(), 8, 0x00); break;
         case ImmediateKind::HeapType: bytes.push_back(0x70); break;
         case ImmediateKind::SelectTypes: bytes.insert(bytes.end(), { 0x01, 0x7F }); break;
+        case ImmediateKind::V128Const:
+        case ImmediateKind::Shuffle: bytes.insert(bytes.end(), 16, 0x00); break;
+        case ImmediateKind::LaneIndex: bytes.push_back(0x00); break;
+        case ImmediateKind::MemArgLane: bytes.insert(bytes.end(), { 0x00, 0x00, 0x00 }); break;
     }
     return bytes;
 }

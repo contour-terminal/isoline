@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -839,4 +840,185 @@ TEST_CASE("ReferenceInterpreter.hostExceptionUnwindsInvocationCount")
     shouldThrow = false;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
     CHECK(reentries == ReferenceInterpreter::MaxNestedInvocations);
+}
+
+namespace
+{
+
+constexpr auto TypeV128 = isoline::binary::V128;
+
+/// A SIMD instruction: the 0xFD prefix, then @p subOpcode as a u32.
+Bytes simd(uint32_t subOpcode)
+{
+    return code({ { 0xFD }, encodeU32(subOpcode) });
+}
+
+/// A SIMD load or store of @p subOpcode with alignment @p align and offset @p offset.
+Bytes vectorAccess(uint32_t subOpcode, uint32_t align, uint32_t offset)
+{
+    return code({ simd(subOpcode), encodeU32(align), encodeU32(offset) });
+}
+
+/// v128.const of the 16 bytes @p first, @p first + 1, …
+Bytes v128Const(uint8_t first)
+{
+    auto out = simd(0x0C);
+    for (auto const index: std::views::iota(0, 16))
+        out.push_back(static_cast<uint8_t>(first + index));
+    return out;
+}
+
+/// v128.const of 16 zero bytes.
+Bytes v128Zero()
+{
+    return code({ simd(0x0C), Bytes(16, 0x00) });
+}
+
+/// A vector value of the two halves @p low and @p high.
+Value v128(uint64_t low, uint64_t high)
+{
+    return isoline::runtime::V128 { .lanes = { low, high } };
+}
+
+} // namespace
+
+TEST_CASE("Interpreter.v128LoadAtMemoryEnd")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, { TypeV128 }))
+        .memory(atLeast(1))
+        .function(0, {}, code({ localGet(0), vectorAccess(0x00, 4, 0) })) // v128.load
+        .function(
+            0, {}, code({ localGet(0), v128Const(0), vectorAccess(0x56, 2, 0), { 0x00 } })); // load32_lane 0
+    auto harness = Harness { builder };
+    CHECK(harness.result(0, { i32(65520) }) == v128(0, 0));
+    CHECK(harness.trap(0, { i32(65521) }) == TrapCode::OutOfBoundsMemoryAccess);
+    CHECK(harness.result(1, { i32(65532) }) == v128(0x0706'0504'0000'0000, 0x0F0E'0D0C'0B0A'0908));
+    CHECK(harness.trap(1, { i32(65533) }) == TrapCode::OutOfBoundsMemoryAccess);
+}
+
+TEST_CASE("Interpreter.vectorLoads")
+{
+    // Memory 0 .. 15: F0 81 82 03 84 85 86 87 08 09 0A 0B 0C 0D 0E 0F.
+    auto const data = code({ { 0x00 },
+                             i32Const(0),
+                             { 0x0B, 0x10 },
+                             { 0xF0, 0x81, 0x82, 0x03, 0x84, 0x85, 0x86, 0x87 },
+                             { 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F } });
+    struct Case
+    {
+        Bytes code;
+        Value expected;
+    };
+    auto const cases = std::to_array<Case>({
+        // v128.load and the six widening loads, at 0.
+        { .code = code({ i32Const(0), vectorAccess(0x00, 0, 0) }),
+          .expected = v128(0x8786'8584'0382'81F0, 0x0F0E'0D0C'0B0A'0908) },
+        { .code = code({ i32Const(0), vectorAccess(0x01, 0, 0) }),
+          .expected = v128(0x0003'FF82'FF81'FFF0, 0xFF87'FF86'FF85'FF84) },
+        { .code = code({ i32Const(0), vectorAccess(0x02, 0, 0) }),
+          .expected = v128(0x0003'0082'0081'00F0, 0x0087'0086'0085'0084) },
+        { .code = code({ i32Const(0), vectorAccess(0x03, 0, 0) }),
+          .expected = v128(0x0000'0382'FFFF'81F0, 0xFFFF'8786'FFFF'8584) },
+        { .code = code({ i32Const(0), vectorAccess(0x04, 0, 0) }),
+          .expected = v128(0x0000'0382'0000'81F0, 0x0000'8786'0000'8584) },
+        { .code = code({ i32Const(0), vectorAccess(0x05, 0, 0) }),
+          .expected = v128(0x0000'0000'0382'81F0, 0xFFFF'FFFF'8786'8584) },
+        { .code = code({ i32Const(0), vectorAccess(0x06, 0, 0) }),
+          .expected = v128(0x0000'0000'0382'81F0, 0x0000'0000'8786'8584) },
+        // The four splats.
+        { .code = code({ i32Const(1), vectorAccess(0x07, 0, 0) }),
+          .expected = v128(0x8181'8181'8181'8181, 0x8181'8181'8181'8181) },
+        { .code = code({ i32Const(0), vectorAccess(0x08, 0, 0) }),
+          .expected = v128(0x81F0'81F0'81F0'81F0, 0x81F0'81F0'81F0'81F0) },
+        { .code = code({ i32Const(0), vectorAccess(0x09, 0, 4) }),
+          .expected = v128(0x8786'8584'8786'8584, 0x8786'8584'8786'8584) },
+        { .code = code({ i32Const(8), vectorAccess(0x0A, 0, 0) }),
+          .expected = v128(0x0F0E'0D0C'0B0A'0908, 0x0F0E'0D0C'0B0A'0908) },
+        // The two zero-extending loads.
+        { .code = code({ i32Const(0), vectorAccess(0x5C, 0, 0) }), .expected = v128(0x0382'81F0, 0) },
+        { .code = code({ i32Const(8), vectorAccess(0x5D, 0, 0) }),
+          .expected = v128(0x0F0E'0D0C'0B0A'0908, 0) },
+        // v128.load16_lane 7 into a zero vector; v128.load8_lane 0 into the bytes 0x30 ….
+        { .code = code({ i32Const(0), v128Zero(), vectorAccess(0x55, 0, 0), { 0x07 } }),
+          .expected = v128(0, 0x81F0'0000'0000'0000) },
+        { .code = code({ i32Const(1), v128Const(0x30), vectorAccess(0x54, 0, 0), { 0x00 } }),
+          .expected = v128(0x3736'3534'3332'3181, 0x3F3E'3D3C'3B3A'3938) },
+    });
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeV128 })).memory(atLeast(1)).data(data);
+    for (auto const& testCase: cases)
+        builder.function(0, {}, testCase.code);
+    auto harness = Harness { builder };
+    auto index = uint32_t { 0 };
+    for (auto const& testCase: cases)
+    {
+        INFO("case " << index);
+        CHECK(harness.result(index) == testCase.expected);
+        ++index;
+    }
+}
+
+TEST_CASE("Interpreter.vectorStores")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, { TypeI64 }))
+        .memory(atLeast(1))
+        // v128.store at 0, v128.store8_lane 5 at 32, v128.store64_lane 1 at 40, all of 00 .. 0F.
+        .function(0,
+                  {},
+                  code({ i32Const(0),
+                         v128Const(0),
+                         vectorAccess(0x0B, 4, 0),
+                         i32Const(32),
+                         v128Const(0),
+                         vectorAccess(0x58, 0, 0),
+                         { 0x05 },
+                         i32Const(40),
+                         v128Const(0),
+                         vectorAccess(0x5B, 3, 0),
+                         { 0x01 } }))
+        .function(1, {}, code({ localGet(0), memoryAccess(0x29, 3, 0) })) // i64.load
+        // v128.store32_lane 0 at the last three bytes.
+        .function(0, {}, code({ i32Const(65533), v128Zero(), vectorAccess(0x5A, 0, 0), { 0x00 } }));
+    auto harness = Harness { builder };
+    REQUIRE(harness.invoke(0).has_value());
+    CHECK(harness.result(1, { i32(0) }) == Value { I64 { 0x0706'0504'0302'0100 } });
+    CHECK(harness.result(1, { i32(8) }) == Value { I64 { 0x0F0E'0D0C'0B0A'0908 } });
+    CHECK(harness.result(1, { i32(32) }) == Value { I64 { 0x05 } });
+    CHECK(harness.result(1, { i32(40) }) == Value { I64 { 0x0F0E'0D0C'0B0A'0908 } });
+    CHECK(harness.trap(2) == TrapCode::OutOfBoundsMemoryAccess);
+}
+
+TEST_CASE("Interpreter.vectorOperators")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeV128 }))
+        .type(signature({}, { TypeI32 }))
+        .global(GlobalType { .type = TypeV128, .mutability = Mutability::Const }, v128Const(0x40))
+        .function(0, {}, code({ v128Const(0x00), simd(0x4D) }))                              // 0 v128.not
+        .function(0, {}, code({ v128Const(0xF0), v128Const(0x0F), simd(0x4F) }))             // 1 v128.andnot
+        .function(0, {}, code({ v128Const(0x00), v128Zero(), v128Const(0xF0), simd(0x52) })) // 2 bitselect
+        .function(1, {}, code({ v128Zero(), simd(0x53) }))                                   // 3 any_true
+        .function(0, {}, code({ v128Const(0x00), i32Const(33), simd(0xAB) }))                // 4 i32x4.shl
+        .function(0, {}, code({ i32Const(0x1234'5678), simd(0x11) }))                        // 5 i32x4.splat
+        .function(0, {}, code({ v128Zero(), i64Const(7), simd(0x1E), { 0x01 } })) // 6 replace_lane 1
+        .function(1, {}, code({ v128Const(0x80), simd(0x15), { 0x0F } }))         // 7 extract_lane_s 15
+        .function(
+            0, {}, code({ v128Const(0x00), v128Const(0x10), simd(0x0D), Bytes(8, 0x1F), Bytes(8, 0x01) }))
+        .function(0, {}, code({ { 0x23, 0x00 } })); // 9 global.get of a v128.const global
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == v128(0xF8F9'FAFB'FCFD'FEFF, 0xF0F1'F2F3'F4F5'F6F7));
+    // andnot: F0 .. FF and not 0F .. 1E; the first operand is the lower on the stack.
+    CHECK(harness.result(1) == v128(0xE1E2'E1E4'E1E2'E1F0, 0xE1E2'E1E4'E1E2'E1E8));
+    // bitselect of 00 .. 0F and zero by the mask F0 .. FF: each byte's low nibble from the first.
+    CHECK(harness.result(2) == v128(0x0706'0504'0302'0100, 0x0F0E'0D0C'0B0A'0908));
+    CHECK(harness.result(3) == i32(0));
+    CHECK(harness.result(4) == v128(0x0E0C'0A08'0604'0200, 0x1E1C'1A18'1614'1210));
+    CHECK(harness.result(5) == v128(0x1234'5678'1234'5678, 0x1234'5678'1234'5678));
+    CHECK(harness.result(6) == v128(0, 7));
+    CHECK(harness.result(7) == i32(static_cast<int32_t>(0xFFFF'FF8F)));
+    CHECK(harness.result(8) == v128(0x1F1F'1F1F'1F1F'1F1F, 0x0101'0101'0101'0101));
+    CHECK(harness.result(9) == v128(0x4746'4544'4342'4140, 0x4F4E'4D4C'4B4A'4948));
 }

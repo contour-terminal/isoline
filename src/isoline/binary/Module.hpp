@@ -4,6 +4,7 @@
 #include <core/Assert.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -63,20 +64,21 @@ struct Instruction
     /// The first immediate: the index for LabelIndex, FunctionIndex, LocalIndex, GlobalIndex,
     /// TableIndex, ElemIndex, MemoryIndex and DataIndex; the type index for CallIndirect and for a
     /// block type of the TypeIndex form; the destination for TableCopy and MemoryCopy; the segment
-    /// for TableInit and MemoryInit; MemArg::align for MemArg; and the offset of the instruction's
-    /// run in Function::brTableLabels for LabelTable, or in Function::selectTypes for SelectTypes.
+    /// for TableInit and MemoryInit; MemArg::align for MemArg and MemArgLane; the offset of the
+    /// instruction's run in Function::brTableLabels for LabelTable, or in Function::selectTypes for
+    /// SelectTypes; and the index of its 16 bytes in Module::v128Literals for V128Const and Shuffle.
     uint32_t a = 0;
 
     /// The second immediate: the table for CallIndirect and TableInit, the memory for MemoryInit,
-    /// the source for TableCopy and MemoryCopy, MemArg::memory for MemArg, and the length of the
-    /// instruction's run for LabelTable (the default label included) and SelectTypes.
+    /// the source for TableCopy and MemoryCopy, MemArg::memory for MemArg and MemArgLane, and the length of
+    /// the instruction's run for LabelTable (the default label included) and SelectTypes.
     uint32_t b = 0;
 
     /// For block, loop, if and else: the index in the function body of the matching end.
     uint32_t endIndex = 0;
 
     /// The wide immediate: the raw bits of I32Const, I64Const, F32Const and F64Const (an i32 or f32
-    /// zero-extended), and MemArg::offset for MemArg.
+    /// zero-extended), and MemArg::offset for MemArg and MemArgLane.
     uint64_t c = 0;
 
     /// For if: the index of the matching else, or endIndex when there is none.
@@ -98,8 +100,9 @@ static_assert(std::is_trivially_copyable_v<Instruction>, "an Instruction must ow
 
 // Every instruction takes at least one byte of input, so 40 bytes bound a decoded body at 40 times
 // its encoding: linear in what the guest supplies. 40 is what the members need once packed: the
-// 8-byte wide immediate, a 12-byte ValueType, four 4-byte fields, the two one-byte enums and the
-// lane byte. Adding a member must not grow it; give a rare, long immediate a side table instead.
+// 8-byte wide immediate, a 12-byte ValueType, four 4-byte fields, the 2-byte opcode, the one-byte
+// block kind and the lane byte. Adding a member must not grow it; give a rare, long immediate a side
+// table instead, as v128.const's 16 bytes have (Module::v128Literals).
 static_assert(sizeof(Instruction) <= 40, "an Instruction must stay compact");
 
 /// A run of locals of one type, as the code section declares them.
@@ -271,6 +274,11 @@ struct Module
     std::vector<DataSegment> data;        ///< The data section.
     std::vector<CustomSection> customs;   ///< Every custom section, in module order.
 
+    /// The 16 immediate bytes of every v128.const and i8x16.shuffle, in the order the decoder read
+    /// them, constant expressions included; such an instruction's Instruction::a indexes this.
+    /// Kept beside the code, as 16 bytes would more than double every Instruction.
+    std::vector<std::array<std::byte, 16>> v128Literals;
+
     /// How many imports of @p kind the module has; they precede the defined entities of that kind
     /// in its index space.
     /// @param kind The kind of entity to count.
@@ -281,5 +289,21 @@ struct Module
             std::ranges::count_if(imports, [kind](Import const& entry) { return entry.kind == kind; }));
     }
 };
+
+/// The 16 immediate bytes of a v128.const or i8x16.shuffle of @p module: a v128.const's vector,
+/// lowest lane byte first, or a shuffle's 16 lane indices.
+///
+/// Precondition (checked): @p instruction is a v128.const or i8x16.shuffle of @p module, so its
+/// index lies within Module::v128Literals; any other instruction's a means something else.
+/// @param module The module whose code holds @p instruction.
+/// @param instruction A v128.const or i8x16.shuffle.
+/// @return Its entry of Module::v128Literals.
+[[nodiscard]] inline std::span<std::byte const, 16> v128LiteralOf(Module const& module,
+                                                                  Instruction const& instruction) noexcept
+{
+    Require(instruction.opcode == Opcode::V128Const || instruction.opcode == Opcode::I8x16Shuffle);
+    Require(instruction.a < module.v128Literals.size());
+    return std::span<std::byte const, 16> { module.v128Literals[instruction.a] };
+}
 
 } // namespace isoline::binary

@@ -40,6 +40,10 @@ enum class ImmediateKind : uint8_t
     F64Const,      ///< A little-endian 64-bit float.
     HeapType,      ///< A heap type (ref.null).
     SelectTypes,   ///< A vector of value types (typed select).
+    V128Const,     ///< 16 raw bytes: the vector, lowest lane byte first (v128.const).
+    Shuffle,       ///< 16 lane index bytes, each below 32 (i8x16.shuffle).
+    LaneIndex,     ///< One lane index byte (extract_lane, replace_lane).
+    MemArgLane,    ///< A memory argument as MemArg, then one lane index byte (load and store lane).
 };
 
 /// The operand and result types of an opcode whose typing is fixed, for the validator.
@@ -81,10 +85,26 @@ enum class OpcodeSignature : uint8_t
     F64F64ToF64,
     I64I64ToI64I64,       ///< i64.mul_wide_s and _u: two i64 to a 128-bit {low, high} pair.
     I64I64I64I64ToI64I64, ///< i64.add128 and sub128: two {low, high} pairs to one.
+    ToV128,               ///< v128.const.
+    V128ToV128,           ///< Lane-wise unary operators and conversions.
+    V128V128ToV128,       ///< Lane-wise binary operators, comparisons, shuffle and swizzle.
+    V128V128V128ToV128,   ///< v128.bitselect.
+    V128ToI32,            ///< Tests (any_true, all_true, bitmask) and the i8, i16 and i32 extract_lane.
+    V128ToI64,            ///< i64x2.extract_lane.
+    V128ToF32,            ///< f32x4.extract_lane.
+    V128ToF64,            ///< f64x2.extract_lane.
+    I32ToV128,            ///< The i8, i16 and i32 splats.
+    I64ToV128,            ///< i64x2.splat.
+    F32ToV128,            ///< f32x4.splat.
+    F64ToV128,            ///< f64x2.splat.
+    V128I32ToV128,        ///< Shifts, and the i8, i16 and i32 replace_lane.
+    V128I64ToV128,        ///< i64x2.replace_lane.
+    V128F32ToV128,        ///< f32x4.replace_lane.
+    V128F64ToV128,        ///< f64x2.replace_lane.
 };
 
 /// The last OpcodeSignature enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastOpcodeSignature = OpcodeSignature::I64I64I64I64ToI64I64;
+inline constexpr auto LastOpcodeSignature = OpcodeSignature::V128F64ToV128;
 
 /// One row of SignatureTable: the value kinds an OpcodeSignature pops and pushes.
 ///
@@ -135,6 +155,31 @@ namespace detail
         return SignatureRow { .signature = signature,
                               .params = { param, param },
                               .paramCount = 2,
+                              .results = { result },
+                              .resultCount = 1 };
+    }
+
+    /// The row of a signature popping @p first, then @p second, and pushing one @p result.
+    [[nodiscard]] consteval SignatureRow mixedRow(OpcodeSignature signature,
+                                                  ValueKind first,
+                                                  ValueKind second,
+                                                  ValueKind result) noexcept
+    {
+        return SignatureRow { .signature = signature,
+                              .params = { first, second },
+                              .paramCount = 2,
+                              .results = { result },
+                              .resultCount = 1 };
+    }
+
+    /// The row of a signature popping three @p param and pushing one @p result.
+    [[nodiscard]] consteval SignatureRow ternaryRow(OpcodeSignature signature,
+                                                    ValueKind param,
+                                                    ValueKind result) noexcept
+    {
+        return SignatureRow { .signature = signature,
+                              .params = { param, param, param },
+                              .paramCount = 3,
                               .results = { result },
                               .resultCount = 1 };
     }
@@ -192,6 +237,22 @@ inline constexpr auto SignatureTable = std::to_array<SignatureRow>({
     detail::binaryRow(OpcodeSignature::F64F64ToF64, ValueKind::F64, ValueKind::F64),
     detail::wideRow(OpcodeSignature::I64I64ToI64I64, 2),
     detail::wideRow(OpcodeSignature::I64I64I64I64ToI64I64, 4),
+    detail::nullaryRow(OpcodeSignature::ToV128, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::V128ToV128, ValueKind::V128, ValueKind::V128),
+    detail::binaryRow(OpcodeSignature::V128V128ToV128, ValueKind::V128, ValueKind::V128),
+    detail::ternaryRow(OpcodeSignature::V128V128V128ToV128, ValueKind::V128, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::V128ToI32, ValueKind::V128, ValueKind::I32),
+    detail::unaryRow(OpcodeSignature::V128ToI64, ValueKind::V128, ValueKind::I64),
+    detail::unaryRow(OpcodeSignature::V128ToF32, ValueKind::V128, ValueKind::F32),
+    detail::unaryRow(OpcodeSignature::V128ToF64, ValueKind::V128, ValueKind::F64),
+    detail::unaryRow(OpcodeSignature::I32ToV128, ValueKind::I32, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::I64ToV128, ValueKind::I64, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::F32ToV128, ValueKind::F32, ValueKind::V128),
+    detail::unaryRow(OpcodeSignature::F64ToV128, ValueKind::F64, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128I32ToV128, ValueKind::V128, ValueKind::I32, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128I64ToV128, ValueKind::V128, ValueKind::I64, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128F32ToV128, ValueKind::V128, ValueKind::F32, ValueKind::V128),
+    detail::mixedRow(OpcodeSignature::V128F64ToV128, ValueKind::V128, ValueKind::F64, ValueKind::V128),
 });
 
 static_assert(
@@ -217,9 +278,8 @@ static_assert(
 
 /// Every instruction Isoline decodes, one enumerator per row of Opcodes.def, in its order.
 ///
-/// The 205 rows so far fit a byte; the SIMD rows will not, and the compiler rejects an enumerator
-/// past 255, so the base type widens to uint16_t with them.
-enum class Opcode : uint8_t
+/// The 441 rows do not fit a byte, so the base type is uint16_t.
+enum class Opcode : uint16_t
 {
 #define ISOLINE_OPCODE(Name, Prefix, Code, Text, Immediate, Signature, Proposal) Name,
 #include <isoline/binary/Opcodes.def>
@@ -268,8 +328,8 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
-static_assert(OpcodeCount == 205,
-              "every non-SIMD WebAssembly 2.0 instruction (201) and the four of wide arithmetic");
+static_assert(OpcodeCount == 441,
+              "every non-SIMD WebAssembly 2.0 instruction (201), SIMD's 236 and wide arithmetic's four");
 
 /// What the table knows about @p opcode.
 /// @param opcode The instruction to describe.

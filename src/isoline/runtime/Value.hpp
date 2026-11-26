@@ -2,7 +2,10 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <ranges>
+#include <span>
 #include <type_traits>
 #include <variant>
 
@@ -51,6 +54,32 @@ struct V128
 
     bool operator==(V128 const&) const = default;
 };
+
+/// The vector whose bytes, lowest lane byte first, are @p bytes: as memory and v128.const hold one.
+///
+/// Composed byte by byte, so the result is the same on hosts of either byte order.
+/// @param bytes The 16 bytes, byte 0 the lowest byte of lane 0.
+/// @return The vector.
+[[nodiscard]] constexpr V128 v128FromBytes(std::span<std::byte const, 16> bytes) noexcept
+{
+    auto vector = V128 {};
+    for (auto const index: std::views::iota(std::size_t { 0 }, bytes.size()))
+        vector.lanes[index / 8] |= uint64_t { std::to_integer<uint8_t>(bytes[index]) } << (8U * (index % 8));
+    return vector;
+}
+
+/// The bytes of @p vector, lowest lane byte first: as memory and v128.const hold it.
+///
+/// Decomposed byte by byte, so the result is the same on hosts of either byte order.
+/// @param vector The vector.
+/// @return Its 16 bytes, byte 0 the lowest byte of lane 0.
+[[nodiscard]] constexpr std::array<std::byte, 16> v128ToBytes(V128 vector) noexcept
+{
+    auto bytes = std::array<std::byte, 16> {};
+    for (auto const index: std::views::iota(std::size_t { 0 }, bytes.size()))
+        bytes[index] = static_cast<std::byte>(vector.lanes[index / 8] >> (8U * (index % 8)));
+    return bytes;
+}
 
 /// What a reference refers to.
 enum class RefKind : uint8_t

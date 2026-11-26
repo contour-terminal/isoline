@@ -13,6 +13,7 @@ target_sources(isoline_core
         binary/Opcode.cpp
         interp/Numerics.cpp
         interp/ReferenceInterpreter.cpp
+        interp/Simd.cpp
         runtime/Instantiate.cpp
         runtime/Store.cpp
         validate/Validator.cpp
@@ -30,6 +31,7 @@ target_sources(isoline_core
             binary/Types.hpp
             interp/Numerics.hpp
             interp/ReferenceInterpreter.hpp
+            interp/Simd.hpp
             runtime/Instantiate.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
