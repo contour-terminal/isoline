@@ -25,6 +25,7 @@
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/ValueCheck.hpp>
 
 namespace isoline::runtime
 {
@@ -315,9 +316,9 @@ TagAddr Store::addTag(TypeId typeId)
 std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value> payload)
 {
     Require(tag < _tags.size());
-    // A host may allocate one, so its payload is checked as host results are: what a handler pushes
-    // is read by the tag's params.
-    Require(haveKinds(payload, type(_tags[tag].typeId).params));
+    // A host may allocate one, so its payload is checked as host results are, references included:
+    // what a handler pushes is read by the tag's params, and no forged funcref or exnref may enter.
+    Require(checkValues(*this, payload, type(_tags[tag].typeId).params).has_value());
     if (_exceptions.size() >= _limits.maxExceptions
         || payload.size() > _limits.maxExceptionValues - _exceptionValues)
         return trap(TrapCode::ExceptionLimitExceeded);
@@ -366,6 +367,16 @@ StoreLimits const& Store::limits() const noexcept
 std::size_t Store::moduleInstanceCount() const noexcept
 {
     return _moduleInstances.size();
+}
+
+std::size_t Store::functionCount() const noexcept
+{
+    return _functions.size();
+}
+
+bool Store::isLiveException(ExnAddr address) const noexcept
+{
+    return address < _exceptions.size();
 }
 
 std::size_t Store::memoryCount() const noexcept

@@ -19,6 +19,7 @@ target_sources(isoline_core
         runtime/Instantiate.cpp
         runtime/LinearMemory.cpp
         runtime/Store.cpp
+        runtime/ValueCheck.cpp
         validate/Subtyping.cpp
         validate/ValidatedModule.cpp
         validate/Validator.cpp
@@ -47,6 +48,7 @@ target_sources(isoline_core
             runtime/Store.hpp
             runtime/Trap.hpp
             runtime/Value.hpp
+            runtime/ValueCheck.hpp
             validate/Subtyping.hpp
             validate/ValidatedModule.hpp
             validate/ValidationError.hpp

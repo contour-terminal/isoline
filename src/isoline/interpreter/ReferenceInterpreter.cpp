@@ -30,6 +30,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/ValueCheck.hpp>
 
 namespace isoline::interpreter
 {
@@ -53,7 +54,6 @@ namespace
     using runtime::fits;
     using runtime::FuncAddr;
     using runtime::FunctionInstance;
-    using runtime::haveKinds;
     using runtime::I32;
     using runtime::I64;
     using runtime::ModuleInstance;
@@ -220,7 +220,8 @@ namespace
         [[nodiscard]] Step run(FuncAddr function, std::span<Value const> args, std::span<Value> results)
         {
             auto const& type = _store.functionType(function);
-            Require(haveKinds(args, type.params));
+            // The caller's to check: arguments of the function's types, references in this store.
+            Require(runtime::checkValues(_store, args, type.params).has_value());
             Require(results.size() == type.results.size());
             _values.assign(args.begin(), args.end());
             if (auto const entered = call(function); !entered)
@@ -349,7 +350,8 @@ namespace
                     return unwind(thrown->exception);
                 return std::unexpected { done.error() };
             }
-            Require(haveKinds(results, type.results));
+            // A host's results are checked as arguments are, so none outside this store enters.
+            Require(runtime::checkValues(_store, results, type.results).has_value());
             _values.insert(_values.end(), results.begin(), results.end());
             return {};
         }

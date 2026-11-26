@@ -281,7 +281,7 @@ class Store
 
     /// Allocates an exception, as throw does, or as a host function may to throw one.
     /// @param tag The tag it is thrown with; must exist (checked).
-    /// @param payload The values it carries: one of each of the tag's params' kinds (checked).
+    /// @param payload The values it carries, of the tag's params' types (checkValues(), checked).
     /// @return Its address, or ExceptionLimitExceeded when the store holds StoreLimits::maxExceptions
     ///         exceptions already, or their payloads would exceed StoreLimits::maxExceptionValues.
     [[nodiscard]] std::expected<ExnAddr, Trap> addException(TagAddr tag, std::vector<Value> payload);
@@ -309,6 +309,16 @@ class Store
     /// How many module instances the store holds.
     /// @return Their count.
     [[nodiscard]] std::size_t moduleInstanceCount() const noexcept;
+
+    /// How many functions the store holds: every FuncAddr below it exists.
+    /// @return Their count.
+    [[nodiscard]] std::size_t functionCount() const noexcept;
+
+    /// Whether @p address names an exception this store holds, which an exnref may refer to: one it
+    /// allocated (addException()). A host's address of an exception it never allocated is not.
+    /// @param address The exception's address.
+    /// @return Whether it is below the arena's count.
+    [[nodiscard]] bool isLiveException(ExnAddr address) const noexcept;
 
     /// How many memories the store holds.
     /// @return Their count.
