@@ -8,10 +8,21 @@ add_library(isoline::core ALIAS isoline_core)
 target_sources(isoline_core
     PRIVATE
         Version.cpp
+        binary/ByteReader.cpp
+        binary/Decoder.cpp
+        binary/Opcode.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
         FILES
             Features.hpp
+            binary/ByteReader.hpp
+            binary/DecodeError.hpp
+            binary/MemoryAccess.hpp
+            binary/Decoder.hpp
+            binary/Module.hpp
+            binary/Opcode.hpp
+            binary/Opcodes.def
+            binary/Types.hpp
             Version.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
