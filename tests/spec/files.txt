@@ -7,7 +7,6 @@
 # does its CTest test; a new skip is a deliberate edit here, never a silent one. A row
 # `<source> <path> exclude <reason…>` names a file that is deliberately not imported, and why.
 # docs/conformance.md lists every exclusion and every skip of the GC cut.
-wasm2 core/align                    46
 wasm2 core/binary                   0
 wasm2 core/binary-leb128            0
 wasm2 core/br_if                    0
@@ -30,6 +29,7 @@ wasm2 core/unreached-valid          0
 wasm2 core/utf8-custom-section-id   0
 wasm2 core/utf8-invalid-encoding    176
 wasm3 core/address                  1
+wasm3 core/align                    46
 wasm3 core/annotations              70
 wasm3 core/block                    15
 wasm3 core/br                       0
@@ -103,6 +103,47 @@ wasm3 core/memory_grow              0
 wasm3 core/memory_redundancy        0
 wasm3 core/memory_size              0
 wasm3 core/memory_trap              0
+wasm3 core/multi-memory/address0    0
+wasm3 core/multi-memory/address1    0
+wasm3 core/multi-memory/align0      0
+wasm3 core/multi-memory/binary0     0
+wasm3 core/multi-memory/data0       0
+wasm3 core/multi-memory/data1       0
+wasm3 core/multi-memory/data_drop0  0
+wasm3 core/multi-memory/exports0    0
+wasm3 core/multi-memory/float_exprs0 0
+wasm3 core/multi-memory/float_exprs1 0
+wasm3 core/multi-memory/float_memory0 0
+wasm3 core/multi-memory/imports0    0
+wasm3 core/multi-memory/imports1    0
+wasm3 core/multi-memory/imports2    0
+wasm3 core/multi-memory/imports3    0
+wasm3 core/multi-memory/imports4    0
+wasm3 core/multi-memory/linking0    0
+wasm3 core/multi-memory/linking1    0
+wasm3 core/multi-memory/linking2    0
+wasm3 core/multi-memory/linking3    0
+wasm3 core/multi-memory/load0       0
+wasm3 core/multi-memory/load1       0
+wasm3 core/multi-memory/load2       0
+wasm3 core/multi-memory/memory-multi 0
+wasm3 core/multi-memory/memory_copy0 0
+wasm3 core/multi-memory/memory_copy1 0
+wasm3 core/multi-memory/memory_fill0 0
+wasm3 core/multi-memory/memory_grow 0
+wasm3 core/multi-memory/memory_init0 0
+wasm3 core/multi-memory/memory_size0 0
+wasm3 core/multi-memory/memory_size1 0
+wasm3 core/multi-memory/memory_size2 0
+wasm3 core/multi-memory/memory_size3 0
+wasm3 core/multi-memory/memory_size_import 0
+wasm3 core/multi-memory/memory_trap0 0
+wasm3 core/multi-memory/memory_trap1 0
+wasm3 core/multi-memory/start0      0
+wasm3 core/multi-memory/store0      0
+wasm3 core/multi-memory/store1      0
+wasm3 core/multi-memory/store2      0
+wasm3 core/multi-memory/traps0      0
 wasm3 core/names                    0
 wasm3 core/nop                      0
 wasm3 core/obsolete-keywords        11
@@ -166,6 +207,7 @@ wasm3 core/simd/simd_load8_lane     0
 wasm3 core/simd/simd_load_extend    6
 wasm3 core/simd/simd_load_splat     4
 wasm3 core/simd/simd_load_zero      6
+wasm3 core/simd/simd_memory-multi   0
 wasm3 core/simd/simd_select         0
 wasm3 core/simd/simd_splat          1
 wasm3 core/simd/simd_store          3

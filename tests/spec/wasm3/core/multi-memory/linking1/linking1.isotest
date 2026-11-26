@@ -1,0 +1,14 @@
+module linking1.0.wasm 4d6d
+register 4d6d 4d6d
+module linking1.1.wasm 4e6d
+assert_return invoke 6c6f6164 4d6d i32:c -> i32:2
+assert_return invoke 4d6d2e6c6f6164 4e6d i32:c -> i32:2
+assert_return invoke 6c6f6164 4e6d i32:c -> i32:f2
+module linking1.2.wasm 4f6d
+assert_return invoke 6c6f6164 4d6d i32:c -> i32:a7
+assert_return invoke 4d6d2e6c6f6164 4e6d i32:c -> i32:a7
+assert_return invoke 6c6f6164 4e6d i32:c -> i32:f2
+assert_return invoke 6c6f6164 4f6d i32:c -> i32:a7
+module linking1.3.wasm
+assert_uninstantiable linking1.4.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_uninstantiable linking1.5.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373

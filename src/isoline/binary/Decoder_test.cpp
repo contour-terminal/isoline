@@ -1075,6 +1075,123 @@ TEST_CASE("Decoder.missingEnd")
           == DecodeErrorCode::SectionSizeMismatch);
 }
 
+TEST_CASE("Decoder.memargWithMemoryIndex")
+{
+    // i32.const 0, i32.load flags=0x42 (alignment 2, a memory index follows) memory 3 offset 8, drop.
+    auto const load = std::vector<uint8_t> { 0x41, 0x00, 0x28, 0x42, 0x03, 0x08, 0x1A };
+    auto const function = functionOf(functionWith(load), FeatureSet::wasm3());
+    CHECK(function.body[1].opcode == Opcode::I32Load);
+    CHECK(function.body[1].a == 2);
+    CHECK(function.body[1].b == 3);
+    CHECK(function.body[1].c == 8);
+    // Below bit 6 the memory is 0, and the alignment field takes every value below 64, which the
+    // validator bounds by the natural alignment.
+    auto const implicit =
+        functionOf(functionWith({ 0x41, 0x00, 0x28, 0x3F, 0x08, 0x1A }), FeatureSet::wasm3());
+    CHECK(implicit.body[1].a == 63);
+    CHECK(implicit.body[1].b == 0);
+    // The memory index is a u32 like any other index.
+    CHECK(errorOf(functionWith({ 0x41, 0x00, 0x28, 0x42, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x00, 0x1A }),
+                  FeatureSet::wasm3())
+          == DecodeErrorCode::IntegerTooLarge);
+    // Without multi-memory the flags are 2.0's alignment exponent, below 32.
+    CHECK(errorOf(functionWith(load)) == DecodeErrorCode::MalformedMemopFlags);
+    CHECK(errorOf(functionWith(load), FeatureSet::wasm3().without(Feature::MultiMemory))
+          == DecodeErrorCode::MalformedMemopFlags);
+    // A lane access reads its memarg through the same reader: v128.load8_lane memory 2 offset 8 lane 15.
+    auto const lane =
+        functionOf(functionWith({ 0xFD, 0x54, 0x40, 0x02, 0x08, 0x0F }), FeatureSet::wasm3()).body[0];
+    CHECK(lane.opcode == Opcode::V128Load8Lane);
+    CHECK(lane.a == 0);
+    CHECK(lane.b == 2);
+    CHECK(lane.c == 8);
+    CHECK(lane.lane == 15);
+}
+
+TEST_CASE("Decoder.memoryIndexImmediates")
+{
+    auto const body = std::vector<uint8_t> {
+        0x3F, 0x03,             // memory.size 3
+        0x40, 0x04,             // memory.grow 4
+        0xFC, 0x0B, 0x05,       // memory.fill 5
+        0xFC, 0x0A, 0x06, 0x07, // memory.copy to 6, from 7
+        0xFC, 0x08, 0x00, 0x09, // memory.init data 0, memory 9
+    };
+    auto const bytes =
+        ModuleBuilder {}.type(FuncType {}).function(0, {}, body).dataCount(1).data({ 0x01, 0x00 }).build();
+    auto const function = functionOf(bytes, FeatureSet::wasm3());
+    CHECK(function.body[0].opcode == Opcode::MemorySize);
+    CHECK(function.body[0].a == 3);
+    CHECK(function.body[1].opcode == Opcode::MemoryGrow);
+    CHECK(function.body[1].a == 4);
+    CHECK(function.body[2].opcode == Opcode::MemoryFill);
+    CHECK(function.body[2].a == 5);
+    CHECK(function.body[3].opcode == Opcode::MemoryCopy);
+    CHECK(function.body[3].a == 6);
+    CHECK(function.body[3].b == 7);
+    CHECK(function.body[4].opcode == Opcode::MemoryInit);
+    CHECK(function.body[4].a == 0);
+    CHECK(function.body[4].b == 9);
+    // A memory index is a u32: 0x80 0x00 is an overlong zero, which multi-memory accepts.
+    CHECK(functionOf(functionWith({ 0x3F, 0x80, 0x00, 0x1A }), FeatureSet::wasm3()).body[0].a == 0);
+}
+
+TEST_CASE("Decoder.memopFlagsTooLarge")
+{
+    // i32.const 0, i32.load flags=0x80 (as the u32 LEB128 0x80 0x01) offset 0, drop.
+    CHECK(errorOf(functionWith({ 0x41, 0x00, 0x28, 0x80, 0x01, 0x00, 0x1A }), FeatureSet::wasm3())
+          == DecodeErrorCode::MalformedMemopFlags);
+    // The same for a lane access's memarg.
+    CHECK(errorOf(functionWith({ 0xFD, 0x54, 0x80, 0x01, 0x00, 0x00 }), FeatureSet::wasm3())
+          == DecodeErrorCode::MalformedMemopFlags);
+
+    // Each interpreter reports the flags at its own byte: 3.0 at the first, 2.0 at the last.
+    auto const offsetOfFlags = [](std::span<std::byte const> bytes) {
+        auto const load = std::to_array({ std::byte { 0x41 }, std::byte { 0x00 }, std::byte { 0x28 } });
+        return static_cast<std::size_t>(std::ranges::search(bytes, load).end() - bytes.begin());
+    };
+    auto const wide = functionWith({ 0x41, 0x00, 0x28, 0x80, 0x01, 0x00, 0x1A });
+    CHECK(decodeModule(wide, FeatureSet::wasm3()).error().offset == offsetOfFlags(wide));
+    auto const twoBytes = functionWith({ 0x41, 0x00, 0x28, 0xA0, 0x00, 0x00, 0x1A }); // 32
+    CHECK(decodeModule(twoBytes, FeatureSet::wasm2()).error().offset == offsetOfFlags(twoBytes) + 1);
+}
+
+TEST_CASE("Decoder.tooManyMemories")
+{
+    auto const importingMemories = [](uint32_t count) {
+        auto builder = ModuleBuilder {};
+        for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
+            builder.importMemory("m", "memory", Limits { .min = 0, .max = std::nullopt });
+        return builder;
+    };
+    CHECK(DecodeLimits {}.maxMemories == 100);
+    CHECK(errorOf(importingMemories(101).build(), FeatureSet::wasm3())
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(errorOf(importingMemories(100).build(), FeatureSet::wasm3()) == std::nullopt);
+    // The limit counts imports and definitions together.
+    CHECK(errorOf(importingMemories(100).memory(Limits { .min = 0, .max = std::nullopt }).build(),
+                  FeatureSet::wasm3())
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(errorOf(importingMemories(2).memory(Limits { .min = 0, .max = std::nullopt }).build(),
+                  FeatureSet::wasm3(),
+                  DecodeLimits { .maxMemories = 3 })
+          == std::nullopt);
+}
+
+TEST_CASE("Decoder.tableLimitCountsImports")
+{
+    auto const table = isoline::binary::TableType { .element = isoline::binary::FuncRef,
+                                                    .limits = Limits { .min = 0, .max = std::nullopt } };
+    auto builder = ModuleBuilder {};
+    builder.importTable("m", "t", table).importTable("m", "u", table);
+    CHECK(errorOf(builder.build(), FeatureSet::wasm2(), DecodeLimits { .maxTables = 1 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    builder.table(table);
+    CHECK(errorOf(builder.build(), FeatureSet::wasm2(), DecodeLimits { .maxTables = 2 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(errorOf(builder.build(), FeatureSet::wasm2(), DecodeLimits { .maxTables = 3 }) == std::nullopt);
+}
+
 TEST_CASE("Decoder.zeroByteExpected")
 {
     CHECK(errorOf(functionWith({ 0x3F, 0x01, 0x1A })) == DecodeErrorCode::ZeroByteExpected);

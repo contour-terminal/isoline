@@ -132,10 +132,9 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     // A block, or a body or constant expression, that ends in anything but end: else where no if
     // is open, or the next section's bytes when the final end is missing.
     { .code = DecodeErrorCode::EndOpcodeExpected, .specMessage = "END opcode expected" },
-    // WebAssembly 2.0: an alignment exponent of 32 or more (3.0 gives bit 6 to multi-memory).
+    // WebAssembly 2.0: an alignment exponent of 32 or more; multi-memory: flags of 0x80 or more.
     { .code = DecodeErrorCode::MalformedMemopFlags, .specMessage = "malformed memop flags" },
-    // Isoline's own: decodeModule refuses a FeatureSet not closed over FeatureRow::prerequisites, as
-    // Wasmtime refuses such a configuration.
+    // Isoline's own: decodeModule refuses a FeatureSet not closed over FeatureRow::prerequisites.
     { .code = DecodeErrorCode::MissingFeaturePrerequisite,
       .specMessage = "feature enabled without its prerequisite",
       .detail = DecodeErrorDetail::FeaturePrerequisite },

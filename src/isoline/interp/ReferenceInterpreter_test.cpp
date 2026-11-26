@@ -1114,3 +1114,116 @@ TEST_CASE("Interpreter.table64Instructions")
     CHECK(harness.result(1, { I64 { 2 } }) == i32(1));
     CHECK(harness.trap(1, { I64 { uint64_t { 1 } << 32 } }) == TrapCode::OutOfBoundsTableAccess);
 }
+
+namespace
+{
+
+/// A load or store of @p opcode byte from memory @p memory, with alignment exponent @p align and
+/// offset @p offset: the memarg's alignment field carries bit 6, a memory index follows.
+Bytes memoryAccessIn(uint8_t opcode, uint32_t memory, uint32_t align, uint32_t offset)
+{
+    return code({ { opcode }, encodeU32(align | 0x40), encodeU32(memory), encodeU32(offset) });
+}
+
+/// memory.copy from memory @p source to memory @p destination.
+Bytes memoryCopy(uint8_t destination, uint8_t source)
+{
+    return { 0xFC, 0x0A, destination, source };
+}
+
+/// A SIMD load or store of @p subOpcode on memory @p memory, with alignment @p align and offset
+/// @p offset: the memarg's alignment field carries bit 6, a memory index follows.
+Bytes vectorAccessIn(uint32_t subOpcode, uint32_t memory, uint32_t align, uint32_t offset)
+{
+    return code({ simd(subOpcode), encodeU32(align | 0x40), encodeU32(memory), encodeU32(offset) });
+}
+
+} // namespace
+
+TEST_CASE("Interpreter.laneAccessOnSecondMemory")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({}, { TypeV128 }))
+        .memory(atLeast(1))
+        .memory(atLeast(1))
+        // v128.store8_lane 5 of 30 .. 3F at 4 in memory 1.
+        .function(0, {}, code({ i32Const(4), v128Const(0x30), vectorAccessIn(0x58, 1, 0, 0), { 0x05 } }))
+        // v128.load8_lane 0 at 4 into a zero vector, from memory 1, then from memory 0.
+        .function(1, {}, code({ i32Const(4), v128Zero(), vectorAccessIn(0x54, 1, 0, 0), { 0x00 } }))
+        .function(1, {}, code({ i32Const(4), v128Zero(), vectorAccessIn(0x54, 0, 0, 0), { 0x00 } }));
+    auto harness = Harness { builder };
+    REQUIRE(harness.invoke(0).has_value());
+    CHECK(harness.result(1) == v128(0x35, 0));
+    CHECK(harness.result(2) == v128(0, 0));
+}
+
+TEST_CASE("Interpreter.copyBetweenMemories")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .memory(atLeast(1))
+        .memory(atLeast(1))
+        .function(0,
+                  {},
+                  code({ i32Const(0),
+                         i32Const(0x0403'0201),
+                         memoryAccess(0x36, 2, 0), // i32.store to memory 0
+                         i32Const(8),
+                         i32Const(0),
+                         i32Const(4),
+                         memoryCopy(1, 0),
+                         i32Const(8),
+                         memoryAccessIn(0x28, 1, 2, 0) }))                     // i32.load from memory 1
+        .function(0, {}, code({ i32Const(8), memoryAccess(0x28, 2, 0) }))      // memory 0 at 8
+        .function(0, {}, code({ i32Const(0), memoryAccessIn(0x28, 1, 2, 0) })) // memory 1 at 0
+        .function(0,
+                  {},
+                  code({ i32Const(static_cast<int32_t>(PageSize) - 2),
+                         i32Const(0),
+                         i32Const(4),
+                         memoryCopy(1, 0),
+                         i32Const(0) }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == i32(0x0403'0201));
+    CHECK(harness.result(1) == i32(0));
+    CHECK(harness.result(2) == i32(0));
+    CHECK(harness.trap(3) == TrapCode::OutOfBoundsMemoryAccess);
+}
+
+TEST_CASE("Interpreter.copyBetweenMixedAddressMemories")
+{
+    // Memory 0 has i64 addresses, memory 1 i32 ones; a copy's count is typed as the narrower side.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .memory(atLeast64(1))
+        .memory(atLeast(1))
+        .function(0,
+                  {},
+                  code({ i64Const(0),
+                         i32Const(0x0403'0201),
+                         memoryAccess(0x36, 2, 0), // i32.store to memory 0
+                         i32Const(8),              // destination: i32
+                         i64Const(0),              // source: i64
+                         i32Const(4),              // count: i32
+                         memoryCopy(1, 0),
+                         i32Const(8),
+                         memoryAccessIn(0x28, 1, 2, 0) }))
+        .function(0,
+                  {},
+                  code({ i64Const(16), // destination: i64
+                         i32Const(8),  // source: i32
+                         i32Const(4),  // count: i32
+                         memoryCopy(0, 1),
+                         i64Const(16),
+                         memoryAccess(0x28, 2, 0) }))
+        // A source past 2^32 is out of bounds, not truncated to 0.
+        .function(
+            0,
+            {},
+            code({ i32Const(0), i64Const(int64_t { 1 } << 32), i32Const(4), memoryCopy(1, 0), i32Const(0) }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == i32(0x0403'0201));
+    CHECK(harness.result(1) == i32(0x0403'0201));
+    CHECK(harness.trap(2) == TrapCode::OutOfBoundsMemoryAccess);
+}

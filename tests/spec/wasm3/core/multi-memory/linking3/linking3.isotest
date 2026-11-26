@@ -1,0 +1,14 @@
+module linking3.0.wasm 4d6d
+register 4d6d 4d6d
+assert_unlinkable linking3.1.wasm 756e6b6e6f776e20696d706f7274
+assert_return invoke 6c6f6164 4d6d i32:0 -> i32:0
+assert_uninstantiable linking3.2.wasm 6f7574206f6620626f756e6473206d656d6f727920616363657373
+assert_return invoke 6c6f6164 4d6d i32:0 -> i32:61
+assert_return invoke 6c6f6164 4d6d i32:4fff6 -> i32:0
+assert_uninstantiable linking3.3.wasm 6f7574206f6620626f756e6473207461626c6520616363657373
+assert_return invoke 6c6f6164 4d6d i32:0 -> i32:61
+module linking3.4.wasm 4d73
+register 4d73 4d73
+assert_uninstantiable linking3.5.wasm 756e726561636861626c65
+assert_return invoke 676574206d656d6f72795b305d 4d73 -> i32:68
+assert_return invoke 676574207461626c655b305d 4d73 -> i32:dead

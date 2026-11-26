@@ -255,8 +255,35 @@ namespace
     /// and u64 bounds. Without it the decoder keeps 2.0's grammar, as the 2.0 suite expects.
     constexpr auto LimitsGrammar3Feature = Feature::Memory64;
 
-    /// The alignment exponents WebAssembly 2.0 admits lie below this (spec decode.ml memop).
-    constexpr auto AlignmentExponentLimit = uint32_t { 32 };
+    /// Where a memarg's malformed flags are reported; the two interpreters' memop differ.
+    enum class FlagsErrorPosition : uint8_t
+    {
+        LastByte,  ///< At the flags' last byte, as WebAssembly 2.0's memop does.
+        FirstByte, ///< At the flags' first byte, as WebAssembly 3.0's memop does.
+    };
+
+    /// How a memarg's flags field splits into an alignment exponent and a memory index (spec
+    /// decode.ml memop).
+    struct MemArgGrammar
+    {
+        uint32_t flagsLimit;        ///< Flags at or above this are malformed memop flags.
+        uint32_t memoryIndexBit;    ///< The flag saying a u32 memory index follows; 0 if none can.
+        FlagsErrorPosition errorAt; ///< Where malformed flags are reported.
+    };
+
+    /// WebAssembly 2.0's memarg: the flags are the alignment exponent, below 32, of memory 0.
+    constexpr auto MemArgGrammar2 =
+        MemArgGrammar { .flagsLimit = 32, .memoryIndexBit = 0, .errorAt = FlagsErrorPosition::LastByte };
+
+    /// Multi-memory's, as WebAssembly 3.0 has it: bit 6 says a memory index follows, the six bits
+    /// below it are the alignment exponent, which the validator bounds, and no higher bit is set.
+    constexpr auto MemArgGrammar3 = MemArgGrammar { .flagsLimit = 0x80,
+                                                    .memoryIndexBit = 0x40,
+                                                    .errorAt = FlagsErrorPosition::FirstByte };
+
+    /// The proposal that brought memory indices: MemArgGrammar3, and a u32 index in memory.size,
+    /// memory.grow, memory.fill, memory.copy and memory.init where 2.0 has the reserved zero byte.
+    constexpr auto MemoryIndexFeature = Feature::MultiMemory;
 
     /// The block type byte of a block without a result.
     constexpr auto EmptyBlockType = uint8_t { 0x40 };
@@ -364,6 +391,14 @@ namespace
         [[nodiscard]] std::optional<uint8_t> peekByte() const;
         [[nodiscard]] std::expected<void, DecodeError> expectZeroByte();
         [[nodiscard]] std::expected<void, DecodeError> readIndex(uint32_t& index);
+        /// Reads a memory index immediate into @p index: a u32 under multi-memory, else the reserved
+        /// zero byte, which names memory 0.
+        [[nodiscard]] std::expected<void, DecodeError> readMemoryIndex(uint32_t& index);
+        /// Counts one more imported table or memory in @p count, refusing one past @p limit.
+        /// @param offset Where the import starts, at which a refusal is reported.
+        [[nodiscard]] static std::expected<void, DecodeError> countImport(uint32_t& count,
+                                                                          uint32_t limit,
+                                                                          std::size_t offset);
         [[nodiscard]] std::expected<void, DecodeError> readExpression(CodeSink sink);
         /// Reads the instruction whose first byte, @p byte, readExpression has peeked already.
         [[nodiscard]] std::expected<Instruction, DecodeError> readInstruction(uint8_t byte, CodeSink sink);
@@ -397,6 +432,10 @@ namespace
         FeatureSet _features;
         DecodeLimits _limits;
         Module _module;
+        /// The tables and memories the import section has declared, which count towards
+        /// DecodeLimits::maxTables and maxMemories with those the module defines.
+        uint32_t _importedTables = 0;
+        uint32_t _importedMemories = 0;
 
         /// The side tables of the constant expression being read. No valid constant expression
         /// uses them, so they only take what an invalid one holds, and are cleared for the next.
@@ -742,6 +781,24 @@ namespace
         return _reader.readU32().transform([&index](uint32_t value) { index = value; });
     }
 
+    std::expected<void, DecodeError> ModuleDecoder::readMemoryIndex(uint32_t& index)
+    {
+        if (_features.has(MemoryIndexFeature))
+            return readIndex(index);
+        index = 0;
+        return expectZeroByte();
+    }
+
+    std::expected<void, DecodeError> ModuleDecoder::countImport(uint32_t& count,
+                                                                uint32_t limit,
+                                                                std::size_t offset)
+    {
+        if (count >= limit)
+            return std::unexpected { DecodeError { DecodeErrorCode::ImplementationLimitExceeded, offset } };
+        ++count;
+        return {};
+    }
+
     std::expected<void, DecodeError> ModuleDecoder::readExpression(CodeSink sink)
     {
         // Reads instructions up to the end that closes the expression, as the interpreter's
@@ -868,11 +925,13 @@ namespace
             case ImmediateKind::LaneIndex: return readLane(instruction);
             case ImmediateKind::V128Const:
             case ImmediateKind::Shuffle: return readV128Literal(instruction);
-            case ImmediateKind::MemoryIndex: return expectZeroByte();
+            case ImmediateKind::MemoryIndex: return readMemoryIndex(instruction.a);
             case ImmediateKind::MemoryCopy:
-                return expectZeroByte().and_then([this] { return expectZeroByte(); });
+                return readMemoryIndex(instruction.a).and_then([&] {
+                    return readMemoryIndex(instruction.b);
+                });
             case ImmediateKind::MemoryInit:
-                return readIndex(instruction.a).and_then([this] { return expectZeroByte(); });
+                return readIndex(instruction.a).and_then([&] { return readMemoryIndex(instruction.b); });
             case ImmediateKind::I32Const:
                 return _reader.readS32().transform(
                     [&](int32_t value) { instruction.c = static_cast<uint32_t>(value); });
@@ -918,14 +977,20 @@ namespace
 
     std::expected<void, DecodeError> ModuleDecoder::readMemArg(Instruction& instruction)
     {
-        auto const align = _reader.readU32();
-        if (!align)
-            return std::unexpected { align.error() };
-        // Reported at the alignment's last byte, as the interpreter does.
-        if (*align >= AlignmentExponentLimit)
-            return std::unexpected { DecodeError { DecodeErrorCode::MalformedMemopFlags,
-                                                   _reader.offset() - 1 } };
-        instruction.a = *align;
+        auto const& grammar = _features.has(MemoryIndexFeature) ? MemArgGrammar3 : MemArgGrammar2;
+        auto const flagsOffset = _reader.offset();
+        auto const flags = _reader.readU32();
+        if (!flags)
+            return std::unexpected { flags.error() };
+        if (*flags >= grammar.flagsLimit)
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::MalformedMemopFlags,
+                grammar.errorAt == FlagsErrorPosition::FirstByte ? flagsOffset : _reader.offset() - 1 } };
+        instruction.a = *flags & ~grammar.memoryIndexBit;
+        instruction.b = 0;
+        if ((*flags & grammar.memoryIndexBit) != 0)
+            if (auto const memory = readIndex(instruction.b); !memory)
+                return memory;
         // A memory64 offset is a u64; the validator bounds it by the memory's address type.
         if (_features.has(Feature::Memory64))
             return _reader.readU64().transform([&](uint64_t offset) { instruction.c = offset; });
@@ -948,6 +1013,7 @@ namespace
 
     std::expected<Import, DecodeError> ModuleDecoder::readImport()
     {
+        auto const importOffset = _reader.offset();
         auto module = readName();
         if (!module)
             return std::unexpected { module.error() };
@@ -966,11 +1032,16 @@ namespace
                     _reader.readU32().transform([&](uint32_t typeIndex) { import.typeIndex = typeIndex; });
                 break;
             case ExternKind::Table:
-                described = readTableType().transform([&](TableType const& table) { import.table = table; });
+                described = countImport(_importedTables, _limits.maxTables, importOffset)
+                                .and_then([this] { return readTableType(); })
+                                .transform([&](TableType const& table) { import.table = table; });
                 break;
             case ExternKind::Memory:
-                described = readLimits().transform(
-                    [&](Limits const& limits) { import.memory = MemoryType { .limits = limits }; });
+                described = countImport(_importedMemories, _limits.maxMemories, importOffset)
+                                .and_then([this] { return readLimits(); })
+                                .transform([&](Limits const& limits) {
+                                    import.memory = MemoryType { .limits = limits };
+                                });
                 break;
             case ExternKind::Global:
                 described =
@@ -1021,13 +1092,16 @@ namespace
 
     std::expected<void, DecodeError> ModuleDecoder::tableSection()
     {
-        return readVector(_limits.maxTables, _module.tables, [this](uint32_t) { return readTableType(); });
+        // countImport keeps the imports within the limit, so what is left of it cannot underflow.
+        return readVector(_limits.maxTables - _importedTables, _module.tables, [this](uint32_t) {
+            return readTableType();
+        });
     }
 
     std::expected<void, DecodeError> ModuleDecoder::memorySection()
     {
-        // DecodeLimits bounds no memories; the validator bounds how many a module has.
-        return readVector(Unlimited, _module.memories, [this](uint32_t) {
+        // Bounded by what the imports left of maxMemories; the validator allows one before multi-memory.
+        return readVector(_limits.maxMemories - _importedMemories, _module.memories, [this](uint32_t) {
             return readLimits().transform(
                 [](Limits const& limits) { return MemoryType { .limits = limits }; });
         });

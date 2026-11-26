@@ -1,0 +1,5 @@
+module imports1.0.wasm
+assert_return invoke 6c6f6164 - i32:0 -> i32:0
+assert_return invoke 6c6f6164 - i32:a -> i32:10
+assert_return invoke 6c6f6164 - i32:8 -> i32:100000
+assert_trap invoke 6c6f6164 - i32:f4240 -> 6f7574206f6620626f756e6473206d656d6f727920616363657373

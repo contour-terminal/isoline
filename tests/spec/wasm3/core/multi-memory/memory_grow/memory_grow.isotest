@@ -1,0 +1,51 @@
+module memory_grow.0.wasm
+register 4d
+module memory_grow.1.wasm
+assert_return invoke 73697a6531 - -> i32:2
+assert_return invoke 73697a6532 - -> i32:0
+assert_return invoke 73697a6533 - -> i32:3
+assert_return invoke 73697a6534 - -> i32:4
+assert_return invoke 67726f7731 - i32:1 -> i32:2
+assert_return invoke 73697a6531 - -> i32:3
+assert_return invoke 73697a6532 - -> i32:0
+assert_return invoke 73697a6533 - -> i32:3
+assert_return invoke 73697a6534 - -> i32:4
+assert_return invoke 67726f7731 - i32:2 -> i32:3
+assert_return invoke 73697a6531 - -> i32:5
+assert_return invoke 73697a6532 - -> i32:0
+assert_return invoke 73697a6533 - -> i32:3
+assert_return invoke 73697a6534 - -> i32:4
+assert_return invoke 67726f7731 - i32:1 -> i32:ffffffff
+assert_return invoke 73697a6531 - -> i32:5
+assert_return invoke 73697a6532 - -> i32:0
+assert_return invoke 73697a6533 - -> i32:3
+assert_return invoke 73697a6534 - -> i32:4
+assert_return invoke 67726f7732 - i32:a -> i32:0
+assert_return invoke 73697a6531 - -> i32:5
+assert_return invoke 73697a6532 - -> i32:a
+assert_return invoke 73697a6533 - -> i32:3
+assert_return invoke 73697a6534 - -> i32:4
+assert_return invoke 67726f7733 - i32:10000000 -> i32:ffffffff
+assert_return invoke 73697a6531 - -> i32:5
+assert_return invoke 73697a6532 - -> i32:a
+assert_return invoke 73697a6533 - -> i32:3
+assert_return invoke 73697a6534 - -> i32:4
+assert_return invoke 67726f7733 - i32:3 -> i32:3
+assert_return invoke 73697a6531 - -> i32:5
+assert_return invoke 73697a6532 - -> i32:a
+assert_return invoke 73697a6533 - -> i32:6
+assert_return invoke 73697a6534 - -> i32:4
+assert_return invoke 67726f7734 - i32:1 -> i32:4
+assert_return invoke 67726f7734 - i32:1 -> i32:ffffffff
+assert_return invoke 73697a6531 - -> i32:5
+assert_return invoke 73697a6532 - -> i32:a
+assert_return invoke 73697a6533 - -> i32:6
+assert_return invoke 73697a6534 - -> i32:5
+module memory_grow.2.wasm
+assert_return invoke 73697a6531 - -> i32:1
+assert_return invoke 73697a6532 - -> i32:2
+assert_return invoke 67726f7731 - i32:3 -> i32:1
+assert_return invoke 67726f7731 - i32:4 -> i32:4
+assert_return invoke 67726f7731 - i32:1 -> i32:8
+assert_return invoke 67726f7732 - i32:1 -> i32:2
+assert_return invoke 67726f7732 - i32:1 -> i32:3

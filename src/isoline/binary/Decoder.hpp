@@ -24,7 +24,8 @@ struct DecodeLimits
     uint32_t maxImports = 100'000;            ///< Entries of the import section.
     uint32_t maxExports = 100'000;            ///< Entries of the export section.
     uint32_t maxGlobals = 1'000'000;          ///< Entries of the global section.
-    uint32_t maxTables = 100'000;             ///< Entries of the table section, as JS embeddings allow.
+    uint32_t maxTables = 100'000;             ///< Tables, imported and defined alike, as JS allows.
+    uint32_t maxMemories = 100;               ///< Memories, imported and defined alike.
     uint32_t maxDataSegments = 100'000;       ///< Entries of the data section.
     uint32_t maxElementSegments = 10'000'000; ///< Entries of the element section.
     uint32_t maxElementItems = 10'000'000;    ///< Items of one element segment.

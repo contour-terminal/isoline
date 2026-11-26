@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -745,10 +746,79 @@ TEST_CASE("Validator.counts")
 
 TEST_CASE("Validator.multipleMemories")
 {
-    // The decoder reads any number of memories; the validator allows one before multi-memory.
+    // The decoder reads up to DecodeLimits::maxMemories; the validator allows one before multi-memory.
     auto memories = ModuleBuilder {};
     memories.memory(atLeast(1)).memory(atLeast(1));
     CHECK(errorOf(memories) == ValidationErrorCode::MultipleMemories);
+}
+
+TEST_CASE("Validator.memoryIndexImmediates")
+{
+    auto const twoMemories = [](std::vector<uint8_t> body) {
+        auto builder = voidFunctionOf(std::move(body));
+        builder.memory(atLeast(1)).memory(atLeast(1));
+        return builder;
+    };
+    auto const wasm3 = FeatureSet::wasm3();
+    // i32.load from memory 1 is valid; from memory 2 it names no memory.
+    CHECK(errorOf(twoMemories({ 0x41, 0x00, 0x28, 0x42, 0x01, 0x00, 0x1A }), wasm3) == std::nullopt);
+    CHECK(errorOf(twoMemories({ 0x41, 0x00, 0x28, 0x42, 0x02, 0x00, 0x1A }), wasm3)
+          == ValidationErrorCode::UnknownMemory);
+    // The alignment field's six bits reach 63; validation bounds them by the natural alignment.
+    CHECK(errorOf(twoMemories({ 0x41, 0x00, 0x28, 0x43, 0x01, 0x00, 0x1A }), wasm3)
+          == ValidationErrorCode::AlignmentMustNotBeLarger);
+    CHECK(errorOf(twoMemories({ 0x41, 0x00, 0x28, 0x3F, 0x00, 0x1A }), wasm3)
+          == ValidationErrorCode::AlignmentMustNotBeLarger);
+    // memory.size, memory.grow, memory.fill and memory.copy (either side) name their memories by
+    // index; memory 1 exists, memory 2 does not.
+    struct Row
+    {
+        std::vector<uint8_t> body;
+        std::optional<ValidationErrorCode> expected;
+    };
+    auto const rows = std::to_array<Row>({
+        { .body = { 0x3F, 0x01, 0x1A }, .expected = std::nullopt },
+        { .body = { 0x3F, 0x02, 0x1A }, .expected = ValidationErrorCode::UnknownMemory },
+        { .body = { 0x41, 0x00, 0x40, 0x01, 0x1A }, .expected = std::nullopt },
+        { .body = { 0x41, 0x00, 0x40, 0x02, 0x1A }, .expected = ValidationErrorCode::UnknownMemory },
+        { .body = { 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0B, 0x01 }, .expected = std::nullopt },
+        { .body = { 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0B, 0x02 },
+          .expected = ValidationErrorCode::UnknownMemory },
+        { .body = { 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0A, 0x00, 0x01 }, .expected = std::nullopt },
+        { .body = { 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0A, 0x01, 0x02 }, // source
+          .expected = ValidationErrorCode::UnknownMemory },
+        { .body = { 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x0A, 0x02, 0x01 }, // destination
+          .expected = ValidationErrorCode::UnknownMemory },
+        // i32.store to memory 1, then to memory 2.
+        { .body = { 0x41, 0x00, 0x41, 0x00, 0x36, 0x42, 0x01, 0x00 }, .expected = std::nullopt },
+        { .body = { 0x41, 0x00, 0x41, 0x00, 0x36, 0x42, 0x02, 0x00 },
+          .expected = ValidationErrorCode::UnknownMemory },
+    });
+    auto index = 0;
+    for (auto const& row: rows)
+    {
+        INFO("row " << index++);
+        CHECK(errorOf(twoMemories(row.body), wasm3) == row.expected);
+    }
+
+    // v128.load8_lane lane 0 from memory 1, then from memory 2.
+    auto const laneLoad = [](uint8_t memory) {
+        auto body = std::vector<uint8_t> { 0x41, 0x00, 0xFD, 0x0C };
+        body.insert(body.end(), 16, 0x00);
+        body.insert(body.end(), { 0xFD, 0x54, 0x40, memory, 0x00, 0x00, 0x1A });
+        return body;
+    };
+    CHECK(errorOf(twoMemories(laneLoad(1)), wasm3) == std::nullopt);
+    CHECK(errorOf(twoMemories(laneLoad(2)), wasm3) == ValidationErrorCode::UnknownMemory);
+
+    // memory.init of data segment 0 into memory 1, then into memory 2.
+    auto const memoryInit = [&](uint8_t memory) {
+        auto builder = twoMemories({ 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0xFC, 0x08, 0x00, memory });
+        builder.dataCount(1).data({ 0x01, 0x00 }); // one passive, empty segment
+        return builder;
+    };
+    CHECK(errorOf(memoryInit(1), wasm3) == std::nullopt);
+    CHECK(errorOf(memoryInit(2), wasm3) == ValidationErrorCode::UnknownMemory);
 }
 
 TEST_CASE("Validator.startFunction")
