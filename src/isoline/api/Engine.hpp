@@ -116,6 +116,8 @@ class Engine
     /// An engine of @p config.
     /// @param config Its configuration. Its feature set must be closed (checked: an unclosed set is a
     ///               programming error of the embedder; FeatureSet::withPrerequisites() closes one).
+    ///               Its engine must be ExecutionEngine::Reference for now (checked), the only one the
+    ///               API runs yet.
     explicit Engine(EngineConfig config) noexcept;
 
     /// The configuration it was constructed with.
