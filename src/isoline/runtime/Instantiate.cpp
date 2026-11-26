@@ -645,7 +645,8 @@ InstantiationOutcome instantiateReporting(Store& store,
                                       .refusedGrowth = {} };
     auto const invocation = InvocationScope { store };
     auto const scope = RefusalScope { store };
-    auto const instance = Instantiation { store, executor, std::move(module), std::move(code), imports }.run();
+    auto const instance =
+        Instantiation { store, executor, std::move(module), std::move(code), imports }.run();
     return InstantiationOutcome { .instance = instance, .refusedGrowth = scope.record() };
 }
 
