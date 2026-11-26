@@ -495,6 +495,94 @@ TEST_CASE("Decoder.malformedLimitsFlags")
     CHECK(isoline::binary::specMessage(result.error()) == "malformed limits flags");
 }
 
+TEST_CASE("Decoder.pageSizeOne")
+{
+    // Memory flags 0x08: a custom page size, whose exponent follows the minimum; 2^0 = 1 byte.
+    auto const pageSizeOne = moduleOf({ 0x05, 0x04, 0x01, 0x08, 0x01, 0x00 });
+    auto const module = decoded(pageSizeOne, FeatureSet::all());
+    REQUIRE(module.memories.size() == 1);
+    CHECK(module.memories[0].pageSizeLog2 == 0);
+    CHECK(module.memories[0].limits.min == 1);
+    CHECK(isoline::binary::pageSize(module.memories[0]) == 1);
+    // Without the flag, 64 KiB pages.
+    auto const plain = decoded(moduleOf({ 0x05, 0x03, 0x01, 0x00, 0x01 }), FeatureSet::all());
+    CHECK(plain.memories[0].pageSizeLog2 == isoline::binary::DefaultPageSizeLog2);
+}
+
+TEST_CASE("Decoder.customPageSizeFlags")
+{
+    auto const all = FeatureSet::all();
+    // 0x09: a maximum, then the exponent; 0x0D: i64 addresses too, with u64 bounds.
+    auto const bounded = decoded(moduleOf({ 0x05, 0x05, 0x01, 0x09, 0x01, 0x02, 0x10 }), all);
+    CHECK(bounded.memories[0].limits.max == 2U);
+    CHECK(bounded.memories[0].pageSizeLog2 == 16);
+    auto const wide = decoded(moduleOf({ 0x05, 0x05, 0x01, 0x0D, 0x01, 0x02, 0x00 }), all);
+    CHECK(wide.memories[0].limits.addressType == isoline::binary::AddressType::I64);
+    CHECK(wide.memories[0].pageSizeLog2 == 0);
+    auto const unbounded64 = decoded(moduleOf({ 0x05, 0x04, 0x01, 0x0C, 0x01, 0x3F }), all);
+    CHECK(unbounded64.memories[0].pageSizeLog2 == 63);
+    CHECK_FALSE(unbounded64.memories[0].limits.max.has_value());
+    // A memory import reads the same memory type.
+    auto builder = ModuleBuilder {};
+    builder.importMemory("m",
+                         "mem",
+                         isoline::binary::MemoryType { .limits = Limits { .min = 3, .max = std::nullopt },
+                                                       .pageSizeLog2 = 0 });
+    auto const imported = decoded(builder.build(), all);
+    REQUIRE(imported.imports.size() == 1);
+    CHECK(imported.imports[0].memory.pageSizeLog2 == 0);
+    CHECK(imported.imports[0].memory.limits.min == 3);
+
+    // An exponent of 64 or more gives no u64 page size; spec custom-page-sizes-invalid.wast uses 65.
+    for (auto const exponent: { uint8_t { 0x40 }, uint8_t { 0x41 } })
+    {
+        auto const result = decodeModule(moduleOf({ 0x05, 0x04, 0x01, 0x08, 0x00, exponent }), all);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == DecodeErrorCode::InvalidCustomPageSize);
+        CHECK(result.error().offset == Preamble.size() + 5);
+        CHECK(isoline::binary::specMessage(result.error()) == "invalid custom page size");
+    }
+    // The exponent is a u32: one past it is too large, an end before it unexpected.
+    CHECK(errorOf(moduleOf({ 0x05, 0x08, 0x01, 0x08, 0x00, 0x80, 0x80, 0x80, 0x80, 0x10 }), all)
+          == DecodeErrorCode::IntegerTooLarge);
+    CHECK(errorOf(moduleOf({ 0x05, 0x03, 0x01, 0x08, 0x00 }), all) == DecodeErrorCode::UnexpectedEnd);
+    // A table has no page size: every flag with bit 3 is malformed there, defined or imported.
+    for (auto const flag: { 0x08, 0x09, 0x0C, 0x0D })
+    {
+        auto const byte = static_cast<uint8_t>(flag);
+        CHECK(errorOf(moduleOf({ 0x04, 0x07, 0x01, 0x70, byte, 0x00, 0x00, 0x00, 0x00 }), all)
+              == DecodeErrorCode::MalformedLimitsFlags);
+        CHECK(
+            errorOf(moduleOf({ 0x02, 0x0B, 0x01, 0x01, 'm', 0x01, 't', 0x01, 0x70, byte, 0x00, 0x00, 0x00 }),
+                    all)
+            == DecodeErrorCode::MalformedLimitsFlags);
+    }
+}
+
+TEST_CASE("Decoder.limitsFlagsNeedTheirProposal")
+{
+    auto const flags = [](uint8_t flag) {
+        return moduleOf({ 0x05, 0x05, 0x01, flag, 0x00, 0x00, 0x00 });
+    };
+    // Either proposal selects WebAssembly 3.0's grammar, in which each flag row needs its own.
+    auto const memory64 = FeatureSet::wasm3();
+    auto const pageSizes = FeatureSet::wasm2().with(Feature::CustomPageSizes);
+    for (auto const flag: { 0x08, 0x09, 0x0C, 0x0D })
+        CHECK(errorOf(flags(static_cast<uint8_t>(flag)), memory64) == DecodeErrorCode::MalformedLimitsFlags);
+    for (auto const flag: { 0x04, 0x05, 0x0C, 0x0D })
+        CHECK(errorOf(flags(static_cast<uint8_t>(flag)), pageSizes) == DecodeErrorCode::MalformedLimitsFlags);
+    CHECK(errorOf(flags(0x09), pageSizes) == std::nullopt);
+    // custom-page-sizes alone reads 3.0's bytes: the flags a byte, the bounds u64s.
+    CHECK(errorOf(moduleOf({ 0x05, 0x04, 0x01, 0x81, 0x00, 0x00 }), pageSizes)
+          == DecodeErrorCode::MalformedLimitsFlags);
+    auto const wide = decoded(moduleOf({ 0x05, 0x07, 0x01, 0x00, 0x80, 0x80, 0x80, 0x80, 0x10 }), pageSizes);
+    CHECK(wide.memories[0].limits.min == uint64_t { 1 } << 32);
+    // Neither: WebAssembly 3.0 without memory64 keeps 2.0's grammar, which memory64 widened.
+    auto const neither = FeatureSet::wasm3().without(Feature::Memory64);
+    CHECK(errorOf(flags(0x04), neither) == DecodeErrorCode::LimitsFlagTooLarge);
+    CHECK(errorOf(flags(0x08), neither) == DecodeErrorCode::LimitsFlagTooLarge);
+}
+
 TEST_CASE("Decoder.valueTypes")
 {
     auto const typeWith = [](uint8_t type) {

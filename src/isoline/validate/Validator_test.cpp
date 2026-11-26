@@ -35,6 +35,7 @@ using isoline::binary::I32;
 using isoline::binary::I64;
 using isoline::binary::Import;
 using isoline::binary::Limits;
+using isoline::binary::MemoryType;
 using isoline::binary::Mutability;
 using isoline::binary::TableType;
 using isoline::binary::testing::ModuleBuilder;
@@ -730,6 +731,51 @@ TEST_CASE("Validator.limits")
     auto invertedTable = ModuleBuilder {};
     invertedTable.table(TableType { .element = FuncRef, .limits = between(2, 1) });
     CHECK(errorOf(invertedTable) == ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
+}
+
+TEST_CASE("Validator.invalidPageSize")
+{
+    auto const all = FeatureSet::all();
+    auto const memoryOf = [](uint8_t pageSizeLog2,
+                             Limits const& limits = Limits { .min = 1, .max = std::nullopt }) {
+        auto builder = ModuleBuilder {};
+        builder.memory(MemoryType { .limits = limits, .pageSizeLog2 = pageSizeLog2 });
+        return builder;
+    };
+    // Only 1-byte and 64 KiB pages are valid; spec custom-page-sizes-invalid.wast tries 2 to 2^17.
+    CHECK(errorOf(memoryOf(0), all) == std::nullopt);
+    CHECK(errorOf(memoryOf(16), all) == std::nullopt);
+    for (auto const exponent: { 1, 12, 15, 17, 63 })
+    {
+        INFO("exponent " << exponent);
+        CHECK(errorOf(memoryOf(static_cast<uint8_t>(exponent)), all)
+              == ValidationErrorCode::InvalidCustomPageSize);
+    }
+    auto const result = validated(memoryOf(12), all);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(specMessage(result.error()) == "invalid custom page size");
+
+    // 1-byte pages: as many as the address type's largest address (spec memory_max*.wast).
+    auto const i32Pages = [](uint64_t min) {
+        return Limits { .min = min, .max = std::nullopt };
+    };
+    auto const i64Pages = [](uint64_t min) {
+        return Limits { .min = min, .max = std::nullopt, .addressType = isoline::binary::AddressType::I64 };
+    };
+    CHECK(errorOf(memoryOf(0, i32Pages(0xFFFF'FFFF)), all) == std::nullopt);
+    CHECK(errorOf(memoryOf(0, i32Pages(uint64_t { 1 } << 32)), all)
+          == ValidationErrorCode::MemorySizeMustBeAtMost);
+    CHECK(errorOf(memoryOf(0, i64Pages(~uint64_t { 0 })), all) == std::nullopt);
+    CHECK(errorOf(memoryOf(16, i64Pages(uint64_t { 1 } << 48)), all) == std::nullopt);
+    CHECK(errorOf(memoryOf(16, i64Pages((uint64_t { 1 } << 48) + 1)), all)
+          == ValidationErrorCode::MemorySizeMustBeAtMost);
+    // The message names the bound of the memory's own page size.
+    auto const tooLarge = validated(memoryOf(0, i32Pages(uint64_t { 1 } << 32)), all);
+    REQUIRE_FALSE(tooLarge.has_value());
+    CHECK(specMessage(tooLarge.error()) == "memory size must be at most 4294967295 pages for i32");
+    auto const tooLarge64k = validated(memoryOf(16, i32Pages(65'537)), all);
+    REQUIRE_FALSE(tooLarge64k.has_value());
+    CHECK(specMessage(tooLarge64k.error()) == "memory size must be at most 2^16 pages (4 GiB) for i32");
 }
 
 TEST_CASE("Validator.counts")

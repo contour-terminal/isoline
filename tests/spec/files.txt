@@ -254,3 +254,7 @@ wasm3 core/type-rec                 exclude GC: recursive type groups
 wasm3 custom/custom/custom_annot    exclude text format (P10)
 wasm3 custom/name/name_annot        exclude text format (P10)
 wide-arithmetic core/wide-arithmetic 0
+custom-page-sizes core/custom-page-sizes/custom-page-sizes 1
+custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid 2
+custom-page-sizes core/custom-page-sizes/memory_max 0
+custom-page-sizes core/custom-page-sizes/memory_max_i64 1

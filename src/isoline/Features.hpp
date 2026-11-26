@@ -111,6 +111,14 @@ class FeatureSet
     /// @return true when @p feature is in this set.
     [[nodiscard]] constexpr bool has(Feature feature) const noexcept { return (_bits & bitOf(feature)) != 0; }
 
+    /// Whether every feature of @p other is on.
+    /// @param other The features to query.
+    /// @return true when @p other is a subset of this set; always for the empty set.
+    [[nodiscard]] constexpr bool includes(FeatureSet other) const noexcept
+    {
+        return (_bits & other._bits) == other._bits;
+    }
+
     /// This set with every prerequisite of its features on, transitively.
     /// @return The smallest closed set (see checkPrerequisites()) holding this one.
     [[nodiscard]] constexpr FeatureSet withPrerequisites() const noexcept;

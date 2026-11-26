@@ -41,7 +41,7 @@ namespace
     /// The most pages a memory may reach.
     [[nodiscard]] constexpr uint64_t pageLimit(binary::MemoryType const& type) noexcept
     {
-        return unitLimit(type.limits, binary::maxPages(type), PageSize);
+        return unitLimit(type.limits, binary::maxPages(type), binary::pageSize(type));
     }
 
     /// The most slots a table may reach.
@@ -132,11 +132,12 @@ std::expected<TableAddr, AllocationFailure> Store::addTable(binary::TableType ty
 
 std::expected<MemAddr, AllocationFailure> Store::addMemory(binary::MemoryType type)
 {
+    Require(type.pageSizeLog2 < binary::PageSizeLog2Limit);
     auto bytes = std::vector<std::byte> {};
     return resize(bytes,
                   type.limits.min,
                   pageLimit(type),
-                  PageSize,
+                  binary::pageSize(type),
                   *_allocator,
                   std::byte {},
                   ExternKind::Memory)
@@ -207,14 +208,15 @@ ModuleInstance& Store::moduleInstance(uint32_t address)
 int64_t Store::growMemory(MemAddr address, uint64_t deltaPages)
 {
     auto& instance = memory(address);
-    auto const oldPages = instance.bytes.size() / PageSize;
+    auto const pageBytes = binary::pageSize(instance.type);
+    auto const oldPages = instance.bytes.size() / pageBytes;
     auto const limit = pageLimit(instance.type);
     if (deltaPages > limit - oldPages)
         return -1;
     return resize(instance.bytes,
                   oldPages + deltaPages,
                   limit,
-                  PageSize,
+                  pageBytes,
                   *_allocator,
                   std::byte {},
                   ExternKind::Memory)

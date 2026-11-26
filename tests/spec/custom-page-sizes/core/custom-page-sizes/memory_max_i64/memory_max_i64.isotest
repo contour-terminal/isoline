@@ -1,0 +1,6 @@
+module_definition memory_max_i64.0.wasm
+module_definition memory_max_i64.1.wasm
+module_definition memory_max_i64.2.wasm
+module_definition memory_max_i64.3.wasm
+skip 6173736572745f6d616c666f726d6564206f6620612074657874206d6f64756c65202877617374206c696e6520323829
+assert_invalid memory_max_i64.5.wasm 6d656d6f72792073697a65206d757374206265206174206d6f7374

@@ -76,6 +76,18 @@ TEST_CASE("Features.withWithout")
     CHECK_FALSE(s.has(isoline::Feature::CustomPageSizes));
 }
 
+TEST_CASE("Features.includes")
+{
+    using isoline::Feature;
+    using isoline::FeatureSet;
+    auto const both = FeatureSet::none().with(Feature::Memory64).with(Feature::CustomPageSizes);
+    CHECK(FeatureSet::all().includes(both));
+    CHECK(both.includes(FeatureSet::none().with(Feature::Memory64)));
+    CHECK(both.includes(FeatureSet::none()));
+    CHECK_FALSE(FeatureSet::wasm3().includes(both));
+    CHECK_FALSE(FeatureSet::none().with(Feature::CustomPageSizes).includes(both));
+}
+
 TEST_CASE("Features.isConstexpr")
 {
     constexpr auto WithTailCall = isoline::FeatureSet::wasm2().with(isoline::Feature::TailCall);

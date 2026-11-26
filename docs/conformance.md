@@ -108,6 +108,10 @@ pins each file's count.
 
 <!-- text-skips:begin -->
 ```text
+custom-page-sizes core/custom-page-sizes/custom-page-sizes:113: assert_malformed of a text module
+custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:3: assert_malformed of a text module
+custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:8: assert_malformed of a text module
+custom-page-sizes core/custom-page-sizes/memory_max_i64:28: assert_malformed of a text module
 wasm2 core/func:448: assert_malformed of a text module
 wasm2 core/func:560: assert_malformed of a text module
 wasm2 core/func:567: assert_malformed of a text module

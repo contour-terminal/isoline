@@ -58,11 +58,14 @@ namespace
                && limitsMatch(table.elements.size(), table.type.limits, required.limits);
     }
 
-    /// Whether @p memory matches the memory type @p required: its limits, in pages.
+    /// Whether @p memory matches the memory type @p required: its page size, exactly, and its limits,
+    /// in pages.
     [[nodiscard]] bool memoryMatches(MemoryInstance const& memory,
                                      binary::MemoryType const& required) noexcept
     {
-        return limitsMatch(memory.bytes.size() / PageSize, memory.type.limits, required.limits);
+        return memory.type.pageSizeLog2 == required.pageSizeLog2
+               && limitsMatch(
+                   memory.bytes.size() / binary::pageSize(memory.type), memory.type.limits, required.limits);
     }
 
     /// Whether @p global matches the global type @p required: its value type and mutability, exactly.

@@ -211,49 +211,115 @@ namespace
         MinimumAndMaximum, ///< A minimum, then a maximum.
     };
 
-    /// One limits flag byte WebAssembly 3.0 admits: what follows it, and the proposal it needs.
-    struct LimitsFlagRow
+    /// Whether a page size exponent follows a limits flag's bounds (custom-page-sizes).
+    enum class PageSizeField : uint8_t
     {
-        uint8_t flags;                   ///< The flag byte.
-        LimitsBound bound;               ///< The bounds that follow.
-        AddressType addressType;         ///< The address type of the memory or table.
-        std::optional<Feature> required; ///< The proposal that admits it; none for the MVP's flags.
+        Default,  ///< None: the page size is 64 KiB.
+        Exponent, ///< A u32 exponent, the page size's base-2 logarithm; memories only.
     };
 
-    /// The limits flags of tables and memories: bit 0 a maximum, bit 2 i64 addresses. Any other byte
-    /// is MalformedLimitsFlags; in WebAssembly 2.0's grammar only the first two rows exist.
+    /// What limits are read for: a table's flags admit no page size.
+    enum class LimitsOf : uint8_t
+    {
+        Table,
+        Memory,
+    };
+
+    /// One limits flag byte WebAssembly 3.0 admits: what follows it, and the proposals it needs.
+    struct LimitsFlagRow
+    {
+        uint8_t flags;           ///< The flag byte.
+        LimitsBound bound;       ///< The bounds that follow.
+        AddressType addressType; ///< The address type of the memory or table.
+        PageSizeField pageSize;  ///< Whether a page size follows the bounds.
+        FeatureSet required;     ///< The proposals that admit it; none for the MVP's flags.
+    };
+
+    constexpr auto NeedsMemory64 = FeatureSet::none().with(Feature::Memory64);
+    constexpr auto NeedsPageSizes = FeatureSet::none().with(Feature::CustomPageSizes);
+    constexpr auto NeedsMemory64AndPageSizes = NeedsMemory64.with(Feature::CustomPageSizes);
+
+    /// The limits flags of tables and memories: bit 0 a maximum, bit 2 i64 addresses, bit 3 a custom
+    /// page size (memories only). Any other byte is MalformedLimitsFlags; in WebAssembly 2.0's grammar
+    /// only the first two rows exist.
     constexpr auto LimitsFlagTable = std::to_array<LimitsFlagRow>({
         { .flags = 0x00,
           .bound = LimitsBound::Minimum,
           .addressType = AddressType::I32,
-          .required = std::nullopt },
+          .pageSize = PageSizeField::Default,
+          .required = FeatureSet::none() },
         { .flags = 0x01,
           .bound = LimitsBound::MinimumAndMaximum,
           .addressType = AddressType::I32,
-          .required = std::nullopt },
+          .pageSize = PageSizeField::Default,
+          .required = FeatureSet::none() },
         { .flags = 0x04,
           .bound = LimitsBound::Minimum,
           .addressType = AddressType::I64,
-          .required = Feature::Memory64 },
+          .pageSize = PageSizeField::Default,
+          .required = NeedsMemory64 },
         { .flags = 0x05,
           .bound = LimitsBound::MinimumAndMaximum,
           .addressType = AddressType::I64,
-          .required = Feature::Memory64 },
+          .pageSize = PageSizeField::Default,
+          .required = NeedsMemory64 },
+        { .flags = 0x08,
+          .bound = LimitsBound::Minimum,
+          .addressType = AddressType::I32,
+          .pageSize = PageSizeField::Exponent,
+          .required = NeedsPageSizes },
+        { .flags = 0x09,
+          .bound = LimitsBound::MinimumAndMaximum,
+          .addressType = AddressType::I32,
+          .pageSize = PageSizeField::Exponent,
+          .required = NeedsPageSizes },
+        { .flags = 0x0C,
+          .bound = LimitsBound::Minimum,
+          .addressType = AddressType::I64,
+          .pageSize = PageSizeField::Exponent,
+          .required = NeedsMemory64AndPageSizes },
+        { .flags = 0x0D,
+          .bound = LimitsBound::MinimumAndMaximum,
+          .addressType = AddressType::I64,
+          .pageSize = PageSizeField::Exponent,
+          .required = NeedsMemory64AndPageSizes },
     });
 
     static_assert(
         [] {
             auto index = uint8_t { 0 };
             for (auto const& row: LimitsFlagTable | std::views::take(2))
-                if (row.flags != index++ || row.required)
+                if (row.flags != index++ || row.required != FeatureSet::none()
+                    || row.pageSize != PageSizeField::Default)
                     return false;
             return true;
         }(),
         "LimitsFlagTable's first two rows are WebAssembly 2.0's flags 0x00 and 0x01, indexed by them");
 
-    /// The proposal whose limits grammar is WebAssembly 3.0's: memory64 brought the byte-read flags
-    /// and u64 bounds. Without it the decoder keeps 2.0's grammar, as the 2.0 suite expects.
-    constexpr auto LimitsGrammar3Feature = Feature::Memory64;
+    /// Which grammar a table's or memory's limits follow.
+    enum class LimitsGrammar : uint8_t
+    {
+        Wasm2, ///< A one-bit LEB128 flag, 0x00 or 0x01, and u32 bounds.
+        Wasm3, ///< A flag byte of a LimitsFlagTable row whose proposals are on, and u64 bounds.
+    };
+
+    /// The grammar limits follow under @p features: WebAssembly 3.0's when a proposal a
+    /// LimitsFlagTable row needs is on (memory64 or custom-page-sizes, which build on 3.0). Otherwise,
+    /// as for 2.0 and for 3.0 without memory64, 2.0's, which memory64 widened to 3.0's.
+    [[nodiscard]] constexpr LimitsGrammar limitsGrammarOf(FeatureSet features) noexcept
+    {
+        auto const widened = std::ranges::any_of(LimitsFlagTable, [features](LimitsFlagRow const& row) {
+            return row.required != FeatureSet::none() && features.includes(row.required);
+        });
+        return widened ? LimitsGrammar::Wasm3 : LimitsGrammar::Wasm2;
+    }
+
+    /// Limits as the binary format encodes them: the bounds and, for a memory, its page size.
+    struct EncodedLimits
+    {
+        Limits limits;                              ///< The bounds and address type.
+        uint8_t pageSizeLog2 = DefaultPageSizeLog2; ///< The page size's base-2 logarithm.
+    };
 
     /// Where a memarg's malformed flags are reported; the two interpreters' memop differ.
     enum class FlagsErrorPosition : uint8_t
@@ -308,7 +374,11 @@ namespace
     {
       public:
         ModuleDecoder(std::span<std::byte const> bytes, FeatureSet features, DecodeLimits const& limits):
-            _reader { bytes }, _moduleSize { bytes.size() }, _features { features }, _limits { limits }
+            _reader { bytes },
+            _moduleSize { bytes.size() },
+            _features { features },
+            _limitsGrammar { limitsGrammarOf(features) },
+            _limits { limits }
         {
         }
 
@@ -372,10 +442,14 @@ namespace
         [[nodiscard]] std::expected<ValueType, DecodeError> readRefType();
         [[nodiscard]] std::expected<std::vector<ValueType>, DecodeError> readResultType(uint32_t limit);
         [[nodiscard]] std::expected<FuncType, DecodeError> readFuncType();
-        /// Reads a table's or memory's limits, in the grammar LimitsGrammar3Feature selects.
-        [[nodiscard]] std::expected<Limits, DecodeError> readLimits();
-        /// Reads limits in WebAssembly 3.0's grammar: flags of LimitsFlagTable, u64 bounds.
-        [[nodiscard]] std::expected<Limits, DecodeError> readLimits3();
+        /// Reads a table's or memory's limits, in the grammar _limitsGrammar names.
+        [[nodiscard]] std::expected<EncodedLimits, DecodeError> readLimits(LimitsOf of);
+        /// Reads limits in WebAssembly 3.0's grammar: flags of a LimitsFlagTable row whose
+        /// proposals are on, u64 bounds, then the page size a memory's flags announce.
+        [[nodiscard]] std::expected<EncodedLimits, DecodeError> readLimits3(LimitsOf of);
+        /// Reads a custom page size's exponent; one of PageSizeLog2Limit or more is malformed.
+        [[nodiscard]] std::expected<uint8_t, DecodeError> readPageSizeLog2();
+        [[nodiscard]] std::expected<MemoryType, DecodeError> readMemoryType();
         /// Reads the bounds @p row's flags announce, each with @p readBound.
         template <typename ReadBound>
         [[nodiscard]] std::expected<Limits, DecodeError> readBounds(LimitsFlagRow const& row,
@@ -430,6 +504,7 @@ namespace
         ByteReader _reader;
         std::size_t _moduleSize;
         FeatureSet _features;
+        LimitsGrammar _limitsGrammar; ///< The grammar of limits under _features.
         DecodeLimits _limits;
         Module _module;
         /// The tables and memories the import section has declared, which count towards
@@ -645,10 +720,10 @@ namespace
         return FuncType { .params = std::move(*params), .results = std::move(*results) };
     }
 
-    std::expected<Limits, DecodeError> ModuleDecoder::readLimits()
+    std::expected<EncodedLimits, DecodeError> ModuleDecoder::readLimits(LimitsOf of)
     {
-        if (_features.has(LimitsGrammar3Feature))
-            return readLimits3();
+        if (_limitsGrammar == LimitsGrammar::Wasm3)
+            return readLimits3(of);
         // WebAssembly 2.0: flags 0x00, a minimum, or 0x01, a minimum and a maximum, read as a one-bit
         // LEB128, so a continuation bit over a valid flag is too long a representation; u32 bounds.
         auto const flagsOffset = _reader.offset();
@@ -661,24 +736,45 @@ namespace
                                                    flagsOffset + 1 } };
         if (*flags > 0x01)
             return std::unexpected { DecodeError { DecodeErrorCode::LimitsFlagTooLarge, flagsOffset } };
-        return readBounds(LimitsFlagTable[*flags], [this] { return _reader.readU32(); });
+        return readBounds(LimitsFlagTable[*flags], [this] { return _reader.readU32(); })
+            .transform([](Limits const& limits) { return EncodedLimits { .limits = limits }; });
     }
 
-    std::expected<Limits, DecodeError> ModuleDecoder::readLimits3()
+    std::expected<EncodedLimits, DecodeError> ModuleDecoder::readLimits3(LimitsOf of)
     {
-        // The flags are a byte, a row of LimitsFlagTable whose proposal is on; the bounds are u64s
-        // whatever the address type, which the validator bounds (decode.ml's `limits u64`).
+        // The flags are a byte, a row of LimitsFlagTable whose proposals are on, and that a table
+        // admits only without a page size; the bounds are u64s whatever the address type, which the
+        // validator bounds (decode.ml's `limits u64`).
         auto const flagsOffset = _reader.offset();
         auto const flags = readByte();
         if (!flags)
             return std::unexpected { flags.error() };
-        auto admitted = LimitsFlagTable | std::views::filter([this](LimitsFlagRow const& row) {
-                            return enabled(row.required);
+        auto admitted = LimitsFlagTable | std::views::filter([this, of](LimitsFlagRow const& row) {
+                            return _features.includes(row.required)
+                                   && (of == LimitsOf::Memory || row.pageSize == PageSizeField::Default);
                         });
         auto const row = std::ranges::find(admitted, *flags, &LimitsFlagRow::flags);
         if (row == admitted.end())
             return std::unexpected { DecodeError { DecodeErrorCode::MalformedLimitsFlags, flagsOffset } };
-        return readBounds(*row, [this] { return _reader.readU64(); });
+        auto const limits = readBounds(*row, [this] { return _reader.readU64(); });
+        if (!limits)
+            return std::unexpected { limits.error() };
+        if (row->pageSize == PageSizeField::Default)
+            return EncodedLimits { .limits = *limits };
+        return readPageSizeLog2().transform([&](uint8_t pageSizeLog2) {
+            return EncodedLimits { .limits = *limits, .pageSizeLog2 = pageSizeLog2 };
+        });
+    }
+
+    std::expected<uint8_t, DecodeError> ModuleDecoder::readPageSizeLog2()
+    {
+        auto const offset = _reader.offset();
+        auto const exponent = _reader.readU32();
+        if (!exponent)
+            return std::unexpected { exponent.error() };
+        if (*exponent >= PageSizeLog2Limit)
+            return std::unexpected { DecodeError { DecodeErrorCode::InvalidCustomPageSize, offset } };
+        return static_cast<uint8_t>(*exponent);
     }
 
     template <typename ReadBound>
@@ -711,8 +807,16 @@ namespace
         auto const element = readRefType();
         if (!element)
             return std::unexpected { element.error() };
-        return readLimits().transform(
-            [&](Limits const& limits) { return TableType { .element = *element, .limits = limits }; });
+        return readLimits(LimitsOf::Table).transform([&](EncodedLimits const& encoded) {
+            return TableType { .element = *element, .limits = encoded.limits };
+        });
+    }
+
+    std::expected<MemoryType, DecodeError> ModuleDecoder::readMemoryType()
+    {
+        return readLimits(LimitsOf::Memory).transform([](EncodedLimits const& encoded) {
+            return MemoryType { .limits = encoded.limits, .pageSizeLog2 = encoded.pageSizeLog2 };
+        });
     }
 
     std::expected<GlobalType, DecodeError> ModuleDecoder::readGlobalType()
@@ -1038,10 +1142,8 @@ namespace
                 break;
             case ExternKind::Memory:
                 described = countImport(_importedMemories, _limits.maxMemories, importOffset)
-                                .and_then([this] { return readLimits(); })
-                                .transform([&](Limits const& limits) {
-                                    import.memory = MemoryType { .limits = limits };
-                                });
+                                .and_then([this] { return readMemoryType(); })
+                                .transform([&](MemoryType const& memory) { import.memory = memory; });
                 break;
             case ExternKind::Global:
                 described =
@@ -1102,8 +1204,7 @@ namespace
     {
         // Bounded by what the imports left of maxMemories; the validator allows one before multi-memory.
         return readVector(_limits.maxMemories - _importedMemories, _module.memories, [this](uint32_t) {
-            return readLimits().transform(
-                [](Limits const& limits) { return MemoryType { .limits = limits }; });
+            return readMemoryType();
         });
     }
 

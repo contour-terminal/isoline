@@ -551,7 +551,7 @@ namespace
         void memorySize(Instruction const& instruction)
         {
             auto const& target = memory(instruction.a);
-            pushAddress(target.type.limits.addressType, target.bytes.size() / runtime::PageSize);
+            pushAddress(target.type.limits.addressType, target.bytes.size() / binary::pageSize(target.type));
         }
 
         [[nodiscard]] Step memoryFill(Instruction const& instruction)

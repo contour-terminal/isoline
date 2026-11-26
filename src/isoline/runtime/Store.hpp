@@ -30,9 +30,6 @@ using MemAddr = uint32_t;
 /// The address of a global instance in its store.
 using GlobalAddr = uint32_t;
 
-/// The size of a memory page, in bytes.
-inline constexpr auto PageSize = uint64_t { 65'536 };
-
 /// A host function's implementation: reads its arguments, writes its results, or traps.
 ///
 /// @p results arrives holding the default value of each result type, and must be left holding a
@@ -63,7 +60,7 @@ struct TableInstance
 /// A memory instance.
 struct MemoryInstance
 {
-    binary::MemoryType type;      ///< Its type as allocated; its current size is bytes.size() / PageSize.
+    binary::MemoryType type;      ///< Its type as allocated; its size is bytes.size() / pageSize(type).
     std::vector<std::byte> bytes; ///< Its contents, a whole number of pages.
 };
 
@@ -123,7 +120,10 @@ class UnlimitedAllocator final: public IMemoryAllocator
   public:
     /// @param bytes The size asked for.
     /// @return Whether @p bytes is at most 4 GiB.
-    [[nodiscard]] bool mayHold(uint64_t bytes) const noexcept override { return bytes <= 65'536 * PageSize; }
+    [[nodiscard]] bool mayHold(uint64_t bytes) const noexcept override { return bytes <= FourGiB; }
+
+  private:
+    static constexpr auto FourGiB = uint64_t { 1 } << 32;
 };
 
 /// Why the store could not allocate a memory or a table.
@@ -168,6 +168,9 @@ class Store
     [[nodiscard]] std::expected<TableAddr, AllocationFailure> addTable(binary::TableType type, Ref init);
 
     /// Adds a zeroed memory of type.limits.min pages.
+    ///
+    /// Precondition (checked): type.pageSizeLog2 is below binary::PageSizeLog2Limit, so that the page
+    /// size is a u64, as the decoder guarantees for every module's memory.
     /// @param type Its type.
     /// @return Its address, or the failure when the allocator refuses its size or allocation fails.
     [[nodiscard]] std::expected<MemAddr, AllocationFailure> addMemory(binary::MemoryType type);

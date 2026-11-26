@@ -20,13 +20,20 @@ using isoline::binary::MemoryType;
 using isoline::binary::Mutability;
 using isoline::binary::TableType;
 using isoline::runtime::I32;
-using isoline::runtime::PageSize;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Store;
 using isoline::runtime::Trap;
 using isoline::runtime::UnlimitedAllocator;
 using isoline::runtime::Value;
+
+namespace
+{
+
+/// The default page size, 64 KiB.
+constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
+
+} // namespace
 
 TEST_CASE("Store.constAccessors")
 {
@@ -74,4 +81,29 @@ TEST_CASE("Store.addressTypesBoundGrowth")
     // What the allocator grants, it grows by.
     CHECK(store.growMemory(*memory, 1) == 1);
     CHECK(store.growTable(*table, 1, Ref {}) == 1);
+}
+
+TEST_CASE("Store.byteGranularMemory")
+{
+    // A memory of 1-byte pages holds as many bytes as pages, and grows by bytes.
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto const memory =
+        store.addMemory(MemoryType { .limits = Limits { .min = 3, .max = std::nullopt }, .pageSizeLog2 = 0 });
+    REQUIRE(memory.has_value());
+    CHECK(store.memory(*memory).bytes.size() == 3);
+    CHECK(store.growMemory(*memory, 1) == 3);
+    CHECK(store.memory(*memory).bytes.size() == 4);
+    // An i32 memory of 1-byte pages reaches 2^32 - 1 bytes, not 2^32.
+    CHECK(store.growMemory(*memory, 0xFFFF'FFFC) == -1);
+    // With i64 addresses it reaches 2^64 - 1 pages, which no product overflows to grant: the
+    // allocator still refuses what is past 4 GiB.
+    auto const wide = store.addMemory(
+        MemoryType { .limits = Limits { .min = 0, .max = std::nullopt, .addressType = AddressType::I64 },
+                     .pageSizeLog2 = 0 });
+    REQUIRE(wide.has_value());
+    CHECK(store.growMemory(*wide, ~uint64_t { 0 }) == -1);
+    CHECK(store.growMemory(*wide, (uint64_t { 1 } << 32) + 1) == -1);
+    CHECK(store.growMemory(*wide, 16) == 0);
+    CHECK(store.memory(*wide).bytes.size() == 16);
 }

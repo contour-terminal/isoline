@@ -107,10 +107,21 @@ struct TableType
     Limits limits;               ///< Its size bounds, in elements.
 };
 
-/// A memory's type. Its page size is fixed at 65536 bytes.
+/// The base-2 logarithm of a memory's page size when it declares none: 65536 bytes.
+inline constexpr auto DefaultPageSizeLog2 = uint8_t { 16 };
+
+/// A page size's base-2 logarithm must be below this, so that the page size is a u64: the decoder
+/// refuses a larger exponent as malformed, and runtime::Store::addMemory requires it of a host's memory.
+inline constexpr auto PageSizeLog2Limit = uint8_t { 64 };
+
+/// A memory's type: its size bounds and its page size.
 struct MemoryType
 {
     Limits limits; ///< Its size bounds, in pages.
+
+    /// The base-2 logarithm of its page size in bytes: 16 unless custom-page-sizes declares another.
+    /// The decoder admits values below PageSizeLog2Limit; the validator only 0 and 16.
+    uint8_t pageSizeLog2 = DefaultPageSizeLog2;
 };
 
 /// The value type of the addresses, offsets and sizes of a memory or table of @p type.
@@ -132,12 +143,29 @@ struct MemoryType
                                                                          : AddressType::I32;
 }
 
-/// The most pages a memory of @p type may declare: what its address type reaches in 64 KiB pages.
+/// The size of a page of a memory of @p type, in bytes.
+///
+/// Precondition: type.pageSizeLog2 is below PageSizeLog2Limit, as the decoder guarantees for a module's
+/// memories and runtime::Store::addMemory checks for a host's.
 /// @param type The memory's type.
-/// @return 2^16 for i32 addresses, 2^48 for i64 ones.
+/// @return 2 to the power of its pageSizeLog2.
+[[nodiscard]] constexpr uint64_t pageSize(MemoryType const& type) noexcept
+{
+    return uint64_t { 1 } << type.pageSizeLog2;
+}
+
+/// The most pages a memory of @p type may declare: as many as its address type's largest byte
+/// address needs, as custom-page-sizes' check_memorytype computes it.
+/// @param type The memory's type.
+/// @return For 64 KiB pages 2^16 with i32 addresses and 2^48 with i64 ones; for 1-byte pages
+///         2^32 - 1 and 2^64 - 1, so that the size in bytes stays a value of the address type.
 [[nodiscard]] constexpr uint64_t maxPages(MemoryType const& type) noexcept
 {
-    return type.limits.addressType == AddressType::I64 ? uint64_t { 1 } << 48 : uint64_t { 1 } << 16;
+    auto const largestAddress =
+        type.limits.addressType == AddressType::I64 ? ~uint64_t { 0 } : uint64_t { 0xFFFF'FFFF };
+    if (type.pageSizeLog2 == 0)
+        return largestAddress;
+    return (largestAddress >> type.pageSizeLog2) + 1;
 }
 
 /// The most elements a table of @p type may declare: the largest value its address type holds.

@@ -40,6 +40,7 @@ using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
 using isoline::binary::Instruction;
 using isoline::binary::Limits;
+using isoline::binary::MemoryType;
 using isoline::binary::Module;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
@@ -53,7 +54,6 @@ using isoline::runtime::F32;
 using isoline::runtime::FuncAddr;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
-using isoline::runtime::PageSize;
 using isoline::runtime::Store;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
@@ -62,6 +62,9 @@ using isoline::runtime::Value;
 
 namespace
 {
+
+/// The default page size, 64 KiB.
+constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
 
 constexpr auto TypeI32 = isoline::binary::I32;
 constexpr auto TypeI64 = isoline::binary::I64;
@@ -608,6 +611,28 @@ TEST_CASE("ReferenceInterpreter.bulkMemory")
     CHECK(harness.result(2) == i32(3));
     CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes.size()
           == 3 * PageSize);
+}
+
+TEST_CASE("Interpreter.byteGranularMemory")
+{
+    // A memory of 1-byte pages, three of them: sizes and growth count bytes.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .memory(MemoryType { .limits = Limits { .min = 3, .max = std::nullopt }, .pageSizeLog2 = 0 })
+        .function(0, {}, { 0x3F, 0x00 })                                   // memory.size
+        .function(0, {}, code({ i32Const(0), memoryAccess(0x28, 2, 0) }))  // i32.load at 0
+        .function(0, {}, code({ i32Const(1), { 0x40, 0x00 } }))            // memory.grow 1
+        .function(0, {}, code({ i32Const(3), memoryAccess(0x2D, 0, 0) })); // i32.load8_u at 3
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == i32(3));
+    CHECK(harness.trap(1) == TrapCode::OutOfBoundsMemoryAccess);
+    CHECK(harness.trap(3) == TrapCode::OutOfBoundsMemoryAccess);
+    CHECK(harness.result(2) == i32(3));
+    CHECK(harness.result(0) == i32(4));
+    CHECK(harness.result(1) == i32(0));
+    CHECK(harness.result(3) == i32(0));
+    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes.size()
+          == 4);
 }
 
 TEST_CASE("ReferenceInterpreter.tables")

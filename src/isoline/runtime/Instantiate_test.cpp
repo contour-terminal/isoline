@@ -47,7 +47,6 @@ using isoline::runtime::IMemoryAllocator;
 using isoline::runtime::InstantiationError;
 using isoline::runtime::LinkError;
 using isoline::runtime::LinkErrorCode;
-using isoline::runtime::PageSize;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Store;
@@ -58,6 +57,9 @@ using isoline::runtime::Value;
 
 namespace
 {
+
+/// The default page size, 64 KiB.
+constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
 
 /// Limits of at least @p min, unbounded.
 Limits atLeast(uint64_t min)
@@ -702,6 +704,36 @@ TEST_CASE("Instantiate.specMessages")
     CHECK(specMessage(LinkErrorCode::UnknownImport) == "unknown import");
     CHECK(specMessage(LinkErrorCode::IncompatibleImportType) == "incompatible import type");
     CHECK(specMessage(AllocationFailure { .kind = ExternKind::Memory }) == "out of memory");
+}
+
+TEST_CASE("Instantiate.pageSizeMustMatch")
+{
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto executor = StubExecutor {};
+    auto const bytePages = MemoryType { .limits = atLeast(0), .pageSizeLog2 = 0 };
+    auto const importing = [](MemoryType const& type) {
+        auto builder = ModuleBuilder {};
+        builder.importMemory("m", "mem", type);
+        return moduleOf(builder, FeatureSet::all());
+    };
+    auto const provided = [&](MemoryType const& type) {
+        auto const memory = store.addMemory(type);
+        REQUIRE(memory.has_value());
+        return std::vector { ExternValue { .kind = ExternKind::Memory, .address = *memory } };
+    };
+    auto const incompatible = InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } };
+    // A 64 KiB-page memory where 1-byte pages are declared, and the other way round.
+    CHECK(errorOf(instantiate(
+              store, executor, importing(bytePages), provided(MemoryType { .limits = atLeast(0) })))
+          == incompatible);
+    CHECK(errorOf(instantiate(
+              store, executor, importing(MemoryType { .limits = atLeast(0) }), provided(bytePages)))
+          == incompatible);
+    CHECK(instantiate(store, executor, importing(bytePages), provided(bytePages)).has_value());
+    // Sizes compare in the memory's own pages: 70000 bytes are 70000 pages, more than 2^16.
+    auto const large = MemoryType { .limits = atLeast(70'000), .pageSizeLog2 = 0 };
+    CHECK(instantiate(store, executor, importing(large), provided(large)).has_value());
 }
 
 TEST_CASE("Instantiate.memory64")

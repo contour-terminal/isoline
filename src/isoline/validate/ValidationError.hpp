@@ -46,37 +46,33 @@ enum class ValidationErrorCode : uint8_t
     UnknownTag,
     OffsetOutOfRange,
     TableSizeMustBeAtMost,
+    InvalidCustomPageSize,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::TableSizeMustBeAtMost;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::InvalidCustomPageSize;
 
 /// What the reference interpreter appends to an error's message.
 enum class MessageDetail : uint8_t
 {
     None,        ///< Nothing: the message is the row's text.
     Index,       ///< The index the error names (ValidationError::subject), after a space.
-    MemoryBound, ///< The memory size bound of the address type ValidationError::subject names.
+    MemoryBound, ///< The memory size bound of the MemoryBoundTable row ValidationError::subject names.
     TableBound,  ///< The table size bound of the address type ValidationError::subject names.
 };
 
-/// The bounds the interpreter's memory and table size errors spell, one row per binary::AddressType
-/// in enumerator order; a size error's subject is the address type's enumerator value.
+/// The bounds the interpreter's table size errors spell, one row per binary::AddressType in
+/// enumerator order; a table size error's subject is the address type's enumerator value.
 struct AddressBoundRow
 {
     binary::AddressType addressType; ///< The address type; equal to the row's index.
-    std::string_view memoryBound;    ///< The largest memory, in the words of check_memorytype.
     std::string_view tableBound;     ///< The largest table, in the words of check_tabletype.
 };
 
-/// Every address type's size bounds, as valid.ml spells them.
+/// Every address type's table size bound, as valid.ml spells it.
 inline constexpr auto AddressBoundTable = std::to_array<AddressBoundRow>({
-    { .addressType = binary::AddressType::I32,
-      .memoryBound = "2^16 pages (4 GiB) for i32",
-      .tableBound = "2^32-1 for i32" },
-    { .addressType = binary::AddressType::I64,
-      .memoryBound = "2^48 pages (256 TiB) for i64",
-      .tableBound = "2^64-1 for i64" },
+    { .addressType = binary::AddressType::I32, .tableBound = "2^32-1 for i32" },
+    { .addressType = binary::AddressType::I64, .tableBound = "2^64-1 for i64" },
 });
 
 static_assert(AddressBoundTable[static_cast<std::size_t>(binary::AddressType::I32)].addressType
@@ -84,6 +80,47 @@ static_assert(AddressBoundTable[static_cast<std::size_t>(binary::AddressType::I3
                   && AddressBoundTable[static_cast<std::size_t>(binary::AddressType::I64)].addressType
                          == binary::AddressType::I64,
               "AddressBoundTable holds one row per AddressType, at the index of its enumerator");
+
+/// The bound a memory size error spells for one address type and page size.
+struct MemoryBoundRow
+{
+    binary::AddressType addressType; ///< The memory's address type.
+    uint8_t pageSizeLog2;            ///< The base-2 logarithm of its page size.
+    std::string_view bound;          ///< The largest memory, in the words of check_memorytype.
+};
+
+/// Every valid memory type's size bound: for 64 KiB pages as WebAssembly 3.0's valid.ml spells it,
+/// for 1-byte pages as custom-page-sizes' does. A memory size error's subject is a row's index, which
+/// memoryBoundRow() computes.
+inline constexpr auto MemoryBoundTable = std::to_array<MemoryBoundRow>({
+    { .addressType = binary::AddressType::I32, .pageSizeLog2 = 16, .bound = "2^16 pages (4 GiB) for i32" },
+    { .addressType = binary::AddressType::I64, .pageSizeLog2 = 16, .bound = "2^48 pages (256 TiB) for i64" },
+    { .addressType = binary::AddressType::I32, .pageSizeLog2 = 0, .bound = "4294967295 pages for i32" },
+    { .addressType = binary::AddressType::I64,
+      .pageSizeLog2 = 0,
+      .bound = "18446744073709551615 pages for i64" },
+});
+
+/// The index of the MemoryBoundTable row of a memory of @p addressType and 64 KiB or 1-byte pages.
+/// @param addressType The memory's address type.
+/// @param pageSizeLog2 Its page size's base-2 logarithm, 0 or 16, as validation admits.
+/// @return The row's index: the address type's, after the two rows of 64 KiB pages for 1-byte ones.
+[[nodiscard]] constexpr uint32_t memoryBoundRow(binary::AddressType addressType,
+                                                uint8_t pageSizeLog2) noexcept
+{
+    constexpr auto AddressTypeCount = uint32_t { 2 };
+    auto const bytePages = pageSizeLog2 == 0 ? AddressTypeCount : 0;
+    return bytePages + static_cast<uint32_t>(addressType);
+}
+
+static_assert(
+    [] {
+        for (auto const& row: MemoryBoundTable)
+            if (&MemoryBoundTable[memoryBoundRow(row.addressType, row.pageSizeLog2)] != &row)
+                return false;
+        return true;
+    }(),
+    "memoryBoundRow() finds every MemoryBoundTable row at its own index");
 
 /// One row of ValidationErrorTable: an error and the message the spec test suite expects for it.
 struct ValidationErrorRow
@@ -160,6 +197,8 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
     { .code = ValidationErrorCode::TableSizeMustBeAtMost,
       .specMessage = "table size must be at most",
       .detail = MessageDetail::TableBound },
+    // custom-page-sizes: a page size other than 1 byte or 64 KiB.
+    { .code = ValidationErrorCode::InvalidCustomPageSize, .specMessage = "invalid custom page size" },
 });
 
 static_assert(
@@ -238,7 +277,7 @@ struct ValidationError
         case MessageDetail::None: break;
         case MessageDetail::Index: return std::format("{} {}", row.specMessage, *error.subject);
         case MessageDetail::MemoryBound:
-            return std::format("{} {}", row.specMessage, AddressBoundTable.at(*error.subject).memoryBound);
+            return std::format("{} {}", row.specMessage, MemoryBoundTable.at(*error.subject).bound);
         case MessageDetail::TableBound:
             return std::format("{} {}", row.specMessage, AddressBoundTable.at(*error.subject).tableBound);
     }

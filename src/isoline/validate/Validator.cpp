@@ -200,28 +200,39 @@ namespace
     // --- Limits -------------------------------------------------------------------------------
 
     /// Checks @p limits against @p range, as the interpreter's check_limits does: both bounds first,
-    /// then their order. A bound past @p range is @p tooLarge, naming the limits' address type.
+    /// then their order. A bound past @p range is @p tooLarge, naming @p boundRow, the row of the
+    /// bound its message spells (AddressBoundTable for a table, MemoryBoundTable for a memory).
     [[nodiscard]] Check checkLimits(binary::Limits const& limits,
                                     uint64_t range,
-                                    ValidationErrorCode tooLarge)
+                                    ValidationErrorCode tooLarge,
+                                    uint32_t boundRow)
     {
         auto const fits = (limits.min <= range) && (!limits.max || *limits.max <= range);
         if (!fits)
-            return failNaming(tooLarge, static_cast<uint32_t>(limits.addressType));
+            return failNaming(tooLarge, boundRow);
         return check(!limits.max || limits.min <= *limits.max,
                      ValidationErrorCode::SizeMinimumMustNotBeGreaterThanMaximum);
     }
 
     [[nodiscard]] Check checkTable(TableType const& table)
     {
-        return checkLimits(
-            table.limits, binary::maxTableSize(table), ValidationErrorCode::TableSizeMustBeAtMost);
+        return checkLimits(table.limits,
+                           binary::maxTableSize(table),
+                           ValidationErrorCode::TableSizeMustBeAtMost,
+                           static_cast<uint32_t>(table.limits.addressType));
     }
+
+    /// The page sizes custom-page-sizes admits, as base-2 logarithms: 1 byte and 64 KiB.
+    constexpr auto ValidPageSizesLog2 = std::to_array<uint8_t>({ 0, binary::DefaultPageSizeLog2 });
 
     [[nodiscard]] Check checkMemory(MemoryType const& memory)
     {
-        return checkLimits(
-            memory.limits, binary::maxPages(memory), ValidationErrorCode::MemorySizeMustBeAtMost);
+        if (std::ranges::find(ValidPageSizesLog2, memory.pageSizeLog2) == ValidPageSizesLog2.end())
+            return fail(ValidationErrorCode::InvalidCustomPageSize);
+        return checkLimits(memory.limits,
+                           binary::maxPages(memory),
+                           ValidationErrorCode::MemorySizeMustBeAtMost,
+                           memoryBoundRow(memory.limits.addressType, memory.pageSizeLog2));
     }
 
     /// The largest memarg offset a memory of i32 addresses admits.

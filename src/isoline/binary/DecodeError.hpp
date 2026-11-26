@@ -54,10 +54,11 @@ enum class DecodeErrorCode : uint8_t
     MalformedMemopFlags,
     MissingFeaturePrerequisite,
     MalformedLimitsFlags,
+    InvalidCustomPageSize,
 };
 
 /// The last DecodeErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::MalformedLimitsFlags;
+inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::InvalidCustomPageSize;
 
 /// What a decode error's message appends to its row's text, from DecodeError::subject.
 enum class DecodeErrorDetail : uint8_t
@@ -141,6 +142,8 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     // WebAssembly 3.0 reads the limits flags as a byte and admits only the flags of its table; 2.0's
     // reading is LimitsFlagTooLarge's.
     { .code = DecodeErrorCode::MalformedLimitsFlags, .specMessage = "malformed limits flags" },
+    // custom-page-sizes: a page size exponent of 64 or more, whose page size is no u64.
+    { .code = DecodeErrorCode::InvalidCustomPageSize, .specMessage = "invalid custom page size" },
 });
 
 static_assert(

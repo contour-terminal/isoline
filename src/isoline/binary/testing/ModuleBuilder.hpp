@@ -97,6 +97,22 @@ namespace isoline::binary::testing
     return bytes;
 }
 
+/// The binary encoding of @p type: its limits, with the custom-page-sizes flag (0x08) and the page
+/// size's exponent after the bounds when the page size is not the default 64 KiB.
+/// @param type The memory type to encode.
+/// @return Its bytes.
+[[nodiscard]] inline std::vector<uint8_t> encodeMemoryType(MemoryType const& type)
+{
+    constexpr auto CustomPageSize = uint8_t { 0x08 };
+    auto bytes = encodeLimits(type.limits);
+    if (type.pageSizeLog2 == DefaultPageSizeLog2)
+        return bytes;
+    bytes.front() |= CustomPageSize;
+    auto const exponent = encodeU32(type.pageSizeLog2);
+    bytes.insert(bytes.end(), exponent.begin(), exponent.end());
+    return bytes;
+}
+
 /// Assembles a binary module in tests.
 ///
 /// The structured methods fill the type, import, function, table, memory, global, export, start,
@@ -155,15 +171,25 @@ class ModuleBuilder
         return *this;
     }
 
-    /// Appends a memory import to the import section.
+    /// Appends a memory import of 64 KiB pages to the import section.
     /// @param module The module name.
     /// @param name The field name.
     /// @param limits The memory's required size bounds, in pages.
     /// @return This builder.
     ModuleBuilder& importMemory(std::string_view module, std::string_view name, Limits const& limits)
     {
+        return importMemory(module, name, MemoryType { .limits = limits });
+    }
+
+    /// Appends a memory import to the import section.
+    /// @param module The module name.
+    /// @param name The field name.
+    /// @param type The memory's required type.
+    /// @return This builder.
+    ModuleBuilder& importMemory(std::string_view module, std::string_view name, MemoryType const& type)
+    {
         auto entry = importHeader(module, name, 0x02);
-        append(entry, encodeLimits(limits));
+        append(entry, encodeMemoryType(type));
         _imports.push_back(std::move(entry));
         return *this;
     }
@@ -205,12 +231,17 @@ class ModuleBuilder
         return *this;
     }
 
-    /// Appends a memory to the memory section.
+    /// Appends a memory of 64 KiB pages to the memory section.
     /// @param limits Its size bounds, in pages.
     /// @return This builder.
-    ModuleBuilder& memory(Limits limits)
+    ModuleBuilder& memory(Limits limits) { return memory(MemoryType { .limits = limits }); }
+
+    /// Appends a memory to the memory section.
+    /// @param type Its size bounds and page size.
+    /// @return This builder.
+    ModuleBuilder& memory(MemoryType const& type)
     {
-        _memories.push_back(limits);
+        _memories.push_back(type);
         return *this;
     }
 
@@ -428,8 +459,8 @@ class ModuleBuilder
     [[nodiscard]] Entries memorySection() const
     {
         auto entries = Entries { .count = static_cast<uint32_t>(_memories.size()), .bytes = {} };
-        for (auto const& limits: _memories)
-            append(entries.bytes, encodeLimits(limits));
+        for (auto const& type: _memories)
+            append(entries.bytes, encodeMemoryType(type));
         return entries;
     }
 
@@ -476,7 +507,7 @@ class ModuleBuilder
     std::vector<std::vector<uint8_t>> _imports;
     std::vector<FunctionEntry> _functions;
     std::vector<TableType> _tables;
-    std::vector<Limits> _memories;
+    std::vector<MemoryType> _memories;
     std::vector<std::vector<uint8_t>> _globals;
     std::vector<ExportEntry> _exports;
     std::optional<uint32_t> _start;
