@@ -261,6 +261,8 @@ A defect there is fixed in core-cpp, released, and re-vendored with `MODE=sync` 
 - Release: `clang-release`. Coverage: `clang-coverage` (`-fprofile-instr-generate -fcoverage-mapping`).
 - GCC: `gcc-debug`. macOS: `macos-clang` (Apple Clang). Windows: `msvc-debug`, from a Developer
   Command Prompt.
+- Cross from Linux, tests under an emulator: `clangcl-cross-debug` (Windows x64, wine) and
+  `clang-aarch64-cross` (arm64, qemu-user); see [docs/cross-compiling.md](docs/cross-compiling.md).
 - Catch2 v3 comes from `find_package(Catch2 3)`; configure with `-DISOLINE_FETCH_DEPS=ON` to fetch it
   when it is not installed (the macOS and Windows presets do).
 - Every preset builds into `out/<preset>/`.
