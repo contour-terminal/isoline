@@ -19,6 +19,14 @@ add_test(NAME spec-selftest-exit
          COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest" 0 --features wasm2)
 set_tests_properties(spec-selftest-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
 
+# assert_invalid_custom, under 3.0 (whose branch hints are the custom section Isoline interprets): a
+# module whose hint names a non-branch passes with "invalid target", fails with "invalid order" (a
+# wrong message), and a malformed module fails it (a load failure is never a custom error).
+add_test(NAME spec-selftest-custom
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-custom" 0 --features wasm3)
+set_tests_properties(spec-selftest-custom PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "passed 1, failed 2, skipped 0")
+
 # The pinned skip count: a script of one skip line passes with one skip pinned, and fails with none
 # pinned or two.
 add_test(NAME spec-skips COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-skips" 1 --features wasm2)

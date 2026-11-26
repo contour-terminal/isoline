@@ -268,6 +268,7 @@ wasm3 core/type-canon               exclude GC: canonicalization of recursive ty
 wasm3 core/type-rec                 exclude GC: recursive type groups
 wasm3 custom/custom/custom_annot    exclude text format (P10)
 wasm3 custom/name/name_annot        exclude text format (P10)
+wasm3 custom/metadata.code.branch_hint/branch_hint 2
 wide-arithmetic core/wide-arithmetic 0
 custom-page-sizes core/custom-page-sizes/custom-page-sizes 1
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid 2

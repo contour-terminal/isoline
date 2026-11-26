@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <isoline/Features.hpp>
+#include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/ByteReader.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Module.hpp>
@@ -446,7 +447,12 @@ namespace
         std::vector<uint32_t>& brTableLabels;   ///< br_table labels (Function::brTableLabels).
         std::vector<ValueType>& selectTypes;    ///< Typed select operand types (Function::selectTypes).
         std::vector<CatchClause>& catchClauses; ///< try_table catch clauses (Function::catchClauses).
+        std::vector<BranchSite>& branchSites;   ///< Every if and br_if (Function::branchSites).
+        std::size_t siteBase;                   ///< The module offset branch site offsets count from.
     };
+
+    /// The instructions a branch hint may attach to, which CodeSink::branchSites records.
+    constexpr auto BranchSiteOpcodes = std::to_array<Opcode>({ Opcode::If, Opcode::BrIf });
 
     /// Whether an instruction of @p immediate opens a block that an end closes: block, loop, if and
     /// try_table.
@@ -648,6 +654,17 @@ namespace
         std::vector<uint32_t> _constBrTableLabels;
         std::vector<ValueType> _constSelectTypes;
         std::vector<CatchClause> _constCatchClauses;
+        std::vector<BranchSite> _constBranchSites;
+
+        /// Where the branch hint section's payload lies, once one is read under
+        /// Feature::BranchHinting; only the first such section is interpreted, and every later one
+        /// is refused (CustomErrorCode::BranchHintDuplicateSection) with whatever hints it holds.
+        struct BranchHintSection
+        {
+            std::size_t custom;        ///< Its index in Module::customs.
+            std::size_t payloadOffset; ///< The module offset of its payload.
+        };
+        std::optional<BranchHintSection> _branchHintSection;
     };
 
     /// One non-custom section: its id, the proposal it needs, and its decoder.
@@ -729,6 +746,12 @@ namespace
 
         if (auto result = checkConsistency(); !result)
             return std::unexpected { result.error() };
+        // Branch hints name code offsets, so they are read once the code section has been, even
+        // though their section precedes it.
+        if (_branchHintSection)
+            decodeBranchHints(_module,
+                              _module.customs[_branchHintSection->custom].bytes,
+                              _branchHintSection->payloadOffset);
         return std::move(_module);
     }
 
@@ -761,6 +784,15 @@ namespace
         auto const consumed = _reader.offset() - start;
         if (consumed > *size)
             return std::unexpected { DecodeError { DecodeErrorCode::UnexpectedEnd, _moduleSize } };
+        if (*name == BranchHintSectionName && _features.has(Feature::BranchHinting))
+        {
+            if (_branchHintSection)
+                _module.customErrors.emplace_back(CustomErrorCode::BranchHintDuplicateSection,
+                                                  _reader.offset());
+            else
+                _branchHintSection =
+                    BranchHintSection { .custom = _module.customs.size(), .payloadOffset = _reader.offset() };
+        }
         return _reader.readBytes(*size - consumed).transform([&](std::span<std::byte const> payload) {
             _module.customs.push_back(CustomSection {
                 .name = std::move(*name), .bytes = std::vector<std::byte>(payload.begin(), payload.end()) });
@@ -1057,10 +1089,13 @@ namespace
         _constBrTableLabels.clear();
         _constSelectTypes.clear();
         _constCatchClauses.clear();
+        _constBranchSites.clear();
         return readExpression(CodeSink { .body = expression,
                                          .brTableLabels = _constBrTableLabels,
                                          .selectTypes = _constSelectTypes,
-                                         .catchClauses = _constCatchClauses })
+                                         .catchClauses = _constCatchClauses,
+                                         .branchSites = _constBranchSites,
+                                         .siteBase = _reader.offset() })
             .transform([&] { return std::move(expression); });
     }
 
@@ -1150,9 +1185,14 @@ namespace
                 continue;
             }
 
+            auto const instructionOffset = _reader.offset();
             auto const instruction = readInstruction(*next, sink);
             if (!instruction)
                 return std::unexpected { instruction.error() };
+            if (std::ranges::find(BranchSiteOpcodes, instruction->opcode) != BranchSiteOpcodes.end())
+                sink.branchSites.push_back(
+                    BranchSite { .instruction = index,
+                                 .offset = static_cast<uint32_t>(instructionOffset - sink.siteBase) });
             if (opensBlock(opcodeInfo(instruction->opcode).immediate))
                 open.push_back(OpenBlock { .opener = index, .elseIndex = std::nullopt });
             sink.body.push_back(*instruction);
@@ -1689,6 +1729,7 @@ namespace
         auto const start = _reader.offset();
         auto const end = start + *size;
 
+        // start is also where the locals declaration begins, which branch site offsets count from.
         auto locals = readLocals();
         if (!locals)
             return std::unexpected { locals.error() };
@@ -1701,6 +1742,7 @@ namespace
             .brTableLabels = {},
             .selectTypes = {},
             .catchClauses = {},
+            .branchSites = {},
         };
         // The body is read from the module's stream, not from its declared bytes: one whose end
         // lies elsewhere reads on, or stops short, and then mismatches its size, as in the
@@ -1708,7 +1750,9 @@ namespace
         auto const body = readExpression(CodeSink { .body = function.body,
                                                     .brTableLabels = function.brTableLabels,
                                                     .selectTypes = function.selectTypes,
-                                                    .catchClauses = function.catchClauses });
+                                                    .catchClauses = function.catchClauses,
+                                                    .branchSites = function.branchSites,
+                                                    .siteBase = start });
         if (!body)
             return std::unexpected { body.error() };
         if (_reader.offset() != end)

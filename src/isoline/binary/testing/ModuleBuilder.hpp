@@ -171,8 +171,9 @@ inline constexpr auto AbstractHeapCodes = std::to_array<AbstractHeapCode>({
 ///
 /// The structured methods fill the type, import, function, table, memory, tag, global, export, start,
 /// element, data count, code and data sections, which build() writes in the binary format's order; raw
-/// sections follow them in the order they were added, so a test that needs a section elsewhere, or out of
-/// order, writes every section raw.
+/// sections follow them in the order they were added (those added with rawSectionBeforeCode() precede the
+/// code section instead), so a test that needs a section elsewhere, or out of order, writes every section
+/// raw.
 class ModuleBuilder
 {
   public:
@@ -397,6 +398,17 @@ class ModuleBuilder
         return *this;
     }
 
+    /// Appends a section verbatim just before the code section, where a custom section that names
+    /// code offsets (such as branch hints) sits in a real module.
+    /// @param id The section id.
+    /// @param payload The section's contents; build() prefixes their size.
+    /// @return This builder.
+    ModuleBuilder& rawSectionBeforeCode(uint8_t id, std::vector<uint8_t> payload)
+    {
+        _rawSectionsBeforeCode.emplace_back(id, std::move(payload));
+        return *this;
+    }
+
     /// Appends a section verbatim after the structured ones.
     /// @param id The section id.
     /// @param payload The section's contents; build() prefixes their size.
@@ -407,7 +419,8 @@ class ModuleBuilder
         return *this;
     }
 
-    /// The module's bytes: the preamble, then every non-empty structured section, then the raw ones.
+    /// The module's bytes: the preamble, then every non-empty structured section, with the raw sections
+    /// meant for before the code section ahead of it, then the other raw ones.
     /// @return The binary module.
     [[nodiscard]] std::vector<std::byte> build() const
     {
@@ -425,6 +438,8 @@ class ModuleBuilder
         appendSection(bytes, ElementSectionId, entriesOf(_elements));
         if (_dataCount)
             appendRaw(bytes, DataCountSectionId, encodeU32(*_dataCount));
+        for (auto const& [id, payload]: _rawSectionsBeforeCode)
+            appendRaw(bytes, id, payload);
         appendSection(bytes, CodeSectionId, codeSection());
         appendSection(bytes, DataSectionId, entriesOf(_data));
         for (auto const& [id, payload]: _rawSections)
@@ -610,6 +625,7 @@ class ModuleBuilder
     std::optional<uint32_t> _dataCount;
     std::vector<std::vector<uint8_t>> _elements;
     std::vector<std::vector<uint8_t>> _data;
+    std::vector<std::pair<uint8_t, std::vector<uint8_t>>> _rawSectionsBeforeCode;
     std::vector<std::pair<uint8_t, std::vector<uint8_t>>> _rawSections;
 };
 

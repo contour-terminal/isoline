@@ -14,6 +14,7 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 
@@ -149,6 +150,13 @@ struct LocalRun
     ValueType type;     ///< Their type.
 };
 
+/// An if or br_if of a function body, where a branch hint may attach.
+struct BranchSite
+{
+    uint32_t instruction = 0; ///< Its index in Function::body.
+    uint32_t offset = 0;      ///< Its byte offset, relative to the function's locals declaration.
+};
+
 /// A defined function's code.
 ///
 /// The decoder reads each body in place, as the code section lists it: its locals, then its
@@ -172,6 +180,10 @@ struct Function
     /// The catch clauses of every try_table in body, one run per try_table in body order; a
     /// try_table's Instruction::c and b give its run's offset and length.
     std::vector<CatchClause> catchClauses;
+
+    /// Every if and br_if in body, in body order, which is also increasing offset order; what the
+    /// branch hint section's offsets are resolved against.
+    std::vector<BranchSite> branchSites;
 };
 
 /// The labels of a br_table in @p function's body, its default label last.
@@ -353,6 +365,13 @@ struct Module
     /// them, constant expressions included; such an instruction's Instruction::a indexes this.
     /// Kept beside the code, as 16 bytes would more than double every Instruction.
     std::vector<std::array<std::byte, 16>> v128Literals;
+
+    /// The branch hints of the `metadata.code.branch_hint` section, ordered by function, then by
+    /// instruction; empty without the section, or when it was refused.
+    std::vector<BranchHint> branchHints;
+
+    /// The custom sections the decoder interpreted and refused; none of them fails the module.
+    std::vector<CustomSectionError> customErrors;
 
     /// How many imports of @p kind the module has; they precede the defined entities of that kind
     /// in its index space.

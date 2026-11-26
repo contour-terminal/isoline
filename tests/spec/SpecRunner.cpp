@@ -36,6 +36,7 @@
 #include "SpecCheck.hpp"
 #include "SpecFeatures.hpp"
 #include <isoline/Features.hpp>
+#include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
@@ -256,8 +257,7 @@ namespace
                     return expectFailure(command, instantiateFile(command.file), Stage::Link);
                 case CommandKind::AssertException:
                     return expectFailure(command, perform(command.action), Stage::Exception);
-                case CommandKind::AssertInvalidCustom:
-                    return expectFailure(command, loadModule(command.file), Stage::Custom);
+                case CommandKind::AssertInvalidCustom: return assertInvalidCustom(command);
                 case CommandKind::Skip: return {};
             }
             return std::unexpected { std::string { "unknown command" } };
@@ -277,6 +277,27 @@ namespace
         {
             return checkFailure(
                 stage, command.text, result ? std::nullopt : std::optional { result.error() });
+        }
+
+        /// Checks that a module loads, and that one of the custom sections the decoder interpreted was
+        /// refused with a message starting with the expected one.
+        [[nodiscard]] Outcome assertInvalidCustom(Command const& command) const
+        {
+            auto const module = loadModule(command.file);
+            if (!module)
+                return checkFailure(Stage::Custom, command.text, module.error());
+            auto const& errors = (*module)->customErrors;
+            auto const matches = [&](binary::CustomSectionError const& error) {
+                return binary::specMessage(error.code).starts_with(command.text);
+            };
+            if (std::ranges::any_of(errors, matches))
+                return {};
+            // None matches: the first refusal, if any, is the one reported.
+            if (errors.empty())
+                return checkFailure(Stage::Custom, command.text, std::nullopt);
+            auto const message = std::string { binary::specMessage(errors.front().code) };
+            return checkFailure(
+                Stage::Custom, command.text, Failure { .stage = Stage::Custom, .message = message });
         }
 
         /// Reads, decodes and validates a module file.

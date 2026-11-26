@@ -1395,5 +1395,7 @@ wasm3 core/token:294: assert_malformed of a text module
 wasm3 core/token:300: assert_malformed of a text module
 wasm3 core/type:44: assert_malformed of a text module
 wasm3 core/type:48: assert_malformed of a text module
+wasm3 custom/metadata.code.branch_hint/branch_hint:51: assert_malformed_custom of a text module
+wasm3 custom/metadata.code.branch_hint/branch_hint:68: assert_malformed_custom of a text module
 ```
 <!-- text-skips:end -->
