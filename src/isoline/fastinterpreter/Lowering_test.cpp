@@ -9,6 +9,7 @@
 #include <memory>
 #include <memory_resource>
 #include <new>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <string>
@@ -154,6 +155,34 @@ class ExhaustedResource final: public std::pmr::memory_resource
     {
         return this == &other;
     }
+};
+
+/// A memory resource over the global heap whose host has memory for @p allowed allocations only.
+class RefusingResource final: public std::pmr::memory_resource
+{
+  public:
+    /// A resource refusing every allocation after the first @p allowed.
+    explicit RefusingResource(std::size_t allowed) noexcept: _allowed { allowed } {}
+
+  private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override
+    {
+        if (_allocations == _allowed)
+            throw std::bad_alloc();
+        ++_allocations;
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+    void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override
+    {
+        std::pmr::new_delete_resource()->deallocate(pointer, bytes, alignment);
+    }
+    [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
+    {
+        return this == &other;
+    }
+
+    std::size_t _allowed;
+    std::size_t _allocations = 0;
 };
 
 /// The value types of a signature's kinds.
@@ -625,6 +654,33 @@ TEST_CASE("Lowering.refusesWhenTheHostHasNoMemory")
     CHECK(result.error().reason == LoweringFailure::HostMemory);
     CHECK(result.error().codeIndex == 0);
     CHECK(arena->charged() == 0);
+}
+
+TEST_CASE("Lowering.everyHostRefusalIsHostMemory")
+{
+    // The host refuses its n-th allocation, for each n until lowering needs no more. Through the arena or at
+    // the module's own record, the last allocation lowering makes, the refusal is HostMemory; at the record
+    // it names no function.
+    auto const module = validated(
+        functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), i32Const(1), op(0x6A) })));
+    auto lastRefusal = std::optional<LoweringError> {};
+    auto lowered = false;
+    for (auto const allowed: std::views::iota(std::size_t { 0 }, std::size_t { 100 }))
+    {
+        auto host = RefusingResource { allowed };
+        auto const arena = std::make_shared<CountingArena>(DefaultBudget, host);
+        auto const result = lower(*module, LoweringConfig {}, arena);
+        if (result.has_value())
+        {
+            lowered = true;
+            break;
+        }
+        CHECK(result.error().reason == LoweringFailure::HostMemory);
+        lastRefusal = result.error();
+    }
+    REQUIRE(lowered);
+    REQUIRE(lastRefusal.has_value());
+    CHECK(lastRefusal->codeIndex == NoFunction);
 }
 
 TEST_CASE("Lowering.recordsWhatItTook")

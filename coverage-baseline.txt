@@ -36,14 +36,20 @@
 # coverage counter clang computed as negative (18.4E), is gone with its exclusion, and the precondition's failing sides, which the
 # decoder never produces, are the new branches no caller takes. No branch lost its coverage.
 #
-# The branch entries of src/isoline/interpreter/ReferenceInterpreter.cpp (95.03 to 94.51, 362 of 383), runtime/Instantiate.cpp
-# (93.56 to 92.98), runtime/Store.cpp (85.18 to 84.12) and api/Store.cpp (84.72 to 83.33) were lowered when the coverage build began
-# to count atomically (-fprofile-update=atomic, P4 Task 6). The [threading] tests run guests on eight threads, whose racing
-# increments were lost, so counts llvm-cov derives by subtraction wrapped past zero and saturated at 2^63 - 1 (seen at
-# ReferenceInterpreter.cpp:362-363 and :1195, api/Store.cpp:278-281, binary/MemoryAccess.hpp:214), and a saturated count reads as
-# covered. The old entries held branches no test takes; the new ones are what four runs measured alike. No test lost coverage.
-# src/isoline/fastinterpreter/Lowering.cpp's line entry went from 98.52 to 97.28 when the host refusing the LoweredModule's own
-# record became a HostMemory error: its five lines are the module-record-host-memory exclusion.
+# Four branch entries were lowered when the coverage build began to count atomically (-fprofile-update=atomic, P4 Task 6). The
+# [threading] tests run guests on eight threads, whose racing increments were lost, so a count llvm-cov derives by subtraction
+# could come out positive, or wrap past zero and saturate at 2^63 - 1, for a branch no test takes; either reads as covered.
+# Two pre-fix runs (f64b8dc) against four atomic ones, which agree exactly:
+# - src/isoline/interpreter/ReferenceInterpreter.cpp, 95.03 to 94.51 (362 of 383): branches at :1019 and :1195 saturated in both
+#   pre-fix runs (364 covered), none in the atomic ones.
+# - src/isoline/runtime/Instantiate.cpp, 93.56 to 92.98 (159 of 171): the no-case side of indexSpace()'s switch over ExternKind
+#   (:99), which has a case for every enumerator, counted 7 and 13 in the pre-fix runs and 0 in every atomic one, where the cases
+#   now sum to the switch's count.
+# - src/isoline/runtime/Store.cpp, 85.18 to 84.12 (159 of 189): the failing sides of internType()'s precondition (:196) that
+#   every concrete type it names is interned, which no valid caller takes, counted 580 and 775, and 2^63 - 1, before; 0 after.
+# - src/isoline/api/Store.cpp, 84.72 to 83.33 (60 of 72): branches at :278 and :280 saturated in both pre-fix runs, and at :132
+#   in one of them (61 covered there), none in the atomic ones.
+# No branch a test takes lost its coverage.
 #
 # src/isoline/validate/Validator.cpp's branch entry was lowered from 97.58 to 97.33 when validateModule began to Require a
 # feature set closed over its prerequisites (FeatureSet::checkPrerequisites): the failing side of that precondition, which
@@ -216,7 +222,6 @@ exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionE
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
 exclude src/isoline/fastinterpreter/Lowering.cpp lowering-later-task core::todo for an opcode no lowering row of P4 Task 6 handles: control flow, calls, memory, references, SIMD and exceptions are lowered from Task 7 on, which replace this exclusion
-exclude src/isoline/fastinterpreter/Lowering.cpp module-record-host-memory the host refusing the LoweredModule's own record: it comes from the host's heap (it owns the arena), which no test can exhaust at that one allocation
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Opcode.everyRowDecodes runs a module of every row of the opcode table, so an instruction without one aborts that test
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp numeric-shape-none numeric() of a non-numeric opcode: execute() dispatches only table rows here
@@ -290,7 +295,7 @@ src/isoline/fastinterpreter/Code.hpp          100.00 -
 src/isoline/fastinterpreter/Dispatch.cpp      100.00 -
 src/isoline/fastinterpreter/Listing.cpp       100.00 85.71
 src/isoline/fastinterpreter/LittleEndian.hpp  100.00 -
-src/isoline/fastinterpreter/Lowering.cpp      97.28 87.42
+src/isoline/fastinterpreter/Lowering.cpp      98.67 88.00
 src/isoline/fastinterpreter/Lowering.hpp      100.00 -
 src/isoline/fastinterpreter/LoweringArena.cpp 100.00 85.71
 src/isoline/fastinterpreter/LoweringArena.hpp 100.00 -
