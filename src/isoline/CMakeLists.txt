@@ -34,7 +34,9 @@ target_sources(isoline_core
     PRIVATE
         Version.cpp
         api/Engine.cpp
+        api/Imports.cpp
         api/Module.cpp
+        api/Store.cpp
         binary/BranchHints.cpp
         binary/ByteReader.cpp
         binary/Decoder.cpp
@@ -57,9 +59,13 @@ target_sources(isoline_core
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
         FILES
             Features.hpp
+            api/CallError.hpp
             api/Engine.hpp
             api/EngineIdentity.hpp
+            api/Imports.hpp
             api/Module.hpp
+            api/Store.hpp
+            api/Types.hpp
             binary/BranchHints.hpp
             binary/ByteReader.hpp
             binary/DecodeError.hpp

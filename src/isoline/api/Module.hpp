@@ -10,16 +10,9 @@
 
 #include <isoline/Features.hpp>
 #include <isoline/api/EngineIdentity.hpp>
+#include <isoline/api/Types.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/validate/ValidationError.hpp>
-
-namespace isoline::binary
-{
-struct FuncType;
-struct TableType;
-struct MemoryType;
-struct GlobalType;
-} // namespace isoline::binary
 
 namespace isoline::validate
 {
@@ -41,7 +34,7 @@ namespace testing
 /// are empty.
 struct TagType
 {
-    binary::FuncType const* type; ///< The function type, inside the module that names the tag.
+    FuncType const* type; ///< The function type, inside the module that names the tag.
 };
 
 /// The type of what an import requires or an export provides, one alternative per binary::ExternKind.
@@ -49,11 +42,8 @@ struct TagType
 /// Each alternative points into the module it describes, which an api::Module keeps alive: a
 /// description costs the same whatever the size of the type it names. Concrete type indices inside a
 /// FuncType, TableType or GlobalType index that module's type section.
-using ExternType = std::variant<binary::FuncType const*,
-                                binary::TableType const*,
-                                binary::MemoryType const*,
-                                binary::GlobalType const*,
-                                TagType>;
+using ExternType =
+    std::variant<FuncType const*, TableType const*, MemoryType const*, GlobalType const*, TagType>;
 
 /// One of a module's imports: what it names, and the type it requires.
 ///
@@ -86,12 +76,12 @@ struct ModuleTooLarge
     bool operator==(ModuleTooLarge const&) const = default;
 };
 
-/// The host ran out of memory while loading a module (std::bad_alloc, or std::length_error for a
-/// container asked past its max_size(), caught at the API boundary).
+/// The host ran out of memory while loading a module, or before a store changed (std::bad_alloc, or
+/// std::length_error for a container asked past its max_size(), caught at the API boundary).
 ///
-/// It says nothing about the module: neither malformed nor past a limit, it may load once memory is
-/// free. LoadLimits bound what loading may hold to a multiple of the module's size, so a host that
-/// sees this is short of memory, not attacked by the module.
+/// It says nothing about the module: neither malformed nor past a limit, it may load (or instantiate)
+/// once memory is free. LoadLimits bound what loading may hold to a multiple of the module's size, so
+/// a host that sees this is short of memory, not attacked by the module.
 struct HostMemoryExhausted
 {
     /// All such refusals are equal.
@@ -100,8 +90,7 @@ struct HostMemoryExhausted
 
 /// Why Engine::load() refused a module: too large to decode, the host out of memory, malformed, or
 /// invalid.
-using LoadError =
-    std::variant<ModuleTooLarge, HostMemoryExhausted, binary::DecodeError, validate::ValidationError>;
+using LoadError = std::variant<ModuleTooLarge, HostMemoryExhausted, DecodeError, ValidationError>;
 
 /// Whether @p error refuses a module only for an implementation limit, which an engine with raised
 /// LoadLimits might load, rather than for being malformed or invalid, which no limits change.

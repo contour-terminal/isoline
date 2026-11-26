@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -24,7 +25,10 @@
 #include "AllocationCounter.hpp"
 #include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
+#include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
+#include <isoline/api/Store.hpp>
+#include <isoline/api/testing/RuntimeAccess.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
@@ -349,6 +353,94 @@ TEST_CASE("MemoryBounds.loadReportsAContainerPastItsSizeAsHostMemoryExhaustion")
     }();
     REQUIRE_FALSE(result.has_value());
     CHECK(std::holds_alternative<isoline::api::HostMemoryExhausted>(result.error()));
+}
+
+TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryBeforeTheStoreChanges")
+{
+    // Two host imports, the second of 1'000 params. Every budget below that type's size runs out while
+    // the externs, the definitions' lookup and the host functions' entries (which copy their types) are
+    // made: before the store changes. Each is refused as HostMemoryExhausted, leaving the store as it was.
+    using isoline::api::HostMemoryExhausted;
+    using isoline::api::InstantiateError;
+    constexpr auto WideParams = std::size_t { 1'000 };
+    auto const type = FuncType { .params = { I32 }, .results = {} };
+    auto const wide = FuncType { .params = std::vector<ValueType>(WideParams, I32), .results = {} };
+    auto builder = ModuleBuilder {};
+    builder.type(type).type(wide).importFunction("env", "f", 0).importFunction("env", "g", 1);
+    auto const host = isoline::runtime::makeHostFunction([](isoline::runtime::HostContext&,
+                                                            std::span<isoline::runtime::Value const>,
+                                                            std::span<isoline::runtime::Value>) noexcept {
+        return std::expected<void, isoline::runtime::Abrupt> {};
+    });
+    auto imports = isoline::api::Imports {};
+    imports.define("env", "f", type, host).define("env", "g", wide, host);
+    auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+    auto allocator = isoline::runtime::HeapMemoryAllocator {};
+    auto store = isoline::api::Store { engine, allocator };
+    auto const module = engine.load(builder.build());
+    REQUIRE(module.has_value());
+    auto& runtime = isoline::api::testing::runtimeOf(store);
+
+    for (auto budget = std::size_t { 0 }; budget < WideParams * sizeof(ValueType); budget += 16)
+    {
+        auto const result = [&] {
+            auto const limit = AllocationLimit { budget };
+            return store.instantiate(*module, imports);
+        }();
+        CAPTURE(budget);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error() == InstantiateError { HostMemoryExhausted {} });
+        CHECK(runtime.functionCount() == 0);
+        CHECK(runtime.moduleInstanceCount() == 0);
+    }
+    for (auto const refusal: { RefusalException::BadAlloc, RefusalException::LengthError })
+    {
+        auto const defined = [&] {
+            auto const limit = AllocationLimit { 0, refusal };
+            return store.define(type, host);
+        }();
+        REQUIRE_FALSE(defined.has_value());
+        CHECK(std::holds_alternative<HostMemoryExhausted>(defined.error()));
+        CHECK(runtime.functionCount() == 0);
+    }
+    // With memory, the same store instantiates it: nothing refused earlier is in its way.
+    CHECK(store.instantiate(*module, imports).has_value());
+    CHECK(runtime.functionCount() == 2);
+}
+
+TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing")
+{
+    // A module of no imports and 300 distinct types: its first allocations are runtime::instantiate()'s
+    // preparation (the TypeIds alone take 1'200 bytes). Every budget below that runs out there, before
+    // the store changes: each is refused as HostMemoryExhausted, leaving the store as it was.
+    using isoline::api::HostMemoryExhausted;
+    using isoline::api::InstantiateError;
+    constexpr auto TypeCount = uint32_t { 300 };
+    auto builder = ModuleBuilder {};
+    for (auto const arity: std::views::iota(uint32_t { 0 }, TypeCount))
+        builder.type(FuncType { .params = std::vector<ValueType>(arity, I32), .results = {} });
+    auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+    auto allocator = isoline::runtime::HeapMemoryAllocator {};
+    auto store = isoline::api::Store { engine, allocator };
+    auto const module = engine.load(builder.build());
+    REQUIRE(module.has_value());
+    auto& runtime = isoline::api::testing::runtimeOf(store);
+    auto const typesBefore = runtime.typeCount();
+
+    for (auto budget = std::size_t { 0 }; budget < TypeCount * sizeof(uint32_t); budget += 8)
+    {
+        auto const result = [&] {
+            auto const limit = AllocationLimit { budget };
+            return store.instantiate(*module, isoline::api::Imports {});
+        }();
+        CAPTURE(budget);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error() == InstantiateError { HostMemoryExhausted {} });
+        CHECK(runtime.moduleInstanceCount() == 0);
+        CHECK(runtime.typeCount() == typesBefore);
+    }
+    CHECK(store.instantiate(*module, isoline::api::Imports {}).has_value());
+    CHECK(runtime.typeCount() == typesBefore + TypeCount);
 }
 
 TEST_CASE("MemoryBounds.throwLoopReclaimsItsPayloads")

@@ -164,6 +164,12 @@ class ICodeExecutor
 /// function's refused grows stay in its RefusalScope. Past StoreLimits::maxNestedInvocations it traps with
 /// CallStackExhausted.
 ///
+/// It runs in two steps. The first prepares (the TypeIds, the imports' check, the demand check, the
+/// instance to be) and changes nothing in the store: running out of memory there throws std::bad_alloc
+/// (or std::length_error) out of instantiate(), the store as it was, for the embedding API to refuse.
+/// The second changes the store and is noexcept: the store is not exception-safe midway through a
+/// change, so running out of memory there terminates, as it does in invokeChecked().
+///
 /// The instance keeps @p module, and its module is @p module's, sharing its ownership. Every external
 /// value in @p imports names an entity of @p store (checked), and there are no more of them than the
 /// module has imports (checked).
@@ -173,6 +179,31 @@ class ICodeExecutor
 /// @param imports The external values its imports bind to, in import order.
 /// @return The address of the new module instance, or why instantiation failed.
 [[nodiscard]] std::expected<uint32_t, InstantiationError> instantiate(
+    Store& store,
+    ICodeExecutor& executor,
+    std::shared_ptr<validate::ValidatedModule const> module,
+    std::span<ExternValue const> imports);
+
+/// What instantiateReporting() ended with: the instance or the error, and the grows instantiation was
+/// refused.
+struct InstantiationOutcome
+{
+    /// The address of the new module instance, or why instantiation failed.
+    std::expected<uint32_t, InstantiationError> instance;
+    /// Instantiation's own first refused memory.grow and table.grow, those of its start function,
+    /// never those of an invocation nested in it: why a start function that gave up after a -1 gave up.
+    GrowthRecord refusedGrowth;
+};
+
+/// Instantiates a module as instantiate() does, and reports the grows its RefusalScope recorded, as
+/// invokeChecked() reports a call's.
+/// @param store The store to allocate in.
+/// @param executor Evaluates constant expressions and runs the start function.
+/// @param module The validated module (checked: not null).
+/// @param imports The external values its imports bind to, in import order.
+/// @return The instance or the error, and the refused grows; none when instantiation was refused
+///         before it began (past StoreLimits::maxNestedInvocations).
+[[nodiscard]] InstantiationOutcome instantiateReporting(
     Store& store,
     ICodeExecutor& executor,
     std::shared_ptr<validate::ValidatedModule const> module,

@@ -150,17 +150,12 @@ namespace
         }
 
         /// Instantiates, polling at Instantiation first: an interrupted store instantiates nothing.
+        /// What prepare() allocates may throw; once commit() changes the store, nothing is thrown.
         [[nodiscard]] std::expected<uint32_t, InstantiationError> run()
         {
             if (auto const polled = _store.poll(PollSite::Instantiation); !polled)
                 return std::unexpected { InstantiationError { polled.error() } };
-            resolveTypes();
-            return checkImports()
-                .and_then([this] { return allocate(); })
-                .and_then([this] { return initializeTables(); })
-                .and_then([this] { return initializeMemories(); })
-                .and_then([this] { return runStart(); })
-                .transform([this] { return _address; });
+            return prepare().and_then([this](ModuleInstance pending) { return commit(std::move(pending)); });
         }
 
       private:
@@ -282,15 +277,17 @@ namespace
             return demand;
         }
 
-        /// Checks the module's demand against the store's limits, then allocates the tables and
-        /// memories, into an instance not yet in the store, so an allocation failure leaves no
-        /// half-built instance registered and no type interned, and releases the tables and memories
-        /// it allocated (Store::releaseTrailing); then interns the types, registers the instance and
-        /// allocates the rest.
-        [[nodiscard]] Step allocate()
+        /// Everything before the store changes: the module's TypeIds, the imports' check, its demand
+        /// against the store's limits, and the instance to be, with its imports in its index spaces.
+        /// It changes nothing in the store, so running out of memory here (std::bad_alloc or
+        /// std::length_error, which it lets through) leaves the store as it was.
+        [[nodiscard]] std::expected<ModuleInstance, InstantiationError> prepare()
         {
+            resolveTypes();
+            if (auto const linked = checkImports(); !linked)
+                return std::unexpected { linked.error() };
             if (auto const fits = _store.checkInstanceDemand(demand()); !fits)
-                return std::unexpected { fits.error() };
+                return std::unexpected { InstantiationError { fits.error() } };
             auto pending = ModuleInstance { .validated = _validated,
                                             .module = _module,
                                             .types = _types,
@@ -304,6 +301,27 @@ namespace
                                             .exports = {} };
             for (auto const& value: _imports)
                 indexSpace(pending, value.kind).push_back(value.address);
+            return pending;
+        }
+
+        /// Changes the store: allocates the tables and memories into @p pending, not yet in the store,
+        /// so an allocation failure leaves no half-built instance registered and no type interned, and
+        /// releases the tables and memories it allocated (Store::releaseTrailing); then interns the
+        /// types, registers the instance, allocates the rest, initializes it and runs its start
+        /// function. noexcept: the store is not exception-safe midway, so running out of memory here
+        /// terminates, as it does in invokeChecked().
+        [[nodiscard]] std::expected<uint32_t, InstantiationError> commit(ModuleInstance pending) noexcept
+        {
+            return allocate(pending)
+                .and_then([this] { return initializeTables(); })
+                .and_then([this] { return initializeMemories(); })
+                .and_then([this] { return runStart(); })
+                .transform([this] { return _address; });
+        }
+
+        /// Allocates @p pending's tables and memories, then registers it and allocates the rest.
+        [[nodiscard]] Step allocate(ModuleInstance& pending)
+        {
             auto const firstTable = static_cast<TableAddr>(_store.tableCount());
             auto const firstMemory = static_cast<MemAddr>(_store.memoryCount());
             return allocateTables(pending)
@@ -586,13 +604,23 @@ std::expected<uint32_t, InstantiationError> instantiate(
     std::shared_ptr<validate::ValidatedModule const> module,
     std::span<ExternValue const> imports)
 {
+    return instantiateReporting(store, executor, std::move(module), imports).instance;
+}
+
+InstantiationOutcome instantiateReporting(Store& store,
+                                          ICodeExecutor& executor,
+                                          std::shared_ptr<validate::ValidatedModule const> module,
+                                          std::span<ExternValue const> imports)
+{
     // One invocation, with a fresh step budget its polls charge and its start function shares, and
     // its own refusal scope, so the start function's refused grows stay in it.
     if (auto const nesting = store.checkInvocationNesting(); !nesting)
-        return std::unexpected { InstantiationError { nesting.error() } };
+        return InstantiationOutcome { .instance = std::unexpected { InstantiationError { nesting.error() } },
+                                      .refusedGrowth = {} };
     auto const invocation = InvocationScope { store };
     auto const scope = RefusalScope { store };
-    return Instantiation { store, executor, std::move(module), imports }.run();
+    auto const instance = Instantiation { store, executor, std::move(module), imports }.run();
+    return InstantiationOutcome { .instance = instance, .refusedGrowth = scope.record() };
 }
 
 } // namespace isoline::runtime

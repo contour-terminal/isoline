@@ -10,6 +10,7 @@
 #include <isoline/Features.hpp>
 #include <isoline/api/EngineIdentity.hpp>
 #include <isoline/api/Module.hpp>
+#include <isoline/api/Types.hpp>
 #include <isoline/binary/DecodeLimits.hpp>
 #include <isoline/runtime/Limits.hpp>
 
@@ -26,7 +27,7 @@ struct LoadLimits
     uint64_t maxModuleBytes = uint64_t { 64 } << 20;
 
     /// The implementation limits of decoding and validation.
-    binary::DecodeLimits decode {};
+    DecodeLimits decode {};
 
     /// Two sets of limits are equal when every limit is.
     bool operator==(LoadLimits const&) const = default;
@@ -51,7 +52,7 @@ struct EngineConfig
     LoadLimits load {};
 
     /// The caps of every store made for this engine.
-    runtime::StoreLimits store {};
+    StoreLimits store {};
 
     /// What a module this configuration loads depends on: the engine, the mode and the features, not
     /// the limits.
