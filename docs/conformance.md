@@ -144,6 +144,9 @@ pins each file's count.
 
 <!-- text-skips:begin -->
 ```text
+compact-imports core/compact-import-section/imports-compact:148: assert_malformed of a text module
+compact-imports core/compact-import-section/imports-compact:152: assert_malformed of a text module
+compact-imports core/compact-import-section/imports-compact:156: assert_malformed of a text module
 custom-page-sizes core/custom-page-sizes/custom-page-sizes:113: assert_malformed of a text module
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:3: assert_malformed of a text module
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:8: assert_malformed of a text module

@@ -273,3 +273,5 @@ custom-page-sizes core/custom-page-sizes/custom-page-sizes 1
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid 2
 custom-page-sizes core/custom-page-sizes/memory_max 0
 custom-page-sizes core/custom-page-sizes/memory_max_i64 1
+compact-imports core/compact-import-section/binary-compact-imports 0
+compact-imports core/compact-import-section/imports-compact 3

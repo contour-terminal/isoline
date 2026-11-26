@@ -492,6 +492,17 @@ namespace
         [[nodiscard]] std::expected<void, DecodeError> codeSection();
         [[nodiscard]] std::expected<void, DecodeError> dataSection();
 
+        /// Reads the rest of a compact import entry from the module it names.
+        using ImportGroupDecoder = std::expected<void, DecodeError> (ModuleDecoder::*)(std::string const&);
+
+        // The compact import group decoders, one per row of CompactImportGroupings.
+        /// Reads the rest of a 0x7F entry from @p module: a vector of item names, each with its
+        /// extern type.
+        [[nodiscard]] std::expected<void, DecodeError> readNamedTypesGroup(std::string const& module);
+        /// Reads the rest of a 0x7E entry from @p module: one extern type, then a vector of item
+        /// names that all import it.
+        [[nodiscard]] std::expected<void, DecodeError> readSharedTypeGroup(std::string const& module);
+
       private:
         [[nodiscard]] std::expected<void, DecodeError> preamble();
         [[nodiscard]] std::expected<void, DecodeError> customSection();
@@ -556,7 +567,22 @@ namespace
         [[nodiscard]] std::expected<Table, DecodeError> readTable();
         [[nodiscard]] std::expected<GlobalType, DecodeError> readGlobalType();
         [[nodiscard]] std::expected<ExternKind, DecodeError> readExternKind(DecodeErrorCode malformed);
-        [[nodiscard]] std::expected<Import, DecodeError> readImport();
+        /// Reads one import section entry and appends every import it declares.
+        [[nodiscard]] std::expected<void, DecodeError> readImportEntry();
+        /// The compact group an entry whose item name is @p name announces, if any: only when the
+        /// name is empty, the proposal is on and a discriminator follows, which is then consumed.
+        /// @return The group's decoder, or nothing for a single import.
+        [[nodiscard]] std::optional<ImportGroupDecoder> readImportGrouping(std::string_view name);
+        /// Reads an extern type: a kind byte and its description, into an Import with no names.
+        [[nodiscard]] std::expected<Import, DecodeError> readExternType();
+        /// Reads the item count of a compact entry, bounded by the bytes left and by what the
+        /// entries before have left of DecodeLimits::maxImports, so that nothing is read or
+        /// allocated for a count that would exceed it.
+        [[nodiscard]] std::expected<uint32_t, DecodeError> readImportGroupCount();
+        /// Appends @p import, counting it towards DecodeLimits::maxImports, and an imported table
+        /// or memory towards maxTables or maxMemories.
+        /// @param offset Where the import's entry or item starts, at which a refusal is reported.
+        [[nodiscard]] std::expected<void, DecodeError> appendImport(Import import, std::size_t offset);
         [[nodiscard]] std::expected<Global, DecodeError> readGlobal();
         [[nodiscard]] std::expected<Export, DecodeError> readExport();
         [[nodiscard]] std::expected<std::string, DecodeError> readName();
@@ -647,6 +673,20 @@ namespace
         { .id = 12, .required = Feature::BulkMemory, .decode = &ModuleDecoder::dataCountSection },
         { .id = 10, .required = std::nullopt, .decode = &ModuleDecoder::codeSection },
         { .id = 11, .required = std::nullopt, .decode = &ModuleDecoder::dataSection },
+    });
+
+    /// A compact import encoding: the discriminator byte that takes the kind byte's place after an
+    /// empty item name, and the decoder of the entry's remainder.
+    struct ImportGroupingRow
+    {
+        uint8_t discriminator;                    ///< The byte, read as is and never as LEB128.
+        ModuleDecoder::ImportGroupDecoder decode; ///< Reads the entry's remainder.
+    };
+
+    /// The compact import encodings, each available under Feature::CompactImports.
+    constexpr auto CompactImportGroupings = std::to_array<ImportGroupingRow>({
+        { .discriminator = 0x7F, .decode = &ModuleDecoder::readNamedTypesGroup },
+        { .discriminator = 0x7E, .decode = &ModuleDecoder::readSharedTypeGroup },
     });
 
     std::expected<Module, DecodeError> ModuleDecoder::decode()
@@ -1321,19 +1361,89 @@ namespace
         return readByte().transform([&](uint8_t lane) { instruction.lane = lane; });
     }
 
-    std::expected<Import, DecodeError> ModuleDecoder::readImport()
+    std::expected<void, DecodeError> ModuleDecoder::readImportEntry()
     {
-        auto const importOffset = _reader.offset();
+        auto const entryOffset = _reader.offset();
         auto module = readName();
         if (!module)
             return std::unexpected { module.error() };
         auto name = readName();
         if (!name)
             return std::unexpected { name.error() };
+        if (auto const group = readImportGrouping(*name))
+            return (this->**group)(*module);
+        return readExternType().and_then([&](Import&& import) {
+            import.module = std::move(*module);
+            import.name = std::move(*name);
+            return appendImport(std::move(import), entryOffset);
+        });
+    }
+
+    std::expected<void, DecodeError> ModuleDecoder::readNamedTypesGroup(std::string const& module)
+    {
+        auto const count = readImportGroupCount();
+        if (!count)
+            return std::unexpected { count.error() };
+        for ([[maybe_unused]] auto const item: std::views::iota(uint32_t { 0 }, *count))
+        {
+            auto const itemOffset = _reader.offset();
+            auto name = readName();
+            if (!name)
+                return std::unexpected { name.error() };
+            auto appended = readExternType().and_then([&](Import&& import) {
+                import.module = module;
+                import.name = std::move(*name);
+                return appendImport(std::move(import), itemOffset);
+            });
+            if (!appended)
+                return appended;
+        }
+        return {};
+    }
+
+    std::expected<void, DecodeError> ModuleDecoder::readSharedTypeGroup(std::string const& module)
+    {
+        auto const shared = readExternType();
+        if (!shared)
+            return std::unexpected { shared.error() };
+        auto const count = readImportGroupCount();
+        if (!count)
+            return std::unexpected { count.error() };
+        for ([[maybe_unused]] auto const item: std::views::iota(uint32_t { 0 }, *count))
+        {
+            auto const itemOffset = _reader.offset();
+            auto appended = readName().and_then([&](std::string&& name) {
+                auto import = *shared;
+                import.module = module;
+                import.name = std::move(name);
+                return appendImport(std::move(import), itemOffset);
+            });
+            if (!appended)
+                return appended;
+        }
+        return {};
+    }
+
+    std::optional<ModuleDecoder::ImportGroupDecoder> ModuleDecoder::readImportGrouping(std::string_view name)
+    {
+        if (!name.empty() || !_features.has(Feature::CompactImports))
+            return std::nullopt;
+        // At the module's end nothing is peeked, which no discriminator equals.
+        auto const row =
+            std::ranges::find(CompactImportGroupings, peekByte(), &ImportGroupingRow::discriminator);
+        if (row == CompactImportGroupings.end())
+            return std::nullopt;
+        std::ignore = readByte(); // the discriminator, peeked
+        return row->decode;
+    }
+
+    std::expected<Import, DecodeError> ModuleDecoder::readExternType()
+    {
         auto const kind = readExternKind(DecodeErrorCode::MalformedImportKind);
         if (!kind)
             return std::unexpected { kind.error() };
-        auto import = Import { .module = std::move(*module), .name = std::move(*name), .kind = *kind };
+        auto import = Import {};
+        import.kind = *kind;
         auto described = std::expected<void, DecodeError> {};
         switch (*kind)
         {
@@ -1342,14 +1452,11 @@ namespace
                     _reader.readU32().transform([&](uint32_t typeIndex) { import.typeIndex = typeIndex; });
                 break;
             case ExternKind::Table:
-                described = countImport(_importedTables, _limits.maxTables, importOffset)
-                                .and_then([this] { return readTableType(); })
-                                .transform([&](TableType const& table) { import.table = table; });
+                described = readTableType().transform([&](TableType const& table) { import.table = table; });
                 break;
             case ExternKind::Memory:
-                described = countImport(_importedMemories, _limits.maxMemories, importOffset)
-                                .and_then([this] { return readMemoryType(); })
-                                .transform([&](MemoryType const& memory) { import.memory = memory; });
+                described =
+                    readMemoryType().transform([&](MemoryType const& memory) { import.memory = memory; });
                 break;
             case ExternKind::Global:
                 described =
@@ -1361,6 +1468,24 @@ namespace
                 break;
         }
         return described.transform([&] { return std::move(import); });
+    }
+
+    std::expected<uint32_t, DecodeError> ModuleDecoder::readImportGroupCount()
+    {
+        // appendImport keeps the imports within the limit, so what is left of it cannot underflow.
+        return readCount(_limits.maxImports - static_cast<uint32_t>(_module.imports.size()));
+    }
+
+    std::expected<void, DecodeError> ModuleDecoder::appendImport(Import import, std::size_t offset)
+    {
+        if (_module.imports.size() >= _limits.maxImports)
+            return std::unexpected { DecodeError { DecodeErrorCode::ImplementationLimitExceeded, offset } };
+        auto counted = std::expected<void, DecodeError> {};
+        if (import.kind == ExternKind::Table)
+            counted = countImport(_importedTables, _limits.maxTables, offset);
+        else if (import.kind == ExternKind::Memory)
+            counted = countImport(_importedMemories, _limits.maxMemories, offset);
+        return counted.transform([&] { _module.imports.push_back(std::move(import)); });
     }
 
     std::expected<Global, DecodeError> ModuleDecoder::readGlobal()
@@ -1392,7 +1517,16 @@ namespace
 
     std::expected<void, DecodeError> ModuleDecoder::importSection()
     {
-        return readVector(_limits.maxImports, _module.imports, [this](uint32_t) { return readImport(); });
+        // The count is of entries; a compact entry declares any number of imports, so each import
+        // counts towards maxImports as it is appended. Entries are bounded by maxImports too.
+        auto const count = readCount(_limits.maxImports);
+        if (!count)
+            return std::unexpected { count.error() };
+        _module.imports.reserve(std::min<std::size_t>(*count, MaxUpFrontReservation));
+        for ([[maybe_unused]] auto const entry: std::views::iota(uint32_t { 0 }, *count))
+            if (auto read = readImportEntry(); !read)
+                return read;
+        return {};
     }
 
     std::expected<void, DecodeError> ModuleDecoder::functionSection()

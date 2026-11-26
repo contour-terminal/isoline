@@ -73,7 +73,7 @@ src/isoline/Features.hpp                    100.00 100.00
 src/isoline/Version.hpp                     100.00 -
 src/isoline/binary/ByteReader.cpp           100.00 98.07
 src/isoline/binary/DecodeError.hpp          100.00 91.66
-src/isoline/binary/Decoder.cpp              100.00 98.76
+src/isoline/binary/Decoder.cpp              100.00 98.87
 src/isoline/binary/MemoryAccess.hpp         100.00 100.00
 src/isoline/binary/Module.hpp               100.00 74.46
 src/isoline/binary/Opcode.cpp               100.00 100.00

@@ -2036,3 +2036,140 @@ TEST_CASE("Decoder.tryTableClauses")
     CHECK(result.error().code == DecodeErrorCode::MalformedCatchClause);
     CHECK(isoline::binary::specMessage(result.error()) == "malformed catch clause");
 }
+
+namespace
+{
+
+/// The features the compact import tests decode with: 3.0 and the compact import section.
+FeatureSet compactImportFeatures()
+{
+    return FeatureSet::wasm3().with(Feature::CompactImports);
+}
+
+/// A module whose only section is an import section of @p payload, after one type `[] -> []`.
+std::vector<std::byte> importingModule(std::vector<uint8_t> payload)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).rawSection(2, std::move(payload));
+    return builder.build();
+}
+
+} // namespace
+
+TEST_CASE("Decoder.compactImportsByItem")
+{
+    // "env" "" 0x7F [("a", func 0), ("b", global i32)]
+    auto const bytes = importingModule(
+        { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7F, 0x02, 0x01, 'a', 0x00, 0x00, 0x01, 'b', 0x03, 0x7F, 0x00 });
+    auto const module = decoded(bytes, compactImportFeatures());
+    REQUIRE(module.imports.size() == 2);
+    CHECK(module.imports[0].module == "env");
+    CHECK(module.imports[0].name == "a");
+    CHECK(module.imports[0].kind == ExternKind::Func);
+    CHECK(module.imports[0].typeIndex == 0);
+    CHECK(module.imports[1].module == "env");
+    CHECK(module.imports[1].name == "b");
+    CHECK(module.imports[1].kind == ExternKind::Global);
+    CHECK(module.imports[1].global.type == isoline::binary::I32);
+    CHECK(module.imports[1].global.mutability == Mutability::Const);
+
+    // Without the proposal the discriminator is no import kind.
+    CHECK(errorOf(bytes, FeatureSet::wasm3()) == DecodeErrorCode::MalformedImportKind);
+}
+
+TEST_CASE("Decoder.compactImportsByType")
+{
+    // "env" "" 0x7E (global i32) ["x", "y", "z"]
+    auto const bytes = importingModule(
+        { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7E, 0x03, 0x7F, 0x00, 0x03, 0x01, 'x', 0x01, 'y', 0x01, 'z' });
+    auto const module = decoded(bytes, compactImportFeatures());
+    REQUIRE(module.imports.size() == 3);
+    auto const names = std::to_array<std::string_view>({ "x", "y", "z" });
+    for (auto const index: std::views::iota(std::size_t { 0 }, names.size()))
+    {
+        auto const& import = module.imports[index];
+        CHECK(import.module == "env");
+        CHECK(import.name == names[index]);
+        CHECK(import.kind == ExternKind::Global);
+        CHECK(import.global.type == isoline::binary::I32);
+    }
+    CHECK(errorOf(bytes, FeatureSet::wasm3()) == DecodeErrorCode::MalformedImportKind);
+
+    // The discriminator only follows an empty item name; after another it is malformed.
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x01, 'b', 0x7E, 0x03, 0x7F, 0x00, 0x01, 0x01, 'x' }),
+                  compactImportFeatures())
+          == DecodeErrorCode::MalformedImportKind);
+    // A group's extern types are read as a single import's are.
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00, 0x7E, 0x05, 0x01, 0x01, 'x' }),
+                  compactImportFeatures())
+          == DecodeErrorCode::MalformedImportKind);
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00, 0x7F, 0x01, 0x01, 'x', 0x05 }),
+                  compactImportFeatures())
+          == DecodeErrorCode::MalformedImportKind);
+    // A section that ends after the empty item name ends unexpectedly, as a single import does.
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00 }), compactImportFeatures())
+          == DecodeErrorCode::UnexpectedEnd);
+    CHECK(errorOf(importingModule({ 0x01, 0x01, 'a', 0x00 }), FeatureSet::wasm3())
+          == DecodeErrorCode::UnexpectedEnd);
+    // An empty item name without a discriminator is a single import.
+    auto const single = decoded(importingModule({ 0x01, 0x00, 0x00, 0x00, 0x00 }), compactImportFeatures());
+    REQUIRE(single.imports.size() == 1);
+    CHECK(single.imports[0].kind == ExternKind::Func);
+}
+
+TEST_CASE("Decoder.compactImportsCounted")
+{
+    // 0x7E with maxImports + 1 empty names: refused at the item count, before any is read.
+    auto const limit = DecodeLimits {}.maxImports;
+    CHECK(limit == 100'000);
+    auto payload = std::vector<uint8_t> { 0x01, 0x03, 'e', 'n', 'v', 0x00, 0x7E, 0x03, 0x7F, 0x00 };
+    auto const countOffset = payload.size();
+    append(payload, encodeU32(limit + 1));
+    payload.insert(payload.end(), limit + 1, 0x00);
+    auto const bytes = importingModule(payload);
+    auto const result = decodeModule(bytes, compactImportFeatures());
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == DecodeErrorCode::ImplementationLimitExceeded);
+    // The module's preamble, type section (2 + 4 bytes) and import section header (1 + 3 bytes).
+    CHECK(result.error().offset == 8 + 6 + 4 + countOffset);
+
+    // The limit counts the imports of every entry: two groups of two exceed three.
+    auto const twoGroups =
+        importingModule({ 0x02, 0x01, 'a',  0x00, 0x7E, 0x00, 0x00, 0x02, 0x01, 'b', 0x01, 'c', 0x01,
+                          'a',  0x00, 0x7F, 0x02, 0x01, 'd',  0x00, 0x00, 0x01, 'e', 0x00, 0x00 });
+    CHECK(errorOf(twoGroups, compactImportFeatures(), DecodeLimits { .maxImports = 3 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(decoded(twoGroups, compactImportFeatures()).imports.size() == 4);
+
+    // A single import after a group counts towards the same limit, at its entry.
+    auto const groupThenSingle = importingModule({ 0x02,
+                                                   0x01,
+                                                   'a',
+                                                   0x00,
+                                                   0x7E,
+                                                   0x00,
+                                                   0x00,
+                                                   0x02,
+                                                   0x01,
+                                                   'b',
+                                                   0x01,
+                                                   'c',
+                                                   0x01,
+                                                   'a',
+                                                   0x01,
+                                                   'd',
+                                                   0x00,
+                                                   0x00 });
+    CHECK(errorOf(groupThenSingle, compactImportFeatures(), DecodeLimits { .maxImports = 2 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(decoded(groupThenSingle, compactImportFeatures()).imports.size() == 3);
+
+    // Each memory a 0x7E group expands to counts towards maxMemories.
+    auto const memories = importingModule(
+        { 0x01, 0x01, 'm', 0x00, 0x7E, 0x02, 0x00, 0x00, 0x03, 0x01, 'x', 0x01, 'y', 0x01, 'z' });
+    auto const refused = decodeModule(memories, compactImportFeatures(), DecodeLimits { .maxMemories = 2 });
+    REQUIRE(!refused);
+    CHECK(refused.error().code == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(refused.error().offset == memories.size() - 2); // the third item, 0x01 'z'
+    CHECK(errorOf(memories, compactImportFeatures(), DecodeLimits { .maxMemories = 3 }) == std::nullopt);
+}

@@ -21,7 +21,7 @@ struct DecodeLimits
 {
     uint32_t maxTypes = 1'000'000;            ///< Entries of the type section.
     uint32_t maxFunctions = 1'000'000;        ///< Entries of the function section.
-    uint32_t maxImports = 100'000;            ///< Entries of the import section.
+    uint32_t maxImports = 100'000;            ///< Imports, each item of a compact entry one.
     uint32_t maxExports = 100'000;            ///< Entries of the export section.
     uint32_t maxGlobals = 1'000'000;          ///< Entries of the global section.
     uint32_t maxTables = 100'000;             ///< Tables, imported and defined alike, as JS allows.
