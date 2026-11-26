@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The fast interpreter's operations: every operation lowered code holds, one row each.
+//
+//     ISOLINE_FAST_OPERATION(Name, Form)
+//
+// Name  the OperationId enumerator, and the operation's name in listings.
+// Form  the OperationForm enumerator naming the layout of the operands after its header word.
+//
+// Adding an operation is adding a row here: OperationId and OperationTable are generated from it.
+// The file has no include guard; each includer defines ISOLINE_FAST_OPERATION.
+
+// Control without operands
+ISOLINE_FAST_OPERATION(Unreachable, Nullary)
+ISOLINE_FAST_OPERATION(Nop, Nullary)
+
+// Value moves and constants
+ISOLINE_FAST_OPERATION(Move64, Move)
+ISOLINE_FAST_OPERATION(Move128, Move)
+ISOLINE_FAST_OPERATION(MoveRange, Move)
+ISOLINE_FAST_OPERATION(Const64, Move)
+ISOLINE_FAST_OPERATION(Const128, Move)
+
+// Leaving the function
+ISOLINE_FAST_OPERATION(Return, Special)
