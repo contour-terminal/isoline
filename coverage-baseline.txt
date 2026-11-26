@@ -6,7 +6,7 @@
 # marker that names its lines in the source (`// uncovered(<marker>)`, or an uncovered-begin/-end
 # range) and why no valid input reaches them; the checker holds the uncovered lines to exactly
 # these. They are failed preconditions (a Require or core::todo that a validated module never
-# trips), and the Tag cases of ExternKind, which Wasm 2.0 has no use for.
+# trips).
 #
 # src/isoline/runtime/Instantiate.cpp's branch entry was lowered from 92.12 to 91.86 when its segment bounds checks moved into
 # runtime/Segment.hpp (100 % covered): four covered branches left the file, and its ten uncovered ones, the contract checks and Tag
@@ -53,15 +53,19 @@
 # another type in a typed reference could take until P3 types the host boundary, is the one new branch no test takes.
 # src/isoline/validate/Subtyping.hpp's branch entry (new, 66.66) is topOf()'s precondition that its heap is not bot, whose
 # failing side no caller takes. No branch lost its coverage.
+#
+# src/isoline/runtime/Store.cpp's branch entry was lowered from 75.47 to 75.00 when addException began to Require that a payload has
+# the kinds of its tag's params, as a host's results are checked: the failing side, which only a host passing a payload of other
+# kinds could take, is the one new branch no test takes. src/isoline/interp/ReferenceInterpreter.cpp's line entry was lowered from
+# 98.26 to 98.25 when haveKinds moved from it to runtime/Value.hpp (100 % covered), for Store to share: covered lines left the
+# file, and its uncovered ones, exactly the exclusions below, are a larger share of fewer. No line or branch lost its coverage.
 
-exclude src/isoline/binary/Decoder.cpp tag-import Tag import: readExternKind decodes no tag kind in P1
 exclude src/isoline/interp/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
 exclude src/isoline/interp/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Numerics.everyFixedSignatureOpcodeHasARow and Simd.everyFixedSignatureSimdOpcodeHasARow prove only the Numerics and Simd table rows; a Special opcode relies on execute()'s switch having its case, which no test lists out (Task 17's Opcode.everyRowDecodes walks every row)
 exclude src/isoline/interp/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
 exclude src/isoline/interp/ReferenceInterpreter.cpp numeric-shape-none numeric() of a non-numeric opcode: execute() dispatches only table rows here
 exclude src/isoline/interp/ReferenceInterpreter.cpp raw-bits rawBits of a vector or reference: a validated body pops a number there
 exclude src/isoline/interp/ReferenceInterpreter.cpp trapping-constant a trapping constant operator: extended-const's add, sub and mul never trap
-exclude src/isoline/runtime/Instantiate.cpp tag-index-space the Tag index space: a tag import fails to link first, and validation rejects tag exports
 exclude src/isoline/runtime/Store.cpp bad-alloc std::bad_alloc from a table or memory: IMemoryAllocator only decides whether a size may be allocated, it does not allocate, so no test double can make the std::vector allocation fail (P3's embedder-provided memory replaces this path)
 exclude src/isoline/validate/Validator.cpp special-default a Special opcode without a case: every one has a case or a MemoryAccessTable row
 
@@ -69,26 +73,27 @@ src/isoline/Features.hpp                    100.00 100.00
 src/isoline/Version.hpp                     100.00 -
 src/isoline/binary/ByteReader.cpp           100.00 98.07
 src/isoline/binary/DecodeError.hpp          100.00 91.66
-src/isoline/binary/Decoder.cpp              99.89 98.20
+src/isoline/binary/Decoder.cpp              100.00 98.76
 src/isoline/binary/MemoryAccess.hpp         100.00 100.00
-src/isoline/binary/Module.hpp               100.00 72.41
+src/isoline/binary/Module.hpp               100.00 74.46
 src/isoline/binary/Opcode.cpp               100.00 100.00
 src/isoline/binary/Opcode.hpp               100.00 -
 src/isoline/binary/TypeCanon.cpp            100.00 80.00
 src/isoline/binary/Types.hpp                100.00 100.00
 src/isoline/interp/Numerics.cpp             100.00 95.90
-src/isoline/interp/ReferenceInterpreter.cpp 98.11 92.85
+src/isoline/interp/ReferenceInterpreter.cpp 98.25 93.23
 src/isoline/interp/ReferenceInterpreter.hpp 100.00 -
 src/isoline/interp/Simd.cpp                 100.00 93.44
 src/isoline/interp/Simd.hpp                 100.00 66.66
-src/isoline/runtime/Instantiate.cpp         99.38 91.83
+src/isoline/runtime/Abrupt.hpp              100.00 -
+src/isoline/runtime/Instantiate.cpp         100.00 93.79
 src/isoline/runtime/Instantiate.hpp         100.00 -
 src/isoline/runtime/Segment.hpp             100.00 100.00
-src/isoline/runtime/Store.cpp               98.81 73.91
+src/isoline/runtime/Store.cpp               98.93 75.00
 src/isoline/runtime/Store.hpp               100.00 -
 src/isoline/runtime/Trap.hpp                100.00 75.00
 src/isoline/runtime/Value.hpp               100.00 94.44
 src/isoline/validate/Subtyping.cpp          100.00 89.65
 src/isoline/validate/Subtyping.hpp          100.00 66.66
-src/isoline/validate/ValidationError.hpp    100.00 92.85
-src/isoline/validate/Validator.cpp          99.78 97.71
+src/isoline/validate/ValidationError.hpp    100.00 96.87
+src/isoline/validate/Validator.cpp          99.80 97.88

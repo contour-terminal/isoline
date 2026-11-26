@@ -24,6 +24,8 @@ enum class ImmediateKind : uint8_t
     FunctionIndex, ///< A u32 function index.
     CallIndirect,  ///< A u32 type index and a u32 table index.
     TypeIndex,     ///< A u32 type index (call_ref).
+    TagIndex,      ///< A u32 tag index (throw).
+    TryTable,      ///< A block type, then a vector of catch clauses (try_table).
     LocalIndex,    ///< A u32 local index.
     GlobalIndex,   ///< A u32 global index.
     TableIndex,    ///< A u32 table index.
@@ -279,7 +281,7 @@ static_assert(
 
 /// Every instruction Isoline decodes, one enumerator per row of Opcodes.def, in its order.
 ///
-/// The 468 rows do not fit a byte, so the base type is uint16_t.
+/// The 471 rows do not fit a byte, so the base type is uint16_t.
 enum class Opcode : uint16_t
 {
 #define ISOLINE_OPCODE(Name, Prefix, Code, Text, Immediate, Signature, Proposal) Name,
@@ -362,9 +364,10 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
-static_assert(OpcodeCount == 468,
+static_assert(OpcodeCount == 471,
               "every non-SIMD WebAssembly 2.0 instruction (201), SIMD's 236, relaxed SIMD's 20, wide "
-              "arithmetic's four, typed function references' four and tail calls' three");
+              "arithmetic's four, typed function references' four, tail calls' three and exception "
+              "handling's three");
 
 /// What the table knows about @p opcode.
 /// @param opcode The instruction to describe.

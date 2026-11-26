@@ -78,6 +78,11 @@ wasm3 core/data:89: constant expression required: global.get of locally defined 
 wasm3 core/data:90: constant expression required: global.get of locally defined global
 wasm3 core/elem:178: constant expression required: global.get of locally defined global
 wasm3 core/elem:182: constant expression required: global.get of locally defined global
+wasm3 core/exceptions/tag:30: rec group usage requires `gc` proposal to be enabled
+wasm3 core/exceptions/tag:38: rec group usage requires `gc` proposal to be enabled (root wast line 30)
+wasm3 core/exceptions/tag:40: rec group usage requires `gc` proposal to be enabled (root wast line 30)
+wasm3 core/exceptions/tag:49: rec group usage requires `gc` proposal to be enabled (root wast line 30)
+wasm3 core/exceptions/tag:60: rec group usage requires `gc` proposal to be enabled (root wast line 30)
 wasm3 core/gc/array: GC: the GC proposal's own tests
 wasm3 core/gc/array_copy: GC: the GC proposal's own tests
 wasm3 core/gc/array_fill: GC: the GC proposal's own tests
@@ -143,22 +148,6 @@ custom-page-sizes core/custom-page-sizes/custom-page-sizes:113: assert_malformed
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:3: assert_malformed of a text module
 custom-page-sizes core/custom-page-sizes/custom-page-sizes-invalid:8: assert_malformed of a text module
 custom-page-sizes core/custom-page-sizes/memory_max_i64:28: assert_malformed of a text module
-wasm2 core/imports:584: assert_malformed of a text module
-wasm2 core/imports:588: assert_malformed of a text module
-wasm2 core/imports:592: assert_malformed of a text module
-wasm2 core/imports:596: assert_malformed of a text module
-wasm2 core/imports:601: assert_malformed of a text module
-wasm2 core/imports:605: assert_malformed of a text module
-wasm2 core/imports:609: assert_malformed of a text module
-wasm2 core/imports:613: assert_malformed of a text module
-wasm2 core/imports:618: assert_malformed of a text module
-wasm2 core/imports:622: assert_malformed of a text module
-wasm2 core/imports:626: assert_malformed of a text module
-wasm2 core/imports:630: assert_malformed of a text module
-wasm2 core/imports:635: assert_malformed of a text module
-wasm2 core/imports:639: assert_malformed of a text module
-wasm2 core/imports:643: assert_malformed of a text module
-wasm2 core/imports:647: assert_malformed of a text module
 wasm2 core/utf8-invalid-encoding:1: assert_malformed of a text module
 wasm2 core/utf8-invalid-encoding:2: assert_malformed of a text module
 wasm2 core/utf8-invalid-encoding:3: assert_malformed of a text module
@@ -558,6 +547,8 @@ wasm3 core/const:419: assert_malformed of a text module
 wasm3 core/const:423: assert_malformed of a text module
 wasm3 core/const:428: assert_malformed of a text module
 wasm3 core/const:432: assert_malformed of a text module
+wasm3 core/exceptions/try_table:340: assert_malformed of a text module
+wasm3 core/exceptions/try_table:345: assert_malformed of a text module
 wasm3 core/f32:2537: assert_malformed of a text module
 wasm3 core/f32:2541: assert_malformed of a text module
 wasm3 core/f64:2537: assert_malformed of a text module
@@ -700,6 +691,22 @@ wasm3 core/if:1550: assert_malformed of a text module
 wasm3 core/if:1554: assert_malformed of a text module
 wasm3 core/if:1558: assert_malformed of a text module
 wasm3 core/if:1562: assert_malformed of a text module
+wasm3 core/imports:676: assert_malformed of a text module
+wasm3 core/imports:680: assert_malformed of a text module
+wasm3 core/imports:684: assert_malformed of a text module
+wasm3 core/imports:688: assert_malformed of a text module
+wasm3 core/imports:693: assert_malformed of a text module
+wasm3 core/imports:697: assert_malformed of a text module
+wasm3 core/imports:701: assert_malformed of a text module
+wasm3 core/imports:705: assert_malformed of a text module
+wasm3 core/imports:710: assert_malformed of a text module
+wasm3 core/imports:714: assert_malformed of a text module
+wasm3 core/imports:718: assert_malformed of a text module
+wasm3 core/imports:722: assert_malformed of a text module
+wasm3 core/imports:727: assert_malformed of a text module
+wasm3 core/imports:731: assert_malformed of a text module
+wasm3 core/imports:735: assert_malformed of a text module
+wasm3 core/imports:739: assert_malformed of a text module
 wasm3 core/int_literals:72: assert_malformed of a text module
 wasm3 core/int_literals:76: assert_malformed of a text module
 wasm3 core/int_literals:80: assert_malformed of a text module

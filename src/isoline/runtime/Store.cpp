@@ -16,6 +16,8 @@
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
 namespace isoline::runtime
@@ -101,8 +103,8 @@ namespace
     }
 } // namespace
 
-Store::Store(IMemoryAllocator const& allocator, uint32_t maxCallDepth):
-    _allocator { &allocator }, _maxCallDepth { maxCallDepth }
+Store::Store(IMemoryAllocator const& allocator, StoreLimits limits):
+    _allocator { &allocator }, _limits { limits }
 {
 }
 
@@ -186,6 +188,25 @@ GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
     return append(_globals, GlobalInstance { .type = type, .value = value });
 }
 
+TagAddr Store::addTag(binary::FuncType type)
+{
+    auto const typeId = internType(type);
+    return append(_tags, TagInstance { .type = std::move(type), .typeId = typeId });
+}
+
+std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value> payload)
+{
+    Require(tag < _tags.size());
+    // A host may allocate one, so its payload is checked as host results are: what a handler pushes
+    // is read by the tag's params.
+    Require(haveKinds(payload, _tags[tag].type.params));
+    if (_exceptions.size() >= _limits.maxExceptions
+        || payload.size() > _limits.maxExceptionValues - _exceptionValues)
+        return trap(TrapCode::ExceptionLimitExceeded);
+    _exceptionValues += payload.size();
+    return append(_exceptions, ExceptionInstance { .tag = tag, .payload = std::move(payload) });
+}
+
 uint32_t Store::addModuleInstance(ModuleInstance instance)
 {
     return append(_moduleInstances, std::move(instance));
@@ -236,6 +257,16 @@ GlobalInstance& Store::global(GlobalAddr address)
     return at(_globals, address);
 }
 
+TagInstance const& Store::tag(TagAddr address) const
+{
+    return at(_tags, address);
+}
+
+ExceptionInstance const& Store::exception(ExnAddr address) const
+{
+    return at(_exceptions, address);
+}
+
 ModuleInstance const& Store::moduleInstance(uint32_t address) const
 {
     return at(_moduleInstances, address);
@@ -280,7 +311,7 @@ int64_t Store::growTable(TableAddr address, uint64_t delta, Ref init)
 
 uint32_t Store::maxCallDepth() const noexcept
 {
-    return _maxCallDepth;
+    return _limits.maxCallDepth;
 }
 
 } // namespace isoline::runtime

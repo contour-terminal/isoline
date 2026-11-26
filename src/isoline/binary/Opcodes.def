@@ -23,7 +23,8 @@
 // are all generated from it. The file has no include guard; each includer defines ISOLINE_OPCODE.
 //
 // It holds every WebAssembly 2.0 instruction, SIMD's 236 included, relaxed SIMD's 20, the
-// wide-arithmetic proposal's four, typed function references' four and tail calls' three.
+// wide-arithmetic proposal's four, typed function references' four, tail calls' three and
+// exception handling's three.
 
 // Control instructions
 ISOLINE_OPCODE(Unreachable, 0x00, 0x00, "unreachable", None, Special, Mvp)
@@ -32,6 +33,8 @@ ISOLINE_OPCODE(Block, 0x00, 0x02, "block", BlockType, Special, Mvp)
 ISOLINE_OPCODE(Loop, 0x00, 0x03, "loop", BlockType, Special, Mvp)
 ISOLINE_OPCODE(If, 0x00, 0x04, "if", BlockType, Special, Mvp)
 ISOLINE_OPCODE(Else, 0x00, 0x05, "else", None, Special, Mvp)
+ISOLINE_OPCODE(Throw, 0x00, 0x08, "throw", TagIndex, Special, ExceptionHandling)
+ISOLINE_OPCODE(ThrowRef, 0x00, 0x0A, "throw_ref", None, Special, ExceptionHandling)
 ISOLINE_OPCODE(End, 0x00, 0x0B, "end", None, Special, Mvp)
 ISOLINE_OPCODE(Br, 0x00, 0x0C, "br", LabelIndex, Special, Mvp)
 ISOLINE_OPCODE(BrIf, 0x00, 0x0D, "br_if", LabelIndex, Special, Mvp)
@@ -43,6 +46,7 @@ ISOLINE_OPCODE(ReturnCall, 0x00, 0x12, "return_call", FunctionIndex, Special, Ta
 ISOLINE_OPCODE(ReturnCallIndirect, 0x00, 0x13, "return_call_indirect", CallIndirect, Special, TailCall)
 ISOLINE_OPCODE(CallRef, 0x00, 0x14, "call_ref", TypeIndex, Special, TypedFunctionReferences)
 ISOLINE_OPCODE(ReturnCallRef, 0x00, 0x15, "return_call_ref", TypeIndex, Special, TailCall)
+ISOLINE_OPCODE(TryTable, 0x00, 0x1F, "try_table", TryTable, Special, ExceptionHandling)
 
 // Parametric instructions
 ISOLINE_OPCODE(Drop, 0x00, 0x1A, "drop", None, Special, Mvp)

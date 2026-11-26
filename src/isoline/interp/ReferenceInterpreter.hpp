@@ -6,6 +6,7 @@
 #include <span>
 
 #include <isoline/binary/Module.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -27,6 +28,11 @@ namespace isoline::interp
 ///
 /// An instance is not thread-safe: its depth counters belong to one thread at a time. Threads that
 /// execute concurrently each use an interpreter of their own.
+///
+/// An exception unwinds the label and frame stacks in a loop, never recursing on the host stack, to
+/// the innermost try_table that catches it. One no try_table of the invocation catches ends it with
+/// Thrown; a host function that returns it to a Wasm caller throws it on there. Exceptions stay in
+/// the store (Store::addException), within its StoreLimits.
 ///
 /// Floats follow Numerics: where the spec allows a set of NaNs, the result is the canonical NaN.
 /// Float results assume the default floating-point environment: round-to-nearest, with subnormals
@@ -54,12 +60,13 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
     /// @param function Its address.
     /// @param args Its arguments.
     /// @param results Receives its results.
-    /// @return Nothing, or the trap execution ended with; CallStackExhausted when
-    ///         MaxNestedInvocations invocations are in progress already.
-    [[nodiscard]] std::expected<void, runtime::Trap> invoke(runtime::Store& store,
-                                                            runtime::FuncAddr function,
-                                                            std::span<runtime::Value const> args,
-                                                            std::span<runtime::Value> results) override;
+    /// @return Nothing, or how execution ended abruptly: the trap, CallStackExhausted when
+    ///         MaxNestedInvocations invocations are in progress already; or Thrown, the exception
+    ///         no handler caught.
+    [[nodiscard]] std::expected<void, runtime::Abrupt> invoke(runtime::Store& store,
+                                                              runtime::FuncAddr function,
+                                                              std::span<runtime::Value const> args,
+                                                              std::span<runtime::Value> results) override;
 
     /// Evaluates a constant expression: the Wasm 2.0 constants, ref.null, ref.func and global.get,
     /// and extended-const's i32 and i64 add, sub and mul.

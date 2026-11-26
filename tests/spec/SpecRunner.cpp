@@ -41,6 +41,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -66,6 +67,21 @@ namespace
     [[nodiscard]] Failure trapFailure(Stage stage, runtime::Trap const& trap)
     {
         return Failure { .stage = stage, .message = runtime::specMessage(trap) };
+    }
+
+    /// The failure of an exception no handler caught: always Stage::Exception, which only
+    /// assert_exception expects, with the reference interpreter's message.
+    [[nodiscard]] Failure thrownFailure(runtime::Thrown const& /*thrown*/)
+    {
+        return Failure { .stage = Stage::Exception, .message = "uncaught exception" };
+    }
+
+    /// The failure of an invocation that ended abruptly: a trap at @p stage, or an uncaught exception.
+    [[nodiscard]] Failure abruptFailure(Stage stage, runtime::Abrupt const& abrupt)
+    {
+        if (auto const* thrown = std::get_if<runtime::Thrown>(&abrupt))
+            return thrownFailure(*thrown);
+        return trapFailure(stage, std::get<runtime::Trap>(abrupt));
     }
 
     /// Whether @p value is of @p type: what the interpreter requires of every argument.
@@ -110,7 +126,7 @@ namespace
         auto instance = runtime::ModuleInstance {};
         instance.module = std::make_shared<Module const>();
         auto const ignore = [](std::span<Value const>,
-                               std::span<Value>) -> std::expected<void, runtime::Trap> {
+                               std::span<Value>) -> std::expected<void, runtime::Abrupt> {
             return {};
         };
         for (auto const& function: std::to_array<HostFunction>({
@@ -330,6 +346,7 @@ namespace
                 {
                     return trapFailure(Stage::Instantiate, trap);
                 }
+                Failure operator()(runtime::Thrown const& thrown) const { return thrownFailure(thrown); }
             };
             return std::unexpected { std::visit(Describe {}, instance.error()) };
         }
@@ -443,7 +460,7 @@ namespace
                 results.push_back(runtime::defaultValue(resultType));
             auto const invoked = _interpreter.invoke(_store, target->address, action.args, results);
             if (!invoked)
-                return std::unexpected { trapFailure(Stage::Execute, invoked.error()) };
+                return std::unexpected { abruptFailure(Stage::Execute, invoked.error()) };
             return results;
         }
 

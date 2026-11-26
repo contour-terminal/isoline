@@ -48,9 +48,9 @@ TEST_CASE("Opcode.knownEncodings")
     CHECK(opcodeInfo(Opcode::I8x16Shuffle).immediate == isoline::binary::ImmediateKind::Shuffle);
     CHECK(opcodeInfo(Opcode::V128Store64Lane).immediate == isoline::binary::ImmediateKind::MemArgLane);
     CHECK(opcodeInfo(Opcode::I16x8ExtractLaneU).immediate == isoline::binary::ImmediateKind::LaneIndex);
-    // 468 opcodes do not fit a byte.
+    // 471 opcodes do not fit a byte.
     STATIC_CHECK(std::is_same_v<std::underlying_type_t<Opcode>, uint16_t>);
-    CHECK(isoline::binary::OpcodeCount == 468);
+    CHECK(isoline::binary::OpcodeCount == 471);
 }
 
 TEST_CASE("Opcode.typedFunctionReferenceEncodings")
@@ -126,6 +126,37 @@ TEST_CASE("Opcode.tailCallEncodings")
         CHECK(opcodeInfo(row.opcode).immediate == row.immediate);
         CHECK(opcodeInfo(row.opcode).signature == isoline::binary::OpcodeSignature::Special);
         CHECK(opcodeInfo(row.opcode).proposal == isoline::Feature::TailCall);
+    }
+}
+
+TEST_CASE("Opcode.exceptionHandlingEncodings")
+{
+    using isoline::binary::ImmediateKind;
+    struct Row
+    {
+        uint8_t code;
+        Opcode opcode;
+        std::string_view text;
+        ImmediateKind immediate;
+    };
+    auto const rows = std::to_array<Row>({
+        { .code = 0x08, .opcode = Opcode::Throw, .text = "throw", .immediate = ImmediateKind::TagIndex },
+        { .code = 0x0A, .opcode = Opcode::ThrowRef, .text = "throw_ref", .immediate = ImmediateKind::None },
+        { .code = 0x1F,
+          .opcode = Opcode::TryTable,
+          .text = "try_table",
+          .immediate = ImmediateKind::TryTable },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(row.text);
+        CHECK(lookupOpcode(0x00, row.code) == row.opcode);
+        CHECK(opcodeInfo(row.opcode).text == row.text);
+        CHECK(opcodeInfo(row.opcode).immediate == row.immediate);
+        CHECK(opcodeInfo(row.opcode).signature == isoline::binary::OpcodeSignature::Special);
+        CHECK(opcodeInfo(row.opcode).proposal == isoline::Feature::ExceptionHandling);
+        CHECK(opcodeInfo(row.opcode).required
+              == isoline::FeatureSet::none().with(isoline::Feature::ExceptionHandling));
     }
 }
 
@@ -391,8 +422,11 @@ TEST_CASE("Opcode.encodingRanges")
     };
     auto const ranges = std::to_array<EncodingRange>({
         { .prefix = 0x00, .first = 0x00, .last = 0x05 }, // unreachable .. else
+        { .prefix = 0x00, .first = 0x08, .last = 0x08 }, // throw
+        { .prefix = 0x00, .first = 0x0A, .last = 0x0A }, // throw_ref
         { .prefix = 0x00, .first = 0x0B, .last = 0x15 }, // end .. return_call_ref
         { .prefix = 0x00, .first = 0x1A, .last = 0x1C }, // drop, select, typed select
+        { .prefix = 0x00, .first = 0x1F, .last = 0x1F }, // try_table
         { .prefix = 0x00, .first = 0x20, .last = 0x26 }, // local.get .. table.set
         { .prefix = 0x00, .first = 0x28, .last = 0x40 }, // loads, stores, memory.size, memory.grow
         { .prefix = 0x00, .first = 0x41, .last = 0xC4 }, // constants and numeric instructions

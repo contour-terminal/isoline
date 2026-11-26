@@ -44,13 +44,49 @@ struct BlockType
     uint32_t typeIndex = 0;  ///< The function type's index, when kind is TypeIndex.
 };
 
+/// What a try_table's catch clause catches, and what it hands its label.
+enum class CatchKind : uint8_t
+{
+    Catch,       ///< catch: exceptions of its tag; the label gets their payload.
+    CatchRef,    ///< catch_ref: exceptions of its tag; the label gets their payload and the exnref.
+    CatchAll,    ///< catch_all: every exception; the label gets nothing.
+    CatchAllRef, ///< catch_all_ref: every exception; the label gets the exnref.
+};
+
+/// One catch clause of a try_table.
+struct CatchClause
+{
+    CatchKind kind = CatchKind::Catch; ///< What it catches, and what it hands the label.
+    uint32_t tag = 0;                  ///< The tag it catches; Catch and CatchRef only.
+    uint32_t label = 0;                ///< The label it branches to, counted from outside the try_table.
+
+    bool operator==(CatchClause const&) const = default;
+};
+
+/// Whether a clause of @p kind catches only its tag's exceptions (catch, catch_ref), not every one.
+/// @param kind The clause's kind.
+/// @return Whether it names a tag.
+[[nodiscard]] constexpr bool catchesByTag(CatchKind kind) noexcept
+{
+    return kind == CatchKind::Catch || kind == CatchKind::CatchRef;
+}
+
+/// Whether a clause of @p kind hands its label the caught exception's exnref (catch_ref,
+/// catch_all_ref), after the payload if it hands that too.
+/// @param kind The clause's kind.
+/// @return Whether the label's last value is the exnref.
+[[nodiscard]] constexpr bool handsReference(CatchKind kind) noexcept
+{
+    return kind == CatchKind::CatchRef || kind == CatchKind::CatchAllRef;
+}
+
 /// One decoded instruction: its opcode and its immediates, in fields shared by all opcodes.
 ///
 /// Which fields an instruction uses follows from its opcode's ImmediateKind; the rest stay zero. An
-/// instruction owns no heap memory: the immediates of variable length, br_table's labels and typed
-/// select's types, live in side tables of the Function the instruction belongs to (labelsOf and
-/// selectTypesOf), referenced by an offset in a and a count in b. A body thus costs a fixed number
-/// of bytes per instruction, whatever counts its immediates claim.
+/// instruction owns no heap memory: the immediates of variable length, br_table's labels, typed
+/// select's types and try_table's catch clauses, live in side tables of the Function the instruction
+/// belongs to (labelsOf, selectTypesOf and catchClausesOf), referenced by an offset and a count. A
+/// body thus costs a fixed number of bytes per instruction, whatever counts its immediates claim.
 struct Instruction
 {
     Opcode opcode {}; ///< The instruction.
@@ -62,33 +98,34 @@ struct Instruction
     uint8_t lane = 0;
 
     /// The first immediate: the index for LabelIndex, FunctionIndex, LocalIndex, GlobalIndex,
-    /// TableIndex, ElemIndex, MemoryIndex and DataIndex; the type index for CallIndirect and for a
-    /// block type of the TypeIndex form; the destination for TableCopy and MemoryCopy; the segment
-    /// for TableInit and MemoryInit; MemArg::align for MemArg and MemArgLane; the offset of the
-    /// instruction's run in Function::brTableLabels for LabelTable, or in Function::selectTypes for
-    /// SelectTypes; and the index of its 16 bytes in Module::v128Literals for V128Const and Shuffle.
+    /// TableIndex, ElemIndex, MemoryIndex, DataIndex and TagIndex; the type index for CallIndirect and
+    /// for a block type of the TypeIndex form (try_table's included); the destination for TableCopy and
+    /// MemoryCopy; the segment for TableInit and MemoryInit; MemArg::align for MemArg and MemArgLane; the
+    /// offset of the instruction's run in Function::brTableLabels for LabelTable, or in Function::selectTypes
+    /// for SelectTypes; and the index of its 16 bytes in Module::v128Literals for V128Const and Shuffle.
     uint32_t a = 0;
 
     /// The second immediate: the table for CallIndirect and TableInit, the memory for MemoryInit,
     /// the source for TableCopy and MemoryCopy, MemArg::memory for MemArg and MemArgLane, and the length of
-    /// the instruction's run for LabelTable (the default label included) and SelectTypes.
+    /// the instruction's run for LabelTable (the default label included), SelectTypes and TryTable.
     uint32_t b = 0;
 
-    /// For block, loop, if and else: the index in the function body of the matching end.
+    /// For block, loop, if, else and try_table: the index in the function body of the matching end.
     uint32_t endIndex = 0;
 
     /// The wide immediate: the raw bits of I32Const, I64Const, F32Const and F64Const (an i32 or f32
-    /// zero-extended), and MemArg::offset for MemArg and MemArgLane.
+    /// zero-extended), MemArg::offset for MemArg and MemArgLane, and the offset of a try_table's run
+    /// in Function::catchClauses (a holds its block type's index).
     uint64_t c = 0;
 
     /// For if: the index of the matching else, or endIndex when there is none.
     uint32_t elseIndex = 0;
 
-    /// The result type of a block, loop or if whose block type has the Value form; the reference
-    /// type of ref.null (its heap type, as a nullable reference).
+    /// The result type of a block, loop, if or try_table whose block type has the Value form; the
+    /// reference type of ref.null (its heap type, as a nullable reference).
     ValueType type {};
 
-    /// The block type of a block, loop or if, assembled from blockKind, type and a.
+    /// The block type of a block, loop, if or try_table, assembled from blockKind, type and a.
     /// @return The block type.
     [[nodiscard]] constexpr BlockType blockType() const noexcept
     {
@@ -131,6 +168,10 @@ struct Function
     /// The operand types of every typed select in body, one run per instruction in body order; a
     /// typed select's Instruction::a and b give its run's offset and length.
     std::vector<ValueType> selectTypes;
+
+    /// The catch clauses of every try_table in body, one run per try_table in body order; a
+    /// try_table's Instruction::c and b give its run's offset and length.
+    std::vector<CatchClause> catchClauses;
 };
 
 /// The labels of a br_table in @p function's body, its default label last.
@@ -165,6 +206,23 @@ struct Function
     return std::span { function.selectTypes }.subspan(instruction.a, instruction.b);
 }
 
+/// The catch clauses of a try_table in @p function's body, in the order they are tried.
+///
+/// Precondition (checked): @p instruction is a try_table of @p function's body, so its run lies
+/// within Function::catchClauses; any other instruction's b and c mean something else.
+/// @param function The function whose body holds @p instruction.
+/// @param instruction A try_table of that body.
+/// @return Its run of Function::catchClauses.
+[[nodiscard]] inline std::span<CatchClause const> catchClausesOf(Function const& function,
+                                                                 Instruction const& instruction) noexcept
+{
+    Require(instruction.opcode == Opcode::TryTable);
+    Require(instruction.c <= function.catchClauses.size()
+            && instruction.b <= function.catchClauses.size() - instruction.c);
+    return std::span { function.catchClauses }.subspan(static_cast<std::size_t>(instruction.c),
+                                                       instruction.b);
+}
+
 /// The type of one of @p function's declared locals.
 ///
 /// Locals are kept as runs, never expanded: a few input bytes can declare tens of thousands of
@@ -188,9 +246,15 @@ struct Function
 ///
 /// The decoder reads it as it reads a function body, so any instruction decodes here; which ones a
 /// constant expression may hold is the validator's to check. No constant expression may hold a
-/// br_table or a typed select, so none has side tables: the decoder reads their immediates and
+/// br_table, a typed select or a try_table, so none has side tables: the decoder reads their immediates and
 /// drops them, and their offsets and counts refer to nothing.
 using ConstExpr = std::vector<Instruction>;
+
+/// A defined tag: the type of the exceptions it marks, whose results are empty.
+struct Tag
+{
+    uint32_t typeIndex = 0; ///< The index of its function type; its params are the payload's types.
+};
 
 /// An import: what it names, and the type the importer requires of it.
 struct Import
@@ -275,6 +339,7 @@ struct Module
     std::vector<uint32_t> functions;      ///< The function section: the type index per defined function.
     std::vector<Table> tables;            ///< The table section: defined tables.
     std::vector<MemoryType> memories;     ///< The memory section: defined memories.
+    std::vector<Tag> tags;                ///< The tag section: defined tags.
     std::vector<Global> globals;          ///< The global section: defined globals.
     std::vector<Export> exports;          ///< The export section.
     std::optional<uint32_t> start;        ///< The start section: the start function's index, if any.

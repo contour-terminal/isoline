@@ -19,6 +19,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -85,18 +86,18 @@ namespace
         return validate::isStoreSubtype(global.type.type, required.type);
     }
 
-    /// The index space of @p kind in @p instance, or nullptr for a kind P1 has none of (Tag).
-    [[nodiscard]] std::vector<uint32_t>* indexSpace(ModuleInstance& instance, ExternKind kind) noexcept
+    /// The index space of @p kind in @p instance.
+    [[nodiscard]] std::vector<uint32_t>& indexSpace(ModuleInstance& instance, ExternKind kind) noexcept
     {
         switch (kind)
         {
-            case ExternKind::Func: return &instance.functions;
-            case ExternKind::Table: return &instance.tables;
-            case ExternKind::Memory: return &instance.memories;
-            case ExternKind::Global: return &instance.globals;
-            case ExternKind::Tag: break; // uncovered(tag-index-space)
+            case ExternKind::Func: return instance.functions;
+            case ExternKind::Table: return instance.tables;
+            case ExternKind::Memory: return instance.memories;
+            case ExternKind::Global: return instance.globals;
+            case ExternKind::Tag: break;
         }
-        return nullptr; // uncovered(tag-index-space)
+        return instance.tags;
     }
 
     /// The address or offset a constant expression of an address type evaluated to.
@@ -223,9 +224,10 @@ namespace
                 case ExternKind::Memory: return memoryMatches(_store.memory(value.address), import.memory);
                 case ExternKind::Global:
                     return globalMatches(_store.global(value.address), storeForm(import.global));
-                case ExternKind::Tag: break;
+                case ExternKind::Tag: break; // matched below the switch
             }
-            return false;
+            // A tag's type matches only its own: an exception's payload is read by the tag's type.
+            return _store.tag(value.address).typeId == _types.at(import.typeIndex);
         }
 
         // --- Allocation ---
@@ -241,17 +243,19 @@ namespace
                                             .tables = {},
                                             .memories = {},
                                             .globals = {},
+                                            .tags = {},
                                             .elements = {},
                                             .data = {},
                                             .exports = {} };
             for (auto const& value: _imports)
-                indexSpace(pending, value.kind)->push_back(value.address);
+                indexSpace(pending, value.kind).push_back(value.address);
             return allocateTables(pending)
                 .and_then([&] { return allocateMemories(pending); })
                 .and_then([&] {
                     internTypes();
                     _address = _store.addModuleInstance(std::move(pending));
                     allocateFunctions();
+                    allocateTags();
                     return allocateGlobals();
                 })
                 .and_then([this] { return fillInitializedTables(); })
@@ -271,6 +275,13 @@ namespace
                     _store.addModuleFunction(_types.at(module().functions[index]), _address, index);
                 instance().functions.push_back(address);
             }
+        }
+
+        /// Allocates the module's tags: each a new tag, so that two instances' tags differ.
+        void allocateTags()
+        {
+            for (auto const& tag: module().tags)
+                instance().tags.push_back(_store.addTag(storeForm(module().types.at(tag.typeIndex))));
         }
 
         [[nodiscard]] Step allocateTables(ModuleInstance& pending)
@@ -382,10 +393,10 @@ namespace
         {
             for (auto const& entry: module().exports)
             {
-                auto const* space = indexSpace(instance(), entry.kind);
-                Require(space != nullptr && entry.index < space->size());
+                auto const& space = indexSpace(instance(), entry.kind);
+                Require(entry.index < space.size());
                 instance().exports.emplace_back(
-                    entry.name, ExternValue { .kind = entry.kind, .address = (*space)[entry.index] });
+                    entry.name, ExternValue { .kind = entry.kind, .address = space[entry.index] });
             }
         }
 
@@ -453,8 +464,8 @@ namespace
             if (!module().start)
                 return {};
             auto const function = instance().functions[*module().start];
-            return _executor.invoke(_store, function, {}, {}).transform_error([](Trap const& trap) {
-                return InstantiationError { trap };
+            return _executor.invoke(_store, function, {}, {}).transform_error([](Abrupt const& abrupt) {
+                return std::visit([](auto const& outcome) { return InstantiationError { outcome }; }, abrupt);
             });
         }
 

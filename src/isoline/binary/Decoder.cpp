@@ -135,12 +135,38 @@ namespace
     /// by a zero byte, the table type and the initializer.
     constexpr auto TableWithInitializer = uint8_t { 0x40 };
 
+    /// What an import or an export names with one kind byte, and the proposal that introduced it.
+    struct ExternKindRow
+    {
+        ExternKind kind;                 ///< The kind of entity; its enumerator is the byte.
+        std::optional<Feature> required; ///< The proposal that introduced it, unless it is MVP.
+    };
+
     /// What an import, or an export, names, by its kind byte.
-    constexpr auto ExternKinds = std::to_array<ExternKind>({
-        ExternKind::Func,
-        ExternKind::Table,
-        ExternKind::Memory,
-        ExternKind::Global,
+    constexpr auto ExternKinds = std::to_array<ExternKindRow>({
+        { .kind = ExternKind::Func, .required = std::nullopt },
+        { .kind = ExternKind::Table, .required = std::nullopt },
+        { .kind = ExternKind::Memory, .required = std::nullopt },
+        { .kind = ExternKind::Global, .required = std::nullopt },
+        { .kind = ExternKind::Tag, .required = Feature::ExceptionHandling },
+    });
+
+    static_assert(
+        [] {
+            auto index = std::size_t { 0 };
+            for (auto const& row: ExternKinds)
+                if (static_cast<std::size_t>(row.kind) != index++)
+                    return false;
+            return true;
+        }(),
+        "ExternKinds holds one row per kind byte, at the index of the ExternKind it decodes to");
+
+    /// What a try_table's catch clause is, by its kind byte.
+    constexpr auto CatchKinds = std::to_array<CatchKind>({
+        CatchKind::Catch,
+        CatchKind::CatchRef,
+        CatchKind::CatchAll,
+        CatchKind::CatchAllRef,
     });
 
     /// Whether a segment names its table or memory, or uses index 0 implicitly.
@@ -416,15 +442,23 @@ namespace
     /// Where decoded instructions go: a body, and the side tables its instructions index.
     struct CodeSink
     {
-        std::vector<Instruction>& body;       ///< The instructions, in order.
-        std::vector<uint32_t>& brTableLabels; ///< br_table labels (Function::brTableLabels).
-        std::vector<ValueType>& selectTypes;  ///< Typed select operand types (Function::selectTypes).
+        std::vector<Instruction>& body;         ///< The instructions, in order.
+        std::vector<uint32_t>& brTableLabels;   ///< br_table labels (Function::brTableLabels).
+        std::vector<ValueType>& selectTypes;    ///< Typed select operand types (Function::selectTypes).
+        std::vector<CatchClause>& catchClauses; ///< try_table catch clauses (Function::catchClauses).
     };
+
+    /// Whether an instruction of @p immediate opens a block that an end closes: block, loop, if and
+    /// try_table.
+    [[nodiscard]] constexpr bool opensBlock(ImmediateKind immediate) noexcept
+    {
+        return immediate == ImmediateKind::BlockType || immediate == ImmediateKind::TryTable;
+    }
 
     /// A block, loop or if whose end has not been read yet.
     struct OpenBlock
     {
-        uint32_t opener;                   ///< The index of its block, loop or if.
+        uint32_t opener;                   ///< The index of its block, loop, if or try_table.
         std::optional<uint32_t> elseIndex; ///< The index of its else, once read.
     };
 
@@ -449,6 +483,7 @@ namespace
         [[nodiscard]] std::expected<void, DecodeError> functionSection();
         [[nodiscard]] std::expected<void, DecodeError> tableSection();
         [[nodiscard]] std::expected<void, DecodeError> memorySection();
+        [[nodiscard]] std::expected<void, DecodeError> tagSection();
         [[nodiscard]] std::expected<void, DecodeError> globalSection();
         [[nodiscard]] std::expected<void, DecodeError> exportSection();
         [[nodiscard]] std::expected<void, DecodeError> startSection();
@@ -543,6 +578,12 @@ namespace
         [[nodiscard]] std::expected<void, DecodeError> readImmediates(Instruction& instruction,
                                                                       CodeSink sink);
         [[nodiscard]] std::expected<void, DecodeError> readBlockType(Instruction& instruction);
+        /// Reads a try_table's catch clauses into @p sink and points @p instruction's c and b at them.
+        [[nodiscard]] std::expected<void, DecodeError> readCatchClauses(Instruction& instruction,
+                                                                        CodeSink sink);
+        [[nodiscard]] std::expected<CatchClause, DecodeError> readCatchClause();
+        /// Reads a tag type: the attribute byte, which must be 0 (an exception), and a type index.
+        [[nodiscard]] std::expected<uint32_t, DecodeError> readTagType();
         [[nodiscard]] std::expected<void, DecodeError> readMemArg(Instruction& instruction);
         /// Reads 16 raw bytes into Module::v128Literals and points @p instruction's a at them.
         [[nodiscard]] std::expected<void, DecodeError> readV128Literal(Instruction& instruction);
@@ -580,6 +621,7 @@ namespace
         /// uses them, so they only take what an invalid one holds, and are cleared for the next.
         std::vector<uint32_t> _constBrTableLabels;
         std::vector<ValueType> _constSelectTypes;
+        std::vector<CatchClause> _constCatchClauses;
     };
 
     /// One non-custom section: its id, the proposal it needs, and its decoder.
@@ -597,6 +639,7 @@ namespace
         { .id = 3, .required = std::nullopt, .decode = &ModuleDecoder::functionSection },
         { .id = 4, .required = std::nullopt, .decode = &ModuleDecoder::tableSection },
         { .id = 5, .required = std::nullopt, .decode = &ModuleDecoder::memorySection },
+        { .id = 13, .required = Feature::ExceptionHandling, .decode = &ModuleDecoder::tagSection },
         { .id = 6, .required = std::nullopt, .decode = &ModuleDecoder::globalSection },
         { .id = 7, .required = std::nullopt, .decode = &ModuleDecoder::exportSection },
         { .id = 8, .required = std::nullopt, .decode = &ModuleDecoder::startSection },
@@ -957,9 +1000,9 @@ namespace
     {
         auto const kindOffset = _reader.offset();
         return readByte().and_then([&](uint8_t byte) -> std::expected<ExternKind, DecodeError> {
-            if (std::size_t { byte } >= ExternKinds.size())
+            if (std::size_t { byte } >= ExternKinds.size() || !enabled(ExternKinds[byte].required))
                 return std::unexpected { DecodeError { malformed, kindOffset } };
-            return ExternKinds[byte];
+            return ExternKinds[byte].kind;
         });
     }
 
@@ -973,9 +1016,11 @@ namespace
         auto expression = ConstExpr {};
         _constBrTableLabels.clear();
         _constSelectTypes.clear();
+        _constCatchClauses.clear();
         return readExpression(CodeSink { .body = expression,
                                          .brTableLabels = _constBrTableLabels,
-                                         .selectTypes = _constSelectTypes })
+                                         .selectTypes = _constSelectTypes,
+                                         .catchClauses = _constCatchClauses })
             .transform([&] { return std::move(expression); });
     }
 
@@ -1068,7 +1113,7 @@ namespace
             auto const instruction = readInstruction(*next, sink);
             if (!instruction)
                 return std::unexpected { instruction.error() };
-            if (opcodeInfo(instruction->opcode).immediate == ImmediateKind::BlockType)
+            if (opensBlock(opcodeInfo(instruction->opcode).immediate))
                 open.push_back(OpenBlock { .opener = index, .elseIndex = std::nullopt });
             sink.body.push_back(*instruction);
         }
@@ -1112,7 +1157,12 @@ namespace
             case ImmediateKind::TableIndex:
             case ImmediateKind::ElemIndex:
             case ImmediateKind::DataIndex:
-            case ImmediateKind::TypeIndex: return readIndex(instruction.a);
+            case ImmediateKind::TypeIndex:
+            case ImmediateKind::TagIndex: return readIndex(instruction.a);
+            case ImmediateKind::TryTable:
+                return readBlockType(instruction).and_then([&] {
+                    return readCatchClauses(instruction, sink);
+                });
             case ImmediateKind::CallIndirect:
                 // Before reference types the table index is the reserved zero byte, as memory
                 // indices are before multi-memory; an overlong zero is malformed there.
@@ -1205,6 +1255,36 @@ namespace
         });
     }
 
+    std::expected<void, DecodeError> ModuleDecoder::readCatchClauses(Instruction& instruction, CodeSink sink)
+    {
+        auto const offset = sink.catchClauses.size();
+        return readVector(
+                   _limits.maxCatchClauses, sink.catchClauses, [this](uint32_t) { return readCatchClause(); })
+            .transform([&] {
+                instruction.c = offset;
+                instruction.b = static_cast<uint32_t>(sink.catchClauses.size() - offset);
+            });
+    }
+
+    std::expected<CatchClause, DecodeError> ModuleDecoder::readCatchClause()
+    {
+        auto const kindOffset = _reader.offset();
+        auto const byte = readByte();
+        if (!byte)
+            return std::unexpected { byte.error() };
+        if (std::size_t { *byte } >= CatchKinds.size())
+            return std::unexpected { DecodeError { DecodeErrorCode::MalformedCatchClause, kindOffset } };
+        auto clause = CatchClause { .kind = CatchKinds[*byte], .tag = 0, .label = 0 };
+        auto const tag =
+            catchesByTag(clause.kind) ? readIndex(clause.tag) : std::expected<void, DecodeError> {};
+        return tag.and_then([&] { return readIndex(clause.label); }).transform([&] { return clause; });
+    }
+
+    std::expected<uint32_t, DecodeError> ModuleDecoder::readTagType()
+    {
+        return expectZeroByte().and_then([this] { return _reader.readU32(); });
+    }
+
     std::expected<void, DecodeError> ModuleDecoder::readMemArg(Instruction& instruction)
     {
         auto const& grammar = _features.has(MemoryIndexFeature) ? MemArgGrammar3 : MemArgGrammar2;
@@ -1275,7 +1355,10 @@ namespace
                 described =
                     readGlobalType().transform([&](GlobalType const& global) { import.global = global; });
                 break;
-            case ExternKind::Tag: break; // uncovered(tag-import): readExternKind decodes no tags in P1
+            case ExternKind::Tag:
+                described =
+                    readTagType().transform([&](uint32_t typeIndex) { import.typeIndex = typeIndex; });
+                break;
         }
         return described.transform([&] { return std::move(import); });
     }
@@ -1330,6 +1413,13 @@ namespace
         // Bounded by what the imports left of maxMemories; the validator allows one before multi-memory.
         return readVector(_limits.maxMemories - _importedMemories, _module.memories, [this](uint32_t) {
             return readMemoryType();
+        });
+    }
+
+    std::expected<void, DecodeError> ModuleDecoder::tagSection()
+    {
+        return readVector(_limits.maxTags, _module.tags, [this](uint32_t) {
+            return readTagType().transform([](uint32_t typeIndex) { return Tag { .typeIndex = typeIndex }; });
         });
     }
 
@@ -1476,13 +1566,15 @@ namespace
             .bodyOffset = _reader.offset(),
             .brTableLabels = {},
             .selectTypes = {},
+            .catchClauses = {},
         };
         // The body is read from the module's stream, not from its declared bytes: one whose end
         // lies elsewhere reads on, or stops short, and then mismatches its size, as in the
         // interpreter.
         auto const body = readExpression(CodeSink { .body = function.body,
                                                     .brTableLabels = function.brTableLabels,
-                                                    .selectTypes = function.selectTypes });
+                                                    .selectTypes = function.selectTypes,
+                                                    .catchClauses = function.catchClauses });
         if (!body)
             return std::unexpected { body.error() };
         if (_reader.offset() != end)

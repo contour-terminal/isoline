@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -87,6 +88,7 @@ enum class RefKind : uint8_t
     Null,   ///< Nothing: the null reference of its heap.
     Func,   ///< A function instance, by its store address.
     Extern, ///< A host object, by an address the embedder assigns.
+    Exn,    ///< An exception instance, by its store address (exception handling's exnref).
 };
 
 /// A reference value.
@@ -126,6 +128,16 @@ using Value = std::variant<I32, I64, F32, F64, V128, Ref>;
             }
         },
         value);
+}
+
+/// Whether @p values are one value of each kind @p types names, in order: what the host boundary
+/// checks of arguments, results and exception payloads (a reference's heap is not checked).
+/// @param values The values.
+/// @param types The types they must be of.
+/// @return Whether the counts match and each value's kind is its type's.
+[[nodiscard]] inline bool haveKinds(std::span<Value const> values, std::span<binary::ValueType const> types)
+{
+    return std::ranges::equal(values, types, {}, kindOf, &binary::ValueType::kind);
 }
 
 /// The value a local or a table slot of @p type starts with: zero, or the null reference.

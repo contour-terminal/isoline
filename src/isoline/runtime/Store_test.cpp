@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -180,4 +181,66 @@ TEST_CASE("Store.typeRoundTrip")
         std::ignore =
             store.internType(FuncType { .params = std::vector(count, isoline::binary::I32), .results = {} });
     CHECK(kept == wide);
+}
+
+TEST_CASE("Store.tagsAreDistinct")
+{
+    // Every tag added is a tag of its own, whatever its type; equal types share their TypeId.
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto const type = FuncType { .params = { isoline::binary::I32 }, .results = {} };
+    auto const first = store.addTag(type);
+    auto const second = store.addTag(type);
+    CHECK(first != second);
+    CHECK(store.tag(first).typeId == store.tag(second).typeId);
+    CHECK(store.tag(first).type == type);
+    CHECK(store.findType(type) == store.tag(first).typeId);
+}
+
+TEST_CASE("Store.exceptionLimits")
+{
+    using isoline::runtime::StoreLimits;
+    using isoline::runtime::TrapCode;
+    auto const allocator = UnlimitedAllocator {};
+    auto const payload = [](std::size_t count) {
+        return std::vector<Value>(count, I32 { .bits = 7 });
+    };
+
+    SECTION("the number of exceptions")
+    {
+        auto store = Store { allocator, StoreLimits { .maxExceptions = 2 } };
+        auto const tag = store.addTag(FuncType {});
+        auto const first = store.addException(tag, {});
+        REQUIRE(first.has_value());
+        REQUIRE(store.addException(tag, {}).has_value());
+        auto const third = store.addException(tag, {});
+        REQUIRE_FALSE(third.has_value());
+        CHECK(third.error() == Trap { TrapCode::ExceptionLimitExceeded });
+        CHECK(isoline::runtime::specMessage(third.error()) == "exception limit exceeded");
+        CHECK(store.exception(*first).tag == tag);
+    }
+
+    SECTION("the values of their payloads")
+    {
+        auto store = Store { allocator, StoreLimits { .maxExceptionValues = 3 } };
+        using isoline::binary::I32;
+        auto const none = store.addTag(FuncType {});
+        auto const one = store.addTag(FuncType { .params = { I32 }, .results = {} });
+        auto const two = store.addTag(FuncType { .params = { I32, I32 }, .results = {} });
+        auto const first = store.addException(two, payload(2));
+        REQUIRE(first.has_value());
+        CHECK(store.exception(*first).payload == payload(2));
+        CHECK(store.addException(two, payload(2)).error() == Trap { TrapCode::ExceptionLimitExceeded });
+        CHECK(store.addException(one, payload(1)).has_value());
+        CHECK(store.addException(none, {}).has_value());
+        CHECK_FALSE(store.addException(one, payload(1)).has_value());
+    }
+
+    SECTION("the defaults")
+    {
+        auto const limits = StoreLimits {};
+        CHECK(limits.maxCallDepth == 10'000);
+        CHECK(limits.maxExceptions == 65'536);
+        CHECK(limits.maxExceptionValues == uint64_t { 1 } << 20);
+    }
 }

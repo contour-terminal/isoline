@@ -129,6 +129,17 @@ namespace
 
     [[nodiscard]] std::string describeExpected(ExpectedValue const& expected);
 
+    /// The token of the hierarchy whose top is @p top, as a reference's token names it.
+    [[nodiscard]] std::string_view heapToken(binary::AbstractHeapType top)
+    {
+        switch (top)
+        {
+            case binary::AbstractHeapType::Extern: return "extern";
+            case binary::AbstractHeapType::Exn: return "exn";
+            default: return "func";
+        }
+    }
+
     [[nodiscard]] std::string describeEither(ExpectedValue const& expected)
     {
         return std::format(
@@ -233,8 +244,7 @@ std::string describe(Value const& value)
         }
         std::string operator()(runtime::Ref const& v) const
         {
-            auto const* const heap =
-                validate::topOf(v.heap.kind) == binary::AbstractHeapType::Extern ? "extern" : "func";
+            auto const heap = heapToken(validate::topOf(v.heap.kind));
             if (v.kind == runtime::RefKind::Null)
                 return std::format("ref.null:{}", heap);
             return std::format("ref.{}:{}", heap, v.address);

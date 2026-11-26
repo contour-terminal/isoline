@@ -218,3 +218,21 @@ TEST_CASE("SpecCheck.nullOfAConcreteTypeIsANullFunc")
         matches(exactly(Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 }), nullOfType));
     CHECK(describeAll(std::vector<Value> { nullOfType }) == "ref.null:func");
 }
+
+TEST_CASE("SpecCheck.exceptionReferencesAreSpelledExn")
+{
+    // An exnref, null or not, is named by its hierarchy, as ref.null:exn and ref.exn:<address>.
+    auto const nullExn = Ref { .kind = RefKind::Null,
+                               .heap = { .kind = isoline::binary::AbstractHeapType::Exn },
+                               .address = 0 };
+    auto const noExn = Ref { .kind = RefKind::Null,
+                             .heap = { .kind = isoline::binary::AbstractHeapType::NoExn },
+                             .address = 0 };
+    auto const exception = Ref { .kind = RefKind::Exn,
+                                 .heap = { .kind = isoline::binary::AbstractHeapType::Exn },
+                                 .address = 3 };
+    CHECK(describeAll(std::vector<Value> { nullExn, noExn, exception })
+          == "ref.null:exn ref.null:exn ref.exn:3");
+    CHECK(matches(exactly(nullExn), noExn));
+    CHECK_FALSE(matches(exactly(nullExn), Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 }));
+}

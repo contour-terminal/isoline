@@ -1,0 +1,23 @@
+module_definition instance.0.wasm 4d
+module_instance 4931 4d
+module_instance 4932 4d
+register 4931 4931
+register 4932 4932
+module instance.1.wasm
+assert_return invoke 676c6f62 - -> i32:0
+assert_return invoke 746162 - -> ref.null
+assert_return invoke 6d656d - -> i32:0
+assert_return invoke 746167 - -> i32:0
+module instance.2.wasm
+assert_return invoke 676c6f62 - -> i32:1
+assert_return invoke 746162 - -> ref.func
+assert_return invoke 6d656d - -> i32:1
+assert_return invoke 746167 - -> i32:1
+module_definition instance.3.wasm 4e
+module_instance 49 4e
+register 49 49
+module instance.4.wasm
+assert_return invoke 676c6f62 - -> i32:1
+assert_return invoke 746162 - -> ref.func
+assert_return invoke 6d656d - -> i32:1
+assert_return invoke 746167 - -> i32:1

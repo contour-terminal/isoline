@@ -24,6 +24,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/interp/Numerics.hpp>
 #include <isoline/interp/Simd.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -35,6 +36,7 @@ namespace isoline::interp
 namespace
 {
     using binary::AddressType;
+    using binary::CatchClause;
     using binary::copyCountType;
     using binary::Extension;
     using binary::Instruction;
@@ -43,25 +45,30 @@ namespace
     using binary::Opcode;
     using binary::ValueKind;
     using binary::VectorShape;
+    using runtime::Abrupt;
+    using runtime::ExnAddr;
     using runtime::F32;
     using runtime::F64;
     using runtime::fits;
     using runtime::FuncAddr;
     using runtime::FunctionInstance;
+    using runtime::haveKinds;
     using runtime::I32;
     using runtime::I64;
     using runtime::ModuleInstance;
     using runtime::Ref;
     using runtime::RefKind;
     using runtime::Store;
+    using runtime::Thrown;
     using runtime::Trap;
     using runtime::trap;
     using runtime::TrapCode;
     using runtime::V128;
     using runtime::Value;
 
-    /// The outcome of executing one instruction: nothing, or the trap execution ends with.
-    using Step = std::expected<void, Trap>;
+    /// The outcome of executing one instruction: nothing, or how execution ends abruptly: the trap,
+    /// or the exception no handler of the invocation caught.
+    using Step = std::expected<void, Abrupt>;
 
     /// How many entries (operands, locals and labels, over all frames) the stacks may hold before
     /// a call or a block entry traps with CallStackExhausted, as the spec lets an implementation do
@@ -148,12 +155,6 @@ namespace
     }
     // uncovered-end(number-of)
 
-    /// Whether @p values are one value of each kind @p types names, in order.
-    [[nodiscard]] bool haveKinds(std::span<Value const> values, std::span<binary::ValueType const> types)
-    {
-        return std::ranges::equal(values, types, {}, runtime::kindOf, &binary::ValueType::kind);
-    }
-
     // --- Memory accesses ----------------------------------------------------------------------
 
     /// The little-endian bytes @p raw's low @p width bytes are, read back; sign-extended if asked.
@@ -167,20 +168,23 @@ namespace
 
     // --- The machine --------------------------------------------------------------------------
 
-    /// What a branch to a label does with it: leaves a block, or repeats a loop.
+    /// What a branch to a label does with it: leaves a block, or repeats a loop; and whether an
+    /// exception unwinding past it may be caught there.
     enum class LabelKind : uint8_t
     {
-        Block, ///< A block or if: a branch continues after its end, and the label is gone.
-        Loop,  ///< A loop: a branch continues at its start, and the label stays.
+        Block,    ///< A block or if: a branch continues after its end, and the label is gone.
+        Loop,     ///< A loop: a branch continues at its start, and the label stays.
+        TryTable, ///< A try_table: branched to as a block; its catch clauses catch at it.
     };
 
     /// A label on the label stack: a structured control instruction being executed.
     struct Label
     {
-        LabelKind kind = LabelKind::Block; ///< What a branch to it does.
-        uint32_t arity = 0;                ///< How many values a branch to it carries.
-        std::size_t height = 0;            ///< The operand stack height beneath its operands.
-        uint32_t continuation = 0;         ///< The instruction a branch to it continues at.
+        LabelKind kind = LabelKind::Block;     ///< What a branch to it does.
+        uint32_t arity = 0;                    ///< How many values a branch to it carries.
+        std::size_t height = 0;                ///< The operand stack height beneath its operands.
+        uint32_t continuation = 0;             ///< The instruction a branch to it continues at.
+        Instruction const* tryTable = nullptr; ///< A TryTable label's instruction, holding its clauses.
     };
 
     /// An activation of a Wasm function.
@@ -332,7 +336,12 @@ namespace
             auto results = std::vector<Value>(type.results.size());
             std::ranges::transform(type.results, results.begin(), runtime::defaultValue);
             if (auto const done = function.host(args, results); !done)
-                return done;
+            {
+                // An exception it throws is thrown on in its caller.
+                if (auto const* thrown = std::get_if<Thrown>(&done.error()))
+                    return unwind(thrown->exception);
+                return std::unexpected { done.error() };
+            }
             Require(haveKinds(results, type.results));
             _values.insert(_values.end(), results.begin(), results.end());
             return {};
@@ -364,7 +373,7 @@ namespace
 
         /// The function call_indirect and return_call_indirect call: the table element the popped
         /// index names, which must hold a function of the instruction's type.
-        [[nodiscard]] std::expected<FuncAddr, Trap> indirectCallee(Instruction const& instruction)
+        [[nodiscard]] std::expected<FuncAddr, Abrupt> indirectCallee(Instruction const& instruction)
         {
             auto const& table = _store.table(instance().tables.at(instruction.b));
             auto const index = popAddress(table.type.limits.addressType);
@@ -379,7 +388,7 @@ namespace
         }
 
         /// The function call_ref and return_call_ref call: the popped reference's.
-        [[nodiscard]] std::expected<FuncAddr, Trap> referencedCallee(Instruction const& instruction)
+        [[nodiscard]] std::expected<FuncAddr, Abrupt> referencedCallee(Instruction const& instruction)
         {
             // Validation typed the reference (ref null $t), so only null is a trap. A host boundary
             // checks the kinds of the values it passes, not yet their types (P3), so a function of
@@ -407,7 +416,7 @@ namespace
                      .results = static_cast<uint32_t>(type.results.size()) };
         }
 
-        /// Enters a block, loop or if whose operands are on the stack; traps with
+        /// Enters a block, loop, if or try_table whose operands are on the stack; traps with
         /// CallStackExhausted when the stacks hold MaxStackValues entries already.
         [[nodiscard]] Step enter(Instruction const& instruction, LabelKind kind)
         {
@@ -420,6 +429,7 @@ namespace
                 .height = _values.size() - arity.params,
                 // A loop's body starts after it, at the frame's next instruction already.
                 .continuation = kind == LabelKind::Loop ? frame().pc : instruction.endIndex + 1,
+                .tryTable = kind == LabelKind::TryTable ? &instruction : nullptr,
             });
             return {};
         }
@@ -457,6 +467,80 @@ namespace
             frame().pc = instruction.elseIndex == instruction.endIndex ? instruction.endIndex
                                                                        : instruction.elseIndex + 1;
             return {};
+        }
+
+        // --- Exceptions ---
+
+        /// Executes throw: allocates an exception of the instruction's tag, its payload popped, and
+        /// throws it; traps with ExceptionLimitExceeded when the store may hold no more.
+        [[nodiscard]] Step throwException(Instruction const& instruction)
+        {
+            auto const tag = instance().tags.at(instruction.a);
+            auto const count = static_cast<std::ptrdiff_t>(_store.tag(tag).type.params.size());
+            auto payload = std::vector<Value>(_values.end() - count, _values.end());
+            _values.resize(_values.size() - static_cast<std::size_t>(count));
+            auto const exception = _store.addException(tag, std::move(payload));
+            if (!exception)
+                return std::unexpected { Abrupt { exception.error() } };
+            return unwind(*exception);
+        }
+
+        /// Executes throw_ref: throws the popped exception again, or traps on a null reference.
+        [[nodiscard]] Step throwReference()
+        {
+            auto const reference = popRef();
+            if (reference.kind == RefKind::Null)
+                return trap(TrapCode::NullExceptionReference);
+            Require(reference.kind == RefKind::Exn);
+            return unwind(reference.address);
+        }
+
+        /// Throws @p exception: unwinds the labels of the current frame, innermost first, then the
+        /// frame, and so on outwards, in a loop, until a try_table's clause catches it. Its first
+        /// clause that does, by tag (by TagAddr, so an imported tag is the tag it imports) or catching
+        /// all, gets the operand stack as the try_table found it, pushes what it hands its label and
+        /// branches there, as from outside the try_table.
+        /// @return Nothing once caught; Thrown when no frame of this invocation catches it.
+        [[nodiscard]] Step unwind(ExnAddr exception)
+        {
+            auto const& thrown = _store.exception(exception);
+            while (!_frames.empty())
+            {
+                while (_labels.size() > frame().labelsBase)
+                {
+                    auto const label = _labels.back();
+                    _labels.pop_back();
+                    if (label.kind != LabelKind::TryTable)
+                        continue;
+                    for (auto const& clause: binary::catchClausesOf(*frame().code, *label.tryTable))
+                    {
+                        if (!catches(clause, thrown.tag))
+                            continue;
+                        _values.resize(label.height);
+                        if (binary::catchesByTag(clause.kind))
+                            _values.insert(_values.end(), thrown.payload.begin(), thrown.payload.end());
+                        if (binary::handsReference(clause.kind))
+                            push(Ref { .kind = RefKind::Exn,
+                                       .heap = { .kind = binary::AbstractHeapType::Exn },
+                                       .address = exception });
+                        branch(clause.label);
+                        return {};
+                    }
+                }
+                // No handler in this frame: it ends, and its caller's labels are tried next.
+                auto const ending = frame();
+                _values.resize(ending.valuesBase);
+                _locals.resize(ending.localsBase);
+                _frames.pop_back();
+                --_depth;
+            }
+            return std::unexpected { Abrupt { Thrown { .exception = exception } } };
+        }
+
+        /// Whether @p clause, of the current frame, catches an exception of @p tag.
+        [[nodiscard]] bool catches(CatchClause const& clause, runtime::TagAddr tag)
+        {
+            return !binary::catchesByTag(clause.kind) || instance().tags.at(clause.tag) == tag;
         }
 
         void end()
@@ -850,6 +934,9 @@ namespace
                 case Opcode::Loop: return enter(instruction, LabelKind::Loop);
                 case Opcode::If: return ifThen(instruction);
                 case Opcode::Else: frame().pc = instruction.endIndex; return {};
+                case Opcode::TryTable: return enter(instruction, LabelKind::TryTable);
+                case Opcode::Throw: return throwException(instruction);
+                case Opcode::ThrowRef: return throwReference();
                 case Opcode::End: end(); return {};
                 case Opcode::Br: branch(instruction.a); return {};
                 case Opcode::BrIf:
@@ -971,10 +1058,10 @@ namespace
     };
 } // namespace
 
-std::expected<void, Trap> ReferenceInterpreter::invoke(Store& store,
-                                                       FuncAddr function,
-                                                       std::span<Value const> args,
-                                                       std::span<Value> results)
+std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
+                                                         FuncAddr function,
+                                                         std::span<Value const> args,
+                                                         std::span<Value> results)
 {
     // Float results are the spec's only in the default floating-point environment.
     assert(std::fegetround() == FE_TONEAREST);

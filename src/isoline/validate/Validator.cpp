@@ -57,8 +57,9 @@ namespace
     /// What a check found wrong, before its caller adds where: the error, and the index it names.
     struct Fault
     {
-        ValidationErrorCode code;        ///< What went wrong.
-        std::optional<uint32_t> subject; ///< The unknown or undeclared index, if it names one.
+        ValidationErrorCode code;                ///< What went wrong.
+        std::optional<uint32_t> subject;         ///< The unknown or undeclared index, if it names one.
+        std::optional<OperandMismatch> mismatch; ///< The operands that did not match, if recorded.
     };
 
     /// The outcome of a check whose position its caller knows.
@@ -67,19 +68,19 @@ namespace
     /// @return The failure of a check with @p code, naming no index.
     [[nodiscard]] std::unexpected<Fault> fail(ValidationErrorCode code) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = std::nullopt } };
+        return std::unexpected { Fault { .code = code, .subject = std::nullopt, .mismatch = std::nullopt } };
     }
 
     /// @return The failure @p fault, passed on.
     [[nodiscard]] std::unexpected<Fault> fail(Fault fault) noexcept
     {
-        return std::unexpected { fault };
+        return std::unexpected { std::move(fault) };
     }
 
     /// @return The failure of a check with @p code about the index @p subject.
     [[nodiscard]] std::unexpected<Fault> failNaming(ValidationErrorCode code, uint32_t subject) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = subject } };
+        return std::unexpected { Fault { .code = code, .subject = subject, .mismatch = std::nullopt } };
     }
 
     /// @return Success when @p holds, else the failure @p code.
@@ -98,14 +99,22 @@ namespace
         return {};
     }
 
+    /// The error @p fault is at @p instruction of function @p function.
+    [[nodiscard]] ValidationError errorAt(Fault fault, uint32_t function, uint32_t instruction) noexcept
+    {
+        return ValidationError {
+            fault.code, function, instruction, fault.subject, std::move(fault.mismatch)
+        };
+    }
+
     /// An error outside every function body.
     [[nodiscard]] std::unexpected<ValidationError> moduleError(Fault fault) noexcept
     {
-        return std::unexpected { ValidationError { fault.code, NoFunction, NoInstruction, fault.subject } };
+        return std::unexpected { errorAt(std::move(fault), NoFunction, NoInstruction) };
     }
 
     /// Lifts a module-level check to a module-level error.
-    [[nodiscard]] std::expected<void, ValidationError> atModule(Check const& result) noexcept
+    [[nodiscard]] std::expected<void, ValidationError> atModule(Check const& result)
     {
         if (!result)
             return moduleError(result.error());
@@ -260,6 +269,7 @@ namespace
         std::vector<TableType> tables;           ///< Every table, imports first.
         std::vector<MemoryType> memories;        ///< Every memory, imports first.
         std::vector<GlobalType> globals;         ///< Every global, imports first.
+        std::vector<uint32_t> tagTypes;          ///< The type index of every tag, imports first.
         std::size_t importedGlobalCount = 0;     ///< How many of globals are imported.
         std::vector<uint32_t> declaredFunctions; ///< The functions ref.func may name; sorted, unique.
         std::vector<uint32_t> canonical;         ///< The canonical id of every type (canonicalTypeIds).
@@ -297,6 +307,23 @@ namespace
         [[nodiscard]] Check type(uint32_t index) const
         {
             return checkIndex(index, module.types.size(), ValidationErrorCode::UnknownType);
+        }
+
+        /// The function type of tag @p index: its params are the payload's types.
+        [[nodiscard]] std::expected<FuncType const*, Fault> tag(uint32_t index) const
+        {
+            if (index >= tagTypes.size())
+                return failNaming(ValidationErrorCode::UnknownTag, index);
+            return &module.types[tagTypes[index]];
+        }
+
+        /// Checks a tag's type: a known function type without results.
+        [[nodiscard]] Check tagType(uint32_t typeIndex) const
+        {
+            return type(typeIndex).and_then([&] {
+                return check(module.types[typeIndex].results.empty(),
+                             ValidationErrorCode::NonEmptyTagResultType);
+            });
         }
 
         /// Checks that @p type names a type of the module, if it names one at all.
@@ -383,7 +410,7 @@ namespace
     /// A control frame of the validation algorithm.
     struct Frame
     {
-        Opcode opcode;                      ///< Block, Loop, If, Else; Block for a body's own frame.
+        Opcode opcode;                      ///< Block, Loop, If, Else, TryTable; Block for a body's own.
         std::span<ValueType const> params;  ///< The types its block starts with.
         std::span<ValueType const> results; ///< The types its block ends with.
         std::size_t height;                 ///< The operand stack height at its start.
@@ -509,6 +536,34 @@ namespace
             for (auto const& type: types | std::views::reverse)
                 if (auto const popped = pop(type); !popped)
                     return fail(popped.error());
+            return {};
+        }
+
+        /// Pops @p types at once, as valid.ml's pop does, and on a mismatch records the operands: those
+        /// required, and the top ones of the block in their place, as many as there are up to as many
+        /// as required, below which an unreachable block's polymorphic stack supplies Unknowns.
+        [[nodiscard]] Check popRecording(std::span<ValueType const> types)
+        {
+            auto const& frame = _frames.back();
+            auto const taken = std::min(types.size(), _operands.size() - frame.height);
+            auto const supplied = frame.reachability == Reachability::Unreachable ? types.size() - taken : 0;
+            auto const top = std::span { _operands }.last(taken);
+            auto const matching =
+                supplied + taken == types.size()
+                && std::ranges::equal(
+                    top, types.last(taken), [this](Operand const& actual, ValueType const& required) {
+                        return !actual || _context.matches(*actual, required);
+                    });
+            if (!matching)
+            {
+                auto mismatch = OperandMismatch { .required = { types.begin(), types.end() },
+                                                  .actual = std::vector<Operand>(supplied) };
+                mismatch.actual.insert(mismatch.actual.end(), top.begin(), top.end());
+                return fail(Fault { .code = ValidationErrorCode::TypeMismatch,
+                                    .subject = std::nullopt,
+                                    .mismatch = std::move(mismatch) });
+            }
+            _operands.resize(_operands.size() - taken);
             return {};
         }
 
@@ -798,6 +853,20 @@ namespace
                             .and_then([&](Operand const&) { return popAll(signature.params); })
                             .transform([&] { pushFrame(Opcode::If, signature); });
                     });
+                case Opcode::TryTable:
+                    // As valid.ml: the block type, then each clause against the labels around the
+                    // try_table, whose own label its clauses cannot name.
+                    return blockSignature(instruction).and_then([&](BlockSignature const& signature) {
+                        return catchClauses(body, instruction)
+                            .and_then([&] { return popAll(signature.params); })
+                            .transform([&] { pushFrame(Opcode::TryTable, signature); });
+                    });
+                case Opcode::Throw:
+                    return _context.tag(instruction.a).and_then([this](FuncType const* type) {
+                        return popRecording(type->params).transform([this] { markUnreachable(); });
+                    });
+                case Opcode::ThrowRef:
+                    return pop(binary::ExnRef).transform([this](Operand const&) { markUnreachable(); });
                 case Opcode::Else:
                     return popFrame().transform([this](Frame const& frame) {
                         restoreLocals(frame.setLocalsHeight);
@@ -1084,6 +1153,40 @@ namespace
                 .transform([this] { markUnreachable(); });
         }
 
+        /// Checks the catch clauses of try_table @p instruction: each one's tag is known, and what it
+        /// hands its label matches the label's types: the tag's params for catch, then the exnref,
+        /// (ref exn), for catch_ref; nothing for catch_all, and the exnref for catch_all_ref.
+        [[nodiscard]] Check catchClauses(Body const& body, Instruction const& instruction)
+        {
+            constexpr auto CaughtReference = binary::ValueType {
+                .kind = ValueKind::Ref,
+                .nullable = binary::Nullable::No,
+                .heap = { .kind = binary::AbstractHeapType::Exn },
+            };
+            for (auto const& clause: binary::catchClausesOf(body.sideTables, instruction))
+            {
+                _handed.clear();
+                if (binary::catchesByTag(clause.kind))
+                {
+                    auto const type = _context.tag(clause.tag);
+                    if (!type)
+                        return fail(type.error());
+                    _handed.assign((*type)->params.begin(), (*type)->params.end());
+                }
+                if (binary::handsReference(clause.kind))
+                    _handed.push_back(CaughtReference);
+                auto const target = label(clause.label);
+                if (!target)
+                    return fail(target.error());
+                auto const types = (*target)->labelTypes();
+                if (!std::ranges::equal(_handed, types, [this](auto const& handed, auto const& required) {
+                        return _context.matches(handed, required);
+                    }))
+                    return fail(ValidationErrorCode::TypeMismatch);
+            }
+            return {};
+        }
+
         [[nodiscard]] Check select()
         {
             return pop(binary::I32).and_then([this](Operand const&) -> Check {
@@ -1136,6 +1239,7 @@ namespace
         std::vector<Frame> _frames;
         std::vector<uint64_t> _localRunEnds; ///< Per local run, the declared-local index past its end.
         std::vector<Operand> _restored;      ///< Scratch for popAndRestore.
+        std::vector<ValueType> _handed;      ///< Scratch for catchClauses: what a clause hands its label.
         std::vector<uint32_t> _setLocals;    ///< The non-defaultable locals set in the open blocks.
         std::vector<uint64_t> _setStamps;    ///< Per local index, _generation while it is set.
         uint64_t _generation = 0;            ///< The stamp of the body being validated; never 0.
@@ -1154,6 +1258,7 @@ namespace
                        .tables = {},
                        .memories = {},
                        .globals = {},
+                       .tagTypes = {},
                        .importedGlobalCount = 0,
                        .declaredFunctions = declaredFunctionsOf(module),
                        .canonical = {} },
@@ -1165,6 +1270,7 @@ namespace
         {
             return checkTypeSection()
                 .and_then([this] { return checkImports(); })
+                .and_then([this] { return checkTags(); })
                 .and_then([this] { return checkFunctionTypes(); })
                 .and_then([this] { return checkTypes(); })
                 .and_then([this] { return checkTablesAndMemories(); })
@@ -1226,10 +1332,25 @@ namespace
                         _context.globals.push_back(import.global);
                         ++_context.importedGlobalCount;
                         break;
-                    case ExternKind::Tag: result = fail(ValidationErrorCode::UnknownTag); break;
+                    case ExternKind::Tag:
+                        result = _context.tagType(import.typeIndex);
+                        _context.tagTypes.push_back(import.typeIndex);
+                        break;
                 }
                 if (!result)
                     return moduleError(result.error());
+            }
+            return {};
+        }
+
+        /// Checks the defined tags, after the imported ones as valid.ml does, before the functions.
+        [[nodiscard]] std::expected<void, ValidationError> checkTags()
+        {
+            for (auto const& tag: module().tags)
+            {
+                if (auto const result = _context.tagType(tag.typeIndex); !result)
+                    return moduleError(result.error());
+                _context.tagTypes.push_back(tag.typeIndex);
             }
             return {};
         }
@@ -1388,8 +1509,7 @@ namespace
                 auto const& type = _context.functionType(functionIndex);
                 for (auto const& run: function.locals)
                     if (auto const result = _context.valueType(run.type); !result)
-                        return std::unexpected { ValidationError {
-                            result.error().code, functionIndex, NoInstruction, result.error().subject } };
+                        return std::unexpected { errorAt(result.error(), functionIndex, NoInstruction) };
                 auto const body = Body { .instructions = function.body,
                                          .sideTables = function,
                                          .params = type.params,
@@ -1397,10 +1517,8 @@ namespace
                                          .results = type.results,
                                          .globals = _context.globals };
                 if (auto const result = _bodies.validate(body); !result)
-                    return std::unexpected { ValidationError { result.error().fault.code,
-                                                               functionIndex,
-                                                               result.error().instruction,
-                                                               result.error().fault.subject } };
+                    return std::unexpected { errorAt(
+                        result.error().fault, functionIndex, result.error().instruction) };
             }
             return {};
         }
@@ -1427,9 +1545,9 @@ namespace
                 case ExternKind::Global:
                     return checkIndex(
                         entry.index, _context.globals.size(), ValidationErrorCode::UnknownGlobal);
-                case ExternKind::Tag: break; // failed below the switch
+                case ExternKind::Tag: break; // checked below the switch
             }
-            return fail(ValidationErrorCode::UnknownTag);
+            return checkIndex(entry.index, _context.tagTypes.size(), ValidationErrorCode::UnknownTag);
         }
 
         /// The index of the first export, in declaration order, whose name an earlier one has.

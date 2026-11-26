@@ -16,6 +16,7 @@
 
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
@@ -33,12 +34,15 @@ using GlobalAddr = uint32_t;
 /// A function type's identity in its store: equal types, of whichever modules, have one TypeId.
 using TypeId = uint32_t;
 
-/// A host function's implementation: reads its arguments, writes its results, or traps.
+/// A host function's implementation: reads its arguments, writes its results, or ends abruptly.
 ///
 /// @p results arrives holding the default value of each result type, and must be left holding a
-/// value of each result type's kind: the interpreter checks that as a precondition.
+/// value of each result type's kind: the interpreter checks that as a precondition. A host function
+/// that ends with Thrown, an exception of the store it was called from (one a Wasm function it
+/// invoked threw, or one it allocated with Store::addException), throws it in its Wasm caller, whose
+/// handlers may catch it.
 using HostCallback =
-    std::function<std::expected<void, Trap>(std::span<Value const> args, std::span<Value> results)>;
+    std::function<std::expected<void, Abrupt>(std::span<Value const> args, std::span<Value> results)>;
 
 /// A function instance: a module's function, or a host function.
 struct FunctionInstance
@@ -74,6 +78,37 @@ struct GlobalInstance
     Value value;             ///< Its current value.
 };
 
+/// A tag instance: what marks an exception, and the types of the payload it carries.
+struct TagInstance
+{
+    binary::FuncType type; ///< Its type, in store form; its params are the payload's types.
+    TypeId typeId = 0;     ///< Its type's identity in the store, which an import of it must name.
+};
+
+/// An exception instance: what throw allocates, and an exnref refers to.
+struct ExceptionInstance
+{
+    TagAddr tag = 0;            ///< The tag it was thrown with; handlers catch by it.
+    std::vector<Value> payload; ///< The tag's params' values, in order.
+};
+
+/// The limits a store's execution keeps to: what a guest may claim of the host's stack and memory
+/// besides its memories and tables.
+struct StoreLimits
+{
+    /// How deep calls may nest before execution traps with CallStackExhausted.
+    uint32_t maxCallDepth = 10'000;
+
+    /// How many exceptions the store may hold; a throw past it traps with ExceptionLimitExceeded. The
+    /// store never frees one (reclaiming unreferenced ones is P3's), so this bounds what a guest
+    /// that throws in a loop may claim.
+    uint32_t maxExceptions = 65'536;
+
+    /// How many payload values the exceptions together may hold; a throw past it traps with
+    /// ExceptionLimitExceeded.
+    uint64_t maxExceptionValues = uint64_t { 1 } << 20;
+};
+
 /// An external value: an entity of the store an import binds to or an export names.
 struct ExternValue
 {
@@ -92,6 +127,7 @@ struct ModuleInstance
     std::vector<TableAddr> tables;                ///< The table index space: imports first.
     std::vector<MemAddr> memories;                ///< The memory index space: imports first.
     std::vector<GlobalAddr> globals;              ///< The global index space: imports first.
+    std::vector<TagAddr> tags;                    ///< The tag index space: imports first.
 
     /// The element segments' references, by segment index; nullopt once dropped.
     std::vector<std::optional<std::vector<Ref>>> elements;
@@ -147,8 +183,8 @@ class Store
   public:
     /// Constructs an empty store.
     /// @param allocator Decides how large a memory or table may grow; must outlive the store.
-    /// @param maxCallDepth How deep calls may nest before execution traps with CallStackExhausted.
-    explicit Store(IMemoryAllocator const& allocator, uint32_t maxCallDepth = 10'000);
+    /// @param limits The call depth and the exceptions execution may reach.
+    explicit Store(IMemoryAllocator const& allocator, StoreLimits limits = {});
 
     /// A store's instances are addressed by index and its types handed out by reference (type()),
     /// so it stays where it was constructed: it is neither copied nor moved.
@@ -215,6 +251,18 @@ class Store
     /// @return Its address.
     [[nodiscard]] GlobalAddr addGlobal(binary::GlobalType type, Value value);
 
+    /// Adds a tag.
+    /// @param type Its type, in store form; interned (internType()).
+    /// @return Its address: a new tag, distinct from every other, whatever its type.
+    [[nodiscard]] TagAddr addTag(binary::FuncType type);
+
+    /// Allocates an exception, as throw does, or as a host function may to throw one.
+    /// @param tag The tag it is thrown with; must exist (checked).
+    /// @param payload The values it carries: one of each of the tag's params' kinds (checked).
+    /// @return Its address, or ExceptionLimitExceeded when the store holds StoreLimits::maxExceptions
+    ///         exceptions already, or their payloads would exceed StoreLimits::maxExceptionValues.
+    [[nodiscard]] std::expected<ExnAddr, Trap> addException(TagAddr tag, std::vector<Value> payload);
+
     /// Adds a module instance.
     /// @param instance The instance; the module and its entities' addresses, as far as allocated.
     /// @return Its address.
@@ -253,6 +301,16 @@ class Store
     /// @copydoc global(GlobalAddr) const
     [[nodiscard]] GlobalInstance& global(GlobalAddr address);
 
+    /// The tag at @p address. Precondition (checked): the address exists.
+    /// @param address The tag's address.
+    /// @return The tag instance.
+    [[nodiscard]] TagInstance const& tag(TagAddr address) const;
+
+    /// The exception at @p address. Precondition (checked): the address exists.
+    /// @param address The exception's address.
+    /// @return The exception instance.
+    [[nodiscard]] ExceptionInstance const& exception(ExnAddr address) const;
+
     /// The module instance at @p address. Precondition (checked): the address exists.
     /// @param address The module instance's address.
     /// @return The module instance.
@@ -282,11 +340,14 @@ class Store
 
   private:
     IMemoryAllocator const* _allocator;
-    uint32_t _maxCallDepth;
+    StoreLimits _limits;
+    uint64_t _exceptionValues = 0; ///< The payload values of every exception held.
     std::deque<FunctionInstance> _functions;
     std::deque<TableInstance> _tables;
     std::deque<MemoryInstance> _memories;
     std::deque<GlobalInstance> _globals;
+    std::deque<TagInstance> _tags;
+    std::deque<ExceptionInstance> _exceptions;
     std::deque<ModuleInstance> _moduleInstances;
 
     /// Every interned type and its TypeId. An ordered map, not a hash table: types are the guest's

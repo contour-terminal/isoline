@@ -8,6 +8,7 @@
 #include <initializer_list>
 #include <optional>
 #include <ranges>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -25,7 +26,6 @@ using isoline::Feature;
 using isoline::FeatureSet;
 using isoline::binary::DecodeErrorCode;
 using isoline::binary::decodeModule;
-using isoline::binary::Export;
 using isoline::binary::ExternKind;
 using isoline::binary::F32;
 using isoline::binary::FuncRef;
@@ -33,7 +33,6 @@ using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
 using isoline::binary::I32;
 using isoline::binary::I64;
-using isoline::binary::Import;
 using isoline::binary::Limits;
 using isoline::binary::MemoryType;
 using isoline::binary::Mutability;
@@ -570,22 +569,206 @@ TEST_CASE("Validator.calls")
 
 TEST_CASE("Validator.tags")
 {
-    // Wasm 2.0 has no tags, so no decoder yields one: the modules are built as data.
-    auto const bytes = ModuleBuilder {}.build();
-    auto const decoded = decodeModule(bytes, FeatureSet::wasm2());
-    REQUIRE(decoded.has_value());
+    // A tag names a function type without results: its params are the exceptions' payload.
+    auto const features = FeatureSet::wasm3();
+    auto const message = [&](ModuleBuilder const& builder) {
+        auto const result = validated(builder, features);
+        REQUIRE_FALSE(result.has_value());
+        return specMessage(result.error());
+    };
+    auto valid = ModuleBuilder {};
+    valid.type(FuncType { .params = { I32 }, .results = {} })
+        .importTag("m", "t", 0)
+        .tag(0)
+        .exportEntity("imported", ExternKind::Tag, 0)
+        .exportEntity("defined", ExternKind::Tag, 1);
+    CHECK(validated(valid, features).has_value());
 
-    auto imported = *decoded;
-    imported.imports.push_back(Import { .module = "m", .name = "t", .kind = ExternKind::Tag });
-    auto const importResult = validateModule(imported, FeatureSet::wasm2());
-    REQUIRE_FALSE(importResult.has_value());
-    CHECK(importResult.error().code == ValidationErrorCode::UnknownTag);
+    auto unknownType = ModuleBuilder {};
+    unknownType.type(FuncType {}).tag(7);
+    CHECK(message(unknownType) == "unknown type 7");
+    auto unknownImportType = ModuleBuilder {};
+    unknownImportType.importTag("m", "t", 0);
+    CHECK(message(unknownImportType) == "unknown type 0");
 
-    auto exported = *decoded;
-    exported.exports.push_back(Export { .name = "t", .kind = ExternKind::Tag, .index = 0 });
-    auto const exportResult = validateModule(exported, FeatureSet::wasm2());
-    REQUIRE_FALSE(exportResult.has_value());
-    CHECK(exportResult.error().code == ValidationErrorCode::UnknownTag);
+    auto unknownExport = ModuleBuilder {};
+    unknownExport.type(FuncType {}).tag(0).exportEntity("t", ExternKind::Tag, 1);
+    CHECK(message(unknownExport) == "unknown tag 1");
+}
+
+TEST_CASE("Validator.nonEmptyTagResult")
+{
+    auto const features = FeatureSet::wasm3();
+    auto const returning = FuncType { .params = {}, .results = { I32 } };
+    auto defined = ModuleBuilder {};
+    defined.type(returning).tag(0);
+    auto const definedResult = validated(defined, features);
+    REQUIRE_FALSE(definedResult.has_value());
+    CHECK(definedResult.error() == ValidationError { ValidationErrorCode::NonEmptyTagResultType });
+    CHECK(specMessage(definedResult.error()) == "non-empty tag result type");
+    auto imported = ModuleBuilder {};
+    imported.type(returning).importTag("m", "t", 0);
+    CHECK(errorOf(imported, features) == ValidationErrorCode::NonEmptyTagResultType);
+}
+
+namespace
+{
+
+/// A module of exception handling: type 0 [i32] -> [], the type of tag 0; type 1 [] -> [], of the one
+/// function, whose body is @p body; then @p types.
+ModuleBuilder throwingModule(std::vector<uint8_t> body, std::initializer_list<FuncType> types = {})
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { I32 }, .results = {} }).type(FuncType {});
+    for (auto const& type: types)
+        builder.type(type);
+    builder.tag(0).function(1, {}, std::move(body));
+    return builder;
+}
+
+/// The message validating @p builder's module, which must be invalid, reports under 3.0.
+std::string invalidMessage(ModuleBuilder const& builder)
+{
+    auto const result = validated(builder, FeatureSet::wasm3());
+    REQUIRE_FALSE(result.has_value());
+    return specMessage(result.error());
+}
+
+} // namespace
+
+TEST_CASE("Validator.throwMismatchDetail")
+{
+    // throw pops its tag's params at once, as valid.ml does, and names them and what the block has.
+    CHECK(invalidMessage(throwingModule({ 0x08, 0x00 }))
+          == "type mismatch: instruction requires [i32] but stack has []");
+    CHECK(invalidMessage(throwingModule({ 0x42, 0x00, 0x08, 0x00 }))
+          == "type mismatch: instruction requires [i32] but stack has [i64]");
+    auto const result = validated(throwingModule({ 0x08, 0x00 }), FeatureSet::wasm3());
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().mismatch.has_value());
+    CHECK(result.error().mismatch->required == std::vector { I32 });
+    CHECK(result.error().mismatch->actual.empty());
+    // Only the block's operands are the stack's: one beneath the block is not.
+    CHECK(invalidMessage(throwingModule({ 0x41, 0x00, 0x02, 0x40, 0x08, 0x00, 0x0B, 0x1A }))
+          == "type mismatch: instruction requires [i32] but stack has []");
+    // An unreachable block's stack supplies operands of unknown type beneath its own, spelled bot.
+    auto twoParams = ModuleBuilder {};
+    twoParams.type(FuncType { .params = { I32, I32 }, .results = {} })
+        .type(FuncType {})
+        .tag(0)
+        .function(1, {}, { 0x00, 0x42, 0x00, 0x08, 0x00 });
+    CHECK(invalidMessage(twoParams)
+          == "type mismatch: instruction requires [i32 i32] but stack has [bot i64]");
+    // A reference is spelled as the text format writes it.
+    CHECK(invalidMessage(throwingModule({ 0xD0, 0x69, 0x08, 0x00 }))
+          == "type mismatch: instruction requires [i32] but stack has [(ref null exn)]");
+    // Enough operands of the right types pass, and the stack is polymorphic afterwards.
+    CHECK(validated(throwingModule({ 0x41, 0x07, 0x08, 0x00, 0x6A, 0x1A }), FeatureSet::wasm3()).has_value());
+    CHECK(validated(throwingModule({ 0x00, 0x08, 0x00 }), FeatureSet::wasm3()).has_value());
+    // An operand of unknown type on the stack, unreachable select's, matches the i32 too.
+    CHECK(validated(throwingModule({ 0x00, 0x1B, 0x08, 0x00 }), FeatureSet::wasm3()).has_value());
+    // The error records the operands, and compares by them.
+    auto const missing = validated(throwingModule({ 0x42, 0x00, 0x08, 0x00 }), FeatureSet::wasm3());
+    REQUIRE_FALSE(missing.has_value());
+    CHECK(
+        missing.error()
+        == ValidationError { ValidationErrorCode::TypeMismatch,
+                             0,
+                             1,
+                             std::nullopt,
+                             isoline::validate::OperandMismatch { .required = { I32 }, .actual = { I64 } } });
+    CHECK(
+        missing.error()
+        != ValidationError { ValidationErrorCode::TypeMismatch,
+                             0,
+                             1,
+                             std::nullopt,
+                             isoline::validate::OperandMismatch { .required = { I32 }, .actual = { I32 } } });
+    CHECK(invalidMessage(throwingModule({ 0x08, 0x01 })) == "unknown tag 1");
+}
+
+TEST_CASE("Validator.typeText")
+{
+    // valid.ml's string_of_valtype, as type mismatches spell their operands.
+    using isoline::binary::AbstractHeapType;
+    using isoline::binary::Nullable;
+    using isoline::validate::resultTypeText;
+    using isoline::validate::typeText;
+    CHECK(typeText(I64) == "i64");
+    CHECK(typeText(isoline::binary::V128) == "v128");
+    CHECK(typeText(std::nullopt) == "bot");
+    CHECK(typeText(FuncRef) == "(ref null func)");
+    CHECK(typeText(isoline::binary::NonNullFuncRef) == "(ref func)");
+    CHECK(typeText(isoline::binary::concreteRef(3, Nullable::No)) == "(ref 3)");
+    CHECK(typeText(isoline::binary::concreteRef(3, Nullable::Yes)) == "(ref null 3)");
+    CHECK(typeText(isoline::binary::ValueType { .kind = isoline::binary::ValueKind::Ref,
+                                                .nullable = Nullable::No,
+                                                .heap = { .kind = AbstractHeapType::Bot } })
+          == "(ref something)");
+    CHECK(resultTypeText(std::vector { I32, isoline::binary::ExnRef }) == "[i32 (ref null exn)]");
+    CHECK(resultTypeText(std::vector<isoline::binary::ValueType> {}) == "[]");
+}
+
+TEST_CASE("Validator.throwRef")
+{
+    CHECK(validated(throwingModule({ 0xD0, 0x69, 0x0A }), FeatureSet::wasm3()).has_value());
+    CHECK(validated(throwingModule({ 0xD0, 0x74, 0x0A }), FeatureSet::wasm3()).has_value()); // nullexnref
+    CHECK(validated(throwingModule({ 0x00, 0x0A }), FeatureSet::wasm3()).has_value());
+    CHECK(errorOf(throwingModule({ 0xD0, 0x70, 0x0A }), FeatureSet::wasm3())
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(errorOf(throwingModule({ 0x0A }), FeatureSet::wasm3()) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.tryTableClauses")
+{
+    auto const features = FeatureSet::wasm3();
+    auto const valid = [&](std::vector<uint8_t> body, std::initializer_list<FuncType> types = {}) {
+        return validated(throwingModule(std::move(body), types), features).has_value();
+    };
+    auto const error = [&](std::vector<uint8_t> body, std::initializer_list<FuncType> types = {}) {
+        return errorOf(throwingModule(std::move(body), types), features);
+    };
+    auto const exnRef = isoline::binary::ExnRef;
+    // block (result i32) try_table (catch 0 0) i32.const 1 throw 0 end i32.const 0 end drop: catch hands
+    // the tag's params, [i32], to the block, which carries [i32].
+    CHECK(valid({ 0x02,
+                  0x7F,
+                  0x1F,
+                  0x40,
+                  0x01,
+                  0x00,
+                  0x00,
+                  0x00,
+                  0x41,
+                  0x01,
+                  0x08,
+                  0x00,
+                  0x0B,
+                  0x41,
+                  0x00,
+                  0x0B,
+                  0x1A }));
+    // catch_ref hands [i32 (ref exn)]: to a block of [i32 exnref] (type 2), not to one of [i32].
+    CHECK(valid({ 0x02, 0x02, 0x1F, 0x40, 0x01, 0x01, 0x00, 0x00, 0x0B, 0x00, 0x0B, 0x1A, 0x1A },
+                { FuncType { .params = {}, .results = { I32, exnRef } } }));
+    CHECK(error({ 0x02, 0x7F, 0x1F, 0x40, 0x01, 0x01, 0x00, 0x00, 0x0B, 0x00, 0x0B, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
+    // catch_all hands nothing; catch_all_ref (ref exn), which an exnref label takes.
+    CHECK(valid({ 0x1F, 0x40, 0x01, 0x02, 0x00, 0x0B }));
+    CHECK(error({ 0x02, 0x7F, 0x1F, 0x40, 0x01, 0x02, 0x00, 0x0B, 0x00, 0x0B, 0x1A })
+          == ValidationErrorCode::TypeMismatch);
+    CHECK(valid({ 0x02, 0x69, 0x1F, 0x40, 0x01, 0x03, 0x00, 0x0B, 0xD0, 0x69, 0x0B, 0x1A }));
+    CHECK(error({ 0x1F, 0x40, 0x01, 0x03, 0x00, 0x0B }) == ValidationErrorCode::TypeMismatch);
+    // A clause's label counts from outside the try_table: label 0 is the function's here, which has no
+    // results, though the try_table's own label would take an i32.
+    CHECK(valid({ 0x1F, 0x7F, 0x01, 0x02, 0x00, 0x41, 0x00, 0x0B, 0x1A }));
+    CHECK(invalidMessage(throwingModule({ 0x1F, 0x40, 0x01, 0x02, 0x01, 0x0B })) == "unknown label 1");
+    CHECK(invalidMessage(throwingModule({ 0x1F, 0x40, 0x01, 0x00, 0x05, 0x00, 0x0B })) == "unknown tag 5");
+    // A try_table takes its params as a block does, and is branched to as one.
+    CHECK(valid({ 0x41, 0x01, 0x1F, 0x02, 0x00, 0x0C, 0x00, 0x0B, 0x1A },
+                { FuncType { .params = { I32 }, .results = { I32 } } }));
+    CHECK(error({ 0x1F, 0x02, 0x00, 0x0B, 0x1A }, { FuncType { .params = { I32 }, .results = { I32 } } })
+          == ValidationErrorCode::TypeMismatch);
 }
 
 TEST_CASE("Validator.functionIndicesAreFuncrefs")
@@ -1135,7 +1318,11 @@ TEST_CASE("Validator.addressTypeBounds")
 
 TEST_CASE("Validator.subjectOfAnErrorWithoutDetail")
 {
-    // A row without a detail spells its text alone, whatever subject an error carries.
+    // A row without a detail spells its text alone, whatever subject an error carries; so does a type
+    // mismatch that records no operands.
+    CHECK(
+        specMessage(ValidationError { ValidationErrorCode::InvalidResultArity, NoFunction, NoInstruction, 3 })
+        == "invalid result arity");
     CHECK(specMessage(ValidationError { ValidationErrorCode::TypeMismatch, NoFunction, NoInstruction, 3 })
           == "type mismatch");
 }

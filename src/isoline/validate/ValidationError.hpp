@@ -9,6 +9,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <isoline/binary/Types.hpp>
 
@@ -48,10 +50,11 @@ enum class ValidationErrorCode : uint8_t
     TableSizeMustBeAtMost,
     InvalidCustomPageSize,
     UninitializedLocal,
+    NonEmptyTagResultType,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::UninitializedLocal;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::NonEmptyTagResultType;
 
 /// What the reference interpreter appends to an error's message.
 enum class MessageDetail : uint8_t
@@ -60,6 +63,9 @@ enum class MessageDetail : uint8_t
     Index,       ///< The index the error names (ValidationError::subject), after a space.
     MemoryBound, ///< The memory size bound of the MemoryBoundTable row ValidationError::subject names.
     TableBound,  ///< The table size bound of the address type ValidationError::subject names.
+    /// The operand types an instruction requires and those the stack has (ValidationError::mismatch),
+    /// as valid.ml's match_stack spells them: ": instruction requires [t*] but stack has [t*]".
+    Operands,
 };
 
 /// The bounds the interpreter's table size errors spell, one row per binary::AddressType in
@@ -140,7 +146,10 @@ struct ValidationErrorRow
 /// involved, which the prefix leaves out, and the index an unknown or undeclared entity has, which
 /// the suite asserts and the Index rows reproduce.
 inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
-    { .code = ValidationErrorCode::TypeMismatch, .specMessage = "type mismatch" },
+    // The operands, where the validator records them (throw's, as the exception-handling suite asserts).
+    { .code = ValidationErrorCode::TypeMismatch,
+      .specMessage = "type mismatch",
+      .detail = MessageDetail::Operands },
     { .code = ValidationErrorCode::UnknownLocal,
       .specMessage = "unknown local",
       .detail = MessageDetail::Index },
@@ -192,8 +201,7 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
       .specMessage = "undeclared function reference",
       .detail = MessageDetail::Index },
     { .code = ValidationErrorCode::InvalidLaneIndex, .specMessage = "invalid lane index" },
-    // An export of a tag, which no P1 module defines: the exception-handling interpreter's text.
-    { .code = ValidationErrorCode::UnknownTag, .specMessage = "unknown tag" },
+    { .code = ValidationErrorCode::UnknownTag, .specMessage = "unknown tag", .detail = MessageDetail::Index },
     // A memarg offset of 2^32 or more on a memory of i32 addresses (memory64 reads offsets as u64s).
     { .code = ValidationErrorCode::OffsetOutOfRange, .specMessage = "offset out of range" },
     { .code = ValidationErrorCode::TableSizeMustBeAtMost,
@@ -204,6 +212,8 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
     // Typed function references: local.get of a local of a non-defaultable type no local.set or
     // local.tee of the same or an enclosing block has set yet.
     { .code = ValidationErrorCode::UninitializedLocal, .specMessage = "uninitialized local" },
+    // Exception handling: a tag whose function type has results.
+    { .code = ValidationErrorCode::NonEmptyTagResultType, .specMessage = "non-empty tag result type" },
 });
 
 static_assert(
@@ -226,6 +236,71 @@ inline constexpr auto NoFunction = std::numeric_limits<uint32_t>::max();
 /// ValidationError::instruction of an error that no single instruction of a body causes.
 inline constexpr auto NoInstruction = std::numeric_limits<uint32_t>::max();
 
+/// The operands an instruction required and those the stack had, when they did not match.
+struct OperandMismatch
+{
+    /// The types the instruction requires, bottom of the stack first.
+    std::vector<binary::ValueType> required;
+
+    /// The operands the stack has in their place, bottom first: as many as are required, or all the
+    /// block has when that is fewer. nullopt is an operand of unknown type (valid.ml's bot), which
+    /// the polymorphic stack of unreachable code supplies.
+    std::vector<std::optional<binary::ValueType>> actual;
+
+    bool operator==(OperandMismatch const&) const = default;
+};
+
+/// The text format's spelling of an abstract heap type, by AbstractHeapType; Concrete's is its index.
+inline constexpr auto AbstractHeapTypeNames = std::to_array<std::string_view>({
+    "func",
+    "extern",
+    "exn",
+    "nofunc",
+    "noextern",
+    "noexn",
+    "something", // valid.ml's spelling of bot
+    "",
+});
+
+static_assert(AbstractHeapTypeNames.size()
+                  == static_cast<std::size_t>(binary::AbstractHeapType::Concrete) + 1,
+              "AbstractHeapTypeNames holds one name per AbstractHeapType");
+
+/// The text format's spelling of @p type, after valid.ml's string_of_valtype: i32, v128,
+/// (ref null func), bot for an operand of unknown type. A concrete reference is Isoline's own
+/// spelling, (ref 3) by its type index; valid.ml prints the substituted definition type instead.
+/// @param type The type, or nullopt for an operand of unknown type.
+/// @return Its spelling.
+[[nodiscard]] inline std::string typeText(std::optional<binary::ValueType> const& type)
+{
+    constexpr auto NumberNames = std::to_array<std::string_view>({ "i32", "i64", "f32", "f64", "v128" });
+    if (!type)
+        return "bot";
+    if (type->kind != binary::ValueKind::Ref)
+        return std::string { NumberNames.at(static_cast<std::size_t>(type->kind)) };
+    auto const heap =
+        type->heap.kind == binary::AbstractHeapType::Concrete
+            ? std::to_string(type->heap.typeIndex)
+            : std::string { AbstractHeapTypeNames.at(static_cast<std::size_t>(type->heap.kind)) };
+    return std::format("(ref {}{})", type->nullable == binary::Nullable::Yes ? "null " : "", heap);
+}
+
+/// The spelling of the result type @p types: their typeText()s, space-separated, in brackets.
+/// @param types The types, bottom of the stack first.
+/// @return For example "[i32 (ref null exn)]".
+template <typename Types>
+[[nodiscard]] std::string resultTypeText(Types const& types)
+{
+    auto text = std::string { "[" };
+    for (auto const& type: types)
+    {
+        if (text.size() > 1)
+            text += ' ';
+        text += typeText(type);
+    }
+    return text + "]";
+}
+
 /// A validation failure: what went wrong, and where.
 struct ValidationError
 {
@@ -235,11 +310,17 @@ struct ValidationError
     /// @param function The function whose body failed, or NoFunction.
     /// @param instruction The failing instruction's index in that body, or NoInstruction.
     /// @param subject The index the error names, if any.
+    /// @param mismatch The operands that did not match, if the validator recorded them.
     constexpr explicit ValidationError(ValidationErrorCode code,
                                        uint32_t function = NoFunction,
                                        uint32_t instruction = NoInstruction,
-                                       std::optional<uint32_t> subject = {}) noexcept:
-        code { code }, function { function }, instruction { instruction }, subject { subject }
+                                       std::optional<uint32_t> subject = {},
+                                       std::optional<OperandMismatch> mismatch = {}) noexcept:
+        code { code },
+        function { function },
+        instruction { instruction },
+        subject { subject },
+        mismatch { std::move(mismatch) }
     {
     }
 
@@ -257,6 +338,10 @@ struct ValidationError
     /// address type of a size error; empty when it names none.
     std::optional<uint32_t> subject;
 
+    /// For a type mismatch of an instruction's operands: what it required and what the stack had;
+    /// empty where the validator records no operands.
+    std::optional<OperandMismatch> mismatch;
+
     bool operator==(ValidationError const&) const = default;
 };
 
@@ -268,18 +353,24 @@ struct ValidationError
     return ValidationErrorTable[static_cast<std::size_t>(code)].specMessage;
 }
 
-/// The message the reference interpreter reports for @p error: its row's message, followed by the
-/// index it names when the row's detail is Index.
+/// The message the reference interpreter reports for @p error: its row's message, followed by what
+/// its detail names: the index, the size bound, or the operands.
 /// @param error The error to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(ValidationError const& error)
 {
     auto const& row = ValidationErrorTable[static_cast<std::size_t>(error.code)];
+    if (row.detail == MessageDetail::Operands && error.mismatch)
+        return std::format("{}: instruction requires {} but stack has {}",
+                           row.specMessage,
+                           resultTypeText(error.mismatch->required),
+                           resultTypeText(error.mismatch->actual));
     if (!error.subject)
         return std::string { row.specMessage };
     switch (row.detail)
     {
-        case MessageDetail::None: break;
+        case MessageDetail::None:
+        case MessageDetail::Operands: break;
         case MessageDetail::Index: return std::format("{} {}", row.specMessage, *error.subject);
         case MessageDetail::MemoryBound:
             return std::format("{} {}", row.specMessage, MemoryBoundTable.at(*error.subject).bound);

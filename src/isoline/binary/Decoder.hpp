@@ -26,6 +26,7 @@ struct DecodeLimits
     uint32_t maxGlobals = 1'000'000;          ///< Entries of the global section.
     uint32_t maxTables = 100'000;             ///< Tables, imported and defined alike, as JS allows.
     uint32_t maxMemories = 100;               ///< Memories, imported and defined alike.
+    uint32_t maxTags = 1'000'000;             ///< Entries of the tag section.
     uint32_t maxDataSegments = 100'000;       ///< Entries of the data section.
     uint32_t maxElementSegments = 10'000'000; ///< Entries of the element section.
     uint32_t maxElementItems = 10'000'000;    ///< Items of one element segment.
@@ -34,6 +35,8 @@ struct DecodeLimits
     uint32_t maxResults = 1'000;              ///< Results of one function type.
     uint32_t maxFunctionBodySize = 7'654'321; ///< Bytes of one function body, its locals included.
     uint32_t maxBrTableSize = 65'520;         ///< Labels of one br_table.
+    /// Catch clauses of one try_table: as many as br_table may name labels, as each clause names one.
+    uint32_t maxCatchClauses = 65'520;
 };
 
 /// Decodes a binary module.

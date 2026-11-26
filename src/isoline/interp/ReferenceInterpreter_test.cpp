@@ -25,6 +25,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -49,12 +50,15 @@ using isoline::binary::ValueType;
 using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::interp::ReferenceInterpreter;
+using isoline::runtime::Abrupt;
 using isoline::runtime::ExternValue;
 using isoline::runtime::F32;
 using isoline::runtime::FuncAddr;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::Store;
+using isoline::runtime::StoreLimits;
+using isoline::runtime::Thrown;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::UnlimitedAllocator;
@@ -150,14 +154,20 @@ class Harness
     explicit Harness(ModuleBuilder const& builder,
                      std::vector<ExternValue> const& imports = {},
                      uint32_t maxCallDepth = 10'000):
-        _store { _allocator, maxCallDepth }
+        Harness { builder, imports, StoreLimits { .maxCallDepth = maxCallDepth } }
+    {
+    }
+
+    /// Decodes, validates and instantiates @p builder's module in a store of @p limits.
+    Harness(ModuleBuilder const& builder, std::vector<ExternValue> const& imports, StoreLimits limits):
+        _store { _allocator, limits }
     {
         instantiate(builder, imports);
     }
 
     /// Creates the harness with host functions that @p bind adds to the store before instantiation.
     template <typename Bind>
-    Harness(ModuleBuilder const& builder, Bind&& bind): _store { _allocator, 10'000 }
+    Harness(ModuleBuilder const& builder, Bind&& bind): _store { _allocator }
     {
         instantiate(builder, std::forward<Bind>(bind)(_store));
     }
@@ -165,12 +175,24 @@ class Harness
     /// Invokes the module's function @p index.
     /// @param index The function's index in the module's function index space.
     /// @param args Its arguments.
-    /// @return Its results, or the trap.
-    std::expected<std::vector<Value>, Trap> invoke(uint32_t index, std::vector<Value> const& args = {})
+    /// @return Its results, or how it ended abruptly.
+    std::expected<std::vector<Value>, Abrupt> outcome(uint32_t index, std::vector<Value> const& args = {})
     {
         auto const address = function(index);
         auto results = std::vector<Value>(_store.functionType(address).results.size());
         return _interpreter.invoke(_store, address, args, results).transform([&] { return results; });
+    }
+
+    /// Invokes the module's function @p index, which must not throw.
+    /// @param index The function's index in the module's function index space.
+    /// @param args Its arguments.
+    /// @return Its results, or the trap.
+    std::expected<std::vector<Value>, Trap> invoke(uint32_t index, std::vector<Value> const& args = {})
+    {
+        return outcome(index, args).transform_error([](Abrupt const& abrupt) {
+            REQUIRE(std::holds_alternative<Trap>(abrupt));
+            return std::get<Trap>(abrupt);
+        });
     }
 
     /// The single result of invoking function @p index, which must not trap.
@@ -1495,4 +1517,385 @@ TEST_CASE("Interpreter.returnCallRefTrapsOnNull")
                                        { code({ refFunc0(), call(1) }), code({ refNull0(), call(1) }) }) };
     CHECK(harness.result(2) == i32(7));
     CHECK(harness.trap(3) == TrapCode::NullFunctionReference);
+}
+
+namespace
+{
+
+/// throw @p tag.
+Bytes throwTag(uint32_t tag)
+{
+    return code({ { 0x08 }, encodeU32(tag) });
+}
+
+/// The opening of a try_table of block type @p blockType with one clause: kind byte @p kind, its tag
+/// @p tag when the kind names one (catch, catch_ref), and its label @p label.
+Bytes tryTable(uint8_t blockType, uint8_t kind, uint32_t tag, uint32_t label)
+{
+    auto const byTag = kind == 0x00 || kind == 0x01;
+    return code({ { 0x1F, blockType, 0x01, kind }, byTag ? encodeU32(tag) : Bytes {}, encodeU32(label) });
+}
+
+/// Clause kinds' bytes.
+constexpr auto ClauseCatch = uint8_t { 0x00 };
+constexpr auto ClauseCatchAll = uint8_t { 0x02 };
+constexpr auto ClauseCatchAllRef = uint8_t { 0x03 };
+
+/// Block types' bytes: none, i32, exnref.
+constexpr auto NoResult = uint8_t { 0x40 };
+constexpr auto I32Result = uint8_t { 0x7F };
+constexpr auto ExnRefResult = uint8_t { 0x69 };
+
+/// The exception @p outcome ended with, which must be an uncaught one.
+Thrown thrownOf(std::expected<std::vector<Value>, Abrupt> const& outcome)
+{
+    REQUIRE_FALSE(outcome.has_value());
+    REQUIRE(std::holds_alternative<Thrown>(outcome.error()));
+    return std::get<Thrown>(outcome.error());
+}
+
+} // namespace
+
+TEST_CASE("Interpreter.catchPayload")
+{
+    // 5 + block (result i32) try_table (catch $e 0) i32.const 99 i32.const 42 throw $e end i32.const 0
+    // end: the catch resets the operands to the try_table's, dropping the 99, and branches to the block
+    // with the payload; the 5 beneath the block stays.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(1,
+                  {},
+                  code({ i32Const(5),
+                         { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         i32Const(99),
+                         i32Const(42),
+                         throwTag(0),
+                         { 0x0B },
+                         i32Const(0),
+                         { 0x0B, 0x6A } }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == i32(47));
+}
+
+TEST_CASE("Interpreter.catchClauseOrder")
+{
+    // Tags 0 and 1, both [i32]; each function throws one of them with payload 7:
+    //   block $outer (result i32) block $one (result i32) block $all
+    //     try_table (catch 0 $outer) (catch_all $all)
+    //       try_table (catch 1 $one) i32.const 7 throw end
+    //     end
+    //   end i32.const -1 return
+    //   end i32.const 1000 i32.add return
+    //   end
+    // The inner try_table catches tag 1 only, so tag 0 passes it to the outer, whose first matching
+    // clause, catch 0 before catch_all, takes it.
+    auto const body = [](uint32_t thrown) {
+        return code({ { 0x02, I32Result, 0x02, I32Result, 0x02, NoResult },
+                      { 0x1F, NoResult, 0x02, 0x00, 0x00, 0x02, 0x02, 0x00 },
+                      tryTable(NoResult, ClauseCatch, 1, 2),
+                      i32Const(7),
+                      throwTag(thrown),
+                      { 0x0B, 0x0B, 0x0B },
+                      i32Const(-1),
+                      { 0x0F, 0x0B },
+                      i32Const(1000),
+                      { 0x6A, 0x0F, 0x0B } });
+    };
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .tag(0)
+        .function(1, {}, body(0))
+        .function(1, {}, body(1));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == i32(7));    // the outer catch 0, to $outer
+    CHECK(harness.result(1) == i32(1007)); // the inner catch 1, to $one
+}
+
+TEST_CASE("Interpreter.throwRefRethrows")
+{
+    // block (result i32) try_table (catch $e 0)
+    //   block (result exnref) try_table (catch_all_ref 0) i32.const 7 throw $e end unreachable end
+    //   throw_ref
+    // end unreachable end: the exnref rethrows the same exception, which the outer catch unpacks.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(1,
+                  {},
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         { 0x02, ExnRefResult },
+                         tryTable(NoResult, ClauseCatchAllRef, 0, 0),
+                         i32Const(7),
+                         throwTag(0),
+                         { 0x0B, 0x00, 0x0B },
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    // A store of one exception: throw_ref allocates none, so one invocation fits, and a second throw
+    // does not, as the store never frees an exception.
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 1 } };
+    CHECK(harness.result(0) == i32(7));
+    CHECK(harness.trap(0) == TrapCode::ExceptionLimitExceeded);
+}
+
+TEST_CASE("Interpreter.throwRefOfNullTraps")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).function(0, {}, { 0xD0, 0x69, 0x0A });
+    auto harness = Harness { builder };
+    CHECK(harness.trap(0) == TrapCode::NullExceptionReference);
+    CHECK(isoline::runtime::specMessage(harness.invoke(0).error()) == "null exception reference");
+}
+
+TEST_CASE("Interpreter.unwindDeepFrames")
+{
+    // Function 0 counts its i32 down in nested calls and throws at 0; function 1 calls it with 10'000
+    // inside try_table (catch_all 1) and returns 1 once it catches: 10'001 frames unwound in a loop,
+    // with no host recursion (ASan would see a deep host stack).
+    constexpr auto Depth = 10'000;
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(1,
+                  {},
+                  code({ localGet(0),
+                         { 0x45, 0x04, NoResult },
+                         throwTag(0),
+                         { 0x0B },
+                         localGet(0),
+                         i32Const(1),
+                         { 0x6B },
+                         call(0) }))
+        .function(2,
+                  {},
+                  code({ { 0x02, NoResult },
+                         tryTable(NoResult, ClauseCatchAll, 0, 0),
+                         i32Const(Depth),
+                         call(0),
+                         { 0x0B },
+                         i32Const(0),
+                         { 0x0F, 0x0B },
+                         i32Const(1) }));
+    auto harness = Harness { builder, {}, 2 * Depth };
+    CHECK(harness.result(1) == i32(1));
+    // Every frame unwound gave its depth back: the deepest call fits again.
+    CHECK(harness.result(1) == i32(1));
+}
+
+TEST_CASE("Interpreter.exceptionCapTraps")
+{
+    // Each call throws and catches with catch_all_ref, keeping the exnref in table slot i: a store of
+    // 16 exceptions holds 16, and the 17th throw traps.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .table(TableType { .element = isoline::binary::ExnRef, .limits = atLeast(32) })
+        .tag(0)
+        .function(1,
+                  {},
+                  code({ localGet(0),
+                         { 0x02, ExnRefResult },
+                         tryTable(NoResult, ClauseCatchAllRef, 0, 0),
+                         throwTag(0),
+                         { 0x0B, 0x00, 0x0B },
+                         { 0x26, 0x00 } })); // table.set 0
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    for (auto const index: std::views::iota(0, 16))
+        REQUIRE(harness.invoke(0, { i32(index) }).has_value());
+    CHECK(harness.trap(0, { i32(16) }) == TrapCode::ExceptionLimitExceeded);
+    // The slots hold the 16 exceptions, all distinct.
+    auto const& table = harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0));
+    CHECK(table.elements[0].kind == isoline::runtime::RefKind::Exn);
+    CHECK(table.elements[0].address != table.elements[15].address);
+    CHECK(table.elements[16].kind == isoline::runtime::RefKind::Null);
+}
+
+TEST_CASE("Interpreter.exceptionCrossesHost")
+{
+    // Function 2 calls the host import 0 inside try_table (catch $e 0); the host invokes function 1,
+    // which throws $e 5 uncaught there, and returns the Thrown: the exception goes on in function 2.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "host", 0)
+        .tag(1)
+        .function(0, {}, code({ i32Const(5), throwTag(0) }))
+        .function(2,
+                  {},
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         call(0),
+                         { 0x0B },
+                         i32Const(0),
+                         { 0x0B } }));
+    Harness* self = nullptr;
+    auto ownException = false;
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host = store.addHostFunction(
+                         signature({}, {}),
+                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Abrupt> {
+                             if (!ownException)
+                                 return self->outcome(1).transform([](auto const&) {});
+                             // An exception of the host's own making, of the guest's tag.
+                             auto& own = self->store();
+                             auto const tag = own.moduleInstance(self->address()).tags.at(0);
+                             auto const exception = own.addException(tag, { i32(9) });
+                             REQUIRE(exception.has_value());
+                             return std::unexpected { Abrupt { Thrown { .exception = *exception } } };
+                         });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    self = &harness;
+    CHECK(harness.result(2) == i32(5));
+    ownException = true;
+    CHECK(harness.result(2) == i32(9));
+    // Uncaught by the guest too, it ends the invocation, through the host, with the same exception.
+    auto const thrown = thrownOf(harness.outcome(0));
+    CHECK(harness.store().exception(thrown.exception).payload == std::vector { i32(9) });
+}
+
+TEST_CASE("Interpreter.uncaughtIsThrown")
+{
+    // throw $e 3, with no handler: the invocation ends with Thrown, whose exception carries the tag
+    // and payload. A try_table left by its end, or by a branch, no longer catches.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, {}))
+        .tag(0)
+        .function(1, {}, code({ i32Const(3), throwTag(0) }))
+        .function(
+            1, {}, code({ tryTable(NoResult, ClauseCatchAll, 0, 0), { 0x0B }, i32Const(4), throwTag(0) }))
+        .function(1,
+                  {},
+                  code({ tryTable(NoResult, ClauseCatchAll, 0, 0),
+                         { 0x0C, 0x00, 0x0B },
+                         i32Const(5),
+                         throwTag(0) }));
+    auto harness = Harness { builder };
+    auto const tag = harness.store().moduleInstance(harness.address()).tags.at(0);
+    for (auto const& [function, payload]:
+         std::to_array<std::pair<uint32_t, int32_t>>({ { 0, 3 }, { 1, 4 }, { 2, 5 } }))
+    {
+        CAPTURE(function);
+        auto const thrown = thrownOf(harness.outcome(function));
+        CHECK(harness.store().exception(thrown.exception).tag == tag);
+        CHECK(harness.store().exception(thrown.exception).payload == std::vector { i32(payload) });
+    }
+}
+
+TEST_CASE("Interpreter.importedTagIsTheSameTag")
+{
+    // Tag identity is the store's address: function 0 throws the imported tag and catches it by that
+    // import; function 1 throws it too, but catches only tag 1, a tag of its own of the same type.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).type(signature({}, { TypeI32 })).importTag("m", "e", 0).tag(0);
+    for (auto const caught: { 0U, 1U })
+        builder.function(1,
+                         {},
+                         code({ { 0x02, NoResult },
+                                tryTable(NoResult, ClauseCatch, caught, 0),
+                                throwTag(0),
+                                { 0x0B },
+                                i32Const(0),
+                                { 0x0F, 0x0B },
+                                i32Const(1) }));
+    auto shared = isoline::runtime::TagAddr {};
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     // A decoy first, so that no TagAddr equals the tag index naming it.
+                     static_cast<void>(store.addTag(signature({}, {})));
+                     shared = store.addTag(signature({}, {}));
+                     return std::vector { ExternValue { .kind = ExternKind::Tag, .address = shared } };
+                 } };
+    CHECK(harness.result(0) == i32(1));
+    auto const thrown = thrownOf(harness.outcome(1));
+    CHECK(harness.store().exception(thrown.exception).tag == shared);
+}
+
+TEST_CASE("Interpreter.catchToALoop")
+{
+    // loop try_table (catch_all 0) local 0 += 1; if local 0 < 3 throw end end end local.get 0: the
+    // clause's label is the loop, so a catch repeats it, until a pass throws no more.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(1,
+                  { TypeI32 },
+                  code({ { 0x03, NoResult },
+                         tryTable(NoResult, ClauseCatchAll, 0, 0),
+                         localGet(0),
+                         i32Const(1),
+                         { 0x6A, 0x22, 0x00 }, // i32.add local.tee 0
+                         i32Const(3),
+                         { 0x49, 0x04, NoResult }, // i32.lt_u if
+                         throwTag(0),
+                         { 0x0B, 0x0B, 0x0B },
+                         localGet(0) }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == i32(3));
+}
+
+TEST_CASE("Interpreter.catchToTheFunctionLabel")
+{
+    // try_table (catch $e 0) i32.const 11 throw $e end i32.const 0: label 0 outside the try_table is
+    // the function's, so the catch returns the payload; function 1 adds it to an operand of its own.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(
+            1,
+            {},
+            code({ tryTable(NoResult, ClauseCatch, 0, 0), i32Const(11), throwTag(0), { 0x0B }, i32Const(0) }))
+        .function(1, {}, code({ i32Const(100), call(0), { 0x6A } }));
+    auto harness = Harness { builder };
+    CHECK(harness.result(0) == i32(11));
+    CHECK(harness.result(1) == i32(111));
+}
+
+TEST_CASE("Interpreter.hostThrowsAPayloadOfItsTagsKinds")
+{
+    // The host throws the guest's tag [i64 f32] with a payload of those kinds (Store::addException
+    // checks them); the guest's catch hands both to a block of [i64 f32] (type 2) and keeps the i64.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI64, TypeF32 }, {}))
+        .type(signature({}, { TypeI64, TypeF32 }))
+        .type(signature({}, { TypeI64 }))
+        .importFunction("env", "host", 0)
+        .tag(1)
+        .function(3,
+                  {},
+                  code({ { 0x02, 0x02 },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         call(0),
+                         { 0x0B, 0x00, 0x0B, 0x1A } }));
+    Harness* self = nullptr;
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host = store.addHostFunction(
+                         signature({}, {}),
+                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Abrupt> {
+                             auto& own = self->store();
+                             auto const tag = own.moduleInstance(self->address()).tags.at(0);
+                             auto const exception =
+                                 own.addException(tag, { I64 { 42 }, F32 { 0x3F80'0000 } });
+                             REQUIRE(exception.has_value());
+                             return std::unexpected { Abrupt { Thrown { .exception = *exception } } };
+                         });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    self = &harness;
+    CHECK(harness.result(1) == Value { I64 { 42 } });
 }

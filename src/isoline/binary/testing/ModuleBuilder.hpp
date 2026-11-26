@@ -169,7 +169,7 @@ inline constexpr auto AbstractHeapCodes = std::to_array<AbstractHeapCode>({
 
 /// Assembles a binary module in tests.
 ///
-/// The structured methods fill the type, import, function, table, memory, global, export, start,
+/// The structured methods fill the type, import, function, table, memory, tag, global, export, start,
 /// element, data count, code and data sections, which build() writes in the binary format's order; raw
 /// sections follow them in the order they were added, so a test that needs a section elsewhere, or out of
 /// order, writes every section raw.
@@ -245,6 +245,29 @@ class ModuleBuilder
         auto entry = importHeader(module, name, 0x02);
         append(entry, encodeMemoryType(type));
         _imports.push_back(std::move(entry));
+        return *this;
+    }
+
+    /// Appends a tag import to the import section.
+    /// @param module The module name.
+    /// @param name The field name.
+    /// @param typeIndex The index of its function type.
+    /// @return This builder.
+    ModuleBuilder& importTag(std::string_view module, std::string_view name, uint32_t typeIndex)
+    {
+        auto entry = importHeader(module, name, 0x04);
+        append(entry, tagType(typeIndex));
+        _imports.push_back(std::move(entry));
+        return *this;
+    }
+
+    /// Appends a tag to the tag section (exception handling), which build() writes between the memory
+    /// and the global sections.
+    /// @param typeIndex The index of its function type.
+    /// @return This builder.
+    ModuleBuilder& tag(uint32_t typeIndex)
+    {
+        _tags.push_back(tagType(typeIndex));
         return *this;
     }
 
@@ -394,6 +417,7 @@ class ModuleBuilder
         appendSection(bytes, FunctionSectionId, functionSection());
         appendSection(bytes, TableSectionId, entriesOf(_tables));
         appendSection(bytes, MemorySectionId, memorySection());
+        appendSection(bytes, TagSectionId, entriesOf(_tags));
         appendSection(bytes, GlobalSectionId, entriesOf(_globals));
         appendSection(bytes, ExportSectionId, exportSection());
         if (_start)
@@ -423,6 +447,7 @@ class ModuleBuilder
     static constexpr auto CodeSectionId = uint8_t { 10 };
     static constexpr auto DataSectionId = uint8_t { 11 };
     static constexpr auto DataCountSectionId = uint8_t { 12 };
+    static constexpr auto TagSectionId = uint8_t { 13 };
 
     struct ExportEntry
     {
@@ -470,6 +495,14 @@ class ModuleBuilder
     {
         append(out, encodeValueType(type.type));
         out.push_back(type.mutability == Mutability::Var ? 0x01 : 0x00);
+    }
+
+    /// A tag type: the attribute byte 0 (an exception), then the type index.
+    [[nodiscard]] static std::vector<uint8_t> tagType(uint32_t typeIndex)
+    {
+        auto bytes = std::vector<uint8_t> { 0x00 };
+        append(bytes, encodeU32(typeIndex));
+        return bytes;
     }
 
     [[nodiscard]] static std::vector<uint8_t> importHeader(std::string_view module,
@@ -570,6 +603,7 @@ class ModuleBuilder
     std::vector<FunctionEntry> _functions;
     std::vector<std::vector<uint8_t>> _tables;
     std::vector<MemoryType> _memories;
+    std::vector<std::vector<uint8_t>> _tags;
     std::vector<std::vector<uint8_t>> _globals;
     std::vector<ExportEntry> _exports;
     std::optional<uint32_t> _start;

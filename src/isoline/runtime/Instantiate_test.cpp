@@ -21,6 +21,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -41,6 +42,7 @@ using isoline::binary::Mutability;
 using isoline::binary::Opcode;
 using isoline::binary::TableType;
 using isoline::binary::testing::ModuleBuilder;
+using isoline::runtime::Abrupt;
 using isoline::runtime::AllocationFailure;
 using isoline::runtime::ExternValue;
 using isoline::runtime::FuncAddr;
@@ -52,6 +54,7 @@ using isoline::runtime::LinkErrorCode;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Store;
+using isoline::runtime::Thrown;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::UnlimitedAllocator;
@@ -93,10 +96,10 @@ class StubExecutor final: public isoline::runtime::ICodeExecutor
   public:
     std::vector<FuncAddr> invoked; ///< Every function invoked, in order.
 
-    [[nodiscard]] std::expected<void, Trap> invoke(Store& /*store*/,
-                                                   FuncAddr function,
-                                                   std::span<Value const> /*args*/,
-                                                   std::span<Value> /*results*/) override
+    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
+                                                     FuncAddr function,
+                                                     std::span<Value const> /*args*/,
+                                                     std::span<Value> /*results*/) override
     {
         invoked.push_back(function);
         return {};
@@ -119,10 +122,10 @@ class TrappingExecutor final: public isoline::runtime::ICodeExecutor
     /// @param trapAt The number of evaluations to perform before the one that traps.
     explicit TrappingExecutor(std::size_t trapAt): _trapAt { trapAt } {}
 
-    [[nodiscard]] std::expected<void, Trap> invoke(Store& /*store*/,
-                                                   FuncAddr /*function*/,
-                                                   std::span<Value const> /*args*/,
-                                                   std::span<Value> /*results*/) override
+    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
+                                                     FuncAddr /*function*/,
+                                                     std::span<Value const> /*args*/,
+                                                     std::span<Value> /*results*/) override
     {
         return {};
     }
@@ -222,20 +225,11 @@ TEST_CASE("Instantiate.incompatibleImportType")
         auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
         CHECK(errorOf(instantiate(store, executor, module, imports)) == incompatible);
     }
-    SECTION("a tag, which P1 has no instances of to link")
+    SECTION("a tag")
     {
-        // The decoder reads no tag import, but a module built by hand may hold one.
-        auto tagged = std::make_shared<Module>();
-        tagged->types.push_back(FuncType {});
-        tagged->imports.push_back(isoline::binary::Import { .module = "m",
-                                                            .name = "t",
-                                                            .kind = ExternKind::Tag,
-                                                            .typeIndex = 0,
-                                                            .table = {},
-                                                            .memory = {},
-                                                            .global = {} });
-        auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = 0 } };
-        CHECK(errorOf(instantiate(store, executor, tagged, imports)) == incompatible);
+        auto const tag = store.addTag(FuncType {});
+        auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
+        CHECK(errorOf(instantiate(store, executor, module, imports)) == incompatible);
     }
     SECTION("the right function type")
     {
@@ -646,18 +640,87 @@ TEST_CASE("Instantiate.constantExpressionTraps")
     CHECK(instantiate(store, executor, module, {}).has_value());
 }
 
-TEST_CASE("Instantiate.tagImportIsIncompatible")
+TEST_CASE("Instantiate.tagImports")
 {
-    // Wasm 2.0 has no tags, so the import is built as data; no tag an embedder supplies matches it.
-    auto module = Module { *moduleOf(ModuleBuilder {}) };
-    module.imports.push_back(isoline::binary::Import { .module = "m", .name = "t", .kind = ExternKind::Tag });
+    // A tag import matches a tag of its type exactly, and binds to that very tag.
+    auto const features = FeatureSet::wasm3();
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .importTag("m", "t", 0)
+        .tag(0)
+        .exportEntity("imported", ExternKind::Tag, 0)
+        .exportEntity("defined", ExternKind::Tag, 1);
+    auto const module = moduleOf(builder, features);
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
     auto executor = StubExecutor {};
-    auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = 0 } };
-    auto const result =
-        instantiate(store, executor, std::make_shared<Module const>(std::move(module)), imports);
-    CHECK(errorOf(result) == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+
+    auto const other = store.addTag(FuncType { .params = { isoline::binary::F32 }, .results = {} });
+    auto const otherImports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = other } };
+    CHECK(errorOf(instantiate(store, executor, module, otherImports))
+          == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+    auto const function =
+        store.addHostFunction(FuncType { .params = { isoline::binary::I32 }, .results = {} },
+                              [](auto, auto) -> std::expected<void, Abrupt> { return {}; });
+    auto const functionImports =
+        std::vector { ExternValue { .kind = ExternKind::Func, .address = function } };
+    CHECK(errorOf(instantiate(store, executor, module, functionImports))
+          == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+
+    auto const tag = store.addTag(FuncType { .params = { isoline::binary::I32 }, .results = {} });
+    auto const imports = std::vector { ExternValue { .kind = ExternKind::Tag, .address = tag } };
+    auto const first = instantiate(store, executor, module, imports);
+    REQUIRE(first.has_value());
+    auto const& instance = store.moduleInstance(*first);
+    REQUIRE(instance.tags.size() == 2);
+    CHECK(instance.tags[0] == tag);
+    CHECK(instance.tags[1] != tag);
+    CHECK(store.tag(instance.tags[1]).typeId == store.tag(tag).typeId);
+    CHECK(instance.exports.at(0).second == ExternValue { .kind = ExternKind::Tag, .address = tag });
+    CHECK(instance.exports.at(1).second
+          == ExternValue { .kind = ExternKind::Tag, .address = instance.tags[1] });
+    // A second instance defines a tag of its own: tags are not shared by type.
+    auto const second = instantiate(store, executor, module, imports);
+    REQUIRE(second.has_value());
+    CHECK(store.moduleInstance(*second).tags[0] == tag);
+    CHECK(store.moduleInstance(*second).tags[1] != store.moduleInstance(*first).tags[1]);
+}
+
+namespace
+{
+
+/// Evaluates nothing, and ends every invocation with an uncaught exception.
+class ThrowingExecutor final: public isoline::runtime::ICodeExecutor
+{
+  public:
+    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
+                                                     FuncAddr /*function*/,
+                                                     std::span<Value const> /*args*/,
+                                                     std::span<Value> /*results*/) override
+    {
+        return std::unexpected { Abrupt { Thrown { .exception = 3 } } };
+    }
+
+    [[nodiscard]] std::expected<Value, Trap> evaluateConst(Store& /*store*/,
+                                                           uint32_t /*moduleInstance*/,
+                                                           ConstExpr const& /*expression*/) override
+    {
+        return std::unexpected { Trap { TrapCode::Unreachable } };
+    }
+};
+
+} // namespace
+
+TEST_CASE("Instantiate.startThrows")
+{
+    // A start function's uncaught exception fails instantiation; the instance stays, as after a trap.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, {}).start(0);
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto executor = ThrowingExecutor {};
+    CHECK(errorOf(instantiate(store, executor, moduleOf(builder), {}))
+          == InstantiationError { Thrown { .exception = 3 } });
 }
 
 TEST_CASE("Instantiate.i64DataOffset")

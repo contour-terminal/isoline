@@ -1530,7 +1530,8 @@ std::vector<uint8_t> instructionOf(isoline::binary::OpcodeInfo const& row)
     switch (row.immediate)
     {
         case ImmediateKind::None: break;
-        case ImmediateKind::BlockType: bytes.insert(bytes.end(), { 0x40, 0x0B }); break; // (empty) end
+        case ImmediateKind::BlockType: bytes.insert(bytes.end(), { 0x40, 0x0B }); break;      // (empty) end
+        case ImmediateKind::TryTable: bytes.insert(bytes.end(), { 0x40, 0x00, 0x0B }); break; // no catches
         case ImmediateKind::LabelIndex:
         case ImmediateKind::FunctionIndex:
         case ImmediateKind::LocalIndex:
@@ -1539,6 +1540,7 @@ std::vector<uint8_t> instructionOf(isoline::binary::OpcodeInfo const& row)
         case ImmediateKind::ElemIndex:
         case ImmediateKind::DataIndex:
         case ImmediateKind::TypeIndex:
+        case ImmediateKind::TagIndex:
         case ImmediateKind::MemoryIndex:
         case ImmediateKind::I32Const:
         case ImmediateKind::I64Const: bytes.push_back(0x00); break;
@@ -1885,4 +1887,152 @@ TEST_CASE("Decoder.functionReferencesNeedReferenceTypes")
     CHECK(isoline::binary::specMessage(refused.error())
           == "feature enabled without its prerequisite: function-references requires reference-types");
     CHECK(errorOf(moduleOf({}), FeatureSet::wasm2().with(Feature::TypedFunctionReferences)) == std::nullopt);
+}
+
+TEST_CASE("Decoder.tagSectionOrder")
+{
+    // Type [] -> [], a memory, a tag of type 0, an i32 global: the tag section (13) sits between
+    // the memory (5) and the global (6) sections.
+    auto const features = FeatureSet::wasm3();
+    auto const ordered = moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type
+                                    0x05, 0x03, 0x01, 0x00, 0x01,       // memory
+                                    0x0D, 0x03, 0x01, 0x00, 0x00,       // tag
+                                    0x06, 0x06, 0x01, 0x7F, 0x00, 0x41, 0x00, 0x0B });
+    auto const module = decoded(ordered, features);
+    REQUIRE(module.tags.size() == 1);
+    CHECK(module.tags[0].typeIndex == 0);
+
+    auto const afterGlobal = moduleOf({ 0x01,
+                                        0x04,
+                                        0x01,
+                                        0x60,
+                                        0x00,
+                                        0x00,
+                                        0x06,
+                                        0x06,
+                                        0x01,
+                                        0x7F,
+                                        0x00,
+                                        0x41,
+                                        0x00,
+                                        0x0B,
+                                        0x0D,
+                                        0x03,
+                                        0x01,
+                                        0x00,
+                                        0x00 });
+    CHECK(errorOf(afterGlobal, features) == DecodeErrorCode::SectionOutOfOrder);
+    auto const beforeMemory = moduleOf(
+        { 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x0D, 0x03, 0x01, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01 });
+    CHECK(errorOf(beforeMemory, features) == DecodeErrorCode::SectionOutOfOrder);
+
+    // Without exception handling the section id is unknown.
+    auto const tagOnly = moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x0D, 0x03, 0x01, 0x00, 0x00 });
+    CHECK(errorOf(tagOnly, features.without(Feature::ExceptionHandling))
+          == DecodeErrorCode::MalformedSectionId);
+    // A tag's attribute byte must be 0, an exception.
+    auto const attribute = moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x0D, 0x03, 0x01, 0x01, 0x00 });
+    CHECK(errorOf(attribute, features) == DecodeErrorCode::ZeroByteExpected);
+    // The tag section's entries are bounded.
+    CHECK(errorOf(tagOnly, features, DecodeLimits { .maxTags = 0 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+}
+
+TEST_CASE("Decoder.tagImportsAndExports")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { isoline::binary::I32 }, .results = {} })
+        .importTag("m", "t", 0)
+        .tag(0)
+        .exportEntity("t", ExternKind::Tag, 1);
+    auto const bytes = builder.build();
+    auto const module = decoded(bytes, FeatureSet::wasm3());
+    REQUIRE(module.imports.size() == 1);
+    CHECK(module.imports[0].kind == ExternKind::Tag);
+    CHECK(module.imports[0].typeIndex == 0);
+    CHECK(module.importedCount(ExternKind::Tag) == 1);
+    REQUIRE(module.exports.size() == 1);
+    CHECK(module.exports[0].kind == ExternKind::Tag);
+    CHECK(module.exports[0].index == 1);
+    // Kind byte 4 is a tag only with exception handling.
+    auto const without = FeatureSet::wasm3().without(Feature::ExceptionHandling);
+    auto imported = ModuleBuilder {};
+    imported.type(FuncType {}).importTag("m", "t", 0);
+    CHECK(errorOf(imported.build(), without) == DecodeErrorCode::MalformedImportKind);
+    auto exported = ModuleBuilder {};
+    exported.exportEntity("t", ExternKind::Tag, 0);
+    CHECK(errorOf(exported.build(), without) == DecodeErrorCode::MalformedExportKind);
+}
+
+TEST_CASE("Decoder.tryTableClauses")
+{
+    using isoline::binary::CatchClause;
+    using isoline::binary::catchClausesOf;
+    using isoline::binary::CatchKind;
+    auto const features = FeatureSet::wasm3();
+    // try_table (result i32) (catch 0 0) (catch_ref 1 1) (catch_all 2) (catch_all_ref 3) throw 0 end,
+    // then a second try_table without clauses, whose run is empty.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, { 0x1F, 0x7F, 0x04, 0x00, 0x00, 0x00, 0x01,
+                                                0x01, 0x01, 0x02, 0x02, 0x03, 0x03, 0x08,
+                                                0x00, 0x0B, 0x1A, 0x1F, 0x40, 0x00, 0x0B });
+    auto const bytes = builder.build();
+    auto const module = decoded(bytes, features);
+    auto const& function = module.code.at(0);
+    REQUIRE(function.body.size() >= 6);
+    auto const& tryTable = function.body[0];
+    CHECK(tryTable.opcode == Opcode::TryTable);
+    CHECK(tryTable.blockType().kind == isoline::binary::BlockType::Kind::Value);
+    CHECK(tryTable.endIndex == 2);
+    CHECK(function.body[1].opcode == Opcode::Throw);
+    CHECK(function.body[1].a == 0);
+    CHECK(std::ranges::equal(catchClausesOf(function, tryTable),
+                             std::to_array<CatchClause>({
+                                 { .kind = CatchKind::Catch, .tag = 0, .label = 0 },
+                                 { .kind = CatchKind::CatchRef, .tag = 1, .label = 1 },
+                                 { .kind = CatchKind::CatchAll, .tag = 0, .label = 2 },
+                                 { .kind = CatchKind::CatchAllRef, .tag = 0, .label = 3 },
+                             })));
+    CHECK(function.body[4].opcode == Opcode::TryTable);
+    CHECK(function.body[4].endIndex == 5);
+    CHECK(catchClausesOf(function, function.body[4]).empty());
+
+    // The clauses of one try_table are bounded.
+    auto twoClauses = ModuleBuilder {};
+    twoClauses.type(FuncType {}).function(0, {}, { 0x1F, 0x40, 0x02, 0x02, 0x00, 0x02, 0x00, 0x0B });
+    auto const twoClausesBytes = twoClauses.build();
+    CHECK(errorOf(twoClausesBytes, features, DecodeLimits { .maxCatchClauses = 2 }) == std::nullopt);
+    CHECK(errorOf(twoClausesBytes, features, DecodeLimits { .maxCatchClauses = 1 })
+          == DecodeErrorCode::ImplementationLimitExceeded);
+    CHECK(DecodeLimits {}.maxCatchClauses == 65'520);
+
+    // A body that ends inside a clause runs out.
+    auto const cut = moduleOf({ 0x01,
+                                0x04,
+                                0x01,
+                                0x60,
+                                0x00,
+                                0x00, // type
+                                0x03,
+                                0x02,
+                                0x01,
+                                0x00, // function
+                                0x0A,
+                                0x06,
+                                0x01,
+                                0x04,
+                                0x00,
+                                0x1F,
+                                0x40,
+                                0x01 });
+    CHECK(errorOf(cut, features) == DecodeErrorCode::UnexpectedEnd);
+
+    // A clause kind above 3 is malformed, at its byte.
+    auto malformed = ModuleBuilder {};
+    malformed.type(FuncType {}).function(0, {}, { 0x1F, 0x40, 0x01, 0x04, 0x00, 0x0B });
+    auto const malformedBytes = malformed.build();
+    auto const result = decodeModule(malformedBytes, features);
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code == DecodeErrorCode::MalformedCatchClause);
+    CHECK(isoline::binary::specMessage(result.error()) == "malformed catch clause");
 }

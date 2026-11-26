@@ -7,16 +7,14 @@
 # does its CTest test; a new skip is a deliberate edit here, never a silent one. A row
 # `<source> <path> exclude <reason…>` names a file that is deliberately not imported, and why.
 # docs/conformance.md lists every exclusion and every skip of the GC cut.
-wasm2 core/binary                   0
 wasm2 core/binary-leb128            0
-wasm2 core/exports                  0
-wasm2 core/imports                  16
 wasm2 core/ref_null                 0
 wasm2 core/utf8-custom-section-id   0
 wasm2 core/utf8-invalid-encoding    176
 wasm3 core/address                  1
 wasm3 core/align                    46
 wasm3 core/annotations              70
+wasm3 core/binary                   0
 wasm3 core/block                    15
 wasm3 core/br                       0
 wasm3 core/br_if                    0
@@ -41,6 +39,11 @@ wasm3 core/custom                   0
 wasm3 core/data                     2
 wasm3 core/elem                     2
 wasm3 core/endianness               0
+wasm3 core/exceptions/tag           5
+wasm3 core/exceptions/throw         0
+wasm3 core/exceptions/throw_ref     0
+wasm3 core/exceptions/try_table     2
+wasm3 core/exports                  0
 wasm3 core/f32                      2
 wasm3 core/f32_bitwise              0
 wasm3 core/f32_cmp                  0
@@ -60,7 +63,9 @@ wasm3 core/i32                      2
 wasm3 core/i64                      2
 wasm3 core/id                       6
 wasm3 core/if                       24
+wasm3 core/imports                  16
 wasm3 core/inline-module            0
+wasm3 core/instance                 0
 wasm3 core/int_exprs                0
 wasm3 core/int_literals             20
 wasm3 core/labels                   0
