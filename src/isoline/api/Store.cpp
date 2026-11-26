@@ -42,8 +42,9 @@ namespace
         {
             case ExecutionEngine::Reference: return std::make_unique<interpreter::ReferenceInterpreter>();
         }
-        core::unreachable(); // every ExecutionEngine is a case above
-    }
+        // Every ExecutionEngine is a case above.
+        core::unreachable(); // uncovered(unknown-engine)
+    } // uncovered(unknown-engine)
 
     /// Whether @p type names a concrete type index, among its params or results.
     [[nodiscard]] bool namesConcreteType(FuncType const& type) noexcept

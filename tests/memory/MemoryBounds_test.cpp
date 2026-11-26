@@ -393,6 +393,14 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryBeforeTheStoreChanges")
         CHECK(runtime.functionCount() == 0);
         CHECK(runtime.moduleInstanceCount() == 0);
     }
+    // A container asked past its max_size() is refused alike.
+    auto const pastMaxSize = [&] {
+        auto const limit = AllocationLimit { 0, RefusalException::LengthError };
+        return store.instantiate(*module, imports);
+    }();
+    REQUIRE_FALSE(pastMaxSize.has_value());
+    CHECK(pastMaxSize.error() == InstantiateError { HostMemoryExhausted {} });
+    CHECK(runtime.functionCount() == 0);
     for (auto const refusal: { RefusalException::BadAlloc, RefusalException::LengthError })
     {
         auto const defined = [&] {
@@ -439,6 +447,14 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing")
         CHECK(runtime.moduleInstanceCount() == 0);
         CHECK(runtime.typeCount() == typesBefore);
     }
+    // A container asked past its max_size() there is refused alike.
+    auto const pastMaxSize = [&] {
+        auto const limit = AllocationLimit { 0, RefusalException::LengthError };
+        return store.instantiate(*module, isoline::api::Imports {});
+    }();
+    REQUIRE_FALSE(pastMaxSize.has_value());
+    CHECK(pastMaxSize.error() == InstantiateError { HostMemoryExhausted {} });
+    CHECK(runtime.typeCount() == typesBefore);
     CHECK(store.instantiate(*module, isoline::api::Imports {}).has_value());
     CHECK(runtime.typeCount() == typesBefore + TypeCount);
 }

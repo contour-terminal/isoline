@@ -923,3 +923,24 @@ TEST_CASE("Store.memorySizeFollowsGrowth")
     REQUIRE(instance.call(exportedFunction(instance, "grow"), {}, {}).has_value());
     CHECK(instance.memorySize(*memory) == MemorySize { .pages = 3, .bytes = uint64_t { 3 } * 65'536 });
 }
+
+TEST_CASE("Store.newHostTypeOverTheTypeBudgetIsRefused")
+{
+    // A host function whose type is new to the store and costs more type units than the store has left
+    // is refused, by instantiate() and by define() alike, and adds nothing.
+    constexpr auto WideParams = std::size_t { 16 };
+    auto config = EngineConfig {};
+    config.store.maxTypes = WideParams; // a type of 16 params costs 17 units
+    auto fixture = Fixture { config };
+    auto const wide = FuncType { .params = std::vector(WideParams, TypeI32), .results = {} };
+    auto const host = makeHostFunction(
+        [](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> Outcome { return {}; });
+    auto builder = ModuleBuilder {};
+    builder.type(wide).importFunction("env", "wide", 0);
+    auto imports = Imports {};
+    imports.define("env", "wide", wide, host);
+    auto const types = isoline::api::LimitExceeded { isoline::api::Limit::Types };
+    CHECK(errorOf(fixture.store.instantiate(fixture.load(builder), imports)) == InstantiateError { types });
+    CHECK(errorOf(fixture.store.define(wide, host)) == isoline::api::DefineError { types });
+    CHECK(runtimeOf(fixture.store).functionCount() == 0);
+}

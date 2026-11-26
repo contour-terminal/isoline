@@ -80,6 +80,12 @@ class IThreadResource
 /// It is move-only, as what it holds belongs to one thread. Keep it on the thread it prepared, and
 /// destroy it there after that thread's last call into guest code. A token of an interpreter holds
 /// nothing.
+///
+/// Tokens nest. A thread may hold any number at once, of one engine and of several: each prepares the
+/// thread on its own, and destroying one, in any order, leaves the thread prepared for every token
+/// still alive. That is a contract for every engine whose tokens hold something (a compiled engine's
+/// signal stack or guard): a resource set up by an earlier token, or shared by several, is released
+/// only when the last token needing it goes. Contract.threadPreparationNests holds every engine to it.
 class ThreadPreparation
 {
   public:
@@ -131,6 +137,9 @@ class Engine
     ///
     /// Interpreters need nothing of a thread: their token holds nothing and the call cannot fail. A
     /// compiling engine may set up a signal stack or a guard here, which the token owns.
+    ///
+    /// It may be called again on a thread already prepared, by this engine or another: tokens nest (see
+    /// ThreadPreparation), and the thread stays prepared while any of them lives.
     /// @return The token, or why the thread could not be prepared.
     [[nodiscard]] std::expected<ThreadPreparation, PrepareError> prepareThread() const noexcept;
 

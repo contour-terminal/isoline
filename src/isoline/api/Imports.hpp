@@ -148,12 +148,6 @@ class Imports
         return std::tie(stored.module, stored.name) <=> std::tuple { viewed.module, viewed.name };
     }
 
-    /// Whether stored names are equal to viewed ones.
-    friend bool operator==(ImportName const& stored, ImportNameView viewed) noexcept
-    {
-        return stored.module == viewed.module && stored.name == viewed.name;
-    }
-
     /// The definition under @p module and @p name, found without allocating.
     /// @return It, or null when there is none.
     [[nodiscard]] Definition const* find(std::string_view module, std::string_view name) const noexcept;

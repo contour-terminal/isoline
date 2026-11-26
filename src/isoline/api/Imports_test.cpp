@@ -265,3 +265,61 @@ TEST_CASE("Imports.storeFunctionsResolveByType")
     CHECK(imports.resolve(load(builder))
           == std::vector { Linkage::Satisfied, Linkage::Unsatisfied, Linkage::Unsatisfied });
 }
+
+TEST_CASE("Imports.concreteTypesOnBothSidesAreLeftToTheStore")
+{
+    // A function and an immutable global whose types name a concrete type index of their own module, on
+    // both sides: only a store can compare those indices, so resolve() reports them satisfied and
+    // instantiation decides.
+    using isoline::binary::AbstractHeapType;
+    using isoline::binary::HeapType;
+    using isoline::binary::ValueKind;
+    auto const concrete = isoline::binary::ValueType { .kind = ValueKind::Ref,
+                                                       .nullable = isoline::binary::Nullable::Yes,
+                                                       .heap = HeapType { .kind = AbstractHeapType::Concrete,
+                                                                          .typeIndex = 0 } };
+    auto const takesConcrete = FuncType { .params = { concrete }, .results = {} };
+    auto engine = Engine { EngineConfig {} };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto exporting = ModuleBuilder {};
+    exporting.type(FuncType {})
+        .type(takesConcrete)
+        .function(1, {}, {})
+        .global(GlobalType { .type = concrete, .mutability = Mutability::Const },
+                { 0xD0, 0x00 }) // ref.null 0
+        .exportFunction("f", 0)
+        .exportEntity("g", ExternKind::Global, 0);
+    auto const exporter = engine.load(exporting.build());
+    REQUIRE(exporter.has_value());
+    auto const instance = store.instantiate(*exporter, Imports {});
+    REQUIRE(instance.has_value());
+    auto imports = Imports {};
+    imports.define("other", "f", *instance, "f").define("other", "g", *instance, "g");
+
+    auto importing = ModuleBuilder {};
+    importing.type(FuncType {})
+        .type(takesConcrete)
+        .importFunction("other", "f", 1)
+        .importGlobal("other", "g", GlobalType { .type = concrete, .mutability = Mutability::Const });
+    auto const importer = engine.load(importing.build());
+    REQUIRE(importer.has_value());
+    CHECK(imports.resolve(*importer) == std::vector { Linkage::Satisfied, Linkage::Satisfied });
+    // The store compares them: the same type, so it links.
+    CHECK(store.instantiate(*importer, imports).has_value());
+
+    // The same spelling, (ref null 0), names another type in a module whose type 0 differs: resolve()
+    // cannot tell, and still reports it satisfied; the store can, and refuses to link it.
+    auto differing = ModuleBuilder {};
+    differing.type(FuncType { .params = { TypeI32 }, .results = {} })
+        .type(takesConcrete)
+        .importFunction("other", "f", 1);
+    auto const mistyped = engine.load(differing.build());
+    REQUIRE(mistyped.has_value());
+    CHECK(imports.resolve(*mistyped) == std::vector { Linkage::Satisfied });
+    auto const refused = store.instantiate(*mistyped, imports);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error()
+          == isoline::api::InstantiateError {
+              isoline::api::LinkError { isoline::api::LinkErrorCode::IncompatibleImportType, 0 } });
+}

@@ -104,7 +104,15 @@ isoline_apply_target_policy(isoline_core)
 
 if(ISOLINE_TESTING)
     # Every *_test.cpp under src/isoline/ is one translation unit of the single unit-test binary.
+    # Those under a posix/ directory test what only POSIX systems have (signal dispositions), and are
+    # added on those alone, so that no test source checks for the platform.
     file(GLOB_RECURSE isolineTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
+    list(FILTER isolineTestSources EXCLUDE REGEX "/posix/[^/]*_test\\.cpp$")
+    if(UNIX)
+        file(GLOB_RECURSE isolinePosixTestSources CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/*/posix/*_test.cpp")
+        list(APPEND isolineTestSources ${isolinePosixTestSources})
+    endif()
     add_executable(isoline_test ${isolineTestSources})
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_test TEST)
