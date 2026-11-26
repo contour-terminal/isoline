@@ -2,24 +2,26 @@
 //
 // The fast interpreter's operations: every operation lowered code holds, one row each.
 //
-//     ISOLINE_FAST_OPERATION(Name, Form)
+//     ISOLINE_FAST_OPERATION(Name, Form, Words)
 //
-// Name  the OperationId enumerator, and the operation's name in listings.
-// Form  the OperationForm enumerator naming the layout of the operands after its header word.
+// Name   the OperationId enumerator, and the operation's name in listings.
+// Form   the OperationForm enumerator naming the layout of the operands after its header word.
+// Words  its fixed size in code words: the header, its 32-bit slot operands two to a word, then its
+//        64-bit immediates.
 //
 // Adding an operation is adding a row here: OperationId and OperationTable are generated from it.
 // The file has no include guard; each includer defines ISOLINE_FAST_OPERATION.
 
 // Control without operands
-ISOLINE_FAST_OPERATION(Unreachable, Nullary)
-ISOLINE_FAST_OPERATION(Nop, Nullary)
+ISOLINE_FAST_OPERATION(Unreachable, Nullary, 1)
+ISOLINE_FAST_OPERATION(Nop, Nullary, 1)
 
 // Value moves and constants
-ISOLINE_FAST_OPERATION(Move64, Move)
-ISOLINE_FAST_OPERATION(Move128, Move)
-ISOLINE_FAST_OPERATION(MoveRange, Move)
-ISOLINE_FAST_OPERATION(Const64, Move)
-ISOLINE_FAST_OPERATION(Const128, Move)
+ISOLINE_FAST_OPERATION(Move64, Move, 2)
+ISOLINE_FAST_OPERATION(Move128, Move, 2)
+ISOLINE_FAST_OPERATION(MoveRange, Move, 3)
+ISOLINE_FAST_OPERATION(Const64, Move, 3)
+ISOLINE_FAST_OPERATION(Const128, Move, 4)
 
 // Leaving the function
-ISOLINE_FAST_OPERATION(Return, Special)
+ISOLINE_FAST_OPERATION(Return, Special, 1)

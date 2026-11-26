@@ -76,12 +76,13 @@ runtime::Value loadValue(binary::ValueType const& type, std::span<Slot const> sl
 
 std::array<Slot, 2> nullSlots(binary::HeapType moduleHeap, std::span<uint32_t const> instanceTypes) noexcept
 {
-    auto heap = moduleHeap;
-    if (heap.kind == AbstractHeapType::Concrete)
-    {
-        Require(heap.typeIndex < instanceTypes.size());
-        heap.typeIndex = instanceTypes[heap.typeIndex];
-    }
+    auto const heap =
+        binary::mapTypeIndex(binary::ValueType { .kind = binary::ValueKind::Ref, .heap = moduleHeap },
+                             [instanceTypes](uint32_t typeIndex) {
+                                 Require(typeIndex < instanceTypes.size());
+                                 return instanceTypes[typeIndex];
+                             })
+            .heap;
     return { tagOf(Ref { .kind = RefKind::Null, .heap = heap, .address = 0 }), 0 };
 }
 

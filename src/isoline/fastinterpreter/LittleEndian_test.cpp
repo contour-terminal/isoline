@@ -108,7 +108,28 @@ TEMPLATE_TEST_CASE("LittleEndian.nativeOrderMatchesByteWiseComposition",
 
     // An unaligned address works alike.
     auto unaligned = std::array<std::byte, sizeof(TestType) + 1> {};
-    storeLittleEndian(unaligned.data() + 1, value);
+    storeLittleEndian<TestType>(unaligned.data() + 1, value);
     CHECK(std::ranges::equal(std::span { unaligned }.subspan(1), littleEndianBytes(value)));
     CHECK(loadLittleEndian<TestType>(unaligned.data() + 1) == value);
+}
+
+/// Whether a store can deduce its type from a value of type V, which a promoted argument would widen.
+template <typename V>
+concept StoreDeducesItsType = requires(std::byte* address, V value) { storeLittleEndian(address, value); };
+
+TEST_CASE("LittleEndian.storeWritesExactlyItsWidth")
+{
+    // Every store names its type: none deduces it from the value.
+    static_assert(!StoreDeducesItsType<int>);
+    static_assert(!StoreDeducesItsType<uint16_t>);
+    CHECK_FALSE(StoreDeducesItsType<int>);
+
+    // A promoted argument (u16 + 1 is an int) converts to the named type: two bytes are written, not
+    // four, and the guard bytes around them stay as they were.
+    constexpr auto Guard = std::byte { 0xA5 };
+    auto bytes = std::array<std::byte, 6> {};
+    std::ranges::fill(bytes, Guard);
+    auto const value = uint16_t { 0x1233 };
+    storeLittleEndian<uint16_t>(bytes.data() + 2, value + 1);
+    CHECK(bytes == std::array { Guard, Guard, std::byte { 0x34 }, std::byte { 0x12 }, Guard, Guard });
 }

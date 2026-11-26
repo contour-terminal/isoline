@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <memory_resource>
 #include <span>
@@ -16,18 +17,25 @@ namespace isoline::fastinterpreter
 
 namespace
 {
+    /// Whether every container of @p function allocates from @p arena.
+    [[nodiscard]] bool allocatesFrom(LoweredFunction const& function,
+                                     std::pmr::memory_resource const* arena) noexcept
+    {
+        auto const resources = std::array {
+            function.code.get_allocator().resource(),     function.localInit.get_allocator().resource(),
+            function.operands.get_allocator().resource(), function.sites.get_allocator().resource(),
+            function.handlers.get_allocator().resource(), function.catches.get_allocator().resource(),
+        };
+        return std::ranges::count(resources, arena) == std::ssize(resources);
+    }
+
     /// Whether @p functions and every container of each allocate from @p arena.
     [[nodiscard]] bool allocateFrom(std::pmr::memory_resource const* arena,
                                     std::pmr::vector<LoweredFunction> const& functions) noexcept
     {
-        auto const fromArena = [arena](auto const& container) {
-            return container.get_allocator().resource() == arena;
-        };
-        return fromArena(functions)
-               && std::ranges::all_of(functions, [&fromArena](LoweredFunction const& function) {
-                      return fromArena(function.code) && fromArena(function.localInit)
-                             && fromArena(function.operands) && fromArena(function.sites)
-                             && fromArena(function.handlers) && fromArena(function.catches);
+        return functions.get_allocator().resource() == arena
+               && std::ranges::all_of(functions, [arena](LoweredFunction const& function) {
+                      return allocatesFrom(function, arena);
                   });
     }
 } // namespace
