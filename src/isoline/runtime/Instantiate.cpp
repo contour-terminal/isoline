@@ -21,8 +21,10 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/meta/Check.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/ConstantExpression.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -139,11 +141,13 @@ namespace
         Instantiation(Store& store,
                       ICodeExecutor& executor,
                       std::shared_ptr<validate::ValidatedModule const> validated,
+                      std::shared_ptr<ModuleCode const> code,
                       std::span<ExternValue const> imports):
             _store { store },
             _executor { executor },
             _validated { std::move(validated) },
             _module { validate::ValidatedModule::moduleOf(_validated) },
+            _code { std::move(code) },
             _imports { imports }
         {
             Require(_imports.size() <= _module->imports.size());
@@ -294,6 +298,7 @@ namespace
                 return std::unexpected { InstantiationError { fits.error() } };
             auto pending = ModuleInstance { .validated = _validated,
                                             .module = _module,
+                                            .code = _code,
                                             .types = _types,
                                             .functions = {},
                                             .tables = {},
@@ -405,9 +410,7 @@ namespace
             for (auto const& global: module().globals)
             {
                 auto const value = evaluate(global.init);
-                if (!value)
-                    return std::unexpected { value.error() };
-                instance().globals.push_back(_store.addGlobal(storeForm(global.type), *value));
+                instance().globals.push_back(_store.addGlobal(storeForm(global.type), value));
             }
             return {};
         }
@@ -424,11 +427,9 @@ namespace
                 if (table.init.empty())
                     continue;
                 auto const value = evaluate(table.init);
-                if (!value)
-                    return std::unexpected { value.error() };
-                Require(std::holds_alternative<Ref>(*value));
+                Require(std::holds_alternative<Ref>(value));
                 auto& elements = _store.table(instance().tables.at(imported + index)).elements;
-                std::ranges::fill(elements, std::get<Ref>(*value));
+                std::ranges::fill(elements, std::get<Ref>(value));
             }
             return {};
         }
@@ -480,10 +481,8 @@ namespace
                 if (auto const polled = pollItem(item); !polled)
                     return std::unexpected { polled.error() };
                 auto const value = evaluate(expression);
-                if (!value)
-                    return std::unexpected { value.error() };
-                Require(std::holds_alternative<Ref>(*value));
-                refs.push_back(std::get<Ref>(*value));
+                Require(std::holds_alternative<Ref>(value));
+                refs.push_back(std::get<Ref>(value));
             }
             return refs;
         }
@@ -527,15 +526,13 @@ namespace
                 if (segment.mode == SegmentMode::Active)
                 {
                     auto const offset = evaluate(segment.offset);
-                    if (!offset)
-                        return std::unexpected { offset.error() };
                     auto const refs = std::span<Ref const> { *instance().elements[index] };
                     auto& elements = _store.table(instance().tables[segment.table]).elements;
                     if (auto const copied = copySegment(refs,
                                                         0,
                                                         refs.size(),
                                                         std::span { elements },
-                                                        addressOf(*offset),
+                                                        addressOf(offset),
                                                         TrapCode::OutOfBoundsTableAccess,
                                                         granulePoll());
                         !copied)
@@ -556,15 +553,13 @@ namespace
                 if (segment.mode != SegmentMode::Active)
                     continue;
                 auto const offset = evaluate(segment.offset);
-                if (!offset)
-                    return std::unexpected { offset.error() };
                 auto const source = std::span<std::byte const> { segment.bytes };
                 auto const bytes = _store.memory(instance().memories[segment.memory]).bytes();
                 if (auto const copied = copySegment(source,
                                                     0,
                                                     source.size(),
                                                     bytes,
-                                                    addressOf(*offset),
+                                                    addressOf(offset),
                                                     TrapCode::OutOfBoundsMemoryAccess,
                                                     granulePoll());
                     !copied)
@@ -586,20 +581,29 @@ namespace
             });
         }
 
-        [[nodiscard]] std::expected<Value, Trap> evaluate(ConstExpr const& expression)
+        /// Evaluates @p expression in the instance (runtime::evaluateConstantExpression()).
+        [[nodiscard]] Value evaluate(ConstExpr const& expression) const
         {
-            return _executor.evaluateConst(_store, _address, expression);
+            return evaluateConstantExpression(_store, _address, expression);
         }
 
         Store& _store;
         ICodeExecutor& _executor;
         std::shared_ptr<validate::ValidatedModule const> _validated;
         std::shared_ptr<Module const> _module; ///< _validated's module.
+        std::shared_ptr<ModuleCode const>
+            _code; ///< The code the instance keeps; null for the reference engine.
         std::span<ExternValue const> _imports;
         std::vector<TypeId> _types; ///< The TypeId of each of the module's types, by type index.
         uint64_t _newTypeUnits = 0; ///< The type units of the types the store does not hold yet.
         uint32_t _address = 0;
     };
+
+    /// The engine @p code is code of: the reference engine's needs none, so null code is its.
+    [[nodiscard]] ExecutionEngine engineOf(ModuleCode const* code) noexcept
+    {
+        return code ? code->engine() : ExecutionEngine::Reference;
+    }
 } // namespace
 
 std::expected<uint32_t, InstantiationError> instantiate(
@@ -608,7 +612,17 @@ std::expected<uint32_t, InstantiationError> instantiate(
     std::shared_ptr<validate::ValidatedModule const> module,
     std::span<ExternValue const> imports)
 {
-    return instantiateReporting(store, executor, std::move(module), imports).instance;
+    return instantiate(store, executor, std::move(module), nullptr, imports);
+}
+
+std::expected<uint32_t, InstantiationError> instantiate(
+    Store& store,
+    ICodeExecutor& executor,
+    std::shared_ptr<validate::ValidatedModule const> module,
+    std::shared_ptr<ModuleCode const> code,
+    std::span<ExternValue const> imports)
+{
+    return instantiateReporting(store, executor, std::move(module), std::move(code), imports).instance;
 }
 
 InstantiationOutcome instantiateReporting(Store& store,
@@ -616,6 +630,16 @@ InstantiationOutcome instantiateReporting(Store& store,
                                           std::shared_ptr<validate::ValidatedModule const> module,
                                           std::span<ExternValue const> imports)
 {
+    return instantiateReporting(store, executor, std::move(module), nullptr, imports);
+}
+
+InstantiationOutcome instantiateReporting(Store& store,
+                                          ICodeExecutor& executor,
+                                          std::shared_ptr<validate::ValidatedModule const> module,
+                                          std::shared_ptr<ModuleCode const> code,
+                                          std::span<ExternValue const> imports)
+{
+    Require(engineOf(code.get()) == executor.engine());
     // One invocation, with a fresh step budget its polls charge and its start function shares, and
     // its own refusal scope, so the start function's refused grows stay in it.
     if (auto const nesting = store.checkInvocationNesting(); !nesting)
@@ -623,7 +647,7 @@ InstantiationOutcome instantiateReporting(Store& store,
                                       .refusedGrowth = {} };
     auto const invocation = InvocationScope { store };
     auto const scope = RefusalScope { store };
-    auto const instance = Instantiation { store, executor, std::move(module), imports }.run();
+    auto const instance = Instantiation { store, executor, std::move(module), std::move(code), imports }.run();
     return InstantiationOutcome { .instance = instance, .refusedGrowth = scope.record() };
 }
 

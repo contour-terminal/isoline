@@ -14,6 +14,7 @@
 #include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -91,13 +92,20 @@ struct LinkError
 using InstantiationError =
     std::variant<LinkError, LimitExceeded, AllocationFailure, Trap, Thrown, HostFailure>;
 
-/// Executes code for instantiation: constant expressions, and the start function.
+/// Executes code: the start function for instantiation, and every function an invocation reaches.
 ///
-/// Implemented by the interpreter; instantiation only decides what runs and in which order.
+/// Implemented by each engine's executor; instantiation only decides what runs and in which order.
+/// Constant expressions are not code it executes: instantiation evaluates them itself
+/// (runtime::evaluateConstantExpression()), alike for every engine.
 class ICodeExecutor
 {
   public:
     virtual ~ICodeExecutor() = default;
+
+    /// The engine it is the executor of; it runs only module instances whose code (ModuleInstance::code)
+    /// is that engine's, which instantiate() checks.
+    /// @return The engine.
+    [[nodiscard]] virtual ExecutionEngine engine() const noexcept = 0;
 
     /// Invokes a function, within an invocation already open (InvocationScope: runtime::invokeChecked()
     /// or runtime::instantiate() opened it; checked).
@@ -120,15 +128,6 @@ class ICodeExecutor
                                                              FuncAddr function,
                                                              std::span<Value const> args,
                                                              std::span<Value> results) = 0;
-
-    /// Evaluates a constant expression of a module instance.
-    /// @param store The store holding the instance.
-    /// @param moduleInstance The instance whose globals and functions the expression may name.
-    /// @param expression The expression; valid for that instance's module.
-    /// @return Its value, or the trap evaluation ended with.
-    [[nodiscard]] virtual std::expected<Value, Trap> evaluateConst(Store& store,
-                                                                   uint32_t moduleInstance,
-                                                                   binary::ConstExpr const& expression) = 0;
 };
 
 /// Instantiates a module, as the WebAssembly 3.0 spec's instantiate does (Execution, Modules).
@@ -147,8 +146,9 @@ class ICodeExecutor
 /// entities claim nothing. Tables and memories are allocated before the instance is added to the
 /// store, so an AllocationFailure leaves no instance behind, and the tables and memories allocated
 /// before the failing one are released (Store::releaseTrailing), their bytes and elements returned to
-/// the store's budgets, so a retry gets its quota back. A trap from a global's initializer, an element
-/// segment, or later, leaves the instance in the store, as the spec's partial instantiation does.
+/// the store's budgets, so a retry gets its quota back. A trap from an element segment (an interrupt
+/// while its items are evaluated, or one out of bounds), or later, leaves the instance in the store, as
+/// the spec's partial instantiation does; constant expressions themselves never trap.
 ///
 /// Instantiation is one invocation (InvocationScope) with a RefusalScope of its own. Its polls charge the
 /// outermost invocation's step budget: a fresh one when instantiation is the outermost, the caller's when
@@ -162,11 +162,30 @@ class ICodeExecutor
 /// The second changes the store and is noexcept: the store is not exception-safe midway through a
 /// change, so running out of memory there terminates, as it does in invokeChecked().
 ///
-/// The instance keeps @p module, and its module is @p module's, sharing its ownership. Every external
-/// value in @p imports names an entity of @p store (checked), and there are no more of them than the
-/// module has imports (checked).
+/// Constant expressions (the globals' and tables' initializers, the element segments' items, the
+/// segments' offsets) are evaluated by runtime::evaluateConstantExpression(), never by @p executor.
+///
+/// The instance keeps @p module, and its module is @p module's, sharing its ownership; it keeps
+/// @p code likewise. @p code is code of @p executor's engine, null being the reference engine's
+/// (checked: a contract violation otherwise). Every external value in @p imports names an entity of
+/// @p store (checked), and there are no more of them than the module has imports (checked).
 /// @param store The store to allocate in.
-/// @param executor Evaluates constant expressions and runs the start function.
+/// @param executor Runs the start function, and later every function of the instance.
+/// @param module The validated module (checked: not null).
+/// @param code The code @p executor's engine made of @p module; null for the reference engine.
+/// @param imports The external values its imports bind to, in import order.
+/// @return The address of the new module instance, or why instantiation failed.
+[[nodiscard]] std::expected<uint32_t, InstantiationError> instantiate(
+    Store& store,
+    ICodeExecutor& executor,
+    std::shared_ptr<validate::ValidatedModule const> module,
+    std::shared_ptr<ModuleCode const> code,
+    std::span<ExternValue const> imports);
+
+/// Instantiates a module for the reference engine, which runs the validated module itself and needs no
+/// code: instantiate() with null code, so @p executor must be the reference engine's (checked).
+/// @param store The store to allocate in.
+/// @param executor Runs the start function, and later every function of the instance.
 /// @param module The validated module (checked: not null).
 /// @param imports The external values its imports bind to, in import order.
 /// @return The address of the new module instance, or why instantiation failed.
@@ -190,7 +209,24 @@ struct InstantiationOutcome
 /// Instantiates a module as instantiate() does, and reports the grows its RefusalScope recorded, as
 /// invokeChecked() reports a call's.
 /// @param store The store to allocate in.
-/// @param executor Evaluates constant expressions and runs the start function.
+/// @param executor Runs the start function, and later every function of the instance.
+/// @param module The validated module (checked: not null).
+/// @param code The code @p executor's engine made of @p module; null for the reference engine (checked).
+/// @param imports The external values its imports bind to, in import order.
+/// @return The instance or the error, and the refused grows; none when instantiation was refused
+///         before it began (past StoreLimits::maxNestedInvocations).
+[[nodiscard]] InstantiationOutcome instantiateReporting(
+    Store& store,
+    ICodeExecutor& executor,
+    std::shared_ptr<validate::ValidatedModule const> module,
+    std::shared_ptr<ModuleCode const> code,
+    std::span<ExternValue const> imports);
+
+/// Instantiates a module for the reference engine as instantiate() does, and reports the grows its
+/// RefusalScope recorded: instantiateReporting() with null code, so @p executor must be the reference
+/// engine's (checked).
+/// @param store The store to allocate in.
+/// @param executor Runs the start function, and later every function of the instance.
 /// @param module The validated module (checked: not null).
 /// @param imports The external values its imports bind to, in import order.
 /// @return The instance or the error, and the refused grows; none when instantiation was refused

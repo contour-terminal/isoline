@@ -50,6 +50,7 @@ target_sources(isoline_core
         interpreter/ReferenceInterpreter.cpp
         interpreter/Simd.cpp
         ${isolineFloatControl}
+        runtime/ConstantExpression.cpp
         runtime/FloatEnvironment.cpp
         runtime/HostFunction.cpp
         runtime/Instantiate.cpp
@@ -93,12 +94,15 @@ target_sources(isoline_core
             meta/EnumRows.hpp
             meta/FixedText.hpp
             runtime/Abrupt.hpp
+            runtime/ConstantExpression.hpp
+            runtime/ExecutionMode.hpp
             runtime/FloatEnvironment.hpp
             runtime/HostFunction.hpp
             runtime/Instantiate.hpp
             runtime/Interrupt.hpp
             runtime/Limits.hpp
             runtime/LinearMemory.hpp
+            runtime/ModuleCode.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp

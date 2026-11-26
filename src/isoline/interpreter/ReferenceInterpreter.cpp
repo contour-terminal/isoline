@@ -26,6 +26,7 @@
 #include <isoline/interpreter/Numerics.hpp>
 #include <isoline/interpreter/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/ConstantExpression.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
@@ -51,16 +52,19 @@ namespace
     using binary::ValueKind;
     using binary::VectorShape;
     using runtime::Abrupt;
+    using runtime::constantOf;
     using runtime::ExnAddr;
     using runtime::F32;
     using runtime::F64;
     using runtime::fits;
     using runtime::FuncAddr;
     using runtime::FunctionInstance;
+    using runtime::functionReference;
     using runtime::GranuleOrder;
     using runtime::I32;
     using runtime::I64;
     using runtime::ModuleInstance;
+    using runtime::nullOf;
     using runtime::PollSite;
     using runtime::Ref;
     using runtime::RefKind;
@@ -90,39 +94,6 @@ namespace
     }
 
     // --- Values -------------------------------------------------------------------------------
-
-    /// The value of a constant instruction (i32/i64/f32/f64/v128.const) of @p module, or nullopt
-    /// for any other.
-    [[nodiscard]] std::optional<Value> constantOf(binary::Module const& module,
-                                                  Instruction const& instruction) noexcept
-    {
-        switch (instruction.opcode)
-        {
-            case Opcode::I32Const: return I32 { static_cast<uint32_t>(instruction.c) };
-            case Opcode::I64Const: return I64 { instruction.c };
-            case Opcode::F32Const: return F32 { static_cast<uint32_t>(instruction.c) };
-            case Opcode::F64Const: return F64 { instruction.c };
-            case Opcode::V128Const: return runtime::v128FromBytes(binary::v128LiteralOf(module, instruction));
-            default: return std::nullopt;
-        }
-    }
-
-    /// The null reference ref.null @p instruction of @p instance pushes, its heap in store form: a
-    /// concrete type is named by its TypeId.
-    [[nodiscard]] Value nullOf(ModuleInstance const& instance, Instruction const& instruction)
-    {
-        auto const type =
-            binary::mapTypeIndex(instruction.type, [&](uint32_t index) { return instance.types.at(index); });
-        return Ref { .kind = RefKind::Null, .heap = type.heap, .address = 0 };
-    }
-
-    /// The reference ref.func pushes for function @p index of @p instance.
-    [[nodiscard]] Value functionReference(ModuleInstance const& instance, uint32_t index)
-    {
-        return Ref { .kind = RefKind::Func,
-                     .heap = { .kind = binary::AbstractHeapType::Func },
-                     .address = instance.functions.at(index) };
-    }
 
     /// The bits of a number value, zero-extended. Precondition (checked): @p value is a number.
     [[nodiscard]] uint64_t rawBits(Value const& value)
@@ -1226,45 +1197,5 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
     Require(store.invocationDepth() > 0);
     return Machine { store, *this, _depth }.run(function, args, results);
 }
-
-std::expected<Value, Trap> ReferenceInterpreter::evaluateConst(Store& store,
-                                                               uint32_t moduleInstance,
-                                                               binary::ConstExpr const& expression)
-{
-    auto const& instance = store.moduleInstance(moduleInstance);
-    auto stack = std::vector<Value> {};
-    for (auto const& instruction: expression)
-    {
-        if (auto const constant = constantOf(*instance.module, instruction))
-        {
-            stack.push_back(*constant);
-            continue;
-        }
-        switch (instruction.opcode)
-        {
-            case Opcode::End: Require(stack.size() == 1); return stack.back();
-            case Opcode::GlobalGet:
-                stack.push_back(store.global(instance.globals.at(instruction.a)).value);
-                break;
-            case Opcode::RefNull: stack.push_back(nullOf(instance, instruction)); break;
-            case Opcode::RefFunc: stack.push_back(functionReference(instance, instruction.a)); break;
-            default: {
-                // Extended-const's i32 and i64 add, sub and mul.
-                Require(numericShape(instruction.opcode) == NumericShape::Binary && stack.size() >= 2);
-                auto const rhs = stack.back();
-                stack.pop_back();
-                auto const lhs = stack.back();
-                stack.pop_back();
-                auto const result = applyBinary(instruction.opcode, lhs, rhs);
-                if (!result)
-                    return std::unexpected { result.error() }; // uncovered(trapping-constant)
-                stack.push_back(*result);
-            }
-        }
-    }
-    // uncovered-begin(constant-without-end)
-    core::todo("a constant expression without end");
-}
-// uncovered-end(constant-without-end)
 
 } // namespace isoline::interpreter

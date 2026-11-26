@@ -24,7 +24,6 @@
 #include <isoline/Features.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
-#include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
@@ -45,16 +44,13 @@
 
 using isoline::FeatureSet;
 using isoline::binary::AddressType;
-using isoline::binary::ConstExpr;
 using isoline::binary::ExternKind;
 using isoline::binary::FuncRef;
 using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
-using isoline::binary::Instruction;
 using isoline::binary::Limits;
 using isoline::binary::MemoryType;
 using isoline::binary::Mutability;
-using isoline::binary::Opcode;
 using isoline::binary::TableType;
 using isoline::binary::ValueType;
 using isoline::binary::testing::Bytes;
@@ -743,45 +739,6 @@ TEST_CASE("ReferenceInterpreter.unreachableTraps")
     builder.type(signature({}, {})).function(0, {}, { 0x00 });
     auto harness = Harness { builder };
     CHECK(harness.trap(0) == TrapCode::Unreachable);
-}
-
-TEST_CASE("ReferenceInterpreter.evaluateConst")
-{
-    auto builder = ModuleBuilder {};
-    builder.type(signature({}, {}))
-        .function(0, {}, {})
-        .global(GlobalType { .type = TypeI32, .mutability = Mutability::Const }, i32Const(9));
-    auto harness = Harness { builder };
-    auto const instruction = [](Opcode opcode, uint64_t immediate = 0, uint32_t index = 0) {
-        return Instruction { .opcode = opcode, .a = index, .c = immediate };
-    };
-    auto const evaluate = [&](ConstExpr const& expression) {
-        return harness.interpreter().evaluateConst(harness.store(), harness.address(), expression);
-    };
-
-    // Extended-const: (9 + 3) * 2 - 1.
-    auto const arithmetic = evaluate(ConstExpr { instruction(Opcode::GlobalGet),
-                                                 instruction(Opcode::I32Const, 3),
-                                                 instruction(Opcode::I32Add),
-                                                 instruction(Opcode::I32Const, 2),
-                                                 instruction(Opcode::I32Mul),
-                                                 instruction(Opcode::I32Const, 1),
-                                                 instruction(Opcode::I32Sub),
-                                                 instruction(Opcode::End) });
-    REQUIRE(arithmetic.has_value());
-    CHECK(*arithmetic == i32(23));
-
-    auto const wide = evaluate(ConstExpr { instruction(Opcode::I64Const, ~uint64_t { 0 }),
-                                           instruction(Opcode::I64Const, 2),
-                                           instruction(Opcode::I64Mul),
-                                           instruction(Opcode::End) });
-    REQUIRE(wide.has_value());
-    CHECK(*wide == Value { I64 { ~uint64_t { 1 } } });
-
-    auto const reference = evaluate(ConstExpr { instruction(Opcode::RefFunc), instruction(Opcode::End) });
-    REQUIRE(reference.has_value());
-    REQUIRE(std::holds_alternative<isoline::runtime::Ref>(*reference));
-    CHECK(std::get<isoline::runtime::Ref>(*reference).address == harness.function(0));
 }
 
 TEST_CASE("ReferenceInterpreter.ifWithoutElse")

@@ -23,6 +23,7 @@
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
@@ -203,12 +204,18 @@ struct ModuleInstance
     /// checks it).
     std::shared_ptr<validate::ValidatedModule const> validated;
     std::shared_ptr<binary::Module const> module; ///< validated's module, sharing its ownership.
-    std::vector<TypeId> types;                    ///< Its type section's types, by type index.
-    std::vector<FuncAddr> functions;              ///< The function index space: imports first.
-    std::vector<TableAddr> tables;                ///< The table index space: imports first.
-    std::vector<MemAddr> memories;                ///< The memory index space: imports first.
-    std::vector<GlobalAddr> globals;              ///< The global index space: imports first.
-    std::vector<TagAddr> tags;                    ///< The tag index space: imports first.
+
+    /// The code its executor runs, made of validated by that executor's engine, sharing its ownership;
+    /// null for the reference engine, which runs the validated module itself, and for a module
+    /// instance the embedder assembled.
+    std::shared_ptr<ModuleCode const> code;
+
+    std::vector<TypeId> types;       ///< Its type section's types, by type index.
+    std::vector<FuncAddr> functions; ///< The function index space: imports first.
+    std::vector<TableAddr> tables;   ///< The table index space: imports first.
+    std::vector<MemAddr> memories;   ///< The memory index space: imports first.
+    std::vector<GlobalAddr> globals; ///< The global index space: imports first.
+    std::vector<TagAddr> tags;       ///< The tag index space: imports first.
 
     /// The element segments' references, by segment index; nullopt once dropped.
     std::vector<std::optional<std::vector<Ref>>> elements;
