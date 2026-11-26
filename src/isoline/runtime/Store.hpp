@@ -19,6 +19,7 @@
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::runtime
 {
@@ -124,7 +125,9 @@ struct ExternValue
 /// A module instance: a module's entities, as store addresses in its index spaces' order.
 struct ModuleInstance
 {
-    std::shared_ptr<binary::Module const> module; ///< The module it instantiates; owns code and data.
+    /// The validated module it instantiates; null for a module instance the embedder assembled.
+    std::shared_ptr<validate::ValidatedModule const> validated;
+    std::shared_ptr<binary::Module const> module; ///< validated's module, sharing its ownership.
     std::vector<TypeId> types;                    ///< Its type section's types, by type index.
     std::vector<FuncAddr> functions;              ///< The function index space: imports first.
     std::vector<TableAddr> tables;                ///< The table index space: imports first.

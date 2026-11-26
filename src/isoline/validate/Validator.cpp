@@ -470,11 +470,12 @@ namespace
 
         /// Types @p body.
         /// @param body The body and what it is typed against.
-        /// @return Nothing when it is valid, else the first error and the instruction it is at.
-        [[nodiscard]] std::expected<void, BodyError> validate(Body const& body)
+        /// @return Its frame shape when it is valid, else the first error and the instruction it is at.
+        [[nodiscard]] std::expected<FrameShape, BodyError> validate(Body const& body)
         {
             _operands.clear();
             _frames.clear();
+            _shape = FrameShape {};
             _localRunEnds.clear();
             startLocalInitialization();
             auto end = uint64_t { 0 };
@@ -494,13 +495,17 @@ namespace
                                                          .instruction = static_cast<uint32_t>(index) } };
             }
             Require(_frames.empty());
-            return {};
+            return _shape;
         }
 
       private:
         // --- The operand and control stacks, as the spec appendix names them ---
 
-        void push(Operand const& operand) { _operands.push_back(operand); }
+        void push(Operand const& operand)
+        {
+            _operands.push_back(operand);
+            _shape.maxOperands = std::max(_shape.maxOperands, static_cast<uint32_t>(_operands.size()));
+        }
 
         void pushAll(std::span<ValueType const> types)
         {
@@ -604,6 +609,8 @@ namespace
                                       .height = _operands.size(),
                                       .setLocalsHeight = _setLocals.size(),
                                       .reachability = Reachability::Reachable });
+            // The body's own frame, the function's label, is not one of its labels.
+            _shape.maxLabels = std::max(_shape.maxLabels, static_cast<uint32_t>(_frames.size() - 1));
             pushAll(signature.params);
         }
 
@@ -1243,6 +1250,7 @@ namespace
         std::vector<uint32_t> _setLocals;    ///< The non-defaultable locals set in the open blocks.
         std::vector<uint64_t> _setStamps;    ///< Per local index, _generation while it is set.
         uint64_t _generation = 0;            ///< The stamp of the body being validated; never 0.
+        FrameShape _shape;                   ///< The high-water marks of the body being validated.
     };
 
     // --- The module ---------------------------------------------------------------------------
@@ -1266,7 +1274,7 @@ namespace
         {
         }
 
-        [[nodiscard]] std::expected<void, ValidationError> validate()
+        [[nodiscard]] std::expected<ModuleShape, ValidationError> validate()
         {
             return checkTypeSection()
                 .and_then([this] { return checkImports(); })
@@ -1280,7 +1288,8 @@ namespace
                 .and_then([this] { return checkBodies(); })
                 .and_then([this] { return checkStart(); })
                 .and_then([this] { return checkExports(); })
-                .and_then([this] { return checkCounts(); });
+                .and_then([this] { return checkCounts(); })
+                .transform([this] { return std::move(_shape); });
         }
 
       private:
@@ -1407,7 +1416,9 @@ namespace
                 .results = std::span { &type, 1 },
                 .globals = std::span { _context.globals }.first(_context.importedGlobalCount),
             };
-            return _bodies.validate(body).transform_error([](BodyError const& error) { return error.fault; });
+            return _bodies.validate(body)
+                .transform([](FrameShape const&) {})
+                .transform_error([](BodyError const& error) { return error.fault; });
         }
 
         [[nodiscard]] std::expected<void, ValidationError> checkGlobals()
@@ -1503,6 +1514,7 @@ namespace
         [[nodiscard]] std::expected<void, ValidationError> checkBodies()
         {
             auto const importedFunctions = _context.functionTypes.size() - module().functions.size();
+            _shape.functions.reserve(module().code.size());
             for (auto const [index, function]: core::views::enumerate(module().code))
             {
                 auto const functionIndex = static_cast<uint32_t>(importedFunctions + index);
@@ -1516,9 +1528,11 @@ namespace
                                          .localRuns = function.locals,
                                          .results = type.results,
                                          .globals = _context.globals };
-                if (auto const result = _bodies.validate(body); !result)
+                auto const shape = _bodies.validate(body);
+                if (!shape)
                     return std::unexpected { errorAt(
-                        result.error().fault, functionIndex, result.error().instruction) };
+                        shape.error().fault, functionIndex, shape.error().instruction) };
+                _shape.functions.push_back(*shape);
             }
             return {};
         }
@@ -1605,11 +1619,13 @@ namespace
         Context _context;
         BodyValidator _bodies;
         Function _constantSideTables; ///< Constant expressions hold no br_table or typed select.
+        ModuleShape _shape;           ///< The frame shapes of the bodies validated so far.
     };
 
 } // namespace
 
-std::expected<void, ValidationError> validateModule(binary::Module const& module, FeatureSet const& features)
+std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
+                                                           FeatureSet const& features)
 {
     // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
     Require(features.checkPrerequisites().has_value());

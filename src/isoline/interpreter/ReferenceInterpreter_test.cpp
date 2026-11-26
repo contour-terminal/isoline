@@ -23,6 +23,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
@@ -30,7 +31,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
-#include <isoline/validate/Validator.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::FeatureSet;
 using isoline::binary::AddressType;
@@ -42,12 +43,18 @@ using isoline::binary::GlobalType;
 using isoline::binary::Instruction;
 using isoline::binary::Limits;
 using isoline::binary::MemoryType;
-using isoline::binary::Module;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
 using isoline::binary::TableType;
 using isoline::binary::ValueType;
+using isoline::binary::testing::Bytes;
+using isoline::binary::testing::call;
+using isoline::binary::testing::code;
 using isoline::binary::testing::encodeU32;
+using isoline::binary::testing::i32Const;
+using isoline::binary::testing::i64Const;
+using isoline::binary::testing::localGet;
+using isoline::binary::testing::memoryAccess;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::interpreter::ReferenceInterpreter;
 using isoline::runtime::Abrupt;
@@ -73,59 +80,6 @@ constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
 constexpr auto TypeI32 = isoline::binary::I32;
 constexpr auto TypeI64 = isoline::binary::I64;
 constexpr auto TypeF32 = isoline::binary::F32;
-
-/// Bytes of a function body, assembled from pieces.
-using Bytes = std::vector<uint8_t>;
-
-/// The concatenation of @p pieces.
-Bytes code(std::initializer_list<Bytes> pieces)
-{
-    auto out = Bytes {};
-    for (auto const& piece: pieces)
-        out.insert(out.end(), piece.begin(), piece.end());
-    return out;
-}
-
-/// The signed LEB128 encoding of @p value.
-Bytes encodeS64(int64_t value)
-{
-    auto out = Bytes {};
-    while (true)
-    {
-        auto const byte = static_cast<uint8_t>(value & 0x7F);
-        value >>= 7;
-        auto const done = (value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0);
-        out.push_back(done ? byte : static_cast<uint8_t>(byte | 0x80));
-        if (done)
-            return out;
-    }
-}
-
-Bytes i32Const(int32_t value)
-{
-    return code({ { 0x41 }, encodeS64(value) });
-}
-
-Bytes i64Const(int64_t value)
-{
-    return code({ { 0x42 }, encodeS64(value) });
-}
-
-Bytes localGet(uint32_t index)
-{
-    return code({ { 0x20 }, encodeU32(index) });
-}
-
-Bytes call(uint32_t index)
-{
-    return code({ { 0x10 }, encodeU32(index) });
-}
-
-/// A load or store of @p opcode byte with alignment exponent @p align and offset @p offset.
-Bytes memoryAccess(uint8_t opcode, uint32_t align, uint32_t offset)
-{
-    return code({ { opcode }, encodeU32(align), encodeU32(offset) });
-}
 
 /// An active element segment for table 0 at @p offset, listing @p functions.
 Bytes activeElements(uint8_t offset, Bytes const& functions)
@@ -228,12 +182,11 @@ class Harness
     {
         // Every feature Isoline knows, so that a test may use any instruction it executes.
         auto const features = FeatureSet::all();
-        auto const bytes = builder.build();
-        auto module = isoline::binary::decodeModule(bytes, features);
-        REQUIRE(module.has_value());
-        REQUIRE(isoline::validate::validateModule(*module, features).has_value());
-        auto const address = isoline::runtime::instantiate(
-            _store, _interpreter, std::make_shared<Module const>(std::move(*module)), imports);
+        auto validated = isoline::validate::ValidatedModule::load(
+            builder.build(), features, isoline::binary::DecodeLimits {});
+        REQUIRE(validated.has_value());
+        auto const address =
+            isoline::runtime::instantiate(_store, _interpreter, std::move(*validated), imports);
         REQUIRE(address.has_value());
         _address = *address;
     }

@@ -25,6 +25,7 @@
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/Subtyping.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::runtime
 {
@@ -115,11 +116,14 @@ namespace
       public:
         Instantiation(Store& store,
                       ICodeExecutor& executor,
-                      std::shared_ptr<Module const> module,
+                      std::shared_ptr<validate::ValidatedModule const> validated,
                       std::span<ExternValue const> imports):
-            _store { store }, _executor { executor }, _module { std::move(module) }, _imports { imports }
+            _store { store },
+            _executor { executor },
+            _validated { std::move(validated) },
+            _module { validate::ValidatedModule::moduleOf(_validated) },
+            _imports { imports }
         {
-            Require(_module != nullptr);
             Require(_imports.size() <= _module->imports.size());
         }
 
@@ -237,7 +241,8 @@ namespace
         /// interns the types, registers the instance and allocates the rest.
         [[nodiscard]] Step allocate()
         {
-            auto pending = ModuleInstance { .module = _module,
+            auto pending = ModuleInstance { .validated = _validated,
+                                            .module = _module,
                                             .types = _types,
                                             .functions = {},
                                             .tables = {},
@@ -476,17 +481,19 @@ namespace
 
         Store& _store;
         ICodeExecutor& _executor;
-        std::shared_ptr<Module const> _module;
+        std::shared_ptr<validate::ValidatedModule const> _validated;
+        std::shared_ptr<Module const> _module; ///< _validated's module.
         std::span<ExternValue const> _imports;
         std::vector<TypeId> _types; ///< The TypeId of each of the module's types, by type index.
         uint32_t _address = 0;
     };
 } // namespace
 
-std::expected<uint32_t, InstantiationError> instantiate(Store& store,
-                                                        ICodeExecutor& executor,
-                                                        std::shared_ptr<binary::Module const> module,
-                                                        std::span<ExternValue const> imports)
+std::expected<uint32_t, InstantiationError> instantiate(
+    Store& store,
+    ICodeExecutor& executor,
+    std::shared_ptr<validate::ValidatedModule const> module,
+    std::span<ExternValue const> imports)
 {
     return Instantiation { store, executor, std::move(module), imports }.run();
 }

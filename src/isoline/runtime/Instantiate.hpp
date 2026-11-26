@@ -15,6 +15,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::runtime
 {
@@ -139,18 +140,18 @@ class ICodeExecutor
 /// failing one stay in the store, unreferenced). A trap from a global's initializer, an element
 /// segment, or later, leaves the instance in the store, as the spec's partial instantiation does.
 ///
-/// Precondition: @p module passed validateModule; it is not validated again here. Every external
+/// The instance keeps @p module, and its module is @p module's, sharing its ownership. Every external
 /// value in @p imports names an entity of @p store (checked), and there are no more of them than the
 /// module has imports (checked).
 /// @param store The store to allocate in.
 /// @param executor Evaluates constant expressions and runs the start function.
-/// @param module The validated module.
+/// @param module The validated module (checked: not null).
 /// @param imports The external values its imports bind to, in import order.
 /// @return The address of the new module instance, or why instantiation failed.
 [[nodiscard]] std::expected<uint32_t, InstantiationError> instantiate(
     Store& store,
     ICodeExecutor& executor,
-    std::shared_ptr<binary::Module const> module,
+    std::shared_ptr<validate::ValidatedModule const> module,
     std::span<ExternValue const> imports);
 
 } // namespace isoline::runtime

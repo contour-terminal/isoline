@@ -19,6 +19,7 @@ target_sources(isoline_core
         runtime/Instantiate.cpp
         runtime/Store.cpp
         validate/Subtyping.cpp
+        validate/ValidatedModule.cpp
         validate/Validator.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
@@ -37,12 +38,14 @@ target_sources(isoline_core
             interpreter/Numerics.hpp
             interpreter/ReferenceInterpreter.hpp
             interpreter/Simd.hpp
+            runtime/Abrupt.hpp
             runtime/Instantiate.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp
             runtime/Value.hpp
             validate/Subtyping.hpp
+            validate/ValidatedModule.hpp
             validate/ValidationError.hpp
             validate/Validator.hpp
             Version.hpp

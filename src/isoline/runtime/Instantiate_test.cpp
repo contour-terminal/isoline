@@ -19,6 +19,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
@@ -26,7 +27,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
-#include <isoline/validate/Validator.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::FeatureSet;
 using isoline::binary::AddressType;
@@ -37,10 +38,10 @@ using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
 using isoline::binary::Limits;
 using isoline::binary::MemoryType;
-using isoline::binary::Module;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
 using isoline::binary::TableType;
+using isoline::binary::testing::i32Const;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::runtime::Abrupt;
 using isoline::runtime::AllocationFailure;
@@ -59,6 +60,7 @@ using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::UnlimitedAllocator;
 using isoline::runtime::Value;
+using isoline::validate::ValidatedModule;
 
 namespace
 {
@@ -151,14 +153,12 @@ class TrappingExecutor final: public isoline::runtime::ICodeExecutor
 };
 
 /// Decodes and validates @p builder's module; fails the test unless it is valid.
-std::shared_ptr<Module const> moduleOf(ModuleBuilder const& builder,
-                                       FeatureSet const& features = FeatureSet::wasm2())
+std::shared_ptr<ValidatedModule const> moduleOf(ModuleBuilder const& builder,
+                                                FeatureSet const& features = FeatureSet::wasm2())
 {
-    auto const bytes = builder.build();
-    auto module = isoline::binary::decodeModule(bytes, features);
-    REQUIRE(module.has_value());
-    REQUIRE(isoline::validate::validateModule(*module, features).has_value());
-    return std::make_shared<Module const>(std::move(*module));
+    auto validated = ValidatedModule::load(builder.build(), features, isoline::binary::DecodeLimits {});
+    REQUIRE(validated.has_value());
+    return std::move(*validated);
 }
 
 /// The bytes of an active data segment for memory 0 at @p offset.
@@ -173,12 +173,6 @@ std::vector<uint8_t> activeData(uint8_t offset, std::vector<uint8_t> const& cont
     return entry;
 }
 
-/// The bytes of i32.const @p value; a one-byte signed LEB128, so @p value must be below 64.
-std::vector<uint8_t> i32Const(uint8_t value)
-{
-    return { 0x41, value };
-}
-
 /// The error of @p result, which must have failed.
 template <typename T>
 InstantiationError errorOf(std::expected<T, InstantiationError> const& result)
@@ -188,6 +182,21 @@ InstantiationError errorOf(std::expected<T, InstantiationError> const& result)
 }
 
 } // namespace
+
+TEST_CASE("Instantiate.keepsTheValidatedModule")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, {});
+    auto const validated = moduleOf(builder);
+    auto const allocator = UnlimitedAllocator {};
+    auto store = Store { allocator };
+    auto executor = StubExecutor {};
+    auto const address = instantiate(store, executor, validated, {});
+    REQUIRE(address.has_value());
+    auto const& instance = store.moduleInstance(*address);
+    CHECK(instance.validated == validated);
+    CHECK(instance.module.get() == &validated->module());
+}
 
 TEST_CASE("Instantiate.unknownImport")
 {
@@ -379,7 +388,7 @@ TEST_CASE("Instantiate.dataSegmentOutOfBounds")
         .data(activeData(0, { 0xAA, 0xBB }))
         .data({ 0x00, 0x41, 0xFF, 0xFF, 0x03, 0x0B, 0x02, 0x01, 0x02 });
     auto const module = moduleOf(builder);
-    REQUIRE(module->data[1].offset.front().c == 65'535);
+    REQUIRE(module->module().data[1].offset.front().c == 65'535);
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
     auto executor = StubExecutor {};
@@ -727,17 +736,14 @@ TEST_CASE("Instantiate.startThrows")
 
 TEST_CASE("Instantiate.i64DataOffset")
 {
-    // A memory of i64 addresses (memory64), which no Wasm 2.0 decoder yields: its data segment's
-    // offset is an i64.
+    // A memory of i64 addresses (memory64): its data segment's offset is an i64.
     auto builder = ModuleBuilder {};
-    builder.memory(atLeast(1)).data(activeData(3, { 0x2A }));
-    auto module = Module { *moduleOf(builder) };
-    module.memories[0].limits.addressType = AddressType::I64;
-    module.data[0].offset.front() = isoline::binary::Instruction { .opcode = Opcode::I64Const, .c = 5 };
+    builder.memory(Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I64 })
+        .data({ 0x00, 0x42, 0x05, 0x0B, 0x01, 0x2A }); // (data (i64.const 5) "\2A")
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
     auto executor = TrappingExecutor { std::numeric_limits<std::size_t>::max() };
-    auto const result = instantiate(store, executor, std::make_shared<Module const>(std::move(module)), {});
+    auto const result = instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {});
     REQUIRE(result.has_value());
     auto const& memory = store.memory(store.moduleInstance(*result).memories[0]);
     CHECK(memory.bytes[5] == std::byte { 0x2A });

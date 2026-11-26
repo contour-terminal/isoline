@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A guest must never make the host run out of memory (spec §7). What a module costs before it runs is
-// bounded by its size: decoding it holds at most BytesPerModuleByte bytes per byte of the module, and
-// so does each instantiation of it in the store, besides the memories and tables the allocator
-// approves. Each test below is a module shaped to amplify one entity the decoder or the store copies,
-// at a size where a cost per item that grows with another item's size (a name, a type) is orders of
+// bounded by its size: loading it (decoding and validating) holds at most BytesPerModuleByte bytes per byte
+// of the module, and so does each instantiation of it in the store, besides the memories and tables the
+// allocator approves. Each test below is a module shaped to amplify one entity the decoder or the store
+// copies, at a size where a cost per item that grows with another item's size (a name, a type) is orders of
 // magnitude over the bound, and a constant cost per item is well under it.
 
 #include <catch2/catch_test_macros.hpp>
@@ -26,7 +26,7 @@
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
-#include <isoline/validate/Validator.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::Feature;
 using isoline::FeatureSet;
@@ -42,7 +42,7 @@ using isoline::testing::AllocationScope;
 namespace
 {
 
-/// The bytes decoding, or one instantiation, may hold per byte of the module.
+/// The bytes loading, or one instantiation, may hold per byte of the module.
 ///
 /// Decoding turns each entity into fixed-size structs, and a vector holds up to twice what it uses,
 /// three times while it grows. Measured under Clang/libstdc++ with ASan, the densest module below is
@@ -54,7 +54,7 @@ namespace
 /// compact import item costs 5500 bytes per module byte, a 1000-param type per tag 5300.
 constexpr auto BytesPerModuleByte = std::size_t { 512 };
 
-/// What decoding, or instantiating, may hold whatever the module: the empty module's cost.
+/// What loading, or instantiating, may hold whatever the module: the empty module's cost.
 constexpr auto FixedBytes = std::size_t { 64 } * 1024;
 
 /// Whether a measured module is instantiated too, or only decoded and validated.
@@ -64,23 +64,22 @@ enum class Instantiation : uint8_t
     Run,  ///< Instantiate it in a fresh store as well, and bound what the store gained.
 };
 
-/// Decodes, validates and (when asked) instantiates @p bytes, and checks that neither decoding nor
+/// Decodes, validates and (when asked) instantiates @p bytes, and checks that neither loading nor
 /// instantiating held more than the bound for a module of their size.
 void checkLinear(std::vector<std::byte> const& bytes, FeatureSet features, Instantiation instantiation)
 {
     auto const budget = (BytesPerModuleByte * bytes.size()) + FixedBytes;
 
-    auto const decodeScope = AllocationScope {};
-    auto decoded = isoline::binary::decodeModule(bytes, features);
-    auto const decodeBytes = decodeScope.peakBytes();
-    REQUIRE(decoded.has_value());
-    CAPTURE(bytes.size(), budget, decodeBytes);
-    CHECK(decodeBytes <= budget);
-    REQUIRE(isoline::validate::validateModule(*decoded, features).has_value());
+    auto const loadScope = AllocationScope {};
+    auto loaded = isoline::validate::ValidatedModule::load(bytes, features, isoline::binary::DecodeLimits {});
+    auto const loadBytes = loadScope.peakBytes();
+    REQUIRE(loaded.has_value());
+    CAPTURE(bytes.size(), budget, loadBytes);
+    CHECK(loadBytes <= budget);
     if (instantiation == Instantiation::Skip)
         return;
 
-    auto const module = std::make_shared<isoline::binary::Module const>(std::move(*decoded));
+    auto const module = std::move(*loaded);
     auto const allocator = isoline::runtime::UnlimitedAllocator {};
     auto store = isoline::runtime::Store { allocator };
     auto interpreter = isoline::interpreter::ReferenceInterpreter {};

@@ -39,6 +39,8 @@ using isoline::binary::Mutability;
 using isoline::binary::TableType;
 using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
+using isoline::validate::FrameShape;
+using isoline::validate::ModuleShape;
 using isoline::validate::NoFunction;
 using isoline::validate::NoInstruction;
 using isoline::validate::specMessage;
@@ -62,8 +64,8 @@ Limits between(uint64_t min, uint64_t max)
 }
 
 /// Decodes and validates @p builder's module; fails the test when it does not decode.
-std::expected<void, ValidationError> validated(ModuleBuilder const& builder,
-                                               FeatureSet const& features = FeatureSet::wasm2())
+std::expected<ModuleShape, ValidationError> validated(ModuleBuilder const& builder,
+                                                      FeatureSet const& features = FeatureSet::wasm2())
 {
     auto const bytes = builder.build();
     auto const module = decodeModule(bytes, features);
@@ -304,6 +306,119 @@ TEST_CASE("Validator.elseResetsReachability")
     CHECK(errorOf(ifOf({ 0x42, 0x01 })) == ValidationErrorCode::TypeMismatch);
     CHECK(errorOf(ifOf({})) == ValidationErrorCode::TypeMismatch);
     CHECK(errorOf(ifOf({ 0x6A })) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.frameShape")
+{
+    // (block (block i32.const 1 i32.const 2 drop drop)): two operands at most, two labels below the
+    // function's own.
+    auto const nestedPushes =
+        voidFunctionOf({ 0x02, 0x40, 0x02, 0x40, 0x41, 0x01, 0x41, 0x02, 0x1A, 0x1A, 0x0B, 0x0B });
+    auto const shape = validated(nestedPushes, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    REQUIRE(shape->functions.size() == 1);
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 2 });
+}
+
+TEST_CASE("Validator.frameShapePerFunction")
+{
+    // One shape per code entry, in order; an empty body has none of either, and the Unknown operands
+    // of unreachable code count like any other.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .function(0, {}, {})
+        .function(0, {}, { 0x00, 0x1A, 0x1A, 0x1A }) // unreachable drop drop drop: pops, pushes nothing
+        .function(0, {}, { 0x00, 0x41, 0x01, 0x41, 0x02, 0x41, 0x03, 0x1A, 0x1A, 0x1A });
+    auto const shape = validated(builder, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions
+          == std::vector<FrameShape> {
+              FrameShape {}, FrameShape {}, FrameShape { .maxOperands = 3, .maxLabels = 0 } });
+}
+
+TEST_CASE("Validator.frameShapeOfDeepNesting")
+{
+    // 100'000 nested blocks: the depth is recorded without recursing.
+    constexpr auto Depth = 100'000;
+    auto body = std::vector<uint8_t> {};
+    body.reserve(std::size_t { 3 } * Depth);
+    for ([[maybe_unused]] auto const level: std::views::iota(0, Depth))
+        body.insert(body.end(), { 0x02, 0x40 });
+    body.insert(body.end(), Depth, 0x0B);
+    auto const shape = validated(voidFunctionOf(std::move(body)), FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 0, .maxLabels = Depth });
+}
+
+TEST_CASE("Validator.frameShapeCountsRestoredUnknowns")
+{
+    // unreachable br_if 0 to the function's label of [i32 i32]: br_if pops its operands, Unknowns of
+    // the polymorphic stack, and pushes them back (popAndRestore), and those are the body's only
+    // operands.
+    auto const restored =
+        functionOf(FuncType { .params = {}, .results = { I32, I32 } }, { 0x00, 0x0D, 0x00 });
+    auto const shape = validated(restored, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 0 });
+}
+
+TEST_CASE("Validator.frameShapeOfBlockParameters")
+{
+    // i32.const 1 block (param i32) (result i32) i32.const 2 i32.add end drop: the block's parameter
+    // stays an operand inside it, beneath the constant.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .type(FuncType { .params = { I32 }, .results = { I32 } })
+        .function(0, {}, { 0x41, 0x01, 0x02, 0x01, 0x41, 0x02, 0x6A, 0x0B, 0x1A });
+    auto const shape = validated(builder, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 1 });
+}
+
+TEST_CASE("Validator.frameShapeOfIfElse")
+{
+    // i32.const 0 if (result i32) i32.const 1 else i32.const 3 i32.const 4 i32.const 5 i32.add i32.add
+    // end drop: the else branch, which starts again at the if's height, is the deeper one.
+    auto const ifElse = voidFunctionOf({ 0x41,
+                                         0x00,
+                                         0x04,
+                                         0x7F,
+                                         0x41,
+                                         0x01,
+                                         0x05,
+                                         0x41,
+                                         0x03,
+                                         0x41,
+                                         0x04,
+                                         0x41,
+                                         0x05,
+                                         0x6A,
+                                         0x6A,
+                                         0x0B,
+                                         0x1A });
+    auto const shape = validated(ifElse, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 3, .maxLabels = 1 });
+}
+
+TEST_CASE("Validator.frameShapeOfLoops")
+{
+    // loop block loop i32.const 1 drop end end end: a loop is a label like a block.
+    auto const loops =
+        voidFunctionOf({ 0x03, 0x40, 0x02, 0x40, 0x03, 0x40, 0x41, 0x01, 0x1A, 0x0B, 0x0B, 0x0B });
+    auto const shape = validated(loops, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 1, .maxLabels = 3 });
+}
+
+TEST_CASE("Validator.frameShapeOfTryTable")
+{
+    // block try_table (catch_all 0) i32.const 1 i32.const 2 drop drop end end: a try_table is a label.
+    auto const tryTable = voidFunctionOf(
+        { 0x02, 0x40, 0x1F, 0x40, 0x01, 0x02, 0x00, 0x41, 0x01, 0x41, 0x02, 0x1A, 0x1A, 0x0B, 0x0B });
+    auto const shape = validated(tryTable, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 2 });
 }
 
 TEST_CASE("Validator.validateDeepNesting")

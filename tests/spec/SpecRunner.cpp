@@ -48,8 +48,8 @@
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/Subtyping.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
-#include <isoline/validate/Validator.hpp>
 
 namespace isoline::spectest
 {
@@ -248,13 +248,13 @@ namespace
                     return expectFailure(command, perform(command.action), Stage::Execute);
                 case CommandKind::AssertTrapModule:
                 case CommandKind::AssertUninstantiable:
-                    return expectFailure(command, instantiateFile(command.file), Stage::Instantiate);
+                    return expectFailure(command, instantiateCommandModule(command), Stage::Instantiate);
                 case CommandKind::AssertInvalid:
-                    return expectFailure(command, loadModule(command.file), Stage::Validate);
+                    return expectFailure(command, loadModule(command), Stage::Validate);
                 case CommandKind::AssertMalformed:
-                    return expectFailure(command, loadModule(command.file), Stage::Decode);
+                    return expectFailure(command, loadModule(command), Stage::Decode);
                 case CommandKind::AssertUnlinkable:
-                    return expectFailure(command, instantiateFile(command.file), Stage::Link);
+                    return expectFailure(command, instantiateCommandModule(command), Stage::Link);
                 case CommandKind::AssertException:
                     return expectFailure(command, perform(command.action), Stage::Exception);
                 case CommandKind::AssertInvalidCustom: return assertInvalidCustom(command);
@@ -283,10 +283,10 @@ namespace
         /// refused with a message starting with the expected one.
         [[nodiscard]] Outcome assertInvalidCustom(Command const& command) const
         {
-            auto const module = loadModule(command.file);
+            auto const module = loadModule(command);
             if (!module)
                 return checkFailure(Stage::Custom, command.text, module.error());
-            auto const& errors = (*module)->customErrors;
+            auto const& errors = (*module)->module().customErrors;
             auto const matches = [&](binary::CustomSectionError const& error) {
                 return binary::specMessage(error.code).starts_with(command.text);
             };
@@ -300,21 +300,38 @@ namespace
                 Stage::Custom, command.text, Failure { .stage = Stage::Custom, .message = message });
         }
 
-        /// Reads, decodes and validates a module file.
-        [[nodiscard]] std::expected<std::shared_ptr<binary::Module const>, Failure> loadModule(
-            std::string const& file) const
+        /// The bytes of a command's module.
+        [[nodiscard]] std::expected<std::vector<std::byte>, Failure> moduleBytes(Command const& command) const
         {
-            auto const bytes = readFile(_directory / file);
-            if (!bytes)
-                return std::unexpected { bytes.error() };
-            auto module = binary::decodeModule(*bytes, _features);
-            if (!module)
-                return std::unexpected { Failure { .stage = Stage::Decode,
-                                                   .message = binary::specMessage(module.error()) } };
-            if (auto const valid = validate::validateModule(*module, _features); !valid)
-                return std::unexpected { Failure { .stage = Stage::Validate,
-                                                   .message = validate::specMessage(valid.error()) } };
-            return std::make_shared<binary::Module const>(std::move(*module));
+            return readFile(_directory / command.file);
+        }
+
+        /// Decodes and validates a module.
+        [[nodiscard]] std::expected<std::shared_ptr<validate::ValidatedModule const>, Failure> loadModule(
+            std::span<std::byte const> bytes) const
+        {
+            struct Describe
+            {
+                Failure operator()(binary::DecodeError const& error) const
+                {
+                    return Failure { .stage = Stage::Decode, .message = binary::specMessage(error) };
+                }
+                Failure operator()(validate::ValidationError const& error) const
+                {
+                    return Failure { .stage = Stage::Validate, .message = validate::specMessage(error) };
+                }
+            };
+            return validate::ValidatedModule::load(bytes, _features, binary::DecodeLimits {})
+                .transform_error(
+                    [](validate::ModuleError const& error) { return std::visit(Describe {}, error); });
+        }
+
+        /// Decodes and validates a command's module.
+        [[nodiscard]] std::expected<std::shared_ptr<validate::ValidatedModule const>, Failure> loadModule(
+            Command const& command) const
+        {
+            return moduleBytes(command).and_then(
+                [this](std::vector<std::byte> const& bytes) { return loadModule(bytes); });
         }
 
         /// Resolves a module's imports against the registered modules, in import order.
@@ -343,9 +360,9 @@ namespace
         }
 
         [[nodiscard]] std::expected<uint32_t, Failure> instantiateModule(
-            std::shared_ptr<binary::Module const> module)
+            std::shared_ptr<validate::ValidatedModule const> module)
         {
-            auto const imports = resolveImports(*module);
+            auto const imports = resolveImports(module->module());
             if (!imports)
                 return std::unexpected { imports.error() };
             auto const instance = runtime::instantiate(_store, _interpreter, std::move(module), *imports);
@@ -372,9 +389,9 @@ namespace
             return std::unexpected { std::visit(Describe {}, instance.error()) };
         }
 
-        [[nodiscard]] std::expected<uint32_t, Failure> instantiateFile(std::string const& file)
+        [[nodiscard]] std::expected<uint32_t, Failure> instantiateCommandModule(Command const& command)
         {
-            return loadModule(file).and_then([&](std::shared_ptr<binary::Module const> module) {
+            return loadModule(command).and_then([&](std::shared_ptr<validate::ValidatedModule const> module) {
                 return instantiateModule(std::move(module));
             });
         }
@@ -384,7 +401,7 @@ namespace
         [[nodiscard]] Outcome defineModule(Command const& command)
         {
             _current = std::nullopt; // the commands after a module that failed fail too
-            auto module = loadModule(command.file);
+            auto module = loadModule(command);
             if (!module)
                 return std::unexpected { describeFailure(module.error()) };
             if (command.name)
@@ -402,7 +419,7 @@ namespace
         /// ModuleInstance.
         [[nodiscard]] Outcome defineDefinition(Command const& command)
         {
-            auto module = loadModule(command.file);
+            auto module = loadModule(command);
             if (!module)
                 return std::unexpected { describeFailure(module.error()) };
             if (command.name)
@@ -503,7 +520,7 @@ namespace
         std::optional<uint32_t> _current;
         std::map<std::string, uint32_t, std::less<>> _named;
         std::map<std::string, uint32_t, std::less<>> _registered;
-        std::map<std::string, std::shared_ptr<binary::Module const>, std::less<>> _definitions;
+        std::map<std::string, std::shared_ptr<validate::ValidatedModule const>, std::less<>> _definitions;
     };
 
     /// Runs the script in @p directory.
