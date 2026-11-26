@@ -57,21 +57,24 @@ foreach(usage IN ITEMS "1" "1;--features" "1;--features;wasm4" "x;--features;was
 endforeach()
 
 # The coverage ratchet's checker, tested on fixture reports: it needs Python, not a coverage build.
+# The Python tests name the interpreter by its path, not as the imported target Python3::Interpreter:
+# CMake runs an executable target through CMAKE_CROSSCOMPILING_EMULATOR, and a cross build's emulator
+# (qemu, wine) cannot run the host's python. A path runs as it is, on the host, in every tree.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME coverage-check-selftest
-             COMMAND Python3::Interpreter -I "${PROJECT_SOURCE_DIR}/scripts/coverage-check_test.py")
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/coverage-check_test.py")
     set_tests_properties(coverage-check-selftest PROPERTIES LABELS lint)
     # The spec importer's translation: which commands become skip lines, and which fail the import.
     add_test(NAME import-spec-tests-selftest
-             COMMAND Python3::Interpreter -I "${PROJECT_SOURCE_DIR}/scripts/import-spec-tests_test.py")
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/import-spec-tests_test.py")
     set_tests_properties(import-spec-tests-selftest PROPERTIES LABELS lint)
     # docs/conformance.md lists exactly the excluded files and the assertions the GC cut skips.
     add_test(NAME conformance-doc-current
-             COMMAND Python3::Interpreter -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance.py")
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance.py")
     set_tests_properties(conformance-doc-current PROPERTIES LABELS lint)
     add_test(NAME check-conformance-selftest
-             COMMAND Python3::Interpreter -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance_test.py")
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance_test.py")
     set_tests_properties(check-conformance-selftest PROPERTIES LABELS lint)
 endif()
 

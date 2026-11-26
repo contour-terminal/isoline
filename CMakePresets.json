@@ -41,6 +41,15 @@
             }
         },
         {
+            "name": "linux-host",
+            "hidden": true,
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
             "name": "clang-common",
             "hidden": true,
             "inherits": [
@@ -128,6 +137,49 @@
                 "CMAKE_CXX_COMPILER": "cl",
                 "ISOLINE_FETCH_DEPS": "ON"
             }
+        },
+        {
+            "name": "clangcl-cross-debug",
+            "displayName": "Windows x64 cross (clang-cl) Debug",
+            "description": "Windows x64 from Linux: clang-cl against an msvc-wine install; tests run under wine",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "debug"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clangcl-cross.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
+            "name": "aarch64-cross-common",
+            "hidden": true,
+            "description": "Linux aarch64 from an x86_64 Linux host against a Debian sysroot; tests run under qemu-user",
+            "inherits": [
+                "isoline-common",
+                "linux-host"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu-clang.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
+            "name": "clang-aarch64-cross",
+            "displayName": "Linux aarch64 cross (Clang) Debug",
+            "inherits": [
+                "aarch64-cross-common",
+                "debug"
+            ]
+        },
+        {
+            "name": "clang-aarch64-cross-release",
+            "displayName": "Linux aarch64 cross (Clang) Release",
+            "inherits": [
+                "aarch64-cross-common",
+                "release"
+            ]
         }
     ],
     "buildPresets": [
@@ -136,7 +188,10 @@
         { "name": "clang-coverage", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
         { "name": "macos-clang", "configurePreset": "macos-clang" },
-        { "name": "msvc-debug", "configurePreset": "msvc-debug" }
+        { "name": "msvc-debug", "configurePreset": "msvc-debug" },
+        { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
+        { "name": "clang-aarch64-cross", "configurePreset": "clang-aarch64-cross" },
+        { "name": "clang-aarch64-cross-release", "configurePreset": "clang-aarch64-cross-release" }
     ],
     "testPresets": [
         {
@@ -151,6 +206,9 @@
         { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
-        { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" }
+        { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" },
+        { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },
+        { "name": "clang-aarch64-cross", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross" },
+        { "name": "clang-aarch64-cross-release", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross-release" }
     ]
 }
