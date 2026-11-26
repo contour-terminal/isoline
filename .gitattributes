@@ -1,0 +1,3 @@
+# The imported spec suite: modules are binary, scripts are LF text on every platform.
+tests/spec/**/*.wasm binary
+tests/spec/**/*.isotest text eol=lf

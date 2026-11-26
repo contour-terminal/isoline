@@ -1,0 +1,11 @@
+{
+  "Exclude": [
+    "^vendor/",
+    "^out/",
+    "^\\.superpowers/",
+    "\\.wasm$"
+  ],
+  "Disable": {
+    "IndentSize": true
+  }
+}
