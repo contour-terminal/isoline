@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@ namespace isoline::spectest
 namespace
 {
     using runtime::Value;
+    using Pattern = ExpectedValue::Pattern;
 
     /// The names of the stages, by Stage.
     constexpr auto StageNames = std::to_array<std::string_view>({
@@ -30,19 +32,111 @@ namespace
         "link",
         "instantiate",
         "execute",
+        "exception",
+        "custom",
     });
 
-    /// Whether @p actual is a @p Float whose bits, under @p mask, are @p required.
+    // A NaN is canonical when, apart from the sign, only the quiet bit is set, and arithmetic when
+    // at least the quiet bit is set.
+    constexpr auto Abs32 = uint64_t { 0x7fff'ffff };
+    constexpr auto Quiet32 = uint64_t { 0x7fc0'0000 };
+    constexpr auto Abs64 = uint64_t { 0x7fff'ffff'ffff'ffff };
+    constexpr auto Quiet64 = uint64_t { 0x7ff8'0000'0000'0000 };
+
+    /// Whether @p bits, a float of the NaN pattern's width, are a NaN that @p nan allows.
+    [[nodiscard]] bool isNan(Pattern nan, uint64_t bits)
+    {
+        switch (nan)
+        {
+            case Pattern::CanonicalNan32: return (bits & Abs32) == Quiet32;
+            case Pattern::ArithmeticNan32: return (bits & Quiet32) == Quiet32;
+            case Pattern::CanonicalNan64: return (bits & Abs64) == Quiet64;
+            case Pattern::ArithmeticNan64: return (bits & Quiet64) == Quiet64;
+            default: return false;
+        }
+    }
+
+    /// Lane @p index of @p value, split into lanes of @p width bits.
+    [[nodiscard]] uint64_t laneBits(runtime::V128 const& value, unsigned width, std::size_t index)
+    {
+        auto const offset = index * width;
+        auto const word = value.lanes.at(offset / 64) >> (offset % 64);
+        return width == 64 ? word : word & ((uint64_t { 1 } << width) - 1);
+    }
+
+    /// Whether each lane of @p actual matches its pattern in @p expected.
+    [[nodiscard]] bool lanesMatch(ExpectedValue const& expected, Value const& actual)
+    {
+        auto const* const vector = std::get_if<runtime::V128>(&actual);
+        auto const* const exactBits = std::get_if<runtime::V128>(&expected.value);
+        if (!vector || !exactBits)
+            return false;
+        auto const& format = laneFormat(expected.laneShape);
+        return std::ranges::all_of(std::views::iota(std::size_t { 0 }, format.count), [&](std::size_t index) {
+            auto const lane = laneBits(*vector, format.width, index);
+            auto const lanePattern = expected.lanes.at(index);
+            return lanePattern == Pattern::Exact ? lane == laneBits(*exactBits, format.width, index)
+                                                 : isNan(lanePattern, lane);
+        });
+    }
+
+    /// The bits of @p actual when it is a @p Float, else nullopt.
     template <typename Float>
-    [[nodiscard]] bool isNan(Value const& actual, decltype(Float::bits) mask, decltype(Float::bits) required)
+    [[nodiscard]] std::optional<uint64_t> floatBits(Value const& actual)
     {
         auto const* const value = std::get_if<Float>(&actual);
-        return value && (value->bits & mask) == required;
+        return value ? std::optional<uint64_t> { value->bits } : std::nullopt;
+    }
+
+    [[nodiscard]] std::string describeLanes(ExpectedValue const& expected)
+    {
+        auto const& format = laneFormat(expected.laneShape);
+        auto text = std::string { format.prefix };
+        auto const* const exactBits = std::get_if<runtime::V128>(&expected.value);
+        for (auto const index: std::views::iota(std::size_t { 0 }, format.count))
+        {
+            if (index != 0)
+                text += ',';
+            switch (expected.lanes.at(index))
+            {
+                case Pattern::CanonicalNan32:
+                case Pattern::CanonicalNan64: text += "nan:canonical"; break;
+                case Pattern::ArithmeticNan32:
+                case Pattern::ArithmeticNan64: text += "nan:arithmetic"; break;
+                default:
+                    text += std::format("{:x}", exactBits ? laneBits(*exactBits, format.width, index) : 0);
+                    break;
+            }
+        }
+        return text;
+    }
+
+    /// The tokens of @p values, as @p describeOne spells each, separated by @p separator, or "(none)".
+    template <typename T, typename Describe>
+    [[nodiscard]] std::string joined(std::span<T const> values,
+                                     Describe describeOne,
+                                     std::string_view separator)
+    {
+        auto text = std::string {};
+        for (auto const& value: values)
+        {
+            text += text.empty() ? std::string_view {} : separator;
+            text += describeOne(value);
+        }
+        return text.empty() ? std::string { "(none)" } : text;
+    }
+
+    [[nodiscard]] std::string describeExpected(ExpectedValue const& expected);
+
+    [[nodiscard]] std::string describeEither(ExpectedValue const& expected)
+    {
+        return std::format(
+            "either({})",
+            joined(std::span<ExpectedValue const> { expected.alternatives }, describeExpected, ";"));
     }
 
     [[nodiscard]] std::string describeExpected(ExpectedValue const& expected)
     {
-        using Pattern = ExpectedValue::Pattern;
         switch (expected.pattern)
         {
             case Pattern::Exact: return spectest::describe(expected.value);
@@ -51,19 +145,13 @@ namespace
             case Pattern::CanonicalNan64: return "f64:nan:canonical";
             case Pattern::ArithmeticNan64: return "f64:nan:arithmetic";
             case Pattern::AnyFunctionRef: return "ref.func";
+            case Pattern::AnyNullRef: return "ref.null";
+            case Pattern::Lanes: return describeLanes(expected);
+            case Pattern::Either: return describeEither(expected);
         }
         return "?";
     }
 
-    /// The tokens of @p values, as @p describeOne spells each, separated by spaces, or "(none)".
-    template <typename T, typename Describe>
-    [[nodiscard]] std::string joined(std::span<T const> values, Describe describeOne)
-    {
-        auto text = std::string {};
-        for (auto const& value: values)
-            text += (text.empty() ? "" : " ") + describeOne(value);
-        return text.empty() ? std::string { "(none)" } : text;
-    }
 } // namespace
 
 std::string_view stageName(Stage stage)
@@ -73,26 +161,29 @@ std::string_view stageName(Stage stage)
 
 bool matches(ExpectedValue const& expected, Value const& actual)
 {
-    using Pattern = ExpectedValue::Pattern;
-    // Canonical: only the quiet bit of the payload; arithmetic: at least the quiet bit. Either sign.
-    constexpr auto Abs32 = uint32_t { 0x7fff'ffff };
-    constexpr auto Quiet32 = uint32_t { 0x7fc0'0000 };
-    constexpr auto Abs64 = uint64_t { 0x7fff'ffff'ffff'ffff };
-    constexpr auto Quiet64 = uint64_t { 0x7ff8'0000'0000'0000 };
+    auto const* const actualRef = std::get_if<runtime::Ref>(&actual);
     switch (expected.pattern)
     {
-        case Pattern::CanonicalNan32: return isNan<runtime::F32>(actual, Abs32, Quiet32);
-        case Pattern::ArithmeticNan32: return isNan<runtime::F32>(actual, Quiet32, Quiet32);
-        case Pattern::CanonicalNan64: return isNan<runtime::F64>(actual, Abs64, Quiet64);
-        case Pattern::ArithmeticNan64: return isNan<runtime::F64>(actual, Quiet64, Quiet64);
-        case Pattern::AnyFunctionRef: {
-            auto const* const ref = std::get_if<runtime::Ref>(&actual);
-            return ref && ref->kind == runtime::RefKind::Func;
+        case Pattern::CanonicalNan32:
+        case Pattern::ArithmeticNan32: {
+            auto const bits = floatBits<runtime::F32>(actual);
+            return bits && isNan(expected.pattern, *bits);
         }
+        case Pattern::CanonicalNan64:
+        case Pattern::ArithmeticNan64: {
+            auto const bits = floatBits<runtime::F64>(actual);
+            return bits && isNan(expected.pattern, *bits);
+        }
+        case Pattern::AnyFunctionRef: return actualRef && actualRef->kind == runtime::RefKind::Func;
+        case Pattern::AnyNullRef: return actualRef && actualRef->kind == runtime::RefKind::Null;
+        case Pattern::Lanes: return lanesMatch(expected, actual);
+        case Pattern::Either:
+            return std::ranges::any_of(expected.alternatives, [&](ExpectedValue const& alternative) {
+                return matches(alternative, actual);
+            });
         case Pattern::Exact: break;
     }
     auto const* const expectedRef = std::get_if<runtime::Ref>(&expected.value);
-    auto const* const actualRef = std::get_if<runtime::Ref>(&actual);
     if (!expectedRef || !actualRef)
         return expected.value == actual;
     // A reference is compared by what it refers to; a null one by the heap it is the null of.
@@ -151,12 +242,12 @@ std::string describe(Value const& value)
 
 std::string describeAll(std::span<Value const> values)
 {
-    return joined(values, [](Value const& value) { return describe(value); });
+    return joined(values, [](Value const& value) { return describe(value); }, " ");
 }
 
 std::string describeAll(std::span<ExpectedValue const> values)
 {
-    return joined(values, describeExpected);
+    return joined(values, describeExpected, " ");
 }
 
 } // namespace isoline::spectest

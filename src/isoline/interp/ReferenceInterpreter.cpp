@@ -118,7 +118,7 @@ namespace
                 if constexpr (requires { number.bits; })
                     return number.bits;
                 else
-                    core::todo("rawBits of a value that is no number");
+                    core::todo("rawBits of a value that is no number"); // uncovered(raw-bits)
             },
             value);
     }
@@ -132,11 +132,13 @@ namespace
             case ValueKind::I64: return I64 { raw };
             case ValueKind::F32: return F32 { static_cast<uint32_t>(raw) };
             case ValueKind::F64: return F64 { raw };
-            case ValueKind::V128:
-            case ValueKind::Ref: break;
+            case ValueKind::V128:       // uncovered(number-of)
+            case ValueKind::Ref: break; // uncovered(number-of)
         }
+        // uncovered-begin(number-of)
         core::todo("numberOf a kind that is no number");
     }
+    // uncovered-end(number-of)
 
     /// Whether @p values are one value of each kind @p types names, in order.
     [[nodiscard]] bool haveKinds(std::span<Value const> values, std::span<binary::ValueType const> types)
@@ -662,10 +664,12 @@ namespace
                 case NumericShape::Test: push(applyTest(opcode, pop())); return {};
                 case NumericShape::Binary: return binaryNumeric(opcode).transform(pushResult);
                 case NumericShape::Compare: push(compareNumeric(opcode)); return {};
-                case NumericShape::None: break;
+                case NumericShape::None: break; // uncovered(numeric-shape-none)
             }
+            // uncovered-begin(numeric-shape-none)
             core::todo(binary::opcodeInfo(opcode).text);
         }
+        // uncovered-end(numeric-shape-none)
 
         /// Executes one instruction of the current frame, whose pc points past it already.
         [[nodiscard]] Step execute(Instruction const& instruction)
@@ -754,11 +758,13 @@ namespace
                 case Opcode::RefIsNull: push(I32 { popRef().kind == RefKind::Null ? 1U : 0U }); return {};
                 case Opcode::RefFunc: push(functionReference(instance(), instruction.a)); return {};
 
-                default: break;
+                default: break; // uncovered(execute-default)
             }
+            // uncovered-begin(execute-default)
             // Every instruction a validated Wasm 2.0 body holds has a case above or a table row.
             core::todo(binary::opcodeInfo(opcode).text);
         }
+        // uncovered-end(execute-default)
 
         Store& _store;
         uint32_t& _depth;
@@ -823,12 +829,14 @@ std::expected<Value, Trap> ReferenceInterpreter::evaluateConst(Store& store,
                 stack.pop_back();
                 auto const result = applyBinary(instruction.opcode, lhs, rhs);
                 if (!result)
-                    return std::unexpected { result.error() };
+                    return std::unexpected { result.error() }; // uncovered(trapping-constant)
                 stack.push_back(*result);
             }
         }
     }
+    // uncovered-begin(constant-without-end)
     core::todo("a constant expression without end");
 }
+// uncovered-end(constant-without-end)
 
 } // namespace isoline::interp

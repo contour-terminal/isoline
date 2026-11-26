@@ -853,7 +853,7 @@ namespace
                 described =
                     readGlobalType().transform([&](GlobalType const& global) { import.global = global; });
                 break;
-            case ExternKind::Tag: break; // readExternKind decodes no tags in P1
+            case ExternKind::Tag: break; // uncovered(tag-import): readExternKind decodes no tags in P1
         }
         return described.transform([&] { return std::move(import); });
     }

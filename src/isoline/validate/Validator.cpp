@@ -732,11 +732,13 @@ namespace
                         })
                         .transform([this] { push(binary::FuncRef); });
 
-                default: break;
+                default: break; // uncovered(special-default)
             }
+            // uncovered-begin(special-default)
             // Every Special opcode has a case above or a row in MemoryAccessTable.
             core::todo(binary::opcodeInfo(instruction.opcode).text);
         }
+        // uncovered-end(special-default)
 
         [[nodiscard]] Check call(FuncType const& type)
         {

@@ -45,11 +45,13 @@ inline constexpr auto LastFeature = Feature::CustomPageSizes;
 /// The number of Feature enumerators, as LastFeature counts them.
 inline constexpr auto FeatureCount = static_cast<std::size_t>(LastFeature) + 1;
 
-/// Whether a feature is enabled.
-enum class FeatureState : uint8_t
+/// The oldest standard a proposal is part of, oldest first, so that a standard's features are the
+/// rows of its enumerator and of every one before it.
+enum class Standard : uint8_t
 {
-    Off,
-    On,
+    Wasm2,    ///< Part of WebAssembly 2.0.
+    Wasm3,    ///< Added by WebAssembly 3.0.
+    Proposal, ///< In no released standard yet.
 };
 
 /// One row of FeatureTable: what is known about a single proposal.
@@ -57,33 +59,33 @@ struct FeatureRow
 {
     Feature feature;       ///< The proposal this row describes; equal to the row's index.
     std::string_view name; ///< The proposal's name, as its repository spells it.
-    FeatureState inWasm2;  ///< On when the proposal is part of WebAssembly 2.0.
+    Standard standard;     ///< The oldest standard the proposal is part of.
 };
 
 /// Every proposal Isoline knows, one row per Feature enumerator, in enumerator order.
 inline constexpr auto FeatureTable = std::to_array<FeatureRow>({
-    { .feature = Feature::SignExtension, .name = "sign-extension", .inWasm2 = FeatureState::On },
+    { .feature = Feature::SignExtension, .name = "sign-extension", .standard = Standard::Wasm2 },
     { .feature = Feature::NonTrappingFloatToInt,
       .name = "nontrapping-float-to-int",
-      .inWasm2 = FeatureState::On },
-    { .feature = Feature::MultiValue, .name = "multi-value", .inWasm2 = FeatureState::On },
-    { .feature = Feature::ReferenceTypes, .name = "reference-types", .inWasm2 = FeatureState::On },
-    { .feature = Feature::BulkMemory, .name = "bulk-memory", .inWasm2 = FeatureState::On },
-    { .feature = Feature::Simd, .name = "simd", .inWasm2 = FeatureState::On },
-    { .feature = Feature::RelaxedSimd, .name = "relaxed-simd", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::TailCall, .name = "tail-call", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::ExtendedConst, .name = "extended-const", .inWasm2 = FeatureState::Off },
+      .standard = Standard::Wasm2 },
+    { .feature = Feature::MultiValue, .name = "multi-value", .standard = Standard::Wasm2 },
+    { .feature = Feature::ReferenceTypes, .name = "reference-types", .standard = Standard::Wasm2 },
+    { .feature = Feature::BulkMemory, .name = "bulk-memory", .standard = Standard::Wasm2 },
+    { .feature = Feature::Simd, .name = "simd", .standard = Standard::Wasm2 },
+    { .feature = Feature::RelaxedSimd, .name = "relaxed-simd", .standard = Standard::Wasm3 },
+    { .feature = Feature::TailCall, .name = "tail-call", .standard = Standard::Wasm3 },
+    { .feature = Feature::ExtendedConst, .name = "extended-const", .standard = Standard::Wasm3 },
     { .feature = Feature::TypedFunctionReferences,
       .name = "function-references",
-      .inWasm2 = FeatureState::Off },
-    { .feature = Feature::MultiMemory, .name = "multi-memory", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::ExceptionHandling, .name = "exception-handling", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::Memory64, .name = "memory64", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::BranchHinting, .name = "branch-hinting", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::Annotations, .name = "annotations", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::WideArithmetic, .name = "wide-arithmetic", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::CompactImports, .name = "compact-imports", .inWasm2 = FeatureState::Off },
-    { .feature = Feature::CustomPageSizes, .name = "custom-page-sizes", .inWasm2 = FeatureState::Off },
+      .standard = Standard::Wasm3 },
+    { .feature = Feature::MultiMemory, .name = "multi-memory", .standard = Standard::Wasm3 },
+    { .feature = Feature::ExceptionHandling, .name = "exception-handling", .standard = Standard::Wasm3 },
+    { .feature = Feature::Memory64, .name = "memory64", .standard = Standard::Wasm3 },
+    { .feature = Feature::BranchHinting, .name = "branch-hinting", .standard = Standard::Wasm3 },
+    { .feature = Feature::Annotations, .name = "annotations", .standard = Standard::Wasm3 },
+    { .feature = Feature::WideArithmetic, .name = "wide-arithmetic", .standard = Standard::Proposal },
+    { .feature = Feature::CompactImports, .name = "compact-imports", .standard = Standard::Proposal },
+    { .feature = Feature::CustomPageSizes, .name = "custom-page-sizes", .standard = Standard::Proposal },
 });
 
 static_assert(
@@ -118,16 +120,17 @@ class FeatureSet
     /// @return A set with every feature off.
     [[nodiscard]] static constexpr FeatureSet none() noexcept { return FeatureSet {}; }
 
-    /// WebAssembly 2.0: every feature whose FeatureTable row has inWasm2 On.
+    /// WebAssembly 2.0: every feature whose FeatureTable row is of Standard::Wasm2.
     /// @return A set with exactly the WebAssembly 2.0 features on.
-    [[nodiscard]] static constexpr FeatureSet wasm2() noexcept
-    {
-        auto set = none();
-        for (auto const& row: FeatureTable)
-            if (row.inWasm2 == FeatureState::On)
-                set = set.with(row.feature);
-        return set;
-    }
+    [[nodiscard]] static constexpr FeatureSet wasm2() noexcept { return upTo(Standard::Wasm2); }
+
+    /// WebAssembly 3.0: every feature of Standard::Wasm2 or Standard::Wasm3.
+    /// @return A set with exactly the WebAssembly 3.0 features on.
+    [[nodiscard]] static constexpr FeatureSet wasm3() noexcept { return upTo(Standard::Wasm3); }
+
+    /// Every feature Isoline knows, the proposals of no released standard included.
+    /// @return A set with every FeatureTable row on.
+    [[nodiscard]] static constexpr FeatureSet all() noexcept { return upTo(Standard::Proposal); }
 
     /// This set with one more feature on.
     /// @param feature The feature to enable.
@@ -157,6 +160,16 @@ class FeatureSet
     static_assert(FeatureTable.size() <= 32, "FeatureSet stores one bit per Feature in a uint32_t");
 
     constexpr explicit FeatureSet(uint32_t bits) noexcept: _bits { bits } {}
+
+    /// Every feature whose standard is @p newest or older.
+    [[nodiscard]] static constexpr FeatureSet upTo(Standard newest) noexcept
+    {
+        auto set = none();
+        for (auto const& row: FeatureTable)
+            if (row.standard <= newest)
+                set = set.with(row.feature);
+        return set;
+    }
 
     [[nodiscard]] static constexpr uint32_t bitOf(Feature feature) noexcept
     {

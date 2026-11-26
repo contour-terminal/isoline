@@ -79,8 +79,10 @@ namespace
         }
         catch (std::bad_alloc const&)
         {
+            // uncovered-begin(bad-alloc)
             return failure;
         }
+        // uncovered-end(bad-alloc)
         return {};
     }
 

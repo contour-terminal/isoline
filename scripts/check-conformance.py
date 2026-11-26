@@ -1,0 +1,131 @@
+#!/usr/bin/env -S python3 -I
+# SPDX-License-Identifier: Apache-2.0
+"""Checks that docs/conformance.md lists exactly what the imported spec suites exclude and skip.
+
+The block between `<!-- exclusions:begin -->` and `<!-- exclusions:end -->` holds one line per
+excluded file, `<source> <path>: <reason>`, from the `exclude` rows of tests/spec/files.txt, and one
+line per assertion the GC cut skips, `<source> <path>:<wast line>: <oracle message>`, from the `gc:`
+skip lines of every imported .isotest. The block between `<!-- text-skips:begin -->` and
+`<!-- text-skips:end -->` holds every other skip line the same way, `<source> <path>:<wast line>:
+<reason>`: the commands skipped because their module is given as text. A command skipped because it
+uses a skipped module names its root, `… (root wast line N)`. The lines are sorted by source, path and
+wast line. The check fails, printing a diff, when a block differs from what the data says; --update
+rewrites the blocks.
+
+Usage: python3 -I scripts/check-conformance.py [--root <repository>] [--update]
+"""
+
+import argparse
+import difflib
+import importlib.util
+import pathlib
+import re
+import sys
+
+SCRIPTS = pathlib.Path(__file__).resolve().parent
+
+# The generated blocks, by name: the markers `<!-- <name>:begin -->` and `<!-- <name>:end -->`.
+EXCLUSIONS = "exclusions"
+TEXT_SKIPS = "text-skips"
+BLOCKS = (EXCLUSIONS, TEXT_SKIPS)
+
+# The skip reasons the importer writes: a root, `<reason> (wast line M)`, and a command that uses a
+# skipped module, `<reason> (root wast line N; wast line M)`.
+SKIP_REASON = re.compile(r"^(?P<reason>.*) \((?:root wast line (?P<root>\d+); )?wast line (?P<line>\d+)\)$")
+
+# The reason prefix of the GC cut's skips; they belong to the exclusions.
+GC_PREFIX = "gc: "
+
+
+def begin(name):
+    return f"<!-- {name}:begin -->"
+
+
+def end(name):
+    return f"<!-- {name}:end -->"
+
+
+def loadImporter():
+    """Loads import-spec-tests.py by path, for its files.txt reader: its name is no module name."""
+    sys.dont_write_bytecode = True  # leave no __pycache__ in the source tree
+    spec = importlib.util.spec_from_file_location("import_spec_tests", SCRIPTS / "import-spec-tests.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def skips(isotest):
+    """The (block, wast line, text) of each skip line of one .isotest file."""
+    entries = []
+    for line in isotest.read_text(encoding="utf-8").splitlines():
+        kind, _, reason = line.partition(" ")
+        if kind != "skip":
+            continue
+        reason = bytes.fromhex(reason).decode("utf-8")
+        match = SKIP_REASON.match(reason)
+        if match is None:
+            raise SystemExit(f"{isotest}: a skip without its wast line: {reason}")
+        text = match["reason"]
+        name = EXCLUSIONS if text.startswith(GC_PREFIX) else TEXT_SKIPS
+        text = text.removeprefix(GC_PREFIX)
+        if match["root"]:
+            text += f" (root wast line {match['root']})"
+        entries.append((name, int(match["line"]), text))
+    return entries
+
+
+def generated(spec):
+    """Each block's lines for the suites imported under spec, the tests/spec directory, in order."""
+    entries = {name: [] for name in BLOCKS}
+    for row in loadImporter().readFiles(spec / "files.txt"):
+        if row.exclude is not None:
+            entries[EXCLUSIONS].append(((row.source, row.path, 0), f"{row.source} {row.path}: {row.exclude}"))
+            continue
+        isotest = row.directory(spec) / f"{pathlib.PurePosixPath(row.path).name}.isotest"
+        for name, line, text in skips(isotest):
+            entries[name].append(((row.source, row.path, line), f"{row.source} {row.path}:{line}: {text}"))
+    return {name: [text for _, text in sorted(lines)] for name, lines in entries.items()}
+
+
+def block(lines):
+    """The text between the markers: the lines in a fenced block, so that Markdown keeps them apart."""
+    return "\n```text\n" + "".join(f"{line}\n" for line in lines) + "```\n"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--root", type=pathlib.Path, default=SCRIPTS.parent, help="the repository root")
+    parser.add_argument("--update", action="store_true", help="rewrite the block instead of checking it")
+    arguments = parser.parse_args(argv)
+
+    doc = arguments.root / "docs" / "conformance.md"
+    text = doc.read_text(encoding="utf-8")
+    wanted = generated(arguments.root / "tests" / "spec")
+    differences = []
+    for name in BLOCKS:
+        start = text.find(begin(name))
+        stop = text.find(end(name))
+        if start < 0 or stop < start:
+            raise SystemExit(f"{doc}: expected the markers {begin(name)} and then {end(name)}")
+        start += len(begin(name))
+        current = text[start:stop]
+        expected = block(wanted[name])
+        if current != expected:
+            differences.extend(difflib.unified_diff(current.splitlines(keepends=True),
+                                                    expected.splitlines(keepends=True),
+                                                    f"{doc} {name} (committed)",
+                                                    f"{doc} {name} (from the imported suites)"))
+            text = text[:start] + expected + text[stop:]
+    if not differences:
+        return 0
+    if arguments.update:
+        doc.write_text(text, encoding="utf-8", newline="\n")
+        print(f"{doc}: generated blocks updated")
+        return 0
+    sys.stdout.writelines(differences)
+    print(f"{doc}: the generated blocks differ from the imported suites; run scripts/check-conformance.py --update")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

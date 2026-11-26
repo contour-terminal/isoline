@@ -81,9 +81,9 @@ namespace
             case ExternKind::Table: return &instance.tables;
             case ExternKind::Memory: return &instance.memories;
             case ExternKind::Global: return &instance.globals;
-            case ExternKind::Tag: break;
+            case ExternKind::Tag: break; // uncovered(tag-index-space)
         }
-        return nullptr;
+        return nullptr; // uncovered(tag-index-space)
     }
 
     /// The address or offset a constant expression of an address type evaluated to.

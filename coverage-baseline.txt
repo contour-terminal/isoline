@@ -2,24 +2,26 @@
 # the tests reach, which scripts/coverage-check.py holds every change to. Raise an entry with
 # `scripts/coverage-check.py <coverage.json> coverage-baseline.txt --update`; it never lowers one.
 #
-# Every source line a test can reach is covered. The lines below are the exceptions, each with why
-# no valid input reaches it. They are failed preconditions (a Require or core::todo that a validated
-# module never trips), and the Tag cases of ExternKind, which Wasm 2.0 has no use for.
-#
-# src/isoline/binary/Decoder.cpp:856 Tag import: readExternKind decodes no tag kind in P1
-# src/isoline/interp/ReferenceInterpreter.cpp:121 rawBits of a vector or reference: a validated body pops a number there
-# src/isoline/interp/ReferenceInterpreter.cpp:135-139 numberOf a vector or reference kind: loads and stores have number kinds only
-# src/isoline/interp/ReferenceInterpreter.cpp:665-668 numeric() of a non-numeric opcode: execute() dispatches only table rows here
-# src/isoline/interp/ReferenceInterpreter.cpp:757-761 an opcode without a case or table row: validation admits none
-# src/isoline/interp/ReferenceInterpreter.cpp:826 a trapping constant operator: extended-const's add, sub and mul never trap
-# src/isoline/interp/ReferenceInterpreter.cpp:831-832 a constant expression without end: the decoder ends every expression with one
-# src/isoline/runtime/Instantiate.cpp:84-86 the Tag index space: a tag import fails to link first, and validation rejects tag exports
-# src/isoline/runtime/Store.cpp:82-83 std::bad_alloc from a table or memory: IMemoryAllocator only decides whether a size may be allocated, it does not allocate, so no test double can make the std::vector allocation fail (P3's embedder-provided memory replaces this path)
-# src/isoline/validate/Validator.cpp:735-739 a Special opcode without a case: every one has a case or a MemoryAccessTable row
+# Every source line a test can reach is covered. The `exclude` lines are the exceptions, each the
+# marker that names its lines in the source (`// uncovered(<marker>)`, or an uncovered-begin/-end
+# range) and why no valid input reaches them; the checker holds the uncovered lines to exactly
+# these. They are failed preconditions (a Require or core::todo that a validated module never
+# trips), and the Tag cases of ExternKind, which Wasm 2.0 has no use for.
 #
 # src/isoline/runtime/Instantiate.cpp's branch entry was lowered from 92.12 to 91.86 when its segment bounds checks moved into
 # runtime/Segment.hpp (100 % covered): four covered branches left the file, and its ten uncovered ones, the contract checks and Tag
-# cases named above, are now a larger share of fewer. No branch lost its coverage.
+# cases the exclusions name, are now a larger share of fewer. No branch lost its coverage.
+
+exclude src/isoline/binary/Decoder.cpp tag-import Tag import: readExternKind decodes no tag kind in P1
+exclude src/isoline/interp/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
+exclude src/isoline/interp/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: validation admits none
+exclude src/isoline/interp/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: loads and stores have number kinds only
+exclude src/isoline/interp/ReferenceInterpreter.cpp numeric-shape-none numeric() of a non-numeric opcode: execute() dispatches only table rows here
+exclude src/isoline/interp/ReferenceInterpreter.cpp raw-bits rawBits of a vector or reference: a validated body pops a number there
+exclude src/isoline/interp/ReferenceInterpreter.cpp trapping-constant a trapping constant operator: extended-const's add, sub and mul never trap
+exclude src/isoline/runtime/Instantiate.cpp tag-index-space the Tag index space: a tag import fails to link first, and validation rejects tag exports
+exclude src/isoline/runtime/Store.cpp bad-alloc std::bad_alloc from a table or memory: IMemoryAllocator only decides whether a size may be allocated, it does not allocate, so no test double can make the std::vector allocation fail (P3's embedder-provided memory replaces this path)
+exclude src/isoline/validate/Validator.cpp special-default a Special opcode without a case: every one has a case or a MemoryAccessTable row
 
 src/isoline/Features.hpp                    100.00 100.00
 src/isoline/Version.hpp                     100.00 -

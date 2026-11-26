@@ -16,13 +16,17 @@ using isoline::runtime::I32;
 using isoline::runtime::I64;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
+using isoline::runtime::V128;
 using isoline::runtime::Value;
 using isoline::spectest::checkFailure;
 using isoline::spectest::checkResults;
+using isoline::spectest::describeAll;
 using isoline::spectest::ExpectedValue;
 using isoline::spectest::Failure;
+using isoline::spectest::LaneShape;
 using isoline::spectest::matches;
 using isoline::spectest::Stage;
+using isoline::spectest::stageName;
 
 namespace
 {
@@ -142,4 +146,60 @@ TEST_CASE("SpecCheck.failures")
     auto const broken = checkFailure(Stage::Harness, "", harness);
     REQUIRE_FALSE(broken.has_value());
     CHECK(broken.error() == "cannot open a.wasm");
+}
+
+TEST_CASE("SpecCheck.lanePatterns")
+{
+    auto expected = pattern(Pattern::Lanes);
+    expected.laneShape = LaneShape::F32x4;
+    expected.lanes = { Pattern::CanonicalNan32, Pattern::Exact, Pattern::ArithmeticNan32, Pattern::Exact };
+    expected.value = V128 { .lanes = { 0x3f80'0000'0000'0000, 0x0000'0000'0000'0000 } };
+    CHECK(matches(expected, V128 { .lanes = { 0x3f80'0000'7fc0'0000, 0x0000'0000'ffc0'0001 } }));
+    CHECK_FALSE(
+        matches(expected, V128 { .lanes = { 0x3f80'0000'7fa0'0000, 0x0000'0000'7fc0'0000 } })); // lane 0
+    CHECK_FALSE(
+        matches(expected, V128 { .lanes = { 0x3f80'0001'7fc0'0000, 0x0000'0000'7fc0'0000 } })); // lane 1
+    CHECK_FALSE(
+        matches(expected, V128 { .lanes = { 0x3f80'0000'7fc0'0000, 0x0000'0001'7fc0'0000 } })); // lane 3
+    CHECK_FALSE(matches(expected, F32 { 0x7fc0'0000 }));                                        // no vector
+
+    auto wide = pattern(Pattern::Lanes);
+    wide.laneShape = LaneShape::F64x2;
+    wide.lanes = { Pattern::Exact, Pattern::ArithmeticNan64, Pattern::Exact, Pattern::Exact };
+    wide.value = V128 { .lanes = { 0x3ff0'0000'0000'0000, 0 } };
+    CHECK(matches(wide, V128 { .lanes = { 0x3ff0'0000'0000'0000, 0xfff8'0000'0000'0001 } }));
+    CHECK_FALSE(matches(wide, V128 { .lanes = { 0x3ff0'0000'0000'0000, 0x7ff4'0000'0000'0000 } }));
+    CHECK(describeAll(std::vector { expected, wide })
+          == "v128:f32x4:nan:canonical,3f800000,nan:arithmetic,0 v128:f64x2:3ff0000000000000,nan:arithmetic");
+}
+
+TEST_CASE("SpecCheck.either")
+{
+    auto expected = pattern(Pattern::Either);
+    expected.alternatives = { exactly(I32 { 1 }), exactly(I32 { 2 }) };
+    CHECK(matches(expected, I32 { 1 }));
+    CHECK(matches(expected, I32 { 2 }));
+    CHECK_FALSE(matches(expected, I32 { 3 }));
+    CHECK(describeAll(std::vector { expected }) == "either(i32:1;i32:2)");
+}
+
+TEST_CASE("SpecCheck.anyNull")
+{
+    CHECK(
+        matches(pattern(Pattern::AnyNullRef), Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 }));
+    CHECK(matches(pattern(Pattern::AnyNullRef),
+                  Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 }));
+    CHECK_FALSE(
+        matches(pattern(Pattern::AnyNullRef), Ref { .kind = RefKind::Func, .heap = FuncHeap, .address = 3 }));
+    CHECK_FALSE(matches(pattern(Pattern::AnyNullRef), I32 { 0 }));
+    CHECK(describeAll(std::vector { pattern(Pattern::AnyNullRef) }) == "ref.null");
+}
+
+TEST_CASE("SpecCheck.newStages")
+{
+    CHECK(stageName(Stage::Exception) == "exception");
+    CHECK(stageName(Stage::Custom) == "custom");
+    // An exception is not a trap: assert_exception is not satisfied by an execute failure.
+    auto const trap = Failure { .stage = Stage::Execute, .message = "unreachable" };
+    CHECK_FALSE(checkFailure(Stage::Exception, "", trap).has_value());
 }

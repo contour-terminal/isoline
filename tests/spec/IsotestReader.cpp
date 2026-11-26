@@ -128,11 +128,13 @@ namespace
     constexpr auto Max32 = uint64_t { std::numeric_limits<uint32_t>::max() };
     constexpr auto Max64 = std::numeric_limits<uint64_t>::max();
 
-    /// A value token spelled exactly so.
+    /// A value token spelled exactly so: the pattern it stands for, and for Exact the value. It
+    /// holds no ExpectedValue, whose std::vector member GCC and MSVC refuse in a constexpr table.
     struct FixedValue
     {
         std::string_view token;
-        ExpectedValue value;
+        Pattern pattern;
+        Value value;
     };
 
     constexpr auto exact(Value value) noexcept
@@ -145,16 +147,18 @@ namespace
         return ExpectedValue { .pattern = kind, .value = {} };
     }
 
+    constexpr auto NullFunc = Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 };
+    constexpr auto NullExtern = Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 };
+
     constexpr auto FixedValues = std::to_array<FixedValue>({
-        { .token = "f32:nan:canonical", .value = pattern(Pattern::CanonicalNan32) },
-        { .token = "f32:nan:arithmetic", .value = pattern(Pattern::ArithmeticNan32) },
-        { .token = "f64:nan:canonical", .value = pattern(Pattern::CanonicalNan64) },
-        { .token = "f64:nan:arithmetic", .value = pattern(Pattern::ArithmeticNan64) },
-        { .token = "ref.null:func",
-          .value = exact(Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 }) },
-        { .token = "ref.null:extern",
-          .value = exact(Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 }) },
-        { .token = "ref.func", .value = pattern(Pattern::AnyFunctionRef) },
+        { .token = "f32:nan:canonical", .pattern = Pattern::CanonicalNan32, .value = {} },
+        { .token = "f32:nan:arithmetic", .pattern = Pattern::ArithmeticNan32, .value = {} },
+        { .token = "f64:nan:canonical", .pattern = Pattern::CanonicalNan64, .value = {} },
+        { .token = "f64:nan:arithmetic", .pattern = Pattern::ArithmeticNan64, .value = {} },
+        { .token = "ref.null:func", .pattern = Pattern::Exact, .value = NullFunc },
+        { .token = "ref.null:extern", .pattern = Pattern::Exact, .value = NullExtern },
+        { .token = "ref.func", .pattern = Pattern::AnyFunctionRef, .value = {} },
+        { .token = "ref.null", .pattern = Pattern::AnyNullRef, .value = {} },
     });
 
     /// A value token: a prefix, then a number in a base, which make() turns into the value.
@@ -201,16 +205,89 @@ namespace
           } },
     });
 
-    [[nodiscard]] std::expected<ExpectedValue, std::string> parseValue(std::string_view token)
+    /// The lanes of a lane pattern token after its prefix: each its bits in hex or a NaN pattern.
+    [[nodiscard]] std::expected<ExpectedValue, std::string> parseLanes(LaneFormat const& format,
+                                                                       std::string_view lanes)
+    {
+        auto expected = pattern(Pattern::Lanes);
+        expected.laneShape = format.shape;
+        auto bits = runtime::V128 {};
+        auto index = std::size_t { 0 };
+        for (auto const lane: lanes | std::views::split(','))
+        {
+            if (index == format.count)
+                return std::unexpected { std::format("more than {} lanes in '{}'", format.count, lanes) };
+            auto const text = std::string_view { lane.begin(), lane.end() };
+            if (text == "nan:canonical")
+                expected.lanes.at(index) = format.canonical;
+            else if (text == "nan:arithmetic")
+                expected.lanes.at(index) = format.arithmetic;
+            else
+            {
+                auto const number = parseNumber(text, 16, format.width == 32 ? Max32 : Max64);
+                if (!number)
+                    return std::unexpected { number.error() };
+                auto const offset = index * format.width;
+                bits.lanes.at(offset / 64) |= *number << (offset % 64);
+            }
+            ++index;
+        }
+        if (index != format.count)
+            return std::unexpected { std::format("{} lanes in '{}', not {}", index, lanes, format.count) };
+        expected.value = bits;
+        return expected;
+    }
+
+    /// The digits of a `v128:` token: 32 hex digits, the most significant first.
+    [[nodiscard]] std::expected<ExpectedValue, std::string> parseV128(std::string_view digits)
+    {
+        constexpr auto HalfDigits = std::size_t { 16 };
+        if (digits.size() != 2 * HalfDigits)
+            return std::unexpected { std::format(
+                "a v128 needs {} hex digits, not '{}'", 2 * HalfDigits, digits) };
+        return parseNumber(digits.substr(0, HalfDigits), 16, Max64).and_then([&](uint64_t high) {
+            return parseNumber(digits.substr(HalfDigits), 16, Max64).transform([&](uint64_t low) {
+                return exact(runtime::V128 { .lanes = { low, high } });
+            });
+        });
+    }
+
+    /// A value token other than `either(…)`.
+    [[nodiscard]] std::expected<ExpectedValue, std::string> parseSingleValue(std::string_view token)
     {
         for (auto const& fixed: FixedValues)
             if (token == fixed.token)
-                return fixed.value;
+                return ExpectedValue { .pattern = fixed.pattern, .value = fixed.value };
+        for (auto const& format: LaneFormats)
+            if (token.starts_with(format.prefix))
+                return parseLanes(format, token.substr(format.prefix.size()));
+        if (constexpr auto V128Prefix = std::string_view { "v128:" }; token.starts_with(V128Prefix))
+            return parseV128(token.substr(V128Prefix.size()));
         for (auto const& numeric: NumericValues)
             if (token.starts_with(numeric.prefix))
                 return parseNumber(token.substr(numeric.prefix.size()), numeric.base, numeric.maxValue)
                     .transform([&](uint64_t number) { return exact(numeric.make(number)); });
         return std::unexpected { std::format("malformed value '{}'", token) };
+    }
+
+    /// A value token: a single value, or `either(<value>;<value>…)` of single values.
+    [[nodiscard]] std::expected<ExpectedValue, std::string> parseValue(std::string_view token)
+    {
+        constexpr auto EitherPrefix = std::string_view { "either(" };
+        if (!token.starts_with(EitherPrefix))
+            return parseSingleValue(token);
+        if (!token.ends_with(')') || token.size() == EitherPrefix.size() + 1)
+            return std::unexpected { std::format("malformed either '{}'", token) };
+        auto expected = pattern(Pattern::Either);
+        auto const inner = token.substr(EitherPrefix.size(), token.size() - EitherPrefix.size() - 1);
+        for (auto const alternative: inner | std::views::split(';'))
+        {
+            auto value = parseSingleValue(std::string_view { alternative.begin(), alternative.end() });
+            if (!value)
+                return std::unexpected { value.error() };
+            expected.alternatives.push_back(std::move(*value));
+        }
+        return expected;
     }
 
     [[nodiscard]] std::expected<std::optional<std::string>, std::string> parseModuleName(
@@ -301,6 +378,20 @@ namespace
         return parseFile(tokens, command).and_then([&] { return parseOptionalName(tokens, command); });
     }
 
+    /// `<name|-> <definition>`.
+    [[nodiscard]] LineResult parseModuleInstanceCommand(Tokens& tokens, Command& command)
+    {
+        auto name = tokens.next("instance name").and_then(parseModuleName);
+        if (!name)
+            return std::unexpected { name.error() };
+        command.name = std::move(*name);
+        auto definition = tokens.next("module definition").and_then(decodeHex);
+        if (!definition)
+            return std::unexpected { definition.error() };
+        command.definition = std::move(*definition);
+        return tokens.finish();
+    }
+
     [[nodiscard]] LineResult parseRegisterCommand(Tokens& tokens, Command& command)
     {
         auto as = tokens.next("registered name").and_then(decodeHex);
@@ -334,17 +425,31 @@ namespace
         });
     }
 
-    /// `invoke <export> <module|-> <arg>* -> <message>`.
-    [[nodiscard]] LineResult parseInvokeMessageCommand(Tokens& tokens, Command& command)
+    /// The keyword `invoke`, which the assertions that take only an invocation start with.
+    [[nodiscard]] LineResult expectInvoke(Tokens& tokens)
     {
         auto const kind = tokens.next("'invoke'");
         if (!kind)
             return std::unexpected { kind.error() };
         if (*kind != "invoke")
             return std::unexpected { std::format("expected 'invoke', not '{}'", *kind) };
-        return parseActionHead(tokens, command, ActionKind::Invoke).and_then([&] {
-            return parseMessage(tokens, command);
-        });
+        return {};
+    }
+
+    /// `invoke <export> <module|-> <arg>* -> <message>`.
+    [[nodiscard]] LineResult parseInvokeMessageCommand(Tokens& tokens, Command& command)
+    {
+        return expectInvoke(tokens)
+            .and_then([&] { return parseActionHead(tokens, command, ActionKind::Invoke); })
+            .and_then([&] { return parseMessage(tokens, command); });
+    }
+
+    /// `invoke <export> <module|-> <arg>* ->`: an exception carries no result to expect.
+    [[nodiscard]] LineResult parseAssertExceptionCommand(Tokens& tokens, Command& command)
+    {
+        return expectInvoke(tokens)
+            .and_then([&] { return parseActionHead(tokens, command, ActionKind::Invoke); })
+            .and_then([&] { return tokens.finish(); });
     }
 
     [[nodiscard]] LineResult parseAssertTrapCommand(Tokens& tokens, Command& command)
@@ -382,6 +487,10 @@ namespace
 
     constexpr auto Keywords = std::to_array<Keyword>({
         { .word = "module", .kind = CommandKind::Module, .parse = parseModuleCommand },
+        { .word = "module_definition", .kind = CommandKind::ModuleDefinition, .parse = parseModuleCommand },
+        { .word = "module_instance",
+          .kind = CommandKind::ModuleInstance,
+          .parse = parseModuleInstanceCommand },
         { .word = "register", .kind = CommandKind::Register, .parse = parseRegisterCommand },
         { .word = "invoke", .kind = CommandKind::Invoke, .parse = parseInvokeCommand },
         { .word = "assert_return", .kind = CommandKind::AssertReturn, .parse = parseAssertReturnCommand },
@@ -398,6 +507,12 @@ namespace
           .parse = parseFileMessageCommand },
         { .word = "assert_uninstantiable",
           .kind = CommandKind::AssertUninstantiable,
+          .parse = parseFileMessageCommand },
+        { .word = "assert_exception",
+          .kind = CommandKind::AssertException,
+          .parse = parseAssertExceptionCommand },
+        { .word = "assert_invalid_custom",
+          .kind = CommandKind::AssertInvalidCustom,
           .parse = parseFileMessageCommand },
         { .word = "skip", .kind = CommandKind::Skip, .parse = parseSkipCommand },
     });

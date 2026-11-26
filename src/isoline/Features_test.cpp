@@ -32,11 +32,30 @@ TEST_CASE("Features.wasm2HasExactlyTheSixWasm2Proposals")
     auto enabled = std::size_t { 0 };
     for (auto const& row: isoline::FeatureTable)
     {
-        CHECK(set.has(row.feature) == (row.inWasm2 == isoline::FeatureState::On));
+        CHECK(set.has(row.feature) == (row.standard == isoline::Standard::Wasm2));
         if (set.has(row.feature))
             ++enabled;
     }
     CHECK(enabled == 6);
+}
+
+TEST_CASE("Features.standards")
+{
+    using isoline::Feature;
+    using isoline::FeatureSet;
+    CHECK(FeatureSet::wasm3().has(Feature::TailCall));
+    CHECK(FeatureSet::wasm3().has(Feature::Simd));
+    CHECK_FALSE(FeatureSet::wasm3().has(Feature::WideArithmetic));
+    for (auto const& row: isoline::FeatureTable)
+    {
+        CHECK(FeatureSet::all().has(row.feature));
+        CHECK(FeatureSet::wasm3().has(row.feature) == (row.standard != isoline::Standard::Proposal));
+    }
+    CHECK(FeatureSet::all()
+          == FeatureSet::wasm3()
+                 .with(Feature::WideArithmetic)
+                 .with(Feature::CompactImports)
+                 .with(Feature::CustomPageSizes));
 }
 
 TEST_CASE("Features.noneHasNothing")

@@ -1,0 +1,471 @@
+module float_misc.0.wasm
+assert_return invoke 6633322e616464 - f32:3f8fcd6f f32:2f07bc16 -> f32:3f8fcd6f
+assert_return invoke 6636342e616464 - f64:3ff1f9add3739636 f64:3de0f782bf7cc83f -> f64:3ff1f9add37c11f7
+assert_return invoke 6633322e616464 - f32:3f800000 f32:33800000 -> f32:3f800000
+assert_return invoke 6633322e616464 - f32:3f800000 f32:33800001 -> f32:3f800001
+assert_return invoke 6636342e616464 - f64:3ff0000000000000 f64:3ca0000000000000 -> f64:3ff0000000000000
+assert_return invoke 6636342e616464 - f64:3ff0000000000000 f64:3ca0000000000001 -> f64:3ff0000000000001
+assert_return invoke 6633322e616464 - f32:1 f32:7fffff -> f32:800000
+assert_return invoke 6636342e616464 - f64:1 f64:fffffffffffff -> f64:10000000000000
+assert_return invoke 6633322e616464 - f32:4f000000 f32:44800800 -> f32:4f000004
+assert_return invoke 6636342e616464 - f64:43e0000000000000 f64:4090010000000000 -> f64:43e0000000000001
+assert_return invoke 6636342e616464 - f64:80f0000000000000 f64:1716 -> f64:80efffffffffffff
+assert_return invoke 6636342e616464 - f64:4340000000000000 f64:3ff0000a7c5ac472 -> f64:4340000000000001
+assert_return invoke 6636342e616464 - f64:4340000000000001 f64:3fefffe000000000 -> f64:4340000000000001
+assert_return invoke 6633322e616464 - f32:4b000000 f32:3f000000 -> f32:4b000000
+assert_return invoke 6633322e616464 - f32:4b000001 f32:3f000000 -> f32:4b000002
+assert_return invoke 6636342e616464 - f64:4330000000000000 f64:3fe0000000000000 -> f64:4330000000000000
+assert_return invoke 6636342e616464 - f64:4330000000000001 f64:3fe0000000000000 -> f64:4330000000000002
+assert_return invoke 6633322e616464 - f32:f29cb3ad f32:e3b64a6 -> f32:f29cb3ad
+assert_return invoke 6633322e616464 - f32:61360792 f32:d995c968 -> f32:61360666
+assert_return invoke 6633322e616464 - f32:1673118c f32:17ba55f -> f32:1673118c
+assert_return invoke 6633322e616464 - f32:531538ea f32:db64f886 -> f32:db64f7f1
+assert_return invoke 6633322e616464 - f32:387c7b9b f32:74bdea2f -> f32:74bdea2f
+assert_return invoke 6636342e616464 - f64:262f33e1fbca27aa f64:cf86b192891ed610 -> f64:cf86b192891ed610
+assert_return invoke 6636342e616464 - f64:c4b46f75d130eeb1 f64:34725275d6f7a4ac -> f64:c4b46f75d130eeb1
+assert_return invoke 6636342e616464 - f64:36b04dec9265a731 f64:bf311eed4e8c127c -> f64:bf311eed4e8c127c
+assert_return invoke 6636342e616464 - f64:5f005773b7166b0a f64:441134022f2da37b -> f64:5f005773b7166b0a
+assert_return invoke 6636342e616464 - f64:540ef4f794282a82 f64:58914a82266bade0 -> f64:58914a82266bade0
+assert_return invoke 6633322e616464 - f32:638dfcbb f32:c9bfac34 -> f32:638dfcbb
+assert_return invoke 6633322e616464 - f32:293fce36 f32:98dcdd87 -> f32:293fce36
+assert_return invoke 6633322e616464 - f32:aa9968de f32:7e7be90a -> f32:7e7be90a
+assert_return invoke 6633322e616464 - f32:a9c72e07 f32:8a9d7d26 -> f32:a9c72e07
+assert_return invoke 6633322e616464 - f32:3a89e6bc f32:8a1d798b -> f32:3a89e6bc
+assert_return invoke 6636342e616464 - f64:4b2f8dd15ca97d4a f64:9f0367317d1fe8bf -> f64:4b2f8dd15ca97d4a
+assert_return invoke 6636342e616464 - f64:49a5db08d739228c f64:bc2fb316fa147dcb -> f64:49a5db08d739228c
+assert_return invoke 6636342e616464 - f64:26bbbb403cb85c07 f64:82c7e44046b8bbf3 -> f64:26bbbb403cb85c07
+assert_return invoke 6636342e616464 - f64:c9234d38af291831 f64:c8a9890b47439953 -> f64:c92366c1ba705bca
+assert_return invoke 6636342e616464 - f64:c02b61dedf4e0306 f64:52109e2f31773c4a -> f64:52109e2f31773c4a
+assert_return invoke 6633322e616464 - f32:85094dec f32:2a63a809 -> f32:2a63a809
+assert_return invoke 6633322e616464 - f32:b7e10251 f32:32405899 -> f32:b7e0ea46
+assert_return invoke 6633322e616464 - f32:d1ef660e f32:963446d -> f32:d1ef660e
+assert_return invoke 6633322e616464 - f32:4b0e735 f32:cebb9449 -> f32:cebb9449
+assert_return invoke 6633322e616464 - f32:839ee413 f32:6f7e1fb3 -> f32:6f7e1fb3
+assert_return invoke 6636342e616464 - f64:f6bf68acc263a0f f64:feb5f9352965e5a6 -> f64:feb5f9352965e5a6
+assert_return invoke 6636342e616464 - f64:e0376eaa70911f51 f64:dec2d746324ce47a -> f64:e0376eaa963fabb6
+assert_return invoke 6636342e616464 - f64:838b637d82c15a7a f64:2e4cc654ccab4152 -> f64:2e4cc654ccab4152
+assert_return invoke 6636342e616464 - f64:a02a5b1fb66e846e f64:a34bdd36f0bb5cc -> f64:a02a5b1fb66e846e
+assert_return invoke 6636342e616464 - f64:fc514108da880f9e f64:71f417f35701e89f -> f64:fc514108da880f9e
+assert_return invoke 6636342e616464 - f64:f23fa0caf21ffebc f64:7394ca8fdcff89f9 -> f64:7394ca8f5e7c5e31
+assert_return invoke 6636342e616464 - f64:70f016f1fcbdfd38 f64:6e9375dffcbc9a2c -> f64:70f016f1fcbe4b0f
+assert_return invoke 6636342e616464 - f64:e6fdffda6d5bff3a f64:6a1f9e8cc2dff782 -> f64:6a1f9e8cc2dff77b
+assert_return invoke 6636342e616464 - f64:5cefff4b43687dfb f64:6040fd5617c4a809 -> f64:6040fd5617c4a809
+assert_return invoke 6636342e616464 - f64:1c535d380035da2 f64:3ccce37dddbb73b -> f64:3ccce37ddf0ed0f
+assert_return invoke 6636342e616464 - f64:eefd91cd3fc0c66f f64:fb74e18c80229734 -> f64:fb74e18c80229734
+assert_return invoke 6636342e616464 - f64:4c0afc70fd36e372 f64:d10bd10a9b377b46 -> f64:d10bd10a9b377b46
+assert_return invoke 6636342e616464 - f64:d2d2abd570b078b2 f64:258b3c1ad759cb5b -> f64:d2d2abd570b078b2
+assert_return invoke 6636342e616464 - f64:ac25b2ae84c0686c f64:dd1dba7a1c022823 -> f64:dd1dba7a1c022823
+assert_return invoke 6636342e616464 - f64:b39ac627bd7cbf38 f64:212312e265b8d59 -> f64:b39ac627bd7cbf38
+assert_return invoke 6633322e616464 - f32:7995c8d0 f32:7f65e6a9 -> f32:7f65f962
+assert_return invoke 6633322e616464 - f32:7f4b79c9 f32:f5359ff6 -> f32:7f4b79be
+assert_return invoke 6633322e616464 - f32:7a89978e f32:ff31eb19 -> f32:ff31a64d
+assert_return invoke 6633322e616464 - f32:fb8eed32 f32:ff778170 -> f32:ff789f4a
+assert_return invoke 6633322e616464 - f32:ff256c6d f32:fe757041 -> f32:ff62c87d
+assert_return invoke 6636342e616464 - f64:7fe017099f2a4b8b f64:7d41f63b28f05454 -> f64:7fe017099f2a5009
+assert_return invoke 6636342e616464 - f64:7fed88b6c74984ef f64:7dd33b444775eabc -> f64:7fed88b6c7532291
+assert_return invoke 6636342e616464 - f64:ffe84576422fdf50 f64:7f360ee6aa12fb9c -> f64:ffe842b4655a9cf1
+assert_return invoke 6636342e616464 - f64:fe89aaace3e79f7d f64:7fee4068af295cb6 -> f64:7fee4068487ea926
+assert_return invoke 6636342e616464 - f64:7fe06cdae79f27b9 f64:fdee05cb0c96f975 -> f64:7fe06cdae78121ee
+assert_return invoke 6633322e616464 - f32:5a8688 f32:26f -> f32:5a88f7
+assert_return invoke 6633322e616464 - f32:25 f32:80000002 -> f32:23
+assert_return invoke 6633322e616464 - f32:80000008 f32:387940 -> f32:387938
+assert_return invoke 6633322e616464 - f32:80000014 f32:2a12029 -> f32:2a12028
+assert_return invoke 6633322e616464 - f32:1c5 f32:80005cbe -> f32:80005af9
+assert_return invoke 6636342e616464 - f64:14774c681d1e21 f64:802271e58e9f58ca -> f64:80106c7eb5219373
+assert_return invoke 6636342e616464 - f64:210b3a75e31916 f64:802ffb82b0e868a7 -> f64:801de090760a9f22
+assert_return invoke 6636342e616464 - f64:8006b58448b8098a f64:801579796ed04cbe -> f64:801c2efdb7885648
+assert_return invoke 6636342e616464 - f64:39eb9e7baae8d1 f64:803d58e136f8c6ee -> f64:800db50aed377874
+assert_return invoke 6636342e616464 - f64:801f1115deeafa0b f64:1221b1c87dca29 -> f64:800cef64166d2fe2
+assert_return invoke 6633322e616464 - f32:7f7ffffe f32:73800000 -> f32:7f7fffff
+assert_return invoke 6636342e616464 - f64:7feffffffffffffe f64:7ca0000000000000 -> f64:7fefffffffffffff
+assert_return invoke 6633322e616464 - f32:40000000 f32:40000000 -> f32:40800000
+assert_return invoke 6636342e616464 - f64:4000000000000000 f64:4000000000000000 -> f64:4010000000000000
+assert_return invoke 6633322e616464 - f32:7f7fffff f32:72ffffff -> f32:7f7fffff
+assert_return invoke 6633322e616464 - f32:7f7fffff f32:73000000 -> f32:7f800000
+assert_return invoke 6636342e616464 - f64:7fefffffffffffff f64:7c8fffffffffffff -> f64:7fefffffffffffff
+assert_return invoke 6636342e616464 - f64:7fefffffffffffff f64:7c90000000000000 -> f64:7ff0000000000000
+assert_return invoke 6633322e737562 - f32:47800000 f32:2d000000 -> f32:47800000
+assert_return invoke 6636342e737562 - f64:40f0000000000000 f64:3da0000000000000 -> f64:40efffffffffffff
+assert_return invoke 6633322e737562 - f32:3f800000 f32:33000000 -> f32:3f800000
+assert_return invoke 6633322e737562 - f32:3f800000 f32:33000001 -> f32:3f7fffff
+assert_return invoke 6636342e737562 - f64:3ff0000000000000 f64:3c90000000000000 -> f64:3ff0000000000000
+assert_return invoke 6636342e737562 - f64:3ff0000000000000 f64:3c90000000000001 -> f64:3fefffffffffffff
+assert_return invoke 6633322e737562 - f32:af71233 f32:fb0b13bf -> f32:7b0b13bf
+assert_return invoke 6633322e737562 - f32:fb2237cf f32:d521cb52 -> f32:fb2237cf
+assert_return invoke 6633322e737562 - f32:3fba3b9e f32:96d12a89 -> f32:3fba3b9e
+assert_return invoke 6633322e737562 - f32:549a2e2 f32:19b3c961 -> f32:99b3c961
+assert_return invoke 6633322e737562 - f32:36cf67d2 f32:8a4325a2 -> f32:36cf67d2
+assert_return invoke 6636342e737562 - f64:ab25b798875e7845 f64:878b5147117452fe -> f64:ab25b798875e7845
+assert_return invoke 6636342e737562 - f64:e276c87baeb6d72d f64:b6164fb35d4b5571 -> f64:e276c87baeb6d72d
+assert_return invoke 6636342e737562 - f64:232b3d369fcf74b0 f64:8baea1668c0dec93 -> f64:232b3d369fcf74b0
+assert_return invoke 6636342e737562 - f64:120abd449353ead f64:c990422ea3e82ee9 -> f64:4990422ea3e82ee9
+assert_return invoke 6636342e737562 - f64:b70aadbc6b43cc3d f64:9e4e7f922ef1ee58 -> f64:b70aadbc6b43cc3d
+assert_return invoke 6633322e737562 - f32:f5b0f131 f32:f7dd79f2 -> f32:77d26adf
+assert_return invoke 6633322e737562 - f32:f631617b f32:42b728a5 -> f32:f631617b
+assert_return invoke 6633322e737562 - f32:96143e4a f32:338797ce -> f32:b38797ce
+assert_return invoke 6633322e737562 - f32:9964412e f32:b9a5756b -> f32:39a5756b
+assert_return invoke 6633322e737562 - f32:f114bb52 f32:226371dc -> f32:f114bb52
+assert_return invoke 6636342e737562 - f64:cc976cb28ae6c045 f64:f840611f2af4e9b9 -> f64:7840611f2af4e9b9
+assert_return invoke 6636342e737562 - f64:28fbaf35eff22e9e f64:23c5c3e08ecf73ec -> f64:28fbaf35eff22e9e
+assert_return invoke 6636342e737562 - f64:b378fd354b376f1f f64:203513c860f386ff -> f64:b378fd354b376f1f
+assert_return invoke 6636342e737562 - f64:81f760d447230ae6 f64:ab716f788438ae3e -> f64:2b716f788438ae3e
+assert_return invoke 6636342e737562 - f64:c6f73aab4fcfc7a0 f64:4aa7c589f990b884 -> f64:caa7c589f990b884
+assert_return invoke 6633322e737562 - f32:6f751326 f32:384294c4 -> f32:6f751326
+assert_return invoke 6633322e737562 - f32:c90a763e f32:ae0569ff -> f32:c90a763e
+assert_return invoke 6633322e737562 - f32:ad9928ed f32:a3a4e4bf -> f32:ad9928e3
+assert_return invoke 6633322e737562 - f32:b889ab2f f32:3917c4d4 -> f32:b95c9a6c
+assert_return invoke 6633322e737562 - f32:af30195b f32:8bdda8cb -> f32:af30195b
+assert_return invoke 6636342e737562 - f64:b62b5b0797af4910 f64:ed1694b8348189e8 -> f64:6d1694b8348189e8
+assert_return invoke 6636342e737562 - f64:ef672b142826ed73 f64:f86010477bc9afbd -> f64:786010477bc9afbd
+assert_return invoke 6636342e737562 - f64:e383273b6bb94cf f64:4b41a93f948a2abb -> f64:cb41a93f948a2abb
+assert_return invoke 6636342e737562 - f64:9c2207e7156cbf20 f64:1dfcf3f12fd3814d -> f64:9dfcf3f13063c086
+assert_return invoke 6636342e737562 - f64:9d0837e6844f1718 f64:bf11c29b757f98ab -> f64:3f11c29b757f98ab
+assert_return invoke 6636342e737562 - f64:3b1c21151a709b6c f64:38c0a12fff8910f6 -> f64:3b1c21151a701663
+assert_return invoke 6636342e737562 - f64:29c57912aae2f64 f64:ddbfbd4800b7cf -> f64:29c579128d2338f
+assert_return invoke 6636342e737562 - f64:301ffef4399af9c6 f64:337edb96dfaea8b1 -> f64:b37edb96dfaea8b1
+assert_return invoke 6636342e737562 - f64:bd8363eee391cde2 f64:bbaa65462000265f -> f64:bd8363eee32838c9
+assert_return invoke 6636342e737562 - f64:3e659016dba002a1 f64:3fc5d4374f124ccc -> f64:bfc5d436f8d1f15d
+assert_return invoke 6636342e737562 - f64:8d118196bca005cf f64:901db7b01ce3f52f -> f64:101db7b01ce3f51d
+assert_return invoke 6636342e737562 - f64:c20d17b3528d2190 f64:56efd739d4ea220a -> f64:d6efd739d4ea220a
+assert_return invoke 6636342e737562 - f64:471dea46994de319 f64:1b1b5b19cd55c7d3 -> f64:471dea46994de319
+assert_return invoke 6636342e737562 - f64:216b60f9b2fbd9ec f64:9496f81c59ec5b8e -> f64:216b60f9b2fbd9ec
+assert_return invoke 6636342e737562 - f64:3c65e423fe8571f4 f64:1959624ed7c162df -> f64:3c65e423fe8571f4
+assert_return invoke 6633322e737562 - f32:41b92023 f32:40490fdb -> f32:419ffe28
+assert_return invoke 6636342e737562 - f64:403724046eb0933a f64:400921fb54442d18 -> f64:4033ffc504280d97
+assert_return invoke 6633322e737562 - f32:4a371afc f32:4a371af8 -> f32:3f800000
+assert_return invoke 6633322e737562 - f32:49f423f8 f32:49f423d8 -> f32:40800000
+assert_return invoke 6633322e737562 - f32:49f423f8 f32:49f423c8 -> f32:40c00000
+assert_return invoke 6633322e737562 - f32:48c35040 f32:48c35020 -> f32:3f800000
+assert_return invoke 6633322e737562 - f32:48c35040 f32:48c35000 -> f32:40000000
+assert_return invoke 6636342e737562 - f64:432550f7dca6fffe f64:432550f7dca6fffc -> f64:3ff0000000000000
+assert_return invoke 6636342e737562 - f64:431c6bf52633fffc f64:431c6bf52633ffec -> f64:4010000000000000
+assert_return invoke 6636342e737562 - f64:431c6bf52633fffc f64:431c6bf52633ffe4 -> f64:4018000000000000
+assert_return invoke 6636342e737562 - f64:42f6bcc41e900020 f64:42f6bcc41e900010 -> f64:3ff0000000000000
+assert_return invoke 6636342e737562 - f64:42f6bcc41e900020 f64:42f6bcc41e900000 -> f64:4000000000000000
+assert_return invoke 6633322e737562 - f32:800000 f32:7fffff -> f32:1
+assert_return invoke 6636342e737562 - f64:10000000000000 f64:fffffffffffff -> f64:1
+assert_return invoke 6633322e737562 - f32:3f800001 f32:3f7fffff -> f32:34400000
+assert_return invoke 6633322e737562 - f32:3f800001 f32:3f800000 -> f32:34000000
+assert_return invoke 6633322e737562 - f32:3f800000 f32:3f7fffff -> f32:33800000
+assert_return invoke 6636342e737562 - f64:3ff0000000000001 f64:3fefffffffffffff -> f64:3cb8000000000000
+assert_return invoke 6636342e737562 - f64:3ff0000000000001 f64:3ff0000000000000 -> f64:3cb0000000000000
+assert_return invoke 6636342e737562 - f64:3ff0000000000000 f64:3fefffffffffffff -> f64:3ca0000000000000
+assert_return invoke 6633322e737562 - f32:7f7fffff f32:72ffffff -> f32:7f7fffff
+assert_return invoke 6633322e737562 - f32:7f7fffff f32:73000000 -> f32:7f7ffffe
+assert_return invoke 6636342e737562 - f64:7fefffffffffffff f64:7c8fffffffffffff -> f64:7fefffffffffffff
+assert_return invoke 6636342e737562 - f64:7fefffffffffffff f64:7c90000000000000 -> f64:7feffffffffffffe
+assert_return invoke 6633322e6d756c - f32:58635fa9 f32:58635fa9 -> f32:7149f2c9
+assert_return invoke 6633322e6d756c - f32:60ad78ec f32:60ad78ec -> f32:7f800000
+assert_return invoke 6633322e6d756c - f32:69045951 f32:69045951 -> f32:7f800000
+assert_return invoke 6636342e6d756c - f64:430c6bf526340000 f64:430c6bf526340000 -> f64:46293e5939a08cea
+assert_return invoke 6636342e6d756c - f64:4415af1d78b58c40 f64:4415af1d78b58c40 -> f64:483d6329f1c35ca5
+assert_return invoke 6636342e6d756c - f64:45208b2a2c280291 f64:45208b2a2c280291 -> f64:4a511b0ec57e649b
+assert_return invoke 6633322e6d756c - f32:4edc672f f32:5094ac4f -> f32:60000001
+assert_return invoke 6636342e6d756c - f64:41db8ce5d7c00000 f64:42129589d27c0000 -> f64:4400000000000001
+assert_return invoke 6633322e6d756c - f32:429a3333 f32:44548000 -> f32:477fff00
+assert_return invoke 6636342e6d756c - f64:4053466666666666 f64:408a900000000000 -> f64:40efffdfffffffff
+assert_return invoke 6633322e6d756c - f32:de0a6f97 f32:2dba443c -> f32:cc4973f4
+assert_return invoke 6633322e6d756c - f32:f2ab14f1 f32:8ce19809 -> f32:4016c302
+assert_return invoke 6633322e6d756c - f32:edd8bb4a f32:8f725ab5 -> f32:3dcd2dd7
+assert_return invoke 6633322e6d756c - f32:e70b1353 f32:9a62beb8 -> f32:41f65d57
+assert_return invoke 6633322e6d756c - f32:5a3d67b9 f32:423644d6 -> f32:5d06daab
+assert_return invoke 6636342e6d756c - f64:da825c293f6f37e4 f64:7b0f5fd4fa41c6d8 -> f64:fff0000000000000
+assert_return invoke 6636342e6d756c - f64:825cc1ae79fffc5b f64:b24c36ccc2861ca6 -> f64:0
+assert_return invoke 6636342e6d756c - f64:65dc0232b3e64b56 f64:c69f6939cf3affaa -> f64:ec8b7e3aedf190d3
+assert_return invoke 6636342e6d756c - f64:ac660f289966b271 f64:64628a5497f0c259 -> f64:d0d98fc50bcec259
+assert_return invoke 6636342e6d756c - f64:71a37dab12d3afa2 f64:a581e156bd393f1 -> f64:3c0d6126554b8298
+assert_return invoke 6633322e6d756c - f32:931fabd1 f32:ed820eb4 -> f32:41223cd8
+assert_return invoke 6633322e6d756c - f32:642682c1 f32:4937021d -> f32:6dee11b0
+assert_return invoke 6633322e6d756c - f32:af97ed00 f32:e4f0b98e -> f32:550edc4f
+assert_return invoke 6633322e6d756c - f32:613de47f f32:c71d6ac9 -> f32:e8e988af
+assert_return invoke 6633322e6d756c - f32:4ec9b3a1 f32:e0d3d0c8 -> f32:f026e38d
+assert_return invoke 6636342e6d756c - f64:980ba737b4ca3b13 f64:2c58923309857438 -> f64:84753bc0d07baa37
+assert_return invoke 6636342e6d756c - f64:2eb7c1932e610219 f64:9842605db646489f -> f64:870b48da2b0d2ae3
+assert_return invoke 6636342e6d756c - f64:d48e43cdf3b21080 f64:f4299d96abbd61d1 -> f64:7ff0000000000000
+assert_return invoke 6636342e6d756c - f64:7b24c19466551da3 f64:2480bdcd6c7646e9 -> f64:5fb5b7cd8c3f638a
+assert_return invoke 6636342e6d756c - f64:552ff1da1726e3df f64:ca8043c44f52b158 -> f64:dfc03c9364bb585c
+assert_return invoke 6633322e6d756c - f32:d6c83f45 f32:ef2e9b34 -> f32:7f800000
+assert_return invoke 6633322e6d756c - f32:be464fba f32:e715a29 -> f32:8d3af6e6
+assert_return invoke 6633322e6d756c - f32:b666302d f32:7476190d -> f32:eb5d48d2
+assert_return invoke 6633322e6d756c - f32:dbafddbd f32:fd44b2f -> f32:ac11d747
+assert_return invoke 6633322e6d756c - f32:c7fdbf89 f32:41d380d -> f32:8c9bd606
+assert_return invoke 6636342e6d756c - f64:a0f5b0266454c26b f64:db0af5787e3e0399 -> f64:3c12457d81949e0b
+assert_return invoke 6636342e6d756c - f64:5dd0d54a82393d45 f64:903425760807ceae -> f64:ae1532068c8d0d5d
+assert_return invoke 6636342e6d756c - f64:cabb532af9817860 f64:566ada95085ba36f -> f64:e136ee38c1e01864
+assert_return invoke 6636342e6d756c - f64:6ffe132f4d49d1ce f64:d75a75afe9a7d864 -> f64:fff0000000000000
+assert_return invoke 6636342e6d756c - f64:45068bbf1cfff90a f64:44509cd17d652c50 -> f64:496768b8d67d7940
+assert_return invoke 6636342e6d756c - f64:2aaf99fb602c89b7 f64:1c06caab46a31a2e -> f64:6c68201f986e9d7
+assert_return invoke 6636342e6d756c - f64:bf686999c5eee379 f64:6d26e3b9e0d53e0d -> f64:eca17654a0ef35f5
+assert_return invoke 6636342e6d756c - f64:d6e069571b176f90 f64:973e248b6ab0a0e3 -> f64:2e2eeaff575cae1d
+assert_return invoke 6636342e6d756c - f64:706c217645777dd2 f64:43bd93f5715dd646 -> f64:743a0064aa1d920d
+assert_return invoke 6636342e6d756c - f64:aeb848981b6e694a f64:77ff5aacb64a0d19 -> f64:e6c7cb2296e6c2e5
+assert_return invoke 6636342e6d756c - f64:1a8db3bd2a286944 f64:256ce910af1d55ca -> f64:d6accdd538a39
+assert_return invoke 6636342e6d756c - f64:bc6aca2239160120 f64:8392b2b4958dd228 -> f64:fa74eccae5615
+assert_return invoke 6636342e6d756c - f64:a17bd062def16cff f64:9e77ddd91a0c4c0e -> f64:a5f4d7769d90d
+assert_return invoke 6636342e6d756c - f64:8fbc6a56169e9ce0 f64:300517d55a474122 -> f64:80012baf260afb77
+assert_return invoke 6636342e6d756c - f64:9fb08951b0b41705 f64:a04102dc27168d09 -> f64:8ca6dbf3f592b
+assert_return invoke 6636342e6d756c - f64:7538d0dea50c8c9b f64:8e21cac31d87a24 -> f64:3e2c177311f7cd73
+assert_return invoke 6636342e6d756c - f64:3f898049118e3063 f64:36a6362525151b58 -> f64:3641b358514103f9
+assert_return invoke 6636342e6d756c - f64:c00ea65cb0631323 f64:3d6fce683201a19b -> f64:bd8e76dc8c223667
+assert_return invoke 6636342e6d756c - f64:28ae4d235961d543 f64:332bc56f20ef9a48 -> f64:1bea4c09efcb71d6
+assert_return invoke 6636342e6d756c - f64:c4cb9612e66faba8 f64:2a3e2bc6aa782273 -> f64:af1a026ea4f81db1
+assert_return invoke 6633322e6d756c - f32:1a000000 f32:1a000000 -> f32:0
+assert_return invoke 6633322e6d756c - f32:1a000001 f32:1a000001 -> f32:1
+assert_return invoke 6636342e6d756c - f64:1e56a09e667f3bcc f64:1e56a09e667f3bcc -> f64:0
+assert_return invoke 6636342e6d756c - f64:1e56a09e667f3bcd f64:1e56a09e667f3bcd -> f64:1
+assert_return invoke 6633322e6d756c - f32:5f7fffff f32:5f7fffff -> f32:7f7ffffe
+assert_return invoke 6633322e6d756c - f32:5f800000 f32:5f800000 -> f32:7f800000
+assert_return invoke 6636342e6d756c - f64:5fefffffffffffff f64:5fefffffffffffff -> f64:7feffffffffffffe
+assert_return invoke 6636342e6d756c - f64:5ff0000000000000 f64:5ff0000000000000 -> f64:7ff0000000000000
+assert_return invoke 6633322e6d756c - f32:3f800001 f32:3f800001 -> f32:3f800002
+assert_return invoke 6633322e6d756c - f32:3f7fffff f32:3f7fffff -> f32:3f7ffffe
+assert_return invoke 6636342e6d756c - f64:3ff0000000000001 f64:3ff0000000000001 -> f64:3ff0000000000002
+assert_return invoke 6636342e6d756c - f64:3fefffffffffffff f64:3fefffffffffffff -> f64:3feffffffffffffe
+assert_return invoke 6633322e6d756c - f32:3f800001 f32:3f7fffff -> f32:3f800000
+assert_return invoke 6633322e6d756c - f32:3f800002 f32:3f7ffffe -> f32:3f800001
+assert_return invoke 6636342e6d756c - f64:3ff0000000000001 f64:3fefffffffffffff -> f64:3ff0000000000000
+assert_return invoke 6636342e6d756c - f64:3ff0000000000002 f64:3feffffffffffffe -> f64:3ff0000000000001
+assert_return invoke 6633322e6d756c - f32:800000 f32:34000000 -> f32:1
+assert_return invoke 6636342e6d756c - f64:10000000000000 f64:3cb0000000000000 -> f64:1
+assert_return invoke 6633322e6d756c - f32:c1800300 f32:34000 -> f32:80340138
+assert_return invoke 6633322e646976 - f32:3f8fcd6f f32:42c80000 -> f32:3c381132
+assert_return invoke 6633322e646976 - f32:4b000bf3 f32:4b3ffff9 -> f32:3f2abaa0
+assert_return invoke 6633322e646976 - f32:47800000 f32:2d000000 -> f32:5a000000
+assert_return invoke 6633322e646976 - f32:3fee5fb5 f32:7f7fffff -> f32:3b97ed
+assert_return invoke 6633322e646976 - f32:40800000 f32:40400000 -> f32:3faaaaab
+assert_return invoke 6636342e646976 - f64:3ff1f9add3739636 f64:4059000000000000 -> f64:3f8702262d60c045
+assert_return invoke 6636342e646976 - f64:4160017e60000000 f64:4167ffff20000000 -> f64:3fe55753f1d9ba27
+assert_return invoke 6636342e646976 - f64:40f0000000000000 f64:3da0000000000000 -> f64:4340000000000000
+assert_return invoke 6636342e646976 - f64:3ffdcbf6a0000000 f64:7fefffffffffffff -> f64:772fda8000000
+assert_return invoke 6636342e646976 - f64:4010000000000000 f64:4008000000000000 -> f64:3ff5555555555555
+assert_return invoke 6633322e646976 - f32:4a800bf6 f32:4a3ffffc -> f32:3faabaa1
+assert_return invoke 6636342e646976 - f64:4150017ec0000000 f64:4147ffff80000000 -> f64:3ff557541c7c6b43
+assert_return invoke 6633322e646976 - f32:27b5362d f32:7f7d05b8 -> f32:0
+assert_return invoke 6633322e646976 - f32:1430b7d9 f32:619990b9 -> f32:0
+assert_return invoke 6633322e646976 - f32:c7cb73bc f32:17f5862b -> f32:ef542205
+assert_return invoke 6633322e646976 - f32:99f13120 f32:82f691b7 -> f32:567a6ac2
+assert_return invoke 6633322e646976 - f32:d4711ba7 f32:17b8fe6e -> f32:fc26d383
+assert_return invoke 6636342e646976 - f64:492163c09d0c38c1 f64:4dee04cc737348e6 -> f64:3b2289921caeed23
+assert_return invoke 6636342e646976 - f64:18dd6867e741e0a9 f64:33335eb19a9aae4 -> f64:55987e342d11f519
+assert_return invoke 6636342e646976 - f64:d29d5edf648aeb98 f64:67f0dda15b079355 -> f64:aa9bdceaf9734b5c
+assert_return invoke 6636342e646976 - f64:eb2b683e3934aeda f64:4f5c364e1df00dff -> f64:dbbf16456e7afe3b
+assert_return invoke 6636342e646976 - f64:e1b44ca7539cc851 f64:5c458501bccc58fe -> f64:c55e2f8657e0924e
+assert_return invoke 6633322e646976 - f32:e26162a5 f32:948068a1 -> f32:7f800000
+assert_return invoke 6633322e646976 - f32:28f1ad5f f32:55e34ef8 -> f32:1288175a
+assert_return invoke 6633322e646976 - f32:3fa2ff95 f32:ec0f43aa -> f32:9311a1a7
+assert_return invoke 6633322e646976 - f32:2646d8c5 f32:28f8cf -> f32:661b4dcb
+assert_return invoke 6633322e646976 - f32:6cbc2cc8 f32:6b29a0a2 -> f32:410dfeee
+assert_return invoke 6636342e646976 - f64:f331c4f47eb51 f64:d69c7ff45bf6f03a -> f64:8000000000000000
+assert_return invoke 6636342e646976 - f64:8240fc8707b9d19c f64:1e777524d5f4a563 -> f64:a3b72c1a937d2310
+assert_return invoke 6636342e646976 - f64:a6cedb3aa64bb338 f64:c2c1c7c164320e40 -> f64:23fbc44cc1c5ae63
+assert_return invoke 6636342e646976 - f64:c4f6534b34e8686b f64:e8c34a7fc59e3c3 -> f64:f6595421bf291b66
+assert_return invoke 6636342e646976 - f64:ceb91f58d7ed1237 f64:c36f190d808383c8 -> f64:4b39d9eb0836f906
+assert_return invoke 6633322e646976 - f32:4cb25952 f32:474aba9 -> f32:7f800000
+assert_return invoke 6633322e646976 - f32:e629e4db f32:4d6b44d0 -> f32:d838dd52
+assert_return invoke 6633322e646976 - f32:52b32545 f32:efacedd1 -> f32:a28499fa
+assert_return invoke 6633322e646976 - f32:f74cf07d f32:c4615ad4 -> f32:7268cef3
+assert_return invoke 6633322e646976 - f32:edad40ad f32:c65ac105 -> f32:66cac05c
+assert_return invoke 6636342e646976 - f64:97081fd1e2af7beb f64:14cedefc4eae536c -> f64:c22901abdd91b661
+assert_return invoke 6636342e646976 - f64:f0d47cf932953c43 f64:9d6bc40496b1f2a1 -> f64:7ff0000000000000
+assert_return invoke 6636342e646976 - f64:9152bd2e8fbdcad7 f64:3beb115674cc476e -> f64:95562752bf19fa81
+assert_return invoke 6636342e646976 - f64:d3cf923e3fea9efe f64:9b38044c74d27a39 -> f64:7885086518cc7186
+assert_return invoke 6636342e646976 - f64:4b4516ed2051d6bb f64:cd5c9f455eb9c2ee -> f64:bdd79414d67f2889
+assert_return invoke 6636342e646976 - f64:e489c52726aed366 f64:cc27d0568c75660f -> f64:5851507ca2a65f23
+assert_return invoke 6636342e646976 - f64:e21522672f461667 f64:d4936d36572c9f71 -> f64:4d71681369370619
+assert_return invoke 6636342e646976 - f64:4b801051b4e8cd61 f64:fc42cbb5ca3d33eb -> f64:8f2b59471598a2f3
+assert_return invoke 6636342e646976 - f64:4d85f93bb80fc2cb f64:5aa7e051aae9f0ed -> f64:32cd732fa926ba4f
+assert_return invoke 6636342e646976 - f64:f38e251d762163cc f64:55c3ee63581e1796 -> f64:ddb8330077d90a07
+assert_return invoke 6636342e646976 - f64:3ffdcbf69f10006d f64:7fefffffffffffff -> f64:772fda7c4001b
+assert_return invoke 6636342e646976 - f64:ce14169442fbca f64:40b505451d62ff7d -> f64:b727e85f38b39
+assert_return invoke 6636342e646976 - f64:b6fd3ebe726ec964 f64:f6f4a7bfc0b83608 -> f64:5a9d8c50cbf87
+assert_return invoke 6636342e646976 - f64:a766c3def770aee1 f64:e768b84724347598 -> f64:3af0707fcd0c7
+assert_return invoke 6636342e646976 - f64:a716abda1bb3cb3 f64:4a56c9c7198eb1e6 -> f64:c3a8fd6741649
+assert_return invoke 6636342e646976 - f64:127057d6ab553ca f64:c162abf1e98660eb -> f64:80004ee8d8ec01cd
+assert_return invoke 6633322e646976 - f32:6c56d4d5 f32:54b4c426 -> f32:57181f17
+assert_return invoke 6633322e646976 - f32:6cc140e4 f32:f4b1441e -> f32:b78b8b4e
+assert_return invoke 6633322e646976 - f32:682e35f1 f32:3f680eff -> f32:68402f19
+assert_return invoke 6633322e646976 - f32:c95de929 f32:d07dd4a8 -> f32:385fceab
+assert_return invoke 6633322e646976 - f32:aa87a0eb f32:db9f96df -> f32:e59906c
+assert_return invoke 6636342e646976 - f64:43cb2348a1c81899 f64:8a24a58aad903dd3 -> f64:f99507c1e2a41b35
+assert_return invoke 6636342e646976 - f64:37d23fa5137a918a f64:9f67268db1951263 -> f64:d8593965e0d896be
+assert_return invoke 6636342e646976 - f64:69cdcb3915d82dee f64:67d50caaa1dc6b19 -> f64:41e6a58ec814b09d
+assert_return invoke 6636342e646976 - f64:cb5046e378c0cc46 f64:704ac925009a922b -> f64:9af3720aa94dab18
+assert_return invoke 6636342e646976 - f64:8988945fd69d8e11 f64:9790a37870af809a -> f64:31e7a2e286c62382
+assert_return invoke 6636342e646976 - f64:3c682002af0ea1f3 f64:3ffd0a9b0c2fa339 -> f64:3c5a952fbd1fc17c
+assert_return invoke 6636342e646976 - f64:3991e12b515db471 f64:bd541fc3c94fba50 -> f64:bc2c6e50cccb7cb6
+assert_return invoke 6636342e646976 - f64:3d6aba5adcd6f583 f64:38f17dfac639ce0f -> f64:446872b0a008c326
+assert_return invoke 6636342e646976 - f64:458cf82510d0ae6b f64:4600207d86498053 -> f64:3f7cbdc804e2cf14
+assert_return invoke 6636342e646976 - f64:3f44c82cbb508e21 f64:c336b57208c2d5d5 -> f64:bbfd48e8b369129a
+assert_return invoke 6633322e646976 - f32:800000 f32:7fffff -> f32:3f800001
+assert_return invoke 6633322e646976 - f32:7fffff f32:800000 -> f32:3f7ffffe
+assert_return invoke 6636342e646976 - f64:10000000000000 f64:fffffffffffff -> f64:3ff0000000000001
+assert_return invoke 6636342e646976 - f64:fffffffffffff f64:10000000000000 -> f64:3feffffffffffffe
+assert_return invoke 6633322e646976 - f32:347fffff f32:7f7fffff -> f32:0
+assert_return invoke 6633322e646976 - f32:34800000 f32:7f7fffff -> f32:1
+assert_return invoke 6636342e646976 - f64:3cbfffffffffffff f64:7fefffffffffffff -> f64:0
+assert_return invoke 6636342e646976 - f64:3cc0000000000000 f64:7fefffffffffffff -> f64:1
+assert_return invoke 6633322e646976 - f32:3f800000 f32:200000 -> f32:7f800000
+assert_return invoke 6633322e646976 - f32:3f800000 f32:200001 -> f32:7f7ffff8
+assert_return invoke 6636342e646976 - f64:3ff0000000000000 f64:4000000000000 -> f64:7ff0000000000000
+assert_return invoke 6636342e646976 - f64:3ff0000000000000 f64:4000000000001 -> f64:7feffffffffffff8
+assert_return invoke 6633322e646976 - f32:3f800000 f32:7e800001 -> f32:7fffff
+assert_return invoke 6633322e646976 - f32:3f800000 f32:7e800000 -> f32:800000
+assert_return invoke 6636342e646976 - f64:3ff0000000000000 f64:7fd0000000000001 -> f64:fffffffffffff
+assert_return invoke 6636342e646976 - f64:3ff0000000000000 f64:7fd0000000000000 -> f64:10000000000000
+assert_return invoke 6633322e646976 - f32:3f800000 f32:40400000 -> f32:3eaaaaab
+assert_return invoke 6633322e646976 - f32:40400000 f32:41100000 -> f32:3eaaaaab
+assert_return invoke 6633322e646976 - f32:41100000 f32:41d80000 -> f32:3eaaaaab
+assert_return invoke 6636342e646976 - f64:3ff0000000000000 f64:4008000000000000 -> f64:3fd5555555555555
+assert_return invoke 6636342e646976 - f64:4008000000000000 f64:4022000000000000 -> f64:3fd5555555555555
+assert_return invoke 6636342e646976 - f64:4022000000000000 f64:403b000000000000 -> f64:3fd5555555555555
+assert_return invoke 6633322e646976 - f32:3f800001 f32:3f7fffff -> f32:3f800002
+assert_return invoke 6633322e646976 - f32:3f7fffff f32:3f800001 -> f32:3f7ffffd
+assert_return invoke 6633322e646976 - f32:3f800000 f32:3f7fffff -> f32:3f800001
+assert_return invoke 6633322e646976 - f32:3f800000 f32:3f800001 -> f32:3f7ffffe
+assert_return invoke 6636342e646976 - f64:3ff0000000000001 f64:3fefffffffffffff -> f64:3ff0000000000002
+assert_return invoke 6636342e646976 - f64:3fefffffffffffff f64:3ff0000000000001 -> f64:3feffffffffffffd
+assert_return invoke 6636342e646976 - f64:3ff0000000000000 f64:3fefffffffffffff -> f64:3ff0000000000001
+assert_return invoke 6636342e646976 - f64:3ff0000000000000 f64:3ff0000000000001 -> f64:3feffffffffffffe
+assert_return invoke 6633322e73717274 - f32:432b0000 -> f32:41513a26
+assert_return invoke 6633322e73717274 - f32:342ca6fe -> f32:39d23c4e
+assert_return invoke 6636342e73717274 - f64:4065600000000000 -> f64:402a2744ce9674f5
+assert_return invoke 6636342e73717274 - f64:3e8594dfc70aa105 -> f64:3f3a4789c0e37f99
+assert_return invoke 6636342e73717274 - f64:35b0263fcc94f259 -> f64:3ad0131485de579f
+assert_return invoke 6636342e73717274 - f64:551352dfa278c43d -> f64:4a8195607dac5417
+assert_return invoke 6636342e73717274 - f64:591b15daa23924fa -> f64:4c84d143db561493
+assert_return invoke 6636342e73717274 - f64:3da518c8e68cb753 -> f64:3ec9fb8ef1ad5bfd
+assert_return invoke 6636342e73717274 - f64:28d86d8b6518078e -> f64:3463c5142a48fcad
+assert_return invoke 6636342e73717274 - f64:3fefffffffffffff -> f64:3fefffffffffffff
+assert_return invoke 6633322e73717274 - f32:3e04c032 -> f32:3eb85918
+assert_return invoke 6633322e73717274 - f32:71ecdf78 -> f32:58ae2029
+assert_return invoke 6633322e73717274 - f32:3da15adb -> f32:3e8fb687
+assert_return invoke 6633322e73717274 - f32:1c1b4268 -> f32:2dc75d71
+assert_return invoke 6633322e73717274 - f32:3a6c5e27 -> f32:3cf5fcf5
+assert_return invoke 6636342e73717274 - f64:635c39f220d5704 -> f64:2312a92bc24ceae9
+assert_return invoke 6636342e73717274 - f64:6d653521a635745c -> f64:56aa0cfdc4ef8ff1
+assert_return invoke 6636342e73717274 - f64:580dfd5bbc9f4678 -> f64:4bfefa817117c94c
+assert_return invoke 6636342e73717274 - f64:46833f9640811cd4 -> f64:4338d17c9243baa3
+assert_return invoke 6636342e73717274 - f64:7e66c0ef0267ff45 -> f64:5f2afbcfae3f2b40
+assert_return invoke 6633322e73717274 - f32:4d135317 -> f32:46423428
+assert_return invoke 6633322e73717274 - f32:70b3001 -> f32:233cc3b1
+assert_return invoke 6633322e73717274 - f32:381efda8 -> f32:3bc9bf1c
+assert_return invoke 6633322e73717274 - f32:3987596 -> f32:218bb203
+assert_return invoke 6633322e73717274 - f32:265b82e -> f32:20f28105
+assert_return invoke 6636342e73717274 - f64:6b6edae8aea05430 -> f64:55af6c1ea4fc8dd2
+assert_return invoke 6636342e73717274 - f64:104f7ee4bda5c9c3 -> f64:281fbf30bdaf11c5
+assert_return invoke 6636342e73717274 - f64:3e1a48f348266ad1 -> f64:3f0481ee7540baf7
+assert_return invoke 6636342e73717274 - f64:30dfeb5a1ce3ed9c -> f64:3866995060c20d46
+assert_return invoke 6636342e73717274 - f64:7a1957d9796e3834 -> f64:5d042305213157ba
+assert_return invoke 6633322e73717274 - f32:7ab2bc3e -> f32:5d174152
+assert_return invoke 6633322e73717274 - f32:4739b022 -> f32:435a0720
+assert_return invoke 6633322e73717274 - f32:3f500768 -> f32:3f66c576
+assert_return invoke 6633322e73717274 - f32:143d2640 -> f32:29dc0cf2
+assert_return invoke 6633322e73717274 - f32:10ae926a -> f32:28157baf
+assert_return invoke 6636342e73717274 - f64:6e1a008948ead274 -> f64:5704659b37c39b19
+assert_return invoke 6636342e73717274 - f64:28270f6199ed21f5 -> f64:340b2a2bddf3300d
+assert_return invoke 6636342e73717274 - f64:7c435c1d49f2a352 -> f64:5e18e3d9f01a9716
+assert_return invoke 6636342e73717274 - f64:3d23fbdcfb2b2a15 -> f64:3e8949ba4feca42a
+assert_return invoke 6636342e73717274 - f64:213c201b94757145 -> f64:3095369ee6bf2967
+assert_return invoke 6636342e73717274 - f64:83c360e8d0032ad0 -> f64:nan:canonical
+assert_return invoke 6636342e73717274 - f64:466d9a6f5eef0503 -> f64:432ec73f56c166f6
+assert_return invoke 6636342e73717274 - f64:107aa051a5c4ec27 -> f64:2834a3e771ff5149
+assert_return invoke 6636342e73717274 - f64:2ebe5522a741babe -> f64:375607ae2b6feb7d
+assert_return invoke 6636342e73717274 - f64:6364832badc0c061 -> f64:51a99ec7934139b2
+assert_return invoke 6633322e73717274 - f32:3f800001 -> f32:3f800000
+assert_return invoke 6633322e73717274 - f32:3f800002 -> f32:3f800001
+assert_return invoke 6636342e73717274 - f64:3ff0000000000001 -> f64:3ff0000000000000
+assert_return invoke 6636342e73717274 - f64:3ff0000000000002 -> f64:3ff0000000000001
+assert_return invoke 6633322e73717274 - f32:3f7ffffe -> f32:3f7fffff
+assert_return invoke 6633322e73717274 - f32:3f7ffffd -> f32:3f7ffffe
+assert_return invoke 6636342e73717274 - f64:3feffffffffffffe -> f64:3fefffffffffffff
+assert_return invoke 6636342e73717274 - f64:3feffffffffffffd -> f64:3feffffffffffffe
+assert_return invoke 6633322e73717274 - f32:3e7fffff -> f32:3effffff
+assert_return invoke 6633322e73717274 - f32:3e800000 -> f32:3f000000
+assert_return invoke 6633322e73717274 - f32:3e800001 -> f32:3f000000
+assert_return invoke 6633322e73717274 - f32:3e800002 -> f32:3f000001
+assert_return invoke 6636342e73717274 - f64:3fcfffffffffffff -> f64:3fdfffffffffffff
+assert_return invoke 6636342e73717274 - f64:3fd0000000000000 -> f64:3fe0000000000000
+assert_return invoke 6636342e73717274 - f64:3fd0000000000001 -> f64:3fe0000000000000
+assert_return invoke 6636342e73717274 - f64:3fd0000000000002 -> f64:3fe0000000000001
+assert_return invoke 6633322e73717274 - f32:527da0ea -> f32:48fecfc0
+assert_return invoke 6636342e73717274 - f64:424fb41d442eeb1b -> f64:411fd9f808a0b68d
+assert_return invoke 6633322e73717274 - f32:501e30d9 -> f32:47c93d00
+assert_return invoke 6633322e73717274 - f32:592b5ea7 -> f32:4c517406
+assert_return invoke 6633322e73717274 - f32:55b2f816 -> f32:4a975aa2
+assert_return invoke 6633322e73717274 - f32:4e932c06 -> f32:4709406b
+assert_return invoke 6636342e73717274 - f64:4203c61b11200000 -> f64:40f927a000000000
+assert_return invoke 6636342e73717274 - f64:43256bd4e65c8548 -> f64:418a2e80d0000000
+assert_return invoke 6636342e73717274 - f64:42b65f02cc93a100 -> f64:4152eb5440000000
+assert_return invoke 6636342e73717274 - f64:41d26580b4c00000 -> f64:40e1280d62b818cf
+assert_return invoke 6633322e73717274 - f32:3f040bfe -> f32:3f37dbcf
+assert_return invoke 6633322e73717274 - f32:3f00bdcc -> f32:3f358af7
+assert_return invoke 6636342e73717274 - f64:3fe0817fc0000000 -> f64:3fe6fb79d0dfaffa
+assert_return invoke 6636342e73717274 - f64:3fe017b980000000 -> f64:3fe6b15ed0071b95
+assert_return invoke 6633322e73717274 - f32:41100000 -> f32:40400000
+assert_return invoke 6633322e73717274 - f32:43090000 -> f32:413b4673
+assert_return invoke 6633322e73717274 - f32:3fe30aef -> f32:3faa7968
+assert_return invoke 6633322e73717274 - f32:447a0000 -> f32:41fcfb72
+assert_return invoke 6636342e73717274 - f64:4022000000000000 -> f64:4008000000000000
+assert_return invoke 6636342e73717274 - f64:4061200000000000 -> f64:402768ce6d3c11e0
+assert_return invoke 6636342e73717274 - f64:3ffc615df07a57d3 -> f64:3ff54f2d015acf09
+assert_return invoke 6636342e73717274 - f64:408f400000000000 -> f64:403f9f6e4990f227
+assert_return invoke 6633322e616273 - f32:7f80f1e2 -> f32:7f80f1e2
+assert_return invoke 6633322e616273 - f32:ff80f1e2 -> f32:7f80f1e2
+assert_return invoke 6636342e616273 - f64:7ff00000f1e27a6b -> f64:7ff00000f1e27a6b
+assert_return invoke 6636342e616273 - f64:fff00000f1e27a6b -> f64:7ff00000f1e27a6b
+assert_return invoke 6633322e6e6567 - f32:7f80f1e2 -> f32:ff80f1e2
+assert_return invoke 6633322e6e6567 - f32:ff80f1e2 -> f32:7f80f1e2
+assert_return invoke 6636342e6e6567 - f64:7ff00000f1e27a6b -> f64:fff00000f1e27a6b
+assert_return invoke 6636342e6e6567 - f64:fff00000f1e27a6b -> f64:7ff00000f1e27a6b
+assert_return invoke 6633322e636f70797369676e - f32:7f80f1e2 f32:7fc00000 -> f32:7f80f1e2
+assert_return invoke 6633322e636f70797369676e - f32:7f80f1e2 f32:ffc00000 -> f32:ff80f1e2
+assert_return invoke 6633322e636f70797369676e - f32:ff80f1e2 f32:7fc00000 -> f32:7f80f1e2
+assert_return invoke 6633322e636f70797369676e - f32:ff80f1e2 f32:ffc00000 -> f32:ff80f1e2
+assert_return invoke 6636342e636f70797369676e - f64:7ff00000f1e27a6b f64:7ff8000000000000 -> f64:7ff00000f1e27a6b
+assert_return invoke 6636342e636f70797369676e - f64:7ff00000f1e27a6b f64:fff8000000000000 -> f64:fff00000f1e27a6b
+assert_return invoke 6636342e636f70797369676e - f64:fff00000f1e27a6b f64:7ff8000000000000 -> f64:7ff00000f1e27a6b
+assert_return invoke 6636342e636f70797369676e - f64:fff00000f1e27a6b f64:fff8000000000000 -> f64:fff00000f1e27a6b
+assert_return invoke 6633322e6365696c - f32:3f7fffff -> f32:3f800000
+assert_return invoke 6633322e6365696c - f32:3f800001 -> f32:40000000
+assert_return invoke 6636342e6365696c - f64:3fefffffffffffff -> f64:3ff0000000000000
+assert_return invoke 6636342e6365696c - f64:3ff0000000000001 -> f64:4000000000000000
+assert_return invoke 6633322e6365696c - f32:4affffff -> f32:4b000000
+assert_return invoke 6633322e6365696c - f32:caffffff -> f32:cafffffe
+assert_return invoke 6636342e6365696c - f64:432fffffffffffff -> f64:4330000000000000
+assert_return invoke 6636342e6365696c - f64:c32fffffffffffff -> f64:c32ffffffffffffe
+assert_return invoke 6633322e6365696c - f32:4b7fffff -> f32:4b7fffff
+assert_return invoke 6633322e6365696c - f32:cb7fffff -> f32:cb7fffff
+assert_return invoke 6636342e6365696c - f64:433fffffffffffff -> f64:433fffffffffffff
+assert_return invoke 6636342e6365696c - f64:c33fffffffffffff -> f64:c33fffffffffffff
+assert_return invoke 6633322e666c6f6f72 - f32:bf7fffff -> f32:bf800000
+assert_return invoke 6633322e666c6f6f72 - f32:bf800001 -> f32:c0000000
+assert_return invoke 6636342e666c6f6f72 - f64:bfefffffffffffff -> f64:bff0000000000000
+assert_return invoke 6636342e666c6f6f72 - f64:bff0000000000001 -> f64:c000000000000000
+assert_return invoke 6633322e666c6f6f72 - f32:caffffff -> f32:cb000000
+assert_return invoke 6633322e666c6f6f72 - f32:4affffff -> f32:4afffffe
+assert_return invoke 6636342e666c6f6f72 - f64:c32fffffffffffff -> f64:c330000000000000
+assert_return invoke 6636342e666c6f6f72 - f64:432fffffffffffff -> f64:432ffffffffffffe
+assert_return invoke 6633322e666c6f6f72 - f32:47ad0f80 -> f32:47ad0f80
+assert_return invoke 6636342e666c6f6f72 - f64:40f5a1f000000000 -> f64:40f5a1f000000000
+assert_return invoke 6633322e7472756e63 - f32:caffffff -> f32:cafffffe
+assert_return invoke 6633322e7472756e63 - f32:4affffff -> f32:4afffffe
+assert_return invoke 6636342e7472756e63 - f64:c32fffffffffffff -> f64:c32ffffffffffffe
+assert_return invoke 6636342e7472756e63 - f64:432fffffffffffff -> f64:432ffffffffffffe
+assert_return invoke 6633322e6e656172657374 - f32:4b000001 -> f32:4b000001
+assert_return invoke 6633322e6e656172657374 - f32:4b000002 -> f32:4b000002
+assert_return invoke 6633322e6e656172657374 - f32:3effffff -> f32:0
+assert_return invoke 6633322e6e656172657374 - f32:577fffff -> f32:577fffff
+assert_return invoke 6636342e6e656172657374 - f64:4330000000000001 -> f64:4330000000000001
+assert_return invoke 6636342e6e656172657374 - f64:4330000000000002 -> f64:4330000000000002
+assert_return invoke 6636342e6e656172657374 - f64:3fdfffffffffffff -> f64:0
+assert_return invoke 6636342e6e656172657374 - f64:468fffffffffffff -> f64:468fffffffffffff
+assert_return invoke 6633322e6e656172657374 - f32:40900000 -> f32:40800000
+assert_return invoke 6633322e6e656172657374 - f32:c0900000 -> f32:c0800000
+assert_return invoke 6633322e6e656172657374 - f32:c0600000 -> f32:c0800000
+assert_return invoke 6636342e6e656172657374 - f64:4012000000000000 -> f64:4010000000000000
+assert_return invoke 6636342e6e656172657374 - f64:c012000000000000 -> f64:c010000000000000
+assert_return invoke 6636342e6e656172657374 - f64:c00c000000000000 -> f64:c010000000000000
+assert_return invoke 6633322e6e656172657374 - f32:caffffff -> f32:cb000000
+assert_return invoke 6633322e6e656172657374 - f32:4affffff -> f32:4b000000
+assert_return invoke 6636342e6e656172657374 - f64:c32fffffffffffff -> f64:c330000000000000
+assert_return invoke 6636342e6e656172657374 - f64:432fffffffffffff -> f64:4330000000000000

@@ -1,89 +1,123 @@
-# The spec suite's .wast files scripts/import-spec-tests.py imports, one per line, each with the
-# number of `skip` lines its .isotest holds: `<name> <skips>`. A skip is an assert_malformed of a
-# module given as text, which Isoline cannot parse yet. The import fails when a count differs, and
-# so does its CTest test; a new skip is a deliberate edit here, never a silent one.
-address                1
-align                  46
-binary                 0
-binary-leb128          0
-block                  15
-br                     0
-br_if                  0
-br_table               0
-bulk                   0
-call                   0
-call_indirect          11
-conversions            0
-custom                 0
-data                   0
-elem                   0
-endianness             0
-exports                0
-f32                    2
-f32_bitwise            0
-f32_cmp                0
-f64                    2
-f64_bitwise            0
-f64_cmp                0
-fac                    0
-float_exprs            0
-float_literals         78
-float_memory           0
-forward                0
-func                   23
-func_ptrs              0
-global                 3
-i32                    2
-i64                    2
-if                     24
-imports                16
-inline-module          0
-int_exprs              0
-int_literals           20
-labels                 0
-left-to-right          0
-linking                0
-load                   13
-local_get              0
-local_set              0
-local_tee              0
-loop                   15
-memory                 6
-memory_copy            0
-memory_fill            0
-memory_grow            0
-memory_init            0
-memory_redundancy      0
-memory_size            0
-memory_trap            0
-names                  0
-nop                    0
-ref_func               0
-ref_is_null            0
-ref_null               0
-return                 0
-select                 0
-skip-stack-guard-page  0
-stack                  0
-start                  1
-store                  7
-switch                 0
-table                  6
-table-sub              0
-table_copy             0
-table_fill             0
-table_get              0
-table_grow             0
-table_init             0
-table_set              0
-table_size             0
-traps                  0
-type                   2
-unreachable            0
-unreached-invalid      0
-unreached-valid        0
-unwind                 0
-utf8-custom-section-id 0
-utf8-import-field      0
-utf8-import-module     0
-utf8-invalid-encoding  176
+# The spec suites' .wast files scripts/import-spec-tests.py imports, one per line:
+# `<source> <path> <skips>`, the source a `source.<name>` of scripts/tools.lock and the path that of
+# the .wast file under its test/ directory, without `.wast`; the import lives in
+# tests/spec/<source>/<path>/. <skips> is the number of `skip` lines its .isotest holds, each a
+# command the importer names a reason for (an assertion of a module given as text, a module the GC
+# cut rejects, or a command using a module it skips). The import fails when a count differs, and so
+# does its CTest test; a new skip is a deliberate edit here, never a silent one. A row
+# `<source> <path> exclude <reason…>` names a file that is deliberately not imported, and why.
+# docs/conformance.md lists every exclusion and every skip of the GC cut.
+wasm2 core/align                    46
+wasm2 core/binary                   0
+wasm2 core/binary-leb128            0
+wasm2 core/br_if                    0
+wasm2 core/br_table                 0
+wasm2 core/data                     0
+wasm2 core/elem                     0
+wasm2 core/exports                  0
+wasm2 core/func                     23
+wasm2 core/global                   3
+wasm2 core/imports                  16
+wasm2 core/linking                  0
+wasm2 core/local_tee                0
+wasm2 core/memory                   6
+wasm2 core/ref_is_null              0
+wasm2 core/ref_null                 0
+wasm2 core/select                   0
+wasm2 core/table                    6
+wasm2 core/table-sub                0
+wasm2 core/unreached-invalid        0
+wasm2 core/unreached-valid          0
+wasm2 core/utf8-custom-section-id   0
+wasm2 core/utf8-invalid-encoding    176
+wasm3 core/address                  1
+wasm3 core/annotations              70
+wasm3 core/block                    15
+wasm3 core/br                       0
+wasm3 core/bulk-memory/bulk         0
+wasm3 core/bulk-memory/memory_copy  0
+wasm3 core/bulk-memory/memory_fill  0
+wasm3 core/bulk-memory/memory_init  0
+wasm3 core/bulk-memory/table_copy   0
+wasm3 core/bulk-memory/table_fill   0
+wasm3 core/bulk-memory/table_init   0
+wasm3 core/call                     0
+wasm3 core/call_indirect            11
+wasm3 core/comments                 4
+wasm3 core/const                    76
+wasm3 core/conversions              0
+wasm3 core/custom                   0
+wasm3 core/endianness               0
+wasm3 core/f32                      2
+wasm3 core/f32_bitwise              0
+wasm3 core/f32_cmp                  0
+wasm3 core/f64                      2
+wasm3 core/f64_bitwise              0
+wasm3 core/f64_cmp                  0
+wasm3 core/fac                      0
+wasm3 core/float_exprs              0
+wasm3 core/float_literals           78
+wasm3 core/float_memory             0
+wasm3 core/float_misc               0
+wasm3 core/forward                  0
+wasm3 core/func_ptrs                0
+wasm3 core/i32                      2
+wasm3 core/i64                      2
+wasm3 core/id                       6
+wasm3 core/if                       24
+wasm3 core/inline-module            0
+wasm3 core/int_exprs                0
+wasm3 core/int_literals             20
+wasm3 core/labels                   0
+wasm3 core/left-to-right            0
+wasm3 core/load                     13
+wasm3 core/local_get                0
+wasm3 core/local_set                0
+wasm3 core/loop                     15
+wasm3 core/memory_grow              0
+wasm3 core/memory_redundancy        0
+wasm3 core/memory_size              0
+wasm3 core/memory_trap              0
+wasm3 core/names                    0
+wasm3 core/nop                      0
+wasm3 core/obsolete-keywords        11
+wasm3 core/ref_func                 0
+wasm3 core/return                   0
+wasm3 core/skip-stack-guard-page    0
+wasm3 core/stack                    0
+wasm3 core/start                    1
+wasm3 core/store                    7
+wasm3 core/switch                   0
+wasm3 core/table_get                0
+wasm3 core/table_grow               0
+wasm3 core/table_set                0
+wasm3 core/table_size               0
+wasm3 core/token                    26
+wasm3 core/traps                    0
+wasm3 core/type                     2
+wasm3 core/unreachable              0
+wasm3 core/unwind                   0
+wasm3 core/utf8-import-field        0
+wasm3 core/utf8-import-module       0
+wasm3 core/gc/array                 exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_copy            exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_fill            exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_init_data       exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_init_elem       exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_new_data        exclude GC: the GC proposal's own tests
+wasm3 core/gc/array_new_elem        exclude GC: the GC proposal's own tests
+wasm3 core/gc/binary-gc             exclude GC: the GC proposal's own tests
+wasm3 core/gc/br_on_cast            exclude GC: the GC proposal's own tests
+wasm3 core/gc/br_on_cast_fail       exclude GC: the GC proposal's own tests
+wasm3 core/gc/extern                exclude GC: the GC proposal's own tests
+wasm3 core/gc/i31                   exclude GC: the GC proposal's own tests
+wasm3 core/gc/ref_cast              exclude GC: the GC proposal's own tests
+wasm3 core/gc/ref_eq                exclude GC: the GC proposal's own tests
+wasm3 core/gc/ref_test              exclude GC: the GC proposal's own tests
+wasm3 core/gc/struct                exclude GC: the GC proposal's own tests
+wasm3 core/gc/type-subtyping        exclude GC: the GC proposal's own tests
+wasm3 core/ref_null                 exclude GC: the nulls of GC's heap types and anyref
+wasm3 core/type-canon               exclude GC: canonicalization of recursive type groups
+wasm3 core/type-rec                 exclude GC: recursive type groups
+wasm3 custom/custom/custom_annot    exclude text format (P10)
+wasm3 custom/name/name_annot        exclude text format (P10)

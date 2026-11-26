@@ -1,0 +1,2 @@
+module extended-const.wasm
+assert_return get 67 - -> i32:3
