@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -289,6 +290,24 @@ TEST_CASE("Decoder.decodeRejectsHugeVectorCount")
           == DecodeErrorCode::LengthOutOfBounds);
 }
 
+TEST_CASE("Decoder.implementationLimitsAreDistinguishable")
+{
+    // Over a limit the embedder may raise, or malformed whatever the limits.
+    for (auto const& row: isoline::binary::DecodeErrorTable)
+    {
+        INFO("error: " << row.specMessage);
+        CHECK(isImplementationLimit(row.code)
+              == (row.code == DecodeErrorCode::ImplementationLimitExceeded
+                  || row.code == DecodeErrorCode::TooManyLocals));
+    }
+    auto const limited =
+        ModuleBuilder {}.type(FuncType {}).function(0, std::vector(4, isoline::binary::I32), {}).build();
+    auto const result = decodeModule(limited, FeatureSet::wasm2(), DecodeLimits { .maxLocals = 3 });
+    REQUIRE_FALSE(result.has_value());
+    CHECK(isImplementationLimit(result.error().code));
+    CHECK_FALSE(isImplementationLimit(DecodeErrorCode::MalformedSectionId));
+}
+
 TEST_CASE("Decoder.tooManyLocals")
 {
     // Two runs of 0x80000000 i32 overflow a u32.
@@ -297,8 +316,13 @@ TEST_CASE("Decoder.tooManyLocals")
                    0x02, 0x80, 0x80, 0x80, 0x80, 0x08, 0x7F, 0x80, 0x80, 0x80, 0x80, 0x08, 0x7F, 0x0B });
     auto const result = decodeModule(bytes, FeatureSet::wasm2());
     REQUIRE_FALSE(result.has_value());
-    CHECK(result.error().code == DecodeErrorCode::TooManyLocals);
+    CHECK(result.error().code == DecodeErrorCode::LocalCountOverflow);
     CHECK(result.error().offset == 22);
+    // Malformed, not past a limit: the highest maxLocals a u32 holds refuses it alike.
+    CHECK_FALSE(isImplementationLimit(result.error().code));
+    CHECK(errorOf(
+              bytes, FeatureSet::wasm2(), DecodeLimits { .maxLocals = std::numeric_limits<uint32_t>::max() })
+          == DecodeErrorCode::LocalCountOverflow);
 
     // Within a u32 but past DecodeLimits::maxLocals.
     auto const limited =

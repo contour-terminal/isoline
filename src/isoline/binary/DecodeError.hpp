@@ -30,6 +30,7 @@ enum class DecodeErrorCode : uint8_t
     JunkAfterLastSection,
     MalformedUtf8Encoding,
     TooManyLocals,
+    LocalCountOverflow,
     IllegalOpcode,
     MalformedReferenceType,
     MalformedImportKind,
@@ -69,6 +70,13 @@ enum class DecodeErrorDetail : uint8_t
     FeaturePrerequisite, ///< The feature and the prerequisite it lacks, by name.
 };
 
+/// What a decode error says of the module: that it is malformed, or only that it is past a limit.
+enum class DecodeErrorKind : uint8_t
+{
+    Malformed,           ///< Not a module under any limits: the binary format refuses it.
+    ImplementationLimit, ///< Past a DecodeLimits value: a module a raised limit may decode.
+};
+
 /// One row of DecodeErrorTable: an error and the message the spec test suite expects for it.
 struct DecodeErrorRow
 {
@@ -76,6 +84,7 @@ struct DecodeErrorRow
     std::string_view
         specMessage; ///< The reference interpreter's message, which spec tests match as a prefix.
     DecodeErrorDetail detail = DecodeErrorDetail::None; ///< What the message appends to specMessage.
+    DecodeErrorKind kind = DecodeErrorKind::Malformed;  ///< Malformed, or past an implementation limit.
 };
 
 /// Every decode error, one row per DecodeErrorCode enumerator, in enumerator order.
@@ -94,7 +103,12 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::SectionSizeMismatch, .specMessage = "section size mismatch" },
     { .code = DecodeErrorCode::JunkAfterLastSection, .specMessage = "junk after last section" },
     { .code = DecodeErrorCode::MalformedUtf8Encoding, .specMessage = "malformed UTF-8 encoding" },
-    { .code = DecodeErrorCode::TooManyLocals, .specMessage = "too many locals" },
+    // Past DecodeLimits::maxLocals: a raised limit may decode the function.
+    { .code = DecodeErrorCode::TooManyLocals,
+      .specMessage = "too many locals",
+      .kind = DecodeErrorKind::ImplementationLimit },
+    // Past 2^32 - 1 locals, which the binary format refuses whatever the limits: malformed.
+    { .code = DecodeErrorCode::LocalCountOverflow, .specMessage = "too many locals" },
     // The interpreter appends the opcode's bytes: "illegal opcode ff", or "illegal opcode fc 12".
     { .code = DecodeErrorCode::IllegalOpcode,
       .specMessage = "illegal opcode",
@@ -119,7 +133,9 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::ZeroByteExpected, .specMessage = "zero byte expected" },
     { .code = DecodeErrorCode::LengthOutOfBounds, .specMessage = "length out of bounds" },
     // The interpreter has no decode-time limit; this is Isoline's own wording.
-    { .code = DecodeErrorCode::ImplementationLimitExceeded, .specMessage = "implementation limit exceeded" },
+    { .code = DecodeErrorCode::ImplementationLimitExceeded,
+      .specMessage = "implementation limit exceeded",
+      .kind = DecodeErrorKind::ImplementationLimit },
     // The interpreter reads sections in their fixed order, so a repeated or misplaced one is left over
     // when it expects the end of the module.
     { .code = DecodeErrorCode::DuplicateSection, .specMessage = "unexpected content after last section" },
@@ -205,6 +221,14 @@ struct DecodeError
 [[nodiscard]] constexpr std::string_view specMessage(DecodeErrorCode code) noexcept
 {
     return DecodeErrorTable[static_cast<std::size_t>(code)].specMessage;
+}
+
+/// Whether @p code reports a module past an implementation limit (DecodeLimits), not a malformed one.
+/// @param code The error.
+/// @return Whether its row's kind is ImplementationLimit.
+[[nodiscard]] constexpr bool isImplementationLimit(DecodeErrorCode code) noexcept
+{
+    return DecodeErrorTable[static_cast<std::size_t>(code)].kind == DecodeErrorKind::ImplementationLimit;
 }
 
 /// The message the reference interpreter reports for @p error: its row's message, followed by what

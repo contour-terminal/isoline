@@ -15,7 +15,8 @@ namespace isoline::binary
 
 /// The implementation limits the decoder and the validator enforce (spec §9, Robustness), published so
 /// embedders know them; exceeding one is ImplementationLimitExceeded, or TooManyLocals for maxLocals,
-/// or the validator's OperandStackLimitExceeded for maxOperandsPerInstruction.
+/// or the validator's OperandStackLimitExceeded for maxOperandsPerInstruction. Each of those codes
+/// answers isImplementationLimit(), so an embedder tells "over a limit" from "malformed" or "invalid".
 ///
 /// Every default but maxOperandsPerInstruction is one the JavaScript embedding fixes, which every
 /// browser engine shares; maxOperandsPerInstruction is Isoline's own, as the JS embedding has none.
@@ -32,7 +33,9 @@ struct DecodeLimits
     uint32_t maxDataSegments = 100'000;       ///< Entries of the data section.
     uint32_t maxElementSegments = 10'000'000; ///< Entries of the element section.
     uint32_t maxElementItems = 10'000'000;    ///< Items of one element segment.
-    uint32_t maxLocals = 50'000;              ///< Declared locals of one function, over all its runs.
+    /// Declared locals of one function, over all its runs. Past 2^32 - 1 a count is malformed
+    /// (LocalCountOverflow) whatever this limit, so it can be raised to the most a u32 holds.
+    uint32_t maxLocals = 50'000;
     uint32_t maxParams = 1'000;               ///< Parameters of one function type.
     uint32_t maxResults = 1'000;              ///< Results of one function type.
     uint32_t maxFunctionBodySize = 7'654'321; ///< Bytes of one function body, its locals included.

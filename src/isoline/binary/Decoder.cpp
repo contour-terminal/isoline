@@ -1715,6 +1715,8 @@ namespace
         auto total = uint64_t { 0 };
         for (auto const& run: runs)
             total += run.count;
+        if (total > std::numeric_limits<uint32_t>::max())
+            return std::unexpected { DecodeError { DecodeErrorCode::LocalCountOverflow, localsOffset } };
         if (total > _limits.maxLocals)
             return std::unexpected { DecodeError { DecodeErrorCode::TooManyLocals, localsOffset } };
 

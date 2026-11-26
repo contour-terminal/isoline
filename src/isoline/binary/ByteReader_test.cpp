@@ -341,6 +341,7 @@ TEST_CASE("DecodeError.specMessages")
         { .code = DecodeErrorCode::SectionSizeMismatch, .message = "section size mismatch" },
         { .code = DecodeErrorCode::JunkAfterLastSection, .message = "junk after last section" },
         { .code = DecodeErrorCode::TooManyLocals, .message = "too many locals" },
+        { .code = DecodeErrorCode::LocalCountOverflow, .message = "too many locals" },
         { .code = DecodeErrorCode::IllegalOpcode, .message = "illegal opcode" },
         { .code = DecodeErrorCode::MalformedReferenceType, .message = "malformed reference type" },
         { .code = DecodeErrorCode::MalformedImportKind, .message = "malformed import kind" },

@@ -130,13 +130,21 @@ static_assert(
     }(),
     "memoryBoundRow() finds every MemoryBoundTable row at its own index");
 
+/// What a validation error says of the module: that it is invalid, or only that it is past a limit.
+enum class ValidationErrorKind : uint8_t
+{
+    Invalid,             ///< Invalid under any limits: the spec's validation refuses it.
+    ImplementationLimit, ///< Past a binary::DecodeLimits value: a module a raised limit may accept.
+};
+
 /// One row of ValidationErrorTable: an error and the message the spec test suite expects for it.
 struct ValidationErrorRow
 {
     ValidationErrorCode code; ///< The error this row describes; equal to the row's index.
     std::string_view
         specMessage; ///< The reference interpreter's message, which spec tests match as a prefix.
-    MessageDetail detail = MessageDetail::None; ///< What the interpreter appends to it.
+    MessageDetail detail = MessageDetail::None;              ///< What the interpreter appends to it.
+    ValidationErrorKind kind = ValidationErrorKind::Invalid; ///< Invalid, or past an implementation limit.
 };
 
 /// Every validation error, one row per ValidationErrorCode enumerator, in enumerator order.
@@ -217,7 +225,9 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
     { .code = ValidationErrorCode::NonEmptyTagResultType, .specMessage = "non-empty tag result type" },
     // Isoline's own implementation limit, DecodeLimits::maxOperandsPerInstruction; the spec suite has
     // no such error.
-    { .code = ValidationErrorCode::OperandStackLimitExceeded, .specMessage = "operand stack limit exceeded" },
+    { .code = ValidationErrorCode::OperandStackLimitExceeded,
+      .specMessage = "operand stack limit exceeded",
+      .kind = ValidationErrorKind::ImplementationLimit },
 });
 
 static_assert(
@@ -355,6 +365,16 @@ struct ValidationError
 [[nodiscard]] constexpr std::string_view specMessage(ValidationErrorCode code) noexcept
 {
     return ValidationErrorTable[static_cast<std::size_t>(code)].specMessage;
+}
+
+/// Whether @p code reports a module past an implementation limit (binary::DecodeLimits), not an
+/// invalid one.
+/// @param code The error.
+/// @return Whether its row's kind is ImplementationLimit.
+[[nodiscard]] constexpr bool isImplementationLimit(ValidationErrorCode code) noexcept
+{
+    return ValidationErrorTable[static_cast<std::size_t>(code)].kind
+           == ValidationErrorKind::ImplementationLimit;
 }
 
 /// The message the reference interpreter reports for @p error: its row's message, followed by what

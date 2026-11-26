@@ -479,6 +479,22 @@ TEST_CASE("Validator.operandStackSlackCoversWideLabels")
     CHECK(wide->functions.at(0) == FrameShape { .maxOperands = 5000, .maxLabels = 1 });
 }
 
+TEST_CASE("Validator.implementationLimitsAreDistinguishable")
+{
+    // Over a limit the embedder may raise, or invalid whatever the limits: only the operand stack
+    // cap is the former.
+    for (auto const& row: isoline::validate::ValidationErrorTable)
+    {
+        INFO("error: " << row.specMessage);
+        CHECK(isImplementationLimit(row.code)
+              == (row.code == ValidationErrorCode::OperandStackLimitExceeded));
+    }
+    auto const two = validated(multiValueCalls(2), FeatureSet::wasm3());
+    REQUIRE_FALSE(two.has_value());
+    CHECK(isImplementationLimit(two.error().code));
+    CHECK_FALSE(isImplementationLimit(ValidationErrorCode::TypeMismatch));
+}
+
 TEST_CASE("Validator.validateDeepNesting")
 {
     constexpr auto Depth = 100'000;
