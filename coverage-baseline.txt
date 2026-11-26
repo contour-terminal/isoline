@@ -172,6 +172,9 @@
 # moved into numerics/SimdLanes.hpp, and it now holds only declarations, which have no code to cover.
 # src/isoline/api/Store.cpp's line entry was lowered from 98.63 to 97.96 when makeExecutor() gained the fast engine's case: its
 # lines are the fast-engine-refused exclusion, which no store reaches until Task 14b, so the covered share of the file fell.
+# src/isoline/runtime/PollGate.hpp's branch entry is 87.50, not 100: its two untaken branches are the failing sides of its
+# Requires (an observed poll with a countdown the store does not hold, a commit of more steps than the budget), contract
+# violations that runtime/PollGate_test.cpp runs in subprocesses, unrecorded.
 
 exclude src/isoline/api/Store.cpp fast-engine-refused makeExecutor for the fast engine, a core::todo naming P4 Task 14b: Engine's constructor refuses ExecutionEngine::Fast until Task 14b wires the fast interpreter in, so no store is made with it
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
@@ -250,7 +253,7 @@ src/isoline/runtime/Limits.hpp                   100.00 -
 src/isoline/runtime/LinearMemory.cpp             88.57 100.00
 src/isoline/runtime/LinearMemory.hpp             100.00 -
 src/isoline/runtime/ModuleCode.hpp               100.00 -
-src/isoline/runtime/PollGate.hpp                 100.00 100.00
+src/isoline/runtime/PollGate.hpp                 100.00 87.50
 src/isoline/runtime/Segment.hpp                  100.00 100.00
 src/isoline/runtime/Store.cpp                    99.69 83.85
 src/isoline/runtime/Store.hpp                    100.00 94.11

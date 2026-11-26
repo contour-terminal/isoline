@@ -7,6 +7,7 @@
 #include <expected>
 #include <format>
 #include <ranges>
+#include <tuple>
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
@@ -16,6 +17,7 @@
 #include <isoline/runtime/PollGate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
+#include <isoline/runtime/testing/ContractViolation.hpp>
 #include <isoline/runtime/testing/PollCounter.hpp>
 
 using isoline::runtime::HeapMemoryAllocator;
@@ -199,4 +201,32 @@ TEST_CASE("PollGate.unchargedSitesCostNothing")
     CHECK(stepsLeft == 0);
     gate.commit(stepsLeft);
     CHECK(invoked.store.used(Limit::Steps) == 1);
+}
+
+// The contract tests below end the process at a failed Require, so they are hidden from the unit run:
+// tests/CMakeLists.txt runs each in a process of its own and expects the Require's text
+// (isoline::runtime::testing::endAtContractViolation()).
+
+TEST_CASE("Contract.PollGate.observedPollNeedsTheStoresCountdown", "[.contract]")
+{
+    // An executor that polled through the store and forgot to reload: on an observed store, the gate's
+    // next poll catches it rather than quietly taking the store's count.
+    isoline::runtime::testing::endAtContractViolation();
+    auto counter = PollCounter {};
+    auto invoked = InvokedStore { StoreLimits {}, &counter };
+    auto gate = PollGate { invoked.store };
+    auto stepsLeft = gate.reload();
+    REQUIRE(invoked.store.poll(PollSite::FunctionEntry).has_value());
+    std::ignore = gate.poll(PollSite::LoopBackEdge, stepsLeft);
+    FAIL("SURVIVED: an observed poll accepted a countdown the store did not hold");
+}
+
+TEST_CASE("Contract.PollGate.commitWithinTheBudget", "[.contract]")
+{
+    // More steps left than the budget holds: a countdown that never came from reload().
+    isoline::runtime::testing::endAtContractViolation();
+    auto invoked = InvokedStore { StoreLimits { .maxSteps = 5 } };
+    auto gate = PollGate { invoked.store };
+    gate.commit(6);
+    FAIL("SURVIVED: commit accepted more steps left than maxSteps");
 }

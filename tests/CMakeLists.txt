@@ -249,6 +249,8 @@ set(isolineContractRows
     "Contract.Instantiate.codeMustMatchTheExecutor|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)"
     "Contract.Instantiate.nullCodeNeedsTheReference|engineOf\\(code\\.get\\(\\)\\) == executor\\.engine\\(\\)"
     "Contract.Instantiate.referenceCodeIsNull|code == nullptr \\|\\| code->engine\\(\\) != ExecutionEngine::Reference"
+    "Contract.PollGate.observedPollNeedsTheStoresCountdown|stepsLeft == reload\\(\\)"
+    "Contract.PollGate.commitWithinTheBudget|stepsLeft <= _maxSteps"
     # Removed in P4 Task 14b, which wires the fast engine into the API.
     "Contract.Engine.runsOnlyTheReferenceEngine|_config\\.engine == ExecutionEngine::Reference")
 set(isolineContractCases)
