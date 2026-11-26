@@ -11,6 +11,7 @@ target_sources(isoline_core
         binary/ByteReader.cpp
         binary/Decoder.cpp
         binary/Opcode.cpp
+        validate/Validator.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
         FILES
@@ -23,6 +24,8 @@ target_sources(isoline_core
             binary/Opcode.hpp
             binary/Opcodes.def
             binary/Types.hpp
+            validate/ValidationError.hpp
+            validate/Validator.hpp
             Version.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
