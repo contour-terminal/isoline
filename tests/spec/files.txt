@@ -82,6 +82,13 @@ wasm3 core/names                    0
 wasm3 core/nop                      0
 wasm3 core/obsolete-keywords        11
 wasm3 core/ref_func                 0
+wasm3 core/relaxed-simd/i16x8_relaxed_q15mulr_s 0
+wasm3 core/relaxed-simd/i32x4_relaxed_trunc 0
+wasm3 core/relaxed-simd/i8x16_relaxed_swizzle 0
+wasm3 core/relaxed-simd/relaxed_dot_product 0
+wasm3 core/relaxed-simd/relaxed_laneselect 0
+wasm3 core/relaxed-simd/relaxed_madd_nmadd 0
+wasm3 core/relaxed-simd/relaxed_min_max 0
 wasm3 core/return                   0
 wasm3 core/simd/simd_address        4
 wasm3 core/simd/simd_align          34

@@ -48,9 +48,45 @@ TEST_CASE("Opcode.knownEncodings")
     CHECK(opcodeInfo(Opcode::I8x16Shuffle).immediate == isoline::binary::ImmediateKind::Shuffle);
     CHECK(opcodeInfo(Opcode::V128Store64Lane).immediate == isoline::binary::ImmediateKind::MemArgLane);
     CHECK(opcodeInfo(Opcode::I16x8ExtractLaneU).immediate == isoline::binary::ImmediateKind::LaneIndex);
-    // 441 opcodes do not fit a byte.
+    // 461 opcodes do not fit a byte.
     STATIC_CHECK(std::is_same_v<std::underlying_type_t<Opcode>, uint16_t>);
-    CHECK(isoline::binary::OpcodeCount == 441);
+    CHECK(isoline::binary::OpcodeCount == 461);
+}
+
+TEST_CASE("Opcode.relaxedEncodings")
+{
+    CHECK(lookupOpcode(0xFD, 0x100) == Opcode::I8x16RelaxedSwizzle);
+    CHECK(lookupOpcode(0xFD, 0x105) == Opcode::F32x4RelaxedMadd);
+    CHECK(lookupOpcode(0xFD, 0x10C) == Opcode::I64x2RelaxedLaneselect);
+    CHECK(lookupOpcode(0xFD, 0x111) == Opcode::I16x8RelaxedQ15mulrS);
+    CHECK(lookupOpcode(0xFD, 0x113) == Opcode::I32x4RelaxedDotI8x16I7x16AddS);
+    CHECK(opcodeInfo(Opcode::I32x4RelaxedTruncF64x2UZero).text == "i32x4.relaxed_trunc_f64x2_u_zero");
+
+    // All 20 are relaxed SIMD's, of fixed type, with no immediate.
+    auto const relaxed = std::ranges::count_if(
+        OpcodeTable, [](auto const& row) { return row.proposal == isoline::Feature::RelaxedSimd; });
+    CHECK(relaxed == 20);
+
+    struct SignatureCase
+    {
+        Opcode opcode;
+        OpcodeSignature signature;
+    };
+    auto const cases = std::to_array<SignatureCase>({
+        { .opcode = Opcode::I8x16RelaxedSwizzle, .signature = OpcodeSignature::V128V128ToV128 },
+        { .opcode = Opcode::I32x4RelaxedTruncF32x4S, .signature = OpcodeSignature::V128ToV128 },
+        { .opcode = Opcode::F64x2RelaxedNmadd, .signature = OpcodeSignature::V128V128V128ToV128 },
+        { .opcode = Opcode::I8x16RelaxedLaneselect, .signature = OpcodeSignature::V128V128V128ToV128 },
+        { .opcode = Opcode::F64x2RelaxedMax, .signature = OpcodeSignature::V128V128ToV128 },
+        { .opcode = Opcode::I16x8RelaxedDotI8x16I7x16S, .signature = OpcodeSignature::V128V128ToV128 },
+        { .opcode = Opcode::I32x4RelaxedDotI8x16I7x16AddS, .signature = OpcodeSignature::V128V128V128ToV128 },
+    });
+    for (auto const& testCase: cases)
+    {
+        INFO(opcodeInfo(testCase.opcode).text);
+        CHECK(opcodeInfo(testCase.opcode).signature == testCase.signature);
+        CHECK(opcodeInfo(testCase.opcode).immediate == isoline::binary::ImmediateKind::None);
+    }
 }
 
 TEST_CASE("Opcode.wideEncodings")
@@ -83,7 +119,7 @@ TEST_CASE("Opcode.unknownEncodings")
     CHECK_FALSE(lookupOpcode(0x00, 0x100).has_value());
     CHECK_FALSE(lookupOpcode(0xFC, 0xFFFF'FFFF).has_value());
     CHECK_FALSE(lookupOpcode(0xFD, 0x9A).has_value());  // a gap in the SIMD encodings
-    CHECK_FALSE(lookupOpcode(0xFD, 0x100).has_value()); // past the last SIMD encoding
+    CHECK_FALSE(lookupOpcode(0xFD, 0x114).has_value()); // past the last relaxed SIMD encoding
     CHECK_FALSE(lookupOpcode(0xFB, 0).has_value());     // not a prefix
 }
 
@@ -184,7 +220,7 @@ TEST_CASE("Opcode.numericSignaturesFollowTheTextPrefix")
     {
         // SIMD's shape prefixes (i8x16. …) name lanes, not a value type; Opcode.simdSignatures checks those.
         if (row.signature == OpcodeSignature::Special || row.signature == OpcodeSignature::None
-            || row.proposal == isoline::Feature::Simd)
+            || row.prefix == 0xFD)
             continue;
         INFO(row.text);
         auto const results = signatureInfo(row.signature).resultKinds();
@@ -208,11 +244,12 @@ TEST_CASE("Opcode.numericSignaturesFollowTheTextPrefix")
 TEST_CASE("Opcode.simdSignatures")
 {
     // Every SIMD instruction of fixed type yields a v128, except tests and extract_lane, which yield
-    // the i32 or lane scalar; every one but v128.const and the splats pops a v128 first.
+    // the i32 or lane scalar; every one but v128.const and the splats pops a v128 first. Relaxed
+    // SIMD's instructions are SIMD instructions too.
     auto count = std::size_t { 0 };
     for (auto const& row: OpcodeTable)
     {
-        if (row.proposal != isoline::Feature::Simd)
+        if (row.proposal != isoline::Feature::Simd && row.proposal != isoline::Feature::RelaxedSimd)
             continue;
         INFO(row.text);
         ++count;
@@ -233,7 +270,7 @@ TEST_CASE("Opcode.simdSignatures")
         auto const takesScalar = row.text.ends_with(".splat") || row.text == "v128.const";
         CHECK((params.empty() || params[0] != ValueKind::V128) == takesScalar);
     }
-    CHECK(count == 236);
+    CHECK(count == 236 + 20);
 
     struct SignatureCase
     {
@@ -300,6 +337,7 @@ TEST_CASE("Opcode.encodingRanges")
         { .prefix = 0xFD, .first = 0xD5, .last = 0xE1 },
         { .prefix = 0xFD, .first = 0xE3, .last = 0xED },
         { .prefix = 0xFD, .first = 0xEF, .last = 0xFF },
+        { .prefix = 0xFD, .first = 0x100, .last = 0x113 }, // relaxed SIMD
     });
     auto const inRange = [&](uint8_t prefix, uint32_t code) {
         return std::ranges::any_of(ranges, [&](EncodingRange const& range) {
@@ -315,7 +353,7 @@ TEST_CASE("Opcode.encodingRanges")
     // Every code of each prefix up to one past the largest in use, plus the u32 extreme.
     for (auto const prefix: { uint8_t { 0x00 }, uint8_t { 0xFC }, uint8_t { 0xFD } })
     {
-        for (auto const code: std::views::iota(uint32_t { 0 }, uint32_t { 0x101 }))
+        for (auto const code: std::views::iota(uint32_t { 0 }, uint32_t { 0x115 }))
         {
             INFO("prefix " << int { prefix } << " code " << code);
             CHECK(lookupOpcode(prefix, code).has_value() == inRange(prefix, code));
@@ -350,6 +388,8 @@ TEST_CASE("Opcode.proposals")
         { .opcode = Opcode::V128Load, .proposal = Feature::Simd },
         { .opcode = Opcode::I8x16Shuffle, .proposal = Feature::Simd },
         { .opcode = Opcode::F64x2ConvertLowI32x4U, .proposal = Feature::Simd },
+        { .opcode = Opcode::I8x16RelaxedSwizzle, .proposal = Feature::RelaxedSimd },
+        { .opcode = Opcode::I32x4RelaxedDotI8x16I7x16AddS, .proposal = Feature::RelaxedSimd },
     });
     for (auto const& row: rows)
     {

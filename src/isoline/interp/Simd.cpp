@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -498,6 +499,95 @@ namespace
         });
     }
 
+    // --- Relaxed SIMD: the Wasmtime-deterministic profile (Simd.hpp) ----------------------------
+    //
+    // The relaxed operators that are an existing operator in that profile (swizzle, trunc_sat,
+    // bitselect, min, max, q15mulr_sat_s) have that operator's evaluator in the table; only these
+    // three have a definition of their own.
+
+    /// Whether relaxed_madd or relaxed_nmadd adds the product or its negation.
+    enum class ProductSign : uint8_t
+    {
+        Positive, ///< relaxed_madd: a * b + c.
+        Negated,  ///< relaxed_nmadd: -(a * b) + c.
+    };
+
+    /// The host floating-point type of the float value type @p Box, and its canonical NaN.
+    template <typename Box>
+    struct FloatLane;
+
+    template <>
+    struct FloatLane<F32>
+    {
+        using Float = float;
+        static constexpr auto CanonicalNan = CanonicalNanF32;
+    };
+
+    template <>
+    struct FloatLane<F64>
+    {
+        using Float = double;
+        static constexpr auto CanonicalNan = CanonicalNanF64;
+    };
+
+    /// relaxed_madd and relaxed_nmadd on each lane, read as @p Box: the product and the sum rounded
+    /// once, as std::fma rounds them exactly on every host (in the default floating-point
+    /// environment, which every guest entry establishes, as for add and mul). A NaN result is the
+    /// canonical NaN.
+    template <typename Box, ProductSign Sign>
+    [[nodiscard]] V128 fusedMultiplyAdd(V128 a, V128 b, V128 c) noexcept
+    {
+        using Bits = LaneOf<Box>;
+        using Float = FloatLane<Box>::Float;
+        static_assert(sizeof(Bits) == sizeof(Float));
+        auto result = V128 {};
+        for (auto const index: std::views::iota(0U, LaneCount<Bits>))
+        {
+            auto const factor = std::bit_cast<Float>(laneOf<Bits>(a, index));
+            auto const fused = std::fma(Sign == ProductSign::Negated ? -factor : factor,
+                                        std::bit_cast<Float>(laneOf<Bits>(b, index)),
+                                        std::bit_cast<Float>(laneOf<Bits>(c, index)));
+            setLane<Bits>(
+                result, index, std::isnan(fused) ? FloatLane<Box>::CanonicalNan : std::bit_cast<Bits>(fused));
+        }
+        return result;
+    }
+
+    /// The exact sum of the signed products of byte lanes Group * lane to Group * lane + Group - 1
+    /// of @p lhs and @p rhs; at most 4 * 128 * 128, so an int32_t holds it.
+    template <unsigned Group>
+    [[nodiscard]] constexpr int32_t signedByteDot(V128 const& lhs, V128 const& rhs, unsigned lane) noexcept
+    {
+        auto sum = int32_t { 0 };
+        for (auto const index: std::views::iota(Group * lane, Group * (lane + 1)))
+            sum += int32_t { interpreted<Extension::Sign>(laneOf<uint8_t>(lhs, index)) }
+                   * interpreted<Extension::Sign>(laneOf<uint8_t>(rhs, index));
+        return sum;
+    }
+
+    /// i16x8.relaxed_dot_i8x16_i7x16_s: lane i is the sum of the signed products of bytes 2i and
+    /// 2i + 1, wrapping at 16 bits (two products of -128 sum to 0x8000).
+    [[nodiscard]] constexpr V128 relaxedDot(V128 lhs, V128 rhs) noexcept
+    {
+        auto result = V128 {};
+        for (auto const index: std::views::iota(0U, LaneCount<uint16_t>))
+            setLane<uint16_t>(result, index, static_cast<uint16_t>(signedByteDot<2>(lhs, rhs, index)));
+        return result;
+    }
+
+    /// i32x4.relaxed_dot_i8x16_i7x16_add_s: lane i is the exact sum of the signed products of bytes
+    /// 4i to 4i + 3, with no 16-bit intermediate, plus lane i of @p addend, wrapping at 32 bits.
+    [[nodiscard]] constexpr V128 relaxedDotAdd(V128 lhs, V128 rhs, V128 addend) noexcept
+    {
+        auto result = V128 {};
+        for (auto const index: std::views::iota(0U, LaneCount<uint32_t>))
+        {
+            auto const dot = static_cast<uint32_t>(signedByteDot<4>(lhs, rhs, index));
+            setLane<uint32_t>(result, index, Add::apply(dot, laneOf<uint32_t>(addend, index)));
+        }
+        return result;
+    }
+
     // --- Splats and lanes ---------------------------------------------------------------------
 
     template <std::unsigned_integral Lane, typename Box>
@@ -868,6 +958,40 @@ namespace
           .evaluator = UnaryFn { &unaryScalarLanes<Opcode::F32DemoteF64, F64, F32> } },
         { .opcode = Opcode::F64x2PromoteLowF32x4,
           .evaluator = UnaryFn { &unaryScalarLanes<Opcode::F64PromoteF32, F32, F64> } },
+        // Relaxed SIMD, the Wasmtime-deterministic profile (Simd.hpp)
+        { .opcode = Opcode::I8x16RelaxedSwizzle, .evaluator = BinaryFn { &swizzle } },
+        { .opcode = Opcode::I32x4RelaxedTruncF32x4S,
+          .evaluator = UnaryFn { &unaryScalarLanes<Opcode::I32TruncSatF32S, F32, I32> } },
+        { .opcode = Opcode::I32x4RelaxedTruncF32x4U,
+          .evaluator = UnaryFn { &unaryScalarLanes<Opcode::I32TruncSatF32U, F32, I32> } },
+        { .opcode = Opcode::I32x4RelaxedTruncF64x2SZero,
+          .evaluator = UnaryFn { &unaryScalarLanes<Opcode::I32TruncSatF64S, F64, I32> } },
+        { .opcode = Opcode::I32x4RelaxedTruncF64x2UZero,
+          .evaluator = UnaryFn { &unaryScalarLanes<Opcode::I32TruncSatF64U, F64, I32> } },
+        { .opcode = Opcode::F32x4RelaxedMadd,
+          .evaluator = TernaryFn { &fusedMultiplyAdd<F32, ProductSign::Positive> } },
+        { .opcode = Opcode::F32x4RelaxedNmadd,
+          .evaluator = TernaryFn { &fusedMultiplyAdd<F32, ProductSign::Negated> } },
+        { .opcode = Opcode::F64x2RelaxedMadd,
+          .evaluator = TernaryFn { &fusedMultiplyAdd<F64, ProductSign::Positive> } },
+        { .opcode = Opcode::F64x2RelaxedNmadd,
+          .evaluator = TernaryFn { &fusedMultiplyAdd<F64, ProductSign::Negated> } },
+        { .opcode = Opcode::I8x16RelaxedLaneselect, .evaluator = TernaryFn { &bitSelect } },
+        { .opcode = Opcode::I16x8RelaxedLaneselect, .evaluator = TernaryFn { &bitSelect } },
+        { .opcode = Opcode::I32x4RelaxedLaneselect, .evaluator = TernaryFn { &bitSelect } },
+        { .opcode = Opcode::I64x2RelaxedLaneselect, .evaluator = TernaryFn { &bitSelect } },
+        { .opcode = Opcode::F32x4RelaxedMin,
+          .evaluator = BinaryFn { &binaryScalarLanes<Opcode::F32Min, F32> } },
+        { .opcode = Opcode::F32x4RelaxedMax,
+          .evaluator = BinaryFn { &binaryScalarLanes<Opcode::F32Max, F32> } },
+        { .opcode = Opcode::F64x2RelaxedMin,
+          .evaluator = BinaryFn { &binaryScalarLanes<Opcode::F64Min, F64> } },
+        { .opcode = Opcode::F64x2RelaxedMax,
+          .evaluator = BinaryFn { &binaryScalarLanes<Opcode::F64Max, F64> } },
+        { .opcode = Opcode::I16x8RelaxedQ15mulrS,
+          .evaluator = BinaryFn { &binaryLanes<uint16_t, Q15MulRoundSaturate> } },
+        { .opcode = Opcode::I16x8RelaxedDotI8x16I7x16S, .evaluator = BinaryFn { &relaxedDot } },
+        { .opcode = Opcode::I32x4RelaxedDotI8x16I7x16AddS, .evaluator = TernaryFn { &relaxedDotAdd } },
         // Splats
         { .opcode = Opcode::I8x16Splat, .evaluator = SplatFn { &splatOf<uint8_t, I32> } },
         { .opcode = Opcode::I16x8Splat, .evaluator = SplatFn { &splatOf<uint16_t, I32> } },

@@ -278,7 +278,7 @@ static_assert(
 
 /// Every instruction Isoline decodes, one enumerator per row of Opcodes.def, in its order.
 ///
-/// The 441 rows do not fit a byte, so the base type is uint16_t.
+/// The 461 rows do not fit a byte, so the base type is uint16_t.
 enum class Opcode : uint16_t
 {
 #define ISOLINE_OPCODE(Name, Prefix, Code, Text, Immediate, Signature, Proposal) Name,
@@ -328,8 +328,9 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
-static_assert(OpcodeCount == 441,
-              "every non-SIMD WebAssembly 2.0 instruction (201), SIMD's 236 and wide arithmetic's four");
+static_assert(OpcodeCount == 461,
+              "every non-SIMD WebAssembly 2.0 instruction (201), SIMD's 236, relaxed SIMD's 20 and wide "
+              "arithmetic's four");
 
 /// What the table knows about @p opcode.
 /// @param opcode The instruction to describe.

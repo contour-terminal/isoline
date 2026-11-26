@@ -301,7 +301,7 @@ TEST_CASE("Simd.shapesFollowSignatures")
         auto const shape = simdShape(row.opcode);
         if (shape == SimdShape::None)
             continue;
-        CHECK(row.proposal == isoline::Feature::Simd);
+        CHECK((row.proposal == isoline::Feature::Simd || row.proposal == isoline::Feature::RelaxedSimd));
         auto const entry = std::ranges::find(shapes, shape, &ShapeRow::shape);
         REQUIRE(entry != shapes.end());
         CHECK(std::ranges::find(entry->signatures, row.signature) != entry->signatures.end());
@@ -895,9 +895,8 @@ TEST_CASE("Simd.everyFixedSignatureSimdOpcodeHasARow")
 {
     // execute() runs an instruction by its Numerics or Simd row, its memory access row, or a case of
     // its own; it has no fallback, so a SIMD instruction validation admits without one would abort.
-    // This walks every 0xFD-prefixed row, whatever its proposal, so a SIMD instruction added later
-    // (relaxed SIMD's included) lands with its row. The table holds no relaxed SIMD row yet: until
-    // it does, the decoder rejects their encodings as illegal opcodes, so validation admits none.
+    // This walks every 0xFD-prefixed row, whatever its proposal, relaxed SIMD's included, so a SIMD
+    // instruction added later lands with its row.
     for (auto const& row: OpcodeTable)
     {
         if (row.prefix != 0xFD)
@@ -919,4 +918,187 @@ TEST_CASE("Simd.everyFixedSignatureSimdOpcodeHasARow")
             default: CHECK(simdShape(row.opcode) != SimdShape::None); break;
         }
     }
+}
+
+// --- Relaxed SIMD: the Wasmtime-deterministic profile (Simd.hpp) ---------------------------------
+
+TEST_CASE("Relaxed.swizzleIsSwizzle")
+{
+    // Out-of-range indices give 0, whether or not their top bit is set: swizzle, not pshufb.
+    auto const bytes = v128FromBytes(bytesFrom(0x40));
+    auto const indices = vectorOf<uint8_t>(
+        { 0x10, 0x80, 0x00, 0x0F, 0xFF, 0x8F, 0x01, 0x11, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 });
+    auto const expected = vectorOf<uint8_t>(
+        { 0x00, 0x00, 0x40, 0x4F, 0x00, 0x00, 0x41, 0x00, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49 });
+    CHECK(applySimdBinary(Opcode::I8x16RelaxedSwizzle, bytes, indices) == expected);
+    CHECK(applySimdBinary(Opcode::I8x16RelaxedSwizzle, bytes, indices)
+          == applySimdBinary(Opcode::I8x16Swizzle, bytes, indices));
+}
+
+TEST_CASE("Relaxed.maddIsFused")
+{
+    // (1 + 2^-23)^2 - (1 + 2^-22) is 2^-46 exactly; rounding the product first would give 0.
+    auto const a = every<uint32_t>(0x3F80'0001);
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedMadd, a, a, every<uint32_t>(0xBF80'0002))
+          == every<uint32_t>(0x2880'0000));
+    // nmadd is -(a * b) + c, fused too: -2^-46.
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedNmadd, a, a, every<uint32_t>(0x3F80'0002))
+          == every<uint32_t>(0xA880'0000));
+    // (1 + 2^-12)^2 + 2^-60 is 1 + 2^-11 + 2^-24 + 2^-60: a tie at f32 that only the 2^-60 breaks
+    // upwards. Rounding once gives 0x3F801001; rounding through double first loses the 2^-60 and the
+    // tie then goes to even, 0x3F801000, so this tells a true fma from a double-rounding one.
+    auto const tie = every<uint32_t>(0x3F80'0800);
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedMadd, tie, tie, every<uint32_t>(0x2180'0000))
+          == every<uint32_t>(0x3F80'1001));
+    // The same at f64: (1 + 2^-52)^2 - (1 + 2^-51) is 2^-104.
+    auto const b = every<uint64_t>(0x3FF0'0000'0000'0001);
+    CHECK(applySimdTernary(Opcode::F64x2RelaxedMadd, b, b, every<uint64_t>(0xBFF0'0000'0000'0002))
+          == every<uint64_t>(0x3970'0000'0000'0000));
+    CHECK(applySimdTernary(Opcode::F64x2RelaxedNmadd, b, b, every<uint64_t>(0x3FF0'0000'0000'0002))
+          == every<uint64_t>(0xB970'0000'0000'0000));
+    // Ordinary lanes, lane-wise: 2 * 3 + 1, -1 * 4 + 0.5, 0 * 5 + -0, 1.5 * 2 + -3.
+    auto const lhs = vectorOf<uint32_t>({ f32Bits(2.0F), f32Bits(-1.0F), 0, f32Bits(1.5F) });
+    auto const rhs = vectorOf<uint32_t>({ f32Bits(3.0F), f32Bits(4.0F), f32Bits(5.0F), f32Bits(2.0F) });
+    auto const addend = vectorOf<uint32_t>({ f32Bits(1.0F), f32Bits(0.5F), 0x8000'0000, f32Bits(-3.0F) });
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedMadd, lhs, rhs, addend)
+          == vectorOf<uint32_t>({ f32Bits(7.0F), f32Bits(-3.5F), 0, 0 }));
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedNmadd, lhs, rhs, addend)
+          == vectorOf<uint32_t>({ f32Bits(-5.0F), f32Bits(4.5F), 0x8000'0000, f32Bits(-6.0F) }));
+    CHECK(applySimdTernary(Opcode::F64x2RelaxedMadd,
+                           V128 { .lanes = { f64Bits(2.0), f64Bits(-0.5) } },
+                           V128 { .lanes = { f64Bits(8.0), f64Bits(4.0) } },
+                           V128 { .lanes = { f64Bits(1.0), f64Bits(2.0) } })
+          == V128 { .lanes = { f64Bits(17.0), 0 } });
+}
+
+TEST_CASE("Relaxed.maddNanIsCanonical")
+{
+    // A NaN operand, or inf * 0, gives the positive canonical NaN, whatever the operands' payloads.
+    auto const one = every<uint32_t>(f32Bits(1.0F));
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedMadd, every<uint32_t>(0xFFA0'0000), one, one)
+          == every<uint32_t>(0x7FC0'0000));
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedNmadd, one, one, every<uint32_t>(0x7FA0'0001))
+          == every<uint32_t>(0x7FC0'0000));
+    CHECK(applySimdTernary(Opcode::F32x4RelaxedMadd, every<uint32_t>(0x7F80'0000), every<uint32_t>(0), one)
+          == every<uint32_t>(0x7FC0'0000));
+    auto const unit = every<uint64_t>(f64Bits(1.0));
+    CHECK(applySimdTernary(Opcode::F64x2RelaxedMadd, unit, every<uint64_t>(0xFFF4'0000'0000'0000), unit)
+          == every<uint64_t>(0x7FF8'0000'0000'0000));
+    CHECK(applySimdTernary(Opcode::F64x2RelaxedNmadd,
+                           every<uint64_t>(0xFFF0'0000'0000'0000),
+                           unit,
+                           every<uint64_t>(0xFFF0'0000'0000'0000))
+          == every<uint64_t>(0x7FF8'0000'0000'0000));
+}
+
+TEST_CASE("Relaxed.laneselectUsesRawMask")
+{
+    // Every relaxed_laneselect is v128.bitselect: each bit from a where the mask's is set, not
+    // the whole lane by its top bit.
+    struct LaneselectRow
+    {
+        Opcode opcode;
+        V128 mask;
+    };
+    auto const rows = std::to_array<LaneselectRow>({
+        { .opcode = Opcode::I8x16RelaxedLaneselect, .mask = every<uint8_t>(0x0F) },
+        { .opcode = Opcode::I16x8RelaxedLaneselect, .mask = every<uint16_t>(0x000F) },
+        { .opcode = Opcode::I32x4RelaxedLaneselect, .mask = every<uint32_t>(0x8000'000F) },
+        { .opcode = Opcode::I64x2RelaxedLaneselect, .mask = every<uint64_t>(0x0F) },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(isoline::binary::opcodeInfo(row.opcode).text);
+        CHECK(applySimdTernary(row.opcode, filled(0xFF), filled(0x00), row.mask) == row.mask);
+        CHECK(applySimdTernary(row.opcode, filled(0xA5), filled(0x5A), row.mask)
+              == applySimdTernary(Opcode::V128Bitselect, filled(0xA5), filled(0x5A), row.mask));
+    }
+    CHECK(applySimdTernary(Opcode::I8x16RelaxedLaneselect, filled(0xFF), filled(0x00), filled(0x0F))
+          == filled(0x0F));
+}
+
+TEST_CASE("Relaxed.truncIsSaturating")
+{
+    CHECK(applySimdUnary(Opcode::I32x4RelaxedTruncF32x4U,
+                         vectorOf<uint32_t>({ 0x7FC0'0000, f32Bits(5e9F), f32Bits(-1.0F), f32Bits(7.9F) }))
+          == vectorOf<uint32_t>({ 0, 0xFFFF'FFFF, 0, 7 }));
+    CHECK(applySimdUnary(Opcode::I32x4RelaxedTruncF32x4S,
+                         vectorOf<uint32_t>({ 0xFFC0'0000, f32Bits(5e9F), f32Bits(-5e9F), f32Bits(-7.9F) }))
+          == vectorOf<uint32_t>({ 0, 0x7FFF'FFFF, 0x8000'0000, static_cast<uint32_t>(-7) }));
+    // The f64x2 forms fill lanes 0 and 1, and zero the upper two.
+    auto const wide = V128 { .lanes = { 0x7FF8'0000'0000'0000, f64Bits(-1e10) } };
+    CHECK(applySimdUnary(Opcode::I32x4RelaxedTruncF64x2SZero, wide)
+          == vectorOf<uint32_t>({ 0, 0x8000'0000, 0, 0 }));
+    CHECK(applySimdUnary(Opcode::I32x4RelaxedTruncF64x2UZero,
+                         V128 { .lanes = { f64Bits(1e10), f64Bits(-1e10) } })
+          == vectorOf<uint32_t>({ 0xFFFF'FFFF, 0, 0, 0 }));
+}
+
+TEST_CASE("Relaxed.q15mulrMinTimesMin")
+{
+    // -1 * -1 in Q15 is +1, which saturates to 0x7FFF rather than wrapping to 0x8000.
+    CHECK(applySimdBinary(Opcode::I16x8RelaxedQ15mulrS, every<uint16_t>(0x8000), every<uint16_t>(0x8000))
+          == every<uint16_t>(0x7FFF));
+    CHECK(applySimdBinary(Opcode::I16x8RelaxedQ15mulrS, every<uint16_t>(0x4000), every<uint16_t>(0x4000))
+          == every<uint16_t>(0x2000));
+}
+
+TEST_CASE("Relaxed.dotWrapsAt16Bits")
+{
+    // Both operands are signed; the two products 16384 sum to 32768, which wraps to 0x8000.
+    CHECK(applySimdBinary(Opcode::I16x8RelaxedDotI8x16I7x16S, filled(0x80), filled(0x80))
+          == every<uint16_t>(0x8000));
+    // The suite's case: -128 * -127 * 2 = 32512, signed by signed.
+    auto const lhs =
+        vectorOf<uint8_t>({ 0x80, 0x80, 0x7F, 0x7F, 0x80, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0xFE });
+    auto const rhs = vectorOf<uint8_t>({ 0x81, 0x81, 0x7F, 0x7F, 0x7F, 0x7F, 0, 0, 0, 0, 0, 0, 0, 0, 5, 7 });
+    CHECK(applySimdBinary(Opcode::I16x8RelaxedDotI8x16I7x16S, lhs, rhs)
+          == vectorOf<uint16_t>({ 32512, 32258, static_cast<uint16_t>(-32512), 0, 0, 0, 0, 1 }));
+}
+
+TEST_CASE("Relaxed.dotAddSumsExactly")
+{
+    // Each i32 lane is the exact sum of its four signed products, with no 16-bit intermediate:
+    // four times 16384 is 65536, then + c, wrapping at 32 bits.
+    CHECK(applySimdTernary(Opcode::I32x4RelaxedDotI8x16I7x16AddS,
+                           filled(0x80),
+                           filled(0x80),
+                           vectorOf<uint32_t>({ 1, 0, 0xFFFF'FFFF, 0x7FFF'FFFF }))
+          == vectorOf<uint32_t>({ 0x1'0001, 0x1'0000, 0xFFFF, 0x8000'FFFF }));
+    // The suite's case: -128 * -127 * 4 + 1 = 65025.
+    auto const lhs = vectorOf<uint8_t>(
+        { 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7F, 0x7F, 0x7F, 0x7F, 1, 2, 3, 4 });
+    auto const rhs = vectorOf<uint8_t>(
+        { 0x81, 0x81, 0x81, 0x81, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF });
+    CHECK(
+        applySimdTernary(Opcode::I32x4RelaxedDotI8x16I7x16AddS, lhs, rhs, vectorOf<uint32_t>({ 1, 2, 3, 4 }))
+        == vectorOf<uint32_t>(
+            { 65025, static_cast<uint32_t>(-65024 + 2), 64516 + 3, static_cast<uint32_t>(-10 + 4) }));
+}
+
+TEST_CASE("Relaxed.minIsMin")
+{
+    // relaxed_min and relaxed_max are min and max: -0 below +0, a NaN canonical.
+    auto const negativeZero = every<uint32_t>(0x8000'0000);
+    auto const positiveZero = every<uint32_t>(0);
+    CHECK(applySimdBinary(Opcode::F32x4RelaxedMin, negativeZero, positiveZero)
+          == every<uint32_t>(0x8000'0000));
+    CHECK(applySimdBinary(Opcode::F32x4RelaxedMin, positiveZero, negativeZero)
+          == every<uint32_t>(0x8000'0000));
+    CHECK(applySimdBinary(Opcode::F32x4RelaxedMax, negativeZero, positiveZero) == positiveZero);
+    CHECK(
+        applySimdBinary(Opcode::F32x4RelaxedMin, every<uint32_t>(0x7FA0'0000), every<uint32_t>(f32Bits(1.0F)))
+        == every<uint32_t>(0x7FC0'0000));
+    CHECK(
+        applySimdBinary(Opcode::F32x4RelaxedMax, every<uint32_t>(f32Bits(1.0F)), every<uint32_t>(0xFFC0'0000))
+        == every<uint32_t>(0x7FC0'0000));
+    CHECK(applySimdBinary(
+              Opcode::F32x4RelaxedMin, every<uint32_t>(f32Bits(1.0F)), every<uint32_t>(f32Bits(-2.0F)))
+          == every<uint32_t>(f32Bits(-2.0F)));
+    CHECK(applySimdBinary(Opcode::F64x2RelaxedMin, every<uint64_t>(0), every<uint64_t>(1ULL << 63U))
+          == every<uint64_t>(1ULL << 63U));
+    CHECK(applySimdBinary(Opcode::F64x2RelaxedMax, every<uint64_t>(1ULL << 63U), every<uint64_t>(0))
+          == every<uint64_t>(0));
+    CHECK(applySimdBinary(Opcode::F64x2RelaxedMax, every<uint64_t>(0x7FF4'0000'0000'0000), every<uint64_t>(0))
+          == every<uint64_t>(0x7FF8'0000'0000'0000));
 }

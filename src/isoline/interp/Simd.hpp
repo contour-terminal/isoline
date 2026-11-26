@@ -18,6 +18,29 @@
 // scalar operator of Numerics, boxed in a runtime::Value and returned in a std::expected. That is
 // several times the work of the lane itself, which is fine for the reference interpreter, whose
 // job is to be obviously right; the fast tiers lower these operators on their own.
+//
+// Relaxed SIMD: the Wasmtime-deterministic profile (Wasmtime v48.0.10, the version Contour pins).
+//
+// Each relaxed operator may give any result of a set the spec allows; Isoline gives one, always the
+// same on every host: the one Wasmtime gives with Config::relaxed_simd_deterministic, as spec §11
+// binds lane 1 to. A NaN result is the canonical NaN, as everywhere in Isoline. The sources are
+// wasmtime crates/cranelift/src/translate/code_translator.rs (CT) and func_environ.rs (FE) at that
+// tag.
+//
+//   relaxed_swizzle             i8x16.swizzle: an index of 16 or more gives 0      CT:2511, FE:5639
+//   relaxed_trunc_f32x4_s       i32x4.trunc_sat_f32x4_s (NaN 0, saturating)        CT:2562
+//   relaxed_trunc_f32x4_u       i32x4.trunc_sat_f32x4_u                            CT:2210
+//   relaxed_trunc_f64x2_s_zero  i32x4.trunc_sat_f64x2_s_zero                       CT:2574
+//   relaxed_trunc_f64x2_u_zero  i32x4.trunc_sat_f64x2_u_zero                       CT:2216
+//   f32x4/f64x2.relaxed_madd    a * b + c, fused: rounded once                     CT:2517, FE:5679
+//   f32x4/f64x2.relaxed_nmadd   -a * b + c, fused                                  CT:2527, FE:5700
+//   *.relaxed_laneselect        v128.bitselect: bit by bit, not by each lane's top CT:2540
+//   relaxed_min, relaxed_max    f32x4/f64x2.min and .max (-0 < +0, a NaN wins)     CT:2473, CT:2492
+//   relaxed_q15mulr_s           i16x8.q15mulr_sat_s: 0x8000 * 0x8000 is 0x7FFF     CT:2590
+//   relaxed_dot_i8x16_i7x16_s   both operands signed, the pair sum wrapping at 16
+//                               bits: two products of -128 * -128 give 0x8000      CT:2604
+//   relaxed_dot_..._add_s       both signed, the four products summed exactly in
+//                               32 bits (no 16-bit intermediate), + c wrapping     CT:2623
 
 namespace isoline::interp
 {
@@ -87,7 +110,7 @@ constexpr void setLane(runtime::V128& v, unsigned index, Lane value) noexcept
 [[nodiscard]] runtime::V128 applySimdUnary(binary::Opcode opcode, runtime::V128 operand);
 
 /// Applies a binary vector operator: a bitwise one, swizzle, or a lane-wise arithmetic operator or
-/// comparison, integer or float.
+/// comparison, integer or float, relaxed SIMD's binary operators included (see above).
 /// Precondition (checked): simdShape(opcode) is Binary.
 /// @param opcode The instruction.
 /// @param lhs The first operand, the lower on the stack.
@@ -95,7 +118,8 @@ constexpr void setLane(runtime::V128& v, unsigned index, Lane value) noexcept
 /// @return The result.
 [[nodiscard]] runtime::V128 applySimdBinary(binary::Opcode opcode, runtime::V128 lhs, runtime::V128 rhs);
 
-/// Applies a ternary vector operator (v128.bitselect).
+/// Applies a ternary vector operator: v128.bitselect, or relaxed SIMD's madd, nmadd, laneselect or
+/// dot_add, in the Wasmtime-deterministic profile above.
 /// Precondition (checked): simdShape(opcode) is Ternary.
 /// @param opcode The instruction.
 /// @param first The first operand, the lowest on the stack.
