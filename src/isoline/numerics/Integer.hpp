@@ -89,7 +89,8 @@ template <typename Box>
     return Box { static_cast<BitsOf<Box>>(std::popcount(value.bits)) };
 }
 
-/// Sign-extends the low bits of @p value that @p Narrow holds.
+/// i32.extend8_s, i32.extend16_s and i64.extend8/16/32_s: the low bits of @p value that @p Narrow
+/// holds, sign-extended.
 template <typename Box, typename Narrow>
 [[nodiscard]] constexpr Box extendSigned(Box value) noexcept
 {
@@ -178,46 +179,49 @@ template <typename Box>
     return Box { static_cast<BitsOf<Box>>(lhs.bits ^ rhs.bits) };
 }
 
-/// The shift count: the operand modulo the bit width.
-template <typename Box>
-[[nodiscard]] constexpr int shiftCount(Box count) noexcept
+namespace detail
 {
-    return static_cast<int>(count.bits % WidthOf<Box>);
-}
+    /// The shift count: the operand modulo the bit width.
+    template <typename Box>
+    [[nodiscard]] constexpr int shiftCount(Box count) noexcept
+    {
+        return static_cast<int>(count.bits % WidthOf<Box>);
+    }
+} // namespace detail
 
 /// shl: the left shift by the count modulo the bit width.
 template <typename Box>
 [[nodiscard]] constexpr Box shl(Box lhs, Box rhs) noexcept
 {
-    return Box { static_cast<BitsOf<Box>>(lhs.bits << shiftCount(rhs)) };
+    return Box { static_cast<BitsOf<Box>>(lhs.bits << detail::shiftCount(rhs)) };
 }
 
 /// The arithmetic right shift: C++20 defines >> of a negative value as one.
 template <typename Box>
 [[nodiscard]] constexpr Box shrS(Box lhs, Box rhs) noexcept
 {
-    return fromSigned<Box>(static_cast<SignedOf<Box>>(asSigned(lhs) >> shiftCount(rhs)));
+    return fromSigned<Box>(static_cast<SignedOf<Box>>(asSigned(lhs) >> detail::shiftCount(rhs)));
 }
 
 /// shr_u: the logical right shift by the count modulo the bit width.
 template <typename Box>
 [[nodiscard]] constexpr Box shrU(Box lhs, Box rhs) noexcept
 {
-    return Box { static_cast<BitsOf<Box>>(lhs.bits >> shiftCount(rhs)) };
+    return Box { static_cast<BitsOf<Box>>(lhs.bits >> detail::shiftCount(rhs)) };
 }
 
 /// rotl: the left rotation by the count modulo the bit width.
 template <typename Box>
 [[nodiscard]] constexpr Box rotl(Box lhs, Box rhs) noexcept
 {
-    return Box { std::rotl(lhs.bits, shiftCount(rhs)) };
+    return Box { std::rotl(lhs.bits, detail::shiftCount(rhs)) };
 }
 
 /// rotr: the right rotation by the count modulo the bit width.
 template <typename Box>
 [[nodiscard]] constexpr Box rotr(Box lhs, Box rhs) noexcept
 {
-    return Box { std::rotr(lhs.bits, shiftCount(rhs)) };
+    return Box { std::rotr(lhs.bits, detail::shiftCount(rhs)) };
 }
 
 /// eqz: whether @p value is zero.
