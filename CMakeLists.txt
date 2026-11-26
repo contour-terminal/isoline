@@ -26,3 +26,7 @@ if(ISOLINE_TESTING)
 endif()
 
 add_subdirectory(src/isoline)
+
+if(ISOLINE_TESTING)
+    add_subdirectory(tests)
+endif()

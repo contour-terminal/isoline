@@ -1,0 +1,4 @@
+# The spec suite's .wast files scripts/import-spec-tests.py imports, one per line, each with the
+# number of `skip` lines its .isotest holds: `<name> <skips>`. A skip is an assert_malformed of a
+# module given as text, which Isoline cannot parse yet. The import fails when a count differs, and
+# so does its CTest test; a new skip is a deliberate edit here, never a silent one.
