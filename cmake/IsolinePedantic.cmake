@@ -119,7 +119,9 @@ if(ISOLINE_COVERAGE)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "ISOLINE_COVERAGE needs Clang (source-based coverage).")
     endif()
-    list(APPEND ISOLINE_COMPILE_OPTIONS -fprofile-instr-generate -fcoverage-mapping)
+    # Atomic counters: the [threading] tests run guests on several threads at once, and plain
+    # increments race and lose counts, so a count derived by subtraction wraps past zero.
+    list(APPEND ISOLINE_COMPILE_OPTIONS -fprofile-instr-generate -fcoverage-mapping -fprofile-update=atomic)
     list(APPEND ISOLINE_LINK_OPTIONS -fprofile-instr-generate)
 endif()
 
