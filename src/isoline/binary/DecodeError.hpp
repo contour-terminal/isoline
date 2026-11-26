@@ -57,11 +57,10 @@ enum class DecodeErrorCode : uint8_t
     MalformedLimitsFlags,
     InvalidCustomPageSize,
     MalformedCatchClause,
-    FeatureNotEnabled,
 };
 
 /// The last DecodeErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::FeatureNotEnabled;
+inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::MalformedCatchClause;
 
 /// What a decode error's message appends to its row's text, from DecodeError::subject.
 enum class DecodeErrorDetail : uint8_t
@@ -69,16 +68,13 @@ enum class DecodeErrorDetail : uint8_t
     None,                ///< Nothing: the message is the row's text.
     OpcodeBytes,         ///< The opcode read, in lowercase hex, as the interpreter's illegal/illegal2.
     FeaturePrerequisite, ///< The feature and the prerequisite it lacks, by name.
-    DisabledFeature,     ///< The opcode read, as OpcodeBytes, and the disabled feature it needs, by name.
 };
 
-/// What a decode error says of the module: that it is malformed, that it is past a limit, or that it
-/// uses a feature the decoder was not given.
+/// What a decode error says of the module: that it is malformed, or that it is past a limit.
 enum class DecodeErrorKind : uint8_t
 {
     Malformed,           ///< Not a module under any limits: the binary format refuses it.
     ImplementationLimit, ///< Past a DecodeLimits value: a module a raised limit may decode.
-    FeatureNotEnabled,   ///< Uses a feature the FeatureSet lacks: a set that enables it may decode it.
 };
 
 /// One row of DecodeErrorTable: an error and the message the spec test suite expects for it.
@@ -167,13 +163,6 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::InvalidCustomPageSize, .specMessage = "invalid custom page size" },
     // Exception handling: a try_table catch clause whose kind byte is above 3.
     { .code = DecodeErrorCode::MalformedCatchClause, .specMessage = "malformed catch clause" },
-    // Isoline's own: an instruction of a proposal the FeatureSet does not enable. The interpreter of a
-    // standard without the proposal knows no such opcode, so the message is IllegalOpcode's, followed by
-    // the feature that would decode it; the suite's prefix match sees "illegal opcode" either way.
-    { .code = DecodeErrorCode::FeatureNotEnabled,
-      .specMessage = "illegal opcode",
-      .detail = DecodeErrorDetail::DisabledFeature,
-      .kind = DecodeErrorKind::FeatureNotEnabled },
 });
 
 static_assert(
@@ -190,6 +179,13 @@ static_assert(
     "DecodeErrorTable must hold one row per DecodeErrorCode, at the index of its enumerator");
 
 /// A decode failure: what went wrong, where, and what it names.
+///
+/// A module that uses a proposal the FeatureSet does not enable is refused as a decoder of a standard
+/// without the proposal refuses it: with the code, and so the message prefix, the spec suite expects
+/// there (an unknown opcode's IllegalOpcode, a tag section's MalformedSectionId, an i64 memory's limits
+/// flag). Such an error names in disabled the proposal that would decode the module past that point,
+/// and the message appends it ("illegal opcode 0c (simd not enabled)"), so an embedder knows what to
+/// enable.
 struct DecodeError
 {
     /// Builds an error; the code and offset are required, so one that forgets its code does not
@@ -197,18 +193,22 @@ struct DecodeError
     /// @param code What went wrong.
     /// @param offset The absolute byte offset it is reported at.
     /// @param subject What it names, as its row's detail reads it; empty when it names nothing.
+    /// @param disabled The proposal the decoder's FeatureSet lacks that would decode the module past
+    ///                 this point; empty when none would.
     constexpr DecodeError(DecodeErrorCode code,
                           std::size_t offset,
-                          std::optional<uint64_t> subject = {}) noexcept:
-        code { code }, offset { offset }, subject { subject }
+                          std::optional<uint64_t> subject = {},
+                          std::optional<Feature> disabled = {}) noexcept:
+        code { code }, offset { offset }, subject { subject }, disabled { disabled }
     {
     }
 
     DecodeErrorCode code;            ///< What went wrong.
     std::size_t offset;              ///< The absolute byte offset in the module the error is reported at.
     std::optional<uint64_t> subject; ///< What it names; see opcodeSubject() and prerequisiteSubject().
+    std::optional<Feature> disabled; ///< The disabled proposal that would decode it, if any.
 
-    /// Two errors are equal when their code, offset and subject are.
+    /// Two errors are equal when their code, offset, subject and disabled proposal are.
     bool operator==(DecodeError const&) const = default;
 };
 
@@ -219,18 +219,6 @@ struct DecodeError
 [[nodiscard]] constexpr uint64_t opcodeSubject(uint8_t prefix, uint32_t code) noexcept
 {
     return (uint64_t { prefix } << 32U) | code;
-}
-
-/// The bit the feature of a FeatureNotEnabled error's subject starts at, above opcodeSubject()'s bits.
-inline constexpr auto DisabledFeatureShift = 48U;
-
-/// The subject of a FeatureNotEnabled error: the opcode as read, and the feature it needs.
-/// @param opcode The opcode, as opcodeSubject() encodes it.
-/// @param feature The disabled feature that would decode it.
-/// @return @p opcode in bits 0-39 and the feature in bits 48-55.
-[[nodiscard]] constexpr uint64_t disabledFeatureSubject(uint64_t opcode, Feature feature) noexcept
-{
-    return opcode | (static_cast<uint64_t>(feature) << DisabledFeatureShift);
 }
 
 /// The subject of a MissingFeaturePrerequisite error.
@@ -257,49 +245,39 @@ inline constexpr auto DisabledFeatureShift = 48U;
     return DecodeErrorTable[static_cast<std::size_t>(code)].kind == DecodeErrorKind::ImplementationLimit;
 }
 
-/// The feature a module needs enabled to get past @p error, when the error is one of a disabled feature.
-/// @param error The error.
-/// @return The feature, when @p error is FeatureNotEnabled; otherwise nothing.
-[[nodiscard]] constexpr std::optional<Feature> disabledFeature(DecodeError const& error) noexcept
-{
-    if (DecodeErrorTable[static_cast<std::size_t>(error.code)].kind != DecodeErrorKind::FeatureNotEnabled
-        || !error.subject)
-        return std::nullopt;
-    return static_cast<Feature>((*error.subject >> DisabledFeatureShift) & 0xFFU);
-}
-
 /// The message the reference interpreter reports for @p error: its row's message, followed by what
-/// the error names when the row has a detail and the error a subject.
+/// the error names when the row has a detail and the error a subject, and then by the disabled
+/// proposal that would decode the module, when the error names one (appendDisabledFeature()).
 /// @param error The error to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(DecodeError const& error)
 {
     auto const& row = DecodeErrorTable[static_cast<std::size_t>(error.code)];
-    if (!error.subject)
+    auto const message = [&]() -> std::string {
+        if (!error.subject)
+            return std::string { row.specMessage };
+        auto const subject = *error.subject;
+        // The name of the feature whose index is the low byte of @p bits.
+        auto const nameOf = [](uint64_t bits) {
+            return featureRow(static_cast<Feature>(bits & 0xFFU)).name;
+        };
+        switch (row.detail)
+        {
+            case DecodeErrorDetail::None: break;
+            case DecodeErrorDetail::OpcodeBytes: {
+                auto const prefix = (subject >> 32U) & 0xFFU;
+                auto const code = subject & 0xFFFF'FFFFU;
+                if (prefix == 0)
+                    return std::format("{} {:02x}", row.specMessage, code);
+                return std::format("{} {:02x} {:02x}", row.specMessage, prefix, code);
+            }
+            case DecodeErrorDetail::FeaturePrerequisite:
+                return std::format(
+                    "{}: {} requires {}", row.specMessage, nameOf(subject), nameOf(subject >> 8U));
+        }
         return std::string { row.specMessage };
-    auto const subject = *error.subject;
-    auto const opcodeBytes = [&row](uint64_t opcode) {
-        auto const prefix = (opcode >> 32U) & 0xFFU;
-        auto const code = opcode & 0xFFFF'FFFFU;
-        if (prefix == 0)
-            return std::format("{} {:02x}", row.specMessage, code);
-        return std::format("{} {:02x} {:02x}", row.specMessage, prefix, code);
-    };
-    // The name of the feature whose index is the low byte of @p bits.
-    auto const nameOf = [](uint64_t bits) {
-        return featureRow(static_cast<Feature>(bits & 0xFFU)).name;
-    };
-    switch (row.detail)
-    {
-        case DecodeErrorDetail::None: break;
-        case DecodeErrorDetail::OpcodeBytes: return opcodeBytes(subject);
-        case DecodeErrorDetail::DisabledFeature:
-            return std::format(
-                "{} ({} not enabled)", opcodeBytes(subject), nameOf(subject >> DisabledFeatureShift));
-        case DecodeErrorDetail::FeaturePrerequisite:
-            return std::format("{}: {} requires {}", row.specMessage, nameOf(subject), nameOf(subject >> 8U));
-    }
-    return std::string { row.specMessage };
+    }();
+    return appendDisabledFeature(message, error.disabled);
 }
 
 } // namespace isoline::binary

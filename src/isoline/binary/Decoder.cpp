@@ -553,6 +553,8 @@ namespace
         /// Reads a heap type: a non-negative s33 type index under typed function references, or
         /// an abstract heap's code; anything else is a malformed reference type at its start.
         [[nodiscard]] std::expected<HeapType, DecodeError> readHeapType();
+        /// Reads an abstract heap type's one-byte code, reporting its errors at @p heapOffset.
+        [[nodiscard]] std::expected<HeapType, DecodeError> readAbstractHeapType(std::size_t heapOffset);
         [[nodiscard]] std::expected<ValueType, DecodeError> readValueType();
         [[nodiscard]] std::expected<ValueType, DecodeError> readRefType();
         [[nodiscard]] std::expected<std::vector<ValueType>, DecodeError> readResultType(uint32_t limit);
@@ -595,7 +597,9 @@ namespace
         [[nodiscard]] std::expected<std::string, DecodeError> readName();
         [[nodiscard]] std::expected<ConstExpr, DecodeError> readConstExpr();
         [[nodiscard]] std::optional<uint8_t> peekByte() const;
-        [[nodiscard]] std::expected<void, DecodeError> expectZeroByte();
+        /// Reads the reserved zero byte; a nonzero one is ZeroByteExpected, naming @p proposal when it is
+        /// one the decoder's set lacks that would read an index there.
+        [[nodiscard]] std::expected<void, DecodeError> expectZeroByte(std::optional<Feature> proposal = {});
         [[nodiscard]] std::expected<void, DecodeError> readIndex(uint32_t& index);
         /// Reads a memory index immediate into @p index: a u32 under multi-memory, else the reserved
         /// zero byte, which names memory 0.
@@ -645,9 +649,37 @@ namespace
             return missing->feature;
         }
 
-        [[nodiscard]] bool enabled(std::optional<Feature> required) const noexcept
+        /// @p required, when it is a proposal the decoder's set lacks: what a refused byte's error names
+        /// (DecodeError::disabled) when a row of the proposal would have decoded it.
+        [[nodiscard]] std::optional<Feature> missingFeature(std::optional<Feature> required) const noexcept
         {
-            return !required || _features.has(*required);
+            if (required && !_features.has(*required))
+                return required;
+            return std::nullopt;
+        }
+
+        /// The first proposal the decoder's set lacks of those a LimitsFlagTable row of @p flags needs,
+        /// for limits of @p of: what a refused limits flag names, when a row would have decoded it.
+        [[nodiscard]] std::optional<Feature> limitsFlagFeature(uint8_t flags, LimitsOf of) const noexcept
+        {
+            auto const row = std::ranges::find(LimitsFlagTable, flags, &LimitsFlagRow::flags);
+            if (row == LimitsFlagTable.end()
+                || (of == LimitsOf::Table && row->pageSize != PageSizeField::Default))
+                return std::nullopt;
+            return firstMissingFeature(row->required);
+        }
+
+        /// @p result, its error naming @p feature (DecodeError::disabled): for a reading a disabled
+        /// proposal changes, whose error without it is the spec's, at a byte the proposal would have
+        /// read otherwise. Precondition: the decoder's set lacks @p feature.
+        template <typename T>
+        [[nodiscard]] static std::expected<T, DecodeError> naming(std::expected<T, DecodeError> const& result,
+                                                                  Feature feature)
+        {
+            return result.transform_error([feature](DecodeError error) {
+                error.disabled = feature;
+                return error;
+            });
         }
 
         ByteReader _reader;
@@ -737,8 +769,12 @@ namespace
             }
 
             auto const row = std::ranges::find(SectionTable, *id, &SectionRow::id);
-            if (row == SectionTable.end() || !enabled(row->required))
-                return std::unexpected { DecodeError { DecodeErrorCode::MalformedSectionId, idOffset } };
+            if (row == SectionTable.end() || missingFeature(row->required))
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::MalformedSectionId,
+                    idOffset,
+                    std::nullopt,
+                    row == SectionTable.end() ? std::nullopt : missingFeature(row->required) } };
             auto const rank = static_cast<std::size_t>(row - SectionTable.begin());
             if (lastRank && rank == *lastRank)
                 return std::unexpected { DecodeError { DecodeErrorCode::DuplicateSection, idOffset } };
@@ -867,9 +903,12 @@ namespace
         auto const typeOffset = _reader.offset();
         return readTypeByte().and_then([&](uint8_t byte) -> std::expected<ValueType, DecodeError> {
             auto const encoding = std::ranges::find(encodings, byte, &TypeEncoding::byte);
-            if (encoding == encodings.end() || !enabled(encoding->required))
+            if (encoding == encodings.end())
                 return std::unexpected { DecodeError { DecodeErrorCode::MalformedReferenceType,
                                                        typeOffset } };
+            if (auto const missing = missingFeature(encoding->required))
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::MalformedReferenceType, typeOffset, std::nullopt, missing } };
             if (encoding->form == TypeForm::Complete)
                 return encoding->type;
             return readHeapType().transform([&](HeapType const& heap) {
@@ -899,11 +938,25 @@ namespace
                                   .typeIndex = static_cast<uint32_t>(*index) };
             }
         }
+        else if (auto probe = _reader; probe.readS33().value_or(-1) >= 0)
+        {
+            // A type index, which only typed function references give a heap type: refused as the
+            // byte it reads as without them, naming the proposal.
+            return naming(readAbstractHeapType(heapOffset), Feature::TypedFunctionReferences);
+        }
+        return readAbstractHeapType(heapOffset);
+    }
+
+    std::expected<HeapType, DecodeError> ModuleDecoder::readAbstractHeapType(std::size_t heapOffset)
+    {
         return readTypeByte().and_then([&](uint8_t byte) -> std::expected<HeapType, DecodeError> {
             auto const encoding = std::ranges::find(AbstractHeapEncodings, byte, &HeapEncoding::byte);
-            if (encoding == AbstractHeapEncodings.end() || !enabled(encoding->required))
+            if (encoding == AbstractHeapEncodings.end())
                 return std::unexpected { DecodeError { DecodeErrorCode::MalformedReferenceType,
                                                        heapOffset } };
+            if (auto const missing = missingFeature(encoding->required))
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::MalformedReferenceType, heapOffset, std::nullopt, missing } };
             return HeapType { .kind = encoding->kind, .typeIndex = 0 };
         });
     }
@@ -960,7 +1013,10 @@ namespace
             return std::unexpected { DecodeError { DecodeErrorCode::IntegerRepresentationTooLong,
                                                    flagsOffset + 1 } };
         if (*flags > 0x01)
-            return std::unexpected { DecodeError { DecodeErrorCode::LimitsFlagTooLarge, flagsOffset } };
+            return std::unexpected { DecodeError { DecodeErrorCode::LimitsFlagTooLarge,
+                                                   flagsOffset,
+                                                   std::nullopt,
+                                                   limitsFlagFeature(*flags, of) } };
         return readBounds(LimitsFlagTable[*flags], [this] { return _reader.readU32(); })
             .transform([](Limits const& limits) { return EncodedLimits { .limits = limits }; });
     }
@@ -980,7 +1036,10 @@ namespace
                         });
         auto const row = std::ranges::find(admitted, *flags, &LimitsFlagRow::flags);
         if (row == admitted.end())
-            return std::unexpected { DecodeError { DecodeErrorCode::MalformedLimitsFlags, flagsOffset } };
+            return std::unexpected { DecodeError { DecodeErrorCode::MalformedLimitsFlags,
+                                                   flagsOffset,
+                                                   std::nullopt,
+                                                   limitsFlagFeature(*flags, of) } };
         auto const limits = readBounds(*row, [this] { return _reader.readU64(); });
         if (!limits)
             return std::unexpected { limits.error() };
@@ -1039,9 +1098,16 @@ namespace
 
     std::expected<Table, DecodeError> ModuleDecoder::readTable()
     {
-        if (!_features.has(Feature::TypedFunctionReferences) || peekByte() != TableWithInitializer)
+        if (peekByte() != TableWithInitializer)
             return readTableType().transform(
                 [](TableType const& type) { return Table { .type = type, .init = {} }; });
+        // Without typed function references the byte reads as a reference type, which it is not: the
+        // error the plain form reports at it, naming the proposal.
+        if (!_features.has(Feature::TypedFunctionReferences))
+            return std::unexpected { DecodeError { DecodeErrorCode::MalformedReferenceType,
+                                                   _reader.offset(),
+                                                   std::nullopt,
+                                                   Feature::TypedFunctionReferences } };
         // The interpreter reads this form first and, when it fails, the plain one from the same
         // start, whose error it reports: 0x40 is no reference type.
         auto const formOffset = _reader.offset();
@@ -1084,8 +1150,10 @@ namespace
     {
         auto const kindOffset = _reader.offset();
         return readByte().and_then([&](uint8_t byte) -> std::expected<ExternKind, DecodeError> {
-            if (std::size_t { byte } >= ExternKinds.size() || !enabled(ExternKinds[byte].required))
+            if (std::size_t { byte } >= ExternKinds.size())
                 return std::unexpected { DecodeError { malformed, kindOffset } };
+            if (auto const missing = missingFeature(ExternKinds[byte].required))
+                return std::unexpected { DecodeError { malformed, kindOffset, std::nullopt, missing } };
             return ExternKinds[byte].kind;
         });
     }
@@ -1120,13 +1188,14 @@ namespace
         return std::to_integer<uint8_t>(*byte);
     }
 
-    std::expected<void, DecodeError> ModuleDecoder::expectZeroByte()
+    std::expected<void, DecodeError> ModuleDecoder::expectZeroByte(std::optional<Feature> proposal)
     {
         // A zero byte, not a zero LEB128: the reserved memory index before multi-memory.
         auto const byteOffset = _reader.offset();
-        return readByte().and_then([byteOffset](uint8_t byte) -> std::expected<void, DecodeError> {
+        return readByte().and_then([&](uint8_t byte) -> std::expected<void, DecodeError> {
             if (byte != 0x00)
-                return std::unexpected { DecodeError { DecodeErrorCode::ZeroByteExpected, byteOffset } };
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::ZeroByteExpected, byteOffset, std::nullopt, missingFeature(proposal) } };
             return {};
         });
     }
@@ -1141,7 +1210,7 @@ namespace
         if (_features.has(MemoryIndexFeature))
             return readIndex(index);
         index = 0;
-        return expectZeroByte();
+        return expectZeroByte(MemoryIndexFeature);
     }
 
     std::expected<void, DecodeError> ModuleDecoder::countImport(uint32_t& count,
@@ -1233,9 +1302,7 @@ namespace
         // names the feature that would decode it, so an embedder knows what to enable.
         if (auto const missing = firstMissingFeature(opcodeInfo(*opcode).required))
             return std::unexpected { DecodeError {
-                DecodeErrorCode::FeatureNotEnabled,
-                opcodeOffset,
-                disabledFeatureSubject(illegalOpcodeSubject(prefix, code), *missing) } };
+                DecodeErrorCode::IllegalOpcode, opcodeOffset, illegalOpcodeSubject(prefix, code), missing } };
 
         auto instruction = Instruction { .opcode = *opcode };
         return readImmediates(instruction, sink).transform([&] { return instruction; });
@@ -1265,7 +1332,9 @@ namespace
                 // Before reference types the table index is the reserved zero byte, as memory
                 // indices are before multi-memory; an overlong zero is malformed there.
                 if (!_features.has(Feature::ReferenceTypes))
-                    return readIndex(instruction.a).and_then([this] { return expectZeroByte(); });
+                    return readIndex(instruction.a).and_then([this] {
+                        return expectZeroByte(Feature::ReferenceTypes);
+                    });
                 return readIndex(instruction.a).and_then([&] { return readIndex(instruction.b); });
             case ImmediateKind::TableCopy:
             case ImmediateKind::TableInit:
@@ -1347,10 +1416,17 @@ namespace
             instruction.blockKind = BlockType::Kind::Empty;
             return {};
         }
-        return readValueType().transform([&](ValueType const& type) {
-            instruction.blockKind = BlockType::Kind::Value;
-            instruction.type = type;
-        });
+        auto const valueType = [&] {
+            return readValueType().transform([&](ValueType const& type) {
+                instruction.blockKind = BlockType::Kind::Value;
+                instruction.type = type;
+            });
+        };
+        // A type index, which only multi-value gives a block: refused as the value type it reads as
+        // without it, naming the proposal.
+        if (auto probe = _reader; probe.readS33().value_or(-1) >= 0)
+            return naming(valueType(), Feature::MultiValue);
+        return valueType();
     }
 
     std::expected<void, DecodeError> ModuleDecoder::readCatchClauses(Instruction& instruction, CodeSink sink)
@@ -1391,9 +1467,16 @@ namespace
         if (!flags)
             return std::unexpected { flags.error() };
         if (*flags >= grammar.flagsLimit)
+        {
+            // Flags that announce a memory index, which only multi-memory reads, name it.
+            auto const memoryIndex =
+                *flags < MemArgGrammar3.flagsLimit && (*flags & MemArgGrammar3.memoryIndexBit) != 0;
             return std::unexpected { DecodeError {
                 DecodeErrorCode::MalformedMemopFlags,
-                grammar.errorAt == FlagsErrorPosition::FirstByte ? flagsOffset : _reader.offset() - 1 } };
+                grammar.errorAt == FlagsErrorPosition::FirstByte ? flagsOffset : _reader.offset() - 1,
+                std::nullopt,
+                memoryIndex ? missingFeature(MemoryIndexFeature) : std::nullopt } };
+        }
         instruction.a = *flags & ~grammar.memoryIndexBit;
         instruction.b = 0;
         if ((*flags & grammar.memoryIndexBit) != 0)
@@ -1639,9 +1722,13 @@ namespace
         auto const flags = _reader.readU32();
         if (!flags)
             return std::unexpected { flags.error() };
-        if (*flags >= ElementForms.size() || !enabled(ElementForms[*flags].required))
+        if (*flags >= ElementForms.size() || missingFeature(ElementForms[*flags].required))
             return std::unexpected { DecodeError { DecodeErrorCode::MalformedElementSegmentKind,
-                                                   flagsOffset } };
+                                                   flagsOffset,
+                                                   std::nullopt,
+                                                   *flags < ElementForms.size()
+                                                       ? missingFeature(ElementForms[*flags].required)
+                                                       : std::nullopt } };
         auto const& form = ElementForms[*flags];
 
         auto segment = ElementSegment {};
@@ -1795,8 +1882,12 @@ namespace
         auto const flags = _reader.readU32();
         if (!flags)
             return std::unexpected { flags.error() };
-        if (*flags >= DataForms.size() || !enabled(DataForms[*flags].required))
-            return std::unexpected { DecodeError { DecodeErrorCode::MalformedDataSegmentKind, flagsOffset } };
+        if (*flags >= DataForms.size() || missingFeature(DataForms[*flags].required))
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::MalformedDataSegmentKind,
+                flagsOffset,
+                std::nullopt,
+                *flags < DataForms.size() ? missingFeature(DataForms[*flags].required) : std::nullopt } };
         auto const& form = DataForms[*flags];
 
         auto segment = DataSegment {};

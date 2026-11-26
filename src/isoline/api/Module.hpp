@@ -101,8 +101,10 @@ using LoadError = std::variant<ModuleTooLarge, HostMemoryExhausted, DecodeError,
 
 /// The feature an engine must enable to get past @p error, when the module uses one it lacks.
 /// @param error Why the module was refused.
-/// @return The feature, for a decode error of a disabled feature (binary::disabledFeature());
-///         otherwise nothing.
+/// @return The feature, for a decode or validation error that names the disabled proposal which would
+///         decode or admit the module (binary::DecodeError::disabled,
+///         validate::ValidationError::disabled); otherwise nothing. Enabling it (closed over its
+///         prerequisites) gets the module past that point, where another may be named.
 [[nodiscard]] std::optional<Feature> requiredFeature(LoadError const& error) noexcept;
 
 /// A module an Engine loaded: decoded, validated, and described.

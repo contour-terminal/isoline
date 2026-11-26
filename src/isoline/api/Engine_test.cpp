@@ -167,7 +167,7 @@ TEST_CASE("Engine.honoursItsFeatures")
     auto const refused = withoutSimd.load(v128ConstBytes());
     REQUIRE_FALSE(refused.has_value());
     REQUIRE(std::holds_alternative<DecodeError>(refused.error()));
-    CHECK(std::get<DecodeError>(refused.error()).code == DecodeErrorCode::FeatureNotEnabled);
+    CHECK(std::get<DecodeError>(refused.error()).code == DecodeErrorCode::IllegalOpcode);
     CHECK(isoline::api::requiredFeature(refused.error()) == Feature::Simd);
     CHECK_FALSE(isoline::api::isImplementationLimit(refused.error()));
 

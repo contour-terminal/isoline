@@ -158,7 +158,8 @@ TEST_CASE("Validator.wideNeedsTwoResults")
         functionOf(FuncType { .params = { I64, I64 }, .results = { I64, I64 } }, mulWideU).build();
     auto const decoded = decodeModule(bytes, FeatureSet::wasm3());
     REQUIRE_FALSE(decoded.has_value());
-    CHECK(decoded.error().code == DecodeErrorCode::FeatureNotEnabled);
+    CHECK(decoded.error().code == DecodeErrorCode::IllegalOpcode);
+    CHECK(decoded.error().disabled == Feature::WideArithmetic);
 }
 
 TEST_CASE("Validator.unreachablePolymorphic")
@@ -2021,4 +2022,69 @@ TEST_CASE("Validator.returnCallResultMismatch")
           == ValidationErrorCode::TypeMismatch);
     CHECK(typedReferenceCheck(FuncType { .params = {}, .results = { I32 } }, { 0x15, 0x09 })
           == ValidationErrorCode::UnknownType);
+}
+
+TEST_CASE("Validator.disabledProposalIsNamed")
+{
+    // Each module is invalid without one proposal, refused as the spec's validator without it refuses
+    // it, and names the proposal; the spec's message comes first.
+    auto twoMemories = ModuleBuilder {};
+    twoMemories.memory(atLeast(1)).memory(atLeast(1));
+    auto twoTables = ModuleBuilder {};
+    twoTables.table(TableType { .element = FuncRef, .limits = atLeast(1) })
+        .table(TableType { .element = FuncRef, .limits = atLeast(1) });
+    auto twoResults = ModuleBuilder {};
+    twoResults.type(FuncType { .params = {}, .results = { I32, I32 } });
+    auto constantSum = ModuleBuilder {};
+    constantSum.global(GlobalType { .type = I32, .mutability = Mutability::Const },
+                       { 0x41, 0x01, 0x41, 0x02, 0x6A });
+    auto notConstant = ModuleBuilder {};
+    notConstant.global(GlobalType { .type = I32, .mutability = Mutability::Const }, { 0x41, 0x01, 0x1A });
+    struct Row
+    {
+        std::string_view name;
+        ModuleBuilder const& module;
+        FeatureSet features;
+        ValidationErrorCode code;
+        std::optional<Feature> disabled;
+    };
+    auto const rows = std::to_array<Row>({
+        { "two memories",
+          twoMemories,
+          FeatureSet::wasm2(),
+          ValidationErrorCode::MultipleMemories,
+          Feature::MultiMemory },
+        { "two tables",
+          twoTables,
+          FeatureSet::none(),
+          ValidationErrorCode::MultipleTables,
+          Feature::ReferenceTypes },
+        { "two results",
+          twoResults,
+          FeatureSet::none(),
+          ValidationErrorCode::InvalidResultArity,
+          Feature::MultiValue },
+        { "constant i32.add",
+          constantSum,
+          FeatureSet::wasm2(),
+          ValidationErrorCode::ConstantExpressionRequired,
+          Feature::ExtendedConst },
+        { "constant drop",
+          notConstant,
+          FeatureSet::wasm3(),
+          ValidationErrorCode::ConstantExpressionRequired,
+          std::nullopt },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(row.name);
+        auto const result = validated(row.module, row.features);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == row.code);
+        CHECK(result.error().disabled == row.disabled);
+        CHECK(specMessage(result.error()).starts_with(specMessage(row.code)));
+    }
+    auto const twoMemoriesRefused = validated(twoMemories, FeatureSet::wasm2());
+    REQUIRE_FALSE(twoMemoriesRefused.has_value());
+    CHECK(specMessage(twoMemoriesRefused.error()) == "multiple memories (multi-memory not enabled)");
 }

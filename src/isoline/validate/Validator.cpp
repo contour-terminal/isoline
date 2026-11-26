@@ -62,6 +62,7 @@ namespace
         ValidationErrorCode code;                ///< What went wrong.
         std::optional<uint32_t> subject;         ///< The unknown or undeclared index, if it names one.
         std::optional<OperandMismatch> mismatch; ///< The operands that did not match, if recorded.
+        std::optional<Feature> disabled;         ///< The disabled proposal that would admit it, if any.
     };
 
     /// The outcome of a check whose position its caller knows.
@@ -70,7 +71,8 @@ namespace
     /// @return The failure of a check with @p code, naming no index.
     [[nodiscard]] std::unexpected<Fault> fail(ValidationErrorCode code) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = std::nullopt, .mismatch = std::nullopt } };
+        return std::unexpected { Fault {
+            .code = code, .subject = std::nullopt, .mismatch = std::nullopt, .disabled = std::nullopt } };
     }
 
     /// @return The failure @p fault, passed on.
@@ -82,7 +84,8 @@ namespace
     /// @return The failure of a check with @p code about the index @p subject.
     [[nodiscard]] std::unexpected<Fault> failNaming(ValidationErrorCode code, uint32_t subject) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = subject, .mismatch = std::nullopt } };
+        return std::unexpected { Fault {
+            .code = code, .subject = subject, .mismatch = std::nullopt, .disabled = std::nullopt } };
     }
 
     /// @return Success when @p holds, else the failure @p code.
@@ -91,6 +94,25 @@ namespace
         if (!holds)
             return fail(code);
         return {};
+    }
+
+    /// @return The failure of a check with @p code, naming @p feature as the disabled proposal that
+    ///         would admit what failed.
+    [[nodiscard]] std::unexpected<Fault> failDisabled(ValidationErrorCode code, Feature feature) noexcept
+    {
+        return std::unexpected { Fault {
+            .code = code, .subject = std::nullopt, .mismatch = std::nullopt, .disabled = feature } };
+    }
+
+    /// @return Success when @p holds or @p features enables @p feature, else failDisabled().
+    [[nodiscard]] Check checkUnlessEnabled(bool holds,
+                                           FeatureSet features,
+                                           Feature feature,
+                                           ValidationErrorCode code) noexcept
+    {
+        if (holds || features.has(feature))
+            return {};
+        return failDisabled(code, feature);
     }
 
     /// @return Success when @p index is below @p count, else the failure @p code naming it.
@@ -105,7 +127,7 @@ namespace
     [[nodiscard]] ValidationError errorAt(Fault fault, uint32_t function, uint32_t instruction) noexcept
     {
         return ValidationError {
-            fault.code, function, instruction, fault.subject, std::move(fault.mismatch)
+            fault.code, function, instruction, fault.subject, std::move(fault.mismatch), fault.disabled
         };
     }
 
@@ -586,7 +608,8 @@ namespace
                 mismatch.actual.insert(mismatch.actual.end(), top.begin(), top.end());
                 return fail(Fault { .code = ValidationErrorCode::TypeMismatch,
                                     .subject = std::nullopt,
-                                    .mismatch = std::move(mismatch) });
+                                    .mismatch = std::move(mismatch),
+                                    .disabled = std::nullopt });
             }
             _operands.resize(_operands.size() - taken);
             return {};
@@ -1405,13 +1428,14 @@ namespace
 
         [[nodiscard]] std::expected<void, ValidationError> checkTypes() const
         {
-            // Before multi-value, a function returns at most one value.
+            // Before multi-value, a function returns at most one value; with it the types are not scanned.
             if (_context.features.has(Feature::MultiValue))
                 return {};
-            return atModule(
-                check(std::ranges::all_of(module().types,
-                                          [](FuncType const& type) { return type.results.size() <= 1; }),
-                      ValidationErrorCode::InvalidResultArity));
+            if (std::ranges::all_of(module().types,
+                                    [](FuncType const& type) { return type.results.size() <= 1; }))
+                return {};
+            return moduleError(
+                failDisabled(ValidationErrorCode::InvalidResultArity, Feature::MultiValue).error());
         }
 
         /// Types a constant expression of type @p type: constness first, as the interpreter checks
@@ -1421,8 +1445,10 @@ namespace
             for (auto const& instruction: expression)
             {
                 auto const row = std::ranges::find(ConstantTable, instruction.opcode, &ConstantRow::opcode);
-                if (row == ConstantTable.end() || (row->required && !_context.features.has(*row->required)))
+                if (row == ConstantTable.end())
                     return fail(ValidationErrorCode::ConstantExpressionRequired);
+                if (row->required && !_context.features.has(*row->required))
+                    return failDisabled(ValidationErrorCode::ConstantExpressionRequired, *row->required);
                 if (instruction.opcode != Opcode::GlobalGet)
                     continue;
                 if (instruction.a >= _context.importedGlobalCount)
@@ -1628,14 +1654,16 @@ namespace
         [[nodiscard]] std::expected<void, ValidationError> checkCounts() const
         {
             // WebAssembly 2.0 still allows one memory; reference types lifted the MVP's one table.
-            return atModule(
-                check(_context.memories.size() <= 1 || _context.features.has(Feature::MultiMemory),
-                      ValidationErrorCode::MultipleMemories)
-                    .and_then([this] {
-                        return check(_context.tables.size() <= 1
-                                         || _context.features.has(Feature::ReferenceTypes),
-                                     ValidationErrorCode::MultipleTables);
-                    }));
+            return atModule(checkUnlessEnabled(_context.memories.size() <= 1,
+                                               _context.features,
+                                               Feature::MultiMemory,
+                                               ValidationErrorCode::MultipleMemories)
+                                .and_then([this] {
+                                    return checkUnlessEnabled(_context.tables.size() <= 1,
+                                                              _context.features,
+                                                              Feature::ReferenceTypes,
+                                                              ValidationErrorCode::MultipleTables);
+                                }));
         }
 
         Context _context;

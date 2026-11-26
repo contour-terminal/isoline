@@ -1029,17 +1029,6 @@ enum class Implementation : uint8_t
     Implemented, ///< A FeatureSet switch decides.
 };
 
-/// How the decoder reports a module using an implemented feature that is switched off.
-enum class Diagnosis : uint8_t
-{
-    /// As the module would read without the proposal: a malformed section id, limits flag or value type,
-    /// or an invalid second memory, which is what the spec suite expects there; requiredFeature() is
-    /// then empty.
-    AsMalformed,
-    /// FeatureNotEnabled, which requiredFeature() names.
-    NamesFeature,
-};
-
 /// One feature of Contour's table, the module that uses it and nothing else, and how Isoline holds it.
 struct FeatureCase
 {
@@ -1049,8 +1038,9 @@ struct FeatureCase
     /// Isoline's switch for it; none for an MVP-era feature or a missing one.
     std::optional<isoline::Feature> feature;
     std::vector<std::byte> (*module)(); ///< A module using it.
-    /// How a refusal reads while the feature is off; NamesFeature for the accepted and missing rows.
-    Diagnosis diagnosis = Diagnosis::NamesFeature;
+    /// The feature a refusal names while it is off, when not feature itself: the first one off that the
+    /// module reaches, a prerequisite read before the feature's own use.
+    std::optional<isoline::Feature> named = std::nullopt;
 };
 
 /// A module of one function of @p type with @p body.
@@ -1189,8 +1179,7 @@ std::vector<FeatureCase> const& featureCases()
               auto builder = ModuleBuilder {};
               builder.type(FuncType {}).tag(0);
               return builder.build();
-          },
-          Diagnosis::AsMalformed },
+          } },
         // (module (memory 1 1 shared))
         { "threads",
           ExtensionUse::Refused,
@@ -1207,8 +1196,7 @@ std::vector<FeatureCase> const& featureCases()
               builder.memory(isoline::binary::Limits {
                   .min = 1, .max = std::nullopt, .addressType = isoline::binary::AddressType::I64 });
               return builder.build();
-          },
-          Diagnosis::AsMalformed },
+          } },
         // (module (memory 1) (memory 1))
         { "multi-memory",
           ExtensionUse::Refused,
@@ -1218,8 +1206,7 @@ std::vector<FeatureCase> const& featureCases()
               auto builder = ModuleBuilder {};
               builder.memory(atLeast(1)).memory(atLeast(1));
               return builder.build();
-          },
-          Diagnosis::AsMalformed },
+          } },
         // (module (func (return_call 0)))
         { "tail-call",
           ExtensionUse::Refused,
@@ -1246,7 +1233,8 @@ std::vector<FeatureCase> const& featureCases()
               return functionModule(FuncType { .params = { TypeV128 }, .results = { TypeV128 } },
                                     code({ localGet(0), { 0xFD, 0x81, 0x02 } })); // 0x101
           },
-          Diagnosis::AsMalformed },
+          // Its v128 param is read before the relaxed instruction, and simd is off too.
+          Feature::Simd },
         // (module (type $t (func)) (func (param (ref null $t))))
         { "function-references",
           ExtensionUse::Refused,
@@ -1263,8 +1251,7 @@ std::vector<FeatureCase> const& featureCases()
                       .results = {} })
                   .function(1, {}, {});
               return builder.build();
-          },
-          Diagnosis::AsMalformed },
+          } },
         // (module (func (param i64 i64 i64 i64) (result i64 i64) (i64.add128 (local.get 0) ... (local.get
         // 3))))
         { "wide-arithmetic",
@@ -1286,8 +1273,7 @@ std::vector<FeatureCase> const& featureCases()
               auto builder = ModuleBuilder {};
               builder.memory(isoline::binary::MemoryType { .limits = atLeast(1), .pageSizeLog2 = 0 });
               return builder.build();
-          },
-          Diagnosis::AsMalformed },
+          } },
         // (module (type $f (func)) (type (cont $f)))
         { "stack-switching",
           ExtensionUse::Refused,
@@ -1300,8 +1286,10 @@ std::vector<FeatureCase> const& featureCases()
 
 /// Loads each feature case whose use is @p use with the extension features, each in a section named
 /// after the feature: accepted when extensions may use it, refused otherwise. A refused feature Isoline
-/// implements is refused as its row's diagnosis says, and loads once the engine enables it, so the
-/// module is valid otherwise; one Isoline lacks is refused whatever the features.
+/// implements is refused naming it (requiredFeature()), or the row's named prerequisite that is off too
+/// (relaxed-simd's module takes a v128 before it reaches a relaxed instruction), and loads once the
+/// engine enables it, so the module is valid otherwise; one Isoline lacks is refused whatever the
+/// features.
 void checkFeatureCases(ExtensionUse use)
 {
     auto const extensions = Engine { EngineConfig { .features = extensionFeatures() } };
@@ -1326,9 +1314,12 @@ void checkFeatureCases(ExtensionUse use)
                 CHECK_FALSE(everything.load(bytes).has_value());
                 continue;
             }
-            auto const named =
-                row.diagnosis == Diagnosis::NamesFeature ? row.feature : std::optional<isoline::Feature> {};
-            CHECK(isoline::api::requiredFeature(error) == named);
+            REQUIRE(row.feature.has_value());
+            auto const named = isoline::api::requiredFeature(error);
+            REQUIRE(named.has_value());
+            CHECK(*named == row.named.value_or(*row.feature));
+            // Refused because it is off: the engine does not enable what the refusal names.
+            CHECK_FALSE(extensionFeatures().has(*named));
             CHECK(everything.load(bytes).has_value());
         }
     }

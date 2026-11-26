@@ -2,6 +2,7 @@
 #include <isoline/api/Module.hpp>
 
 #include <core/Assert.hpp>
+#include <core/Overloaded.hpp>
 #include <core/Utils.hpp>
 
 #include <array>
@@ -136,10 +137,12 @@ bool isImplementationLimit(LoadError const& error) noexcept
 
 std::optional<Feature> requiredFeature(LoadError const& error) noexcept
 {
-    auto const* const decode = std::get_if<binary::DecodeError>(&error);
-    if (decode == nullptr)
-        return std::nullopt;
-    return binary::disabledFeature(*decode);
+    return std::visit(core::Overloaded {
+                          [](binary::DecodeError const& decode) { return decode.disabled; },
+                          [](validate::ValidationError const& validation) { return validation.disabled; },
+                          [](auto const&) { return std::optional<Feature> {}; },
+                      },
+                      error);
 }
 
 Module::Module(Key /*key*/,

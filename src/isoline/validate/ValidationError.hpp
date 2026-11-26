@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/Features.hpp>
 #include <isoline/binary/Types.hpp>
 
 namespace isoline::validate
@@ -325,16 +326,20 @@ struct ValidationError
     /// @param instruction The failing instruction's index in that body, or NoInstruction.
     /// @param subject The index the error names, if any.
     /// @param mismatch The operands that did not match, if the validator recorded them.
+    /// @param disabled The proposal the validator's FeatureSet lacks that would admit the module past
+    ///                 this point; empty when none would.
     constexpr explicit ValidationError(ValidationErrorCode code,
                                        uint32_t function = NoFunction,
                                        uint32_t instruction = NoInstruction,
                                        std::optional<uint32_t> subject = {},
-                                       std::optional<OperandMismatch> mismatch = {}) noexcept:
+                                       std::optional<OperandMismatch> mismatch = {},
+                                       std::optional<Feature> disabled = {}) noexcept:
         code { code },
         function { function },
         instruction { instruction },
         subject { subject },
-        mismatch { std::move(mismatch) }
+        mismatch { std::move(mismatch) },
+        disabled { disabled }
     {
     }
 
@@ -355,6 +360,12 @@ struct ValidationError
     /// For a type mismatch of an instruction's operands: what it required and what the stack had;
     /// empty where the validator records no operands.
     std::optional<OperandMismatch> mismatch;
+
+    /// The proposal the validator's FeatureSet lacks that would admit the module past this point: a
+    /// second memory's multi-memory, a type of two results' multi-value, a constant i32.add's
+    /// extended-const. The error is the one the spec suite expects of a validator without it, and the
+    /// message appends the proposal (appendDisabledFeature()).
+    std::optional<Feature> disabled;
 
     bool operator==(ValidationError const&) const = default;
 };
@@ -378,30 +389,34 @@ struct ValidationError
 }
 
 /// The message the reference interpreter reports for @p error: its row's message, followed by what
-/// its detail names: the index, the size bound, or the operands.
+/// its detail names (the index, the size bound, or the operands), and then by the disabled proposal
+/// that would admit the module, when the error names one (appendDisabledFeature()).
 /// @param error The error to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(ValidationError const& error)
 {
     auto const& row = ValidationErrorTable[static_cast<std::size_t>(error.code)];
-    if (row.detail == MessageDetail::Operands && error.mismatch)
-        return std::format("{}: instruction requires {} but stack has {}",
-                           row.specMessage,
-                           resultTypeText(error.mismatch->required),
-                           resultTypeText(error.mismatch->actual));
-    if (!error.subject)
+    auto const message = [&]() -> std::string {
+        if (row.detail == MessageDetail::Operands && error.mismatch)
+            return std::format("{}: instruction requires {} but stack has {}",
+                               row.specMessage,
+                               resultTypeText(error.mismatch->required),
+                               resultTypeText(error.mismatch->actual));
+        if (!error.subject)
+            return std::string { row.specMessage };
+        switch (row.detail)
+        {
+            case MessageDetail::None:
+            case MessageDetail::Operands: break;
+            case MessageDetail::Index: return std::format("{} {}", row.specMessage, *error.subject);
+            case MessageDetail::MemoryBound:
+                return std::format("{} {}", row.specMessage, MemoryBoundTable.at(*error.subject).bound);
+            case MessageDetail::TableBound:
+                return std::format("{} {}", row.specMessage, AddressBoundTable.at(*error.subject).tableBound);
+        }
         return std::string { row.specMessage };
-    switch (row.detail)
-    {
-        case MessageDetail::None:
-        case MessageDetail::Operands: break;
-        case MessageDetail::Index: return std::format("{} {}", row.specMessage, *error.subject);
-        case MessageDetail::MemoryBound:
-            return std::format("{} {}", row.specMessage, MemoryBoundTable.at(*error.subject).bound);
-        case MessageDetail::TableBound:
-            return std::format("{} {}", row.specMessage, AddressBoundTable.at(*error.subject).tableBound);
-    }
-    return std::string { row.specMessage };
+    }();
+    return appendDisabledFeature(message, error.disabled);
 }
 
 } // namespace isoline::validate
