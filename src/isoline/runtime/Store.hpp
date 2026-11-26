@@ -483,7 +483,7 @@ class Store
     {
         if (_pollObserver != nullptr)
             _pollObserver->onPoll(site);
-        if (_interrupter->state() == InterruptState::Interrupted)
+        if (_interrupt->state() == InterruptState::Interrupted)
             return trap(TrapCode::Interrupted);
         if (PollSiteTable[static_cast<std::size_t>(site)].charge == StepCharge::None)
             return {};
@@ -610,6 +610,15 @@ class Store
     friend class HostCallScope;
     friend class InvocationScope;
     friend class ExceptionRootsRegistration;
+    friend class PollGate;
+
+    /// The steps the latest outermost invocation took so far: what PollGate::reload() counts down from.
+    /// @return Its steps, at most StoreLimits::maxSteps.
+    [[nodiscard]] uint64_t stepsTaken() const noexcept { return _steps; }
+
+    /// Records the steps the outermost invocation took: what PollGate::commit() writes back.
+    /// @param steps Its steps, at most StoreLimits::maxSteps.
+    void setStepsTaken(uint64_t steps) noexcept { _steps = steps; }
 
     /// What an exception arena slot holds.
     enum class ExceptionSlot : uint8_t
@@ -641,6 +650,8 @@ class Store
     IPollObserver* _pollObserver;
     IRoundingMode* _roundingMode; ///< How the floating-point scopes switch the rounding mode; never null.
     std::shared_ptr<Interrupter> _interrupter;
+    /// _interrupter's, raw: what every poll loads through, sparing the shared_ptr's indirection.
+    Interrupter const* _interrupt;
     StoreLimits _limits;
     GrowthRecord _growthRecord;       ///< The current refusal scope's first refused grow per kind.
     uint64_t _exceptionValues = 0;    ///< The payload values of every exception held.

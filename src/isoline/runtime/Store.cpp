@@ -183,6 +183,7 @@ Store::Store(StoreLimits limits, StoreServices services):
     _pollObserver { services.pollObserver },
     _roundingMode { services.roundingMode },
     _interrupter { std::make_shared<Interrupter>() },
+    _interrupt { _interrupter.get() },
     _limits { limits },
     _growthRecord {}
 {
