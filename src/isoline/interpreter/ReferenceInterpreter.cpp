@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
 
 #include <core/Assert.hpp>
 
@@ -22,15 +22,15 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
-#include <isoline/interp/Numerics.hpp>
-#include <isoline/interp/Simd.hpp>
+#include <isoline/interpreter/Numerics.hpp>
+#include <isoline/interpreter/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
-namespace isoline::interp
+namespace isoline::interpreter
 {
 
 namespace
@@ -883,7 +883,7 @@ namespace
         {
             auto const b = popV128();
             auto const a = popV128();
-            push(interp::shuffle(a, b, binary::v128LiteralOf(*instance().module, instruction)));
+            push(interpreter::shuffle(a, b, binary::v128LiteralOf(*instance().module, instruction)));
         }
 
         /// Executes a numeric instruction by its row in Numerics' table.
@@ -1121,4 +1121,4 @@ std::expected<Value, Trap> ReferenceInterpreter::evaluateConst(Store& store,
 }
 // uncovered-end(constant-without-end)
 
-} // namespace isoline::interp
+} // namespace isoline::interpreter

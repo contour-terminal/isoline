@@ -13,9 +13,9 @@ target_sources(isoline_core
         binary/Decoder.cpp
         binary/Opcode.cpp
         binary/TypeCanon.cpp
-        interp/Numerics.cpp
-        interp/ReferenceInterpreter.cpp
-        interp/Simd.cpp
+        interpreter/Numerics.cpp
+        interpreter/ReferenceInterpreter.cpp
+        interpreter/Simd.cpp
         runtime/Instantiate.cpp
         runtime/Store.cpp
         validate/Subtyping.cpp
@@ -34,9 +34,9 @@ target_sources(isoline_core
             binary/Opcodes.def
             binary/TypeCanon.hpp
             binary/Types.hpp
-            interp/Numerics.hpp
-            interp/ReferenceInterpreter.hpp
-            interp/Simd.hpp
+            interpreter/Numerics.hpp
+            interpreter/ReferenceInterpreter.hpp
+            interpreter/Simd.hpp
             runtime/Instantiate.hpp
             runtime/Segment.hpp
             runtime/Store.hpp

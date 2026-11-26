@@ -41,7 +41,7 @@
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
-#include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -499,7 +499,7 @@ namespace
         FeatureSet _features;
         runtime::UnlimitedAllocator _allocator;
         runtime::Store _store;
-        interp::ReferenceInterpreter _interpreter;
+        interpreter::ReferenceInterpreter _interpreter;
         std::optional<uint32_t> _current;
         std::map<std::string, uint32_t, std::less<>> _named;
         std::map<std::string, uint32_t, std::less<>> _registered;

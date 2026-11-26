@@ -10,7 +10,7 @@
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
-namespace isoline::interp
+namespace isoline::interpreter
 {
 
 /// How a numeric instruction takes its operands, and so which apply function evaluates it.
@@ -91,4 +91,4 @@ inline constexpr auto CanonicalNanF32 = uint32_t { 0x7FC0'0000 };
 /// The canonical NaN of f64: quiet, with no other payload bit; positive.
 inline constexpr auto CanonicalNanF64 = uint64_t { 0x7FF8'0000'0000'0000 };
 
-} // namespace isoline::interp
+} // namespace isoline::interpreter

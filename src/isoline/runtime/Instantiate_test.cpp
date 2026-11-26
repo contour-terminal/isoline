@@ -20,7 +20,7 @@
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
-#include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -884,7 +884,7 @@ TEST_CASE("Instantiate.typeIdentityAcrossModules")
 {
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
-    auto interpreter = isoline::interp::ReferenceInterpreter {};
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
     auto const identity =
         FuncType { .params = { isoline::binary::I32 }, .results = { isoline::binary::I32 } };
 
@@ -955,7 +955,7 @@ TEST_CASE("Instantiate.tableInitializer")
 {
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
-    auto interpreter = isoline::interp::ReferenceInterpreter {};
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
     auto const nonNullFunc =
         isoline::binary::ValueType { .kind = isoline::binary::ValueKind::Ref,
                                      .nullable = isoline::binary::Nullable::No,
@@ -989,7 +989,7 @@ TEST_CASE("Instantiate.importsMatchByStoreTypes")
 {
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
-    auto interpreter = isoline::interp::ReferenceInterpreter {};
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
     auto const wasm3 = FeatureSet::wasm3();
     // The exporter's type 1 is (func); the importers declare it at index 0.
     auto exporter = ModuleBuilder {};
@@ -1094,7 +1094,7 @@ TEST_CASE("Instantiate.importOfAnUnheldTypeMatchesNothing")
     // element or value type names it, matches nothing — and interns nothing.
     auto const allocator = UnlimitedAllocator {};
     auto store = Store { allocator };
-    auto interpreter = isoline::interp::ReferenceInterpreter {};
+    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
     auto const wasm3 = FeatureSet::wasm3();
     auto exporter = ModuleBuilder {};
     exporter.type(FuncType {})

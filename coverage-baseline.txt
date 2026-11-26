@@ -16,11 +16,11 @@
 # instruction is a v128.const or an i8x16.shuffle, adds the branch of both comparisons failing, which no valid caller takes, as
 # every Require's failing side is. No branch lost its coverage.
 #
-# src/isoline/interp/Simd.cpp's branch entry was lowered from 92.68 to 92.00 when the float operators arrived: untrapped()'s
+# src/isoline/interpreter/Simd.cpp's branch entry was lowered from 92.68 to 92.00 when the float operators arrived: untrapped()'s
 # precondition, that a scalar float operator or trunc_sat lifted to a lane did not trap, adds the branch of a trap, which none of
 # them takes, as every Require's failing side is. No branch lost its coverage.
 #
-# src/isoline/interp/ReferenceInterpreter.cpp's line entry was lowered from 97.93 to 97.92, and src/isoline/runtime/Store.cpp's
+# src/isoline/interpreter/ReferenceInterpreter.cpp's line entry was lowered from 97.93 to 97.92, and src/isoline/runtime/Store.cpp's
 # from 98.60 to 98.55, when memory64 moved copyCountType and the address-type reaches into binary/Types.hpp (copyCountType,
 # maxPages, maxTableSize, 100 % covered): covered lines left both files, and their uncovered ones, exactly the exclusions
 # below, are now a larger share of fewer. No line lost its coverage.
@@ -40,7 +40,7 @@
 # Require's failing side is; the test of a concrete reference moved to binary::isConcreteRef in binary/Types.hpp (100 % covered).
 # No branch lost its coverage.
 #
-# src/isoline/binary/TypeCanon.cpp's branch entry was lowered from 92.30 to 80.00, src/isoline/interp/ReferenceInterpreter.cpp's
+# src/isoline/binary/TypeCanon.cpp's branch entry was lowered from 92.30 to 80.00, src/isoline/interpreter/ReferenceInterpreter.cpp's
 # from 92.37 to 92.33 and src/isoline/validate/Validator.cpp's from 97.57 to 97.56 when the test of a concrete reference and the
 # rewrite of its type index moved into binary::isConcreteRef and binary::mapTypeIndex(es) in binary/Types.hpp (100 % covered):
 # covered branches left the files, and their untaken ones, the failing sides of Require, are a larger share of fewer.
@@ -48,7 +48,7 @@
 # that each type is interned at the TypeId resolveTypes() predicted for it, whose failing side no instantiation takes. No branch
 # lost its coverage.
 #
-# src/isoline/interp/ReferenceInterpreter.cpp's branch entry was lowered from 92.67 to 92.45 when call_ref began to Require that
+# src/isoline/interpreter/ReferenceInterpreter.cpp's branch entry was lowered from 92.67 to 92.45 when call_ref began to Require that
 # the function it calls has the type validation gave its reference: the failing side, which only a host passing a function of
 # another type in a typed reference could take until P3 types the host boundary, is the one new branch no test takes.
 # src/isoline/validate/Subtyping.hpp's branch entry (new, 66.66) is topOf()'s precondition that its heap is not bot, whose
@@ -56,7 +56,7 @@
 #
 # src/isoline/runtime/Store.cpp's branch entry was lowered from 75.47 to 75.00 when addException began to Require that a payload has
 # the kinds of its tag's params, as a host's results are checked: the failing side, which only a host passing a payload of other
-# kinds could take, is the one new branch no test takes. src/isoline/interp/ReferenceInterpreter.cpp's line entry was lowered from
+# kinds could take, is the one new branch no test takes. src/isoline/interpreter/ReferenceInterpreter.cpp's line entry was lowered from
 # 98.26 to 98.25 when haveKinds moved from it to runtime/Value.hpp (100 % covered), for Store to share: covered lines left the
 # file, and its uncovered ones, exactly the exclusions below, are a larger share of fewer. No line or branch lost its coverage.
 #
@@ -66,12 +66,12 @@
 # index: importModuleOf's precondition, that the index lies within Module::importModules, adds the failing side no decoded module
 # takes. No branch lost its coverage.
 
-exclude src/isoline/interp/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
-exclude src/isoline/interp/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Opcode.everyRowDecodes runs a module of every row of the opcode table, so an instruction without one aborts that test
-exclude src/isoline/interp/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
-exclude src/isoline/interp/ReferenceInterpreter.cpp numeric-shape-none numeric() of a non-numeric opcode: execute() dispatches only table rows here
-exclude src/isoline/interp/ReferenceInterpreter.cpp raw-bits rawBits of a vector or reference: a validated body pops a number there
-exclude src/isoline/interp/ReferenceInterpreter.cpp trapping-constant a trapping constant operator: extended-const's add, sub and mul never trap
+exclude src/isoline/interpreter/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
+exclude src/isoline/interpreter/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Opcode.everyRowDecodes runs a module of every row of the opcode table, so an instruction without one aborts that test
+exclude src/isoline/interpreter/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
+exclude src/isoline/interpreter/ReferenceInterpreter.cpp numeric-shape-none numeric() of a non-numeric opcode: execute() dispatches only table rows here
+exclude src/isoline/interpreter/ReferenceInterpreter.cpp raw-bits rawBits of a vector or reference: a validated body pops a number there
+exclude src/isoline/interpreter/ReferenceInterpreter.cpp trapping-constant a trapping constant operator: extended-const's add, sub and mul never trap
 exclude src/isoline/runtime/Store.cpp bad-alloc std::bad_alloc from a table or memory: IMemoryAllocator only decides whether a size may be allocated, it does not allocate, so no test double can make the std::vector allocation fail (P3's embedder-provided memory replaces this path)
 exclude src/isoline/validate/Validator.cpp special-default a Special opcode without a case: every one has a case or a MemoryAccessTable row
 
@@ -88,11 +88,11 @@ src/isoline/binary/Opcode.cpp               100.00 100.00
 src/isoline/binary/Opcode.hpp               100.00 -
 src/isoline/binary/TypeCanon.cpp            100.00 80.00
 src/isoline/binary/Types.hpp                100.00 100.00
-src/isoline/interp/Numerics.cpp             100.00 95.90
-src/isoline/interp/ReferenceInterpreter.cpp 98.25 93.23
-src/isoline/interp/ReferenceInterpreter.hpp 100.00 -
-src/isoline/interp/Simd.cpp                 100.00 93.44
-src/isoline/interp/Simd.hpp                 100.00 66.66
+src/isoline/interpreter/Numerics.cpp             100.00 95.90
+src/isoline/interpreter/ReferenceInterpreter.cpp 98.25 93.23
+src/isoline/interpreter/ReferenceInterpreter.hpp 100.00 -
+src/isoline/interpreter/Simd.cpp                 100.00 93.44
+src/isoline/interpreter/Simd.hpp                 100.00 66.66
 src/isoline/runtime/Abrupt.hpp              100.00 -
 src/isoline/runtime/Instantiate.cpp         100.00 93.79
 src/isoline/runtime/Instantiate.hpp         100.00 -

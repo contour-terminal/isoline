@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <isoline/interp/Simd.hpp>
+#include <isoline/interpreter/Simd.hpp>
 
 #include <core/Assert.hpp>
 
@@ -19,11 +19,11 @@
 
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
-#include <isoline/interp/Numerics.hpp>
+#include <isoline/interpreter/Numerics.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
-namespace isoline::interp
+namespace isoline::interpreter
 {
 
 namespace
@@ -1095,4 +1095,4 @@ V128 shuffle(V128 a, V128 b, std::span<std::byte const, 16> lanes) noexcept
     return result;
 }
 
-} // namespace isoline::interp
+} // namespace isoline::interpreter

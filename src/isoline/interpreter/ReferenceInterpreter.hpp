@@ -12,7 +12,7 @@
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
-namespace isoline::interp
+namespace isoline::interpreter
 {
 
 /// Executes Wasm by the spec's small-step semantics, for clarity. Never a production engine.
@@ -86,4 +86,4 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
     uint32_t _invocations = 0;
 };
 
-} // namespace isoline::interp
+} // namespace isoline::interpreter

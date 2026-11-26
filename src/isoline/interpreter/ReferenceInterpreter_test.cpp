@@ -24,7 +24,7 @@
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
-#include <isoline/interp/ReferenceInterpreter.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -49,7 +49,7 @@ using isoline::binary::TableType;
 using isoline::binary::ValueType;
 using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
-using isoline::interp::ReferenceInterpreter;
+using isoline::interpreter::ReferenceInterpreter;
 using isoline::runtime::Abrupt;
 using isoline::runtime::ExternValue;
 using isoline::runtime::F32;

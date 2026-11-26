@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <isoline/interp/Numerics.hpp>
+#include <isoline/interpreter/Numerics.hpp>
 
 #include <core/Assert.hpp>
 
@@ -28,7 +28,7 @@ static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<doubl
 static_assert(FLT_EVAL_METHOD == 0,
               "the reference interpreter needs floats evaluated in their own precision");
 
-namespace isoline::interp
+namespace isoline::interpreter
 {
 
 namespace
@@ -1109,4 +1109,4 @@ std::array<uint64_t, 2> applyWide(Opcode opcode, std::span<uint64_t const> opera
     return rowOf(opcode, NumericShape::Wide, operands.size()).wide(operands);
 }
 
-} // namespace isoline::interp
+} // namespace isoline::interpreter

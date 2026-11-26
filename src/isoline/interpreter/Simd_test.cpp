@@ -13,25 +13,25 @@
 #include <isoline/Features.hpp>
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
-#include <isoline/interp/Simd.hpp>
+#include <isoline/interpreter/Simd.hpp>
 #include <isoline/runtime/Value.hpp>
 
 using isoline::binary::Opcode;
 using isoline::binary::OpcodeSignature;
 using isoline::binary::OpcodeTable;
-using isoline::interp::applySimdBinary;
-using isoline::interp::applySimdShift;
-using isoline::interp::applySimdTernary;
-using isoline::interp::applySimdTest;
-using isoline::interp::applySimdUnary;
-using isoline::interp::extractLane;
-using isoline::interp::LaneCount;
-using isoline::interp::laneOf;
-using isoline::interp::replaceLane;
-using isoline::interp::setLane;
-using isoline::interp::SimdShape;
-using isoline::interp::simdShape;
-using isoline::interp::splat;
+using isoline::interpreter::applySimdBinary;
+using isoline::interpreter::applySimdShift;
+using isoline::interpreter::applySimdTernary;
+using isoline::interpreter::applySimdTest;
+using isoline::interpreter::applySimdUnary;
+using isoline::interpreter::extractLane;
+using isoline::interpreter::LaneCount;
+using isoline::interpreter::laneOf;
+using isoline::interpreter::replaceLane;
+using isoline::interpreter::setLane;
+using isoline::interpreter::SimdShape;
+using isoline::interpreter::simdShape;
+using isoline::interpreter::splat;
 using isoline::runtime::F32;
 using isoline::runtime::F64;
 using isoline::runtime::I32;
@@ -132,14 +132,14 @@ TEST_CASE("Simd.shuffleTakesSecondOperand")
     auto const a = v128FromBytes(bytesFrom(0x00));
     auto const b = v128FromBytes(bytesFrom(0x10));
     auto const second = bytesFrom(16);
-    CHECK(isoline::interp::shuffle(a, b, second) == b);
+    CHECK(isoline::interpreter::shuffle(a, b, second) == b);
     // Lanes {0, 16, 1, 17, …} interleave the two operands' bytes.
     auto interleave = std::array<std::byte, 16> {};
     for (auto const index: std::views::iota(std::size_t { 0 }, interleave.size()))
         interleave[index] = static_cast<std::byte>((index / 2) + (index % 2 == 0 ? 0 : 16));
     auto const expected = std::to_array<uint8_t>(
         { 0x00, 0x10, 0x01, 0x11, 0x02, 0x12, 0x03, 0x13, 0x04, 0x14, 0x05, 0x15, 0x06, 0x16, 0x07, 0x17 });
-    auto const result = v128ToBytes(isoline::interp::shuffle(a, b, interleave));
+    auto const result = v128ToBytes(isoline::interpreter::shuffle(a, b, interleave));
     for (auto const index: std::views::iota(std::size_t { 0 }, expected.size()))
         CHECK(std::to_integer<uint8_t>(result[index]) == expected[index]);
 }

@@ -42,7 +42,7 @@
 //   relaxed_dot_..._add_s       both signed, the four products summed exactly in
 //                               32 bits (no 16-bit intermediate), + c wrapping     CT:2623
 
-namespace isoline::interp
+namespace isoline::interpreter
 {
 
 /// How a SIMD instruction takes its operands, and so which apply function evaluates it.
@@ -186,4 +186,4 @@ constexpr void setLane(runtime::V128& v, unsigned index, Lane value) noexcept
                                     runtime::V128 b,
                                     std::span<std::byte const, 16> lanes) noexcept;
 
-} // namespace isoline::interp
+} // namespace isoline::interpreter
