@@ -17,6 +17,10 @@ Whether it is a plugin system in a desktop application, sandboxed extensions in 
 host, or a command-line tool that runs `.wasm` programs directly, Isoline is meant to be the production-grade
 choice for running WebAssembly from C++.
 
+Isoline's first consumer is [Contour](https://github.com/contour-terminal/contour), the terminal emulator,
+which runs its extensions as WebAssembly. Contour switching its extension host to Isoline — and dropping
+the two runtimes it carries today — is the first milestone that proves the runtime in production.
+
 ## Why Isoline
 
 - **One language, one toolchain.** Pure C++23 from decoder to code generator. It builds warning-free with
@@ -85,30 +89,6 @@ imports.define("env", "log", logFunction);          // a host function
 auto instance = store.instantiate(*module, imports); // std::expected<Instance, InstantiateError>
 auto result = instance->call("add", { 2, 3 });       // traps, limits and interrupts come back as values
 ```
-
-## Roadmap
-
-Isoline is built in phases, each landing as reviewed, fully tested pull requests.
-
-| Phase | | Status |
-|---|---|---|
-| P1 | Foundation: build and CI, decoder, validator and reference interpreter for WebAssembly 1.0 and 2.0 | done |
-| P2 | Full core language: SIMD, tail calls, exceptions, memory64, multiple memories and the rest of WebAssembly 3.0 minus GC | done |
-| P3 | Runtime and embedding API: limits, interrupts, deterministic budgets, the public API | in progress |
-| P4 | Fast interpreter | in progress |
-| P10 | Text format: `.wat` / `.wast` | in progress |
-| P5 | Optimizing compiler, x86-64 | planned |
-| P6 | arm64 code generation | planned |
-| P7 | Code memory, guard pages and fault handling on every OS | planned |
-| P8 | AOT cache and CLI | planned |
-| P11 | Component model | planned |
-| P12 | Component model async | planned |
-| P14 | WASI 0.3 | planned |
-| P15 | 1.0 hardening: fuzzing campaigns, mutation testing, published benchmarks, release | planned |
-
-Isoline's first consumer is [Contour](https://github.com/contour-terminal/contour), the terminal emulator,
-which runs its extensions as WebAssembly. Contour switching its extension host to Isoline — and dropping
-the two runtimes it carries today — is the first milestone that proves the runtime in production.
 
 ## Platforms
 
