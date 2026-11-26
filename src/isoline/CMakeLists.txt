@@ -112,6 +112,7 @@ target_compile_features(isoline_core PUBLIC cxx_std_23)
 target_link_libraries(isoline_core PUBLIC core::base)
 isoline_apply_target_policy(isoline_core)
 
+add_subdirectory(numerics)
 add_subdirectory(text)
 add_subdirectory(cli)
 
