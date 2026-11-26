@@ -42,6 +42,31 @@ jobs:
       - name: Test
         run: ctest --preset clang-asan --output-on-failure
 
+  linux-clang-tsan:
+    name: Linux Clang (TSan, clang-tidy)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get install -qy "clang-tidy-$LLVM_VERSION" ninja-build
+      - name: Configure
+        run: >
+          cmake --preset clang-tsan
+          -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
+          -DISOLINE_CLANG_TIDY_EXE="/usr/bin/clang-tidy-$LLVM_VERSION"
+          -DISOLINE_FETCH_DEPS=ON
+      - name: Build
+        run: cmake --build --preset clang-tsan
+      - name: Test
+        # TSan's shadow mapping cannot take the runner kernel's full mmap randomisation.
+        run: |
+          sudo sysctl vm.mmap_rnd_bits=28
+          ctest --preset clang-tsan -L unit --output-on-failure
+
   linux-gcc:
     name: Linux GCC
     runs-on: ubuntu-24.04

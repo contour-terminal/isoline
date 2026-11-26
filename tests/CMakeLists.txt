@@ -80,9 +80,12 @@ endif()
 
 # The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced
 # global operator new (AllocationCounter.cpp). The replacement is program-wide, hence a binary of its
-# own.
-add_executable(isoline_memory_test memory/AllocationCounter.cpp memory/MemoryBounds_test.cpp)
-target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
-isoline_apply_target_policy(isoline_memory_test TEST)
-add_test(NAME isoline_memory_test COMMAND isoline_memory_test)
-set_tests_properties(isoline_memory_test PROPERTIES LABELS unit)
+# own. TSan's runtime defines operator new itself, not replaceably, so a TSan build leaves it out; the
+# bounds hold under every other build.
+if(NOT ISOLINE_SANITIZE STREQUAL "thread")
+    add_executable(isoline_memory_test memory/AllocationCounter.cpp memory/MemoryBounds_test.cpp)
+    target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
+    isoline_apply_target_policy(isoline_memory_test TEST)
+    add_test(NAME isoline_memory_test COMMAND isoline_memory_test)
+    set_tests_properties(isoline_memory_test PROPERTIES LABELS unit)
+endif()

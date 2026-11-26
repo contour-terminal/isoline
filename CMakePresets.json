@@ -73,6 +73,17 @@
             }
         },
         {
+            "name": "clang-tsan",
+            "displayName": "Clang Debug + TSan",
+            "inherits": [
+                "clang-common",
+                "debug"
+            ],
+            "cacheVariables": {
+                "ISOLINE_SANITIZE": "thread"
+            }
+        },
+        {
             "name": "clang-release",
             "displayName": "Clang Release",
             "inherits": [
@@ -184,6 +195,7 @@
     ],
     "buildPresets": [
         { "name": "clang-asan", "configurePreset": "clang-asan" },
+        { "name": "clang-tsan", "configurePreset": "clang-tsan" },
         { "name": "clang-release", "configurePreset": "clang-release" },
         { "name": "clang-coverage", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
@@ -202,6 +214,7 @@
             }
         },
         { "name": "clang-asan", "inherits": "isoline-test-common", "configurePreset": "clang-asan" },
+        { "name": "clang-tsan", "inherits": "isoline-test-common", "configurePreset": "clang-tsan" },
         { "name": "clang-release", "inherits": "isoline-test-common", "configurePreset": "clang-release" },
         { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
