@@ -1,33 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include <cstdint>
-
 #include <isoline/Features.hpp>
+#include <isoline/runtime/ExecutionMode.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
 
 namespace isoline::api
 {
 
-/// Which engine runs a module's code.
-///
-/// Every engine honours the whole embedding contract (limits, interrupts, poll sites, the frame
-/// cost), so the choice changes speed, not behaviour.
-enum class ExecutionEngine : uint8_t
-{
-    /// The reference interpreter: clarity and spec fidelity over speed. It is the oracle of
-    /// differential fuzzing, never a production path.
-    Reference,
-};
+/// Which engine runs a module's code: the runtime's own vocabulary (runtime/ModuleCode.hpp), which the
+/// executors and the instances share.
+using runtime::ExecutionEngine;
 
-/// How an engine computes what the WebAssembly specification leaves nondeterministic.
-enum class ExecutionMode : uint8_t
-{
-    /// Whatever is fastest within the specification.
-    Production,
-    /// The same result on every engine and every host: canonical NaNs, the deterministic
-    /// relaxed-SIMD profile, and the step limit counted alike everywhere.
-    Deterministic,
-};
+/// How an engine computes what the WebAssembly specification leaves nondeterministic
+/// (runtime/ExecutionMode.hpp).
+using runtime::ExecutionMode;
 
 /// What a loaded module's code depends on: the engine that runs it, its mode, and the features it was
 /// decoded and validated with. Nothing else enters it: limits decide whether a module loads, not what
