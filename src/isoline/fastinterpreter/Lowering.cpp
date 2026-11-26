@@ -185,27 +185,31 @@ namespace
         [[nodiscard]] uint32_t layOutLocals()
         {
             _localRuns.reserve(_type.params.size() + _source.locals.size());
-            auto slot = uint32_t { 0 };
+            // Counted in 64 bits: frameSlotsOf() refused every frame past MaxFrameSlots before this.
+            auto slot = uint64_t { 0 };
             auto local = uint32_t { 0 };
             for (auto const& param: _type.params)
             {
-                _localRuns.push_back(LocalRun { .firstLocal = local, .firstSlot = slot, .type = param });
+                _localRuns.push_back(LocalRun {
+                    .firstLocal = local, .firstSlot = static_cast<uint32_t>(slot), .type = param });
                 ++local;
                 slot += widthOf(param);
             }
-            _function.paramSlots = slot;
+            _function.paramSlots = static_cast<uint32_t>(slot);
             for (auto const& run: _source.locals)
             {
                 if (run.count == 0)
                     continue;
-                _localRuns.push_back(LocalRun { .firstLocal = local, .firstSlot = slot, .type = run.type });
-                auto const slots = run.count * widthOf(run.type);
-                appendLocalInit(slot, slots, run.type);
+                _localRuns.push_back(LocalRun {
+                    .firstLocal = local, .firstSlot = static_cast<uint32_t>(slot), .type = run.type });
+                auto const slots = uint64_t { run.count } * widthOf(run.type);
+                appendLocalInit(static_cast<uint32_t>(slot), static_cast<uint32_t>(slots), run.type);
                 local += run.count;
                 slot += slots;
             }
-            _function.localSlots = slot;
-            return slot;
+            Require(slot <= MaxFrameSlots);
+            _function.localSlots = static_cast<uint32_t>(slot);
+            return _function.localSlots;
         }
 
         /// Appends the initialization of @p slotCount slots from @p slotBase, of declared locals of @p type,
@@ -355,6 +359,9 @@ namespace
         [[nodiscard]] Entry setLocal(uint32_t local)
         {
             auto value = pop();
+            // The local's own value written back changes nothing: its forwarders stay forwarders.
+            if (value.kind == EntryKind::Local && value.local == local)
+                return value;
             materializeChain(local);
             auto const target = localSlot(local);
             switch (value.kind)
@@ -363,9 +370,7 @@ namespace
                     emit(operationFor(MoveOperations, value.type), { target, value.slot }, {});
                     break;
                 case EntryKind::Local:
-                    if (value.local != local)
-                        emit(
-                            operationFor(MoveOperations, value.type), { target, localSlot(value.local) }, {});
+                    emit(operationFor(MoveOperations, value.type), { target, localSlot(value.local) }, {});
                     break;
                 case EntryKind::Constant: emit(OperationId::Const64, { target }, { value.constant }); break;
             }
@@ -501,8 +506,27 @@ namespace
         uint64_t _work = 0;
     };
 
+    /// The most slots a frame of @p function may take, in 64 bits: its params' and locals' slots, and two
+    /// per operand of its deepest operand stack (validate::FrameShape::maxOperands).
+    [[nodiscard]] uint64_t frameSlotsOf(validate::ValidatedModule const& validated, uint32_t codeIndex)
+    {
+        auto const& module = validated.module();
+        auto const& function = module.code[codeIndex];
+        auto slots = uint64_t { 2 } * validated.frameShape(codeIndex).maxOperands;
+        for (auto const& param: module.types.at(function.typeIndex).params)
+            slots += widthOf(param);
+        for (auto const& run: function.locals)
+            slots += uint64_t { run.count } * widthOf(run.type);
+        return slots;
+    }
+
+    /// The LoweringFailure of each RefusalReason of the arena, indexed by the reason.
+    inline constexpr auto RefusalFailures =
+        std::to_array<LoweringFailure>({ LoweringFailure::Budget, LoweringFailure::HostMemory });
+
     /// Lowers every function of @p validated into @p functions, reserving each one's bound first.
-    /// @param codeIndex Set to the function being lowered, which a refusal names.
+    /// @param codeIndex Set to the function being lowered, which a refusal names; NoFunction before the
+    /// first.
     [[nodiscard]] std::expected<LoweringStats, LoweringError> lowerFunctions(
         validate::ValidatedModule const& validated,
         ILoweringArena& arena,
@@ -516,6 +540,11 @@ namespace
         for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(module.code.size())))
         {
             codeIndex = index;
+            if (auto const slots = frameSlotsOf(validated, index); slots > MaxFrameSlots)
+                return std::unexpected(LoweringError { .codeIndex = index,
+                                                       .requested = slots,
+                                                       .limit = MaxFrameSlots,
+                                                       .reason = LoweringFailure::FrameSlots });
             auto const reservation = loweringReservation(module, index);
             if (auto const reserved = arena.reserve(reservation); !reserved)
                 return std::unexpected(
@@ -553,8 +582,9 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     Require(arena != nullptr);
     Require(std::ranges::find(availableDispatches(), config.dispatch) != availableDispatches().end());
     auto const chargedBefore = arena->charged();
+    auto const budget = arena->budget();
     auto functions = std::pmr::vector<LoweredFunction>(arena.get());
-    auto codeIndex = uint32_t { 0 };
+    auto codeIndex = NoFunction;
     auto stats = std::expected<LoweringStats, LoweringError> {};
     try
     {
@@ -562,20 +592,35 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     }
     catch (std::bad_alloc const&)
     {
-        // The arena refused an allocation past its reservation; what it holds unwound with the throw.
+        // The arena refused an allocation, for its budget or for the host's memory. What was allocated
+        // unwinds with the throw; what is left of the reservation is returned here.
         arena->release(arena->reserved());
         auto const refusal = arena->lastRefusal();
         Require(refusal.has_value());
-        return std::unexpected(LoweringError { .codeIndex = codeIndex,
-                                               .requested = refusal->requested,
-                                               .limit = arena->budget(),
-                                               .reason = refusal->reason });
+        return std::unexpected(
+            LoweringError { .codeIndex = codeIndex,
+                            .requested = refusal->requested,
+                            .limit = budget,
+                            .reason = RefusalFailures[std::to_underlying(refusal->reason)] });
     }
     if (!stats)
         return std::unexpected(stats.error());
     auto const loweredBytes = arena->charged() - chargedBefore;
-    return std::make_shared<LoweredModule const>(
-        std::move(arena), std::move(functions), config.dispatch, config.mode, loweredBytes, *stats);
+    try
+    {
+        // The module's own record comes from the host's heap, not the arena: it owns the arena.
+        return std::make_shared<LoweredModule const>(
+            std::move(arena), std::move(functions), config.dispatch, config.mode, loweredBytes, *stats);
+    }
+    catch (std::bad_alloc const&)
+    {
+        // uncovered-begin(module-record-host-memory)
+        return std::unexpected(LoweringError { .codeIndex = NoFunction,
+                                               .requested = sizeof(LoweredModule),
+                                               .limit = budget,
+                                               .reason = LoweringFailure::HostMemory });
+    }
+    // uncovered-end(module-record-host-memory)
 }
 
 } // namespace isoline::fastinterpreter
