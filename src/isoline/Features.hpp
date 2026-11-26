@@ -4,6 +4,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <ranges>
 #include <string_view>
 
 namespace isoline
@@ -54,62 +56,18 @@ enum class Standard : uint8_t
     Proposal, ///< In no released standard yet.
 };
 
-/// One row of FeatureTable: what is known about a single proposal.
-struct FeatureRow
+/// A feature switched on without a feature it builds on (FeatureRow::prerequisites).
+struct UnmetPrerequisite
 {
-    Feature feature;       ///< The proposal this row describes; equal to the row's index.
-    std::string_view name; ///< The proposal's name, as its repository spells it.
-    Standard standard;     ///< The oldest standard the proposal is part of.
+    Feature feature;      ///< The feature that is on.
+    Feature prerequisite; ///< The feature it builds on, which is off.
 };
 
-/// Every proposal Isoline knows, one row per Feature enumerator, in enumerator order.
-inline constexpr auto FeatureTable = std::to_array<FeatureRow>({
-    { .feature = Feature::SignExtension, .name = "sign-extension", .standard = Standard::Wasm2 },
-    { .feature = Feature::NonTrappingFloatToInt,
-      .name = "nontrapping-float-to-int",
-      .standard = Standard::Wasm2 },
-    { .feature = Feature::MultiValue, .name = "multi-value", .standard = Standard::Wasm2 },
-    { .feature = Feature::ReferenceTypes, .name = "reference-types", .standard = Standard::Wasm2 },
-    { .feature = Feature::BulkMemory, .name = "bulk-memory", .standard = Standard::Wasm2 },
-    { .feature = Feature::Simd, .name = "simd", .standard = Standard::Wasm2 },
-    { .feature = Feature::RelaxedSimd, .name = "relaxed-simd", .standard = Standard::Wasm3 },
-    { .feature = Feature::TailCall, .name = "tail-call", .standard = Standard::Wasm3 },
-    { .feature = Feature::ExtendedConst, .name = "extended-const", .standard = Standard::Wasm3 },
-    { .feature = Feature::TypedFunctionReferences,
-      .name = "function-references",
-      .standard = Standard::Wasm3 },
-    { .feature = Feature::MultiMemory, .name = "multi-memory", .standard = Standard::Wasm3 },
-    { .feature = Feature::ExceptionHandling, .name = "exception-handling", .standard = Standard::Wasm3 },
-    { .feature = Feature::Memory64, .name = "memory64", .standard = Standard::Wasm3 },
-    { .feature = Feature::BranchHinting, .name = "branch-hinting", .standard = Standard::Wasm3 },
-    { .feature = Feature::Annotations, .name = "annotations", .standard = Standard::Wasm3 },
-    { .feature = Feature::WideArithmetic, .name = "wide-arithmetic", .standard = Standard::Proposal },
-    { .feature = Feature::CompactImports, .name = "compact-imports", .standard = Standard::Proposal },
-    { .feature = Feature::CustomPageSizes, .name = "custom-page-sizes", .standard = Standard::Proposal },
-});
-
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: FeatureTable)
-        {
-            if (static_cast<std::size_t>(row.feature) != index)
-                return false;
-            ++index;
-        }
-        return index == FeatureCount;
-    }(),
-    "FeatureTable must hold one row per Feature, at the index of its enumerator");
-
-/// The table row describing @p feature.
-/// @param feature The proposal to look up.
-/// @return Its row in FeatureTable.
-[[nodiscard]] constexpr FeatureRow const& featureRow(Feature feature) noexcept
-{
-    return FeatureTable[static_cast<std::size_t>(feature)];
-}
-
 /// An immutable set of enabled features, handed to an engine part at construction.
+///
+/// A set may be built in any order with with() and without(); whether it is closed over every
+/// enabled feature's prerequisites is checkPrerequisites()'s question, which decodeModule asks
+/// before it reads a byte.
 class FeatureSet
 {
   public:
@@ -153,23 +111,25 @@ class FeatureSet
     /// @return true when @p feature is in this set.
     [[nodiscard]] constexpr bool has(Feature feature) const noexcept { return (_bits & bitOf(feature)) != 0; }
 
+    /// This set with every prerequisite of its features on, transitively.
+    /// @return The smallest closed set (see checkPrerequisites()) holding this one.
+    [[nodiscard]] constexpr FeatureSet withPrerequisites() const noexcept;
+
+    /// Whether every enabled feature's prerequisites are enabled too.
+    /// @return Nothing when the set is closed; otherwise the first enabled feature, in FeatureTable
+    ///         order, with a prerequisite that is off, and the first such prerequisite.
+    [[nodiscard]] constexpr std::expected<void, UnmetPrerequisite> checkPrerequisites() const noexcept;
+
     /// Two sets are equal when they enable the same features.
     [[nodiscard]] constexpr bool operator==(FeatureSet const&) const noexcept = default;
 
   private:
-    static_assert(FeatureTable.size() <= 32, "FeatureSet stores one bit per Feature in a uint32_t");
+    static_assert(FeatureCount <= 32, "FeatureSet stores one bit per Feature in a uint32_t");
 
     constexpr explicit FeatureSet(uint32_t bits) noexcept: _bits { bits } {}
 
     /// Every feature whose standard is @p newest or older.
-    [[nodiscard]] static constexpr FeatureSet upTo(Standard newest) noexcept
-    {
-        auto set = none();
-        for (auto const& row: FeatureTable)
-            if (row.standard <= newest)
-                set = set.with(row.feature);
-        return set;
-    }
+    [[nodiscard]] static constexpr FeatureSet upTo(Standard newest) noexcept;
 
     [[nodiscard]] static constexpr uint32_t bitOf(Feature feature) noexcept
     {
@@ -178,5 +138,113 @@ class FeatureSet
 
     uint32_t _bits = 0;
 };
+
+/// One row of FeatureTable: what is known about a single proposal.
+struct FeatureRow
+{
+    Feature feature;             ///< The proposal this row describes; equal to the row's index.
+    std::string_view name;       ///< The proposal's name, as its repository spells it.
+    Standard standard;           ///< The oldest standard the proposal is part of.
+    FeatureSet prerequisites {}; ///< The proposals it builds on, which must be on whenever it is.
+};
+
+/// Every proposal Isoline knows, one row per Feature enumerator, in enumerator order.
+///
+/// The prerequisites are those the proposals state and Wasmtime enforces at configuration: reference
+/// types extends bulk memory's segments and table instructions, relaxed SIMD and function references
+/// extend SIMD and reference types, exception handling's exnref is a reference type, and wide
+/// arithmetic's instructions return two results.
+inline constexpr auto FeatureTable = std::to_array<FeatureRow>({
+    { .feature = Feature::SignExtension, .name = "sign-extension", .standard = Standard::Wasm2 },
+    { .feature = Feature::NonTrappingFloatToInt,
+      .name = "nontrapping-float-to-int",
+      .standard = Standard::Wasm2 },
+    { .feature = Feature::MultiValue, .name = "multi-value", .standard = Standard::Wasm2 },
+    { .feature = Feature::ReferenceTypes,
+      .name = "reference-types",
+      .standard = Standard::Wasm2,
+      .prerequisites = FeatureSet::none().with(Feature::BulkMemory) },
+    { .feature = Feature::BulkMemory, .name = "bulk-memory", .standard = Standard::Wasm2 },
+    { .feature = Feature::Simd, .name = "simd", .standard = Standard::Wasm2 },
+    { .feature = Feature::RelaxedSimd,
+      .name = "relaxed-simd",
+      .standard = Standard::Wasm3,
+      .prerequisites = FeatureSet::none().with(Feature::Simd) },
+    { .feature = Feature::TailCall, .name = "tail-call", .standard = Standard::Wasm3 },
+    { .feature = Feature::ExtendedConst, .name = "extended-const", .standard = Standard::Wasm3 },
+    { .feature = Feature::TypedFunctionReferences,
+      .name = "function-references",
+      .standard = Standard::Wasm3,
+      .prerequisites = FeatureSet::none().with(Feature::ReferenceTypes) },
+    { .feature = Feature::MultiMemory, .name = "multi-memory", .standard = Standard::Wasm3 },
+    { .feature = Feature::ExceptionHandling,
+      .name = "exception-handling",
+      .standard = Standard::Wasm3,
+      .prerequisites = FeatureSet::none().with(Feature::ReferenceTypes) },
+    { .feature = Feature::Memory64, .name = "memory64", .standard = Standard::Wasm3 },
+    { .feature = Feature::BranchHinting, .name = "branch-hinting", .standard = Standard::Wasm3 },
+    { .feature = Feature::Annotations, .name = "annotations", .standard = Standard::Wasm3 },
+    { .feature = Feature::WideArithmetic,
+      .name = "wide-arithmetic",
+      .standard = Standard::Proposal,
+      .prerequisites = FeatureSet::none().with(Feature::MultiValue) },
+    { .feature = Feature::CompactImports, .name = "compact-imports", .standard = Standard::Proposal },
+    { .feature = Feature::CustomPageSizes, .name = "custom-page-sizes", .standard = Standard::Proposal },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: FeatureTable)
+        {
+            if (static_cast<std::size_t>(row.feature) != index)
+                return false;
+            ++index;
+        }
+        return index == FeatureCount;
+    }(),
+    "FeatureTable must hold one row per Feature, at the index of its enumerator");
+
+/// The table row describing @p feature.
+/// @param feature The proposal to look up.
+/// @return Its row in FeatureTable.
+[[nodiscard]] constexpr FeatureRow const& featureRow(Feature feature) noexcept
+{
+    return FeatureTable[static_cast<std::size_t>(feature)];
+}
+
+constexpr FeatureSet FeatureSet::upTo(Standard newest) noexcept
+{
+    auto set = none();
+    for (auto const& row: FeatureTable)
+        if (row.standard <= newest)
+            set = set.with(row.feature);
+    return set;
+}
+
+constexpr FeatureSet FeatureSet::withPrerequisites() const noexcept
+{
+    // Each pass adds the prerequisites of what is on; a chain is at most FeatureCount long.
+    auto closed = *this;
+    for ([[maybe_unused]] auto const pass: std::views::iota(std::size_t { 0 }, FeatureCount))
+        for (auto const& row: FeatureTable)
+            if (closed.has(row.feature))
+                closed._bits |= row.prerequisites._bits;
+    return closed;
+}
+
+constexpr std::expected<void, UnmetPrerequisite> FeatureSet::checkPrerequisites() const noexcept
+{
+    for (auto const& row: FeatureTable)
+    {
+        if (!has(row.feature))
+            continue;
+        for (auto const& prerequisite: FeatureTable)
+            if (row.prerequisites.has(prerequisite.feature) && !has(prerequisite.feature))
+                return std::unexpected { UnmetPrerequisite { .feature = row.feature,
+                                                             .prerequisite = prerequisite.feature } };
+    }
+    return {};
+}
 
 } // namespace isoline

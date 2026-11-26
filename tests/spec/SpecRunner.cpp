@@ -256,9 +256,8 @@ namespace
                 return std::unexpected { bytes.error() };
             auto module = binary::decodeModule(*bytes, _features);
             if (!module)
-                return std::unexpected { Failure {
-                    .stage = Stage::Decode,
-                    .message = std::string { binary::specMessage(module.error().code) } } };
+                return std::unexpected { Failure { .stage = Stage::Decode,
+                                                   .message = binary::specMessage(module.error()) } };
             if (auto const valid = validate::validateModule(*module, _features); !valid)
                 return std::unexpected { Failure { .stage = Stage::Validate,
                                                    .message = validate::specMessage(valid.error()) } };

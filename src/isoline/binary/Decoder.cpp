@@ -192,6 +192,18 @@ namespace
         return roles;
     }();
 
+    /// The prefixes whose unknown sub-opcodes the interpreter names alone, without the prefix byte:
+    /// its vector decoder reports "illegal opcode 9a" where 0xFC's reports "illegal opcode fc 12".
+    constexpr auto PrefixesNamedBySubOpcode = std::to_array<uint8_t>({ 0xFD });
+
+    /// The subject of an IllegalOpcode error for the opcode read, spelled as the interpreter does.
+    [[nodiscard]] constexpr uint64_t illegalOpcodeSubject(uint8_t prefix, uint32_t code) noexcept
+    {
+        if (std::ranges::find(PrefixesNamedBySubOpcode, prefix) != PrefixesNamedBySubOpcode.end())
+            return opcodeSubject(NoPrefix, code);
+        return opcodeSubject(prefix, code);
+    }
+
     /// The alignment exponents WebAssembly 2.0 admits lie below this (spec decode.ml memop).
     constexpr auto AlignmentExponentLimit = uint32_t { 32 };
 
@@ -716,7 +728,8 @@ namespace
         auto const opcode = lookupOpcode(prefix, code);
         // An instruction of a disabled proposal is as unknown as one of no proposal at all.
         if (!opcode || !enabled(opcodeInfo(*opcode).proposal))
-            return std::unexpected { DecodeError { DecodeErrorCode::IllegalOpcode, opcodeOffset } };
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::IllegalOpcode, opcodeOffset, illegalOpcodeSubject(prefix, code) } };
 
         auto instruction = Instruction { .opcode = *opcode };
         return readImmediates(instruction, sink).transform([&] { return instruction; });
@@ -1142,6 +1155,10 @@ std::expected<Module, DecodeError> decodeModule(std::span<std::byte const> bytes
                                                 FeatureSet const& features,
                                                 DecodeLimits const& limits)
 {
+    // The one place a FeatureSet enters the engine; every later part takes the set decoding used.
+    if (auto const closed = features.checkPrerequisites(); !closed)
+        return std::unexpected { DecodeError {
+            DecodeErrorCode::MissingFeaturePrerequisite, 0, prerequisiteSubject(closed.error()) } };
     return ModuleDecoder { bytes, features, limits }.decode();
 }
 

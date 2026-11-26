@@ -478,10 +478,13 @@ TEST_CASE("Decoder.refFuncNeedsReferenceTypes")
     // Initializers whose type decodes without reference types, so the ref.func gate is what fails.
     auto const elementOffset = moduleOf({ 0x09, 0x07, 0x01, 0x00, 0xD2, 0x00, 0x0B, 0x01, 0x00 });
     CHECK(errorOf(elementOffset, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
-    CHECK_FALSE(errorOf(elementOffset, FeatureSet::none().with(Feature::ReferenceTypes)).has_value());
+    CHECK_FALSE(
+        errorOf(elementOffset, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
+            .has_value());
     auto const i32Global = moduleOf({ 0x06, 0x06, 0x01, 0x7F, 0x00, 0xD2, 0x00, 0x0B });
     CHECK(errorOf(i32Global, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
-    CHECK_FALSE(errorOf(i32Global, FeatureSet::none().with(Feature::ReferenceTypes)).has_value());
+    CHECK_FALSE(errorOf(i32Global, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
+                    .has_value());
 }
 
 TEST_CASE("Decoder.elementSegments")
@@ -935,6 +938,24 @@ TEST_CASE("Decoder.prefixed")
     CHECK(opcodesOf(function.body) == std::vector { Opcode::MemoryCopy, Opcode::MemoryFill, Opcode::End });
 }
 
+TEST_CASE("Decoder.illegalOpcodeNamesItsBytes")
+{
+    // The interpreter's spelling: illegal for a byte, illegal2 for 0xFC's sub-opcodes, and its vector
+    // decoder names 0xFD's by the sub-opcode alone.
+    auto const messageOf = [](std::vector<uint8_t> body, FeatureSet const& features = FeatureSet::wasm3()) {
+        auto const result = decodeModule(functionWith(std::move(body)), features);
+        REQUIRE_FALSE(result.has_value());
+        return isoline::binary::specMessage(result.error());
+    };
+    CHECK(messageOf({ 0xFF }) == "illegal opcode ff");
+    CHECK(messageOf({ 0x06 }) == "illegal opcode 06");
+    CHECK(messageOf({ 0xFC, 0x12 }) == "illegal opcode fc 12");
+    CHECK(messageOf({ 0xFC, 0x80, 0x02 }) == "illegal opcode fc 100");
+    CHECK(messageOf({ 0xFD, 0x9A, 0x01 }) == "illegal opcode 9a");
+    // An instruction of a disabled proposal is named as an unknown one is.
+    CHECK(messageOf({ 0xFD, 0x0C }, FeatureSet::none()) == "illegal opcode 0c");
+}
+
 TEST_CASE("Decoder.unknownOpcode")
 {
     CHECK(errorOf(functionWith({ 0x06 })) == DecodeErrorCode::IllegalOpcode);
@@ -1194,6 +1215,21 @@ std::vector<std::byte> moduleWithInstruction(std::span<uint8_t const> instructio
 
 } // namespace
 
+TEST_CASE("Decoder.refusesAFeatureSetMissingAPrerequisite")
+{
+    // (func unreachable i8x16.relaxed_swizzle drop): in dead code the operand stack is polymorphic,
+    // so without the check this would decode and validate with no v128 ever encoded.
+    auto const bytes = functionWith({ 0x00, 0xFD, 0x80, 0x02, 0x1A });
+    auto const unclosed = FeatureSet::wasm2().with(Feature::RelaxedSimd).without(Feature::Simd);
+    auto const refused = decodeModule(bytes, unclosed);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MissingFeaturePrerequisite);
+    CHECK(refused.error().offset == 0);
+    CHECK(isoline::binary::specMessage(refused.error())
+          == "feature enabled without its prerequisite: relaxed-simd requires simd");
+    CHECK_FALSE(errorOf(bytes, FeatureSet::wasm2().with(Feature::RelaxedSimd)).has_value());
+}
+
 TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
 {
     // Driven by the opcode table, so a row added with the wrong proposal, or none, fails here.
@@ -1217,7 +1253,7 @@ TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
             row.immediate == ImmediateKind::DataIndex || row.immediate == ImmediateKind::MemoryInit;
         auto const accepted = namesDataSegment ? std::optional { DecodeErrorCode::DataCountSectionRequired }
                                                : std::optional<DecodeErrorCode> {};
-        CHECK(errorOf(bytes, FeatureSet::none().with(*row.proposal)) == accepted);
+        CHECK(errorOf(bytes, FeatureSet::none().with(*row.proposal).withPrerequisites()) == accepted);
     }
 }
 

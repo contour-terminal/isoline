@@ -82,3 +82,59 @@ TEST_CASE("Features.isConstexpr")
     STATIC_CHECK(WithTailCall.has(isoline::Feature::TailCall));
     STATIC_CHECK(WithTailCall.has(isoline::Feature::SignExtension));
 }
+
+TEST_CASE("Features.everyStandardSetIsClosedOverPrerequisites")
+{
+    using isoline::FeatureSet;
+    for (auto const set: { FeatureSet::none(), FeatureSet::wasm2(), FeatureSet::wasm3(), FeatureSet::all() })
+        CHECK(set.checkPrerequisites().has_value());
+    // A prerequisite is never of a newer standard than the feature needing it, so every upTo set is
+    // closed by construction.
+    for (auto const& row: isoline::FeatureTable)
+        for (auto const& prerequisite: isoline::FeatureTable)
+            if (row.prerequisites.has(prerequisite.feature))
+                CHECK(prerequisite.standard <= row.standard);
+}
+
+TEST_CASE("Features.relaxedSimdRequiresSimd")
+{
+    using isoline::Feature;
+    using isoline::FeatureSet;
+    CHECK(isoline::featureRow(Feature::RelaxedSimd).prerequisites == FeatureSet::none().with(Feature::Simd));
+    auto const unclosed = FeatureSet::wasm2().with(Feature::RelaxedSimd).without(Feature::Simd);
+    auto const checked = unclosed.checkPrerequisites();
+    REQUIRE_FALSE(checked.has_value());
+    CHECK(checked.error().feature == Feature::RelaxedSimd);
+    CHECK(checked.error().prerequisite == Feature::Simd);
+}
+
+TEST_CASE("Features.prerequisiteRows")
+{
+    using isoline::Feature;
+    using isoline::FeatureSet;
+    auto const needs = [](Feature feature, Feature prerequisite) {
+        return isoline::featureRow(feature).prerequisites.has(prerequisite);
+    };
+    CHECK(needs(Feature::ReferenceTypes, Feature::BulkMemory));
+    CHECK(needs(Feature::TypedFunctionReferences, Feature::ReferenceTypes));
+    CHECK(needs(Feature::ExceptionHandling, Feature::ReferenceTypes));
+    CHECK(needs(Feature::WideArithmetic, Feature::MultiValue));
+    CHECK(isoline::featureRow(Feature::Simd).prerequisites == FeatureSet::none());
+    CHECK(isoline::featureRow(Feature::Memory64).prerequisites == FeatureSet::none());
+}
+
+TEST_CASE("Features.withPrerequisitesClosesTheSet")
+{
+    using isoline::Feature;
+    using isoline::FeatureSet;
+    // Transitively: function references need reference types, which need bulk memory.
+    auto const closed = FeatureSet::none().with(Feature::TypedFunctionReferences).withPrerequisites();
+    CHECK(closed
+          == FeatureSet::none()
+                 .with(Feature::TypedFunctionReferences)
+                 .with(Feature::ReferenceTypes)
+                 .with(Feature::BulkMemory));
+    CHECK(closed.checkPrerequisites().has_value());
+    CHECK(FeatureSet::wasm3().withPrerequisites() == FeatureSet::wasm3());
+    STATIC_CHECK(FeatureSet::none().with(Feature::RelaxedSimd).withPrerequisites().has(Feature::Simd));
+}
