@@ -5,7 +5,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <ranges>
+#include <string_view>
 #include <utility>
 
 #include <isoline/binary/Opcode.hpp>
@@ -468,9 +470,47 @@ namespace detail
 
     /// FusionRow indices by branch and comparison.
     inline constexpr auto FusionIndex = spreadFusionRows();
+
+    /// Whether @p text is @p parts, concatenated.
+    [[nodiscard]] consteval bool spells(std::string_view text,
+                                        std::initializer_list<std::string_view> parts) noexcept
+    {
+        for (auto const part: parts)
+        {
+            if (!text.starts_with(part))
+                return false;
+            text.remove_prefix(part.size());
+        }
+        return text.empty();
+    }
+
+    /// Whether every row's operations are the ones its texts name, so that no row swaps a block twin
+    /// for its loop twin, which would leave a loop's back-edge without its poll: `fused` is the
+    /// comparison's text, then the branch's; `immediate` the same with `.imm` after the comparison (eqz,
+    /// with no right operand, has none); and a br_if's loop twins the same, then `.loop`.
+    [[nodiscard]] consteval bool fusionRowsAreNamedByTheirParts() noexcept
+    {
+        return std::ranges::all_of(FusionTable, [](FusionRow const& row) {
+            auto const compare = binary::OpcodeTable[std::to_underlying(row.compare)].text;
+            auto const branch = binary::OpcodeTable[std::to_underlying(row.branch)].text;
+            auto const textOf = [](OperationId operation) {
+                return operationRow(operation).text;
+            };
+            auto const unary = LoweringTable[std::to_underlying(row.compare)].form == OperationForm::Unary;
+            auto const immediate = unary ? std::string_view {} : std::string_view { ".imm" };
+            auto const loop =
+                row.branch == binary::Opcode::BrIf ? std::string_view { ".loop" } : std::string_view {};
+            return spells(textOf(row.fused), { compare, ".", branch })
+                   && spells(textOf(row.fusedLoop), { compare, ".", branch, loop })
+                   && spells(textOf(row.immediate), { compare, immediate, ".", branch })
+                   && spells(textOf(row.immediateLoop), { compare, immediate, ".", branch, loop });
+        });
+    }
 } // namespace detail
 
 static_assert(detail::fusionRowsAreWellFormed(), "a fusion row names an operation of another shape");
+static_assert(detail::fusionRowsAreNamedByTheirParts(),
+              "a fusion row names another comparison's, branch's or label kind's operation");
 
 /// The fusion of @p compare with the @p branch right after it.
 /// @param compare The comparison.

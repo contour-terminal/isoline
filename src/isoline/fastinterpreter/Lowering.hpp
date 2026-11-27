@@ -20,14 +20,19 @@ namespace isoline::fastinterpreter
 /// amortized over the function: LoweringStats::work is at most this many times its bodyUnits.
 ///
 /// Work is counted per touch: each push, each pop of one value, each removal or shrink of an entry when
-/// dead code is cut away, and each materialization. An instruction pushes at most one entry, a run of a
-/// block's values included, and that entry is materialized and removed at most once each: 3, charged to
-/// the instruction that pushed it. It also pops at most three values one by one (select, the ternary
-/// operations), which may come from a run no single push paid for: 3 more. A block's else or end shrinks
-/// at most one run, within the end's own 3. Laying out a frame, O(params + local runs + results) per
-/// function, and a type's slots, once per module, are not counted: local runs are body units, and the
-/// params and results are bounded by the type section's limits (binary::DecodeLimits::maxParams,
-/// maxResults). Neither are the visits of the index list and the forwarding chains, at most one per push.
+/// dead code is cut away, each materialization, and each look-up of a label (the control stack) and
+/// binding of a branch's target to it. An instruction pushes at most one entry, a run of a block's values
+/// included, and that entry is materialized and removed at most once each: 3, charged to the instruction
+/// that pushed it. It also pops at most three values one by one (select, the ternary operations), which
+/// may come from a run no single push paid for: 3 more. A branch pops at most its condition and looks its
+/// label up at most twice (once more where a comparison before it does not fuse) and binds it once: 4,
+/// within the 6 of an instruction, since only br_on_null of the branches also pushes, and it looks up and
+/// binds once each. A br_table's label is a body unit of its own and costs its look-up and binding: 2. A
+/// block's else or end shrinks at most one run, within the end's own 3. Laying out a frame, O(params +
+/// local runs + results) per function, and a type's slots, once per module, are not counted: local runs
+/// are body units, and the params and results are bounded by the type section's limits
+/// (binary::DecodeLimits::maxParams, maxResults). Neither are the visits of the index list and the
+/// forwarding chains, at most one per push.
 inline constexpr auto WorkPerBodyUnit = uint64_t { 6 };
 
 /// The most slots a frame may have: slot operands are 32 bits wide.
