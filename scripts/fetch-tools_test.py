@@ -145,6 +145,8 @@ class FetchToolsTest(unittest.TestCase):
             ("gcc", "g++ (GCC) 16.0.0 20260101 (experimental)", "", ("16.0.0", " (experimental)")),
             ("gcc", "g++ (GCC) 15.0.1 20250301 (prerelease)", "", ("15.0.1", " (prerelease)")),
             ("cmake", "no version here", "nor 1.2.3 a version line", None),
+            ("wasmtime", "wasmtime 50.0.3 (9bbe3e2f8 2026-11-19)", "", ("50.0.3", None)),
+            ("wasmtime", "wasmtime 51.0.0-dev", "", ("51.0.0", "-dev")),
         ]
         for tool, stdout, stderr, reported in cases:
             with self.subTest(tool=tool, stdout=stdout, stderr=stderr):
@@ -413,7 +415,7 @@ class LockTest(unittest.TestCase):
     def test_everyPinnedPlatformIsComplete(self):
         lock = fetchTools.readLock(fetchTools.DEFAULT_LOCK)
         tools = {key.removesuffix(".version") for key in lock if key.endswith(".version")}
-        self.assertLessEqual({"wasm-tools", "cmake", "ninja"}, tools)
+        self.assertLessEqual({"wasm-tools", "cmake", "ninja", "wasmtime"}, tools)
         for tool in tools:
             self.assertIn(f"{tool}.url", lock)
             platforms = {key.rsplit(".", 1)[1] for key in lock if key.startswith(f"{tool}.sha256.")}
@@ -422,6 +424,15 @@ class LockTest(unittest.TestCase):
                 for column in ("archive", "executable"):
                     self.assertIn(f"{tool}.{column}.{name}", lock)
                 self.assertRegex(lock[f"{tool}.sha256.{name}"], r"^[0-9a-f]{64}$")
+
+    def test_theWamrSourceIsPinned(self):
+        # A source archive, not a tool: a release, the commit it is, and the archive's URL and digest.
+        lock = fetchTools.readLock(fetchTools.DEFAULT_LOCK)
+        self.assertNotIn("wamr.version", lock)
+        self.assertRegex(lock["wamr.release"], r"^\d+\.\d+\.\d+$")
+        self.assertRegex(lock["wamr.commit"], r"^[0-9a-f]{40}$")
+        self.assertIn("{commit}", lock["wamr.source.url"])
+        self.assertRegex(lock["wamr.source.sha256"], r"^[0-9a-f]{64}$")
 
 
 if __name__ == "__main__":

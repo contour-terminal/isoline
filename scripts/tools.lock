@@ -40,6 +40,31 @@ ninja.executable.x86_64-windows = ninja.exe
 ninja.sha256.x86_64-linux = 5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6
 ninja.sha256.x86_64-windows = 07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65
 
+# The differential harness's oracle (tests/differential/WasmtimeOracle.hpp): it runs import-free modules
+# whose exports take and return numbers, and its results and traps are compared with Isoline's.
+wasmtime.version = 50.0.3
+wasmtime.url = https://github.com/bytecodealliance/wasmtime/releases/download/v{version}/{archive}
+wasmtime.archive.x86_64-linux = wasmtime-v{version}-x86_64-linux.tar.xz
+wasmtime.archive.aarch64-linux = wasmtime-v{version}-aarch64-linux.tar.xz
+wasmtime.archive.aarch64-macos = wasmtime-v{version}-aarch64-macos.tar.xz
+wasmtime.archive.x86_64-windows = wasmtime-v{version}-x86_64-windows.zip
+wasmtime.executable.x86_64-linux = wasmtime-v{version}-x86_64-linux/wasmtime
+wasmtime.executable.aarch64-linux = wasmtime-v{version}-aarch64-linux/wasmtime
+wasmtime.executable.aarch64-macos = wasmtime-v{version}-aarch64-macos/wasmtime
+wasmtime.executable.x86_64-windows = wasmtime-v{version}-x86_64-windows/wasmtime.exe
+wasmtime.sha256.x86_64-linux = c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254ef4b47af1361476
+wasmtime.sha256.aarch64-linux = c6aabff1e38536c05b0cb90d60a6a93770f3c49bacd5f7881653bc2c41263268
+wasmtime.sha256.aarch64-macos = b16fc3c60341fb20b85adb3ba04549eeb3e99b9e56a6d317a142584c07a505d4
+wasmtime.sha256.x86_64-windows = d1e3fbca4af955381104065afc5147770a58d02abb768cba547909c8bf0b455a
+
+# The WAMR the benchmarks compare with: Contour's pin (cmake/ContourThirdParties.cmake), built from source
+# with Contour's patches, so it is a source archive rather than a tool: no `wamr.version` row, which would
+# make it one (fetch-tools.py fetches tools by their `.version` rows).
+wamr.release = 2.4.5
+wamr.commit = 25bd7eb63e828e4bd242cc9b38d260b4b31c6605
+wamr.source.url = https://github.com/bytecodealliance/wasm-micro-runtime/archive/{commit}.tar.gz
+wamr.source.sha256 = 4ea552d9d979f3c3d5f9e298a1594150820d2b76e8328ad68779578edea7a873
+
 # The spec suites scripts/import-spec-tests.py imports, one source per name that tests/spec/files.txt
 # rows start with: `source.<name>.repository` and the `source.<name>.commit` imported.
 
