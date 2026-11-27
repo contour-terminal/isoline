@@ -31,6 +31,7 @@
 #include <isoline/component/api/Component.hpp>
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/binary/Decoder.hpp>
+#include <isoline/component/binary/testing/Builder.hpp>
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/runtime/Calls.hpp>
 #include <isoline/component/runtime/ComponentStore.hpp>
@@ -318,6 +319,155 @@ template <typename Builder>
     return builder.type(binary::TypeDefinition {
         .type = binary::FunctionTypeDefinition {
             .asyncness = binary::Asyncness::Sync, .params = std::move(labelled), .result = result } });
+}
+
+/// B and A, two instances of one root, both importing the host resource `r` and `make: func() -> own<r>`.
+/// B exports take(own<r>), take-str(own<r>, string) whose `realloc` traps, and give() -> own<r> (an own
+/// make returned to B). A's run-take passes make's own to take, run-str passes it to take-str with "x",
+/// and run-give drops what give returns.
+[[nodiscard]] inline std::vector<std::byte> guestToGuest()
+{
+    using binary::CanonBuiltin;
+    using binary::CanonDefinition;
+    using binary::CanonOptionKind;
+    using binary::CoreInlineExport;
+    using binary::CoreSort;
+    using binary::DefinedValueType;
+    using binary::ExternDesc;
+    using binary::OwnType;
+    using binary::PrimitiveValueType;
+    using binary::Sort;
+    using binary::SortIndex;
+    using binary::TypeBound;
+    using binary::TypeDefinition;
+    using binary::TypeIndex;
+    using binary::testing::ComponentBuilder;
+    auto const subResource = ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource };
+    auto const ownOf = [](ComponentBuilder& builder, uint32_t resource) {
+        return builder.type(TypeDefinition { .type = DefinedValueType { OwnType { .resource = resource } } });
+    };
+    auto b = ComponentBuilder {};
+    {
+        auto const own = ownOf(b, b.import("r", subResource));
+        auto const make = b.import(
+            "make",
+            ExternDesc { .sort = Sort::Func, .index = functionType(b, {}, TypeIndex { .index = own }) });
+        auto const memory = b.coreInstantiate(b.coreModule(coreModule(R"((module
+          (memory (export "mem") 1)
+          (func (export "realloc") (param i32 i32 i32 i32) (result i32) unreachable)))")),
+                                              {});
+        auto const lowered = b.coreInlineExports(
+            { CoreInlineExport { .name = "make", .sort = CoreSort::Func, .index = b.canonLower(make, {}) } });
+        auto const core = b.coreInstantiate(b.coreModule(coreModule(R"((module
+          (import "h" "make" (func $make (result i32)))
+          (func (export "take") (param i32))
+          (func (export "take-str") (param i32 i32 i32))
+          (func (export "give") (result i32) (call $make))))")),
+                                            { { "h", lowered } });
+        auto const options = std::vector {
+            option(CanonOptionKind::Memory, b.aliasCoreExport(memory, "mem", CoreSort::Memory)),
+            option(CanonOptionKind::Realloc, b.aliasCoreExport(memory, "realloc", CoreSort::Func)),
+        };
+        std::ignore =
+            b.exportItem("take",
+                         Sort::Func,
+                         b.canonLift(b.aliasCoreExport(core, "take", CoreSort::Func),
+                                     {},
+                                     functionType(b, { TypeIndex { .index = own } }, std::nullopt)));
+        std::ignore = b.exportItem(
+            "take-str",
+            Sort::Func,
+            b.canonLift(
+                b.aliasCoreExport(core, "take-str", CoreSort::Func),
+                options,
+                functionType(b, { TypeIndex { .index = own }, PrimitiveValueType::String }, std::nullopt)));
+        std::ignore = b.exportItem("give",
+                                   Sort::Func,
+                                   b.canonLift(b.aliasCoreExport(core, "give", CoreSort::Func),
+                                               {},
+                                               functionType(b, {}, TypeIndex { .index = own })));
+    }
+    auto a = ComponentBuilder {};
+    {
+        auto const resource = a.import("r", subResource);
+        auto const own = ownOf(a, resource);
+        auto const make = a.import(
+            "make",
+            ExternDesc { .sort = Sort::Func, .index = functionType(a, {}, TypeIndex { .index = own }) });
+        auto const take =
+            a.import("take",
+                     ExternDesc { .sort = Sort::Func,
+                                  .index = functionType(a, { TypeIndex { .index = own } }, std::nullopt) });
+        auto const takeStr = a.import(
+            "take-str",
+            ExternDesc { .sort = Sort::Func,
+                         .index = functionType(
+                             a, { TypeIndex { .index = own }, PrimitiveValueType::String }, std::nullopt) });
+        auto const give = a.import(
+            "give",
+            ExternDesc { .sort = Sort::Func, .index = functionType(a, {}, TypeIndex { .index = own }) });
+        auto const memory =
+            a.coreInstantiate(a.coreModule(coreModule(R"((module (memory (export "mem") 1)))")), {});
+        auto const memoryOption =
+            option(CanonOptionKind::Memory, a.aliasCoreExport(memory, "mem", CoreSort::Memory));
+        auto const lowered = a.coreInlineExports({
+            CoreInlineExport { .name = "make", .sort = CoreSort::Func, .index = a.canonLower(make, {}) },
+            CoreInlineExport { .name = "take", .sort = CoreSort::Func, .index = a.canonLower(take, {}) },
+            CoreInlineExport { .name = "take-str",
+                               .sort = CoreSort::Func,
+                               .index = a.canonLower(takeStr, { memoryOption }) },
+            CoreInlineExport { .name = "give", .sort = CoreSort::Func, .index = a.canonLower(give, {}) },
+            CoreInlineExport { .name = "drop",
+                               .sort = CoreSort::Func,
+                               .index = a.canon(CanonDefinition { .builtin = CanonBuiltin::ResourceDrop,
+                                                                  .immediates = { resource },
+                                                                  .options = {},
+                                                                  .result = std::nullopt }) },
+        });
+        auto const memoryExports = a.coreInlineExports(
+            { CoreInlineExport { .name = "mem",
+                                 .sort = CoreSort::Memory,
+                                 .index = a.aliasCoreExport(memory, "mem", CoreSort::Memory) } });
+        auto const core = a.coreInstantiate(a.coreModule(coreModule(R"((module
+          (import "h" "make" (func $make (result i32)))
+          (import "h" "take" (func $take (param i32)))
+          (import "h" "take-str" (func $take-str (param i32 i32 i32)))
+          (import "h" "give" (func $give (result i32)))
+          (import "h" "drop" (func $drop (param i32)))
+          (import "m" "mem" (memory 1))
+          (data (i32.const 16) "x")
+          (func (export "run-take") (call $take (call $make)))
+          (func (export "run-str") (call $take-str (call $make) (i32.const 16) (i32.const 1)))
+          (func (export "run-give") (call $drop (call $give)))))")),
+                                            { { "h", lowered }, { "m", memoryExports } });
+        for (auto const* name: { "run-take", "run-str", "run-give" })
+            std::ignore = a.exportItem(name,
+                                       Sort::Func,
+                                       a.canonLift(a.aliasCoreExport(core, name, CoreSort::Func),
+                                                   {},
+                                                   functionType(a, {}, std::nullopt)));
+    }
+    auto root = ComponentBuilder {};
+    auto const resource = root.import("r", subResource);
+    auto const own = ownOf(root, resource);
+    auto const make = root.import(
+        "make",
+        ExternDesc { .sort = Sort::Func, .index = functionType(root, {}, TypeIndex { .index = own }) });
+    auto const bComponent = root.nested(std::move(b));
+    auto const aComponent = root.nested(std::move(a));
+    auto const shared = std::vector<std::pair<std::string, SortIndex>> {
+        { "r", SortIndex { .sort = Sort::Type, .index = resource } },
+        { "make", SortIndex { .sort = Sort::Func, .index = make } },
+    };
+    auto const bInstance = root.instantiate(bComponent, shared);
+    auto arguments = shared;
+    for (auto const* name: { "take", "take-str", "give" })
+        arguments.emplace_back(
+            name, SortIndex { .sort = Sort::Func, .index = root.aliasExport(bInstance, name, Sort::Func) });
+    auto const aInstance = root.instantiate(aComponent, arguments);
+    for (auto const* name: { "run-take", "run-str", "run-give" })
+        std::ignore = root.exportItem(name, Sort::Func, root.aliasExport(aInstance, name, Sort::Func));
+    return root.build();
 }
 
 } // namespace isoline::component::runtime::testing

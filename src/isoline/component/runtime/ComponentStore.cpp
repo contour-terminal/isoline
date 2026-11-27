@@ -575,11 +575,23 @@ struct ComponentStore::Instantiation
     }
 };
 
+void ComponentStore::undeliver(std::span<canonical::ResourceValue const> owns, OwnHolder holder) noexcept
+{
+    if (owns.empty())
+        return;
+    if (holder == OwnHolder::Host && _hostOwns != nullptr)
+        _hostOwns->returned(owns);
+    else
+        _resources.adoptOrphans(owns);
+}
+
 ComponentStore::ComponentStore(isoline::api::Engine const& engine,
                                isoline::api::IMemoryAllocator& allocator,
                                ComponentLimits const& limits,
-                               isoline::api::IPollObserver* observer):
+                               isoline::api::IPollObserver* observer,
+                               IHostOwnSink* hostOwns):
     _limits { limits },
+    _hostOwns { hostOwns },
     _identity { engine.config().identity() },
     _store { std::make_unique<isoline::api::Store>(
         engine, allocator, storeOptions(engine, limits, observer)) },

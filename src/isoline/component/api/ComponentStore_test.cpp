@@ -1499,3 +1499,42 @@ TEST_CASE("HostResources.failedLoweringKeepsTheOwn")
         CHECK(destructor->destroyed == std::vector<uint32_t> { 8 });
     }
 }
+
+TEST_CASE("HostResources.guestToGuestOwnIsNoHosts")
+{
+    // An own B returns to A that cannot be lowered into A goes back to B, whose trap locked the store
+    // down: the store's end destroys it, once, and the host, which never held it, cannot drop it.
+    auto harness = ApiHarness {};
+    auto const destructor = std::make_shared<RecordingDestructor>();
+    auto const type = HostResourceType { "r", destructor };
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineResource("r", type));
+    auto ownType = linker.ownType(type);
+    REQUIRE(ownType.has_value());
+    require(linker.defineFunction(
+        "make",
+        functionSpec({}, *ownType),
+        hostFunction([&](HostComponentContext& context, Values const&, ValueBuilder& results) -> HostResult {
+            auto fresh = context.newOwn(type, 20);
+            if (!fresh)
+                return std::unexpected { embedderFailure() };
+            results.resource(*fresh);
+            return {};
+        })));
+    auto limits = isoline::component::ComponentLimits {};
+    limits.maxHandles = 1;
+    {
+        auto store = harness.store(limits);
+        auto instance = instanceOf(
+            store.instantiate(harness.load(isoline::component::runtime::testing::guestToGuest()), linker));
+        CHECK(trapOf(callWith(instance, "run-give")) == TrapCode::Handles);
+        auto const own = store.hostResource(type, 20, Ownership::Borrow);
+        REQUIRE(own.has_value());
+        auto const dropped =
+            store.drop(ResourceValue { .type = own->type, .rep = 20, .ownership = Ownership::Own });
+        REQUIRE_FALSE(dropped.has_value());
+        CHECK(dropped.error().failure == ComponentCallFailure::ArgumentMismatch);
+        CHECK(destructor->destroyed.empty());
+    }
+    CHECK(destructor->destroyed == std::vector<uint32_t> { 20 });
+}

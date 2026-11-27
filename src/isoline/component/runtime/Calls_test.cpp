@@ -28,6 +28,7 @@
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/runtime/Calls.hpp>
 #include <isoline/component/runtime/ComponentStore.hpp>
+#include <isoline/component/runtime/testing/ResourceDoubles.hpp>
 #include <isoline/component/runtime/testing/StackThread.hpp>
 #include <isoline/component/runtime/testing/StoreFixtures.hpp>
 
@@ -68,6 +69,7 @@ using isoline::component::runtime::testing::coreModule;
 using isoline::component::runtime::testing::embedderFailure;
 using isoline::component::runtime::testing::Engines;
 using isoline::component::runtime::testing::functionType;
+using isoline::component::runtime::testing::guestToGuest;
 using isoline::component::runtime::testing::Harness;
 using isoline::component::runtime::testing::HarnessOptions;
 using isoline::component::runtime::testing::hostFunction;
@@ -1467,4 +1469,48 @@ TEST_CASE("Calls.guestDestructorRunsOnDrop")
     CHECK(trapCodeOf(runWith("run", 13)) == TrapCode::Core);
     CHECK(failing->calls == 1);
     CHECK(store.state() == StoreState::LockedDown);
+}
+
+TEST_CASE("Calls.guestToGuestFailedLoweringKeepsTheOwn")
+{
+    // An own A passes to B, or B returns to A, whose lowering fails is in no guest table: it goes back
+    // to its holder, whose trap locked the store down, so the store's end destroys it, once.
+    auto const engine = GENERATE(from_range(Engines));
+    struct Case
+    {
+        std::string_view run;
+        uint32_t maxHandles;
+        TrapCode trap;
+    };
+    auto const [run, maxHandles, trap] = GENERATE(values({
+        Case { .run = "run-take", .maxHandles = 1, .trap = TrapCode::Handles },
+        Case { .run = "run-str", .maxHandles = 1'000'000, .trap = TrapCode::Core },
+        Case { .run = "run-give", .maxHandles = 1, .trap = TrapCode::Handles },
+    }));
+    INFO(run);
+    auto limits = isoline::component::ComponentLimits {};
+    limits.maxHandles = maxHandles;
+    auto harness = Harness { guestToGuest(), HarnessOptions { .engine = engine, .limits = limits } };
+    auto const identity = std::make_shared<HostResourceIdentity const>(HostResourceIdentity { .name = "r" });
+    auto const destructor = std::make_shared<isoline::component::runtime::testing::RecordingDestructor>();
+    auto next = uint32_t { 20 };
+    auto make = hostFunction([&](ComponentStore& store,
+                                 Values const&,
+                                 ValueBuilder& results) -> std::expected<void, isoline::api::HostFailure> {
+        auto const type = store.hostResourceTypeOf(*identity);
+        if (!type)
+            return std::unexpected { embedderFailure() };
+        results.resource(ResourceValue { .type = *type, .rep = next++ });
+        return {};
+    });
+    auto imports = ResolvedImports {};
+    imports.values.emplace_back(HostResourceImport { .identity = identity, .destructor = destructor });
+    imports.values.emplace_back(make);
+    imports.imports = { 0, 1 };
+    auto const root = harness.instance(imports);
+    CHECK(trapCodeOf(call(*harness.store, root, run)) == trap);
+    CHECK(harness.store->state() == StoreState::LockedDown);
+    CHECK(destructor->destroyed.empty());
+    harness.store.reset();
+    CHECK(destructor->destroyed == std::vector<uint32_t> { 20 });
 }

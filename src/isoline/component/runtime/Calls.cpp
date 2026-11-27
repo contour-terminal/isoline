@@ -168,11 +168,29 @@ namespace
         };
     }
 
+    /// Hands @p values to @p consumer, which lowers them: the one undo every lowering path shares. When
+    /// the consumer fails, the owns among the values are in no table (a lowering that fails rolls back
+    /// what it added), so they go back to their holder (ComponentStore::undeliver()). Only values whose
+    /// type may hold an own are walked for them.
+    [[nodiscard]] std::expected<void, CallError> deliver(ComponentStore& store,
+                                                         canonical::Values values,
+                                                         types::HandleContent handles,
+                                                         OwnHolder holder,
+                                                         OnResolve consumer)
+    {
+        auto const owns = types::holds(handles, types::HandleContent::Own)
+                              ? ownsOf(values)
+                              : std::vector<canonical::ResourceValue> {};
+        auto delivered = consumer(std::move(values));
+        if (!delivered)
+            store.undeliver(owns, holder);
+        return delivered;
+    }
+
     /// canon_lift's body (canonLift() guards it).
     [[nodiscard]] std::expected<void, CallError> liftedCall(ComponentStore& store,
                                                             LiftedFunction const& function,
                                                             OnStart onStart,
-                                                            OnLowered onLowered,
                                                             OnResolve onResolve)
     {
         auto const& side = function.side;
@@ -202,15 +220,19 @@ namespace
             Require(views.size() == params.size());
             return canonical::lowerFlat(context, params, views, canonical::MaxFlatParams, std::nullopt);
         }();
-        arguments.reset();
         // Each realloc re-checks the store itself (GuestMemory::reallocate()). A failed lowering passed no
-        // own: those it added leave the callee's table.
+        // own: those it added leave the callee's table, and the arguments' go back to their holder, the
+        // guest that lifted them or the host that lent them.
         if (!flatArgs)
         {
             handles.rollBackLoweredOwns();
+            if (types::holds(type.handles, types::HandleContent::Own))
+                store.undeliver(ownsOf(valuesOf(*arguments)),
+                                std::holds_alternative<canonical::Values>(*arguments) ? OwnHolder::Guest
+                                                                                      : OwnHolder::Host);
             return std::unexpected { CallError { std::move(flatArgs.error()) } };
         }
-        onLowered();
+        arguments.reset();
 
         auto const signature =
             canonical::flattenFunction(*side.layouts, type, canonical::FlattenContext::Lift);
@@ -229,7 +251,9 @@ namespace
             return std::unexpected { CallError { std::move(results.error()) } };
         if (auto resolved = resources.tasks().resolve(task.id()); !resolved)
             return std::unexpected { CallError { std::move(resolved.error()) } };
-        if (auto delivered = onResolve(std::move(*results)); !delivered)
+        // The results were lifted out of the callee's table: a caller that cannot take them hands them back.
+        if (auto delivered = deliver(store, std::move(*results), type.handles, OwnHolder::Guest, onResolve);
+            !delivered)
             return delivered;
         // on_resolve, like on_start, may have re-entered the store and swallowed a trap: no post-return then.
         if (auto checked = recheck(store); !checked)
@@ -274,12 +298,9 @@ namespace
         }
         if (auto checked = callee.checkResults(store, *built); !checked)
             return std::unexpected { CallError { checked.error() } };
-        // A lowering of the results that fails passes none of their owns: the callee gets them back.
-        auto const owns = ownsOf(*built);
-        auto delivered = onResolve(std::move(*built));
-        if (!delivered)
-            callee.resultsUndelivered(store, owns);
-        return delivered;
+        // A lowering of the results that fails passes none of their owns: the host holds them again.
+        return deliver(
+            store, std::move(*built), (*resultSide.arena)[resultType].handles, OwnHolder::Host, onResolve);
     }
 } // namespace
 
@@ -308,23 +329,12 @@ std::expected<void, CallError> canonLift(ComponentStore& store,
                                          OnStart onStart,
                                          OnResolve onResolve) noexcept
 {
-    auto nothing = [] {
-    };
-    return canonLift(store, function, onStart, nothing, onResolve);
-}
-
-std::expected<void, CallError> canonLift(ComponentStore& store,
-                                         LiftedFunction const& function,
-                                         OnStart onStart,
-                                         OnLowered onLowered,
-                                         OnResolve onResolve) noexcept
-{
     if (store.state() == StoreState::LockedDown)
         return std::unexpected { CallError { trapOf(TrapCode::CannotEnter) } };
     // One invocation: argument reallocs, the callee and post-return share its step budget and record.
     auto const scope = store.coreStore().openInvocation();
     auto const active = ActiveCall { store };
-    auto outcome = liftedCall(store, function, onStart, onLowered, onResolve);
+    auto outcome = liftedCall(store, function, onStart, onResolve);
     if (!outcome)
         store.lockDown();
     return outcome;

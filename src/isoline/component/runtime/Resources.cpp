@@ -161,6 +161,16 @@ void ResourceStore::destroyHostResources() noexcept
                 host->destructor->destroy(rep);
         });
     }
+    auto orphans = std::exchange(_orphans, {});
+    for (auto const& orphan: orphans)
+        if (auto const* const host = std::get_if<HostImplementor>(&_types[orphan.type]);
+            host && host->destructor)
+            host->destructor->destroy(orphan.rep);
+}
+
+void ResourceStore::adoptOrphans(std::span<ResourceValue const> owns)
+{
+    _orphans.insert(_orphans.end(), owns.begin(), owns.end());
 }
 
 Trap wrongHandleType(ResourceTypeTable const& types,

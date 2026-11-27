@@ -64,10 +64,6 @@ using OnStart = CallbackRef<std::expected<CallArguments, CallError>()>;
 /// the callee's arena; it runs before `post-return`.
 using OnResolve = CallbackRef<std::expected<void, CallError>(canonical::Values)>;
 
-/// Runs once the arguments are lowered into the callee, before it runs: from then on its table holds
-/// the owns among them. A lowering that fails took none (ResourceOperations::rollBackLoweredOwns()).
-using OnLowered = CallbackRef<void()>;
-
 /// Every own among @p values, in pre-order. A list of scalars holds none, so it is skipped whole.
 /// @param values Lifted values.
 /// @return The owns.
@@ -79,12 +75,14 @@ using OnLowered = CallbackRef<void()>;
 /// It refuses a locked-down store first (CannotEnter, no guest code runs). In one InvocationScope, so
 /// that argument `realloc`s, the callee and `post-return` share one step budget and one GrowthRecord, it
 /// starts a Task, asks @p onStart for the arguments, lowers them into the callee (its `realloc` with
-/// `may_leave` cleared), destroys owned arguments, calls the core function, lifts the results, ends the
-/// task (BorrowOutstanding while a borrow lent to it is held), hands the results to @p onResolve, then
-/// runs `post-return` with `may_leave` cleared. After the callee, every `realloc` and the `post-return`
-/// it re-checks the store: locked down (a host swallowed a nested trap) is CannotEnter, even after
-/// success. Every failure locks the store down. The host running out of memory (std::bad_alloc from a
-/// lift, a lower or a ValueBuilder) terminates the process, as a core call's does (api::Store).
+/// `may_leave` cleared; a lowering that fails hands the owns among them back to their holder,
+/// ComponentStore::undeliver(), as a caller that cannot take the results does), destroys owned arguments,
+/// calls the core function, lifts the results, ends the task (BorrowOutstanding while a borrow lent to it is
+/// held), hands the results to @p onResolve, then runs `post-return` with `may_leave` cleared. After the
+/// callee, every `realloc` and the `post-return` it re-checks the store: locked down (a host swallowed a
+/// nested trap) is CannotEnter, even after success. Every failure locks the store down. The host running out
+/// of memory (std::bad_alloc from a lift, a lower or a ValueBuilder) terminates the process, as a core call's
+/// does (api::Store).
 /// @param store The store.
 /// @param function The function, of @p store.
 /// @param onStart Supplies the arguments.
@@ -93,19 +91,6 @@ using OnLowered = CallbackRef<void()>;
 [[nodiscard]] std::expected<void, CallError> canonLift(ComponentStore& store,
                                                        LiftedFunction const& function,
                                                        OnStart onStart,
-                                                       OnResolve onResolve) noexcept;
-
-/// canonLift(), telling @p onLowered when the arguments are lowered into the callee.
-/// @param store The store.
-/// @param function The function, of @p store.
-/// @param onStart Supplies the arguments.
-/// @param onLowered Runs once they are lowered, before the callee; not when lowering fails.
-/// @param onResolve Takes the results.
-/// @return As canonLift().
-[[nodiscard]] std::expected<void, CallError> canonLift(ComponentStore& store,
-                                                       LiftedFunction const& function,
-                                                       OnStart onStart,
-                                                       OnLowered onLowered,
                                                        OnResolve onResolve) noexcept;
 
 /// Calls any component function: canonLift() for a lifted one; for a host one, its IHostCallee with the

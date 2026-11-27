@@ -149,12 +149,6 @@ namespace
             return {};
         }
 
-        void resultsUndelivered(runtime::ComponentStore&,
-                                std::span<ResourceValue const> owns) noexcept override
-        {
-            hold(*_state, owns);
-        }
-
       private:
         StoreState* _state;
         std::shared_ptr<IHostComponentFunction> _function;
@@ -355,17 +349,9 @@ std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
         results.emplace(std::move(values));
         return {};
     };
-    // The owns were taken before the call: a lowering that fails passed none, so the host keeps them.
-    auto lowered = false;
-    auto onLowered = [&] {
-        lowered = true;
-    };
-    if (auto called = runtime::canonLift(store, lifted, start, onLowered, resolve); !called)
-    {
-        if (!lowered)
-            hold(*state, owns);
+    // The owns were taken before the call: a lowering that fails hands them back (StoreState::returned()).
+    if (auto called = runtime::canonLift(store, lifted, start, resolve); !called)
         return std::unexpected { fromRuntime(std::move(called.error())) };
-    }
     // The owns returned left the guest's table: the host holds them (R12).
     hold(*state, runtime::ownsOf(*results));
     return std::move(*results);
@@ -396,11 +382,16 @@ StoreState::StoreState(isoline::api::Engine const& engine,
                        isoline::api::IMemoryAllocator& allocator,
                        ComponentConfig const& config,
                        isoline::api::IPollObserver* observer):
-    runtime { engine, allocator, config.limits, observer },
+    runtime { engine, allocator, config.limits, observer, this },
     serial { nextSerial() },
     engine { engine.config().identity() },
     limits { config.limits }
 {
+}
+
+void StoreState::returned(std::span<canonical::ResourceValue const> owns) noexcept
+{
+    hold(*this, owns);
 }
 
 ComponentStore::ComponentStore(isoline::api::Engine const& engine,

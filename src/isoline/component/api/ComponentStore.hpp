@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -272,13 +273,22 @@ using InstantiateComponentError = std::variant<isoline::api::EngineMismatch,
 
 /// The store-side state every handle of a ComponentStore reaches: the runtime store, at a fixed address
 /// for the store's life however the ComponentStore moves.
-struct StoreState
+struct StoreState final: runtime::IHostOwnSink
 {
     /// @copydoc ComponentStore::ComponentStore
     StoreState(isoline::api::Engine const& engine,
                isoline::api::IMemoryAllocator& allocator,
                ComponentConfig const& config,
                isoline::api::IPollObserver* observer);
+
+    StoreState(StoreState const&) = delete;
+    StoreState& operator=(StoreState const&) = delete;
+    StoreState(StoreState&&) = delete;
+    StoreState& operator=(StoreState&&) = delete;
+    ~StoreState() override = default;
+
+    /// The host holds @p owns again: a lowering failed to deliver them to a guest (hostOwns).
+    void returned(std::span<canonical::ResourceValue const> owns) noexcept override;
 
     runtime::ComponentStore runtime;     ///< The runtime store.
     ComponentStore* owner = nullptr;     ///< The ComponentStore holding it: re-pointed when it moves.

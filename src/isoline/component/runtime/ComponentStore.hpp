@@ -81,23 +81,39 @@ class IHostCallee
         return {};
     }
 
-    /// The results checkResults() passed could not be lowered into the caller: the owns among them are
-    /// in no guest table, so they are the host's again. Nothing by default.
-    /// @param store The store the call runs in.
-    /// @param owns The owns among the results.
-    virtual void resultsUndelivered(ComponentStore& store,
-                                    std::span<canonical::ResourceValue const> owns) noexcept
-    {
-        std::ignore = store;
-        std::ignore = owns;
-    }
-
   protected:
     IHostCallee() = default;
     IHostCallee(IHostCallee const&) = default;
     IHostCallee& operator=(IHostCallee const&) = default;
     IHostCallee(IHostCallee&&) = default;
     IHostCallee& operator=(IHostCallee&&) = default;
+};
+
+/// Who passed the owns a lowering failed to deliver: the host (the embedder's arguments, a host function's
+/// results), or a guest whose table they were lifted from.
+enum class OwnHolder : uint8_t
+{
+    Host,  ///< The embedder or a host function.
+    Guest, ///< A guest's table.
+};
+
+/// Where the owns a lowering failed to deliver to a guest go back when the host passed them: the api
+/// layer's table of the owns the host holds.
+class IHostOwnSink
+{
+  public:
+    virtual ~IHostOwnSink() = default;
+
+    /// The host holds @p owns again.
+    /// @param owns The owns.
+    virtual void returned(std::span<canonical::ResourceValue const> owns) noexcept = 0;
+
+  protected:
+    IHostOwnSink() = default;
+    IHostOwnSink(IHostOwnSink const&) = default;
+    IHostOwnSink& operator=(IHostOwnSink const&) = default;
+    IHostOwnSink(IHostOwnSink&&) = default;
+    IHostOwnSink& operator=(IHostOwnSink&&) = default;
 };
 
 /// The canonical options of one `canon lift` or `canon lower`, resolved to the core entities of the
@@ -301,11 +317,14 @@ class ComponentStore final: public IBuiltinHost
     /// @param allocator Allocates every linear memory; outlives the store.
     /// @param limits The component caps it enforces.
     /// @param observer Observes every poll; none when null; outlives the store.
+    /// @param hostOwns Takes back the owns the host passed that a lowering failed to deliver; when null,
+    ///                 they are kept for the store's end as a guest's are (undeliver()); outlives the store.
     /// @throws std::bad_alloc When the host has no memory for the empty store.
     ComponentStore(isoline::api::Engine const& engine,
                    isoline::api::IMemoryAllocator& allocator,
                    ComponentLimits const& limits,
-                   isoline::api::IPollObserver* observer = nullptr);
+                   isoline::api::IPollObserver* observer = nullptr,
+                   IHostOwnSink* hostOwns = nullptr);
 
     ComponentStore(ComponentStore const&) = delete;
     ComponentStore& operator=(ComponentStore const&) = delete;
@@ -390,6 +409,15 @@ class ComponentStore final: public IBuiltinHost
         return _resources.instances()[instance];
     }
 
+    /// The one undo of every lowering that failed (canon lift's arguments, canon lower's results): the
+    /// owns among the values it could not deliver were lifted out of their holder's table, and the failed
+    /// lowering added none to the receiver's (ResourceOperations::rollBackLoweredOwns()). They go back to
+    /// their holder: the host's to the sink, if any; a guest's, whose trap locks the store down, to the
+    /// store's end, which destroys each host resource among them once.
+    /// @param owns The owns.
+    /// @param holder Who passed them.
+    void undeliver(std::span<canonical::ResourceValue const> owns, OwnHolder holder) noexcept;
+
     /// The calls of the store in progress, nested ones included: what refuses a re-entrant instantiate().
     [[nodiscard]] uint32_t activeCalls() const noexcept { return _activeCalls; }
 
@@ -425,6 +453,7 @@ class ComponentStore final: public IBuiltinHost
     friend struct Instantiation;
 
     ComponentLimits _limits;
+    IHostOwnSink* _hostOwns;
     isoline::api::EngineIdentity _identity;
     std::unique_ptr<isoline::api::Store> _store;
     ResourceStore _resources;

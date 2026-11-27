@@ -311,11 +311,22 @@ class ResourceStore
     /// @return The tasks in progress.
     [[nodiscard]] TaskStack& tasks() noexcept { return _tasks; }
 
+    /// Keeps owns no table holds any more for the store's end, which destroys each host resource among
+    /// them once, as it destroys the ones a table still holds: what a failed lowering leaves of owns
+    /// whose guest holder locked the store down (ComponentStore::undeliver()).
+    /// @param owns The owns.
+    /// @throws std::bad_alloc When they cannot be stored.
+    void adoptOrphans(std::span<ResourceValue const> owns);
+
+    /// The owns adoptOrphans() kept and teardown has not destroyed yet.
+    [[nodiscard]] std::size_t orphanCount() const noexcept { return _orphans.size(); }
+
   private:
     HandleBudget _budget;
     InstanceTables _instances;
     ResourceTypeTable _types;
     TaskStack _tasks {};
+    std::vector<ResourceValue> _orphans {}; ///< adoptOrphans(): destroyed at the store's end.
 };
 
 /// The trap of the handle at @p index being of @p found where @p expected is wanted, worded as the
