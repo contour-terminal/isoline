@@ -363,6 +363,10 @@ TEST_CASE("Verbs.loadFailure")
     auto const exhausted = loadFailure(isoline::api::HostMemoryExhausted {}, "a.wat");
     CHECK(exhausted.refusal == Refusal::OutOfMemory);
     CHECK(exhausted.message == "a.wat: error: out of memory");
+    auto const uncompiled = loadFailure(
+        isoline::api::CompileLimitExceeded { .codeIndex = 3, .requested = 200, .limit = 128 }, "a.wat");
+    CHECK(uncompiled.refusal == Refusal::InputTooLarge);
+    CHECK(uncompiled.message == "a.wat: error: lowering function 3 needs 200, past the limit of 128");
 }
 
 TEST_CASE("Verbs.readmeListsEveryRefusal")

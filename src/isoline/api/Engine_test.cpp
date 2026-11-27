@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <memory_resource>
+#include <new>
+#include <optional>
 #include <ranges>
 #include <tuple>
 #include <type_traits>
@@ -14,12 +18,17 @@
 #include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/Module.hpp>
+#include <isoline/api/Store.hpp>
+#include <isoline/api/testing/Contract.hpp>
+#include <isoline/api/testing/RuntimeAccess.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/runtime/testing/ContractViolation.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
+using isoline::api::CompileLimitExceeded;
+using isoline::api::Dispatch;
 using isoline::api::Engine;
 using isoline::api::EngineConfig;
 using isoline::api::EngineIdentity;
@@ -76,6 +85,22 @@ std::vector<std::byte> v128ConstBytes()
     auto body = std::vector<uint8_t> { 0xFD, 0x0C }; // v128.const
     body.resize(body.size() + 16, 0x00);
     body.push_back(0x1A); // drop
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {}).function(0, {}, std::move(body));
+    return builder.build();
+}
+
+/// A module of one function [] -> [] whose body pushes an i32 constant and drops it @p count times: twice
+/// as many instructions.
+std::vector<std::byte> pushAndDropBytes(uint32_t count)
+{
+    auto body = std::vector<uint8_t> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
+    {
+        body.push_back(0x41); // i32.const 0
+        body.push_back(0x00);
+        body.push_back(0x1A); // drop
+    }
     auto builder = ModuleBuilder {};
     builder.type(FuncType {}).function(0, {}, std::move(body));
     return builder.build();
@@ -194,6 +219,115 @@ TEST_CASE("Engine.requiresAClosedFeatureSet")
     CHECK(engine.load(v128ConstBytes()).has_value());
 }
 
+TEST_CASE("Engine.fastIsTheDefault")
+{
+    CHECK(EngineConfig {}.engine == ExecutionEngine::Fast);
+    CHECK(EngineConfig {}.dispatch == isoline::api::bestDispatch());
+}
+
+TEST_CASE("Engine.refusesOverTheCompileBudget")
+{
+    // 1'000 instructions lower into more than 128 bytes: the fast engine refuses the module at its one
+    // function, an implementation limit; the reference engine lowers nothing, and loads it.
+    auto const bytes = pushAndDropBytes(500);
+    auto const fast = Engine { EngineConfig { .load = { .maxCompileBytes = 128 } } }.load(bytes);
+    REQUIRE_FALSE(fast.has_value());
+    REQUIRE(std::holds_alternative<CompileLimitExceeded>(fast.error()));
+    auto const refused = std::get<CompileLimitExceeded>(fast.error());
+    CHECK(refused.codeIndex == 0);
+    CHECK(refused.limit == 128);
+    CHECK(refused.requested > 0);
+    CHECK(fast.error()
+          == LoadError {
+              CompileLimitExceeded { .codeIndex = 0, .requested = refused.requested, .limit = 128 } });
+    CHECK(refused != CompileLimitExceeded { .codeIndex = 1, .requested = refused.requested, .limit = 128 });
+    CHECK(isoline::api::isImplementationLimit(fast.error()));
+    CHECK_FALSE(isoline::api::requiredFeature(fast.error()).has_value());
+    auto const reference = Engine {
+        EngineConfig { .engine = ExecutionEngine::Reference, .load = { .maxCompileBytes = 128 } }
+    }.load(bytes);
+    REQUIRE(reference.has_value());
+    CHECK(reference->code() == nullptr);
+    // The default budget lowers it.
+    auto const lowered = Engine { EngineConfig {} }.load(bytes);
+    REQUIRE(lowered.has_value());
+    CHECK(lowered->code() != nullptr);
+}
+
+TEST_CASE("Engine.lowersIntoItsCodeMemory")
+{
+    /// Refuses every allocation, as a host out of memory does.
+    class ExhaustedMemory final: public std::pmr::memory_resource
+    {
+        void* do_allocate(std::size_t /*bytes*/, std::size_t /*alignment*/) override
+        {
+            throw std::bad_alloc {};
+        }
+        void do_deallocate(void* /*pointer*/, std::size_t /*bytes*/, std::size_t /*alignment*/) override {}
+        [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
+        {
+            return this == &other;
+        }
+    };
+    // The fast engine lowers into the code memory it was given: one with nothing to give refuses the
+    // module as the host out of memory, which no limit lifts. The reference engine lowers nothing.
+    auto memory = ExhaustedMemory {};
+    auto const bytes = pushAndDropBytes(1);
+    auto const fast = Engine { EngineConfig {}, memory }.load(bytes);
+    REQUIRE_FALSE(fast.has_value());
+    CHECK(fast.error() == LoadError { isoline::api::HostMemoryExhausted {} });
+    CHECK_FALSE(isoline::api::isImplementationLimit(fast.error()));
+    CHECK(Engine { EngineConfig { .engine = ExecutionEngine::Reference }, memory }.load(bytes).has_value());
+}
+
+TEST_CASE("Engine.lowersOnceForManyStores")
+{
+    // One module, instantiated by 8 stores on 8 threads: every instance runs the one lowered module the
+    // engine made when it loaded it.
+    namespace contract = isoline::api::testing::contract;
+    constexpr auto Threads = 8U;
+    auto const engine = Engine { EngineConfig {} };
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = { isoline::binary::I32 } })
+        .function(0, {}, { 0x41, 0x2A }) // i32.const 42
+        .exportFunction("answer", 0);
+    auto const module = engine.load(builder.build());
+    REQUIRE(module.has_value());
+    REQUIRE(module->code() != nullptr);
+    /// What one thread saw: whether its instance runs the module's code, and what it answered.
+    struct Seen
+    {
+        bool sharesTheCode = false;
+        int32_t answer = 0;
+    };
+    auto const instantiate = [&] {
+        auto const preparation = engine.prepareThread();
+        auto allocator = isoline::api::HeapMemoryAllocator {};
+        auto store = isoline::api::Store { engine, allocator };
+        auto const instance = store.instantiate(*module, isoline::api::Imports {});
+        if (!preparation || !instance)
+            return Seen {};
+        auto& runtime = isoline::api::testing::runtimeOf(store);
+        auto const& code =
+            runtime.moduleInstance(isoline::api::testing::RuntimeAccess::addressOf(*instance)).code;
+        auto results = std::array<isoline::api::Value, 1> {};
+        auto const answer = instance->function("answer");
+        if (!answer || !instance->call(*answer, {}, results))
+            return Seen {};
+        return Seen { .sharesTheCode = code.get() == module->code().get(),
+                      .answer = static_cast<int32_t>(std::get<isoline::api::I32>(results[0]).bits) };
+    };
+    auto workers = std::vector<std::unique_ptr<contract::Worker<Seen>>> {};
+    for ([[maybe_unused]] auto const thread: std::views::iota(0U, Threads))
+        workers.push_back(std::make_unique<contract::Worker<Seen>>(instantiate));
+    for (auto const& worker: workers)
+    {
+        auto const seen = worker->result("an instantiating thread");
+        CHECK(seen.sharesTheCode);
+        CHECK(seen.answer == 42);
+    }
+}
+
 TEST_CASE("Engine.keepsItsConfiguration")
 {
     auto const config = EngineConfig { .features = FeatureSet::wasm2(),
@@ -211,15 +345,22 @@ TEST_CASE("Engine.identityIsWhatCodeDependsOn")
 {
     auto const wasm3 = EngineConfig {};
     CHECK(wasm3.identity()
+          == EngineIdentity { .engine = isoline::api::ExecutionEngine::Fast,
+                              .mode = ExecutionMode::Production,
+                              .features = FeatureSet::wasm3(),
+                              .dispatch = isoline::api::bestDispatch() });
+    CHECK(EngineConfig { .engine = ExecutionEngine::Reference }.identity()
           == EngineIdentity { .engine = isoline::api::ExecutionEngine::Reference,
                               .mode = ExecutionMode::Production,
-                              .features = FeatureSet::wasm3() });
+                              .features = FeatureSet::wasm3(),
+                              .dispatch = std::nullopt });
     CHECK(EngineConfig { .features = FeatureSet::wasm2() }.identity() != wasm3.identity());
     CHECK(EngineConfig { .mode = ExecutionMode::Deterministic }.identity() != wasm3.identity());
     // Limits decide whether a module loads, not what its code is.
     CHECK(EngineConfig { .load = { .maxModuleBytes = 1, .decode = { .maxImports = 1 } } }.identity()
           == wasm3.identity());
     CHECK(EngineConfig { .store = { .maxMemoryBytes = 1 } }.identity() == wasm3.identity());
+    CHECK(EngineConfig { .load = { .maxCompileBytes = 1 } }.identity() == wasm3.identity());
 }
 
 TEST_CASE("Engine.prepareThreadAndGuard")
@@ -274,10 +415,21 @@ TEST_CASE("Engine.hostMemoryExhaustionIsNeitherALimitNorAFeature")
         isoline::api::requiredFeature(LoadError { ModuleTooLarge { .bytes = 9, .limit = 8 } }).has_value());
 }
 
-TEST_CASE("Contract.Engine.runsOnlyTheReferenceEngine", "[.contract]")
+TEST_CASE("Contract.Engine.fastDispatchMustBeAvailable", "[.contract]")
 {
-    // The fast engine is not wired into the API yet (P4 Task 14b removes this check and this case).
     isoline::runtime::testing::endAtContractViolation();
-    std::ignore = Engine { EngineConfig { .engine = ExecutionEngine::Fast } };
-    FAIL("SURVIVED: the engine accepted the fast engine");
+    // One past the last Dispatch: no build compiles it, whether or not a probe row passed for TailCall.
+    auto const uncompiled = static_cast<Dispatch>(std::to_underlying(Dispatch::TailCall) + 1);
+    std::ignore = Engine { EngineConfig { .engine = ExecutionEngine::Fast, .dispatch = uncompiled } };
+    FAIL("SURVIVED: the fast engine accepted a dispatch this build did not compile");
+}
+
+TEST_CASE("Engine.referenceIgnoresTheDispatch")
+{
+    // The reference engine lowers nothing: a dispatch no build compiles is no part of it.
+    auto const uncompiled = static_cast<Dispatch>(std::to_underlying(Dispatch::TailCall) + 1);
+    auto const engine =
+        Engine { EngineConfig { .engine = ExecutionEngine::Reference, .dispatch = uncompiled } };
+    CHECK_FALSE(engine.config().identity().dispatch.has_value());
+    CHECK(engine.load(emptyModuleBytes()).has_value());
 }

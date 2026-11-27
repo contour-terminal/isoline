@@ -277,7 +277,7 @@ class Runtime
     /// @param allocator Allocates the store's memories; a heap allocator when null.
     /// @param answer How the host functions answer.
     /// @param observer Observes the store's polls; none when null. Must outlive the runtime.
-    explicit Runtime(EngineConfig const& config = configOf({}),
+    explicit Runtime(EngineConfig const& config,
                      std::unique_ptr<IMemoryAllocator> allocator = nullptr,
                      HostAnswer answer = HostAnswer::Return,
                      IPollObserver* observer = nullptr):

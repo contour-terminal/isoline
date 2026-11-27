@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <memory_resource>
 #include <span>
 
 #include <isoline/Features.hpp>
@@ -17,7 +18,8 @@
 namespace isoline::api
 {
 
-/// The limits loading a module enforces: one on its size, and those decoding enforces.
+/// The limits loading a module enforces: one on its size, those decoding enforces, and the fast engine's
+/// compile budget.
 ///
 /// They decide whether a module loads, not what its code is, so they are no part of EngineIdentity.
 struct LoadLimits
@@ -28,6 +30,12 @@ struct LoadLimits
 
     /// The implementation limits of decoding and validation.
     DecodeLimits decode {};
+
+    /// The most bytes the fast engine may hold at once while it lowers a module, its code included; a
+    /// module that needs more is refused (CompileLimitExceeded) at the first byte past it. 256 MiB by
+    /// default, a quarter of Contour's helper data limit. The reference engine lowers nothing, so it
+    /// ignores this limit.
+    uint64_t maxCompileBytes = uint64_t { 256 } << 20;
 
     /// Two sets of limits are equal when every limit is.
     bool operator==(LoadLimits const&) const = default;
@@ -42,8 +50,12 @@ struct EngineConfig
     /// closes a set.
     FeatureSet features = FeatureSet::wasm3();
 
-    /// The engine that runs modules' code.
-    ExecutionEngine engine = ExecutionEngine::Reference;
+    /// The engine that runs modules' code: the fast interpreter by default.
+    ExecutionEngine engine = ExecutionEngine::Fast;
+
+    /// The dispatch the fast engine lowers code for and runs it with: one of availableDispatches(), the
+    /// fastest by default. The reference engine ignores it.
+    Dispatch dispatch = bestDispatch();
 
     /// How that code computes what the specification leaves nondeterministic.
     ExecutionMode mode = ExecutionMode::Production;
@@ -55,8 +67,8 @@ struct EngineConfig
     /// (StoreOptions::limits).
     StoreLimits store {};
 
-    /// What a module this configuration loads depends on: the engine, the mode and the features, not
-    /// the limits.
+    /// What a module this configuration loads depends on: the engine, the mode, the features and, for
+    /// the fast engine alone, the dispatch; not the limits.
     /// @return The identity of an engine of this configuration.
     [[nodiscard]] EngineIdentity identity() const noexcept;
 };
@@ -107,32 +119,42 @@ class ThreadPreparation
 
 /// The entry point of the embedding API: it loads modules, under a configuration fixed at construction.
 ///
-/// An engine holds no state but its configuration, so loading is const and may run on any number of
-/// threads at once. The modules it loads stay valid after it is gone; each carries the engine's
-/// identity, which decides which stores may instantiate it.
+/// An engine holds no state but its configuration and the memory it lowers code into, so loading is
+/// const and may run on any number of threads at once, as long as that memory may be allocated from on
+/// any of them (the global heap's may). The modules it loads stay valid after it is gone; each carries the
+/// engine's identity, which decides which stores may instantiate it.
 class Engine
 {
   public:
     /// An engine of @p config.
     /// @param config Its configuration. Its feature set must be closed (checked: an unclosed set is a
     ///               programming error of the embedder; FeatureSet::withPrerequisites() closes one).
-    ///               Its engine must be ExecutionEngine::Reference for now (checked), the only one the
-    ///               API runs yet.
+    ///               For the fast engine, its dispatch must be one of availableDispatches() (checked).
     explicit Engine(EngineConfig config) noexcept;
+
+    /// An engine of @p config whose fast engine allocates the code it lowers from @p codeMemory, through
+    /// a budget of LoadLimits::maxCompileBytes per module: the global heap's being the other
+    /// constructor's.
+    /// @param config Its configuration, checked as the other constructor checks it.
+    /// @param codeMemory What lowered code is allocated from. It must outlive every module the engine
+    ///                   loads, which may outlive the engine: a module's code returns its memory here.
+    Engine(EngineConfig config, std::pmr::memory_resource& codeMemory) noexcept;
 
     /// The configuration it was constructed with.
     /// @return The configuration.
     [[nodiscard]] EngineConfig const& config() const noexcept { return _config; }
 
     /// Loads a module: checks its size, then decodes and validates it with the engine's features and
-    /// decode limits.
+    /// decode limits; the fast engine then lowers it, once, for every store that instantiates it, within
+    /// LoadLimits::maxCompileBytes.
     ///
     /// Imports are described, never resolved: a module loads whatever it imports. Nothing is thrown:
     /// the host running out of memory is a HostMemoryExhausted refusal.
     /// @param bytes The module's bytes, from the magic number on; not referenced after the call.
     /// @return The module, or why it was refused: ModuleTooLarge before a byte is decoded, else the
-    ///         first decode or validation error. isImplementationLimit() tells a refusal a raised
-    ///         limit would lift, and requiredFeature() one a feature would.
+    ///         first decode or validation error, else CompileLimitExceeded where lowering it would
+    ///         exceed the compile budget. isImplementationLimit() tells a refusal a raised limit would
+    ///         lift, and requiredFeature() one a feature would.
     [[nodiscard]] std::expected<Module, LoadError> load(std::span<std::byte const> bytes) const noexcept;
 
     /// Makes the calling thread ready to run guest code of this engine. A thread calls it before its
@@ -155,6 +177,7 @@ class Engine
 
   private:
     EngineConfig _config;
+    std::pmr::memory_resource* _codeMemory; ///< What lowered code is allocated from; never null.
 };
 
 } // namespace isoline::api

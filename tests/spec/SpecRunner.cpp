@@ -38,6 +38,7 @@
 #include "Oracle.hpp"
 #include "Script.hpp"
 #include "SpecCheck.hpp"
+#include "SpecEngine.hpp"
 #include "SpecFeatures.hpp"
 #include "WastReader.hpp"
 #include <isoline/Features.hpp>
@@ -260,8 +261,10 @@ namespace
     class Runner
     {
       public:
-        explicit Runner(FeatureSet features):
+        Runner(FeatureSet features, SpecEngine const& engine):
             _features { features },
+            _engine { engine },
+            _executor { makeExecutor(engine) },
             _store { runtime::StoreLimits {}, runtime::StoreServices { .allocator = _allocator } }
         {
             _registered.emplace("spectest", _store.addModuleInstance(makeSpectest(_store)));
@@ -419,7 +422,11 @@ namespace
             auto const imports = resolveImports(module->module());
             if (!imports)
                 return std::unexpected { imports.error() };
-            auto const instance = runtime::instantiate(_store, _interpreter, std::move(module), *imports);
+            auto code = codeFor(_engine, *module);
+            if (!code)
+                return std::unexpected { harnessFailure(code.error()) };
+            auto const instance =
+                runtime::instantiate(_store, *_executor, std::move(module), std::move(*code), *imports);
             if (instance)
                 return *instance;
             struct Describe
@@ -550,7 +557,7 @@ namespace
             for (auto const& resultType: type.results)
                 results.push_back(runtime::defaultValue(resultType));
             auto const invoked =
-                runtime::invokeChecked(_store, _interpreter, target->address, action.args, results);
+                runtime::invokeChecked(_store, *_executor, target->address, action.args, results);
             if (invoked.entry == runtime::Entry::Refused)
                 return std::unexpected { harnessFailure(
                     std::format("arguments {} do not match '{}'", describeAll(action.args), action.field)) };
@@ -570,9 +577,10 @@ namespace
         }
 
         FeatureSet _features;
+        SpecEngine _engine;
+        std::unique_ptr<runtime::ICodeExecutor> _executor;
         runtime::HeapMemoryAllocator _allocator;
         runtime::Store _store;
-        interpreter::ReferenceInterpreter _interpreter;
         std::optional<uint32_t> _current;
         std::map<std::string, uint32_t, std::less<>> _named;
         std::map<std::string, uint32_t, std::less<>> _registered;
@@ -810,12 +818,12 @@ namespace
     /// Runs the script in @p directory: `<name>.wast` against `<name>.oracle`.
     /// @param directory The directory of one imported .wast file.
     /// @param expectedSkips How many of its commands are skipped.
-    /// @param features The features the decoder and the validator accept.
+    /// @param options The features the decoder and the validator accept, and the engine the script runs on.
     /// @return 0 when every command passed and exactly @p expectedSkips were skipped, 1 when not or when
     ///         the oracle does not describe the script, and 2 when a file cannot be read.
     [[nodiscard]] int runDirectory(std::filesystem::path directory,
                                    std::size_t expectedSkips,
-                                   FeatureSet features)
+                                   RunOptions const& options)
     {
         if (!directory.has_filename())
             directory = directory.parent_path();
@@ -827,7 +835,7 @@ namespace
             return script.error().status;
         }
 
-        auto runner = Runner { features };
+        auto runner = Runner { options.features, options.engine };
         auto counts = std::array<std::size_t, 3> {};
         auto const location = scriptPath.string();
         for (auto const [ordinal, command]: core::views::enumerate(script->commands))
@@ -837,7 +845,8 @@ namespace
             auto const parity =
                 command.kind == CommandKind::Skip
                     ? std::expected<void, std::string> {}
-                    : holdToRecord(checkParity(command, oracleEntry, directory, features), oracleEntry);
+                    : holdToRecord(checkParity(command, oracleEntry, directory, options.features),
+                                   oracleEntry);
             if (!parity)
                 std::cout << std::format("{}:{}: {}\n", location, command.line, parity.error());
             // A command the oracle records a divergence for is checked against it instead of run.
@@ -885,18 +894,22 @@ int main(int argc, char const* argv[])
 {
     auto const arguments = std::span { argv, static_cast<std::size_t>(argc) };
     auto const expectedSkips =
-        arguments.size() == 5 ? isoline::spectest::parseCount(arguments[2]) : std::nullopt;
-    auto const features = arguments.size() == 5 && std::string_view { arguments[3] } == "--features"
-                              ? isoline::spectest::featureSetNamed(arguments[4])
-                              : std::nullopt;
-    if (!expectedSkips || !features)
+        arguments.size() >= 3 ? isoline::spectest::parseCount(arguments[2]) : std::nullopt;
+    auto const options = arguments.size() >= 3
+                             ? isoline::spectest::parseOptions(arguments.subspan(3))
+                             : std::expected<isoline::spectest::RunOptions, std::string> { std::unexpected {
+                                   std::string { "a directory and its expected skips are required" } } };
+    if (!expectedSkips || !options)
     {
-        std::cerr << "usage: isoline_spec_runner <directory> <expected skips> --features <wasm2|wasm3|all>\n";
+        if (!options)
+            std::cerr << "isoline_spec_runner: " << options.error() << '\n';
+        std::cerr << "usage: isoline_spec_runner <directory> <expected skips> --features <wasm2|wasm3|all>"
+                     " [--engine <reference|fast>] [--dispatch <switch|tailcall>]\n";
         return 2;
     }
     try
     {
-        return isoline::spectest::runDirectory(arguments[1], *expectedSkips, *features);
+        return isoline::spectest::runDirectory(arguments[1], *expectedSkips, *options);
     }
     catch (std::exception const& error)
     {

@@ -4,7 +4,7 @@
 # per .wast file: the verbatim .wast script with its oracle manifest and the oracle's .wasm files. The
 # import is committed, so running it needs neither the network nor wasm-tools.
 
-add_library(isoline_spectest STATIC Hex.cpp Oracle.cpp SpecCheck.cpp WastReader.cpp)
+add_library(isoline_spectest STATIC Hex.cpp Oracle.cpp SpecCheck.cpp SpecEngine.cpp WastReader.cpp)
 target_include_directories(isoline_spectest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(isoline_spectest PUBLIC isoline::core isoline::text)
 isoline_apply_target_policy(isoline_spectest)
@@ -14,7 +14,8 @@ target_link_libraries(isoline_spec_runner PRIVATE isoline_spectest)
 # TEST: it is run by ctest alone, so a failing spec file must end it rather than open a dialog.
 isoline_apply_target_policy(isoline_spec_runner TEST)
 
-add_executable(isoline_spectest_test Oracle_test.cpp SpecCheck_test.cpp SpecFeatures_test.cpp WastReader_test.cpp)
+add_executable(isoline_spectest_test Oracle_test.cpp SpecCheck_test.cpp SpecEngine_test.cpp SpecFeatures_test.cpp
+                                     WastReader_test.cpp)
 target_link_libraries(isoline_spectest_test PRIVATE isoline_spectest Catch2::Catch2WithMain)
 # WastReader.ordinalsMatchWasmTools reads its fixture, tests/spec/ordinals, from the source tree.
 target_compile_definitions(isoline_spectest_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
@@ -29,8 +30,32 @@ set(specFeatures_wide-arithmetic all)
 set(specFeatures_custom-page-sizes all)
 set(specFeatures_compact-imports all)
 
-# One test per imported .wast file, in files.txt's order, named spec.<source>.<path with / as .>,
-# which fails unless the file's script skips exactly as many commands as files.txt pins. An `exclude`
+## @brief Registers the test of one imported .wast file on one engine: the reference interpreter as
+## spec.<source>.<path with / as .> (label spec), the fast one under a dispatch as
+## spec.fast.<dispatch>.<source>.<path> (labels spec and fast). Each fails unless the file's script skips
+## exactly as many commands as files.txt pins, the same on every engine.
+## @param engine reference or fast.
+## @param dispatch The fast engine's dispatch (switch or tailcall); empty for the reference.
+function(isoline_add_spec_test engine dispatch source path skips)
+    string(REPLACE "/" "." testName "${source}.${path}")
+    set(engineArguments)
+    if(engine STREQUAL "reference")
+        set(testName "spec.${testName}")
+        set(labels spec)
+    else()
+        set(testName "spec.${engine}.${dispatch}.${testName}")
+        set(engineArguments --engine ${engine} --dispatch ${dispatch})
+        set(labels spec ${engine})
+    endif()
+    add_test(NAME ${testName}
+             COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/${source}/${path}" "${skips}"
+                     --features "${specFeatures_${source}}" ${engineArguments})
+    set_tests_properties(${testName} PROPERTIES LABELS "${labels}")
+endfunction()
+
+get_property(specDispatches GLOBAL PROPERTY ISOLINE_FAST_DISPATCH_NAMES)
+
+# One test per imported .wast file and engine, in files.txt's order (isoline_add_spec_test()). An `exclude`
 # row names a file that is deliberately not imported.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS files.txt)
 file(STRINGS files.txt specFiles REGEX "^[^#]" ENCODING UTF-8)
@@ -48,9 +73,8 @@ foreach(entry IN LISTS specFiles)
     if(NOT DEFINED specFeatures_${source})
         message(FATAL_ERROR "tests/spec/files.txt: no feature set for the suite source '${source}'")
     endif()
-    string(REPLACE "/" "." testName "spec.${source}.${path}")
-    add_test(NAME ${testName}
-             COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/${source}/${path}" "${skips}"
-                     --features "${specFeatures_${source}}")
-    set_tests_properties(${testName} PROPERTIES LABELS spec)
+    isoline_add_spec_test(reference "" "${source}" "${path}" "${skips}")
+    foreach(dispatch IN LISTS specDispatches)
+        isoline_add_spec_test(fast "${dispatch}" "${source}" "${path}" "${skips}")
+    endforeach()
 endforeach()

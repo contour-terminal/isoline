@@ -27,11 +27,12 @@ using binary::ExternKind;
 using binary::ExternKindCount;
 
 /// What every copy of a Module shares: the validated module, the identity of the engine that loaded
-/// it, and the descriptions, which point into the validated module.
+/// it, the code that engine made of it, and the descriptions, which point into the validated module.
 struct Module::Contents
 {
     std::shared_ptr<validate::ValidatedModule const> validated; ///< Never null.
     EngineIdentity engine;                                      ///< The loading engine's identity.
+    std::shared_ptr<runtime::ModuleCode const> code;            ///< Null for the reference engine.
     std::vector<ImportDescription> imports;                     ///< One per import, in order.
     std::vector<ExportDescription> exports;                     ///< One per export, in order.
 };
@@ -105,7 +106,9 @@ namespace
 } // namespace
 
 std::shared_ptr<Module::Contents const> Module::describe(
-    std::shared_ptr<validate::ValidatedModule const> validated, EngineIdentity const& engine)
+    std::shared_ptr<validate::ValidatedModule const> validated,
+    EngineIdentity const& engine,
+    std::shared_ptr<runtime::ModuleCode const> code)
 {
     Require(validated != nullptr);
     auto const& module = validated->module();
@@ -113,6 +116,7 @@ std::shared_ptr<Module::Contents const> Module::describe(
     auto exports = describeExports(module, imports);
     return std::make_shared<Contents const>(Contents { .validated = std::move(validated),
                                                        .engine = engine,
+                                                       .code = std::move(code),
                                                        .imports = std::move(imports),
                                                        .exports = std::move(exports) });
 }
@@ -123,6 +127,7 @@ bool isImplementationLimit(LoadError const& error) noexcept
     {
         bool operator()(ModuleTooLarge const&) const noexcept { return true; }
         bool operator()(HostMemoryExhausted const&) const noexcept { return false; }
+        bool operator()(CompileLimitExceeded const&) const noexcept { return true; }
         bool operator()(binary::DecodeError const& decode) const noexcept
         {
             return binary::isImplementationLimit(decode.code);
@@ -147,8 +152,9 @@ std::optional<Feature> requiredFeature(LoadError const& error) noexcept
 
 Module::Module(Key /*key*/,
                std::shared_ptr<validate::ValidatedModule const> validated,
-               EngineIdentity const& engine):
-    _contents { describe(std::move(validated), engine) }
+               EngineIdentity const& engine,
+               std::shared_ptr<runtime::ModuleCode const> code):
+    _contents { describe(std::move(validated), engine, std::move(code)) }
 {
 }
 
@@ -170,6 +176,11 @@ FeatureSet Module::features() const noexcept
 EngineIdentity const& Module::engine() const& noexcept
 {
     return _contents->engine;
+}
+
+std::shared_ptr<runtime::ModuleCode const> const& Module::code() const noexcept
+{
+    return _contents->code;
 }
 
 std::shared_ptr<validate::ValidatedModule const> const& Module::validated() const noexcept

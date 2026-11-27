@@ -12,6 +12,7 @@
 #include <isoline/api/EngineIdentity.hpp>
 #include <isoline/api/Types.hpp>
 #include <isoline/binary/DecodeError.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
 namespace isoline::validate
@@ -88,15 +89,32 @@ struct HostMemoryExhausted
     bool operator==(HostMemoryExhausted const&) const = default;
 };
 
-/// Why Engine::load() refused a module: too large to decode, the host out of memory, malformed, or
-/// invalid.
-using LoadError = std::variant<ModuleTooLarge, HostMemoryExhausted, DecodeError, ValidationError>;
+/// A module the fast engine refused to lower: its code needs more than the engine allows.
+///
+/// Most often it needs more than LoadLimits::maxCompileBytes at once, in bytes. A function whose frame
+/// needs more slots, or whose code more words, than the fast engine's code addresses is refused the same
+/// way, counted in slots or code words: only decode limits raised far past their defaults admit one.
+struct CompileLimitExceeded
+{
+    /// The function lowering was refused at, by its index in the code section;
+    /// fastinterpreter::NoFunction when the refusal came outside any function.
+    uint32_t codeIndex;
+    uint64_t requested; ///< What the refused reservation asked for.
+    uint64_t limit;     ///< What the engine allows: the compile budget, or the code's own bound.
+    /// Two refusals are equal when function, request and limit are.
+    bool operator==(CompileLimitExceeded const&) const = default;
+};
+
+/// Why Engine::load() refused a module: too large to decode, the host out of memory, malformed, invalid,
+/// or too large to lower.
+using LoadError =
+    std::variant<ModuleTooLarge, HostMemoryExhausted, DecodeError, ValidationError, CompileLimitExceeded>;
 
 /// Whether @p error refuses a module only for an implementation limit, which an engine with raised
 /// LoadLimits might load, rather than for being malformed or invalid, which no limits change.
 /// @param error Why the module was refused.
-/// @return Whether a ModuleTooLarge, or a decode or validation error whose row is an implementation
-///         limit (binary::isImplementationLimit(), validate::isImplementationLimit()).
+/// @return Whether a ModuleTooLarge or a CompileLimitExceeded, or a decode or validation error whose row
+///         is an implementation limit (binary::isImplementationLimit(), validate::isImplementationLimit()).
 [[nodiscard]] bool isImplementationLimit(LoadError const& error) noexcept;
 
 /// The feature an engine must enable to get past @p error, when the module uses one it lacks.
@@ -107,12 +125,12 @@ using LoadError = std::variant<ModuleTooLarge, HostMemoryExhausted, DecodeError,
 ///         prerequisites) gets the module past that point, where another may be named.
 [[nodiscard]] std::optional<Feature> requiredFeature(LoadError const& error) noexcept;
 
-/// A module an Engine loaded: decoded, validated, and described.
+/// A module an Engine loaded: decoded, validated, described, and for the fast engine lowered.
 ///
 /// Its imports are only described, never resolved: a module loads whatever it imports, and whether
 /// they are satisfied is a question for instantiation. A module is immutable and cheap to copy, every
-/// copy sharing one validated module and one set of descriptions, so it may be instantiated by any
-/// number of stores, on any thread.
+/// copy sharing one validated module, one set of descriptions and one lowered code, so it may be
+/// instantiated by any number of stores, on any thread.
 class Module
 {
   public:
@@ -127,7 +145,12 @@ class Module
     /// @param key The passkey only an Engine has.
     /// @param validated The module, decoded and validated (checked: not null).
     /// @param engine The identity of the engine that loaded it.
-    Module(Key key, std::shared_ptr<validate::ValidatedModule const> validated, EngineIdentity const& engine);
+    /// @param code What the engine made of @p validated to run it: the fast engine's lowered module; null
+    ///             for the reference engine, which runs the validated module itself.
+    Module(Key key,
+           std::shared_ptr<validate::ValidatedModule const> validated,
+           EngineIdentity const& engine,
+           std::shared_ptr<runtime::ModuleCode const> code);
 
     /// A copy, sharing this module's contents.
     ///
@@ -168,6 +191,11 @@ class Module
     /// Deleted: the identity of a temporary module would dangle at the end of the expression.
     [[nodiscard]] EngineIdentity const& engine() const&& = delete;
 
+    /// What its engine made of it to run it, which every store instantiating it shares: lowered once,
+    /// when it was loaded.
+    /// @return The fast engine's lowered module; null for the reference engine.
+    [[nodiscard]] std::shared_ptr<runtime::ModuleCode const> const& code() const noexcept;
+
   private:
     friend class Store;
     friend struct testing::ModuleAccess;
@@ -177,9 +205,12 @@ class Module
     /// Describes @p validated's imports and exports.
     /// @param validated The module (checked: not null).
     /// @param engine The identity of the engine that loaded it.
+    /// @param code What the engine made of @p validated to run it; null for the reference engine.
     /// @return What every copy of the Module shares.
     [[nodiscard]] static std::shared_ptr<Contents const> describe(
-        std::shared_ptr<validate::ValidatedModule const> validated, EngineIdentity const& engine);
+        std::shared_ptr<validate::ValidatedModule const> validated,
+        EngineIdentity const& engine,
+        std::shared_ptr<runtime::ModuleCode const> code);
 
     /// The validated module it describes, which a Store instantiates.
     /// @return The validated module, shared with every copy of this one.

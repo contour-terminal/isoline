@@ -268,8 +268,7 @@ set(isolineContractRows
     "Contract.Lowering.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), config\\.dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"
     "Contract.Listing.wholeOperations|row\\.words <= code\\.size\\(\\)"
     "Contract.FastInterpreter.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"
-    # Removed in P4 Task 14b, which wires the fast engine into the API.
-    "Contract.Engine.runsOnlyTheReferenceEngine|_config\\.engine == ExecutionEngine::Reference")
+    "Contract.Engine.fastDispatchMustBeAvailable|_config\\.engine != ExecutionEngine::Fast \\|\\| std::ranges::find\\(availableDispatches\\(\\), _config\\.dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)")
 set(isolineContractCases)
 foreach(contract IN LISTS isolineContractRows)
     string(FIND "${contract}" "|" separator)

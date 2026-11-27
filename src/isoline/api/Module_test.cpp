@@ -12,6 +12,7 @@
 #include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/Module.hpp>
+#include <isoline/api/Store.hpp>
 #include <isoline/api/testing/ModuleAccess.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
@@ -19,8 +20,11 @@
 #include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::FeatureSet;
+using isoline::api::Dispatch;
 using isoline::api::Engine;
 using isoline::api::EngineConfig;
+using isoline::api::EngineMismatch;
+using isoline::api::ExecutionEngine;
 using isoline::api::ExecutionMode;
 using isoline::api::ExternType;
 using isoline::api::Module;
@@ -204,6 +208,46 @@ TEST_CASE("Module.carriesItsEngineIdentity")
     auto const capped = Engine { EngineConfig { .store = { .maxMemoryBytes = 1 } } }.load(bytes);
     REQUIRE(capped.has_value());
     CHECK(capped->engine() == first->engine());
+}
+
+TEST_CASE("Module.identityIncludesDispatchOnlyForFast")
+{
+    // The fast engine lowers its code for its dispatch, so a store of one dispatch refuses a module of the
+    // other; the reference engine lowers nothing, so two of them that differ only in the dispatch share
+    // their modules.
+    auto const bytes = ModuleBuilder {}.build();
+    auto const fastOf = [](Dispatch dispatch) {
+        return EngineConfig { .engine = ExecutionEngine::Fast, .dispatch = dispatch };
+    };
+    CHECK(fastOf(Dispatch::Switch).identity() != fastOf(Dispatch::TailCall).identity());
+    CHECK(fastOf(Dispatch::Switch).identity().dispatch == Dispatch::Switch);
+    auto allocator = isoline::api::HeapMemoryAllocator {};
+    // Every ordered pair of distinct dispatches this build compiled: none where it compiled Switch alone.
+    for (auto const loading: isoline::api::availableDispatches())
+    {
+        for (auto const instantiating: isoline::api::availableDispatches())
+        {
+            if (loading == instantiating)
+                continue;
+            auto const module = Engine { fastOf(loading) }.load(bytes);
+            REQUIRE(module.has_value());
+            auto const engine = Engine { fastOf(instantiating) };
+            auto store = isoline::api::Store { engine, allocator };
+            auto const instance = store.instantiate(*module, isoline::api::Imports {});
+            REQUIRE_FALSE(instance.has_value());
+            CHECK(std::holds_alternative<EngineMismatch>(instance.error()));
+        }
+    }
+    auto const referenceOf = [](Dispatch dispatch) {
+        return EngineConfig { .engine = ExecutionEngine::Reference, .dispatch = dispatch };
+    };
+    CHECK(referenceOf(Dispatch::Switch).identity() == referenceOf(Dispatch::TailCall).identity());
+    CHECK_FALSE(referenceOf(Dispatch::TailCall).identity().dispatch.has_value());
+    auto const module = Engine { referenceOf(Dispatch::Switch) }.load(bytes);
+    REQUIRE(module.has_value());
+    auto const engine = Engine { referenceOf(Dispatch::TailCall) };
+    auto store = isoline::api::Store { engine, allocator };
+    CHECK(store.instantiate(*module, isoline::api::Imports {}).has_value());
 }
 
 TEST_CASE("Module.movingLeavesTheSourceWhole")

@@ -124,6 +124,17 @@ Failure loadFailure(api::LoadError const& error, std::string_view input)
                 return Failure { .refusal = Refusal::OutOfMemory,
                                  .message = std::format("{}: error: out of memory", input) };
             },
+            [input](api::CompileLimitExceeded const& tooLarge) {
+                // The verbs load with the reference engine, which lowers nothing: only an embedder's
+                // fast engine refuses this way.
+                return Failure { .refusal = Refusal::InputTooLarge,
+                                 .message = std::format("{}: error: lowering function {} needs {}, past the "
+                                                        "limit of {}",
+                                                        input,
+                                                        tooLarge.codeIndex,
+                                                        tooLarge.requested,
+                                                        tooLarge.limit) };
+            },
             [input](binary::DecodeError const& decode) {
                 return Failure { .refusal = Refusal::ModuleMalformed,
                                  .message =
@@ -167,8 +178,10 @@ namespace
                                     bytes.error().position.line,
                                     bytes.error().position.column,
                                     text::specMessage(bytes.error())));
+        // The reference engine: a verb decodes and validates, and runs nothing, so it lowers nothing.
         auto const engine = api::Engine { api::EngineConfig {
             .features = featuresOf(context.features),
+            .engine = api::ExecutionEngine::Reference,
             .load = api::LoadLimits { .maxModuleBytes = context.limits.maxModuleBytes } } };
         if (auto const loaded = engine.load(*bytes); !loaded)
             return std::unexpected { loadFailure(loaded.error(), input) };

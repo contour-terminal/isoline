@@ -624,14 +624,6 @@ std::expected<uint32_t, InstantiationError> instantiate(
 InstantiationOutcome instantiateReporting(Store& store,
                                           ICodeExecutor& executor,
                                           std::shared_ptr<validate::ValidatedModule const> module,
-                                          std::span<ExternValue const> imports)
-{
-    return instantiateReporting(store, executor, std::move(module), nullptr, imports);
-}
-
-InstantiationOutcome instantiateReporting(Store& store,
-                                          ICodeExecutor& executor,
-                                          std::shared_ptr<validate::ValidatedModule const> module,
                                           std::shared_ptr<ModuleCode const> code,
                                           std::span<ExternValue const> imports)
 {

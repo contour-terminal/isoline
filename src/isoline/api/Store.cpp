@@ -26,6 +26,7 @@
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
+#include <isoline/fastinterpreter/FastInterpreter.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -37,19 +38,15 @@ namespace isoline::api
 
 namespace
 {
-    /// A store's executor for @p engine: a case per ExecutionEngine and no default, so that -Wswitch
-    /// names this place when an engine is added.
-    [[nodiscard]] std::unique_ptr<runtime::ICodeExecutor> makeExecutor(ExecutionEngine engine)
+    /// A store's executor for @p config's engine, the fast one running code lowered for its dispatch: a case
+    /// per ExecutionEngine and no default, so that -Wswitch names this place when an engine is added.
+    [[nodiscard]] std::unique_ptr<runtime::ICodeExecutor> makeExecutor(EngineConfig const& config)
     {
-        switch (engine)
+        switch (config.engine)
         {
             case ExecutionEngine::Reference: return std::make_unique<interpreter::ReferenceInterpreter>();
-            // Engine's constructor refuses the fast engine until P4 Task 14b wires it in, so no store
-            // has it; should that refusal go first, this ends the process instead of running on.
-            // uncovered-begin(fast-engine-refused)
             case ExecutionEngine::Fast:
-                core::todo("the fast engine's executor (P4 Task 14b)");
-                // uncovered-end(fast-engine-refused)
+                return std::make_unique<fastinterpreter::FastInterpreter>(config.dispatch);
         }
         // Every ExecutionEngine is a case above.
         core::unreachable(); // uncovered(unknown-engine)
@@ -135,7 +132,7 @@ Store::Store(Engine const& engine, IMemoryAllocator& allocator, StoreOptions con
                                         // derived from maxMemoryBytes must check the effective limits).
                                         .requiredGuardBytes = engine.requiredGuardBytes(),
                                         .pollObserver = options.observer } },
-    _executor { makeExecutor(engine.config().engine) },
+    _executor { makeExecutor(engine.config()) },
     _alive { std::make_shared<std::monostate>() }
 {
 }
@@ -266,7 +263,7 @@ std::expected<Instance, InstantiateError> Store::link(
     try
     {
         instantiated.emplace(
-            runtime::instantiateReporting(_runtime, *_executor, module.validated(), externs));
+            runtime::instantiateReporting(_runtime, *_executor, module.validated(), module.code(), externs));
     }
     catch (std::bad_alloc const&)
     {

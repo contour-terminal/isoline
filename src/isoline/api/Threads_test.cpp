@@ -3,6 +3,8 @@
 // The api across threads: a module shared by stores on many threads at once, one store moving
 // between threads, and a watchdog that interrupts a store from another thread and outlives it.
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
 #include <array>
@@ -38,9 +40,11 @@ using isoline::api::InterruptState;
 using isoline::api::Module;
 using isoline::api::Store;
 using isoline::api::Value;
+using isoline::api::testing::engineRows;
 using isoline::api::testing::contract::addModule;
 using isoline::api::testing::contract::callI32;
 using isoline::api::testing::contract::configOf;
+using isoline::api::testing::contract::ContractLimits;
 using isoline::api::testing::contract::functionOf;
 using isoline::api::testing::contract::GateOutcome;
 using isoline::api::testing::contract::Handover;
@@ -57,11 +61,12 @@ using isoline::api::testing::contract::Worker;
 
 TEST_CASE("Threads.instantiatesConcurrently", "[threading]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // One Module, shared by 8 threads, each with a store of its own: every round instantiates it and
     // calls add(1, 2).
     constexpr auto ThreadCount = 8;
     constexpr auto Rounds = 1'000;
-    auto const engine = Engine { configOf({}) };
+    auto const engine = Engine { configOf(ContractLimits {}, row) };
     auto const loaded = engine.load(addModule().build());
     REQUIRE(loaded.has_value());
     auto const& module = *loaded;
@@ -112,9 +117,10 @@ TEST_CASE("Threads.instantiatesConcurrently", "[threading]")
 
 TEST_CASE("Threads.instanceMovesBetweenThreads", "[threading]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // Loaded on thread A, its store made and the module instantiated on B, called on C, one after the
     // other, and the store destroyed on the test thread: no state is the thread's own.
-    auto const engine = Engine { configOf({}) };
+    auto const engine = Engine { configOf(ContractLimits {}, row) };
     auto allocator = HeapMemoryAllocator {};
     auto const loaded = onPreparedThread(engine, [&] { return engine.load(addModule().build()); });
     REQUIRE(loaded.has_value());
@@ -136,6 +142,7 @@ TEST_CASE("Threads.instanceMovesBetweenThreads", "[threading]")
 
 TEST_CASE("Threads.watchdogInterruptsASpinningCall", "[threading]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // A watchdog thread interrupts the spinning call (at a fixed back-edge, where the call waits for it:
     // see HandoverInterrupt), and keeps the store's interrupter past the store:
     // interrupting it then is harmless, and it still reads Interrupted.
@@ -148,7 +155,9 @@ TEST_CASE("Threads.watchdogInterruptsASpinningCall", "[threading]")
     // promise before the watchdog is joined.
     auto storeGone = std::promise<void> {};
     {
-        auto runtime = Runtime { configOf({}, SpinBackstopSteps), nullptr, HostAnswer::Return, &handover };
+        auto runtime = Runtime {
+            configOf(ContractLimits {}, row, SpinBackstopSteps), nullptr, HostAnswer::Return, &handover
+        };
         auto const instance = runtime.instantiate(runtime.load(instanceModule()));
         watchdog.emplace([&handover,
                           &handedOver,

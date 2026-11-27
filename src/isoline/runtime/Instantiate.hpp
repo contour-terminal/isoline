@@ -231,19 +231,4 @@ struct InstantiationOutcome
     std::shared_ptr<ModuleCode const> code,
     std::span<ExternValue const> imports);
 
-/// Instantiates a module for the reference engine as instantiate() does, and reports the grows its
-/// RefusalScope recorded: instantiateReporting() with null code, so @p executor must be the reference
-/// engine's (checked).
-/// @param store The store to allocate in.
-/// @param executor Runs the start function, and later every function of the instance.
-/// @param module The validated module (checked: not null).
-/// @param imports The external values its imports bind to, in import order.
-/// @return The instance or the error, and the refused grows; none when instantiation was refused
-///         before it began (past StoreLimits::maxNestedInvocations).
-[[nodiscard]] InstantiationOutcome instantiateReporting(
-    Store& store,
-    ICodeExecutor& executor,
-    std::shared_ptr<validate::ValidatedModule const> module,
-    std::span<ExternValue const> imports);
-
 } // namespace isoline::runtime
