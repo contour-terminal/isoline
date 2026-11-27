@@ -481,6 +481,18 @@ with the components around them, the outermost component included, where wasm-to
 of component types (100) apart from that of components, so a type nested 100 deep inside the outermost
 component is refused here and accepted there.
 
+Loading a component (`component::api::Component::load`) takes time linear in its bytes, bounded by
+the same caps: one decode pass, one validation pass, each charged as it goes (the type caps,
+`maxSubtypingSteps`, `maxCoreMatchingSteps`), one SHA-256 pass over the bytes, then each embedded core
+module validated decode-only and, only once the whole component validated, loaded once through the
+`ICoreModuleLoader` (each within the engine's `LoadLimits::maxModuleBytes`), then one plan step per
+definition. Nothing in it is interruptible but the loader, which may refuse a module and so end the
+load; an embedder that loads untrusted components lowers `maxComponentBytes` to bound the time, as
+Contour's extension host (P9) does for extensions. The loaded modules must be the engine's: a module
+of another engine identity, or a validator whose core features are not the engine's, is refused at
+load (`CoreModuleEngineMismatch`, `CoreFeaturesMismatch`), so a module cache keys by the engine
+identity as well as by the component hash and ordinal.
+
 A component store's handles are capped by `maxHandles` (1000000), where the component model's
 `definitions.py` caps only each table's indices (2^28 − 1) and has no store-wide cap at all. The cap
 counts handle *slots*, every table's together, plus the handles lent to calls in progress: a table

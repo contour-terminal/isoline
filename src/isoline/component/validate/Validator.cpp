@@ -481,7 +481,15 @@ namespace
         [[nodiscard]] types::ComponentTypeInfo takeRootType() { return std::move(_rootType); }
 
         /// The core modules, once run() succeeded.
-        [[nodiscard]] std::vector<CoreModuleShape> takeCoreModules() { return std::move(_coreModules); }
+        /// The embedded modules' shapes, once run() succeeded: their types only. The validated modules are
+        /// dropped, so a ValidatedComponent never holds them for its life (a Component holds what the loader
+        /// made of them instead).
+        [[nodiscard]] std::vector<CoreModuleShape> takeCoreModules()
+        {
+            for (auto& shape: _coreModules)
+                shape.module.reset();
+            return std::move(_coreModules);
+        }
 
         /// What the validation cost, once run() succeeded.
         [[nodiscard]] ValidationWork work() const noexcept
@@ -612,6 +620,15 @@ namespace
                                                      DefinitionPosition position) const;
         [[nodiscard]] Result<void> declaredFunctionType(isoline::binary::FuncType const& type,
                                                         DefinitionPosition position) const;
+        /// The tables and memories a module type imported so far.
+        struct ImportedCount
+        {
+            uint32_t tables = 0;   ///< Table imports.
+            uint32_t memories = 0; ///< Memory imports.
+        };
+        [[nodiscard]] Result<void> countImport(isoline::binary::ExternKind kind,
+                                               ImportedCount& imported,
+                                               DefinitionPosition position) const;
         [[nodiscard]] Result<void> declaredExternGate(binary::CoreExternType const& type,
                                                       DefinitionPosition position) const;
         [[nodiscard]] Result<CoreEntityType> declaredEntity(binary::CoreExternType const& type,
@@ -1685,6 +1702,26 @@ namespace
         return _arena.intern(std::move(type));
     }
 
+    Result<void> ComponentValidator::countImport(isoline::binary::ExternKind kind,
+                                                 ImportedCount& imported,
+                                                 DefinitionPosition position) const
+    {
+        // Module::add_import (core.rs:549-596): a table or memory import past the first needs the feature
+        // that lifts the cap of one; exports add none.
+        switch (kind)
+        {
+            case isoline::binary::ExternKind::Table:
+                ++imported.tables;
+                return imported.tables > 1 ? coreGate(CoreFeatureGate::MultipleTables, position)
+                                           : Result<void> {};
+            case isoline::binary::ExternKind::Memory:
+                ++imported.memories;
+                return imported.memories > 1 ? coreGate(CoreFeatureGate::MultipleMemories, position)
+                                             : Result<void> {};
+            default: return {};
+        }
+    }
+
     Result<void> ComponentValidator::declaredExternGate(binary::CoreExternType const& type,
                                                         DefinitionPosition position) const
     {
@@ -1866,6 +1903,7 @@ namespace
         auto scope = std::vector<CoreFunctionTypeId> {};
         auto info = types::CoreModuleTypeInfo {};
         auto exportNames = std::set<std::string_view> {};
+        auto imported = ImportedCount {};
         for (auto const& declaration: type.declarations)
         {
             auto declared = std::visit(
@@ -1911,9 +1949,11 @@ namespace
                     }
                     else if constexpr (std::is_same_v<Entry, binary::CoreImportDeclaration>)
                         return declaredEntity(entry.type, scope, position)
-                            .transform([&](CoreEntityType entity) {
-                                info.imports.push_back(types::CoreImportType {
-                                    .module = entry.module, .name = entry.name, .type = entity });
+                            .and_then([&](CoreEntityType entity) {
+                                return countImport(entity.kind, imported, position).transform([&] {
+                                    info.imports.push_back(types::CoreImportType {
+                                        .module = entry.module, .name = entry.name, .type = entity });
+                                });
                             });
                     else
                     {

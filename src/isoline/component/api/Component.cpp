@@ -33,7 +33,7 @@ struct Component::State
 };
 
 std::expected<isoline::api::Module, isoline::api::LoadError> EngineCoreModuleLoader::load(
-    CoreModuleKey, std::span<std::byte const> bytes)
+    CoreModuleKey, std::span<std::byte const> bytes) noexcept
 {
     return _engine->load(bytes);
 }
@@ -64,9 +64,10 @@ namespace
 
     /// Loads every embedded core module of @p validated through @p loader, by ordinal, stopping at the
     /// first refusal.
-    [[nodiscard]] std::expected<std::vector<isoline::api::Module>, CoreModuleLoadError> loadCoreModules(
+    [[nodiscard]] std::expected<std::vector<isoline::api::Module>, ComponentLoadError> loadCoreModules(
         validate::ValidatedComponent const& validated,
         std::array<std::byte, 32> const& hash,
+        isoline::api::EngineIdentity const& engine,
         ICoreModuleLoader& loader)
     {
         auto const& pool = validated.pool;
@@ -83,9 +84,13 @@ namespace
                 CoreModuleKey { .componentHash = hash, .ordinal = static_cast<uint32_t>(ordinal) };
             auto loaded = loader.load(key, bytes.subspan(definition.offset, definition.size));
             if (!loaded)
-                return std::unexpected { CoreModuleLoadError { .ordinal = key.ordinal,
-                                                               .error = std::move(loaded.error()) } };
-            modules.push_back(std::move(*loaded));
+                return std::unexpected { ComponentLoadError {
+                    CoreModuleLoadError { .ordinal = key.ordinal, .error = std::move(loaded.error()) } } };
+            // A cache may hand back a module of another engine, which no store of this one instantiates.
+            if (loaded->engine() != engine)
+                return std::unexpected { ComponentLoadError {
+                    CoreModuleEngineMismatch { .ordinal = key.ordinal } } };
+            modules.push_back(*loaded);
         }
         return modules;
     }
@@ -103,6 +108,11 @@ std::expected<Component, ComponentLoadError> Component::load(
     // of memory is a refusal, never an exception in the embedder's lap.
     try
     {
+        // Declared core types are validated under the validator's features, embedded modules run under the
+        // engine's: the two must agree, or validation would admit what the engine refuses.
+        if (auto const features = engine.config().features; validator.coreFeatures() != features)
+            return std::unexpected { ComponentLoadError {
+                CoreFeaturesMismatch { .validator = validator.coreFeatures(), .engine = features } } };
         auto pool = binary::decodeComponent(bytes, config.features, config.limits);
         if (!pool)
             return std::unexpected { ComponentLoadError { pool.error() } };
@@ -117,9 +127,9 @@ std::expected<Component, ComponentLoadError> Component::load(
                              .plans = {},
                              .hash = core::Sha256::hash(bytes),
                              .engine = engine.config().identity() };
-        auto modules = loadCoreModules(*state.validated, state.hash, loader);
+        auto modules = loadCoreModules(*state.validated, state.hash, state.engine, loader);
         if (!modules)
-            return std::unexpected { ComponentLoadError { std::move(modules.error()) } };
+            return std::unexpected { std::move(modules.error()) };
         state.coreModules = std::move(*modules);
         state.plans = runtime::buildPlans(*state.validated);
         return Component { std::make_shared<State const>(std::move(state)) };

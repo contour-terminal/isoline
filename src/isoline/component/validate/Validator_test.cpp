@@ -580,6 +580,9 @@ TEST_CASE("Validator.coreModules")
     REQUIRE(result.has_value());
     CHECK(coreModules.calls() == 2);
     CHECK((*result)->coreModules.size() == 2);
+    // Only their types are kept: the validated modules are not held for the component's life.
+    for (auto const& shape: (*result)->coreModules)
+        CHECK(shape.module == nullptr);
 
     // A module the core validator refuses names its ordinal.
     auto broken = modulePreamble();

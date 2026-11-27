@@ -39,6 +39,8 @@ using isoline::component::ComponentLimit;
 using isoline::component::api::Component;
 using isoline::component::api::ComponentConfig;
 using isoline::component::api::ComponentLoadError;
+using isoline::component::api::CoreFeaturesMismatch;
+using isoline::component::api::CoreModuleEngineMismatch;
 using isoline::component::api::CoreModuleKey;
 using isoline::component::api::CoreModuleLoadError;
 using isoline::component::api::EngineCoreModuleLoader;
@@ -69,24 +71,49 @@ class RecordingLoader final: public ICoreModuleLoader
     explicit RecordingLoader(isoline::api::Engine const& engine) noexcept: _engine { &engine } {}
 
     [[nodiscard]] std::expected<isoline::api::Module, isoline::api::LoadError> load(
-        CoreModuleKey key, std::span<std::byte const> bytes) override
+        CoreModuleKey key, std::span<std::byte const> bytes) noexcept override
     {
-        keys.push_back(key);
-        modules.emplace_back(bytes.begin(), bytes.end());
-        if (key.ordinal == throwAt)
-            throw std::bad_alloc {};
+        try
+        {
+            keys.push_back(key);
+            modules.emplace_back(bytes.begin(), bytes.end());
+        }
+        catch (std::bad_alloc const&)
+        {
+            return std::unexpected { isoline::api::LoadError { isoline::api::HostMemoryExhausted {} } };
+        }
         if (key.ordinal == refuseAt)
             return std::unexpected { isoline::api::LoadError { isoline::api::HostMemoryExhausted {} } };
-        return _engine->load(bytes);
+        return (from != nullptr ? from : _engine)->load(bytes);
     }
 
-    std::vector<CoreModuleKey> keys {};  ///< Each call's key, in order.
-    std::vector<Bytes> modules {};       ///< Each call's module bytes, in order.
-    std::optional<uint32_t> refuseAt {}; ///< The ordinal refused, if any.
-    std::optional<uint32_t> throwAt {};  ///< The ordinal whose load throws std::bad_alloc, if any.
+    std::vector<CoreModuleKey> keys {};         ///< Each call's key, in order.
+    std::vector<Bytes> modules {};              ///< Each call's module bytes, in order.
+    std::optional<uint32_t> refuseAt {};        ///< The ordinal refused, if any.
+    isoline::api::Engine const* from = nullptr; ///< Another engine to load with (a stale cache), if set.
 
   private:
     isoline::api::Engine const* _engine;
+};
+
+/// A validator that throws std::bad_alloc at its @ref throwAt th call, as the host running out of memory.
+class ThrowingValidator final: public isoline::component::validate::ICoreModuleValidator
+{
+  public:
+    [[nodiscard]] std::expected<isoline::component::validate::CoreModuleShape, isoline::api::LoadError>
+    validate(std::span<std::byte const> bytes) override
+    {
+        if (_inner.calls() == throwAt)
+            throw std::bad_alloc {};
+        return _inner.validate(bytes);
+    }
+
+    [[nodiscard]] isoline::FeatureSet coreFeatures() const noexcept override { return _inner.coreFeatures(); }
+
+    std::size_t throwAt = 0; ///< The call (counted from 0) that throws.
+
+  private:
+    CoreModuleValidator _inner { isoline::api::EngineConfig {}.features };
 };
 
 /// What a load needs: an engine, a recording loader and a counting validator.
@@ -94,7 +121,7 @@ struct Loading
 {
     isoline::api::Engine engine { isoline::api::EngineConfig {} };
     RecordingLoader loader { engine };
-    CoreModuleValidator validator {};
+    CoreModuleValidator validator { engine.config().features };
 
     /// Loads @p bytes under @p config.
     [[nodiscard]] std::expected<Component, ComponentLoadError> load(std::span<std::byte const> bytes,
@@ -221,11 +248,44 @@ TEST_CASE("Component.loaderRefusalStopsALargeLoadPartway")
 
 TEST_CASE("Component.hostMemoryExhaustedIsARefusal")
 {
-    // The boundary catches std::bad_alloc wherever it is thrown, the loader included.
+    // The boundary catches std::bad_alloc wherever it is thrown, an injected validator included.
     auto loading = Loading {};
-    loading.loader.throwAt = 1;
-    auto const loaded = loading.load(modulesComponent(3).build());
+    auto validator = ThrowingValidator {};
+    validator.throwAt = 1;
+    auto const loaded =
+        Component::load(loading.engine, modulesComponent(3).build(), {}, loading.loader, validator);
     std::ignore = errorOf<isoline::api::HostMemoryExhausted>(loaded);
+    CHECK(loading.loader.keys.empty());
+}
+
+TEST_CASE("Component.moduleOfAnotherEngineRefused")
+{
+    // A loader backed by another engine (a cache keyed without the engine identity): the first module it
+    // hands back is refused by ordinal, as no store of the component's engine could instantiate it.
+    auto loading = Loading {};
+    auto const other = isoline::api::Engine { isoline::api::EngineConfig {
+        .mode = isoline::api::ExecutionMode::Deterministic } };
+    REQUIRE(other.config().identity() != loading.engine.config().identity());
+    loading.loader.from = &other;
+    auto const error = errorOf<CoreModuleEngineMismatch>(loading.load(modulesComponent(3).build()));
+    CHECK(error.ordinal == 0);
+    CHECK(loading.loader.keys.size() == 1);
+}
+
+TEST_CASE("Component.validatorOfOtherFeaturesRefused")
+{
+    // A validator whose core features are not the engine's would admit declared core types the engine
+    // refuses: refused before anything is decoded.
+    auto loading = Loading {};
+    auto validator = CoreModuleValidator { isoline::FeatureSet::all() };
+    REQUIRE(validator.coreFeatures() != loading.engine.config().features);
+    auto const loaded =
+        Component::load(loading.engine, liftedIdentity().build(), {}, loading.loader, validator);
+    auto const error = errorOf<CoreFeaturesMismatch>(loaded);
+    CHECK(error.validator == isoline::FeatureSet::all());
+    CHECK(error.engine == loading.engine.config().features);
+    CHECK(validator.calls() == 0);
+    CHECK(loading.loader.keys.empty());
 }
 
 TEST_CASE("Component.sameBytesSameIdentity")

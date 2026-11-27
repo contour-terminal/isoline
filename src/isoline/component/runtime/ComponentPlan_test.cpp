@@ -298,7 +298,10 @@ TEST_CASE("ComponentPlan.outerAliasReadsEnclosingSlots")
     auto child = ComponentBuilder {};
     auto const aliased = child.aliasOuter(Sort::CoreModule, 1, 0);
     std::ignore = child.coreInstantiate(aliased, {});
+    // A type from outside is static: a slot, no step.
+    auto const aliasedType = child.aliasOuter(Sort::Type, 1, 0);
     auto parent = ComponentBuilder {};
+    std::ignore = parent.type(nullaryFunction());
     std::ignore = parent.coreModule(identityModule());
     std::ignore = parent.instantiate(parent.nested(std::move(child)), {});
     auto const validated = validatedOf(parent);
@@ -312,6 +315,8 @@ TEST_CASE("ComponentPlan.outerAliasReadsEnclosingSlots")
     CHECK(std::get<OuterSlot>(alias.source).slot == 0);
     CHECK(stepAt<InstantiateCore>(plans.plans[1], 1).module == aliased);
     CHECK(stepsOf<DefineCoreModule>(plans.plans[1]).empty());
+    CHECK(plans.plans[1].steps.size() == 2);
+    CHECK(plans.plans[1].slots[Sort::Type] == aliasedType + 1);
 }
 
 TEST_CASE("ComponentPlan.argumentsOrderedByName")

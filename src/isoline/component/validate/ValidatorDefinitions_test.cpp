@@ -2139,6 +2139,18 @@ TEST_CASE("Validator.declaredCoreTypesKeepToTheEngine")
     auto const memory = [&](isoline::binary::MemoryType type) {
         return importing(CoreExternType { .kind = ExternKind::Memory, .memory = type });
     };
+    auto const table = CoreExternType { .kind = ExternKind::Table,
+                                        .table = { .element = isoline::binary::FuncRef, .limits = {} } };
+    auto const oneMemory = CoreExternType { .kind = ExternKind::Memory, .memory = { .limits = {} } };
+    // Two imports of one kind, a table or a memory; exports of more would need no feature.
+    auto const twice = [](CoreExternType type) {
+        return std::vector<CoreModuleDeclaration> {
+            CoreImportDeclaration { .module = "", .name = "a", .type = type },
+            CoreImportDeclaration { .module = "", .name = "b", .type = type },
+            CoreExportDeclaration { .name = "c", .type = type },
+            CoreExportDeclaration { .name = "d", .type = type }
+        };
+    };
     struct Case
     {
         CoreFeatureGate gate;
@@ -2182,6 +2194,12 @@ TEST_CASE("Validator.declaredCoreTypesKeepToTheEngine")
         { .gate = CoreFeatureGate::Tag,
           .functionType = std::nullopt,
           .declarations = importing(CoreExternType { .kind = ExternKind::Tag, .typeIndex = 0 }) },
+        { .gate = CoreFeatureGate::MultipleTables,
+          .functionType = std::nullopt,
+          .declarations = twice(table) },
+        { .gate = CoreFeatureGate::MultipleMemories,
+          .functionType = std::nullopt,
+          .declarations = twice(oneMemory) },
     };
     REQUIRE(cases.size() == CoreFeatureGateTable.size());
     auto const validatedUnder = [](Case const& row, FeatureSet features) {
@@ -2217,6 +2235,13 @@ TEST_CASE("Validator.declaredCoreTypesKeepToTheEngine")
                                        .kind = ExternKind::Table,
                                        .table = { .element = isoline::binary::FuncRef, .limits = {} } }) };
     CHECK(validatedUnder(plainTable, FeatureSet::all().without(Feature::ReferenceTypes)).has_value());
+    // Exports of a second memory add none: only imports count against the cap of one.
+    auto const exportsOnly =
+        Case { .gate = CoreFeatureGate::MultipleMemories,
+               .functionType = std::nullopt,
+               .declarations = { CoreExportDeclaration { .name = "c", .type = oneMemory },
+                                 CoreExportDeclaration { .name = "d", .type = oneMemory } } };
+    CHECK(validatedUnder(exportsOnly, FeatureSet::all().without(Feature::MultiMemory)).has_value());
     CHECK_FALSE(
         requiredCoreFeature(ValidationError { .code = ValidationErrorCode::LimitExceeded, .position = {} })
             .has_value());

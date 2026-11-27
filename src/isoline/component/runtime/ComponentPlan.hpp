@@ -25,7 +25,8 @@ namespace isoline::component::runtime
 //
 // Slots of sort CoreType and Value are never filled: core types are static, and values are refused
 // before validation (🪙). A type slot holds a runtime resource type when the entry is a resource, and
-// nothing otherwise; only the definitions that can name a resource have a step.
+// nothing otherwise; only the definitions that can name a resource have a step (an outer alias of a type
+// from an enclosing component never can).
 
 /// The slots of a plan: per sort, the entries of that index space, equal to the counts validation
 /// made (validate::ScopeInfo).

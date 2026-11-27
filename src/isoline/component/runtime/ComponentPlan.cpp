@@ -131,8 +131,12 @@ namespace
                             CoreInstanceExport { .coreInstance = alias.instance, .name = alias.name } });
                     return;
                 case binary::AliasTarget::Outer:
-                    // A core type is static; every other sort an outer alias may name has a value.
-                    if (sort == binary::Sort::CoreType)
+                    // A core type is static, and so is a type aliased from outside: validation refuses an
+                    // outer alias naming a resource not defined in the component itself, so it names no
+                    // runtime resource type. Modules and components keep their values, and an outer 0 type
+                    // alias may name the component's own resource.
+                    if (sort == binary::Sort::CoreType
+                        || (sort == binary::Sort::Type && alias.outerCount > 0))
                         return;
                     _plan.steps.emplace_back(AliasSlot {
                         .sort = sort,

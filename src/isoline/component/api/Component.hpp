@@ -45,12 +45,15 @@ class ICoreModuleLoader
   public:
     virtual ~ICoreModuleLoader() = default;
 
-    /// Loads one embedded core module.
+    /// Loads one embedded core module. Contract: it throws nothing; the host running out of memory is the
+    /// refusal HostMemoryExhausted, as isoline::api::Engine::load() reports it. The module must be of the
+    /// engine Component::load() was given (its identity is checked), so a cache keys modules by the
+    /// engine's identity as well as by @p key.
     /// @param key The component's hash and the module's ordinal.
     /// @param bytes The module's bytes, from its preamble on; already validated, decode-only.
     /// @return The module, or why it was refused.
     [[nodiscard]] virtual std::expected<isoline::api::Module, isoline::api::LoadError> load(
-        CoreModuleKey key, std::span<std::byte const> bytes) = 0;
+        CoreModuleKey key, std::span<std::byte const> bytes) noexcept = 0;
 
   protected:
     ICoreModuleLoader() = default;
@@ -68,7 +71,7 @@ class EngineCoreModuleLoader final: public ICoreModuleLoader
     explicit EngineCoreModuleLoader(isoline::api::Engine const& engine) noexcept: _engine { &engine } {}
 
     [[nodiscard]] std::expected<isoline::api::Module, isoline::api::LoadError> load(
-        CoreModuleKey key, std::span<std::byte const> bytes) override;
+        CoreModuleKey key, std::span<std::byte const> bytes) noexcept override;
 
   private:
     isoline::api::Engine const* _engine;
@@ -107,11 +110,29 @@ struct CoreModuleLoadError
     isoline::api::LoadError error; ///< The loader's refusal.
 };
 
-/// Why Component::load() refused a component: malformed, invalid, a core module its loader refused, or
-/// the host out of memory (caught at this boundary, as isoline::api::Engine::load() does).
+/// A core module the ICoreModuleLoader loaded for another engine than the component's: a store of the
+/// component's engine could not instantiate it.
+struct CoreModuleEngineMismatch
+{
+    uint32_t ordinal = 0; ///< The module's ordinal.
+};
+
+/// An ICoreModuleValidator whose core features are not the engine's: the component would be validated
+/// under other features than its modules run with. Refused before anything is decoded.
+struct CoreFeaturesMismatch
+{
+    FeatureSet validator; ///< ICoreModuleValidator::coreFeatures().
+    FeatureSet engine;    ///< The engine's EngineConfig::features.
+};
+
+/// Why Component::load() refused a component: malformed, invalid, a core module its loader refused or
+/// made for another engine, a validator of other features than the engine's, or the host out of memory
+/// (caught at this boundary, as isoline::api::Engine::load() does).
 using ComponentLoadError = std::variant<binary::DecodeError,
                                         validate::ValidationError,
                                         CoreModuleLoadError,
+                                        CoreModuleEngineMismatch,
+                                        CoreFeaturesMismatch,
                                         isoline::api::HostMemoryExhausted>;
 
 /// An import or an export of a component: its name and its type in the component's arena (types()).
@@ -125,9 +146,23 @@ using ExternDescription = types::NamedExtern;
 class Component
 {
   public:
-    /// Loads a component: decodes it, validates it (each embedded core module decode-only, through
-    /// @p validator), and only then loads every core module through @p loader, in ordinal order, keyed
-    /// by the component's hash; then plans it. Nothing is thrown: the host running out of memory is a
+    /// A copy, sharing this component's state.
+    ///
+    /// There is deliberately no move constructor or move assignment, as api::Module has none: a moved-from
+    /// component would hold no state, and every member reads it. Moving copies instead, one atomic
+    /// increment, leaving the source whole.
+    Component(Component const&) = default;
+
+    /// Makes this component a copy of @p other, sharing its state; moving assigns the same way.
+    /// @return This component.
+    Component& operator=(Component const&) = default;
+
+    ~Component() = default;
+
+    /// Loads a component: refuses a @p validator of other core features than @p engine's; decodes it,
+    /// validates it (each embedded core module decode-only, through @p validator), and only then loads
+    /// every core module through @p loader, in ordinal order, keyed by the component's hash, refusing
+    /// one of another engine identity; then plans it. Nothing is thrown: the host running out of memory is a
     /// refusal.
     /// @param engine The engine its core modules are for; the component records its identity.
     /// @param bytes The component's bytes, from its preamble on; copied, so the caller may free them.

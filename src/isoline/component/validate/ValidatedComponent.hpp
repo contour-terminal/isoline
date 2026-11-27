@@ -14,11 +14,12 @@
 namespace isoline::component::validate
 {
 
-/// What validation keeps of one embedded core module: the module, decoded and validated, never
-/// compiled (D10).
+/// One embedded core module as validation sees it: decoded and validated, never compiled (D10).
 struct CoreModuleShape
 {
-    std::shared_ptr<isoline::validate::ValidatedModule const> module; ///< The validated module.
+    /// The validated module, from the ICoreModuleValidator. validateComponent() drops it once it has read
+    /// the module's type, so a ValidatedComponent holds only the type: empty there.
+    std::shared_ptr<isoline::validate::ValidatedModule const> module;
     /// Its type, in the arena of the ValidatedComponent: its imports and exports in canonical core ids.
     types::CoreModuleTypeId type {};
 };
@@ -68,7 +69,7 @@ struct ValidatedComponent
     canonical::LayoutTable layouts;           ///< The layout of every value type of the arena, by TypeId.
     std::vector<ScopeInfo> scopes;            ///< Per entry of the pool, by its index: its index spaces.
     types::ComponentTypeInfo type;            ///< The root's imports and exports, typed.
-    std::vector<CoreModuleShape> coreModules; ///< The embedded core modules, by ordinal (D10).
+    std::vector<CoreModuleShape> coreModules; ///< The embedded core modules' types, by ordinal (D10).
     ValidationWork work {};                   ///< What validating it cost.
 };
 

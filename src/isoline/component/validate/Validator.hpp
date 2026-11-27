@@ -415,6 +415,8 @@ enum class CoreFeatureGate : uint8_t
     Memory64,             ///< A memory of 64-bit addresses.
     CustomPageSize,       ///< A memory of another page size than 64 KiB.
     Tag,                  ///< A tag.
+    MultipleTables,       ///< A module type's second table import (Module::max_tables, core.rs:927).
+    MultipleMemories,     ///< A module type's second memory import (Module::max_memories, core.rs:935).
 };
 
 /// One row of CoreFeatureGateTable: a gate, the core feature it needs and wasm-tools' refusal.
@@ -460,6 +462,13 @@ inline constexpr auto CoreFeatureGateTable = std::to_array<CoreFeatureGateRow>({
     { .gate = CoreFeatureGate::Tag,
       .feature = Feature::ExceptionHandling,
       .text = "exceptions proposal not enabled" },
+    // check_max (validator.rs:72-86) words a cap of one as "multiple {desc}".
+    { .gate = CoreFeatureGate::MultipleTables,
+      .feature = Feature::ReferenceTypes,
+      .text = "multiple tables" },
+    { .gate = CoreFeatureGate::MultipleMemories,
+      .feature = Feature::MultiMemory,
+      .text = "multiple memories" },
 });
 
 static_assert(
@@ -471,7 +480,7 @@ static_assert(
                 return false;
             ++index;
         }
-        return index == static_cast<std::size_t>(CoreFeatureGate::Tag) + 1;
+        return index == static_cast<std::size_t>(CoreFeatureGate::MultipleMemories) + 1;
     }(),
     "CoreFeatureGateTable must hold one row per CoreFeatureGate, at the index of its enumerator");
 
