@@ -21,3 +21,4 @@ ISOLINE_REQUIRE_CANARY_CASE(importsHostTypeBottom, "imports-host-type-bottom", "
 ISOLINE_REQUIRE_CANARY_CASE(hostMemoryStoreAfterDelete, "host-memory-store-after-delete", "isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(hostTableStoreAfterDelete, "host-table-store-after-delete", "isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(hostGlobalStoreAfterDelete, "host-global-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(normalizeAnchorOutOfRange, "normalize-anchor-out-of-range", "anchor <= LastSectionAnchor")

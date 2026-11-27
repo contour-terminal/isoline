@@ -16,12 +16,15 @@
 #include <print>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Store.hpp>
 #include <isoline/api/Types.hpp>
 #include <isoline/api/testing/EngineRows.hpp>
+#include <isoline/binary/Encoder.hpp>
+#include <isoline/binary/Module.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 
@@ -257,6 +260,21 @@ void hostTableStoreAfterDelete()
 void hostGlobalStoreAfterDelete()
 {
     wentThrough("a defined Global::store()", deletedHostHandles().global.store().serial());
+}
+
+/// binary::normalize() of a hand-built module whose custom section's anchor is past LastSectionAnchor
+/// (binary/Encoder.cpp): no decoder or text reader makes one, and the section table is not read past its end.
+void normalizeAnchorOutOfRange()
+{
+    auto module = isoline::binary::Module {};
+    module.customs.push_back(
+        isoline::binary::CustomSection { .name = "c",
+                                         .bytes = {},
+                                         .after = static_cast<isoline::binary::SectionAnchor>(
+                                             std::to_underlying(isoline::binary::LastSectionAnchor) + 1) });
+    auto const normalized = isoline::binary::normalize(std::move(module));
+    std::println("binary::normalize() of an anchor past the last returned ({} customs)",
+                 normalized.customs.size());
 }
 
 /// A case: its name on the command line, and what it calls.

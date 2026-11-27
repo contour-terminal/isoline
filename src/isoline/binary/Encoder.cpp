@@ -293,10 +293,12 @@ namespace
         }(),
         "SectionWriters holds one writer per row of SectionEncodings, in its order");
 
-    /// The writer of the section @p anchor names; BeforeFirst names none.
+    /// The writer of the section @p anchor names; BeforeFirst names none, and a value past
+    /// LastSectionAnchor is no anchor (checked: the table is never read out of its bounds).
     [[nodiscard]] SectionWriter const& sectionWriterOf(SectionAnchor anchor) noexcept
     {
         Require(anchor != SectionAnchor::BeforeFirst);
+        Require(anchor <= LastSectionAnchor);
         return SectionWriters[std::to_underlying(anchor) - 1];
     }
 

@@ -103,7 +103,9 @@ enum class EncodeError : uint8_t
 /// at or before @p anchor in section order, that encodeModule writes for @p module, as the decoder of
 /// the encoding records it.
 /// @param module The module.
-/// @param anchor The anchor asked for.
+/// @param anchor The anchor asked for (checked: an enumerator of SectionAnchor). The decoder and the text
+///        reader produce nothing else, so only a hand-built Module holds another value: a programming
+///        error of its builder, which ends the process rather than reading past the section table.
 /// @return @p anchor when encodeModule writes that section; otherwise the last section before it that
 ///         it writes, or BeforeFirst when it writes none.
 [[nodiscard]] SectionAnchor writtenAnchor(Module const& module, SectionAnchor anchor) noexcept;
@@ -127,7 +129,8 @@ enum class EncodeError : uint8_t
 ///   decodes, which drops what the codec skips (field names, unknown, out-of-order and repeated
 ///   subsections) and empty subsections, and writes every map by ascending index in shortest
 ///   LEB128s; one that does not decode stays verbatim, as names are advisory.
-/// @param module The module, as decoded or as read from text.
+/// @param module The module, as decoded or as read from text; each custom section's anchor is an
+///        enumerator of SectionAnchor (checked, as writtenAnchor() checks it).
 /// @return The canonical module.
 [[nodiscard]] Module normalize(Module module);
 
