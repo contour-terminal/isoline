@@ -180,6 +180,13 @@ if(ISOLINE_TESTING)
     # A bound, so a test that would hang (an interrupt test whose poll went missing) fails instead.
     set_tests_properties(isoline_test PROPERTIES LABELS unit TIMEOUT 600)
     isoline_add_capped_test(NAME isoline_test_memory TARGET isoline_test LABELS unit ARGS "[memory]")
+    # Contract violations end the process (Require): each runs its hidden [.contract] case alone, whose
+    # fail handler reports the check and exits, and passes when the report names the precondition.
+    add_test(NAME isoline_contract_store_destroyed_mid_call
+             COMMAND isoline_test "Store.destroyedMidCallIsAContractViolation")
+    set_tests_properties(isoline_contract_store_destroyed_mid_call PROPERTIES
+        LABELS unit TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "contract check failed: [^\n]*Precondition failed\\. _invocationDepth == 0")
     # The interrupt latency the specification publishes (p99 interrupt-to-return within 10 ms) is a
     # property of optimized code: measured in release builds only, by the hidden [perf] cases, which
     # the unit run above skips. It asserts wall-clock time, so every test preset but clang-release-perf

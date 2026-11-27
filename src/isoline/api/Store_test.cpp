@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <core/Assert.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
@@ -8,14 +10,18 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -1596,4 +1602,82 @@ TEST_CASE("Store.bulkPollInterruptedFromAnotherThread", "[api][threading]")
     watchdog.join();
     REQUIRE(outcome.has_value());
     CHECK(outcome->failure() == CallFailure::Interrupted);
+}
+
+TEST_CASE("Store.hopOutsideAScopeKeepsItsRecord", "[api]")
+{
+    // In a scope opened outside every call, a host function hops into a guest without opening a scope
+    // of its own: the hop is refused a table element and traps; its refusal is its own CallError's,
+    // never the scope's.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto store = static_cast<Store*>(nullptr);
+    auto growTable = std::optional<Function> {};
+    auto hop = std::optional<CallError> {};
+    auto imports = Imports {};
+    imports.define(
+        "env",
+        "hop",
+        FuncType {},
+        makeHostFunction([&](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> Outcome {
+            if (auto const nested = store->call(*growTable, {}, {}); !nested)
+                hop = nested.error();
+            return {};
+        }));
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .importFunction("env", "hop", 0)
+        .table(TableType { .element = isoline::binary::FuncRef, .limits = pages(1) })
+        .function(0, {}, code({ { 0xD0, 0x70 }, i32Const(1), tableGrow(0), drop(), unreachable() }))
+        .function(0, {}, call(0))
+        .exportFunction("grow-table-then-trap", 1)
+        .exportFunction("hop", 2);
+    auto fixture = InvocationFixture { row, invocationLimits(100), builder, imports };
+    store = &fixture.store;
+    growTable = exportedFunction(*fixture.instance, "grow-table-then-trap");
+    auto const outer = fixture.store.openInvocation();
+    CHECK(fixture.call("hop").has_value());
+    REQUIRE(hop.has_value());
+    CHECK(hop->failure() == CallFailure::Trap);
+    CHECK(hop->refusedGrowth == GrowthRecord { .memory = {}, .table = Refusal::Limit });
+    CHECK(outer.refusedGrowth() == GrowthRecord {});
+}
+
+TEST_CASE("Store.destroyedMidCallIsAContractViolation", "[.contract]")
+{
+    // Destroying the store from a host function while a call made in a scope runs ends the process
+    // (Require): never a silent abandon of the scope. Hidden: CTest runs it alone and expects the
+    // report (isoline_contract_store_destroyed_mid_call). The fail handler reports the check and ends
+    // the process at once, as a failed check would, without the abort CTest counts as a crash.
+    core::setFailHandler(
+        [](std::string_view text, std::string_view message, std::string_view file, int line) {
+            std::cerr << "contract check failed: [" << file << ':' << line << "] " << message << ' ' << text
+                      << '\n'
+                      << std::flush;
+            std::_Exit(0);
+        });
+    auto const engine = Engine { configOf(invocationLimits(100), engineRows().front()) };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = std::make_unique<Store>(engine, allocator);
+    auto imports = Imports {};
+    imports.define(
+        "env",
+        "destroy",
+        FuncType {},
+        makeHostFunction([&](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> Outcome {
+            store.reset();
+            return {};
+        }));
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .importFunction("env", "destroy", 0)
+        .function(0, {}, call(0))
+        .exportFunction("destroy", 1);
+    auto const module = engine.load(builder.build());
+    REQUIRE(module.has_value());
+    auto const instance = store->instantiate(*module, imports);
+    REQUIRE(instance.has_value());
+    auto const scope = store->openInvocation();
+    CHECK(scope.refusedGrowth() == GrowthRecord {});
+    std::ignore = instance->call(exportedFunction(*instance, "destroy"), {}, {});
+    FAIL("the store was destroyed mid-call without a contract violation");
 }

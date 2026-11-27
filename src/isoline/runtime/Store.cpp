@@ -581,6 +581,8 @@ Store::~Store()
 
 void Store::abandonHeldInvocations() noexcept
 {
+    // A store destroyed while a call runs is a programmer error, never a silent abandon.
+    Require(_invocationDepth == 0);
     _heldDepth.reset();
     _stepsHeld = StepsHeld::No;
 }

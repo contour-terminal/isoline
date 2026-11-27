@@ -514,7 +514,8 @@ class Store
 
     /// Lets go of every held invocation (SharedInvocationScope), whose scopes then end nothing: what an
     /// owner whose scopes may outlive the store (api::Store) does before the store is destroyed. Their
-    /// destructors must then not reach the store (SharedInvocationScope::abandon()).
+    /// destructors must then not reach the store (SharedInvocationScope::abandon()). Precondition
+    /// (checked): no invocation is in progress: a store is never destroyed while a call runs in it.
     void abandonHeldInvocations() noexcept;
 
     /// How many module instances the store holds.
