@@ -12,6 +12,7 @@ target_sources(isoline_core
         FeatureSupport.cpp
         intermediate/Dominators.cpp
         intermediate/Function.cpp
+        intermediate/MemoryStretches.cpp
         intermediate/Printer.cpp
         intermediate/Verifier.cpp
         optimization/BoundsChecks.cpp
@@ -35,6 +36,7 @@ target_sources(isoline_core
             intermediate/Dominators.hpp
             intermediate/Function.hpp
             intermediate/Guards.hpp
+            intermediate/MemoryStretches.hpp
             intermediate/Operation.hpp
             intermediate/Operations.def
             intermediate/Printer.hpp

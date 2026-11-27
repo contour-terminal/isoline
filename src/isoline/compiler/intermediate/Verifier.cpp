@@ -22,6 +22,7 @@
 
 #include <isoline/compiler/intermediate/Dominators.hpp>
 #include <isoline/compiler/intermediate/Guards.hpp>
+#include <isoline/compiler/intermediate/MemoryStretches.hpp>
 
 namespace isoline::compiler::intermediate
 {
@@ -125,8 +126,9 @@ namespace
     class Verification
     {
       public:
-        explicit Verification(Function const& function):
+        Verification(Function const& function, std::span<uint64_t const> memoryMinimumBytes):
             _function { function },
+            _memoryMinimumBytes { memoryMinimumBytes },
             _definitions(function.valueCount(), Definition {}, &function.memory()),
             _isListed(function.instructionCount(), false, &function.memory()),
             _spans(function.valueCount(), GuardSpan {}, &function.memory()),
@@ -153,7 +155,9 @@ namespace
                             return fault(checked.error(), block, index);
             if (auto agreed = checkReturns(); !agreed)
                 return agreed;
-            return checkDominance().and_then([this] { return checkCountdown(); });
+            return checkDominance().and_then([this] { return checkCountdown(); }).and_then([this] {
+                return checkGuardedStorage();
+            });
         }
 
       private:
@@ -260,6 +264,7 @@ namespace
                     .and_then([&] { return checkTypedImmediates(instruction); })
                     .and_then([&] { return checkResults(instruction); })
                     .and_then([&] { return checkArguments(instruction); })
+                    .and_then([&] { return checkGuard(instruction); })
                     .and_then([&] { return checkGuardedUse(instruction); });
             });
         }
@@ -334,6 +339,23 @@ namespace
             return std::nullopt; // uncovered(guard-scope-without-case)
         }
 
+        /// A guard whose bound is static (GuardBound::MemoryMinimum: inBoundsAddress) reaches no further
+        /// than its memory's declared minimum: offset + size within it, computed without wrapping. A memory
+        /// whose minimum the verifier was not given admits none.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> checkGuard(Instruction const& instruction) const
+        {
+            auto const row = guardRowOf(instruction.operation);
+            if (!row || row->bound != GuardBound::MemoryMinimum)
+                return {};
+            auto const memory = immediateOf(instruction, ImmediateField::Memory).value_or(0);
+            auto const offset = immediateOf(instruction, ImmediateField::Offset).value_or(0);
+            auto const size = immediateOf(instruction, ImmediateField::Size).value_or(0);
+            if (memory >= _memoryMinimumBytes.size()
+                || !liesWithin(offset, size, _memoryMinimumBytes[memory]))
+                return std::unexpected { VerifierErrorCode::UnguardedAddress };
+            return {};
+        }
+
         /// A use of a guarded pointer takes it from its GuardedUseTable row's guard, directly or through
         /// guardAddress: of the same memory or table, and reaching no further than the guard checked.
         [[nodiscard]] std::expected<void, VerifierErrorCode> checkGuardedUse(
@@ -344,7 +366,7 @@ namespace
                 return {};
             auto const unguarded = std::unexpected { VerifierErrorCode::UnguardedAddress };
             auto const span = guardSpanOf(_function.operands(instruction.operands)[use->operand]);
-            if (!span || _function.instruction(span->root).operation != use->guard)
+            if (!span || rootGuardOf(_function.instruction(span->root).operation) != use->guard)
                 return unguarded;
             if (auto const field = scopeFieldOf(use->scope))
             {
@@ -791,7 +813,160 @@ namespace
             return {};
         }
 
+        /// A value's memory, when it is a memory's base: BaseOfNothing when it is none, BaseOfAnything while
+        /// a parameter's incoming edges are not yet known (and for one no edge enters).
+        static constexpr auto BaseOfNothing = std::numeric_limits<uint64_t>::max() - 1;
+        static constexpr auto BaseOfAnything = std::numeric_limits<uint64_t>::max();
+
+        /// What two edges agree a parameter is the base of.
+        [[nodiscard]] static uint64_t meetBases(uint64_t first, uint64_t second) noexcept
+        {
+            if (first == BaseOfAnything)
+                return second;
+            if (second == BaseOfAnything || first == second)
+                return first;
+            return BaseOfNothing;
+        }
+
+        /// Whether @p value is a block parameter.
+        [[nodiscard]] bool isParameter(ValueId value) const noexcept
+        {
+            auto const& definition = _definitions[std::to_underlying(value)];
+            return definition.operation == Operation::Removed && definition.position == 0;
+        }
+
+        /// Per value, the memory whose base it is: memory 0's context value, memoryBase(m), or a block
+        /// parameter every edge passes the same memory's base to (a forward must-analysis: each parameter
+        /// falls from anything to one memory to nothing at most, and each edge is met once per fall of its
+        /// argument); BaseOfNothing for every other value, and for a parameter no edge enters.
+        [[nodiscard]] std::pmr::vector<uint64_t> baseMemoriesOf() const
+        {
+            auto& memory = _function.memory();
+            auto bases = std::pmr::vector<uint64_t>(_function.valueCount(), BaseOfNothing, &memory);
+            for (auto const block: blocksOf(_function))
+            {
+                if (std::to_underlying(block) != 0)
+                    for (auto const parameter: _function.operands(_function.block(block).parameters))
+                        bases[std::to_underlying(parameter)] = BaseOfAnything;
+                for (auto const index: _function.block(block).instructions)
+                {
+                    auto const& instruction = _function.instruction(index);
+                    auto const isMemory0Base = instruction.operation == Operation::LoadContext
+                                               && _function.immediates(instruction.immediates)[0]
+                                                      == std::to_underlying(ContextValue::Memory0Base);
+                    if (isMemory0Base)
+                        bases[std::to_underlying(_function.operands(instruction.results)[0])] = 0;
+                    if (instruction.operation == Operation::MemoryBase)
+                        bases[std::to_underlying(_function.operands(instruction.results)[0])] =
+                            _function.immediates(instruction.immediates)[0];
+                }
+            }
+            // Every edge as (argument, parameter); those whose argument is a parameter by argument, to pass
+            // on its falls.
+            auto edges = std::pmr::vector<std::pair<ValueId, ValueId>> { &memory };
+            for (auto const block: blocksOf(_function))
+            {
+                auto const terminator = _function.terminator(block);
+                if (!terminator)
+                    continue;
+                _function.forEachTarget(_function.instruction(*terminator), [&](BranchTarget const& target) {
+                    auto const parameters = _function.operands(_function.block(target.block).parameters);
+                    auto const arguments = _function.operands(target.arguments);
+                    for (auto const position: std::views::iota(std::size_t { 0 }, parameters.size()))
+                        edges.emplace_back(arguments[position], parameters[position]);
+                });
+            }
+            auto begins = std::pmr::vector<uint32_t>(_function.valueCount() + 1, 0, &memory);
+            for (auto const& [argument, parameter]: edges)
+                if (isParameter(argument))
+                    ++begins[std::to_underlying(argument) + 1];
+            for (auto const index:
+                 std::views::iota(std::size_t { 0 }, std::size_t { _function.valueCount() }))
+                begins[index + 1] += begins[index];
+            auto users = std::pmr::vector<ValueId>(begins.back(), ValueId {}, &memory);
+            auto cursors = std::pmr::vector<uint32_t>(begins.begin(), begins.end() - 1, &memory);
+            auto worklist = std::pmr::vector<ValueId> { &memory };
+            auto const fall = [&](ValueId parameter, uint64_t argumentBase) {
+                auto& base = bases[std::to_underlying(parameter)];
+                auto const met = meetBases(base, argumentBase);
+                if (met == base)
+                    return;
+                base = met;
+                worklist.push_back(parameter);
+            };
+            for (auto const& [argument, parameter]: edges)
+            {
+                if (isParameter(argument))
+                    users[cursors[std::to_underlying(argument)]++] = parameter;
+                else
+                    fall(parameter, bases[std::to_underlying(argument)]);
+            }
+            while (!worklist.empty())
+            {
+                auto const changed = worklist.back();
+                worklist.pop_back();
+                auto const key = std::to_underlying(changed);
+                for (auto const user: std::span { users }.subspan(begins[key], begins[key + 1] - begins[key]))
+                    fall(user, bases[key]);
+            }
+            return bases;
+        }
+
+        /// In every block the entry reaches: each memory guard's base is its memory's (GuardRow::baseOperand,
+        /// UnguardedAddress), and every use of a guarded pointer runs in the stretch its root guard ran in
+        /// (MemoryStretches, AddressAcrossMemoryMotion). Code no path reaches never runs.
+        [[nodiscard]] std::expected<void, VerifierError> checkGuardedStorage() const
+        {
+            auto const hasGuard = std::ranges::any_of(
+                std::views::iota(uint32_t { 0 }, _function.instructionCount()), [this](uint32_t index) {
+                    return guardRowOf(_function.instruction(index).operation).has_value();
+                });
+            if (!hasGuard)
+                return {}; // no guard, so no use of a guarded pointer either (checkGuardedUse())
+            auto& memory = _function.memory();
+            auto const graph = controlFlowGraphOf(_function, memory);
+            auto const stretches = MemoryStretches { _function, graph, memory };
+            auto const bases = baseMemoriesOf();
+            auto at = std::pmr::vector<Stretch>(_function.instructionCount(), UnreachedStretch, &memory);
+            for (auto const block: blocksOf(_function))
+            {
+                auto stretch = stretches.entryOf(block);
+                if (stretch == UnreachedStretch)
+                    continue;
+                for (auto const index: _function.block(block).instructions)
+                {
+                    at[index] = stretch;
+                    stretch = MemoryStretches::after(_function, index, stretch);
+                }
+            }
+            for (auto const block: blocksOf(_function))
+            {
+                if (stretches.entryOf(block) == UnreachedStretch)
+                    continue;
+                for (auto const index: _function.block(block).instructions)
+                {
+                    auto const& instruction = _function.instruction(index);
+                    if (instruction.operation == Operation::Removed)
+                        continue;
+                    auto const operands = _function.operands(instruction.operands);
+                    if (auto const row = guardRowOf(instruction.operation);
+                        row && row->baseOperand != NoBaseOperand
+                        && bases[std::to_underlying(operands[row->baseOperand])]
+                               != immediateOf(instruction, ImmediateField::Memory))
+                        return fault(VerifierErrorCode::UnguardedAddress, block, index);
+                    auto const use = guardedUseOf(instruction.operation);
+                    if (!use)
+                        continue;
+                    auto const span = guardSpanOf(operands[use->operand]);
+                    if (span && at[span->root] != at[index])
+                        return fault(VerifierErrorCode::AddressAcrossMemoryMotion, block, index);
+                }
+            }
+            return {};
+        }
+
         Function const& _function;
+        std::span<uint64_t const> _memoryMinimumBytes; ///< Per memory, its declared minimum in bytes.
         std::pmr::vector<Definition> _definitions;
         std::pmr::vector<bool> _isListed;
         /// Per value, where its guardAddress chain leads, worked out once by guardSpanOf(): what keeps the
@@ -813,7 +988,13 @@ std::string describe(VerifierError const& error)
 
 std::expected<void, VerifierError> verify(Function const& function)
 {
-    return Verification { function }.run();
+    return verify(function, {});
+}
+
+std::expected<void, VerifierError> verify(Function const& function,
+                                          std::span<uint64_t const> memoryMinimumBytes)
+{
+    return Verification { function, memoryMinimumBytes }.run();
 }
 
 } // namespace isoline::compiler::intermediate

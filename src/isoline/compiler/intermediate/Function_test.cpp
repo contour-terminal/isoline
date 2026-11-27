@@ -272,9 +272,10 @@ TEST_CASE("Function.printsEveryFormOfInstruction")
     auto const entry = builder.createBlock();
     auto const exit = builder.createBlock();
     auto const index = builder.addParameter(entry, Type::I32);
-    auto const base = builder.addParameter(entry, Type::Pointer);
     auto const bound = builder.addParameter(entry, Type::I64);
     builder.switchTo(entry);
+    auto const base = builder.emit(
+        Operation::MemoryBase, std::array { Type::Pointer }, {}, std::array<uint64_t, 1> { 0 })[0];
     auto const address = builder.emit(Operation::CheckMemory,
                                       std::array { Type::Pointer },
                                       std::array { index, base, bound },
@@ -297,14 +298,15 @@ TEST_CASE("Function.printsEveryFormOfInstruction")
 
     REQUIRE(verify(function).has_value());
     CHECK(print(function)
-          == "b0(v0:i32, v1:ptr, v2:i64):\n"
-             "  v3 = check_memory v0, v1, v2 [memory=0, offset=16, size=4]\n"
+          == "b0(v0:i32, v1:i64):\n"
+             "  v2 = memory_base [memory=0]\n"
+             "  v3 = check_memory v0, v2, v1 [memory=0, offset=16, size=4]\n"
              "  v4 = load v3 [memory=0, size=1, extension=1, type=i64]\n"
              "  v5, v6 = call v4, v0 [function=7]\n"
              "  switch v5, b1(), b1()\n"
              "b1():\n"
              "  trap [trap=0]\n");
-    function.remove(function.block(entry).instructions[1]);
+    function.remove(function.block(entry).instructions[2]);
     CHECK(print(function).contains("  removed\n"));
 }
 

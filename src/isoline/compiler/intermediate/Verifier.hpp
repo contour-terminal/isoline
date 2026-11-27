@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -46,12 +47,17 @@ enum class VerifierErrorCode : uint8_t
     ArgumentType,           ///< An argument's type is not its parameter's.
     ReturnsDisagree,        ///< Two returns differ in their values' count or types.
     UseNotDominated,        ///< A value is used where its definition does not dominate the use.
-    UnguardedAddress,       ///< A pointer is used that its GuardedUseTable row's guards did not define.
+    UnguardedAddress,       ///< A pointer is used that its GuardedUseTable row's guards did not define, an
+                            ///< inBoundsAddress reaches past its memory's declared minimum, or a memory
+                            ///< guard's base is not its memory's (GuardRow::baseOperand).
     CountdownNotStored,     ///< A trap site is reached on a path where the live step countdown is not stored.
+    /// A guarded pointer is used in another stretch than its guard ran in (MemoryStretches): an operation
+    /// that may grow or move a memory or table lies between, which may have left the pointer dangling.
+    AddressAcrossMemoryMotion,
 };
 
 /// The last VerifierErrorCode enumerator.
-inline constexpr auto LastVerifierErrorCode = VerifierErrorCode::CountdownNotStored;
+inline constexpr auto LastVerifierErrorCode = VerifierErrorCode::AddressAcrossMemoryMotion;
 
 /// How many VerifierErrorCode enumerators there are.
 inline constexpr auto VerifierErrorCodeCount = std::size_t { std::to_underlying(LastVerifierErrorCode) } + 1;
@@ -90,6 +96,8 @@ inline constexpr auto VerifierErrorTable = std::to_array<VerifierErrorRow>({
     { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
     { .code = VerifierErrorCode::UnguardedAddress, .text = "address not defined by its guard" },
     { .code = VerifierErrorCode::CountdownNotStored, .text = "trap site with the countdown not stored" },
+    { .code = VerifierErrorCode::AddressAcrossMemoryMotion,
+      .text = "guarded address used across memory motion" },
 });
 
 static_assert(
@@ -175,11 +183,24 @@ struct VerifierError
 /// edge into it leaves it stored (the entry's always is); and every store of the countdown stores the live
 /// one on every path: the result of the last poll or reload, or a block parameter every edge passed the live
 /// one to, followed across blocks; never one a poll or reload since superseded, and after a call nothing
-/// until a reload (the entry's countdown, before any of these, is not checked). Removed instructions are
-/// skipped.
+/// until a reload (the entry's countdown, before any of these, is not checked); and, in every block the entry
+/// reaches, each memory guard's base is its memory's (memory 0's context value or memoryBase of it, directly
+/// or through block parameters every edge passes one to), and every use of a guarded pointer runs in the
+/// stretch its root guard ran in (MemoryStretches): no operation that may grow or move a memory or table
+/// between. Removed instructions are skipped.
 /// @param function The function, however it was built.
 /// @return Nothing; or the first fault: every block's structure is checked before any instruction's row,
-///         every row before the returns' agreement, that before dominance, and that before the countdown.
+///         every row before the returns' agreement, that before dominance, that before the countdown, and
+///         that before the guards' bases and stretches.
 [[nodiscard]] std::expected<void, VerifierError> verify(Function const& function);
+
+/// verify(), knowing each memory's declared minimum in bytes (minimumBytesOf()): what an inBoundsAddress, an
+/// access bounds-check elimination proved by a constant index, is held to. verify(function) knows none, so it
+/// refuses every inBoundsAddress (UnguardedAddress).
+/// @param function The function, however it was built.
+/// @param memoryMinimumBytes Per memory of the module's index space, imports first, its declared minimum.
+/// @return As verify().
+[[nodiscard]] std::expected<void, VerifierError> verify(Function const& function,
+                                                        std::span<uint64_t const> memoryMinimumBytes);
 
 } // namespace isoline::compiler::intermediate

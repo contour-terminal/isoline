@@ -191,6 +191,7 @@ enum class OperandSignature : uint8_t
     Store,             ///< A Pointer, then the value stored.
     StoreReference,    ///< A Pointer, then the Ref stored.
     CheckMemory,       ///< The index (I32 or I64), the memory's base (Pointer) and bound (I64).
+    Base,              ///< A memory's base (Pointer): an address no guard returned, which no access takes.
     ConditionIndex,    ///< An I32 condition, then an index (I32 or I64): a trap's subject.
     RefIndex,          ///< A Ref, then an index (I32 or I64): a trap's subject.
     Variadic,          ///< Any number of values.
@@ -246,6 +247,7 @@ inline constexpr auto OperandSignatureTable = std::to_array<OperandSignatureRow>
     { .signature = OperandSignature::CheckMemory,
       .types = { OperandType::Integer, OperandType::Pointer, OperandType::I64 },
       .count = 3 },
+    { .signature = OperandSignature::Base, .types = { OperandType::Pointer }, .count = 1 },
     { .signature = OperandSignature::ConditionIndex,
       .types = { OperandType::I32, OperandType::Integer },
       .count = 2 },
@@ -438,7 +440,7 @@ enum class ImmediateSchema : uint8_t
     Heap,         ///< {heap}: ref.null.
     Function,     ///< {function}: ref.func, call, call_import.
     Memory,       ///< {memory}: memoryBase, memoryBound.
-    MemoryAccess, ///< {memory, offset, size}: checkMemory.
+    MemoryAccess, ///< {memory, offset, size}: checkMemory, inBoundsAddress.
     Load,         ///< {memory, size, extension, type}: load, whose result is a numeric type.
     StoreAccess,  ///< {memory, size}: store, of its value's width or narrower.
     Offset,       ///< {offset}: guardAddress.

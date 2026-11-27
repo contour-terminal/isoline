@@ -99,6 +99,37 @@ ValueId reloadCountdown(Fixture& fixture)
                                                           std::to_underlying(Type::I64) })[0];
 }
 
+/// The immediates of a load of @p size bytes into @p type, extended as @p extension says.
+std::array<uint64_t, 4> loadOf(uint64_t size, Extension extension, Type type)
+{
+    return { 0, size, std::to_underlying(extension), std::to_underlying(type) };
+}
+
+/// @p memory's base, in the current block: memory 0's context value, memoryBase of any other.
+ValueId baseOf(Fixture& fixture, uint64_t memory)
+{
+    if (memory == 0)
+        return fixture.builder.emit(Operation::LoadContext,
+                                    std::array { Type::Pointer },
+                                    {},
+                                    std::array<uint64_t, 2> { std::to_underlying(ContextValue::Memory0Base),
+                                                              std::to_underlying(Type::Pointer) })[0];
+    return fixture.builder.emit(
+        Operation::MemoryBase, std::array { Type::Pointer }, {}, std::array<uint64_t, 1> { memory })[0];
+}
+
+/// A guarded address: checkMemory [memory, offset 0, size] of an entry parameter, of the memory's base.
+ValueId guardedAddress(Fixture& fixture, uint64_t memory = 0, uint64_t size = 8)
+{
+    auto const index = fixture.builder.addParameter(fixture.entry, Type::I32);
+    auto const base = baseOf(fixture, memory);
+    auto const bound = fixture.builder.addParameter(fixture.entry, Type::I64);
+    return fixture.builder.emit(Operation::CheckMemory,
+                                std::array { Type::Pointer },
+                                std::array { index, base, bound },
+                                std::array<uint64_t, 3> { memory, 0, size })[0];
+}
+
 /// verify()'s refusal of @p function; fails the test if it accepts.
 VerifierError refusal(Function const& function)
 {
@@ -327,6 +358,18 @@ TEST_CASE("Verifier.rejectsEachErrorCode")
                   std::ignore = poll(fixture, countdown);
                   fixture.builder.trap(TrapCode::Unreachable);
               } },
+        { .code = VerifierErrorCode::AddressAcrossMemoryMotion,
+          .build =
+              [](Fixture& fixture) {
+                  // A call between a check and its load: the memory may have moved.
+                  auto const address = guardedAddress(fixture);
+                  std::ignore = fixture.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+                  std::ignore = fixture.builder.emit(Operation::Load,
+                                                     std::array { Type::I64 },
+                                                     std::array { address },
+                                                     loadOf(8, Extension::Zero, Type::I64));
+                  fixture.builder.ret({});
+              } },
     };
     REQUIRE(rows.size() == VerifierErrorCodeCount);
     auto covered = std::set<VerifierErrorCode> {};
@@ -482,6 +525,8 @@ TEST_CASE("Verifier.everyCodeHasItsExactText")
         { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
         { .code = VerifierErrorCode::UnguardedAddress, .text = "address not defined by its guard" },
         { .code = VerifierErrorCode::CountdownNotStored, .text = "trap site with the countdown not stored" },
+        { .code = VerifierErrorCode::AddressAcrossMemoryMotion,
+          .text = "guarded address used across memory motion" },
     });
     REQUIRE(expected.size() == VerifierErrorCodeCount);
     for (auto const index: std::views::iota(std::size_t { 0 }, VerifierErrorCodeCount))
@@ -503,24 +548,6 @@ struct TypedRow
     VerifierErrorCode code;              ///< The refusal.
     std::function<void(Fixture&)> build; ///< Emits it into the entry block, which it does not end.
 };
-
-/// The immediates of a load of @p size bytes into @p type, extended as @p extension says.
-std::array<uint64_t, 4> loadOf(uint64_t size, Extension extension, Type type)
-{
-    return { 0, size, std::to_underlying(extension), std::to_underlying(type) };
-}
-
-/// A guarded address: checkMemory [memory, offset 0, size] of parameters of the entry.
-ValueId guardedAddress(Fixture& fixture, uint64_t memory = 0, uint64_t size = 8)
-{
-    auto const index = fixture.builder.addParameter(fixture.entry, Type::I32);
-    auto const base = fixture.builder.addParameter(fixture.entry, Type::Pointer);
-    auto const bound = fixture.builder.addParameter(fixture.entry, Type::I64);
-    return fixture.builder.emit(Operation::CheckMemory,
-                                std::array { Type::Pointer },
-                                std::array { index, base, bound },
-                                std::array<uint64_t, 3> { memory, 0, size })[0];
-}
 
 /// A load from a guarded address with @p immediates, its result of @p type.
 void emitLoad(Fixture& fixture, Type type, std::array<uint64_t, 4> const& immediates)
@@ -1171,5 +1198,182 @@ TEST_CASE("Verifier.staleCountdownAcrossBlocks")
             builder.trap(TrapCode::Unreachable);
             CHECK(verify(fixture.function).has_value());
         }
+    }
+}
+
+TEST_CASE("Verifier.guardedAddressesStayInTheirStretch")
+{
+    // A guarded pointer addresses the storage its guard saw: no operation that may grow or move a memory
+    // (a call, a stub, a poll, whose observer is host code) may lie between the guard and a use of it, on any
+    // path. storeContext moves nothing.
+    auto const loadFrom = [](Fixture& fixture, ValueId address) {
+        std::ignore = fixture.builder.emit(Operation::Load,
+                                           std::array { Type::I64 },
+                                           std::array { address },
+                                           loadOf(8, Extension::Zero, Type::I64));
+    };
+    SECTION("an operation between the check and its load")
+    {
+        struct Between
+        {
+            std::string_view name;
+            std::function<void(Fixture&)> emit;
+            bool refused;
+        };
+        auto const cases = std::vector<Between> {
+            { "nothing", [](Fixture&) {}, false },
+            { "a call",
+              [](Fixture& f) {
+                  std::ignore = f.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+              },
+              true },
+            { "a stub",
+              [](Fixture& f) {
+                  std::ignore = f.builder.emit(Operation::CallStub, {}, {}, std::array { uint64_t { 0 } });
+              },
+              true },
+            { "a poll",
+              [](Fixture& f) {
+                  auto const polled = poll(f, reloadCountdown(f));
+                  storeCountdown(f, polled);
+              },
+              true },
+            { "a stored countdown", [](Fixture& f) { storeCountdown(f, reloadCountdown(f)); }, false },
+        };
+        for (auto const& entry: cases)
+        {
+            INFO(entry.name);
+            auto fixture = Fixture {};
+            auto const address = guardedAddress(fixture);
+            entry.emit(fixture);
+            loadFrom(fixture, address);
+            fixture.builder.ret({});
+            if (entry.refused)
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::AddressAcrossMemoryMotion);
+            else
+                CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("across blocks: a merge where one edge called is a new stretch; a block only a quiet edge enters "
+            "is not")
+    {
+        // entry: check; branch -> calls | quiet; calls: call -> merge; quiet: [load] -> merge; merge: [load].
+        for (auto const loadAtMerge: { false, true })
+        {
+            INFO("load at the merge " << loadAtMerge);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const address = guardedAddress(fixture);
+            auto const calls = builder.createBlock();
+            auto const quiet = builder.createBlock();
+            auto const merge = builder.createBlock();
+            builder.branch(condition, calls, {}, quiet, {});
+            builder.switchTo(calls);
+            std::ignore = builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+            builder.jump(merge, {});
+            builder.switchTo(quiet);
+            if (!loadAtMerge)
+                loadFrom(fixture, address);
+            builder.jump(merge, {});
+            builder.switchTo(merge);
+            if (loadAtMerge)
+                loadFrom(fixture, address);
+            builder.ret({});
+            if (loadAtMerge)
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::AddressAcrossMemoryMotion);
+            else
+                CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("an in-bounds address used after a call")
+    {
+        auto fixture = Fixture {};
+        auto const address = fixture.builder.emit(Operation::InBoundsAddress,
+                                                  std::array { Type::Pointer },
+                                                  std::array { baseOf(fixture, 0) },
+                                                  std::array<uint64_t, 3> { 0, 0, 8 })[0];
+        std::ignore = fixture.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+        loadFrom(fixture, address);
+        fixture.builder.ret({});
+        auto const minimums = std::array { uint64_t { 65'536 } };
+        auto const refused = verify(fixture.function, minimums);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == VerifierErrorCode::AddressAcrossMemoryMotion);
+    }
+}
+
+TEST_CASE("Verifier.memoryGuardsTakeTheirMemorysBase")
+{
+    // checkMemory and inBoundsAddress add their offset to their memory's base: memory 0's context value or
+    // memoryBase of the memory, directly or through block parameters every edge passes one to.
+    auto const checkOf = [](Fixture& fixture, ValueId base, uint64_t memory) {
+        auto const index = fixture.builder.addParameter(fixture.entry, Type::I32);
+        auto const bound = fixture.builder.addParameter(fixture.entry, Type::I64);
+        std::ignore = fixture.builder.emit(Operation::CheckMemory,
+                                           std::array { Type::Pointer },
+                                           std::array { index, base, bound },
+                                           std::array<uint64_t, 3> { memory, 0, 4 });
+    };
+    SECTION("its own memory's base, memory 0's or another's: accepted")
+    {
+        for (auto const memory: { uint64_t { 0 }, uint64_t { 3 } })
+        {
+            auto fixture = Fixture {};
+            checkOf(fixture, baseOf(fixture, memory), memory);
+            fixture.builder.ret({});
+            CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("a parameter of the entry, or another memory's base: refused")
+    {
+        auto parameter = Fixture {};
+        checkOf(parameter, parameter.builder.addParameter(parameter.entry, Type::Pointer), 0);
+        parameter.builder.ret({});
+        CHECK(refusal(parameter.function).code == VerifierErrorCode::UnguardedAddress);
+        auto other = Fixture {};
+        checkOf(other, baseOf(other, 1), 0);
+        other.builder.ret({});
+        CHECK(refusal(other.function).code == VerifierErrorCode::UnguardedAddress);
+    }
+    SECTION(
+        "through a merge: accepted when both edges pass memory 0's base, refused when one passes another's")
+    {
+        for (auto const mixed: { false, true })
+        {
+            INFO("mixed " << mixed);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const left = builder.createBlock();
+            auto const right = builder.createBlock();
+            auto const merge = builder.createBlock();
+            auto const merged = builder.addParameter(merge, Type::Pointer);
+            builder.branch(condition, left, {}, right, {});
+            builder.switchTo(left);
+            builder.jump(merge, std::array { baseOf(fixture, 0) });
+            builder.switchTo(right);
+            builder.jump(merge, std::array { baseOf(fixture, mixed ? 1 : 0) });
+            builder.switchTo(merge);
+            checkOf(fixture, merged, 0);
+            builder.ret({});
+            if (mixed)
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::UnguardedAddress);
+            else
+                CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("an in-bounds address of another memory's base: refused")
+    {
+        auto fixture = Fixture {};
+        std::ignore = fixture.builder.emit(Operation::InBoundsAddress,
+                                           std::array { Type::Pointer },
+                                           std::array { baseOf(fixture, 1) },
+                                           std::array<uint64_t, 3> { 0, 0, 8 });
+        fixture.builder.ret({});
+        auto const minimums = std::array { uint64_t { 65'536 }, uint64_t { 65'536 } };
+        auto const refused = verify(fixture.function, minimums);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == VerifierErrorCode::UnguardedAddress);
     }
 }

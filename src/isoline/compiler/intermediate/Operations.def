@@ -179,8 +179,14 @@ ISOLINE_OPERATION(CanonicalizeNan, "canonicalize_nan", Float, SameAsOperand0, Pu
 // address as it is, with no offset of their own: nothing is added to a guarded address after its select
 // (GuardedUseTable, which the verifier holds every use to). A memory's size is its bound, shifted by its
 // page size; memory 0's base and bound are context values, every other memory's memoryBase and memoryBound.
+// inBoundsAddress(base) is a check bounds-check elimination proved by its constant index: base + offset,
+// where offset is the index plus the access's offset and offset + size is at most the memory's declared
+// minimum in bytes, which every size the memory can have reaches (memories never shrink). It traps nowhere
+// and selects nothing: no index the guest chooses reaches it. The verifier holds it to the minimum it is
+// given (verify()), so no pass can claim more.
 ISOLINE_OPERATION(CheckMemory, "check_memory", CheckMemory, Pointer, MayTrap, MemoryAccess)
 ISOLINE_OPERATION(GuardAddress, "guard_address", Pointer, Pointer, Pure, Offset)
+ISOLINE_OPERATION(InBoundsAddress, "in_bounds_address", Base, Pointer, Pure, MemoryAccess)
 ISOLINE_OPERATION(Load, "load", Pointer, FromImmediate, ReadsMemory, Load)
 ISOLINE_OPERATION(Store, "store", Store, None, WritesMemory, StoreAccess)
 ISOLINE_OPERATION(MemoryBase, "memory_base", None, Pointer, ReadsContext, Memory)

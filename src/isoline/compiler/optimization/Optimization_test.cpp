@@ -73,6 +73,9 @@ using isoline::compiler::optimization::Pass;
 using isoline::compiler::optimization::PassContext;
 using isoline::compiler::optimization::PassOutcome;
 using isoline::compiler::optimization::PassRow;
+using isoline::compiler::optimization::PassStatistic;
+using isoline::compiler::optimization::PassStatistics;
+using isoline::compiler::optimization::PassStatisticTable;
 using isoline::compiler::optimization::PassTable;
 using isoline::compiler::optimization::runPasses;
 using isoline::compiler::optimization::Verification;
@@ -126,13 +129,19 @@ struct Passes
                              .codeIndex = 0 };
     }
 
-    /// Runs @p rows over @p function, verifying after each; the run must succeed.
-    void run(Function& function, std::span<PassRow const> rows = PassTable)
+    /// Runs @p rows over @p function, verifying after each against @p memoryMinimumBytes; the run must
+    /// succeed.
+    /// @return What the passes counted.
+    PassStatistics run(Function& function,
+                       std::span<PassRow const> rows = PassTable,
+                       std::span<uint64_t const> memoryMinimumBytes = {})
     {
         auto context = contextFor(function.memory());
+        context.memoryMinimumBytes = memoryMinimumBytes;
         auto const ran = runPasses(function, context, rows);
         INFO((ran ? std::string {} : isoline::compiler::describe(ran.error())));
         REQUIRE(ran.has_value());
+        return context.statistics;
     }
 };
 
@@ -1298,24 +1307,96 @@ class Origins
 
 } // namespace
 
+namespace
+{
+
+/// The guards and accesses of a function, in block order: each operation, its immediates, and for a guard the
+/// origins of its operands (Origins).
+using GuardSignature = std::vector<std::tuple<Operation, std::vector<uint64_t>, std::vector<std::string>>>;
+
+/// Whether folding ran before EliminateBoundsChecks: until it does, an index computed from constants is no
+/// constant, and rule (a) proves nothing.
+enum class IndexFolded : uint8_t
+{
+    No,  ///< The pass ran alone.
+    Yes, ///< FoldConstants ran first.
+};
+
+/// What EliminateBoundsChecks does to passesKeepEveryGuard's memory function, as its signature shows it: of
+/// the three checks in block order (the first, the second after a call, the narrow third), each whose
+/// constant index ends within @p minimums' first, once @p folded, becomes inBoundsAddress of its base; else
+/// the third, which the second dominates with nothing between, shares the second's address and goes, unless
+/// the second's static end passes 2^64 (translation never emits that check, and the pass takes no proof from
+/// it). Counts each.
+void eliminateExpectedChecks(GuardSignature& signature,
+                             PassStatistics& counts,
+                             Type indexType,
+                             uint64_t bits,
+                             std::span<uint64_t const> minimums,
+                             IndexFolded folded)
+{
+    auto position = std::size_t { 0 };
+    auto checks = 0;
+    auto secondKept = false;
+    while (position < signature.size())
+    {
+        auto& [operation, immediates, operands] = signature[position];
+        if (operation != Operation::CheckMemory)
+        {
+            ++position;
+            continue;
+        }
+        auto const ordinal = checks++;
+        auto const effective =
+            minimums.empty() || folded == IndexFolded::No
+                ? std::nullopt
+                : intermediate::guardMemoryAccess(indexType, bits, immediates[1], immediates[2], minimums[0]);
+        if (effective)
+        {
+            operation = Operation::InBoundsAddress;
+            immediates = { 0, *effective, immediates[2] };
+            operands = { operands[1] };
+            counts.add(PassStatistic::ChecksProvedByMinimum);
+        }
+        else if (ordinal == 1)
+            secondKept =
+                !intermediate::staticEndOverflows(immediates[1], immediates[2]); // proves nothing else
+        else if (ordinal == 2 && secondKept)
+        {
+            signature.erase(signature.begin() + static_cast<std::ptrdiff_t>(position));
+            counts.add(PassStatistic::ChecksSharingDominatingAddress);
+            continue;
+        }
+        ++position;
+    }
+}
+
+} // namespace
+
 TEST_CASE("Optimization.passesKeepEveryGuard")
 {
     // The guards' lowering contract (intermediate/Guards.hpp) on every edge row: each pass, then the whole
     // table, keeps every checkMemory, checkTable and checkDispatch with its immediates, and its access, and
     // the function verifies (the guard still covers the access). A constant index is foldable around them; a
-    // call between two equal checks, and a second check of another size, must keep both.
+    // call between two equal checks must keep both. EliminateBoundsChecks alone may change a checkMemory,
+    // and exactly as Guards.hpp's rules allow, each counted: the narrower check a wider one dominates with
+    // no call between shares its address, and, given the memory's minimum, a check whose constant index ends
+    // within it becomes inBoundsAddress. Every other pass keeps them all, and counts nothing.
     using isoline::compiler::intermediate::testing::DispatchGuardEdges;
     using isoline::compiler::intermediate::testing::MemoryGuardEdges;
     using isoline::compiler::intermediate::testing::TableGuardEdges;
-    auto const guards =
-        std::to_array({ Operation::CheckMemory, Operation::CheckTable, Operation::CheckDispatch });
+    auto const guards = std::to_array({ Operation::CheckMemory,
+                                        Operation::GuardAddress,
+                                        Operation::InBoundsAddress,
+                                        Operation::CheckTable,
+                                        Operation::CheckDispatch });
     auto const accesses = std::to_array(
         { Operation::Load, Operation::Store, Operation::LoadTableElement, Operation::LoadDispatchType });
     /// The guards and accesses of @p function with their immediates, the guards with the origins of their
     /// index, base and bound (Origins), in block order.
     auto const signatureOf = [&](Function const& function) {
         auto origins = Origins { function };
-        auto found = std::vector<std::tuple<Operation, std::vector<uint64_t>, std::vector<std::string>>> {};
+        auto found = GuardSignature {};
         for (auto const block: std::views::iota(uint32_t { 0 }, function.blockCount()))
             for (auto const index: function.block(BlockId { block }).instructions)
             {
@@ -1334,23 +1415,41 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
             }
         return found;
     };
-    auto const checkEveryPass = [&](std::function<void(Fixture&)> const& build) {
-        for (auto const& row: PassTable)
-        {
-            INFO("pass " << row.name);
-            auto fixture = Fixture {};
-            build(fixture);
-            REQUIRE(verify(fixture.function).has_value());
-            auto const before = signatureOf(fixture.function);
-            Passes {}.run(fixture.function, std::span { &row, 1 });
-            CHECK(signatureOf(fixture.function) == before);
-        }
-        auto fixture = Fixture {};
-        build(fixture);
-        auto const before = signatureOf(fixture.function);
-        Passes {}.run(fixture.function);
-        CHECK(signatureOf(fixture.function) == before);
-    };
+    using Signature = GuardSignature;
+    /// What EliminateBoundsChecks does to a signature: the signature it leaves, and what it counts.
+    using Elimination = std::function<void(Signature&, PassStatistics&, IndexFolded)>;
+    auto const checkEveryPass =
+        [&](
+            std::function<void(Fixture&)> const& build,
+            std::span<uint64_t const> minimums = {},
+            Elimination const& eliminated = [](Signature&, PassStatistics&, IndexFolded) {}) {
+            auto const checkRun = [&](std::span<PassRow const> rows) {
+                auto fixture = Fixture {};
+                build(fixture);
+                REQUIRE(verify(fixture.function).has_value());
+                auto expected = signatureOf(fixture.function);
+                auto expectedCounts = PassStatistics {};
+                if (std::ranges::contains(rows, Pass::EliminateBoundsChecks, &PassRow::pass))
+                    eliminated(expected,
+                               expectedCounts,
+                               std::ranges::contains(rows, Pass::FoldConstants, &PassRow::pass)
+                                   ? IndexFolded::Yes
+                                   : IndexFolded::No);
+                auto const counted = Passes {}.run(fixture.function, rows, minimums);
+                CHECK(signatureOf(fixture.function) == expected);
+                for (auto const& statistic: PassStatisticTable)
+                {
+                    INFO(statistic.name);
+                    CHECK(counted.count(statistic.statistic) == expectedCounts.count(statistic.statistic));
+                }
+            };
+            for (auto const& row: PassTable)
+            {
+                INFO("pass " << row.name);
+                checkRun(std::span { &row, 1 });
+            }
+            checkRun(PassTable);
+        };
     auto const constantIndex = [](Fixture& fixture, Type type, uint64_t bits) {
         // An index computed from constants, which folding turns into one.
         auto const half = fixture.constant(type, bits ^ 0x5A);
@@ -1361,11 +1460,27 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
     for (auto const& edge: MemoryGuardEdges)
     {
         INFO("memory edge index " << edge.index << " offset " << edge.offset << " size " << edge.size);
-        checkEveryPass([&](Fixture& fixture) {
+        auto const bits = edge.indexType == Type::I32 ? edge.index & 0xFFFF'FFFF : edge.index;
+        auto const minimum = std::array { edge.bound };
+        // The checks in block order: the first, the second (after the call), the narrow third. Given the
+        // minimum, each whose constant index ends within it becomes inBoundsAddress of its base; else the
+        // narrow third, which the second dominates with nothing between, shares the second's address.
+        auto const eliminated = [&](std::span<uint64_t const> minimums) {
+            return [&, minimums](GuardSignature& signature, PassStatistics& counts, IndexFolded folded) {
+                eliminateExpectedChecks(signature, counts, edge.indexType, bits, minimums, folded);
+            };
+        };
+        auto const build = [&](Fixture& fixture) {
             // The base and the bound reach the checks through a merge and a loop header, as context values
             // do: entry(base, bound, c) -> left | right -> merge(b, d) -> header(b, d) ... -> header | done.
             auto& builder = fixture.builder;
-            auto const entryBase = builder.addParameter(fixture.entry, Type::Pointer);
+            auto const entryBase = builder.emit(
+                Operation::LoadContext,
+                std::array { Type::Pointer },
+                {},
+                std::array<uint64_t, 2> {
+                    std::to_underlying(isoline::compiler::intermediate::ContextValue::Memory0Base),
+                    std::to_underlying(Type::Pointer) })[0];
             auto const entryBound = builder.addParameter(fixture.entry, Type::I64);
             auto const condition = builder.addParameter(fixture.entry, Type::I32);
             auto const left = builder.createBlock();
@@ -1388,7 +1503,6 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
             builder.switchTo(merge);
             builder.jump(header, mergedValues);
             builder.switchTo(header);
-            auto const bits = edge.indexType == Type::I32 ? edge.index & 0xFFFF'FFFF : edge.index;
             auto const index = constantIndex(fixture, edge.indexType, bits);
             auto const checkOf = [&](uint64_t size) {
                 return builder.emit(Operation::CheckMemory,
@@ -1418,7 +1532,8 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
                                        {},
                                        std::array { second, loaded },
                                        std::array<uint64_t, 2> { 0, edge.size });
-            // A narrower check of the same index on a branch folding takes: kept, not merged with the wider.
+            // A narrower check of the same index on a branch folding takes: the wider one dominates it, with
+            // no call between, so EliminateBoundsChecks lets it share the wider one's address.
             auto const narrow = builder.createBlock();
             auto const exit = builder.createBlock();
             builder.branch(fixture.constant(Type::I32, 1), narrow, {}, exit, {});
@@ -1434,7 +1549,9 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
             builder.branch(condition, header, headerValues, done, {});
             builder.switchTo(done);
             builder.ret({});
-        });
+        };
+        checkEveryPass(build, {}, eliminated({}));
+        checkEveryPass(build, minimum, eliminated(minimum));
     }
     for (auto const& edge: TableGuardEdges)
     {

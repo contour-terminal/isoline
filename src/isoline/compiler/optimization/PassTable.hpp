@@ -10,9 +10,11 @@
 // removed while a path reaches it, nor moved, nor merged with another; so every reachable poll, pollStored,
 // enterFrame, leaveFrame, storeContext, call, store and trap stays where translation put it, and every
 // guard (checkMemory, checkTable, checkDispatch) with it. No pass folds an offset into an address, merges two
-// guards, or reuses one guard's result for another access: guardAddress is only ever created by
-// EliminateBoundsChecks (P5 Task 8), and no other pass creates or rewrites a Pointer. Code no path reaches
-// (after a trap, or in a block no edge enters) goes with its polls and guards, which never run.
+// guards, or reuses one guard's result for another access, but EliminateBoundsChecks: it alone removes
+// checkMemory, by intermediate/Guards.hpp's two rules (a constant index within the memory's declared minimum
+// becomes inBoundsAddress; a check a dominating one covers takes its address, through guardAddress), counting
+// each in PassStatistics, and no other pass creates or rewrites a Pointer. Code no path reaches (after a
+// trap, or in a block no edge enters) goes with its polls and guards, which never run.
 
 #include <algorithm>
 #include <array>
@@ -58,7 +60,71 @@ enum class Verification : uint8_t
     AfterEachPass, ///< After every pass: tests and debug builds.
 };
 
-/// What every pass reads: the module, the configuration, the cancellation, the arena.
+/// What a pass counts: the rows of PassStatisticTable.
+enum class PassStatistic : uint8_t
+{
+    /// checkMemory of a constant index within its memory's declared minimum, become inBoundsAddress.
+    ChecksProvedByMinimum,
+    /// checkMemory a dominating check covered at the same offset, its uses now the dominating check's
+    /// address.
+    ChecksSharingDominatingAddress,
+    /// checkMemory a dominating check covered further on, become guardAddress of the dominating address.
+    ChecksMovedFromDominatingAddress,
+};
+
+/// The last PassStatistic enumerator.
+inline constexpr auto LastPassStatistic = PassStatistic::ChecksMovedFromDominatingAddress;
+
+/// How many PassStatistic enumerators there are.
+inline constexpr auto PassStatisticCount = std::size_t { std::to_underlying(LastPassStatistic) } + 1;
+
+/// One PassStatistic: its name in diagnostics.
+struct PassStatisticRow
+{
+    PassStatistic statistic; ///< The statistic; equal to the row's index.
+    std::string_view name;   ///< Its name.
+};
+
+/// Every PassStatistic's row, in enumerator order.
+inline constexpr auto PassStatisticTable = std::to_array<PassStatisticRow>({
+    { .statistic = PassStatistic::ChecksProvedByMinimum, .name = "checks-proved-by-minimum" },
+    { .statistic = PassStatistic::ChecksSharingDominatingAddress,
+      .name = "checks-sharing-dominating-address" },
+    { .statistic = PassStatistic::ChecksMovedFromDominatingAddress,
+      .name = "checks-moved-from-dominating-address" },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: PassStatisticTable)
+            if (std::to_underlying(row.statistic) != index++)
+                return false;
+        return index == PassStatisticCount;
+    }(),
+    "PassStatisticTable must hold one row per PassStatistic, at the index of its enumerator");
+
+/// What the passes of one run counted, by PassStatistic: every check a pass eliminated shows here.
+class PassStatistics
+{
+  public:
+    /// How many @p statistic counted.
+    [[nodiscard]] uint64_t count(PassStatistic statistic) const noexcept
+    {
+        return _counts[std::to_underlying(statistic)];
+    }
+
+    /// Counts @p amount more of @p statistic.
+    void add(PassStatistic statistic, uint64_t amount = 1) noexcept
+    {
+        _counts[std::to_underlying(statistic)] += amount;
+    }
+
+  private:
+    std::array<uint64_t, PassStatisticCount> _counts {};
+};
+
+/// What every pass reads: the module, the configuration, the cancellation, the arena; and what they count.
 struct PassContext
 {
     validate::ValidatedModule const& module; ///< The module the function is of.
@@ -67,7 +133,20 @@ struct PassContext
     std::pmr::memory_resource& memory;       ///< The compile's arena: every temporary allocates from it.
     Verification verification = Verification::AtEnd; ///< When runPasses() verifies.
     uint32_t codeIndex = 0; ///< The function's index in the code section, for errors.
+    /// Per memory of the module's index space, imports first, its declared minimum in bytes
+    /// (memoryMinimumBytesOf()): what EliminateBoundsChecks proves a constant index against and the verifier
+    /// holds inBoundsAddress to. Empty proves nothing: every such check stays.
+    std::span<uint64_t const> memoryMinimumBytes {};
+    PassStatistics statistics {}; ///< What the passes counted; runPasses() adds to it.
 };
+
+/// Every memory's declared minimum in bytes (intermediate::minimumBytesOf()), imports first, for
+/// PassContext::memoryMinimumBytes: worked out once per module. An imported memory's is its import's
+/// minimum, which import matching guarantees the memory bound to it reaches.
+/// @param module The module.
+/// @param memory What the result allocates from.
+[[nodiscard]] std::pmr::vector<uint64_t> memoryMinimumBytesOf(validate::ValidatedModule const& module,
+                                                              std::pmr::memory_resource& memory);
 
 /// What a pass ends with: nothing, or Cancelled; what runPasses() ends with may also be
 /// InternalVerificationFailed. A failed run may leave the function half rewritten; the compile then discards
@@ -104,8 +183,14 @@ PassOutcome foldConstants(intermediate::Function& function, PassContext& context
 /// jumps into a block with no other predecessor with that block.
 PassOutcome simplifyControlFlow(intermediate::Function& function, PassContext& context);
 
-/// Removes the memory checks a constant or a dominating check proves redundant. P5 Task 8 implements it;
-/// until then it is the identity, so that the pass order is the one the plan's Decisions fix.
+/// Removes the memory checks a constant or a dominating check proves redundant, by intermediate/Guards.hpp's
+/// rules: a constant index whose access ends within the memory's declared minimum becomes inBoundsAddress;
+/// a check whose bytes a dominating check of the same memory and SSA index covered, with nothing that may
+/// grow or move a memory (MemoryMotionTable) on any path between, takes that check's address, through
+/// guardAddress when it lies further on. One explicit-stack walk of the dominator tree, keeping per index the
+/// widest check in scope, after a linear pass that numbers the stretches free of memory motion. The rewrite
+/// is the same in both SpectreGuard modes: the clamp is the dominating check's select, which guardAddress
+/// keeps; the mode decides only guardAddress's lowering. Counts each check in PassStatistics.
 PassOutcome eliminateBoundsChecks(intermediate::Function& function, PassContext& context);
 
 /// Removes every Pure and ReadsContext instruction no kept instruction, return or branch condition needs,
