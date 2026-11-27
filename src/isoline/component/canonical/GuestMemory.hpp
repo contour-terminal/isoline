@@ -57,6 +57,14 @@ class IGuestMemoryAccess
     [[nodiscard]] virtual uint64_t size() = 0;
 };
 
+/// The trap of a range of guest memory past the memory's end.
+/// @param address The range's first byte.
+/// @param length Its length.
+/// @param memorySize The memory's size.
+/// @return OutOfBounds, naming the three.
+/// @throws std::bad_alloc When the trap's message cannot be stored.
+[[nodiscard]] Trap outOfBounds(uint32_t address, uint64_t length, uint64_t memorySize);
+
 /// Checks that @p length bytes at @p address are aligned to @p alignment and lie in a memory of
 /// @p memorySize bytes (definitions.py's two trap_if of lift_flat_values and lower_flat_values), in
 /// 64-bit arithmetic, so no range wraps.

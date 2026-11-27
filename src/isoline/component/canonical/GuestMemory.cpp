@@ -6,11 +6,18 @@
 #include <bit>
 #include <cstdint>
 #include <expected>
+#include <format>
 
 #include <isoline/component/canonical/Trap.hpp>
 
 namespace isoline::component::canonical
 {
+
+Trap outOfBounds(uint32_t address, uint64_t length, uint64_t memorySize)
+{
+    return trapOf(TrapCode::OutOfBounds,
+                  std::format("{} bytes at {} pass its end at {}", length, address, memorySize));
+}
 
 std::expected<void, Trap> checkRange(uint32_t address,
                                      uint64_t length,
@@ -21,7 +28,7 @@ std::expected<void, Trap> checkRange(uint32_t address,
     if (address % alignment != 0)
         return std::unexpected { trapOf(TrapCode::UnalignedPointer, address, alignment) };
     if (length > memorySize || address > memorySize - length)
-        return std::unexpected { trapOf(TrapCode::OutOfBounds, length, address, memorySize) };
+        return std::unexpected { outOfBounds(address, length, memorySize) };
     return {};
 }
 

@@ -514,7 +514,11 @@ namespace
                     auto bits = _source->bits(address, bytes, layout.flat.front());
                     if (!bits)
                         return std::unexpected { std::move(bits.error()) };
-                    auto const value = scalar(row.rule, *bits & widthMask(row.bytes), layout.flat.front());
+                    // A bool is any nonzero core value (convert_int_to_bool), not only its low byte; every
+                    // other scalar wraps to its width (lift_flat_unsigned/signed).
+                    auto const width =
+                        row.rule == ScalarRule::Bool ? std::size_t { 8 } : std::size_t { row.bytes };
+                    auto const value = scalar(row.rule, *bits & widthMask(width), layout.flat.front());
                     if (!value)
                         return std::unexpected { value.error() };
                     _builder->scalar(*value);
@@ -876,7 +880,8 @@ std::expected<std::vector<isoline::api::Value>, Trap> lowerFlat(LiftContext& con
         // holds: no realloc could return such a block.
         if (footprint.size > std::numeric_limits<uint32_t>::max())
             return std::unexpected { trapOf(
-                TrapCode::OutOfBounds, footprint.size, 0, context.memory->size()) };
+                TrapCode::OutOfBounds,
+                std::format("a tuple of {} bytes, more than any 32-bit memory holds", footprint.size)) };
         auto allocated =
             context.memory->reallocate(0, 0, footprint.alignment, static_cast<uint32_t>(footprint.size));
         if (!allocated)

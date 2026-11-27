@@ -47,6 +47,7 @@ using isoline::component::canonical::load;
 using isoline::component::canonical::lowerFlat;
 using isoline::component::canonical::MaxFlatParams;
 using isoline::component::canonical::MaxFlatResults;
+using isoline::component::canonical::outOfBounds;
 using isoline::component::canonical::Ownership;
 using isoline::component::canonical::ResourceTypeIndex;
 using isoline::component::canonical::ResourceValue;
@@ -320,6 +321,21 @@ TEST_CASE("LiftLower.scalarsFlat")
                                   I32 { 2 },
                                   I32 { 0x8000'0000 } });
 
+    // A bool is any nonzero core value, its low byte or not (convert_int_to_bool); in a variant's joined
+    // i64 slot it is the wrapped i32's (wrap_i64_to_i32).
+    auto const boolType = std::vector<TypeId> { side.primitive(ValueKind::Bool) };
+    for (auto const truthy: { 0x100U, 0xffff'ff00U, 1U })
+        CHECK(lifted(context, boolType, { I32 { truthy } }).root(0).scalar<bool>());
+    CHECK_FALSE(lifted(context, boolType, { I32 { 0 } }).root(0).scalar<bool>());
+    auto const boolOrWide = side.variant({ "a", "b" }, { boolType.front(), side.primitive(ValueKind::U64) });
+    auto boolContext = side.context();
+    CHECK(
+        lifted(boolContext, { boolOrWide }, { I32 { 0 }, I64 { 0x100 } }).root(0).payload()->scalar<bool>());
+    CHECK_FALSE(lifted(boolContext, { boolOrWide }, { I32 { 0 }, I64 { uint64_t { 1 } << 32U } })
+                    .root(0)
+                    .payload()
+                    ->scalar<bool>());
+
     // A char past 0x10FFFF or a surrogate traps; the scalar values around them lift.
     auto const charType = std::vector<TypeId> { side.primitive(ValueKind::Char) };
     auto const invalid = GENERATE(0xd800U, 0xdbffU, 0xdc00U, 0xdfffU, 0x11'0000U, 0xffff'ffffU);
@@ -441,8 +457,7 @@ TEST_CASE("LiftLower.badDiscriminant")
     auto const trap =
         trapIn(liftFlat(context, std::vector { enumeration }, std::vector<Value> { I32 { 2 } }, 16));
     CHECK(trap == trapOf(TrapCode::InvalidDiscriminant, 2, 2));
-    CHECK(trap.message().contains("invalid variant discriminant"));
-    CHECK(trap.message().contains("discriminant 2 out of range [0..2)"));
+    CHECK(trap.message().starts_with("invalid variant discriminant"));
     CHECK(trapIn(liftFlat(context, std::vector { option }, std::vector<Value> { I32 { 2 }, I32 { 0 } }, 16))
           == trapOf(TrapCode::InvalidDiscriminant, 2, 2));
     CHECK(trapIn(liftFlat(
@@ -489,10 +504,8 @@ TEST_CASE("LiftLower.recordRoundTripMemory")
     CHECK(trapIn(load(context, std::vector { record }, 4)) == trapOf(TrapCode::UnalignedPointer, 4, 8));
     CHECK(trapIn(store(context, record, values.root(0), 4)) == trapOf(TrapCode::UnalignedPointer, 4, 8));
     auto const end = static_cast<uint32_t>(side.memory().size());
-    CHECK(trapIn(load(context, std::vector { record }, end - 16))
-          == trapOf(TrapCode::OutOfBounds, 24, end - 16, end));
-    CHECK(trapIn(store(context, record, values.root(0), end - 16))
-          == trapOf(TrapCode::OutOfBounds, 24, end - 16, end));
+    CHECK(trapIn(load(context, std::vector { record }, end - 16)) == outOfBounds(end - 16, 24, end));
+    CHECK(trapIn(store(context, record, values.root(0), end - 16)) == outOfBounds(end - 16, 24, end));
     // Nothing was written by the refused stores.
     CHECK(side.memory().writes().size() == 4);
 }
@@ -578,7 +591,7 @@ TEST_CASE("LiftLower.manyResultsUseReturnPointer")
           == trapOf(TrapCode::UnalignedPointer, 34, 4));
     auto const end = static_cast<uint32_t>(side.memory().size());
     CHECK(trapIn(lowerFlat(context, std::vector { pair }, rootsOf(values), MaxFlatResults, end - 4))
-          == trapOf(TrapCode::OutOfBounds, 8, end - 4, end));
+          == outOfBounds(end - 4, 8, end));
     // Without one, realloc allocates the tuple and its address is the one core value.
     auto const allocated = lowered(context, { pair }, values, MaxFlatResults);
     REQUIRE(side.memory().reallocations().size() == 1);
@@ -598,6 +611,8 @@ TEST_CASE("LiftLower.manyResultsUseReturnPointer")
     auto const anyValues = std::vector<ValueView>(hugeTypes.size(), values.root(0));
     CHECK(trapIn(lowerFlat(hugeContext, hugeTypes, anyValues, MaxFlatParams, std::nullopt)).code
           == TrapCode::OutOfBounds);
+    CHECK(trapIn(lowerFlat(hugeContext, hugeTypes, anyValues, MaxFlatParams, std::nullopt))
+          == trapOf(TrapCode::OutOfBounds, "a tuple of 4295491584 bytes, more than any 32-bit memory holds"));
     CHECK(side.memory().reallocations().size() == 1);
     // Seventeen parameters spill past MaxFlatParams the same way; sixteen stay flat.
     auto const sixteen = std::vector<TypeId>(16, u32);

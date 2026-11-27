@@ -59,18 +59,16 @@ struct TrapCodeRow
 
 /// Every trap's message, one row per TrapCode enumerator, in enumerator order.
 ///
-/// The suites match a trap by substring (Global Constraints), so where they word one trap differently
-/// its message holds each wording: the component-model tests' first, then Wasmtime v51's (`invalid
-/// variant discriminant` and `discriminant 2 out of range [0..2)`; `invalid `char` bit pattern` and
-/// `integer out of range`). The caps read as their LimitTable rows do.
+/// One wording per trap: the component-model tests' (test/ at the pin) where they assert one, as a
+/// prefix the values follow, else Isoline's own; the caps read as their LimitTable rows do. Other
+/// suites word some traps differently; the wast runner maps each TrapCode to the texts it accepts
+/// (Task 19), as CoreTrapWording does for core traps.
 inline constexpr auto TrapCodeTable = std::to_array<TrapCodeRow>({
-    { .code = TrapCode::InvalidChar, .format = "invalid `char` bit pattern {}: integer out of range" },
-    { .code = TrapCode::InvalidDiscriminant,
-      .format = "invalid variant discriminant: discriminant {} out of range [0..{})" },
-    { .code = TrapCode::UnalignedPointer, .format = "unaligned pointer: {} is not aligned to {}" },
-    { .code = TrapCode::OutOfBounds,
-      .format = "pointer out of bounds of memory: {} bytes at {} pass its end at {}" },
-    { .code = TrapCode::InvalidEncoding, .format = "invalid {} encoding" },
+    { .code = TrapCode::InvalidChar, .format = "invalid `char` bit pattern {}" },
+    { .code = TrapCode::InvalidDiscriminant, .format = "invalid variant discriminant {} of {} cases" },
+    { .code = TrapCode::UnalignedPointer, .format = "unaligned pointer {} for an alignment of {}" },
+    { .code = TrapCode::OutOfBounds, .format = "out of bounds of memory: {}" },
+    { .code = TrapCode::InvalidEncoding, .format = "invalid {}" },
     { .code = TrapCode::LiveValueBytes,
       .format = LimitTable[static_cast<std::size_t>(ComponentLimit::LiveValueBytes)].message },
     { .code = TrapCode::Handles,
@@ -83,7 +81,7 @@ inline constexpr auto TrapCodeTable = std::to_array<TrapCodeRow>({
     { .code = TrapCode::UnknownHandle, .format = "unknown handle index {}" },
     { .code = TrapCode::WrongHandleType,
       .format = "handle index {} used with the wrong type, expected {} but found {}" },
-    { .code = TrapCode::BorrowOutstanding, .format = "borrow handles still remain at the end of the call" },
+    { .code = TrapCode::BorrowOutstanding, .format = "borrowed handles remain at the end of the call" },
     { .code = TrapCode::LendOutstanding, .format = "cannot remove owned resource while borrowed" },
     { .code = TrapCode::Core, .format = "{}" },
 });

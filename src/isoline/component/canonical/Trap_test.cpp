@@ -28,6 +28,7 @@ using isoline::component::ComponentLimit;
 using isoline::component::canonical::carrierTrap;
 using isoline::component::canonical::checkRange;
 using isoline::component::canonical::fromCore;
+using isoline::component::canonical::outOfBounds;
 using isoline::component::canonical::PendingTrap;
 using isoline::component::canonical::placeholderCount;
 using isoline::component::canonical::Trap;
@@ -75,17 +76,13 @@ TEST_CASE("Trap.messagesCarryValues")
                                       std::pair { TrapCode::ResourceTypes, ComponentLimit::ResourceTypes } })
         CHECK(trapOf(code, 7).message() == isoline::component::limitMessage(limit, 7));
 
-    // Where the suites word a trap differently, the message holds each wording (substring rule).
-    auto const discriminant = trapOf(TrapCode::InvalidDiscriminant, 2, 2).message();
-    CHECK(discriminant.contains("invalid variant discriminant"));
-    CHECK(discriminant.contains("discriminant 2 out of range [0..2)"));
-    auto const character = trapOf(TrapCode::InvalidChar, "0xd800").message();
-    CHECK(character.contains("invalid `char` bit pattern"));
-    CHECK(character.contains("integer out of range"));
-    CHECK(trapOf(TrapCode::OutOfBounds, 8, 4092, 4096)
-              .message()
-              .starts_with("pointer out of bounds of memory"));
+    // One wording per trap: the component-model tests' as a prefix, the values after it.
+    CHECK(trapOf(TrapCode::InvalidDiscriminant, 2, 2).message()
+          == "invalid variant discriminant 2 of 2 cases");
+    CHECK(trapOf(TrapCode::InvalidChar, "0xd800").message() == "invalid `char` bit pattern 0xd800");
     CHECK(trapOf(TrapCode::UnalignedPointer, 4, 8).message().starts_with("unaligned pointer"));
+    CHECK(outOfBounds(4092, 8, 4096).message()
+          == "out of bounds of memory: 8 bytes at 4092 pass its end at 4096");
 }
 
 TEST_CASE("Trap.fromCore")
@@ -107,7 +104,7 @@ TEST_CASE("Trap.checkRange")
     CHECK(checkRange(8, 16, 8, 24).has_value());
     CHECK(checkRange(0, 0, 1, 0).has_value());
     CHECK(trapIn(checkRange(4, 8, 8, 4096)) == trapOf(TrapCode::UnalignedPointer, 4, 8));
-    CHECK(trapIn(checkRange(4088, 16, 8, 4096)) == trapOf(TrapCode::OutOfBounds, 16, 4088, 4096));
+    CHECK(trapIn(checkRange(4088, 16, 8, 4096)) == outOfBounds(4088, 16, 4096));
     // Alignment is checked first, as definitions.py does.
     CHECK(trapIn(checkRange(4093, 16, 2, 4096)).code == TrapCode::UnalignedPointer);
     // 64-bit arithmetic: a range that would wrap 32 bits is out of bounds, never at a low address.
