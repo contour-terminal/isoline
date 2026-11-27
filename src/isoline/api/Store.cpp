@@ -134,7 +134,11 @@ Store::Store(Engine const& engine, IMemoryAllocator& allocator, StoreOptions con
 {
 }
 
-Store::~Store() = default;
+Store::~Store()
+{
+    // Its InvocationScopes may outlive it: they find its alive-token expired and end nothing.
+    _runtime.abandonHeldInvocations();
+}
 
 std::shared_ptr<Interrupter> const& Store::interrupter() const noexcept
 {
@@ -574,9 +578,15 @@ std::expected<void, CallError> Store::poll(BulkGranule granule) noexcept
     });
 }
 
+GrowthRecord const& InvocationScope::refusedGrowth() const noexcept
+{
+    Require(!_alive.expired());
+    return _held.refusedGrowth();
+}
+
 InvocationScope Store::openInvocation() noexcept
 {
-    return InvocationScope { _runtime };
+    return InvocationScope { _runtime, _alive };
 }
 
 Store const& Store::ownerOf(Extern const& value) noexcept

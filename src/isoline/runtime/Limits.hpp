@@ -121,8 +121,9 @@ struct StoreLimits
     /// each poll's PollSiteTable row charges (stepsCharged()). Poll sites are
     /// Wasm-level places, so the same module, inputs and limits exhaust the budget at the same point
     /// in every engine, in both execution modes. Past it, StepLimitExceeded. Every outermost
-    /// invocation, and every outermost instantiation, starts a fresh budget, but for the calls made
-    /// directly in a held invocation (SharedInvocationScope), which share its budget; an instantiation a host
+    /// invocation, and every outermost instantiation, starts a fresh budget, but for the calls and
+    /// instantiations made in a SharedInvocationScope opened outside every call, which share its budget,
+    /// start functions included; an instantiation a host
     /// function makes is nested in the call that reached the host, and shares its budget. The default is
     /// no limit.
     uint64_t maxSteps = std::numeric_limits<uint64_t>::max();

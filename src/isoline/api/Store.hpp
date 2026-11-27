@@ -212,15 +212,22 @@ struct BulkGranule
 };
 
 /// One invocation held open across several calls of a store (Store::openInvocation()), for as long as
-/// it lives: realloc, the callee and post-return of one component call, which share one step budget
-/// (StoreLimits::maxSteps) and one GrowthRecord, and are one outermost invocation for
-/// StoreLimits::maxNestedInvocations. Each call made directly in it counts that one invocation while it
-/// runs, the scope none of its own; each hop a host function makes back into the guest counts one more.
-/// One opened while another is open, or from a host function while a call runs, joins that invocation:
-/// it changes and counts nothing, and reports that invocation's record.
+/// it lives: realloc, the callee and post-return of one component call, which share one GrowthRecord,
+/// and, opened outside every call, one step budget (StoreLimits::maxSteps), and are one outermost
+/// invocation for StoreLimits::maxNestedInvocations. Each call made directly in it counts that one
+/// invocation while it runs, the scope none of its own; each hop a host function makes back into the
+/// guest counts one more.
 ///
-/// Move-only; closing it (its destruction) ends the invocation. Its store must outlive it, and no call
-/// made in it may still be running when it closes (checked).
+/// Opened from a host function while a call runs, it holds a record of its own for the calls the host
+/// function makes in it (the hops), whose refusals it reports, while the step budget stays the call's
+/// that reached the host; the outer call's refusals stay in the outer record. One opened while another
+/// is open at the same depth joins it: it changes and counts nothing, and reports that scope's record.
+/// An instantiation made in a scope shares its step budget, its start function included, but keeps its
+/// refused grows in a record of its own (Store::instantiate()).
+///
+/// Move-only; closing it (its destruction) ends the invocation, and no call made in it may still be
+/// running then (checked). It belongs to its store's one-thread unit (see Store), and may outlive the
+/// store: closing it once the store is gone does nothing.
 class InvocationScope
 {
   public:
@@ -228,18 +235,29 @@ class InvocationScope
     InvocationScope(InvocationScope const&) = delete;
     InvocationScope& operator=(InvocationScope const&) = delete;
     InvocationScope& operator=(InvocationScope&&) = delete;
-    ~InvocationScope() = default;
+
+    /// Ends the invocation, unless the store is gone, which let go of it already.
+    ~InvocationScope()
+    {
+        if (_alive.expired())
+            _held.abandon();
+    }
 
     /// The first refused memory.grow and table.grow of the invocation, every call made directly in it
     /// included; for a scope that joined another invocation, that invocation's.
     /// @return The record so far.
-    [[nodiscard]] GrowthRecord const& refusedGrowth() const noexcept { return _held.refusedGrowth(); }
+    /// Precondition (checked): the store is alive.
+    [[nodiscard]] GrowthRecord const& refusedGrowth() const noexcept;
 
   private:
     friend class Store;
 
-    explicit InvocationScope(runtime::Store& store) noexcept: _held { store } {}
+    InvocationScope(runtime::Store& store, std::weak_ptr<void> alive) noexcept:
+        _alive { std::move(alive) }, _held { store }
+    {
+    }
 
+    std::weak_ptr<void> _alive; ///< The store's alive-token: expired once the store is gone.
     runtime::SharedInvocationScope _held;
 };
 
@@ -391,9 +409,10 @@ class Store
     [[nodiscard]] std::expected<void, CallError> poll(BulkGranule granule) noexcept;
 
     /// Opens one invocation: until the scope ends, every call made through this store (call(),
-    /// Instance::call()) with no other call running, such as realloc, the callee and post-return,
-    /// shares one step budget and one GrowthRecord, and is one outermost invocation for
-    /// maxNestedInvocations. Opened while a scope is open or a call runs, it joins that invocation.
+    /// Instance::call()) at the depth it was opened at, such as realloc, the callee and post-return,
+    /// shares one GrowthRecord and, opened outside every call, one step budget, and is one outermost
+    /// invocation for maxNestedInvocations (InvocationScope has the rules for one opened from a host
+    /// function or within another).
     /// @return The scope.
     [[nodiscard]] InvocationScope openInvocation() noexcept;
 

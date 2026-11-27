@@ -4,6 +4,7 @@
 #include <catch2/generators/catch_generators_range.hpp>
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <ranges>
 #include <span>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -1378,37 +1380,13 @@ TEST_CASE("Store.invocationScopeNesting", "[api]")
 
 TEST_CASE("Store.invocationScopeJoinsWhenNested", "[api]")
 {
-    // A scope opened while one is open, or from a host function while a call runs, joins it: it counts
-    // nothing, keeps the budget and reports the record of the invocation it joined.
+    // A scope opened while one is open at the same depth joins it: it counts nothing, keeps the budget
+    // and reports the record of the scope it joined.
     auto const row = GENERATE(from_range(engineRows()));
     STATIC_CHECK_FALSE(std::is_copy_constructible_v<InvocationScope>);
     STATIC_CHECK_FALSE(std::is_copy_assignable_v<InvocationScope>);
     STATIC_CHECK(std::is_nothrow_move_constructible_v<InvocationScope>);
-    auto store = static_cast<Store*>(nullptr);
-    auto joinedSteps = std::optional<uint64_t> {};
-    auto imports = Imports {};
-    imports.define(
-        "env",
-        "join",
-        FuncType {},
-        makeHostFunction([&](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> Outcome {
-            auto const joined = store->openInvocation();
-            joinedSteps = store->used(Limit::Steps);
-            CHECK(joined.refusedGrowth() == GrowthRecord { .memory = Refusal::Limit, .table = {} });
-            return {};
-        }));
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType {})
-        .importFunction("env", "join", 0)
-        .memory(pages(1))
-        .function(0, {}, {})
-        .function(0, {}, code({ i32Const(1), memoryGrow(), drop() }))
-        .function(0, {}, code({ i32Const(1), memoryGrow(), drop(), call(0) }))
-        .exportFunction("post-return", 1)
-        .exportFunction("realloc", 2)
-        .exportFunction("grow-then-join", 3);
-    auto fixture = InvocationFixture { row, invocationLimits(4), builder, imports };
-    store = &fixture.store;
+    auto fixture = InvocationFixture { row, invocationLimits(4), invocationModule() };
     {
         auto const outer = fixture.store.openInvocation();
         CHECK(fixture.call("post-return").has_value());
@@ -1438,9 +1416,184 @@ TEST_CASE("Store.invocationScopeJoinsWhenNested", "[api]")
     }
     CHECK(fixture.call("post-return").has_value());
     CHECK(fixture.store.used(Limit::Steps) == 1);
+}
 
-    // Opened from a host function, it joins the call that reached the host, whose budget goes on:
-    // the call's entry, then the host function's, two steps before it.
-    CHECK(fixture.call("grow-then-join").has_value());
-    CHECK(joinedSteps == std::optional<uint64_t> { 2 });
+TEST_CASE("Store.invocationScopeInAHostFunction", "[api]")
+{
+    // Opened from a host function, a scope holds a record of its own for the hops the host makes in
+    // it, while the budget stays the call's: "grow-then-hop" is refused a page and calls the host, which
+    // opens a scope and calls "grow-table", refused an element, twice. The scope sees the table refusal
+    // only; the outer call, trapping after the host returns, the memory refusal only.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto store = static_cast<Store*>(nullptr);
+    auto growTable = std::optional<Function> {};
+    auto stepsAtOpen = std::optional<uint64_t> {};
+    auto scopeRecord = std::optional<GrowthRecord> {};
+    auto imports = Imports {};
+    imports.define(
+        "env",
+        "hop",
+        FuncType {},
+        makeHostFunction([&](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> Outcome {
+            auto const scope = store->openInvocation();
+            // The call's entry, then the host function's: the call's budget goes on.
+            stepsAtOpen = store->used(Limit::Steps);
+            CHECK(scope.refusedGrowth() == GrowthRecord {});
+            CHECK(store->call(*growTable, {}, {}).has_value());
+            CHECK(store->call(*growTable, {}, {}).has_value());
+            scopeRecord = scope.refusedGrowth();
+            return {};
+        }));
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .importFunction("env", "hop", 0)
+        .memory(pages(1))
+        .table(TableType { .element = isoline::binary::FuncRef, .limits = pages(1) })
+        .function(0, {}, code({ { 0xD0, 0x70 }, i32Const(1), tableGrow(0), drop() }))
+        .function(0, {}, code({ i32Const(1), memoryGrow(), drop(), call(0), unreachable() }))
+        .exportFunction("grow-table", 1)
+        .exportFunction("grow-then-hop", 2);
+    auto fixture = InvocationFixture { row, invocationLimits(100), builder, imports };
+    store = &fixture.store;
+    growTable = exportedFunction(*fixture.instance, "grow-table");
+    auto const failed = fixture.call("grow-then-hop");
+    CHECK(errorOf(failed).failure() == CallFailure::Trap);
+    CHECK(errorOf(failed).refusedGrowth == GrowthRecord { .memory = Refusal::Limit, .table = {} });
+    CHECK(stepsAtOpen == std::optional<uint64_t> { 2 });
+    CHECK(scopeRecord
+          == std::optional<GrowthRecord> { GrowthRecord { .memory = {}, .table = Refusal::Limit } });
+
+    // Within an outer scope alike; once the host's scope ends, the outer one holds on, and a later call
+    // made in it records into it.
+    scopeRecord.reset();
+    auto const outer = fixture.store.openInvocation();
+    CHECK(errorOf(fixture.call("grow-then-hop")).refusedGrowth
+          == GrowthRecord { .memory = Refusal::Limit, .table = {} });
+    CHECK(scopeRecord
+          == std::optional<GrowthRecord> { GrowthRecord { .memory = {}, .table = Refusal::Limit } });
+    CHECK(fixture.store.call(*growTable, {}, {}).has_value());
+    CHECK(outer.refusedGrowth() == GrowthRecord { .memory = Refusal::Limit, .table = Refusal::Limit });
+}
+
+TEST_CASE("Store.instantiationInsideAScope", "[api]")
+{
+    // An instantiation in a scope shares its budget, its start function included, but keeps its refused
+    // grows to itself. Instantiating costs 3 steps (its entry, before the start function, and the start
+    // function's entry): of 3, it fits alone, but not after a call in the scope took one.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto starter = ModuleBuilder {};
+    starter.type(FuncType {})
+        .memory(pages(1))
+        .function(0, {}, code({ i32Const(100), memoryGrow(), drop() }))
+        .start(0);
+    auto limits = invocationLimits(3);
+    limits.maxMemoryBytes =
+        uint64_t { 8 } * 65'536; // room for every instance's page, none for the start's 100
+    auto fixture = InvocationFixture { row, limits, invocationModule() };
+    auto const module = fixture.engine.load(starter.build());
+    REQUIRE(module.has_value());
+    CHECK(fixture.store.instantiate(*module, {}).has_value());
+    CHECK(fixture.store.used(Limit::Steps) == 3);
+    {
+        auto const invocation = fixture.store.openInvocation();
+        CHECK(fixture.call("post-return").has_value());
+        auto const refused = callErrorOf(fixture.store.instantiate(*module, {}));
+        CHECK(refused.detail == CallError::Detail { Trap { TrapCode::StepLimitExceeded } });
+        CHECK(fixture.store.used(Limit::Steps) == 3);
+    }
+    {
+        // Within the budget, the start function's refused page stays out of the scope's record.
+        auto const invocation = fixture.store.openInvocation();
+        CHECK(fixture.store.instantiate(*module, {}).has_value());
+        CHECK(invocation.refusedGrowth() == GrowthRecord {});
+    }
+}
+
+TEST_CASE("Store.hostPollsOutsideAScope", "[api]")
+{
+    // A host function polls with no scope open: the call's own budget pays. Of 4 steps, the call's
+    // entry and the host function's take 2, a poll of two granules the rest, and one more is refused;
+    // the next call starts a budget of its own.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto store = static_cast<Store*>(nullptr);
+    auto outcomes = std::vector<bool> {};
+    auto imports = Imports {};
+    imports.define(
+        "env",
+        "work",
+        FuncType {},
+        makeHostFunction([&](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> Outcome {
+            outcomes.push_back(store->poll(BulkGranule { .bytes = 2 * BulkPollBytes }).has_value());
+            outcomes.push_back(store->used(Limit::Steps) == 4);
+            auto const refused = store->poll(BulkGranule { .bytes = 0 });
+            outcomes.push_back(!refused.has_value()
+                               && refused.error().detail
+                                      == CallError::Detail { Trap { TrapCode::StepLimitExceeded } });
+            return {};
+        }));
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .importFunction("env", "work", 0)
+        .function(0, {}, call(0))
+        .exportFunction("work", 1);
+    auto fixture = InvocationFixture { row, invocationLimits(4), builder, imports };
+    store = &fixture.store;
+    for ([[maybe_unused]] auto const round: std::views::iota(0, 2))
+    {
+        outcomes.clear();
+        // The host return's step is past the budget: the call ends there.
+        CHECK(errorOf(fixture.call("work")).detail
+              == CallError::Detail { Trap { TrapCode::StepLimitExceeded } });
+        CHECK(outcomes == std::vector<bool> { true, true, true });
+    }
+}
+
+TEST_CASE("Store.scopeOutlivesItsStore", "[api]")
+{
+    // Destroying the store first lets go of its scope, whose end then does nothing (ASan sees no use
+    // after free).
+    auto const row = GENERATE(from_range(engineRows()));
+    auto const engine = Engine { configOf(invocationLimits(10), row) };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = std::make_unique<Store>(engine, allocator);
+    auto scope = std::optional<InvocationScope> {};
+    scope.emplace(store->openInvocation());
+    CHECK(store->poll(BulkGranule { .bytes = 0 }).has_value());
+    store.reset();
+    scope.reset();
+    CHECK_FALSE(scope.has_value());
+}
+
+TEST_CASE("Store.bulkPollInterruptedFromAnotherThread", "[api][threading]")
+{
+    // A host bulk-poll loop in a scope, interrupted by a watchdog thread once it runs: the loop ends with
+    // Interrupted. The loop is bounded, so a missed interrupt fails rather than hangs.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto const engine = Engine { configOf(invocationLimits(std::numeric_limits<uint64_t>::max()), row) };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const interrupter = store.interrupter();
+    auto started = std::atomic<bool> { false };
+    auto watchdog = std::thread { [&] {
+        while (!started.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        interrupter->interrupt();
+    } };
+    auto outcome = std::optional<CallError> {};
+    {
+        auto const invocation = store.openInvocation();
+        for ([[maybe_unused]] auto const round: std::views::iota(uint64_t { 0 }, uint64_t { 100'000'000 }))
+        {
+            started.store(true, std::memory_order_release);
+            if (auto polled = store.poll(BulkGranule { .bytes = BulkPollBytes }); !polled)
+            {
+                outcome = polled.error();
+                break;
+            }
+        }
+    }
+    started.store(true, std::memory_order_release);
+    watchdog.join();
+    REQUIRE(outcome.has_value());
+    CHECK(outcome->failure() == CallFailure::Interrupted);
 }

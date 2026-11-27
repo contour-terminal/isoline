@@ -249,9 +249,12 @@ invocation open across them until it is destroyed: every call made through the s
 call running shares its step budget and one `GrowthRecord` (read with `refusedGrowth()`, and reported
 as each failed call's `refusedGrowth`), and is the one outermost invocation for `maxNestedInvocations`,
 counted while it runs, the scope counting none of its own. Each hop a host function makes back into the
-guest counts one more, as ever. A scope opened while another is open, or from a host function while a
-call runs, joins that invocation and changes nothing. Destroying a scope while a call made in it still
-runs is a contract violation (checked).
+guest counts one more, as ever. A scope opened from a host function while a call runs holds a record of
+its own for the calls the host function makes in it, while the budget stays the call's; the outer
+call's refusals stay in the outer record. A scope opened while another is open at the same depth joins
+it and changes nothing. An instantiation made in a scope shares its step budget, its start function
+included, but keeps its refused grows to itself. Destroying a scope while a call made in it still runs
+is a contract violation (checked); destroying it after its store is fine, and does nothing.
 
 **Polling host work.** Host work done on a call's behalf (a component call's copies and transcodes)
 polls with `Store::poll(BulkGranule { bytes })` at least every `BulkPollBytes` (65536) bytes, from a
@@ -433,8 +436,9 @@ fails, printing the block as it should read, when the two part. A frame costs it
 `maxStackValues` (params, locals, its most operands, its deepest label nesting, and 1; a host frame its
 params, results and 1), so the call that exhausts the stack is the same in every engine. `maxSteps`
 counts the steps each poll site charges (below); every outermost call and every outermost
-instantiation starts a fresh budget, while an instantiation a host function makes shares the budget of
-the call that reached it. The default is no limit.
+instantiation outside any `InvocationScope` starts a fresh budget, while one made inside a scope shares
+the scope's, its start function included, and an instantiation a host function makes shares the budget
+of the call that reached it. The default is no limit.
 
 `LoadLimits` bound loading: `maxModuleBytes` (64 MiB), and the decode limits of
 `binary::DecodeLimits` (function body size, locals, operand height and the rest), so that what loading

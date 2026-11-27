@@ -151,8 +151,9 @@ class ICodeExecutor
 /// segment, or later, leaves the instance in the store, as the spec's partial instantiation does.
 ///
 /// Instantiation is one invocation (InvocationScope) with a RefusalScope of its own. Its polls charge the
-/// outermost invocation's step budget: a fresh one when instantiation is the outermost, the caller's when
-/// a host function instantiates. Its start function, nested in it, shares that budget, and the start
+/// outermost invocation's step budget: a fresh one when instantiation is the outermost outside any
+/// SharedInvocationScope, the held one when it is the outermost inside one, and the caller's when a host
+/// function instantiates. Its start function, nested in it, shares that budget, and the start
 /// function's refused grows stay in its RefusalScope. Past StoreLimits::maxNestedInvocations it traps with
 /// CallStackExhausted.
 ///

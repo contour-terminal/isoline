@@ -613,8 +613,9 @@ InstantiationOutcome instantiateReporting(Store& store,
                                           std::shared_ptr<validate::ValidatedModule const> module,
                                           std::span<ExternValue const> imports)
 {
-    // One invocation, with a fresh step budget its polls charge and its start function shares, and
-    // its own refusal scope, so the start function's refused grows stay in it.
+    // One invocation, whose polls charge the outermost invocation's budget (a fresh one outside any
+    // SharedInvocationScope, the held one inside one) and its start function shares, with its own
+    // refusal scope, so the start function's refused grows stay in it, never in a held record.
     if (auto const nesting = store.checkInvocationNesting(); !nesting)
         return InstantiationOutcome { .instance = std::unexpected { InstantiationError { nesting.error() } },
                                       .refusedGrowth = {} };

@@ -265,7 +265,8 @@ class Store
     Store(Store&&) = delete;
     Store& operator=(Store const&) = delete;
     Store& operator=(Store&&) = delete;
-    ~Store() = default;
+    /// Precondition (checked): no invocation is held (SharedInvocationScope, abandonHeldInvocations()).
+    ~Store();
 
     /// Interns a function type: the TypeId of the type equal to it, added if there is none. A type
     /// added gets the next TypeId, typeCount() before the call, so that instantiation can tell the
@@ -497,9 +498,24 @@ class Store
     ///         Trap{StepLimitExceeded}, no step charged, when the budget cannot take the charge whole.
     [[nodiscard]] std::expected<void, Trap> poll(PollSite site, uint64_t bytes) noexcept;
 
-    /// Whether an invocation is held open across calls (SharedInvocationScope).
+    /// Whether an invocation is held open across calls (SharedInvocationScope), at any depth.
     /// @return Whether one is.
-    [[nodiscard]] bool isInvocationHeld() const noexcept { return _heldInvocation == HeldInvocation::Held; }
+    [[nodiscard]] bool isInvocationHeld() const noexcept { return _heldDepth.has_value(); }
+
+    /// The invocation depth (invocationDepth()) at which the innermost SharedInvocationScope holding a
+    /// record was opened: the calls made at that depth record into its record.
+    /// @return It; nullopt when none is held.
+    [[nodiscard]] std::optional<uint32_t> heldInvocationDepth() const noexcept { return _heldDepth; }
+
+    /// Whether the step budget is held across calls: a SharedInvocationScope opened with no invocation
+    /// in progress holds it, and the outermost calls made in it share it.
+    /// @return Whether it is.
+    [[nodiscard]] bool isStepBudgetHeld() const noexcept { return _stepsHeld == StepsHeld::Yes; }
+
+    /// Lets go of every held invocation (SharedInvocationScope), whose scopes then end nothing: what an
+    /// owner whose scopes may outlive the store (api::Store) does before the store is destroyed. Their
+    /// destructors must then not reach the store (SharedInvocationScope::abandon()).
+    void abandonHeldInvocations() noexcept;
 
     /// How many module instances the store holds.
     /// @return Their count.
@@ -620,11 +636,11 @@ class Store
     friend class SharedInvocationScope;
     friend class ExceptionRootsRegistration;
 
-    /// Whether an invocation is held open across calls (SharedInvocationScope).
-    enum class HeldInvocation : uint8_t
+    /// Whether the step budget is held across outermost calls (SharedInvocationScope).
+    enum class StepsHeld : uint8_t
     {
-        None, ///< None: every outermost call is an invocation of its own.
-        Held, ///< One is: the calls made with no invocation in progress share its budget and record.
+        No,  ///< Every outermost call or instantiation starts a fresh budget.
+        Yes, ///< The outermost calls and instantiations share the held budget.
     };
 
     /// What an exception arena slot holds.
@@ -658,16 +674,17 @@ class Store
     IRoundingMode* _roundingMode; ///< How the floating-point scopes switch the rounding mode; never null.
     std::shared_ptr<Interrupter> _interrupter;
     StoreLimits _limits;
-    GrowthRecord _growthRecord;    ///< The current refusal scope's first refused grow per kind.
-    uint64_t _exceptionValues = 0; ///< The payload values of every exception held.
-    uint64_t _memoryBytes = 0;     ///< The bytes of every memory, charged against maxMemoryBytes.
-    uint64_t _tableElements = 0;   ///< The slots of every table, charged against maxTableElements.
-    uint64_t _typeUnits = 0;       ///< The type units of every interned type, charged against maxTypes.
-    uint32_t _hostCalls = 0;       ///< The host functions running, nested ones included.
-    uint32_t _invocationDepth = 0; ///< The invocations in progress, nested ones included.
-    uint64_t _steps = 0;           ///< The steps the latest outermost invocation took.
-    HeldInvocation _heldInvocation = HeldInvocation::None; ///< Whether one is held open across calls.
-    uint64_t _chargedStackValues = 0;                      ///< The static costs of the frames in progress.
+    GrowthRecord _growthRecord;         ///< The current refusal scope's first refused grow per kind.
+    uint64_t _exceptionValues = 0;      ///< The payload values of every exception held.
+    uint64_t _memoryBytes = 0;          ///< The bytes of every memory, charged against maxMemoryBytes.
+    uint64_t _tableElements = 0;        ///< The slots of every table, charged against maxTableElements.
+    uint64_t _typeUnits = 0;            ///< The type units of every interned type, charged against maxTypes.
+    uint32_t _hostCalls = 0;            ///< The host functions running, nested ones included.
+    uint32_t _invocationDepth = 0;      ///< The invocations in progress, nested ones included.
+    uint64_t _steps = 0;                ///< The steps the latest outermost invocation took.
+    std::optional<uint32_t> _heldDepth; ///< The depth of the innermost held record, if any.
+    StepsHeld _stepsHeld = StepsHeld::No; ///< Whether the step budget is held across outermost calls.
+    uint64_t _chargedStackValues = 0;     ///< The static costs of the frames in progress.
     std::deque<FunctionInstance> _functions;
     std::deque<TableInstance> _tables;
     std::deque<MemoryInstance> _memories;
@@ -743,26 +760,28 @@ class InvocationScope
     FloatEnvironmentScope _floatEnvironment; ///< The IEEE defaults, for as long as the invocation runs.
 };
 
-/// Holds one outermost invocation open on a store across several calls, for as long as it lives: what
-/// the embedder opens (api::Store::openInvocation()) around the calls of one component call, its
-/// realloc, the callee and its post-return. Opened with no invocation in progress or held, it starts a
-/// fresh step budget (StoreLimits::maxSteps) and an empty GrowthRecord, as an outermost invocation does;
-/// until it ends, each call made with no invocation in progress (invokeChecked()) is that outermost
-/// invocation: it charges the shared budget and records its refused grows in the shared record, and
-/// counts one invocation while it runs, the scope none of its own (StoreLimits::maxNestedInvocations).
-/// The hops a host function makes from such a call are nested invocations, as ever. Opened while an
-/// invocation is in progress or held, it joins it: it changes and counts nothing.
+/// Holds one invocation open on a store across several calls, for as long as it lives: what the
+/// embedder opens (api::Store::openInvocation()) around the calls of one component call, its realloc,
+/// the callee and its post-return. It holds a GrowthRecord at the invocation depth it was opened at:
+/// each call made at that depth (invokeChecked()) records its refused grows in it, not in a record of
+/// its own, and the record found when it began is given back when it ends. Opened with no invocation in
+/// progress, it also holds the step budget: it starts a fresh one, and the outermost calls and
+/// instantiations made in it share it, instead of each starting its own. Opened from a host function,
+/// the budget is the call's that reached the host, as ever. It counts no invocation
+/// (StoreLimits::maxNestedInvocations): a call made in it counts one while it runs, and each hop a host
+/// function makes counts one more. Opened while a scope holds a record at the same depth, it joins
+/// that scope: it changes and counts nothing.
 ///
 /// It sets no floating-point environment: each call pins its own (InvocationScope). Move-only.
 class SharedInvocationScope
 {
   public:
-    /// Holds an invocation open on @p store, or joins the one in progress or held.
-    /// @param store The store; must outlive the scope.
+    /// Holds an invocation open on @p store at its current depth, or joins the scope holding one there.
+    /// @param store The store; must outlive the scope, or let go of it first (abandon()).
     explicit SharedInvocationScope(Store& store) noexcept;
 
     /// Ends the invocation it holds, restoring the record saved when it began; a joined one ends nothing.
-    /// Precondition (checked): no call made in it is still running.
+    /// Precondition (checked): no call made in it is still running (the depth is the one it was opened at).
     ~SharedInvocationScope();
 
     /// Takes over @p other's invocation; @p other is left holding none.
@@ -773,9 +792,13 @@ class SharedInvocationScope
     SharedInvocationScope& operator=(SharedInvocationScope&&) = delete;
 
     /// The first refused grow of each kind of the invocation, its calls' included: for a joined scope,
-    /// the record of the invocation it joined.
+    /// the record of the scope it joined.
     /// @return The store's current record.
     [[nodiscard]] GrowthRecord const& refusedGrowth() const noexcept;
+
+    /// Lets go of the store, which Store::abandonHeldInvocations() released already: the scope then ends
+    /// nothing, and its destructor does not reach the store.
+    void abandon() noexcept;
 
   private:
     /// What the scope does to its store.
@@ -787,7 +810,9 @@ class SharedInvocationScope
 
     Store* _store;
     Role _role;
-    GrowthRecord _outer; ///< The record saved when it began holding.
+    uint32_t _depth;                     ///< The invocation depth it was opened at.
+    std::optional<uint32_t> _outerDepth; ///< The held depth it found, given back when it ends.
+    GrowthRecord _outer;                 ///< The record saved when it began holding.
 };
 
 /// Counts a host function call in progress on a store (Store::hostCallsInProgress()) for as long as it

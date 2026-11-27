@@ -133,8 +133,8 @@ InvocationResult invokeChecked(Store& store,
         return InvocationResult { .entry = Entry::Entered,
                                   .outcome = std::unexpected { Abrupt { nesting.error() } },
                                   .refusedGrowth = {} };
-    // A call made directly in a held invocation (SharedInvocationScope) records into its record.
-    auto const isHeldDirectly = store.invocationDepth() == 0 && store.isInvocationHeld();
+    // A call made at the depth a SharedInvocationScope holds a record at records into that record.
+    auto const isHeldDirectly = store.heldInvocationDepth() == store.invocationDepth();
     auto const invocation = InvocationScope { store };
     auto scope = std::optional<RefusalScope> {};
     if (!isHeldDirectly)
