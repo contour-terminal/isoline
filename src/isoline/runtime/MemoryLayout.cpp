@@ -20,6 +20,14 @@ namespace
     /// The access every other access of a memory relies on at least as much as: a one-byte load at
     /// offset 0. Its extent, 1, is the least, and it neither writes nor tears.
     constexpr auto LeastDemandingAccess = MemoryAccess { .offset = 0, .size = 1, .kind = AccessKind::Load };
+
+    /// Checks the precondition strategyRuleFor() and boundsStrategyFor() share: @p access's size is a power
+    /// of two of at most MaximumAccessBytes.
+    /// @param access The access.
+    void requireAccessSize(MemoryAccess access) noexcept
+    {
+        ISOLINE_PRECONDITION(std::has_single_bit(access.size) && access.size <= MaximumAccessBytes);
+    }
 } // namespace
 
 StoreFaultAtomicity storeFaultAtomicityOf(platform::Architecture architecture) noexcept
@@ -34,7 +42,7 @@ StrategyRule strategyRuleFor(std::optional<MemoryLayout> const& layout,
                              StoreFaultAtomicity atomicity) noexcept
 {
     ISOLINE_PRECONDITION(!layout.has_value() || isWellFormed(*layout));
-    ISOLINE_PRECONDITION(std::has_single_bit(access.size) && access.size <= MaximumAccessBytes);
+    requireAccessSize(access);
     auto const query =
         StrategyQuery { .layout = layout, .type = type, .access = access, .atomicity = atomicity };
     auto const deciding =
@@ -49,7 +57,7 @@ BoundsStrategy boundsStrategyFor(std::optional<MemoryLayout> const& layout,
                                  StoreFaultAtomicity atomicity) noexcept
 {
     ISOLINE_PRECONDITION(!layout.has_value() || isWellFormed(*layout));
-    ISOLINE_PRECONDITION(std::has_single_bit(access.size) && access.size <= MaximumAccessBytes);
+    requireAccessSize(access);
     return StrategyTable[std::to_underlying(strategyRuleFor(layout, type, access, atomicity))].strategy;
 }
 
