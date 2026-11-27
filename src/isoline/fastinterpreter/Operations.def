@@ -35,6 +35,19 @@ ISOLINE_FAST_OPERATION(Const128, "const128", Move, 1, 2, Control)
 // Leaving the function: the slot of its first result, the rest following it
 ISOLINE_FAST_OPERATION(Return, "return", Special, 1, 0, Control)
 
+// Calls (CallTable): the slot of the first argument, where the callee's frame begins and its results come
+// back to; then what names the callee: a code index of the caller's own module (call), a function index
+// (call.import), the slot of a table index with the type and table indices (call_indirect), or the slot of a
+// function reference with the type index (call_ref). Each return_call twin replaces the caller's frame.
+ISOLINE_FAST_OPERATION(CallInternal, "call", Call, 1, 1, Control)
+ISOLINE_FAST_OPERATION(CallImport, "call.import", Call, 1, 1, Control)
+ISOLINE_FAST_OPERATION(CallIndirect, "call_indirect", Call, 2, 2, Control)
+ISOLINE_FAST_OPERATION(CallRef, "call_ref", Call, 2, 1, Control)
+ISOLINE_FAST_OPERATION(ReturnCallInternal, "return_call", Call, 1, 1, Control)
+ISOLINE_FAST_OPERATION(ReturnCallImport, "return_call.import", Call, 1, 1, Control)
+ISOLINE_FAST_OPERATION(ReturnCallIndirect, "return_call_indirect", Call, 2, 2, Control)
+ISOLINE_FAST_OPERATION(ReturnCallRef, "return_call_ref", Call, 2, 1, Control)
+
 // Globals: a slot and the global's index in the module, whatever the global's type
 ISOLINE_FAST_OPERATION(GlobalGet, "global.get", Special, 1, 1, Variable)
 ISOLINE_FAST_OPERATION(GlobalSet, "global.set", Special, 1, 1, Variable)

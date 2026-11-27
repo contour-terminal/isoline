@@ -6,15 +6,19 @@
 #include <cfenv>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <ranges>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <isoline/binary/Opcode.hpp>
@@ -28,8 +32,11 @@
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/testing/Engines.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
+#include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/runtime/testing/ContractViolation.hpp>
@@ -894,13 +901,25 @@ class Agreement
                std::vector<std::vector<Value>> const& argumentSets,
                StoreLimits limits = {})
     {
-        auto reference = Harness { module, Reference, limits };
-        auto harness = Harness { module, _engine, limits };
+        checkFunction(module, {}, 0, argumentSets, limits);
+    }
+
+    /// Runs @p module's function @p function on both engines with each of @p argumentSets, the imports bound
+    /// to what @p imports adds to each store: the outcomes and the steps they took must be equal.
+    void checkFunction(ModuleBuilder const& module,
+                       Harness::Imports const& imports,
+                       uint32_t function,
+                       std::vector<std::vector<Value>> const& argumentSets,
+                       StoreLimits limits = {})
+    {
+        auto reference = Harness { module, Reference, imports, limits };
+        auto harness = Harness { module, _engine, imports, limits };
         _executed.merge(operationsOf(*harness.code()));
         for (auto const& args: argumentSets)
         {
-            CHECK(harness.outcome(0, args) == reference.outcome(0, args));
+            CHECK(harness.outcome(function, args) == reference.outcome(function, args));
             CHECK(harness.store().used(Limit::Steps) == reference.store().used(Limit::Steps));
+            CHECK(harness.store().chargedStackValues() == 0);
         }
     }
 
@@ -1174,6 +1193,79 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
                                 typeIndex(0),
                                 code({ i64Const(1), i64Const(10), i64Const(20), i64Const(30), br(0) })));
         agreement.check(module, { {} });
+    }
+
+    // Calls by code index: f0(x) = return_call f1(f1(x)), f1(x) = x + 3.
+    {
+        auto module = ModuleBuilder {};
+        module.type(FuncType { .params = { binary::I32 }, .results = { binary::I32 } });
+        module.function(0, {}, code({ localGet(0), op(0x10, 1), op(0x12, 1) }));
+        module.function(0, {}, code({ localGet(0), i32Const(3), op(0x6A) }));
+        agreement.check(module, argumentsOf({ ValueKind::I32 }));
+    }
+    // Calls of an import, a host function: f1(x) = return_call double(double(x)). The host function invoked
+    // directly too, by the embedder.
+    {
+        auto module = ModuleBuilder {};
+        module.type(FuncType { .params = { binary::I32 }, .results = { binary::I32 } });
+        module.importFunction("env", "double", 0);
+        module.function(0, {}, code({ localGet(0), op(0x10, 0), op(0x12, 0) }));
+        auto const doubling = [](isoline::runtime::Store& store) {
+            auto const host = store.addHostFunction(
+                FuncType { .params = { binary::I32 }, .results = { binary::I32 } },
+                isoline::runtime::makeHostFunction(
+                    [](isoline::runtime::HostContext&,
+                       std::span<Value const> args,
+                       std::span<Value> results) noexcept -> std::expected<void, isoline::runtime::Abrupt> {
+                        results[0] = I32 { std::get<I32>(args[0]).bits * 2 };
+                        return {};
+                    }));
+            REQUIRE(host.has_value());
+            return std::vector { isoline::runtime::ExternValue { .kind = binary::ExternKind::Func,
+                                                                 .address = *host } };
+        };
+        agreement.checkFunction(module, doubling, 1, argumentsOf({ ValueKind::I32 }));
+        agreement.checkFunction(module, doubling, 0, argumentsOf({ ValueKind::I32 }));
+    }
+    // Calls through a table: f0(i, x) = return_call_indirect[i] f1(call_indirect[i](x)), over the table
+    // [f1, f2, null] of type 1's f1 and type 2's f2: a call, a type mismatch, an uninitialized and an
+    // undefined element.
+    {
+        auto module = ModuleBuilder {};
+        module.type(FuncType { .params = { binary::I32, binary::I32 }, .results = { binary::I32 } });
+        module.type(FuncType { .params = { binary::I32 }, .results = { binary::I32 } });
+        module.type(FuncType { .params = {}, .results = { binary::I32 } });
+        module.table(binary::TableType {
+            .element = binary::FuncRef,
+            .limits = { .min = 3, .max = std::nullopt, .addressType = binary::AddressType::I32 } });
+        module.function(
+            0,
+            {},
+            code({ localGet(1), localGet(0), { 0x11, 0x01, 0x00 }, localGet(0), { 0x13, 0x01, 0x00 } }));
+        module.function(1, {}, code({ localGet(0), i32Const(3), op(0x6A) }));
+        module.function(2, {}, i32Const(9));
+        module.element(code({ { 0x00 }, i32Const(0), { 0x0B, 0x02, 0x01, 0x02 } }));
+        auto argumentSets = std::vector<std::vector<Value>> {};
+        for (auto const index: { 0, 1, 2, 3, -1 })
+            for (auto const value: { 0, 7 })
+                argumentSets.push_back({ i32(index), i32(value) });
+        agreement.check(module, argumentSets);
+    }
+    // Calls of a reference: f0(r, x) = return_call_ref r(call_ref r(x)), of f1 (of type 0) and of a null.
+    {
+        auto module = ModuleBuilder {};
+        module.type(FuncType { .params = { binary::I32 }, .results = { binary::I32 } });
+        module.type(FuncType { .params = { binary::concreteRef(0, binary::Nullable::Yes), binary::I32 },
+                               .results = { binary::I32 } });
+        module.function(
+            1, {}, code({ localGet(1), localGet(0), { 0x14, 0x00 }, localGet(0), { 0x15, 0x00 } }));
+        module.function(0, {}, code({ localGet(0), i32Const(3), op(0x6A) }));
+        agreement.checkWith(module, [](Harness& reference) {
+            auto const function = Value { Ref { .kind = RefKind::Func,
+                                                .heap = { .kind = AbstractHeapType::Func },
+                                                .address = reference.function(1) } };
+            return std::vector<std::vector<Value>> { { function, i32(4) }, { nullFunc(), i32(4) } };
+        });
     }
 
     // No lowering emits these yet: nop lowers to nothing, and v128.const is lowered with the vector

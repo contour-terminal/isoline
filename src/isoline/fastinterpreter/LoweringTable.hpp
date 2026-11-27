@@ -94,6 +94,12 @@ inline constexpr auto LoweringRows = std::to_array<LoweringRow>({
     detail::specialRow(binary::Opcode::BrOnNonNull, OperationId::BrOnNonNull),
     detail::specialRow(binary::Opcode::End, OperationId::Return),
     detail::specialRow(binary::Opcode::Return, OperationId::Return),
+    detail::specialRow(binary::Opcode::Call, OperationId::CallInternal),
+    detail::specialRow(binary::Opcode::CallIndirect, OperationId::CallIndirect),
+    detail::specialRow(binary::Opcode::CallRef, OperationId::CallRef),
+    detail::specialRow(binary::Opcode::ReturnCall, OperationId::ReturnCallInternal),
+    detail::specialRow(binary::Opcode::ReturnCallIndirect, OperationId::ReturnCallIndirect),
+    detail::specialRow(binary::Opcode::ReturnCallRef, OperationId::ReturnCallRef),
     detail::specialRow(binary::Opcode::Drop, OperationId::Nop),
     detail::specialRow(binary::Opcode::Select, OperationId::Select64),
     detail::specialRow(binary::Opcode::SelectTyped, OperationId::Select64),
@@ -565,6 +571,103 @@ inline constexpr auto ConditionalBranchTable = std::to_array<ConditionalBranchRo
 {
     auto const row = std::ranges::find(ConditionalBranchTable, opcode, &ConditionalBranchRow::opcode);
     return row == ConditionalBranchTable.end() ? nullptr : &*row;
+}
+
+/// One call operation: the instruction it lowers, what names its callee, and what it does with the caller's
+/// frame. call and return_call lower to their Internal operation for a function of the module's own code,
+/// and to their Import twin for an imported one.
+struct CallRow
+{
+    OperationId operation; ///< The operation.
+    binary::Opcode opcode; ///< The instruction it lowers.
+    CalleeKind callee;     ///< What names its callee.
+    CallMode mode;         ///< Whether it keeps the caller's frame or replaces it.
+};
+
+/// Every call operation, one row each.
+inline constexpr auto CallTable = std::to_array<CallRow>({
+    { .operation = OperationId::CallInternal,
+      .opcode = binary::Opcode::Call,
+      .callee = CalleeKind::Internal,
+      .mode = CallMode::Call },
+    { .operation = OperationId::CallImport,
+      .opcode = binary::Opcode::Call,
+      .callee = CalleeKind::Import,
+      .mode = CallMode::Call },
+    { .operation = OperationId::CallIndirect,
+      .opcode = binary::Opcode::CallIndirect,
+      .callee = CalleeKind::Table,
+      .mode = CallMode::Call },
+    { .operation = OperationId::CallRef,
+      .opcode = binary::Opcode::CallRef,
+      .callee = CalleeKind::Reference,
+      .mode = CallMode::Call },
+    { .operation = OperationId::ReturnCallInternal,
+      .opcode = binary::Opcode::ReturnCall,
+      .callee = CalleeKind::Internal,
+      .mode = CallMode::Tail },
+    { .operation = OperationId::ReturnCallImport,
+      .opcode = binary::Opcode::ReturnCall,
+      .callee = CalleeKind::Import,
+      .mode = CallMode::Tail },
+    { .operation = OperationId::ReturnCallIndirect,
+      .opcode = binary::Opcode::ReturnCallIndirect,
+      .callee = CalleeKind::Table,
+      .mode = CallMode::Tail },
+    { .operation = OperationId::ReturnCallRef,
+      .opcode = binary::Opcode::ReturnCallRef,
+      .callee = CalleeKind::Reference,
+      .mode = CallMode::Tail },
+});
+
+/// The slot operands of a call operation whose callee @p callee names: the first argument's, then the table
+/// index's or the reference's where the callee is on the operand stack.
+[[nodiscard]] constexpr uint32_t callSlots(CalleeKind callee) noexcept
+{
+    return callee == CalleeKind::Table || callee == CalleeKind::Reference ? 2 : 1;
+}
+
+/// The immediates of a call operation whose callee @p callee names: the type and table indices of a
+/// call_indirect, the one index of every other.
+[[nodiscard]] consteval uint32_t callImmediates(CalleeKind callee) noexcept
+{
+    return callee == CalleeKind::Table ? 2 : 1;
+}
+
+namespace detail
+{
+    /// Whether every row's operation is a call of the operands its callee needs, a tail call exactly when
+    /// its instruction is a return_call, and every pair of instruction and callee has one row.
+    [[nodiscard]] consteval bool callRowsAreWellFormed() noexcept
+    {
+        constexpr auto TailCalls = std::to_array<binary::Opcode>({ binary::Opcode::ReturnCall,
+                                                                   binary::Opcode::ReturnCallIndirect,
+                                                                   binary::Opcode::ReturnCallRef });
+        return std::ranges::all_of(CallTable, [&TailCalls](CallRow const& row) {
+            auto const& info = operationRow(row.operation);
+            auto const tail = std::ranges::find(TailCalls, row.opcode) != TailCalls.end();
+            auto const pairs = std::ranges::count_if(CallTable, [&row](CallRow const& other) {
+                return other.opcode == row.opcode && other.callee == row.callee;
+            });
+            return info.form == OperationForm::Call && info.slots == callSlots(row.callee)
+                   && info.immediates == callImmediates(row.callee) && tail == (row.mode == CallMode::Tail)
+                   && pairs == 1;
+        });
+    }
+} // namespace detail
+
+static_assert(detail::callRowsAreWellFormed(), "a call row names an operation of another shape or mode");
+
+/// The call operation of @p opcode whose callee @p callee names.
+/// @param opcode A call instruction.
+/// @param callee What names its callee.
+/// @return Its row of CallTable, or null where none lowers the pair.
+[[nodiscard]] constexpr CallRow const* callOf(binary::Opcode opcode, CalleeKind callee) noexcept
+{
+    auto const row = std::ranges::find_if(CallTable, [&](CallRow const& candidate) {
+        return candidate.opcode == opcode && candidate.callee == callee;
+    });
+    return row == CallTable.end() ? nullptr : &*row;
 }
 
 /// What follows an instruction in its block.

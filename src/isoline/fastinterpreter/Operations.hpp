@@ -408,6 +408,23 @@ namespace detail
         return NoRow;
     }
 
+    /// The CallTable row of @p id, or NoRow.
+    [[nodiscard]] consteval std::size_t callRowOf(OperationId id) noexcept
+    {
+        auto const row = std::ranges::find(CallTable, id, &CallRow::operation);
+        return row == CallTable.end() ? NoRow : static_cast<std::size_t>(row - CallTable.begin());
+    }
+
+    /// Whether every operation of the Call form has its row of CallTable, which its body runs by.
+    [[nodiscard]] consteval bool everyCallHasARow() noexcept
+    {
+        return std::ranges::all_of(OperationTable, [](OperationRow const& row) {
+            return row.form != OperationForm::Call || callRowOf(row.id) != NoRow;
+        });
+    }
+
+    static_assert(everyCallHasARow(), "a call operation without its CallTable row has no body");
+
     /// False, for an operation: what a static_assert in a branch no operation reaches tests.
     template <OperationId>
     inline constexpr auto NoOperation = false;
@@ -590,6 +607,28 @@ template <OperationId Id>
     return branchTo<LoopPoll::No>(state, record[0]);
 }
 
+/// A call (CallTable): names the callee as its row says, and calls it out of line (callFunction()), which
+/// leaves the registers at the callee's first operation, or after the call once a host function returned.
+template <OperationId Id>
+[[nodiscard]] inline Flow callOperation(State& state) noexcept
+{
+    constexpr auto Row = CallTable[detail::callRowOf(Id)];
+    auto site = CallSite { .callee = Row.callee,
+                           .mode = Row.mode,
+                           .words = operationRow(Id).words,
+                           .argumentSlot = slotOperand<0>(state.pc),
+                           .operandSlot = 0,
+                           .index = immediateOperand<Id, 0>(state.pc),
+                           .table = 0 };
+    if constexpr (callSlots(Row.callee) == 2)
+        site.operandSlot = slotOperand<1>(state.pc);
+    if constexpr (callImmediates(Row.callee) == 2)
+        site.table = immediateOperand<Id, 1>(state.pc);
+    auto const step = callFunction(state, site);
+    state = step.state;
+    return step.flow;
+}
+
 /// The operations of a body of their own: control without operands, moves, constants, selects, globals,
 /// unconditional branches, if, br_table and return.
 template <OperationId Id>
@@ -630,7 +669,11 @@ template <OperationId Id>
         return next<Id>(state);
     }
     else if constexpr (Id == OperationId::Return)
-        return leaveReturning(*state.context, state.stepsLeft, slotOperand<0>(pc));
+    {
+        auto const step = returnFromFunction(state, slotOperand<0>(pc));
+        state = step.state;
+        return step.flow;
+    }
     else if constexpr (Id == OperationId::GlobalGet)
     {
         auto const& global = state.context->store.global(
@@ -686,6 +729,8 @@ template <OperationId Id>
         return fusedBranch<Id>(state);
     else if constexpr (detail::conditionalBranchRowOf(Id) != detail::NoRow)
         return conditionalBranch<Id>(state);
+    else if constexpr (detail::callRowOf(Id) != detail::NoRow)
+        return callOperation<Id>(state);
     else
         return specialOperation<Id>(state);
 }

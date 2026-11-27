@@ -177,8 +177,33 @@ if(ISOLINE_TESTING)
     foreach(directory IN LISTS isolineSeparateTestDirectories)
         list(FILTER isolineTestSources EXCLUDE REGEX "/${directory}/posix/[^/]*_test\\.cpp$")
     endforeach()
+    # The platform's half of runtime/testing/SmallStackThread.hpp, one row per platform.
+    if(WIN32)
+        list(APPEND isolineTestSources runtime/testing/SmallStackThreadWindows.cpp)
+    else()
+        list(APPEND isolineTestSources runtime/testing/SmallStackThreadPosix.cpp)
+    endif()
     add_executable(isoline_test ${isolineTestSources})
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
+    # The stack of the tests' small threads (SmallStackBytes), per build flavour: 512 KiB where the dispatch
+    # files' frames are bounded (-Wframe-larger-than=4096 on an optimized GCC or Clang build without
+    # sanitizers or coverage, fastinterpreter/CMakeLists.txt), 16 MiB on every other, whose frames carry
+    # redzones and counters or are unbounded (they record their sizes with -fstack-usage instead).
+    set(isolineSmallStackBounded 524288)
+    set(isolineSmallStackUnbounded 16777216)
+    if((CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU" OR (NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT
+                                                                AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+       AND NOT ISOLINE_SANITIZE AND NOT ISOLINE_COVERAGE)
+        set(isolineSmallStackBytes
+            "$<IF:$<CONFIG:Release,RelWithDebInfo,MinSizeRel>,${isolineSmallStackBounded},${isolineSmallStackUnbounded}>")
+    else()
+        set(isolineSmallStackBytes ${isolineSmallStackUnbounded})
+    endif()
+    target_compile_definitions(isoline_test PRIVATE ISOLINE_SMALL_STACK_BYTES=${isolineSmallStackBytes})
+    if(NOT WIN32)
+        find_package(Threads REQUIRED)
+        target_link_libraries(isoline_test PRIVATE Threads::Threads)
+    endif()
     # The source tree, from which tests derive the paths of their data: tests/spec, and docs/embedding.md,
     # whose generated blocks PublishedLimits_test checks against the tables.
     target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
