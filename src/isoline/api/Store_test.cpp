@@ -10,6 +10,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <expected>
 #include <iostream>
@@ -38,6 +39,7 @@
 #include <isoline/api/testing/RuntimeAccess.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
+#include <isoline/runtime/testing/ReportedContractChecks.hpp>
 
 using isoline::FeatureSet;
 using isoline::api::Abrupt;
@@ -105,6 +107,7 @@ using isoline::binary::testing::memoryGrow;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::binary::testing::tableGrow;
 using isoline::binary::testing::unreachable;
+using isoline::runtime::testing::ReportedContractChecks;
 
 namespace
 {
@@ -1646,15 +1649,8 @@ TEST_CASE("Store.destroyedMidCallIsAContractViolation", "[.contract]")
 {
     // Destroying the store from a host function while a call made in a scope runs ends the process
     // (Require): never a silent abandon of the scope. Hidden: CTest runs it alone and expects the
-    // report (isoline_contract_store_destroyed_mid_call). The fail handler reports the check and ends
-    // the process at once, as a failed check would, without the abort CTest counts as a crash.
-    core::setFailHandler(
-        [](std::string_view text, std::string_view message, std::string_view file, int line) {
-            std::cerr << "contract check failed: [" << file << ':' << line << "] " << message << ' ' << text
-                      << '\n'
-                      << std::flush;
-            std::_Exit(0);
-        });
+    // report (isoline_contract_store_destroyed_mid_call).
+    ReportedContractChecks const checks;
     auto const engine = Engine { configOf(invocationLimits(100), engineRows().front()) };
     auto allocator = HeapMemoryAllocator {};
     auto store = std::make_unique<Store>(engine, allocator);
@@ -1679,5 +1675,7 @@ TEST_CASE("Store.destroyedMidCallIsAContractViolation", "[.contract]")
     auto const scope = store->openInvocation();
     CHECK(scope.refusedGrowth() == GrowthRecord {});
     std::ignore = instance->call(exportedFunction(*instance, "destroy"), {}, {});
+    // The sentinel isoline_add_contract_test() fails the run on, where the call went through.
+    std::puts("contract-test: the check let the call through");
     FAIL("the store was destroyed mid-call without a contract violation");
 }
