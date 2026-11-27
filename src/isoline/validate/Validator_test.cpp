@@ -8,6 +8,7 @@
 #include <initializer_list>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -355,14 +356,47 @@ TEST_CASE("Validator.frameShapeOfDeepNesting")
 
 TEST_CASE("Validator.frameShapeCountsRestoredUnknowns")
 {
-    // unreachable br_if 0 to the function's label of [i32 i32]: br_if pops its operands, Unknowns of
-    // the polymorphic stack, and pushes them back (popAndRestore), and those are the body's only
-    // operands.
+    // unreachable br_if 0 to the function's label of [i32 i32]: br_if takes its operands from the
+    // polymorphic stack, Unknowns, and leaves the label's i32 i32 in their place, and those are the
+    // body's only operands.
     auto const restored =
         functionOf(FuncType { .params = {}, .results = { I32, I32 } }, { 0x00, 0x0D, 0x00 });
     auto const shape = validated(restored, FeatureSet::wasm3());
     REQUIRE(shape.has_value());
     CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 0 });
+
+    // block (type 1) <5 x i32.const 0> block unreachable i32.const 0 <branch> end <5 x drop> unreachable
+    // end <8 x drop>, type 1 being [] -> [i32 x 8]: the branch to the outer label is checked above the
+    // inner block's floor of 5, where the unreachable frame supplies its 8 operands, so the stack reaches
+    // 13.
+    auto const raisedFloor = [](std::vector<uint8_t> const& branch) {
+        auto body = std::vector<uint8_t> { 0x02, 0x01 };
+        for ([[maybe_unused]] auto const operand: std::views::iota(0, 5))
+            body.insert(body.end(), { 0x41, 0x00 });
+        body.insert(body.end(), { 0x02, 0x40, 0x00, 0x41, 0x00 });
+        body.insert(body.end(), branch.begin(), branch.end());
+        body.push_back(0x0B);
+        body.insert(body.end(), 5, 0x1A);
+        body.insert(body.end(), { 0x00, 0x0B });
+        body.insert(body.end(), 8, 0x1A);
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {})
+            .type(FuncType { .params = {}, .results = std::vector<isoline::binary::ValueType>(8, I32) })
+            .function(0, {}, std::move(body));
+        return validated(builder, FeatureSet::wasm3());
+    };
+    // br_if 1, then dropping the 8 it leaves.
+    auto const brIf = raisedFloor({ 0x0D, 0x01, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A });
+    REQUIRE(brIf.has_value());
+    CHECK(brIf->functions.at(0) == FrameShape { .maxOperands = 13, .maxLabels = 2 });
+    // br_table 1 1: its labels were popped and pushed back, Unknowns supplied, as the shape still counts.
+    auto const brTable = raisedFloor({ 0x0E, 0x01, 0x01, 0x01 });
+    REQUIRE(brTable.has_value());
+    CHECK(brTable->functions.at(0) == FrameShape { .maxOperands = 13, .maxLabels = 2 });
+    // br_table 1 (the default label alone) pops what it checks and pushes nothing back.
+    auto const defaultOnly = raisedFloor({ 0x0E, 0x00, 0x01 });
+    REQUIRE(defaultOnly.has_value());
+    CHECK(defaultOnly->functions.at(0) == FrameShape { .maxOperands = 8, .maxLabels = 2 });
 }
 
 TEST_CASE("Validator.frameShapeOfBlockParameters")
@@ -2087,4 +2121,249 @@ TEST_CASE("Validator.disabledProposalIsNamed")
     auto const twoMemoriesRefused = validated(twoMemories, FeatureSet::wasm2());
     REQUIRE_FALSE(twoMemoriesRefused.has_value());
     CHECK(specMessage(twoMemoriesRefused.error()) == "multiple memories (multi-memory not enabled)");
+}
+
+namespace
+{
+
+/// A case of a branch typed in place: a body, and what validating it reports.
+struct BranchRow
+{
+    std::string_view name;     ///< What the row pins.
+    std::vector<uint8_t> body; ///< The instructions, inside the shape the test wraps them in.
+    std::optional<ValidationErrorCode> expected; ///< nullopt when valid.
+};
+
+/// f32.const 0.
+constexpr auto F32Const = std::array<uint8_t, 5> { 0x43, 0x00, 0x00, 0x00, 0x00 };
+
+/// @p parts, one after another.
+std::vector<uint8_t> concat(std::initializer_list<std::span<uint8_t const>> parts)
+{
+    auto bytes = std::vector<uint8_t> {};
+    for (auto const part: parts)
+        bytes.insert(bytes.end(), part.begin(), part.end());
+    return bytes;
+}
+
+/// A module of one function [] -> [] whose body is block (type 1) @p inner end drop drop drop, type 1
+/// being [] -> [i32 i64 f32].
+ModuleBuilder threeResultBlockOf(std::vector<uint8_t> const& inner)
+{
+    auto body = std::vector<uint8_t> { 0x02, 0x01 };
+    body.insert(body.end(), inner.begin(), inner.end());
+    body.insert(body.end(), { 0x0B, 0x1A, 0x1A, 0x1A });
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .type(FuncType { .params = {}, .results = { I32, I64, F32 } })
+        .function(0, {}, std::move(body));
+    return builder;
+}
+
+} // namespace
+
+TEST_CASE("Validator.branchesCheckTheirOperandsInPlace")
+{
+    auto const i32 = std::array<uint8_t, 2> { 0x41, 0x00 };
+    auto const i64 = std::array<uint8_t, 2> { 0x42, 0x00 };
+    auto const brIf = std::array<uint8_t, 4> { 0x41, 0x00, 0x0D, 0x00 }; // i32.const 0; br_if 0
+    auto const unreachable = std::array<uint8_t, 1> { 0x00 };
+    auto const rows = std::vector<BranchRow> {
+        { "all three operands", concat({ i32, i64, F32Const, brIf }), std::nullopt },
+        { "the deepest operand mismatches",
+          concat({ i64, i64, F32Const, brIf }),
+          ValidationErrorCode::TypeMismatch },
+        { "the top operand mismatches", concat({ i32, i64, i64, brIf }), ValidationErrorCode::TypeMismatch },
+        { "a reachable frame holds too few",
+          concat({ i64, F32Const, brIf }),
+          ValidationErrorCode::TypeMismatch },
+        { "polymorphic: one present, the top type", concat({ unreachable, F32Const, brIf }), std::nullopt },
+        { "polymorphic: one present, the deepest type",
+          concat({ unreachable, i32, brIf }),
+          ValidationErrorCode::TypeMismatch },
+        { "polymorphic: two present", concat({ unreachable, i64, F32Const, brIf }), std::nullopt },
+        { "polymorphic: two present, the deeper mismatches",
+          concat({ unreachable, i32, F32Const, brIf }),
+          ValidationErrorCode::TypeMismatch },
+        { "polymorphic: none present", concat({ unreachable, brIf }), std::nullopt },
+        // The types the branch supplies below the present operands are the label's, not Unknown: under the
+        // f32 lies an i64, which i64.eqz takes and i32.eqz does not.
+        { "supplied types are typed",
+          concat({ unreachable, F32Const, brIf, std::array<uint8_t, 4> { 0x1A, 0x50, 0x1A, 0x1A } }),
+          std::nullopt },
+        { "supplied types are not Unknown",
+          concat({ unreachable, F32Const, brIf, std::array<uint8_t, 4> { 0x1A, 0x45, 0x1A, 0x1A } }),
+          ValidationErrorCode::TypeMismatch },
+        // A second br_if to the same label sees what replaced the first one's operands.
+        { "a replaced operand is checked again",
+          concat({ i32,
+                   i64,
+                   F32Const,
+                   brIf,
+                   std::array<uint8_t, 1> { 0x1A },
+                   i64,
+                   brIf,
+                   std::array<uint8_t, 1> { 0x1A },
+                   F32Const }),
+          ValidationErrorCode::TypeMismatch },
+        { "an operand put back is checked again",
+          concat({ i32, i64, F32Const, brIf, std::array<uint8_t, 1> { 0x1A }, F32Const, brIf }),
+          std::nullopt },
+        // br and return check in place too, an unreachable frame supplying what is missing.
+        { "br: polymorphic, the top type",
+          concat({ unreachable, F32Const, std::array<uint8_t, 2> { 0x0C, 0x00 } }),
+          std::nullopt },
+        { "br: polymorphic, the deepest type",
+          concat({ unreachable, i32, std::array<uint8_t, 2> { 0x0C, 0x00 } }),
+          ValidationErrorCode::TypeMismatch },
+    };
+    for (auto const& row: rows)
+    {
+        INFO(row.name);
+        CHECK(errorOf(threeResultBlockOf(row.body), FeatureSet::wasm3()) == row.expected);
+    }
+}
+
+TEST_CASE("Validator.branchesCheckInPlaceAcrossFrames")
+{
+    // block (result i32) i32.const 0 i32.const 0 br_if 0 <inner> end drop.
+    auto const afterBrIf = [](std::vector<uint8_t> const& inner) {
+        auto body = std::vector<uint8_t> { 0x02, 0x7F, 0x41, 0x00, 0x41, 0x00, 0x0D, 0x00 };
+        body.insert(body.end(), inner.begin(), inner.end());
+        body.insert(body.end(), { 0x0B, 0x1A });
+        return errorOf(voidFunctionOf(std::move(body)), FeatureSet::wasm3());
+    };
+    // A block opened above the branch's operands hides them from a br_if to the outer label.
+    CHECK(afterBrIf({ 0x02, 0x40, 0x41, 0x00, 0x0D, 0x01, 0x0B }) == ValidationErrorCode::TypeMismatch);
+    CHECK(afterBrIf({ 0x02, 0x40, 0x41, 0x07, 0x41, 0x00, 0x0D, 0x01, 0x1A, 0x0B }) == std::nullopt);
+    // One closed again leaves them as they were.
+    CHECK(afterBrIf({ 0x02, 0x40, 0x0B, 0x41, 0x00, 0x0D, 0x00 }) == std::nullopt);
+    // Dropped and replaced by an f32, the operand is checked again (and the f32 replaced by an i32 for the
+    // block's end).
+    CHECK(afterBrIf({ 0x1A, 0x43, 0x00, 0x00, 0x00, 0x00, 0x41, 0x00, 0x0D, 0x00, 0x1A, 0x41, 0x00 })
+          == ValidationErrorCode::TypeMismatch);
+    // A return checks the function's results in place: [] -> [i32 i64] after unreachable.
+    auto const returning = [](std::vector<uint8_t> body) {
+        return errorOf(functionOf(FuncType { .params = {}, .results = { I32, I64 } }, std::move(body)),
+                       FeatureSet::wasm3());
+    };
+    CHECK(returning({ 0x00, 0x42, 0x00, 0x0F }) == std::nullopt);
+    CHECK(returning({ 0x00, 0x41, 0x00, 0x0F }) == ValidationErrorCode::TypeMismatch);
+    CHECK(returning({ 0x41, 0x00, 0x0F }) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.brIfLeavesItsLabelTypes")
+{
+    // block (result (ref null 0)) local.get 0 i32.const 0 br_if 0 <then> local.set 1 local.get 0 end, the
+    // param a (ref 0) and local 1 a (ref 0): br_if leaves the label's (ref null 0), which the
+    // non-nullable local takes only through ref.as_non_null.
+    auto const branching = [](std::vector<uint8_t> const& then) {
+        auto body = std::vector<uint8_t> { 0x02, 0x63, 0x00, 0x20, 0x00, 0x41, 0x00, 0x0D, 0x00 };
+        body.insert(body.end(), then.begin(), then.end());
+        body.insert(body.end(), { 0x21, 0x01, 0x20, 0x00, 0x0B });
+        return typedReferenceCheck(
+            FuncType { .params = { refTo(0) }, .results = { refNullTo(0) } }, body, { refTo(0) });
+    };
+    CHECK(branching({}) == ValidationErrorCode::TypeMismatch);
+    CHECK(branching({ 0xD4 }) == std::nullopt);
+    // br_on_non_null leaves the label's types but its last, the same span cut short, at the height a br_if
+    // to the same label then sees: the br_if must check the whole list, not take the shorter one's check
+    // for it. block (type 2) i32.const 7 ref.null func br_on_non_null 0 <operand> i32.const 0 br_if 0
+    // <after> end, type 2 being [] -> [i32 funcref].
+    auto const afterNonNull = [](std::vector<uint8_t> const& operand, std::vector<uint8_t> const& after) {
+        auto body = std::vector<uint8_t> { 0x02, 0x02, 0x41, 0x07, 0xD0, 0x70, 0xD6, 0x00 };
+        body.insert(body.end(), operand.begin(), operand.end());
+        body.insert(body.end(), { 0x41, 0x00, 0x0D, 0x00 });
+        body.insert(body.end(), after.begin(), after.end());
+        body.push_back(0x0B);
+        return typedReferenceCheck(FuncType { .params = {}, .results = { I32, FuncRef } }, body);
+    };
+    CHECK(afterNonNull({ 0xD0, 0x70 }, {}) == std::nullopt);
+    CHECK(afterNonNull({}, { 0xD0, 0x70 }) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.recordedTopGuards")
+{
+    // The top a br_if leaves is remembered with its label's type list and height. Each body below
+    // would pass if one of the guards on that memory were missing, and fails at its second branch.
+    auto const firstError = [](ModuleBuilder const& builder) {
+        auto const result = validated(builder, FeatureSet::wasm3());
+        REQUIRE_FALSE(result.has_value());
+        return result.error();
+    };
+    // Another label's type list, of the same length, at the same height: block (result i32) block
+    // (result i64) i64.const 0 i32.const 0 br_if 0 i32.const 0 br_if 1 end drop i32.const 0 end drop.
+    CHECK(firstError(voidFunctionOf({ 0x02, 0x7F, 0x02, 0x7E, 0x42, 0x00, 0x41, 0x00, 0x0D, 0x00,
+                                      0x41, 0x00, 0x0D, 0x01, 0x0B, 0x1A, 0x41, 0x00, 0x0B, 0x1A }))
+          == ValidationError { ValidationErrorCode::TypeMismatch, 0, 6 });
+    // The same label, the stack grown past the remembered top: block (result i32) i32.const 0 i32.const 0
+    // br_if 0 f32.const 0 i32.const 0 br_if 0 drop end drop.
+    CHECK(firstError(voidFunctionOf({ 0x02, 0x7F, 0x41, 0x00, 0x41, 0x00, 0x0D, 0x00, 0x43, 0x00,
+                                      0x00, 0x00, 0x00, 0x41, 0x00, 0x0D, 0x00, 0x1A, 0x0B, 0x1A }))
+          == ValidationError { ValidationErrorCode::TypeMismatch, 0, 6 });
+    // A shorter list of the same label (br_on_non_null's), at the height the br_if sees.
+    auto shorter = ModuleBuilder {};
+    shorter.type(FuncType { .params = {}, .results = { I32, FuncRef } })
+        .function(
+            0,
+            {},
+            { 0x02, 0x00, 0x41, 0x07, 0xD0, 0x70, 0xD6, 0x00, 0x41, 0x00, 0x0D, 0x00, 0xD0, 0x70, 0x0B });
+    CHECK(firstError(shorter) == ValidationError { ValidationErrorCode::TypeMismatch, 0, 5 });
+    // The same, over an f32 that fills the longer list's first slot: block (type 0) f32.const 0 i32.const 7
+    // ref.null func br_on_non_null 0 i32.const 0 br_if 0 drop drop i32.const 0 ref.null func end.
+    auto overShorter = ModuleBuilder {};
+    overShorter.type(FuncType { .params = {}, .results = { I32, FuncRef } })
+        .function(0, {}, { 0x02, 0x00, 0x43, 0x00, 0x00, 0x00, 0x00, 0x41, 0x07, 0xD0, 0x70, 0xD6,
+                           0x00, 0x41, 0x00, 0x0D, 0x00, 0x1A, 0x1A, 0x41, 0x00, 0xD0, 0x70, 0x0B });
+    CHECK(firstError(overShorter) == ValidationError { ValidationErrorCode::TypeMismatch, 0, 6 });
+    // return checks the function's results, not the innermost label's: [] -> [i32] with block (result i64)
+    // i64.const 0 return end drop i32.const 0.
+    CHECK(firstError(i32FunctionOf({ 0x02, 0x7E, 0x42, 0x00, 0x0F, 0x0B, 0x1A, 0x41, 0x00 }))
+          == ValidationError { ValidationErrorCode::TypeMismatch, 0, 2 });
+}
+
+TEST_CASE("Validator.brTableChecksEveryLabelInPlace")
+{
+    // block (result i32) block (result i64) <operand> i32.const 0 br_table <labels> end drop i32.const 0
+    // end drop: label 0 carries an i64, label 1 an i32, label 7 is unknown.
+    auto const tabled = [](std::vector<uint8_t> const& operand, std::vector<uint8_t> const& labels) {
+        auto body = std::vector<uint8_t> { 0x02, 0x7F, 0x02, 0x7E };
+        body.insert(body.end(), operand.begin(), operand.end());
+        body.insert(body.end(), { 0x41, 0x00, 0x0E });
+        body.insert(body.end(), labels.begin(), labels.end());
+        body.insert(body.end(), { 0x0B, 0x1A, 0x41, 0x00, 0x0B, 0x1A });
+        return validated(voidFunctionOf(std::move(body)), FeatureSet::wasm3());
+    };
+    auto const tabledError = [&](std::vector<uint8_t> const& operand,
+                                 std::vector<uint8_t> const& labels) -> std::optional<ValidationErrorCode> {
+        auto const result = tabled(operand, labels);
+        if (result)
+            return std::nullopt;
+        return result.error().code;
+    };
+    auto const i64 = std::vector<uint8_t> { 0x42, 0x00 };
+    // Labels of one arity and different types: the i32 label after an i64 one is checked, its own types.
+    auto const mixed = tabled(i64, { 0x02, 0x00, 0x01, 0x00 });
+    REQUIRE_FALSE(mixed.has_value());
+    CHECK(mixed.error() == ValidationError { ValidationErrorCode::TypeMismatch, 0, 4 });
+    CHECK(specMessage(mixed.error()) == "type mismatch");
+    CHECK(tabled(i64, { 0x02, 0x00, 0x00, 0x00 }).has_value());
+    // The default label is checked last, after labels of another type passed.
+    CHECK(tabledError(i64, { 0x02, 0x00, 0x00, 0x01 }) == ValidationErrorCode::TypeMismatch);
+    // In label order: a mismatch before an unknown label, an unknown label before a mismatch.
+    CHECK(tabledError(i64, { 0x02, 0x01, 0x07, 0x00 }) == ValidationErrorCode::TypeMismatch);
+    CHECK(tabledError(i64, { 0x02, 0x07, 0x01, 0x00 }) == ValidationErrorCode::UnknownLabel);
+    // An Unknown operand suits both, however the labels alternate.
+    CHECK(tabled({ 0x00 }, { 0x04, 0x00, 0x01, 0x00, 0x01, 0x00 }).has_value());
+    // Each br_table checks its labels itself: block (result i64) block i64.const 0 i32.const 0 br_table 1 1
+    // end <operand> i32.const 0 br_table 0 0 end drop, a second br_table to the first one's label.
+    auto const twice = [](std::vector<uint8_t> const& operand) {
+        auto body = std::vector<uint8_t> { 0x02, 0x7E, 0x02, 0x40, 0x42, 0x00, 0x41,
+                                           0x00, 0x0E, 0x01, 0x01, 0x01, 0x0B };
+        body.insert(body.end(), operand.begin(), operand.end());
+        body.insert(body.end(), { 0x41, 0x00, 0x0E, 0x01, 0x00, 0x00, 0x0B, 0x1A });
+        return errorOf(voidFunctionOf(std::move(body)), FeatureSet::wasm3());
+    };
+    CHECK(twice(i64) == std::nullopt);
+    CHECK(twice({ 0x41, 0x00 }) == ValidationErrorCode::TypeMismatch);
 }
