@@ -19,6 +19,7 @@
 
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/EngineIdentity.hpp>
+#include <isoline/api/ExecutionEngines.hpp>
 #include <isoline/api/Types.hpp>
 #include <isoline/api/testing/ContractLimits.hpp>
 
@@ -54,7 +55,8 @@ inline constexpr auto EngineRowTable = std::to_array<EngineRow>({
 /// @return Whether the row's engine can be constructed.
 [[nodiscard]] inline bool isAvailable(EngineRow const& row) noexcept
 {
-    return row.engine != ExecutionEngine::Fast || fastinterpreter::isAvailable(row.dispatch);
+    return engines::rowOf(row.engine)->dispatch == engines::DispatchUse::None
+           || fastinterpreter::isAvailable(row.dispatch);
 }
 
 /// Every engine row this build runs (EngineRowTable, isAvailable()), as GENERATE(from_range(…)) takes it.

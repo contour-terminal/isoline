@@ -1951,26 +1951,17 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
         return std::unexpected(stats.error());
     threadCode(*functions, config.dispatch);
     auto const loweredBytes = arena->charged() - chargedBefore;
-    // The module's own record comes from the host's memory, not the arena: it owns the arena.
-    auto const host = std::pmr::polymorphic_allocator<> { &arena->hostResource() };
-    auto resource = std::shared_ptr<std::pmr::memory_resource> { std::move(arena) };
-    try
-    {
-        return std::allocate_shared<LoweredModule const>(host,
-                                                         std::move(resource),
-                                                         std::move(*functions),
-                                                         config.dispatch,
-                                                         config.mode,
-                                                         loweredBytes,
-                                                         *stats);
-    }
-    catch (std::bad_alloc const&)
-    {
-        return std::unexpected(LoweringError { .codeIndex = NoFunction,
-                                               .requested = sizeof(LoweredModule),
-                                               .limit = budget,
-                                               .reason = LoweringFailure::HostMemory });
-    }
+    // The module's own record, and its control block, come from the global heap: never from the arena or the
+    // arena's upstream, which the record keeps alive and would release before its own storage is returned.
+    // Only its contents come from the arena. The global heap refuses as it does everywhere, with
+    // std::bad_alloc, which the embedding API refuses as HostMemoryExhausted.
+    return std::make_shared<LoweredModule const>(
+        std::shared_ptr<std::pmr::memory_resource> { std::move(arena) },
+        std::move(*functions),
+        config.dispatch,
+        config.mode,
+        loweredBytes,
+        *stats);
 }
 
 } // namespace isoline::fastinterpreter

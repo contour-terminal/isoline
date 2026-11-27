@@ -270,22 +270,24 @@ class ExhaustedMemory final: public std::pmr::memory_resource
     }
 };
 
-/// Passes every allocation on to the global heap, and counts those not yet returned.
+/// Passes every allocation on to the global heap, and counts those not yet returned in a counter it does not
+/// own, which outlives it: nothing but its owners keeps its storage, so destroying it frees it.
 class LiveMemory final: public std::pmr::memory_resource
 {
   public:
-    /// The allocations not yet returned.
-    [[nodiscard]] int64_t live() const noexcept { return _live; }
+    /// A resource that counts into @p live.
+    /// @param live The counter; must outlive the resource.
+    explicit LiveMemory(int64_t& live) noexcept: _live { &live } {}
 
   private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override
     {
-        ++_live;
+        ++*_live;
         return std::pmr::new_delete_resource()->allocate(bytes, alignment);
     }
     void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override
     {
-        --_live;
+        --*_live;
         std::pmr::new_delete_resource()->deallocate(pointer, bytes, alignment);
     }
     [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
@@ -293,7 +295,7 @@ class LiveMemory final: public std::pmr::memory_resource
         return this == &other;
     }
 
-    int64_t _live = 0;
+    int64_t* _live;
 };
 
 } // namespace
@@ -317,9 +319,10 @@ TEST_CASE("Engine.loweringMemoryLivesAsLongAsItsCode")
 {
     // A store's instance keeps the code it runs, and the code the memory it was lowered into: the engine, the
     // module and the caller's handle on the memory go first, and destroying the store last returns every
-    // allocation to a memory still alive (AddressSanitizer reports one that is not).
-    auto memory = std::make_shared<LiveMemory>();
-    auto const watched = std::weak_ptr<LiveMemory> { memory };
+    // allocation to the memory before it is freed. Nothing else keeps the memory's storage, so a record
+    // returned to it after it is gone is a use after free that AddressSanitizer reports.
+    auto live = int64_t { 0 };
+    auto memory = std::make_shared<LiveMemory>(live);
     auto allocator = isoline::api::HeapMemoryAllocator {};
     auto store = std::optional<isoline::api::Store> {};
     {
@@ -329,12 +332,10 @@ TEST_CASE("Engine.loweringMemoryLivesAsLongAsItsCode")
         store.emplace(engine, allocator);
         REQUIRE(store->instantiate(*module, isoline::api::Imports {}).has_value());
     }
-    CHECK(memory->live() > 0);
     memory.reset();
-    REQUIRE_FALSE(watched.expired());
-    CHECK(watched.lock()->live() > 0);
+    CHECK(live > 0);
     store.reset();
-    CHECK(watched.expired());
+    CHECK(live == 0);
 }
 
 TEST_CASE("Engine.lowersOnceForManyStores")

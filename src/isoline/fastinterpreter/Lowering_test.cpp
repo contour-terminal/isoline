@@ -544,9 +544,8 @@ TEST_CASE("Lowering.refusesWhenTheHostHasNoMemory")
 
 TEST_CASE("Lowering.everyHostRefusalIsHostMemory")
 {
-    // The host refuses its n-th allocation, for each n until lowering needs no more. Through the arena or at
-    // the module's own record, the last allocation lowering makes, the refusal is HostMemory; at the record
-    // it names no function.
+    // The host refuses its n-th allocation, for each n until lowering needs no more: every one through the
+    // arena, as the module's own record comes from the global heap, and each refusal is HostMemory.
     auto const module = validated(
         functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), i32Const(1), op(0x6A) })));
     auto lastRefusal = std::optional<LoweringError> {};
@@ -566,7 +565,6 @@ TEST_CASE("Lowering.everyHostRefusalIsHostMemory")
     }
     REQUIRE(lowered);
     REQUIRE(lastRefusal.has_value());
-    CHECK(lastRefusal->codeIndex == NoFunction);
 }
 
 TEST_CASE("Lowering.recordsWhatItTook")
