@@ -1009,6 +1009,9 @@ TEST_CASE("Decoder.blockTypes")
                     .has_value());
     CHECK(errorOf(functionWith({ 0x02, 0x6F, 0x0B }), FeatureSet::none())
           == DecodeErrorCode::MalformedReferenceType);
+    // An s33 longer than five bytes is no type index, and the value type reading reports its length.
+    CHECK(errorOf(functionWith({ 0x02, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x0B }))
+          == DecodeErrorCode::IntegerRepresentationTooLong);
 }
 
 TEST_CASE("Decoder.brTable")
@@ -2504,4 +2507,10 @@ TEST_CASE("Decoder.embeddedTypes")
     REQUIRE_FALSE(open.has_value());
     CHECK(open.error().code == DecodeErrorCode::MissingFeaturePrerequisite);
     CHECK(openReader.offset() == 0);
+    auto openExternReader = ByteReader { memory };
+    auto const openExtern =
+        decodeEmbeddedExternType(openExternReader, FeatureSet::none().with(Feature::RelaxedSimd));
+    REQUIRE_FALSE(openExtern.has_value());
+    CHECK(openExtern.error().code == DecodeErrorCode::MissingFeaturePrerequisite);
+    CHECK(openExternReader.offset() == 0);
 }

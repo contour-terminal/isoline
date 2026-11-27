@@ -1391,3 +1391,646 @@ TEST_CASE("Validator.coreMatchingChargesNameBytes")
     CHECK(twice * 10 >= single * 19);
     CHECK(twice * 10 <= single * 21);
 }
+
+namespace
+{
+/// A canonical built-in of one immediate and no options.
+[[nodiscard]] isoline::component::binary::CanonDefinition resourceBuiltin(
+    isoline::component::binary::CanonBuiltin which, uint32_t resource)
+{
+    return isoline::component::binary::CanonDefinition {
+        .builtin = which, .immediates = { resource }, .options = {}, .result = {}
+    };
+}
+
+/// A module of a table of funcref, an immutable i32 global, a tag of [] and a memory, exported as
+/// "t", "g", "e" and "m", and functions "floats" of [f32] -> [f64] and "refs" of [i32 funcref] -> [].
+[[nodiscard]] Bytes everyKindLibrary()
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .type(FuncType { .params = { isoline::binary::F32 }, .results = { isoline::binary::F64 } })
+        .type(FuncType { .params = { I32, isoline::binary::FuncRef }, .results = {} })
+        .function(1, {}, { 0x20, 0x00, 0xBB }) // f64.promote_f32 (local.get 0)
+        .function(2, {}, {})
+        .table(TableType { .element = isoline::binary::FuncRef,
+                           .limits = Limits { .min = 1, .max = std::nullopt } })
+        .global(GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const }, { 0x41, 0x00 })
+        .tag(0)
+        .memory(Limits { .min = 1, .max = std::nullopt })
+        .exportEntity("t", ExternKind::Table, 0)
+        .exportEntity("g", ExternKind::Global, 0)
+        .exportEntity("e", ExternKind::Tag, 0)
+        .exportEntity("m", ExternKind::Memory, 0)
+        .exportFunction("floats", 0)
+        .exportFunction("refs", 1);
+    return moduleBytes(builder);
+}
+
+/// A component instantiating everyKindLibrary() as core instance 0, its exports aliased: core table 0,
+/// global 0, tag 0, memory 0, then core functions floats 0 and refs 1.
+[[nodiscard]] ComponentBuilder withEveryKind()
+{
+    auto builder = ComponentBuilder {};
+    std::ignore = builder.coreModule(everyKindLibrary());
+    std::ignore = builder.coreInstantiate(0, {});
+    std::ignore = builder.aliasCoreExport(0, "t", CoreSort::Table);
+    std::ignore = builder.aliasCoreExport(0, "g", CoreSort::Global);
+    std::ignore = builder.aliasCoreExport(0, "e", CoreSort::Tag);
+    std::ignore = builder.aliasCoreExport(0, "m", CoreSort::Memory);
+    std::ignore = builder.aliasCoreExport(0, "floats", CoreSort::Func);
+    std::ignore = builder.aliasCoreExport(0, "refs", CoreSort::Func);
+    return builder;
+}
+} // namespace
+
+TEST_CASE("Validator.liftsFloatsAndSpellsReferenceTypes")
+{
+    // ComponentFuncType::lower's flat f32 and f64 (component_types.rs:1236-1359), and a lifting mismatch
+    // spelling a list of two types, a reference among them, as Rust's Debug of ValType does.
+    auto floats = withEveryKind();
+    auto const promote = floats.type(
+        function({ LabeledType { .label = "a", .type = PrimitiveValueType::F32 } }, PrimitiveValueType::F64));
+    std::ignore = floats.canonLift(0, {}, promote);
+    CHECK(accepted(floats.pool()));
+
+    auto refs = withEveryKind();
+    auto const pair = refs.type(function({ LabeledType { .label = "a", .type = PrimitiveValueType::U32 },
+                                           LabeledType { .label = "b", .type = PrimitiveValueType::U32 } }));
+    std::ignore = refs.canonLift(1, {}, pair);
+    CHECK(
+        refusalText(refs.pool())
+        == "lowered parameter types `[I32, I32]` do not match parameter types `[I32, Ref(funcref)]` of core "
+           "function 1");
+}
+
+TEST_CASE("Validator.coreInlineExportsOfEveryKind")
+{
+    // instantiate_core_exports (component.rs:3633-3721) of a table, a global and a tag, which a module
+    // then imports from the instance (instantiate_core_module's matching).
+    auto const importer = [](GlobalType global) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType {})
+            .importTable("lib",
+                         "t",
+                         TableType { .element = isoline::binary::FuncRef,
+                                     .limits = Limits { .min = 1, .max = std::nullopt } })
+            .importGlobal("lib", "g", global)
+            .importTag("lib", "e", 0)
+            .importMemory("lib", "m", Limits { .min = 1, .max = std::nullopt });
+        return moduleBytes(builder);
+    };
+    auto const instantiating = [&](GlobalType global) {
+        auto builder = withEveryKind();
+        std::ignore = builder.coreInlineExports(
+            { CoreInlineExport { .name = "t", .sort = CoreSort::Table, .index = 0 },
+              CoreInlineExport { .name = "g", .sort = CoreSort::Global, .index = 0 },
+              CoreInlineExport { .name = "e", .sort = CoreSort::Tag, .index = 0 },
+              CoreInlineExport { .name = "m", .sort = CoreSort::Memory, .index = 0 } });
+        std::ignore = builder.coreModule(importer(global));
+        std::ignore = builder.coreInstantiate(1, { { "lib", 1 } });
+        return builder.pool();
+    };
+    CHECK(accepted(
+        instantiating(GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const })));
+    CHECK(
+        refusalText(instantiating(GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Var }))
+        == "type mismatch for export `g` of module instantiation argument `lib`\nglobal types differ in "
+           "mutability");
+
+    for (auto const& [sort, text]:
+         { std::pair { CoreSort::Global, "unknown global 5: global index out of bounds" },
+           std::pair { CoreSort::Tag, "unknown tag 5: tag index out of bounds" } })
+    {
+        INFO(text);
+        auto builder = withEveryKind();
+        std::ignore =
+            builder.coreInlineExports({ CoreInlineExport { .name = "x", .sort = sort, .index = 5 } });
+        CHECK(refusalText(builder.pool()) == text);
+    }
+}
+
+TEST_CASE("Validator.coreFunctionTypesNameEarlierTypes")
+{
+    // add_core_type (component.rs:510-534): a concrete reference of a core function type names an earlier
+    // core type of the scope, which must be a function type.
+    auto const typed = [](std::vector<CoreTypeDefinition> types) {
+        auto builder = ComponentBuilder {};
+        for (auto& type: types)
+            std::ignore = builder.coreType(std::move(type));
+        return builder.pool();
+    };
+    auto const takes = [](uint32_t index) {
+        return CoreTypeDefinition {
+            .type =
+                FuncType {
+                    .params = { isoline::binary::concreteRef(index, isoline::binary::Nullable::No) },
+                    .results = { isoline::binary::concreteRef(index, isoline::binary::Nullable::Yes) } }
+        };
+    };
+    auto const accepted = validated(typed({ CoreTypeDefinition { .type = FuncType {} }, takes(0) }));
+    REQUIRE(accepted.has_value());
+    CHECK(refusalText(typed({ takes(4) })) == "unknown type 4: type index out of bounds");
+    CHECK(refusalText(typed({ CoreTypeDefinition { .type = CoreModuleTypeDefinition {} }, takes(0) }))
+          == "type index 0 is a module type, not a sub type");
+}
+
+TEST_CASE("Validator.moduleTypeDeclarations")
+{
+    // create_module_type (component.rs:2987-3045) and Module::check_type_ref (core.rs:680-930): a type
+    // space of the module type's own, outer aliases of this scope and the enclosing one, and imports of
+    // every kind checked by the core rules.
+    using isoline::component::binary::CoreModuleDeclaration;
+    auto const moduleType = [](std::vector<CoreModuleDeclaration> declarations,
+                               ComponentLimits const& limits = {}) {
+        auto builder = ComponentBuilder {};
+        std::ignore =
+            builder.coreType(CoreTypeDefinition { .type = FuncType { .params = { I32 }, .results = {} } });
+        std::ignore = builder.coreType(CoreTypeDefinition {
+            .type = CoreModuleTypeDefinition { .declarations = std::move(declarations) } });
+        return validated(builder.pool(), limits);
+    };
+    auto const importing = [](CoreExternType type) {
+        return CoreImportDeclaration { .module = "m", .name = "x", .type = type };
+    };
+    auto const global = [](isoline::binary::ValueType type) {
+        return CoreExternType { .kind = ExternKind::Global,
+                                .global = GlobalType { .type = type,
+                                                       .mutability = isoline::binary::Mutability::Var } };
+    };
+    auto const memory = [](Limits limits) {
+        return CoreExternType { .kind = ExternKind::Memory,
+                                .memory = isoline::binary::MemoryType { .limits = limits } };
+    };
+    auto const message = [](Validated const& result) {
+        REQUIRE_FALSE(result.has_value());
+        return specMessage(result.error());
+    };
+    auto const every = moduleType(
+        { CoreTypeDeclaration { .type = FuncType {} },
+          CoreOuterAliasDeclaration { .outerCount = 0, .outerIndex = 0 },
+          CoreOuterAliasDeclaration { .outerCount = 1, .outerIndex = 0 },
+          importing(global(I32)),
+          CoreImportDeclaration { .module = "m", .name = "y", .type = memory(Limits { .min = 1, .max = 2 }) },
+          CoreExportDeclaration { .name = "f",
+                                  .type = CoreExternType { .kind = ExternKind::Func, .typeIndex = 2 } } });
+    REQUIRE(every.has_value());
+    CHECK(message(moduleType({ CoreOuterAliasDeclaration { .outerCount = 0, .outerIndex = 3 } }))
+          == "unknown type 3: type index out of bounds");
+    CHECK(message(moduleType({ CoreOuterAliasDeclaration { .outerCount = 1, .outerIndex = 7 } }))
+          == "unknown type 7: type index out of bounds");
+    CHECK(message(moduleType(
+              { importing(global(isoline::binary::concreteRef(9, isoline::binary::Nullable::Yes))) }))
+          == "unknown type 9: type index out of bounds");
+    CHECK(message(moduleType({ importing(memory(Limits { .min = 1, .max = 65537 })) }))
+          == "memory size must be at most 0x10000 65536-byte pages");
+
+    // The module type's own type space counts toward maxTypes, by a declaration or an alias; and its
+    // type size toward maxTypeSize, by its imports and its exports (Module::type_size).
+    auto limits = ComponentLimits {};
+    limits.maxTypes = 2;
+    for (auto const& third:
+         { CoreModuleDeclaration { CoreTypeDeclaration { .type = FuncType {} } },
+           CoreModuleDeclaration { CoreOuterAliasDeclaration { .outerCount = 0, .outerIndex = 0 } } })
+    {
+        auto const refused = moduleType({ CoreTypeDeclaration { .type = FuncType {} },
+                                          CoreTypeDeclaration { .type = FuncType {} },
+                                          third },
+                                        limits);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(exceededLimit(refused.error()) == ComponentLimit::Types);
+    }
+    auto const tableOf = [] {
+        return CoreExternType { .kind = ExternKind::Table,
+                                .table = TableType { .element = isoline::binary::FuncRef,
+                                                     .limits = Limits { .min = 0, .max = std::nullopt } } };
+    };
+    auto sized = ComponentLimits {};
+    sized.maxTypeSize = 3;
+    for (auto const& second:
+         { CoreModuleDeclaration { CoreImportDeclaration { .module = "m", .name = "b", .type = tableOf() } },
+           CoreModuleDeclaration { CoreExportDeclaration { .name = "b", .type = tableOf() } } })
+    {
+        auto const refused = moduleType(
+            { CoreImportDeclaration { .module = "m", .name = "a", .type = tableOf() }, second }, sized);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(exceededLimit(refused.error()) == ComponentLimit::TypeSize);
+    }
+    auto const exportsOnly = moduleType({ CoreExportDeclaration { .name = "a", .type = tableOf() },
+                                          CoreExportDeclaration { .name = "b", .type = tableOf() } },
+                                        sized);
+    REQUIRE_FALSE(exportsOnly.has_value());
+    CHECK(exceededLimit(exportsOnly.error()) == ComponentLimit::TypeSize);
+
+    // A declared type of a reference past the module type's space, and a tag of an unknown type.
+    CHECK(
+        message(moduleType({ CoreTypeDeclaration {
+            .type = FuncType { .params = { isoline::binary::concreteRef(9, isoline::binary::Nullable::Yes) },
+                               .results = {} } } }))
+        == "unknown type 9: type index out of bounds");
+    CHECK(message(moduleType({ importing(CoreExternType { .kind = ExternKind::Tag, .typeIndex = 9 }) }))
+          == "unknown type 9: type index out of bounds");
+}
+
+TEST_CASE("Validator.exportAliasNamesTheSortExpected")
+{
+    // alias_instance_export (component.rs:3813-3861): an export of another sort than the alias's,
+    // named by ComponentExternalKind::desc; an instance exporting a module, a component, a function and
+    // a type.
+    auto const aliasing = [](std::string name, Sort sort) {
+        auto builder = ComponentBuilder {};
+        auto const signature = builder.type(function({}));
+        auto const imported = builder.import("f", ExternDesc { .sort = Sort::Func, .index = signature });
+        auto const list = builder.type(defined(ListType { .element = PrimitiveValueType::U32 }));
+        auto const module = builder.coreModule(modulePreamble());
+        auto const component = builder.nested(ComponentBuilder {});
+        auto const instance =
+            builder.inlineInstance({ { "f", SortIndex { .sort = Sort::Func, .index = imported } },
+                                     { "t", SortIndex { .sort = Sort::Type, .index = list } },
+                                     { "m", SortIndex { .sort = Sort::CoreModule, .index = module } },
+                                     { "c", SortIndex { .sort = Sort::Component, .index = component } } });
+        std::ignore = builder.aliasExport(instance, std::move(name), sort);
+        return builder.pool();
+    };
+    CHECK(accepted(aliasing("c", Sort::Component)));
+    CHECK(refusalText(aliasing("f", Sort::Type)) == "export `f` for instance 0 is not a type");
+    CHECK(refusalText(aliasing("t", Sort::CoreModule)) == "export `t` for instance 0 is not a module");
+    CHECK(refusalText(aliasing("m", Sort::Component)) == "export `m` for instance 0 is not a component");
+    CHECK(refusalText(aliasing("c", Sort::Func)) == "export `c` for instance 0 is not a func");
+}
+
+TEST_CASE("Validator.exportItemsAndAscriptions")
+{
+    // component_export_section (validator.rs:1363-1392): the item, then the type ascribed to it.
+    auto past = ComponentBuilder {};
+    std::ignore = past.exportItem("t", Sort::Type, 9);
+    CHECK(refusalText(past.pool()) == "unknown type 9: type index out of bounds");
+    auto badAscription = ComponentBuilder {};
+    auto const signature = badAscription.type(function({}));
+    auto const imported = badAscription.import("f", ExternDesc { .sort = Sort::Func, .index = signature });
+    std::ignore =
+        badAscription.exportItem("g", Sort::Func, imported, ExternDesc { .sort = Sort::Func, .index = 9 });
+    CHECK(refusalText(badAscription.pool()) == "unknown type 9: type index out of bounds");
+    auto component = ComponentBuilder {};
+    std::ignore = component.exportItem("c", Sort::Component, component.nested(ComponentBuilder {}));
+    CHECK(accepted(component.pool()));
+}
+
+TEST_CASE("Validator.canonIndicesChecked")
+{
+    // Each built-in's operands, out of bounds (lift_function, lower_function, resource_new/drop/rep).
+    using isoline::component::binary::CanonBuiltin;
+    auto lift = withLibrary();
+    std::ignore = lift.canonLift(Nothing, {}, 9);
+    CHECK(refusalText(lift.pool()) == "unknown type 9: type index out of bounds");
+    auto postReturn = withLibrary();
+    auto const result = postReturn.type(function({}, PrimitiveValueType::U32));
+    std::ignore = postReturn.canonLift(Number, { option(CanonOptionKind::PostReturn, 99) }, result);
+    CHECK(refusalText(postReturn.pool()) == "unknown core function 99: function index out of bounds");
+    auto lower = withLibrary();
+    std::ignore = lower.canonLower(9, {});
+    CHECK(refusalText(lower.pool()) == "unknown function 9: function index out of bounds");
+    for (auto const which:
+         { CanonBuiltin::ResourceNew, CanonBuiltin::ResourceDrop, CanonBuiltin::ResourceRep })
+    {
+        auto builder = ComponentBuilder {};
+        std::ignore = builder.canon(resourceBuiltin(which, 9));
+        CHECK(refusalText(builder.pool()) == "unknown type 9: type index out of bounds");
+    }
+}
+
+TEST_CASE("Validator.coreInstancesChecked")
+{
+    // instance_section's room (validator.rs:1091-1115), then the module instantiated.
+    auto limits = ComponentLimits {};
+    limits.maxInstances = 0;
+    auto const capped = validated(withLibrary().pool(), limits);
+    REQUIRE_FALSE(capped.has_value());
+    CHECK(exceededLimit(capped.error()) == ComponentLimit::Instances);
+    auto unknown = ComponentBuilder {};
+    std::ignore = unknown.coreInstantiate(5, {});
+    CHECK(refusalText(unknown.pool()) == "unknown module 5: module index out of bounds");
+    auto outer = ComponentBuilder {};
+    auto inner = ComponentBuilder {};
+    std::ignore = inner.aliasOuter(Sort::CoreType, 1, 9);
+    std::ignore = outer.nested(std::move(inner));
+    CHECK(refusalText(outer.pool()) == "unknown type 9: type index out of bounds");
+}
+
+TEST_CASE("Validator.visibilityOfExportedTypes")
+{
+    // validate_and_register_named_types (component.rs:816-913) and the all_valtypes_named rules
+    // (component.rs:915-1045, component_types.rs:3108-3165): what an exported type names.
+    auto const exportedType = [](auto define) {
+        auto builder = ComponentBuilder {};
+        auto const resource = builder.resource();
+        std::ignore = builder.exportItem("r", Sort::Type, resource);
+        std::ignore = builder.exportItem("t", Sort::Type, define(builder, resource + 1));
+        return builder.pool();
+    };
+    // Flags and enums name nothing; a handle names its resource, here exported.
+    CHECK(accepted(exportedType([](ComponentBuilder& builder, uint32_t) {
+        return builder.type(defined(isoline::component::binary::FlagsType { .labels = { "a" } }));
+    })));
+    CHECK(accepted(exportedType([](ComponentBuilder& builder, uint32_t) {
+        return builder.type(defined(isoline::component::binary::EnumType { .labels = { "a" } }));
+    })));
+    CHECK(accepted(exportedType([](ComponentBuilder& builder, uint32_t resource) {
+        return builder.type(defined(OwnType { .resource = resource }));
+    })));
+    // A function type, and a tuple of one list twice, whose list is checked once.
+    CHECK(accepted(exportedType([](ComponentBuilder& builder, uint32_t) {
+        auto const list = builder.type(defined(ListType { .element = PrimitiveValueType::U32 }));
+        auto const pair = builder.type(
+            defined(isoline::component::binary::TupleType { .elements = { at(list), at(list) } }));
+        return builder.type(function({ LabeledType { .label = "p", .type = at(pair) } }));
+    })));
+
+    // An instance type, whose exports are named within it: a nested instance, an instance type and a
+    // function type bound as types, a function of a record it exports.
+    auto const instanceOf = [](bool recordExported) {
+        auto builder = ComponentBuilder {};
+        auto nestedDeclarations = TypeScopeBuilder {};
+        auto const nestedType = builder.instanceType(std::move(nestedDeclarations));
+        auto declarations = TypeScopeBuilder {};
+        auto const nested = declarations.aliasOuter(Sort::Type, 1, nestedType);
+        std::ignore = declarations.exportItem("n", ExternDesc { .sort = Sort::Instance, .index = nested });
+        std::ignore = declarations.exportItem(
+            "nt", ExternDesc { .sort = Sort::Type, .index = nested, .bound = TypeBound::Equal });
+        auto const record = declarations.type(defined(
+            RecordType { .fields = { LabeledType { .label = "a", .type = PrimitiveValueType::U32 } } }));
+        auto named = record;
+        if (recordExported)
+            named = declarations.exportItem(
+                "rec", ExternDesc { .sort = Sort::Type, .index = record, .bound = TypeBound::Equal });
+        auto const take = declarations.type(function({ LabeledType { .label = "x", .type = at(named) } }));
+        std::ignore = declarations.exportItem(
+            "ft", ExternDesc { .sort = Sort::Type, .index = take, .bound = TypeBound::Equal });
+        std::ignore = declarations.exportItem("f", ExternDesc { .sort = Sort::Func, .index = take });
+        auto const instanceType = builder.instanceType(std::move(declarations));
+        std::ignore = builder.exportItem("i", Sort::Type, instanceType);
+        return builder.pool();
+    };
+    CHECK(accepted(instanceOf(true)));
+    CHECK(refusalText(instanceOf(false)) == "type not valid to be used as export");
+
+    // An exported instance whose function, lifted here, names an unexported record, within an
+    // instance it exports.
+    auto unnamed = withLibrary();
+    auto const record = unnamed.type(
+        defined(RecordType { .fields = { LabeledType { .label = "a", .type = PrimitiveValueType::U32 } } }));
+    auto const take = unnamed.type(function({ LabeledType { .label = "x", .type = at(record) } }));
+    auto const lifted = unnamed.canonLift(One, {}, take);
+    auto const inner = unnamed.inlineInstance({ { "f", SortIndex { .sort = Sort::Func, .index = lifted } } });
+    auto const outer =
+        unnamed.inlineInstance({ { "inner", SortIndex { .sort = Sort::Instance, .index = inner } } });
+    std::ignore = unnamed.exportItem("outer", Sort::Instance, outer);
+    CHECK(refusalText(unnamed.pool()) == "instance not valid to be used as export");
+
+    // An instance of inline exports names each export as an extern name.
+    auto badName = ComponentBuilder {};
+    auto const list = badName.type(defined(ListType { .element = PrimitiveValueType::U32 }));
+    std::ignore = badName.inlineInstance({ { "A B", SortIndex { .sort = Sort::Type, .index = list } } });
+    CHECK(refusalText(badName.pool())
+          == "export name `A B` is not a valid extern name\n`A B` is not in kebab case");
+}
+
+TEST_CASE("Validator.exportedResourcePaths")
+{
+    // explicit_resource_paths (component_types.rs:3034-3106): a local resource is found past an exported
+    // instance that holds none; and a component exported whose type defines a resource of its own.
+    auto builder = ComponentBuilder {};
+    auto const resource = builder.resource();
+    auto const signature = builder.type(function({}));
+    auto const imported = builder.import("f", ExternDesc { .sort = Sort::Func, .index = signature });
+    auto const plain =
+        builder.inlineInstance({ { "f", SortIndex { .sort = Sort::Func, .index = imported } } });
+    auto const holding =
+        builder.inlineInstance({ { "r", SortIndex { .sort = Sort::Type, .index = resource } } });
+    std::ignore = builder.exportItem("plain", Sort::Instance, plain);
+    std::ignore = builder.exportItem("holding", Sort::Instance, holding);
+    auto const validatedPaths = validated(builder.pool());
+    REQUIRE(validatedPaths.has_value());
+    auto const& type = (**validatedPaths).type;
+    REQUIRE(type.definedResources.size() == 1);
+    CHECK(type.definedResources.front().path == std::vector<uint32_t> { 1, 0 });
+
+    auto outer = ComponentBuilder {};
+    auto child = ComponentBuilder {};
+    std::ignore = child.exportItem("r", Sort::Type, child.resource());
+    std::ignore = outer.exportItem("c", Sort::Component, outer.nested(std::move(child)));
+    CHECK(accepted(outer.pool()));
+}
+
+TEST_CASE("Validator.exportedInstanceTypesMintResources")
+{
+    // prepare_instance_export (component.rs:1060-1168): a component type's export of an instance type
+    // defining a resource defines a fresh one at its path; and the component type's exports are capped.
+    auto const componentType = [](ComponentLimits const& limits) {
+        auto builder = ComponentBuilder {};
+        auto instanceDeclarations = TypeScopeBuilder {};
+        std::ignore = instanceDeclarations.exportItem(
+            "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+        auto declarations = TypeScopeBuilder {};
+        auto const instanceType = declarations.instanceType(std::move(instanceDeclarations));
+        std::ignore =
+            declarations.exportItem("i", ExternDesc { .sort = Sort::Instance, .index = instanceType });
+        std::ignore = builder.componentType(std::move(declarations));
+        return validated(builder.pool(), limits);
+    };
+    auto const minted = componentType({});
+    CHECK(minted.has_value());
+    auto limits = ComponentLimits {};
+    limits.maxExports = 0;
+    auto const capped = componentType(limits);
+    REQUIRE_FALSE(capped.has_value());
+    CHECK(exceededLimit(capped.error()) == ComponentLimit::Exports);
+}
+
+TEST_CASE("Validator.resourceFunctionNamesItsResource")
+{
+    // validate_resource_name (component.rs:4885-5090): an exported method on a resource that only an
+    // import names has no name among the exports.
+    auto builder = ComponentBuilder {};
+    auto const resource =
+        builder.import("r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto const handle = builder.type(defined(BorrowType { .resource = resource }));
+    auto const method = builder.type(function({ LabeledType { .label = "self", .type = at(handle) } }));
+    auto const imported = builder.import("f", ExternDesc { .sort = Sort::Func, .index = method });
+    std::ignore = builder.exportItem("[method]r.f", Sort::Func, imported);
+    CHECK(refusalText(builder.pool())
+          == "export name `[method]r.f` is not valid\nresource used in function does not have a name in this "
+             "context");
+}
+
+namespace
+{
+/// A component of every kind of definition the caps count: core instances of instantiations and of
+/// inline exports of every core sort, core function and module types, resources and their built-ins,
+/// a lifted and a lowered function, a nested component instantiated, an instance of inline exports, a
+/// component type exporting an instance type that defines a resource, and exports of each sort, one of
+/// them ascribed a type.
+[[nodiscard]] ComponentPool everyCountedDefinition()
+{
+    using isoline::component::binary::CanonBuiltin;
+    using isoline::component::binary::CoreModuleDeclaration;
+    auto builder = withEveryKind();
+    std::ignore = builder.coreInlineExports(
+        { CoreInlineExport { .name = "t", .sort = CoreSort::Table, .index = 0 },
+          CoreInlineExport { .name = "g", .sort = CoreSort::Global, .index = 0 },
+          CoreInlineExport { .name = "e", .sort = CoreSort::Tag, .index = 0 },
+          CoreInlineExport { .name = "m", .sort = CoreSort::Memory, .index = 0 },
+          CoreInlineExport { .name = "floats", .sort = CoreSort::Func, .index = 0 } });
+    auto importer = ModuleBuilder {};
+    importer.type(FuncType { .params = { isoline::binary::F32 }, .results = { isoline::binary::F64 } })
+        .type(FuncType {})
+        .importFunction("lib", "floats", 0)
+        .importTable("lib",
+                     "t",
+                     TableType { .element = isoline::binary::FuncRef,
+                                 .limits = Limits { .min = 1, .max = std::nullopt } })
+        .importGlobal(
+            "lib", "g", GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const })
+        .importTag("lib", "e", 1)
+        .importMemory("lib", "m", Limits { .min = 1, .max = std::nullopt });
+    std::ignore = builder.coreModule(moduleBytes(importer));
+    std::ignore = builder.coreInstantiate(1, { { "lib", 1 } });
+
+    std::ignore = builder.coreType(CoreTypeDefinition { .type = FuncType {} });
+    std::ignore = builder.coreType(CoreTypeDefinition {
+        .type = FuncType { .params = { isoline::binary::concreteRef(0, isoline::binary::Nullable::Yes) },
+                           .results = {} } });
+    std::ignore = builder.coreType(CoreTypeDefinition {
+        .type = CoreModuleTypeDefinition {
+            .declarations = {
+                CoreModuleDeclaration { CoreTypeDeclaration { .type = FuncType {} } },
+                CoreModuleDeclaration { CoreOuterAliasDeclaration { .outerCount = 1, .outerIndex = 1 } },
+                CoreModuleDeclaration { CoreImportDeclaration {
+                    .module = "m",
+                    .name = "f",
+                    .type = CoreExternType { .kind = ExternKind::Func, .typeIndex = 1 } } },
+                CoreModuleDeclaration { CoreExportDeclaration {
+                    .name = "g",
+                    .type = CoreExternType { .kind = ExternKind::Func, .typeIndex = 0 } } } } } });
+
+    auto const resource = builder.resource();
+    for (auto const which:
+         { CanonBuiltin::ResourceNew, CanonBuiltin::ResourceDrop, CanonBuiltin::ResourceRep })
+        std::ignore = builder.canon(resourceBuiltin(which, resource));
+    auto const promote = builder.type(
+        function({ LabeledType { .label = "a", .type = PrimitiveValueType::F32 } }, PrimitiveValueType::F64));
+    auto const lifted = builder.canonLift(0, {}, promote);
+    std::ignore = builder.canonLower(lifted, {});
+
+    auto child = ComponentBuilder {};
+    std::ignore = child.exportItem("r", Sort::Type, child.resource());
+    auto const component = builder.nested(std::move(child));
+    auto const instance = builder.instantiate(component, {});
+    auto const inlined =
+        builder.inlineInstance({ { "f", SortIndex { .sort = Sort::Func, .index = lifted } },
+                                 { "i", SortIndex { .sort = Sort::Instance, .index = instance } } });
+
+    auto instanceDeclarations = TypeScopeBuilder {};
+    std::ignore = instanceDeclarations.exportItem(
+        "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto declarations = TypeScopeBuilder {};
+    auto const instanceType = declarations.instanceType(std::move(instanceDeclarations));
+    std::ignore = declarations.exportItem("i", ExternDesc { .sort = Sort::Instance, .index = instanceType });
+    std::ignore = builder.componentType(std::move(declarations));
+
+    std::ignore = builder.exportItem("r", Sort::Type, resource);
+    std::ignore =
+        builder.exportItem("f", Sort::Func, lifted, ExternDesc { .sort = Sort::Func, .index = promote });
+    std::ignore = builder.exportItem("c", Sort::Component, component);
+    std::ignore = builder.exportItem("i", Sort::Instance, inlined);
+    return builder.pool();
+}
+
+/// One cap of ComponentLimits: the limit it reports and its field.
+struct CapRow
+{
+    ComponentLimit limit;
+    uint32_t ComponentLimits::* field;
+};
+
+/// Validates @p pool under @p row's cap at 0, 1, … until it is accepted: each value below that is
+/// refused by that cap, and some value above zero accepts.
+void checkRefusedBelowNeed(ComponentPool const& pool, CapRow const& row)
+{
+    INFO(std::format("limit {}", static_cast<int>(row.limit)));
+    auto limits = ComponentLimits {};
+    auto needed = std::optional<uint32_t> {};
+    for (auto const cap: std::views::iota(uint32_t { 0 }, uint32_t { 100'000 }))
+    {
+        limits.*row.field = cap;
+        auto const result = validated(pool, limits);
+        if (result)
+        {
+            needed = cap;
+            break;
+        }
+        if (exceededLimit(result.error()) != row.limit)
+        {
+            FAIL_CHECK(std::format("refused at {} otherwise: {}", cap, specMessage(result.error())));
+            return;
+        }
+    }
+    REQUIRE(needed.has_value());
+    CHECK(*needed > 0);
+}
+} // namespace
+
+TEST_CASE("Validator.everyCapRefusesAtEveryCount")
+{
+    // Each cap the validator enforces, at every value below what the component takes: refused, and by
+    // that cap, wherever its count falls; at what it takes, accepted.
+    auto const pool = everyCountedDefinition();
+    REQUIRE(accepted(pool));
+    auto const rows = std::vector<CapRow> {
+        { .limit = ComponentLimit::TypeSize, .field = &ComponentLimits::maxTypeSize },
+        { .limit = ComponentLimit::TypeDepth, .field = &ComponentLimits::maxTypeDepth },
+        { .limit = ComponentLimit::Types, .field = &ComponentLimits::maxTypes },
+        { .limit = ComponentLimit::ResourceTypes, .field = &ComponentLimits::maxResourceTypes },
+        { .limit = ComponentLimit::SubtypingSteps, .field = &ComponentLimits::maxSubtypingSteps },
+        { .limit = ComponentLimit::SubstitutedTypes, .field = &ComponentLimits::maxSubstitutedTypes },
+        { .limit = ComponentLimit::Modules, .field = &ComponentLimits::maxModules },
+        { .limit = ComponentLimit::Components, .field = &ComponentLimits::maxComponents },
+        { .limit = ComponentLimit::Instances, .field = &ComponentLimits::maxInstances },
+        { .limit = ComponentLimit::Functions, .field = &ComponentLimits::maxFunctions },
+        { .limit = ComponentLimit::Exports, .field = &ComponentLimits::maxExports },
+        { .limit = ComponentLimit::CoreTables, .field = &ComponentLimits::maxCoreTables },
+        { .limit = ComponentLimit::CoreMemories, .field = &ComponentLimits::maxCoreMemories },
+        { .limit = ComponentLimit::CoreGlobals, .field = &ComponentLimits::maxCoreGlobals },
+        { .limit = ComponentLimit::CoreTags, .field = &ComponentLimits::maxCoreTags },
+        { .limit = ComponentLimit::CoreMatchingSteps, .field = &ComponentLimits::maxCoreMatchingSteps },
+    };
+    for (auto const& row: rows)
+        checkRefusedBelowNeed(pool, row);
+
+    // The measure of an instance, a core one instantiated or of inline exports, or a component one of
+    // inline exports: its depth over its exports', and its size their sum, which outgrows any one of
+    // them when one entity is exported many times.
+    auto instantiated = withEveryKind();
+    auto coreInline = withEveryKind();
+    auto inlineExports = std::vector<CoreInlineExport> {};
+    for (auto const index: std::views::iota(0, 20))
+        inlineExports.push_back(
+            CoreInlineExport { .name = std::format("f{}", index), .sort = CoreSort::Func, .index = 0 });
+    std::ignore = coreInline.coreInlineExports(std::move(inlineExports));
+    auto componentInline = withEveryKind();
+    auto const promote = componentInline.type(
+        function({ LabeledType { .label = "a", .type = PrimitiveValueType::F32 } }, PrimitiveValueType::F64));
+    auto const lifted = componentInline.canonLift(0, {}, promote);
+    auto items = std::vector<std::pair<std::string, SortIndex>> {};
+    for (auto const index: std::views::iota(0, 20))
+        items.emplace_back(std::format("f{}", index), SortIndex { .sort = Sort::Func, .index = lifted });
+    std::ignore = componentInline.inlineInstance(std::move(items));
+    for (auto const* builder: { &instantiated, &coreInline, &componentInline })
+    {
+        auto const instancePool = builder->pool();
+        checkRefusedBelowNeed(instancePool,
+                              { .limit = ComponentLimit::TypeSize, .field = &ComponentLimits::maxTypeSize });
+        checkRefusedBelowNeed(
+            instancePool, { .limit = ComponentLimit::TypeDepth, .field = &ComponentLimits::maxTypeDepth });
+    }
+}

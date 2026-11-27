@@ -86,10 +86,11 @@ TypeArena::TypeArena(ComponentLimits const& limits):
     _store { std::make_unique<ValueStore>() },
     _index { StructuralOrder { .store = _store.get() } }
 {
-    for (auto const& row: ValueKindTable)
+    // The primitives lead ValueKindTable, so the arena's first ids are theirs.
+    for (auto const& row: ValueKindTable | std::views::take_while([](ValueKindRow const& entry) {
+                              return isPrimitive(entry.kind);
+                          }))
     {
-        if (!isPrimitive(row.kind))
-            break;
         auto primitive = DefinedType { .kind = row.kind };
         _store->types.push_back(std::move(primitive));
         _index.insert(static_cast<uint32_t>(_store->types.size() - 1));

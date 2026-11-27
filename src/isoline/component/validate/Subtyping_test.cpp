@@ -30,6 +30,7 @@ using isoline::component::types::ComponentTypeId;
 using isoline::component::types::ComponentTypeInfo;
 using isoline::component::types::CoreExportType;
 using isoline::component::types::CoreFunctionTypeId;
+using isoline::component::types::CoreImportType;
 using isoline::component::types::CoreModuleTypeInfo;
 using isoline::component::types::DefinedType;
 using isoline::component::types::ExternType;
@@ -928,4 +929,58 @@ TEST_CASE("Subtyping.coreTypesAcrossArenas")
     CHECK(relation.steps() <= std::size_t { 8 } * Levels);
     CHECK(mismatch(relation.isSubtype(ExternType { provided }, ExternType { other })).code
           == RelationErrorCode::CoreMismatch);
+}
+
+TEST_CASE("Subtyping.coreModulesAcrossArenas")
+{
+    // Two module types of different arenas, each importing and exporting a function: the import is
+    // contravariant, the export covariant, and each step of the walk is capped, wherever it falls (the
+    // module, a name's bytes, the joint canonical ids built at the first core comparison).
+    auto const module = [](TypeArena& arena, isoline::binary::ValueType imported) {
+        auto const takes = arena.intern(isoline::binary::FuncType { .params = { imported }, .results = {} });
+        auto const gives = arena.intern(isoline::binary::FuncType { .params = {}, .results = { imported } });
+        return arena.add(CoreModuleTypeInfo {
+            .imports = { CoreImportType {
+                .module = std::string { "m" },
+                .name = std::string { "f" },
+                .type = { .kind = isoline::binary::ExternKind::Func, .typeIndex = takes.value } } },
+            .exports = { CoreExportType {
+                .name = std::string { "g" },
+                .type = { .kind = isoline::binary::ExternKind::Func, .typeIndex = gives.value } } } });
+    };
+    auto left = TypeArena { ComponentLimits {} };
+    auto right = TypeArena { ComponentLimits {} };
+    std::ignore = right.intern(isoline::binary::FuncType {});
+    auto const provided = module(left, isoline::binary::I32);
+    auto const required = module(right, isoline::binary::I32);
+    auto const other = module(right, isoline::binary::I64);
+    auto relation = TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} };
+    REQUIRE(relation.isSubtype(ExternType { provided }, ExternType { required }).has_value());
+    auto const total = relation.steps();
+    REQUIRE(total > 2);
+    for (auto const cap: std::views::iota(std::size_t { 0 }, total))
+    {
+        INFO(cap);
+        auto limits = ComponentLimits {};
+        limits.maxSubtypingSteps = static_cast<uint32_t>(cap);
+        auto capped = TypeRelation { left, right, ResourceMapping {}, limits };
+        auto const refused = capped.isSubtype(ExternType { provided }, ExternType { required });
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == RelationErrorCode::StepLimit);
+    }
+
+    // The import the expected module provides is checked against the one the provided module requires.
+    auto const importMismatch =
+        mismatch(TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} }.isSubtype(
+            ExternType { provided }, ExternType { other }));
+    CHECK(importMismatch.code == RelationErrorCode::CoreMismatch);
+    CHECK(importMismatch.message
+          == "type mismatch in import `m::f`\nexpected: (func (param i32))\nfound:    (func (param i64))");
+
+    // A module where a function is expected, and the other way around.
+    auto const function = held(left.add(FunctionTypeInfo {}));
+    CHECK(mismatchText(left, ExternType { provided }, ExternType { function })
+          == "expected func, found module");
+    CHECK(mismatchText(left, ExternType { function }, ExternType { provided })
+          == "expected module, found func");
 }

@@ -209,9 +209,22 @@
 #   if-constexpr chain, which each instantiation takes one way.
 # Raised by the same run, unasked: api/Imports.cpp, api/Store.cpp, runtime/Store.cpp and validate/Validator.cpp branches,
 # reached by tests that landed since Task 6b.
-# Not entered: validate/CoreTypes.{cpp,hpp} (Tasks 6-7) and the drops below their entries of types/TypeArena.cpp,
-# validate/Subtyping.cpp and validate/Validator.cpp (Tasks 7-8). About 250 uncovered lines of Task 7's code are owed to a
-# catch-up like Task 6b's, so the check fails on those files alone until then.
+# Not entered then: validate/CoreTypes.{cpp,hpp} (Tasks 6-7) and the drops below their entries of types/TypeArena.cpp,
+# validate/Subtyping.cpp and validate/Validator.cpp (Tasks 7-8), owed to a catch-up like Task 6b's.
+#
+# That catch-up (P11 Task 9b) tested every reachable line of those files and marked the rest, each mark listed below with
+# its reason (core-sort-item, gated-builtin, outer-sort, value-entity, visibility-first, and CoreTypes.hpp's
+# exhaustive-switch). Entered or raised, lines / branches, from what the files stood at after Task 9:
+# - types/TypeArena.cpp 98.44 / 87.31 to 100.00 / 92.11; its constructor's loop over the primitives became a take_while,
+#   whose exit no input took. The untaken branches are Requires' failing sides.
+# - validate/Subtyping.cpp 98.44 / 92.44 to 99.55 / 94.27; validate/Validator.cpp 93.82 / 82.69 to 98.49 / 89.61: every
+#   unmarked line covered; the lines below 100 % are the marked ones.
+# - validate/CoreTypes.cpp 83.87 / 81.25 to 100.00 / 100.00; validate/CoreTypes.hpp 50.00 / 31.25 to 96.29 / 90.62, its
+#   marked line and Requires' failing sides short of 100.
+# - binary/Decoder.cpp's branch entry, 98.97 by the branch and 98.96 by master before their rebase, measured 98.96 (480 of
+#   485) on the merged file; a test of an over-long s33 block type now takes the branch master's rewrite left untaken.
+# Raised by the same run, unasked: canonical/Values.{cpp,hpp} by Task 9's review fixes (the retried growth, the named
+# flags refusal).
 
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
@@ -222,13 +235,19 @@ exclude src/isoline/component/canonical/Values.cpp exhaustive-switch the fall-th
 exclude src/isoline/component/canonical/Values.cpp node-count a Values of 2^32 - 1 nodes: 2^32 builder steps and about 100 GB charged before it, past the 256 MiB default and any test; the refusal keeps the 32-bit node indices sound under a budget an embedder raises that far
 exclude src/isoline/component/canonical/Values.cpp string-bytes a host string of 2^32 bytes or more: a 4 GiB argument to string(), past the default budget and any test; the refusal keeps the 32-bit byte count sound under a budget an embedder raises that far
 exclude src/isoline/component/types/TypeArena.cpp resource-rebuild substitute()'s rebuild of a resource: a resource's image is the substitution's, read by imageOf() before any type is rebuilt, so the walk never pushes one
+exclude src/isoline/component/validate/CoreTypes.hpp exhaustive-switch the fall-through after matchCoreEntity()'s switch over every core extern kind, each case of which returns; -Wswitch makes a new kind without a case a build error, and a static_assert counts the kinds
 exclude src/isoline/component/validate/Subtyping.cpp exhaustive-switch the fall-through after a switch whose every case returns (advanceComponent's phases, advance's frame kinds, context()'s context arguments and frame kinds); -Wswitch makes a new enumerator without a case a build error
 exclude src/isoline/component/validate/Validator.cpp arena-refold TypeArena::add() refusing a component or instance type its scope finished: declare() combined each import and export into the scope's measure as it came, the same monotone fold of depth and size add() makes, so what declare() accepted add() accepts
 exclude src/isoline/component/validate/Validator.cpp async the 🔀 stream and future types: P11 refuses 🔀 (DefinedTypeGates) before the type is resolved
 exclude src/isoline/component/validate/Validator.cpp core-sort-extern an extern descriptor of a core sort other than core module: the decoder reads an extern descriptor's sort from ExternalKinds, which holds core module alone of the core sorts
+exclude src/isoline/component/validate/Validator.cpp core-sort-item a sortidx, or a component export alias, of a core sort other than core module: the decoder reads a sortidx's sort from ExternalKinds, which holds core module alone of the core sorts, and an alias of a core export as AliasTarget::CoreExport
 exclude src/isoline/component/validate/Validator.cpp exhaustive-switch the fall-through after a switch whose every case returns (finish()'s scope kinds, specMessage()'s detail kinds); -Wswitch makes a new enumerator without a case a build error
 exclude src/isoline/component/validate/Validator.cpp fixed-length-lists the 🔧 (list t len) type's validation: P11 refuses 🔧 (DefinedTypeGates) before its length and element are checked
+exclude src/isoline/component/validate/Validator.cpp gated-builtin a canonical built-in other than lift, lower and resource.new, resource.drop and resource.rep: every other row of CanonBuiltinTable has a gate P11 does not implement, which canon() refuses (CanonRefusalTable) before its switch
+exclude src/isoline/component/validate/Validator.cpp outer-sort an outer alias of a sort other than core module, core type, type and component: the decoder reads an outer alias's sort from OuterAliasKinds, which holds those four alone
 exclude src/isoline/component/validate/Validator.cpp premeasured interning or adding a type the validator measured first: every caller combines the children's measures before it interns (record, variant, tuple, elements) or interns no children (enum, flags, handles), and functions are measured parameter by parameter, so the arena's own measure cannot refuse
+exclude src/isoline/component/validate/Validator.cpp value-entity the 🪙 value sort: P11 refuses 🪙 (GatedForm::Value) before a value import, export, alias or instantiation argument is made, so no value index space is reserved or sized, no value entity added or named, and no component or instance type holds a value extern
+exclude src/isoline/component/validate/Validator.cpp visibility-first LocalResourceNotExported in finishComponent(): the visibility rule refuses an export naming a local resource that is not exported before it, so explicit_resource_paths finds a path for every resource the exports use; wasm-tools keeps the check "out of an abundance of caution"
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Opcode.everyRowDecodes runs a module of every row of the opcode table, so an instruction without one aborts that test
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
@@ -307,15 +326,17 @@ src/isoline/component/binary/Encoder.cpp         100.00 84.87
 src/isoline/component/binary/Encoder.hpp         100.00 -
 src/isoline/component/canonical/Layout.cpp       99.57 88.69
 src/isoline/component/canonical/Layout.hpp       100.00 -
-src/isoline/component/canonical/Values.cpp       99.31 90.18
-src/isoline/component/canonical/Values.hpp       97.29 67.74
-src/isoline/component/types/TypeArena.cpp        100.00 92.00
+src/isoline/component/canonical/Values.cpp       99.31 90.47
+src/isoline/component/canonical/Values.hpp       97.45 71.42
+src/isoline/component/types/TypeArena.cpp        100.00 92.11
 src/isoline/component/types/TypeArena.hpp        100.00 100.00
+src/isoline/component/validate/CoreTypes.cpp     100.00 100.00
+src/isoline/component/validate/CoreTypes.hpp     96.29 90.62
 src/isoline/component/validate/Names.cpp         100.00 96.28
 src/isoline/component/validate/Names.hpp         100.00 -
-src/isoline/component/validate/Subtyping.cpp     99.48 93.84
+src/isoline/component/validate/Subtyping.cpp     99.55 94.27
 src/isoline/component/validate/Subtyping.hpp     100.00 100.00
-src/isoline/component/validate/Validator.cpp     97.92 87.61
+src/isoline/component/validate/Validator.cpp     98.49 89.61
 src/isoline/component/validate/Validator.hpp     100.00 -
 src/isoline/interpreter/Numerics.cpp             100.00 95.90
 src/isoline/interpreter/ReferenceInterpreter.cpp 98.50 93.58

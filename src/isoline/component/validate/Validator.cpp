@@ -282,7 +282,7 @@ namespace
             case Sort::CoreModule: return spaces.coreModules.size();
             case Sort::CoreInstance: return spaces.coreInstances.size();
             case Sort::Func: return spaces.functions.size();
-            case Sort::Value: return 0;
+            case Sort::Value: return 0; // uncovered(value-entity)
             case Sort::Type: return spaces.types.size();
             case Sort::Component: return spaces.components.size();
             case Sort::Instance: return spaces.instances.size();
@@ -298,11 +298,11 @@ namespace
         {
             case Sort::CoreModule: return "module";
             case Sort::Func: return "func";
-            case Sort::Value: return "value";
+            case Sort::Value: return "value"; // uncovered(value-entity)
             case Sort::Type: return "type";
             case Sort::Component: return "component";
             case Sort::Instance: return "instance";
-            default: return "";
+            default: return ""; // uncovered(core-sort-item)
         }
     }
 
@@ -838,7 +838,7 @@ namespace
                     if constexpr (std::is_same_v<Alternative, types::TypeExtern>)
                         exportTypes.push_back(alternative.type);
                     else if constexpr (std::is_same_v<Alternative, types::ValueExtern>)
-                        exportTypes.emplace_back(alternative.type);
+                        exportTypes.emplace_back(alternative.type); // uncovered(value-entity)
                     else if constexpr (std::is_constructible_v<AnyTypeId, Alternative>)
                         exportTypes.emplace_back(alternative);
                 },
@@ -993,7 +993,7 @@ namespace
         // its cap with) must stay within the cap.
         auto const& row = SortLimitTable[static_cast<std::size_t>(sort)];
         if (!row.limit)
-            return {};
+            return {}; // uncovered(value-entity)
         auto const& spaces = current().spaces;
         auto count = spaceSize(spaces, sort);
         if (row.sharedWith)
@@ -2163,8 +2163,9 @@ namespace
         }
         // An extern type names no other core sort (binary::ExternalKinds).
         Require(false);
-        return std::unexpected { plainError(ValidationErrorCode::NotModuleType,
-                                            position) }; // uncovered(core-sort-extern)
+        // uncovered-begin(core-sort-extern)
+        return std::unexpected { plainError(ValidationErrorCode::NotModuleType, position) };
+        // uncovered-end(core-sort-extern)
     }
 
     Result<void> ComponentValidator::addEntity(ExternType& type,
@@ -2230,12 +2231,14 @@ namespace
                     return {};
                 }
                 else
+                // uncovered-begin(value-entity)
                 {
                     // 🪙's value sort is refused before an entity of it is made.
                     static_assert(std::is_same_v<Entity, types::ValueExtern>, "every extern type has a case");
                     Require(false);
-                    return {}; // uncovered(value-entity)
+                    return {};
                 }
+                // uncovered-end(value-entity)
             },
             type);
         if (!added)
@@ -2357,8 +2360,9 @@ namespace
         }
         // A sortidx names no other core sort (binary::ExternalKinds).
         Require(false);
-        return std::unexpected { plainError(ValidationErrorCode::NotModuleType,
-                                            position) }; // uncovered(core-sort-item)
+        // uncovered-begin(core-sort-item)
+        return std::unexpected { plainError(ValidationErrorCode::NotModuleType, position) };
+        // uncovered-end(core-sort-item)
     }
 
     Result<void> ComponentValidator::exportDefinition(binary::ExportDefinition const& definition,
@@ -2663,7 +2667,7 @@ namespace
             if (auto const* function = std::get_if<types::FunctionTypeId>(&entry))
                 isNamed = functionNamed(*function, named);
             else if (auto const* value = std::get_if<types::ValueExtern>(&entry))
-                isNamed = definedNamed(value->type, named);
+                isNamed = definedNamed(value->type, named); // uncovered(value-entity)
             else if (auto const* nested = std::get_if<types::InstanceTypeId>(&entry))
             {
                 stack.push_back(Open { .instance = *nested });
@@ -2793,7 +2797,7 @@ namespace
                     if constexpr (std::is_same_v<Alternative, types::TypeExtern>)
                         scope.pending.push_back(alternative.type);
                     else if constexpr (std::is_same_v<Alternative, types::ValueExtern>)
-                        scope.pending.emplace_back(alternative.type);
+                        scope.pending.emplace_back(alternative.type); // uncovered(value-entity)
                     else if constexpr (std::is_constructible_v<AnyTypeId, Alternative>)
                         scope.pending.emplace_back(alternative);
                 },

@@ -439,3 +439,128 @@ TEST_CASE("TypeArena.substitutedInstanceIsCharged")
     CHECK(inner.error() == TypeLimitError { .limit = ComponentLimit::SubstitutedTypes, .value = 4 });
     CHECK(room.arena.substitutedTypes() == 4); // the instance and its two exports, then the own
 }
+
+TEST_CASE("TypeArena.substitutesCoreModulesAndTypeCopies")
+{
+    auto types = NestedResourceTypes { ComponentLimits {} };
+    auto& arena = types.arena;
+    auto const module = arena.add(isoline::component::types::CoreModuleTypeInfo {});
+
+    // A core module names no component resource: an instance exporting one and a resource is
+    // found to name the resource past it, and substitution keeps the module as it is.
+    auto const own = interned(arena, DefinedType { .kind = ValueKind::Own, .resource = types.resource });
+    auto const mixed = arena.add(
+        InstanceTypeInfo { .exports = { NamedExtern { .name = "m", .type = module },
+                                        NamedExtern { .name = "o", .type = ValueExtern { .type = own } } } });
+    auto const moduleOnly =
+        arena.add(InstanceTypeInfo { .exports = { NamedExtern { .name = "m", .type = module } } });
+    REQUIRE(mixed.has_value());
+    REQUIRE(moduleOnly.has_value());
+    CHECK(arena.namesResource(*mixed));
+    CHECK_FALSE(arena.namesResource(*moduleOnly));
+    auto const substituted = arena.substitute(*mixed, types.substitution());
+    REQUIRE(substituted.has_value());
+    auto const* instance = std::get_if<InstanceTypeId>(&*substituted);
+    REQUIRE(instance != nullptr);
+    CHECK(*instance != *mixed);
+    auto const& exports = arena[*instance].exports;
+    REQUIRE(exports.size() == 2);
+    CHECK(exports[0].type == isoline::component::types::ExternType { module });
+    CHECK(exports[1].type
+          == isoline::component::types::ExternType { ValueExtern {
+              .type = interned(arena, DefinedType { .kind = ValueKind::Own, .resource = types.image }) } });
+    auto const sameModule = arena.substitute(module, types.substitution());
+    REQUIRE(sameModule.has_value());
+    CHECK(*sameModule == isoline::component::types::ExternType { module });
+
+    // A type extern that copied the entry it named rewrites both, the copy and the entry named.
+    auto const borrow =
+        interned(arena, DefinedType { .kind = ValueKind::Borrow, .resource = types.resource });
+    auto const copy =
+        TypeExtern { .type = AnyTypeId { own },
+                     .alias = 1,
+                     .referenced = isoline::component::types::TypeIdentity { .type = AnyTypeId { borrow } } };
+    auto const rewritten = arena.substitute(copy, types.substitution());
+    REQUIRE(rewritten.has_value());
+    auto const* bound = std::get_if<TypeExtern>(&*rewritten);
+    REQUIRE(bound != nullptr);
+    CHECK(bound->alias == 1);
+    CHECK(bound->type
+          == AnyTypeId { interned(arena, DefinedType { .kind = ValueKind::Own, .resource = types.image }) });
+    REQUIRE(bound->referenced.has_value());
+    CHECK(
+        bound->referenced->type
+        == AnyTypeId { interned(arena, DefinedType { .kind = ValueKind::Borrow, .resource = types.image }) });
+
+    // Either rewrite refused refuses the extern.
+    auto limits = ComponentLimits {};
+    limits.maxSubstitutedTypes = 0;
+    auto capped = NestedResourceTypes { limits };
+    auto const cappedOwn =
+        interned(capped.arena, DefinedType { .kind = ValueKind::Own, .resource = capped.resource });
+    auto const cappedBorrow =
+        interned(capped.arena, DefinedType { .kind = ValueKind::Borrow, .resource = capped.resource });
+    auto const unchangedFirst =
+        TypeExtern { .type = AnyTypeId { capped.arena.primitive(ValueKind::U32) },
+                     .referenced =
+                         isoline::component::types::TypeIdentity { .type = AnyTypeId { cappedBorrow } } };
+    auto const refusedFirst = capped.arena.substitute(
+        TypeExtern { .type = AnyTypeId { cappedOwn },
+                     .referenced =
+                         isoline::component::types::TypeIdentity { .type = AnyTypeId { cappedBorrow } } },
+        capped.substitution());
+    REQUIRE_FALSE(refusedFirst.has_value());
+    CHECK(refusedFirst.error().limit == ComponentLimit::SubstitutedTypes);
+    auto const refusedSecond = capped.arena.substitute(unchangedFirst, capped.substitution());
+    REQUIRE_FALSE(refusedSecond.has_value());
+    CHECK(refusedSecond.error().limit == ComponentLimit::SubstitutedTypes);
+}
+
+TEST_CASE("TypeArena.lookupsAndFlagsOfEveryShape")
+{
+    // A name between two others is found by neither lookup, though its search stops at one of them.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const function = arena.intern(isoline::binary::FuncType {});
+    auto const entity = isoline::component::types::CoreEntityType { .kind = isoline::binary::ExternKind::Func,
+                                                                    .typeIndex = function.value };
+    auto const module = arena.add(isoline::component::types::CoreModuleTypeInfo {
+        .imports = { isoline::component::types::CoreImportType {
+                         .module = std::string { "m" }, .name = std::string { "a" }, .type = entity },
+                     isoline::component::types::CoreImportType {
+                         .module = std::string { "m" }, .name = std::string { "c" }, .type = entity } },
+        .exports = {
+            isoline::component::types::CoreExportType { .name = std::string { "a" }, .type = entity },
+            isoline::component::types::CoreExportType { .name = std::string { "c" }, .type = entity } } });
+    CHECK(arena.findExport(module, "c") != nullptr);
+    CHECK(arena.findExport(module, "b") == nullptr);
+    CHECK(arena.findImport(module, "m", "c") != nullptr);
+    CHECK(arena.findImport(module, "m", "b") == nullptr);
+
+    // A component type names a resource by the resources it imports or defines alone.
+    auto const resource = arena.newResource(ResourceTypeInfo {});
+    REQUIRE(resource.has_value());
+    auto const imports = arena.add(
+        ComponentTypeInfo { .importedResources = { ResourcePath { .resource = *resource, .path = { 0 } } } });
+    auto const defines = arena.add(
+        ComponentTypeInfo { .definedResources = { ResourcePath { .resource = *resource, .path = { 0 } } } });
+    REQUIRE(imports.has_value());
+    REQUIRE(defines.has_value());
+    CHECK(arena.namesResource(*imports));
+    CHECK(arena.namesResource(*defines));
+
+    // A variant of a case without a payload and one of a handle: the empty case is kept as it is.
+    auto types = NestedResourceTypes { ComponentLimits {} };
+    auto const own =
+        interned(types.arena, DefinedType { .kind = ValueKind::Own, .resource = types.resource });
+    auto const variant =
+        interned(types.arena, typeOf(ValueKind::Variant, { std::nullopt, own }, { "none", "some" }));
+    auto const substituted = types.arena.substitute(ValueExtern { .type = variant }, types.substitution());
+    REQUIRE(substituted.has_value());
+    auto const image = std::get<ValueExtern>(*substituted).type;
+    CHECK(image != variant);
+    auto const& children = types.arena[image].children;
+    REQUIRE(children.size() == 2);
+    CHECK_FALSE(children[0].has_value());
+    CHECK(children[1]
+          == interned(types.arena, DefinedType { .kind = ValueKind::Own, .resource = types.image }));
+}
