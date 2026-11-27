@@ -1,12 +1,44 @@
-# Pinned prebuilt tools used to produce test inputs. Never needed by a build or an offline ctest.
+# Pinned prebuilt tools: the ones that produce test inputs, and the tools a CI lane installs. Never
+# needed by a default build or an offline ctest.
 # One `key = value` per line; '#' starts a comment. scripts/fetch-tools.py verifies every download
-# against the SHA-256 recorded here.
+# against the SHA-256 recorded here. Each tool is a `version`, a `url` template of {version} and
+# {archive}, and per platform its `archive` and the `executable` inside it (templates of {version})
+# and the archive's `sha256`.
 
 wasm-tools.version = 1.263.0
+wasm-tools.url = https://github.com/bytecodealliance/wasm-tools/releases/download/v{version}/{archive}
+wasm-tools.archive.x86_64-linux = wasm-tools-{version}-x86_64-linux.tar.gz
+wasm-tools.archive.aarch64-linux = wasm-tools-{version}-aarch64-linux.tar.gz
+wasm-tools.archive.aarch64-macos = wasm-tools-{version}-aarch64-macos.tar.gz
+wasm-tools.archive.x86_64-windows = wasm-tools-{version}-x86_64-windows.zip
+wasm-tools.executable.x86_64-linux = wasm-tools-{version}-x86_64-linux/wasm-tools
+wasm-tools.executable.aarch64-linux = wasm-tools-{version}-aarch64-linux/wasm-tools
+wasm-tools.executable.aarch64-macos = wasm-tools-{version}-aarch64-macos/wasm-tools
+wasm-tools.executable.x86_64-windows = wasm-tools-{version}-x86_64-windows/wasm-tools.exe
 wasm-tools.sha256.x86_64-linux = 21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431
 wasm-tools.sha256.aarch64-linux = 773b5e6bf957f0d93a9a337c9c5fc4c35509706301a80799f57a76fa367fd1ca
 wasm-tools.sha256.aarch64-macos = b568f04746a699c4068b8d751779b60b501cf2cab6d259a3bc973eb5eeb1f62b
 wasm-tools.sha256.x86_64-windows = 0803df158b4dbea6b029d11f4206c414f432f0447af91542817061e4f0bd912e
+
+# The CMake and Ninja the C++ module lanes build with (.github/workflows/build.yml): CMake 4.3 is
+# the modules floor (cmake/IsolineModuleSupport.cmake), and neither runner image ships it.
+cmake.version = 4.3.0
+cmake.url = https://github.com/Kitware/CMake/releases/download/v{version}/{archive}
+cmake.archive.x86_64-linux = cmake-{version}-linux-x86_64.tar.gz
+cmake.archive.x86_64-windows = cmake-{version}-windows-x86_64.zip
+cmake.executable.x86_64-linux = cmake-{version}-linux-x86_64/bin/cmake
+cmake.executable.x86_64-windows = cmake-{version}-windows-x86_64/bin/cmake.exe
+cmake.sha256.x86_64-linux = 201bdabe17a54e017f119cffa247648e9c44327e52473c2cc60a88fded94652a
+cmake.sha256.x86_64-windows = 0f664f44eeb5b35b77f83e0984459c0dfa70539bd215c54ae1059604fd4f77ea
+
+ninja.version = 1.13.2
+ninja.url = https://github.com/ninja-build/ninja/releases/download/v{version}/{archive}
+ninja.archive.x86_64-linux = ninja-linux.zip
+ninja.archive.x86_64-windows = ninja-win.zip
+ninja.executable.x86_64-linux = ninja
+ninja.executable.x86_64-windows = ninja.exe
+ninja.sha256.x86_64-linux = 5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6
+ninja.sha256.x86_64-windows = 07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65
 
 # The spec suites scripts/import-spec-tests.py imports, one source per name that tests/spec/files.txt
 # rows start with: `source.<name>.repository` and the `source.<name>.commit` imported.

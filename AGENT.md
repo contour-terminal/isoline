@@ -237,7 +237,8 @@ inherited by every preset through `isoline-common` (see `cmake/IsolinePedantic.c
 
 Isoline is a WebAssembly runtime written in C++23 only — **no Rust in its source or build**. Prebuilt
 tools made in Rust may serve as test inputs only (pinned by version and SHA-256 in
-`scripts/tools.lock`); a default build and an offline `ctest` need none of them.
+`scripts/tools.lock`, beside the CMake and Ninja the CI module lanes install); a default build and an
+offline `ctest` need none of them.
 
 - `src/isoline/` — the library, `isoline::core` (target `isoline_core`). Namespace `isoline`, with
   **one sub-namespace per directory** beneath it (`src/isoline/binary/` is `isoline::binary`, and so on).
