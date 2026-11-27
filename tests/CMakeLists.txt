@@ -318,3 +318,23 @@ add_test(NAME contract-rows-complete
          COMMAND ${CMAKE_COMMAND} -DTEST_BINARY=$<TARGET_FILE:isoline_test> "-DTEST_EMULATOR=${isolineTestEmulator}"
                  "-DEXPECTED=${isolineContractCaseList}" -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckContractRows.cmake")
 set_tests_properties(contract-rows-complete PROPERTIES LABELS unit)
+
+# The memory-bound cases of the unit tests: each case tagged [.hostile] in isoline_test builds a hostile
+# shape that a broken cap would let grow without bound, so the unit run hides them and they run here,
+# capped. A sanitizer build caps its resident memory through ASan; any other build its address space
+# through prlimit where the host has it; an emulated cross build (wine, qemu) runs them uncapped, every
+# case also drawing on a counting arena of a small budget.
+if(ISOLINE_SANITIZE STREQUAL "address")
+    add_test(NAME isoline_hostile COMMAND isoline_test "[.hostile]")
+    set_tests_properties(isoline_hostile PROPERTIES
+                         ENVIRONMENT "ASAN_OPTIONS=hard_rss_limit_mb=4096:allocator_may_return_null=1")
+else()
+    find_program(ISOLINE_PRLIMIT prlimit)
+    if(ISOLINE_PRLIMIT AND NOT CMAKE_CROSSCOMPILING AND NOT ISOLINE_SANITIZE STREQUAL "thread")
+        add_test(NAME isoline_hostile
+                 COMMAND "${ISOLINE_PRLIMIT}" --as=6442450944 -- $<TARGET_FILE:isoline_test> "[.hostile]")
+    else()
+        add_test(NAME isoline_hostile COMMAND isoline_test "[.hostile]")
+    endif()
+endif()
+set_tests_properties(isoline_hostile PROPERTIES LABELS unit TIMEOUT 300)

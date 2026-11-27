@@ -203,9 +203,12 @@ ISOLINE_OPERATION(StoreGlobal, "store_global", Any, None, WritesMemory, Global)
 ISOLINE_OPERATION(LoadContext, "load_context", None, FromImmediate, ReadsContext, ContextType)
 ISOLINE_OPERATION(StoreContext, "store_context", Any, None, Poll, Context)
 
-// The execution budget: poll(countdown) at a PollSite returns the countdown after it; enterFrame and
-// leaveFrame charge and release a frame of `frameCost` stack values, after the call depth.
+// The execution budget: poll(countdown) at a PollSite returns the countdown after it; pollStored polls
+// the countdown the execution state holds, where a function's entry finds it (its caller stored it before
+// the call), and leaves it there; enterFrame and leaveFrame charge and release a frame of `frameCost`
+// stack values, after the call depth.
 ISOLINE_OPERATION(Poll, "poll", I64, I64, Poll, PollSite)
+ISOLINE_OPERATION(PollStored, "poll_stored", None, None, Poll, PollSite)
 ISOLINE_OPERATION(EnterFrame, "enter_frame", None, None, Poll, FrameCost)
 ISOLINE_OPERATION(LeaveFrame, "leave_frame", None, None, Poll, FrameCost)
 
