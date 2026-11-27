@@ -163,8 +163,14 @@ namespace
     {
       public:
         ModuleDecoder(std::span<std::byte const> bytes, FeatureSet features, DecodeLimits const& limits):
-            _reader { bytes },
-            _moduleSize { bytes.size() },
+            ModuleDecoder { ByteReader { bytes }, features, limits }
+        {
+        }
+
+        /// A decoder reading from where @p reader stands, its offsets those of @p reader.
+        ModuleDecoder(ByteReader reader, FeatureSet features, DecodeLimits const& limits):
+            _reader { reader },
+            _moduleSize { reader.offset() + reader.remaining() },
             _features { features },
             _limitsGrammar { limitsGrammarOf(features) },
             _limits { limits }
@@ -172,6 +178,15 @@ namespace
         }
 
         [[nodiscard]] std::expected<Module, DecodeError> decode();
+
+        /// Reads one function type from where the reader stands, for decodeEmbeddedFuncType().
+        [[nodiscard]] std::expected<FuncType, DecodeError> embeddedFuncType() { return readFuncType(); }
+
+        /// Reads one extern type from where the reader stands, for decodeEmbeddedExternType().
+        [[nodiscard]] std::expected<Import, DecodeError> embeddedExternType() { return readExternType(); }
+
+        /// The reader, past what the decoder has read.
+        [[nodiscard]] ByteReader const& reader() const noexcept { return _reader; }
 
         // The section decoders, one per row of SectionEncodings.
         [[nodiscard]] std::expected<void, DecodeError> typeSection();
@@ -1633,6 +1648,44 @@ std::expected<Module, DecodeError> decodeModule(std::span<std::byte const> bytes
         return std::unexpected { DecodeError {
             DecodeErrorCode::MissingFeaturePrerequisite, 0, prerequisiteSubject(closed.error()) } };
     return ModuleDecoder { bytes, features, limits }.decode();
+}
+
+namespace
+{
+    /// Reads one embedded item with @p read from where @p reader stands, advancing @p reader past it
+    /// when it decodes.
+    template <typename Read>
+    [[nodiscard]] auto decodeEmbedded(ByteReader& reader,
+                                      FeatureSet const& features,
+                                      DecodeLimits const& limits,
+                                      Read read) -> decltype(read(std::declval<ModuleDecoder&>()))
+    {
+        if (auto const closed = features.checkPrerequisites(); !closed)
+            return std::unexpected { DecodeError { DecodeErrorCode::MissingFeaturePrerequisite,
+                                                   reader.offset(),
+                                                   prerequisiteSubject(closed.error()) } };
+        auto decoder = ModuleDecoder { reader, features, limits };
+        auto item = read(decoder);
+        if (item)
+            reader = decoder.reader();
+        return item;
+    }
+} // namespace
+
+std::expected<FuncType, DecodeError> decodeEmbeddedFuncType(ByteReader& reader,
+                                                            FeatureSet const& features,
+                                                            DecodeLimits const& limits)
+{
+    return decodeEmbedded(
+        reader, features, limits, [](ModuleDecoder& decoder) { return decoder.embeddedFuncType(); });
+}
+
+std::expected<Import, DecodeError> decodeEmbeddedExternType(ByteReader& reader,
+                                                            FeatureSet const& features,
+                                                            DecodeLimits const& limits)
+{
+    return decodeEmbedded(
+        reader, features, limits, [](ModuleDecoder& decoder) { return decoder.embeddedExternType(); });
 }
 
 } // namespace isoline::binary

@@ -2451,3 +2451,57 @@ TEST_CASE("Decoder.compactImportsCounted")
     CHECK(refused.error().offset == memories.size() - 2); // the third item, 0x01 'z'
     CHECK(errorOf(memories, compactImportFeatures(), DecodeLimits { .maxMemories = 3 }) == std::nullopt);
 }
+
+TEST_CASE("Decoder.embeddedTypes")
+{
+    using isoline::binary::ByteReader;
+    using isoline::binary::decodeEmbeddedExternType;
+    using isoline::binary::decodeEmbeddedFuncType;
+    using isoline::binary::I32;
+    using isoline::binary::I64;
+
+    // Read from inside other bytes, at their absolute offsets, and only as far as the type goes.
+    auto const bytes = std::to_array<std::byte>({ std::byte { 0xAA },
+                                                  std::byte { 0x60 },
+                                                  std::byte { 0x01 },
+                                                  std::byte { 0x7F },
+                                                  std::byte { 0x01 },
+                                                  std::byte { 0x7E },
+                                                  std::byte { 0xBB } });
+    auto reader = ByteReader { std::span { bytes }.subspan(1), 100 };
+    auto const type = decodeEmbeddedFuncType(reader, FeatureSet::all());
+    REQUIRE(type.has_value());
+    CHECK(*type == FuncType { .params = { I32 }, .results = { I64 } });
+    CHECK(reader.offset() == 105);
+
+    // An error leaves the reader where it was, and is reported at its absolute offset.
+    auto const rec = std::to_array<std::byte>({ std::byte { 0x4E }, std::byte { 0x00 } });
+    auto recReader = ByteReader { rec, 20 };
+    auto const refused = decodeEmbeddedFuncType(recReader, FeatureSet::all());
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == DecodeErrorCode::MalformedFunctionType);
+    CHECK(refused.error().offset == 20);
+    CHECK(recReader.offset() == 20);
+
+    // A memory import's type: (memory 1 2).
+    auto const memory = std::to_array<std::byte>(
+        { std::byte { 0x02 }, std::byte { 0x01 }, std::byte { 0x01 }, std::byte { 0x02 } });
+    auto memoryReader = ByteReader { memory };
+    auto const import = decodeEmbeddedExternType(memoryReader, FeatureSet::all());
+    REQUIRE(import.has_value());
+    CHECK(import->kind == ExternKind::Memory);
+    CHECK(import->memory.limits == Limits { .min = 1, .max = 2 });
+    CHECK(memoryReader.atEnd());
+    auto const unknownKind = std::to_array<std::byte>({ std::byte { 0x09 } });
+    auto unknownReader = ByteReader { unknownKind };
+    auto const malformed = decodeEmbeddedExternType(unknownReader, FeatureSet::all());
+    REQUIRE_FALSE(malformed.has_value());
+    CHECK(malformed.error().code == DecodeErrorCode::MalformedImportKind);
+
+    // A set not closed over its prerequisites is refused, as decodeModule refuses it.
+    auto openReader = ByteReader { std::span { bytes }.subspan(1) };
+    auto const open = decodeEmbeddedFuncType(openReader, FeatureSet::none().with(Feature::RelaxedSimd));
+    REQUIRE_FALSE(open.has_value());
+    CHECK(open.error().code == DecodeErrorCode::MissingFeaturePrerequisite);
+    CHECK(openReader.offset() == 0);
+}

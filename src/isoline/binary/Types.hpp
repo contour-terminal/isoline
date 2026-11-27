@@ -183,6 +183,9 @@ struct Limits
     uint64_t min = 0;                           ///< The initial size.
     std::optional<uint64_t> max;                ///< The maximum size, if bounded.
     AddressType addressType = AddressType::I32; ///< The type its addresses take.
+
+    /// Two limits are equal when their bounds and address types are.
+    bool operator==(Limits const&) const = default;
 };
 
 /// A table's type: its element reference type and its size bounds.
@@ -190,6 +193,9 @@ struct TableType
 {
     ValueType element = FuncRef; ///< The reference type of its elements.
     Limits limits;               ///< Its size bounds, in elements.
+
+    /// Two table types are equal when their element types and limits are.
+    bool operator==(TableType const&) const = default;
 };
 
 /// The base-2 logarithm of a memory's page size when it declares none: 65536 bytes.
@@ -211,6 +217,9 @@ struct MemoryType
     /// The base-2 logarithm of its page size in bytes: 16 unless custom-page-sizes declares another.
     /// The decoder admits values below PageSizeLog2Limit; the validator only 0 and 16.
     uint8_t pageSizeLog2 = DefaultPageSizeLog2;
+
+    /// Two memory types are equal when their limits and page sizes are.
+    bool operator==(MemoryType const&) const = default;
 };
 
 /// The value type of the addresses, offsets and sizes of a memory or table of @p type.
@@ -280,6 +289,9 @@ struct GlobalType
 {
     ValueType type;                            ///< The type of its value.
     Mutability mutability = Mutability::Const; ///< Whether global.set may assign it.
+
+    /// Two global types are equal when their value types and mutability are.
+    bool operator==(GlobalType const&) const = default;
 };
 
 /// What an import or export names.
