@@ -489,3 +489,12 @@ TEST_CASE("Dominators.loopNestingMatchesTheNaturalLoops")
         }
     }
 }
+
+TEST_CASE("Dominators.ofAnEmptyGraph")
+{
+    // A graph of no blocks has an empty tree: nothing to number, nothing reachable.
+    auto arena = Arena {};
+    auto const graph = graphOf(0, {}, arena.memory);
+    auto const tree = DominatorTree { graph, arena.memory };
+    CHECK(tree.reversePostorder().empty());
+}

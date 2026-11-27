@@ -161,6 +161,13 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(make-differential-corpus-selftest PROPERTIES LABELS lint)
 endif()
 
+# The compiler's translation handles every instruction of the features it compiles: no core::todo is
+# left under it (MemoryTranslation.everyCompiledOpcodeTranslates runs each of them).
+add_test(NAME compiler-translation-no-todo
+         COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src/isoline/compiler/translation"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckNoTodo.cmake")
+set_tests_properties(compiler-translation-no-todo PROPERTIES LABELS lint)
+
 # How long the text memory suite may run before its timeout stops it: five minutes natively. Under ASan
 # it takes 66 seconds on a workstation and 92 to more than 120 on a CI runner, whose speed varies by
 # 1.7 times between runs; its reader cases are a third of that, 200,000 items each. An emulator (qemu,

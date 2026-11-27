@@ -15,6 +15,7 @@ target_sources(isoline_core
         intermediate/Printer.cpp
         intermediate/Verifier.cpp
         translation/LoopAssignments.cpp
+        translation/MemoryTranslation.cpp
         translation/Translator.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
@@ -26,6 +27,7 @@ target_sources(isoline_core
             FeatureSupport.hpp
             intermediate/Dominators.hpp
             intermediate/Function.hpp
+            intermediate/Guards.hpp
             intermediate/Operation.hpp
             intermediate/Operations.def
             intermediate/Printer.hpp
@@ -33,5 +35,6 @@ target_sources(isoline_core
             machine/Target.hpp
             machine/TargetDescription.hpp
             translation/LoopAssignments.hpp
+            translation/MemoryTranslation.hpp
             translation/NumericRules.hpp
             translation/Translator.hpp)

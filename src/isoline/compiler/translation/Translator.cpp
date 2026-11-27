@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <memory_resource>
 #include <optional>
 #include <ranges>
@@ -19,11 +20,15 @@
 #include <isoline/binary/BodyUnits.hpp>
 #include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/compiler/ContextLayout.hpp>
 #include <isoline/compiler/FeatureSupport.hpp>
+#include <isoline/compiler/intermediate/Guards.hpp>
 #include <isoline/compiler/intermediate/Operation.hpp>
 #include <isoline/compiler/translation/LoopAssignments.hpp>
+#include <isoline/compiler/translation/MemoryTranslation.hpp>
 #include <isoline/compiler/translation/NumericRules.hpp>
 #include <isoline/runtime/Interrupt.hpp>
+#include <isoline/runtime/RawValue.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
@@ -31,18 +36,21 @@ namespace isoline::compiler::translation
 {
 
 ModuleIndex::ModuleIndex(binary::Module const& module, std::pmr::memory_resource& memory):
-    _module { &module }, _importedFunctionTypes(&memory), _importedGlobals(&memory)
+    _module { &module },
+    _importedFunctionTypes(&memory),
+    _importedGlobals(&memory),
+    _importedMemories(&memory),
+    _importedTables(&memory)
 {
     for (auto const& entry: module.imports)
         switch (entry.kind)
         {
             case binary::ExternKind::Func: _importedFunctionTypes.push_back(entry.typeIndex); break;
             case binary::ExternKind::Global: _importedGlobals.push_back(&entry.global); break;
-            case binary::ExternKind::Memory: ++_memoryCount; break;
-            case binary::ExternKind::Table:
+            case binary::ExternKind::Memory: _importedMemories.push_back(&entry.memory); break;
+            case binary::ExternKind::Table: _importedTables.push_back(&entry.table); break;
             case binary::ExternKind::Tag: break;
         }
-    _memoryCount += static_cast<uint32_t>(module.memories.size());
 }
 
 uint32_t ModuleIndex::functionType(uint32_t function) const noexcept
@@ -61,6 +69,24 @@ binary::GlobalType const& ModuleIndex::globalType(uint32_t global) const noexcep
     auto const defined = std::size_t { global } - _importedGlobals.size();
     Require(defined < _module->globals.size());
     return _module->globals[defined].type;
+}
+
+binary::MemoryType const& ModuleIndex::memoryType(uint32_t memory) const noexcept
+{
+    if (memory < _importedMemories.size())
+        return *_importedMemories[memory];
+    auto const defined = std::size_t { memory } - _importedMemories.size();
+    Require(defined < _module->memories.size());
+    return _module->memories[defined];
+}
+
+binary::TableType const& ModuleIndex::tableType(uint32_t table) const noexcept
+{
+    if (table < _importedTables.size())
+        return *_importedTables[table];
+    auto const defined = std::size_t { table } - _importedTables.size();
+    Require(defined < _module->tables.size());
+    return _module->tables[defined].type;
 }
 
 namespace
@@ -194,6 +220,25 @@ namespace
         ValueId merged {};         ///< Its value after the end.
     };
 
+    /// A memory's base and bound, as SSA values of the current block.
+    struct MemoryValues
+    {
+        ValueId base {};  ///< memoryBase, or the Memory0Base context value.
+        ValueId bound {}; ///< memoryBound, or the Memory0Bound context value.
+    };
+
+    /// The immediates of loadTableElement and storeTableElement of @p table: the table, then where a Ref's
+    /// fields lie, which they read and write one by one.
+    [[nodiscard]] std::array<uint64_t, 5> tableElementImmediates(uint32_t table) noexcept
+    {
+        auto const& layout = runtime::RefLayoutOfRef;
+        return { uint64_t { table },
+                 uint64_t { layout.kindOffset },
+                 uint64_t { layout.heapKindOffset },
+                 uint64_t { layout.heapTypeIndexOffset },
+                 uint64_t { layout.addressOffset } };
+    }
+
     /// The refusal @p code of @p function, with what was requested of which @p limit.
     [[nodiscard]] std::unexpected<CompileError> refusal(CompileErrorCode code,
                                                         uint32_t function,
@@ -216,10 +261,10 @@ namespace
             case binary::ValueKind::F32: return Type::F32;
             case binary::ValueKind::F64: return Type::F64;
             case binary::ValueKind::Ref: return Type::Ref;
-            case binary::ValueKind::V128: break;
+            case binary::ValueKind::V128: break; // uncovered(v128-refused-before)
         }
-        core::unreachable(); // checkValueType() refuses a v128
-    }
+        core::unreachable(); // uncovered(v128-refused-before)
+    } // uncovered(v128-refused-before)
 
     /// @p value as an immediate.
     template <typename Enum>
@@ -249,7 +294,22 @@ namespace
         void checkDivision(NumericCheck check, ValueId lhs, ValueId rhs);
         void checkTruncation(Operation operation, ValueId operand);
         [[nodiscard]] Outcome call(binary::Instruction const& instruction);
+        [[nodiscard]] Outcome calleeTypes(binary::FuncType const& type);
         void select();
+
+        // --- memories, tables, indirect calls
+        [[nodiscard]] Outcome memoryInstruction(binary::Instruction const& instruction);
+        void access(binary::Instruction const& instruction, MemoryAccessRow const& row);
+        void memorySize(uint32_t memory);
+        void tableGet(uint32_t table);
+        void tableSet(uint32_t table);
+        void tableSize(uint32_t table);
+        void stubCall(binary::Instruction const& instruction, StubCallRow const& row);
+        [[nodiscard]] Outcome callIndirect(binary::Instruction const& instruction);
+        [[nodiscard]] MemoryValues memoryValues(uint32_t memory);
+        [[nodiscard]] Outcome checkTables(binary::Instruction const& instruction) const;
+        [[nodiscard]] ValueId checkTable(uint32_t table, ValueId index, runtime::TrapCode code);
+        [[nodiscard]] ValueId narrowed(ValueId value, binary::AddressType type);
 
         // --- control
         [[nodiscard]] Outcome open(ConstructKind kind, uint32_t index);
@@ -307,8 +367,14 @@ namespace
         void trapIf(ValueId condition, runtime::TrapCode code);
         [[nodiscard]] ValueId pop() noexcept;
         [[nodiscard]] std::span<ValueId const> top(uint32_t count) const noexcept;
-        void switchTo(BlockId block) noexcept { _builder.switchTo(block); }
+        void switchTo(BlockId block) noexcept
+        {
+            _builder.switchTo(block);
+            _memoryValues.clear(); // reused within a block only
+        }
         [[nodiscard]] BlockId createBlock(Hotness hotness = Hotness::Normal);
+        /// Ends the current block with a jump to a new block, which it returns.
+        [[nodiscard]] BlockId jumpToNewBlock();
 
         TranslationInput const& _input;
         binary::Module const& _module;
@@ -344,6 +410,9 @@ namespace
         std::pmr::vector<uint32_t> _edgeStamps; ///< Per depth, the br_table that last made its edge.
         std::pmr::vector<uint32_t> _edgeBlocks; ///< Per depth, that edge's block.
         std::pmr::vector<uint32_t> _edgeDepths; ///< The current br_table's distinct depths.
+        /// The memories but memory 0 whose base and bound the current block has, by memory index: cleared at
+        /// every block's start and after every call or stub, so that each value dominates its uses.
+        std::pmr::map<uint32_t, MemoryValues> _memoryValues;
         std::array<ValueId, MemoryContextValues> _context {};
         uint32_t _contextCount;
         std::optional<ValueId> _storedCountdown; ///< The countdown the execution state holds, if known.
@@ -396,6 +465,7 @@ namespace
         _edgeStamps(&memory),
         _edgeBlocks(&memory),
         _edgeDepths(&memory),
+        _memoryValues(&memory),
         _contextCount { input.index.memoryCount() > 0 ? static_cast<uint32_t>(MemoryContextValues) : 1U },
         _storedCountdown {}
     {
@@ -579,11 +649,20 @@ namespace
                 _stack.push_back(
                     emitValue(Operation::RefFunc, Type::Ref, {}, std::array { uint64_t { instruction.a } }));
                 return {};
+            case Opcode::CallIndirect: return callIndirect(instruction);
+            case Opcode::MemorySize: memorySize(instruction.a); return {};
             default: break;
+        }
+        if (auto checked = checkTables(instruction); !checked)
+            return checked;
+        if (instruction.opcode == Opcode::TableSize)
+        {
+            tableSize(instruction.a);
+            return {};
         }
         if (auto const operation = numericOperationOf(instruction.opcode))
             return numeric(instruction, *operation);
-        core::todo("memory, table, bulk and indirect-call instructions: P5 Task 6");
+        return memoryInstruction(instruction);
     }
 
     Translation::Outcome Translation::numeric(binary::Instruction const& instruction, Operation operation)
@@ -653,17 +732,8 @@ namespace
     {
         auto const callee = instruction.a;
         auto const& type = _module.types[_input.index.functionType(callee)];
-        _resultScratch.clear();
-        for (auto const& result: type.results)
-        {
-            auto const resultType = irTypeOf(result, _input.codeIndex);
-            if (!resultType)
-                return std::unexpected { resultType.error() };
-            _resultScratch.push_back(*resultType);
-        }
-        for (auto const& parameter: type.params)
-            if (auto checked = irTypeOf(parameter, _input.codeIndex); !checked)
-                return std::unexpected { checked.error() };
+        if (auto typed = calleeTypes(type); !typed)
+            return typed;
         if (auto reserved = reserve(type.params.size() + type.results.size(), 0); !reserved)
             return reserved;
         auto const arguments = static_cast<uint32_t>(type.params.size());
@@ -678,6 +748,23 @@ namespace
         return {};
     }
 
+    Translation::Outcome Translation::calleeTypes(binary::FuncType const& type)
+    {
+        // A callee's results into _resultScratch, its parameters checked: each a type the compiler compiles.
+        _resultScratch.clear();
+        for (auto const& result: type.results)
+        {
+            auto const resultType = irTypeOf(result, _input.codeIndex);
+            if (!resultType)
+                return std::unexpected { resultType.error() };
+            _resultScratch.push_back(*resultType);
+        }
+        for (auto const& parameter: type.params)
+            if (auto checked = irTypeOf(parameter, _input.codeIndex); !checked)
+                return std::unexpected { checked.error() };
+        return {};
+    }
+
     void Translation::select()
     {
         auto const condition = pop();
@@ -685,6 +772,253 @@ namespace
         auto const first = pop();
         _stack.push_back(
             emitValue(Operation::Select, _function.typeOf(first), std::array { first, second, condition }));
+    }
+
+    Translation::Outcome Translation::memoryInstruction(binary::Instruction const& instruction)
+    {
+        if (auto const row = memoryAccessOf(instruction.opcode))
+        {
+            access(instruction, *row);
+            return {};
+        }
+        // Every other instruction a compiled feature has is a stub's (MemoryTranslation's coverage test);
+        // checkOpcode() refused those of a deferred one.
+        auto const stub = stubCallOf(instruction.opcode);
+        Require(stub.has_value());
+        if (stub->tables == StubTables::Imported && instruction.a >= _input.index.importedTableCount())
+        {
+            // A defined table's element, inline.
+            if (instruction.opcode == binary::Opcode::TableGet)
+                tableGet(instruction.a);
+            else
+                tableSet(instruction.a);
+            return {};
+        }
+        stubCall(instruction, *stub);
+        return {};
+    }
+
+    void Translation::access(binary::Instruction const& instruction, MemoryAccessRow const& row)
+    {
+        // checkMemory(index, base, bound) [memory, offset, size], then a load or store of its address. The
+        // index keeps the memory's address type: an I32's high half never reaches the address (GuardTable).
+        auto const memory = instruction.b;
+        auto const offset = instruction.c;
+        auto const value = row.kind == AccessKind::Store ? std::optional { pop() } : std::nullopt;
+        auto const index = pop();
+        storeCountdownForTrap();
+        if (intermediate::staticEndOverflows(offset, row.size))
+        {
+            // No index fits: a memory64 access past 2^64 - 1 traps, its operands evaluated.
+            _builder.trap(runtime::TrapCode::OutOfBoundsMemoryAccess);
+            _reach = Reach::Unreachable;
+            return;
+        }
+        auto const [base, bound] = memoryValues(memory);
+        auto const address = emitValue(Operation::CheckMemory,
+                                       Type::Pointer,
+                                       std::array { index, base, bound },
+                                       std::array { uint64_t { memory }, offset, uint64_t { row.size } });
+        switch (row.kind)
+        {
+            case AccessKind::Load:
+                _stack.push_back(emitValue(Operation::Load,
+                                           row.type,
+                                           std::array { address },
+                                           std::array { uint64_t { memory },
+                                                        uint64_t { 0 },
+                                                        uint64_t { row.size },
+                                                        immediateOf(row.extension),
+                                                        immediateOf(row.type) }));
+                break;
+            case AccessKind::Store:
+                emitEffect(Operation::Store,
+                           std::array { address, *value },
+                           std::array { uint64_t { memory }, uint64_t { 0 }, uint64_t { row.size } });
+                break;
+        }
+    }
+
+    void Translation::memorySize(uint32_t memory)
+    {
+        // The bound in pages: shifted by the page size's log2, none for a page of one byte.
+        auto const& type = _input.index.memoryType(memory);
+        auto size = memoryValues(memory).bound;
+        if (type.pageSizeLog2 != 0)
+            size = emitValue(Operation::I64ShrU,
+                             Type::I64,
+                             std::array { size, constant(Type::I64, uint64_t { type.pageSizeLog2 }) });
+        _stack.push_back(narrowed(size, type.limits.addressType));
+    }
+
+    void Translation::tableGet(uint32_t table)
+    {
+        auto const index = pop();
+        auto const element = checkTable(table, index, runtime::TrapCode::OutOfBoundsTableAccess);
+        _stack.push_back(emitValue(
+            Operation::LoadTableElement, Type::Ref, std::array { element }, tableElementImmediates(table)));
+    }
+
+    void Translation::tableSet(uint32_t table)
+    {
+        auto const value = pop();
+        auto const index = pop();
+        auto const element = checkTable(table, index, runtime::TrapCode::OutOfBoundsTableAccess);
+        emitEffect(
+            Operation::StoreTableElement, std::array { element, value }, tableElementImmediates(table));
+    }
+
+    void Translation::tableSize(uint32_t table)
+    {
+        auto const size = emitValue(Operation::TableSize, Type::I64, {}, std::array { uint64_t { table } });
+        _stack.push_back(narrowed(size, _input.index.tableType(table).limits.addressType));
+    }
+
+    void Translation::stubCall(binary::Instruction const& instruction, StubCallRow const& row)
+    {
+        // The indices as I32 constants, then the operands, an I32 zero-extended (RuntimeStub). The countdown
+        // is stored before and every context value reloaded after: the stub may grow a memory.
+        auto arguments = std::array<ValueId, MaxStubIndices + MaxStubOperands> {};
+        auto count = std::size_t { 0 };
+        auto const indices = std::to_array({ instruction.a, instruction.b });
+
+        for (auto const index: std::span { indices }.first(indexCountOf(row.indices)))
+            arguments[count++] = constant(Type::I32, uint64_t { index });
+        for (auto const operand: top(row.operands))
+            arguments[count++] = _function.typeOf(operand) == Type::I32
+                                     ? emitValue(Operation::I64ExtendI32U, Type::I64, std::array { operand })
+                                     : operand;
+        _stack.resize(_stack.size() - row.operands);
+        auto result = std::optional<Type> {};
+        switch (row.result)
+        {
+            case StubResult::None: break;
+            case StubResult::MemoryAddress:
+            case StubResult::TableAddress: result = Type::I64; break;
+            case StubResult::Reference: result = Type::Ref; break;
+        }
+        storeCountdown();
+        auto const results =
+            _builder.emit(Operation::CallStub,
+                          result ? std::span<Type const> { &*result, 1 } : std::span<Type const> {},
+                          std::span { arguments }.first(count),
+                          std::array { immediateOf(row.stub) });
+        auto const value = results.empty() ? std::optional<ValueId> {} : std::optional { results.front() };
+        loadContext();
+        switch (row.result)
+        {
+            case StubResult::None: break;
+            case StubResult::MemoryAddress:
+                _stack.push_back(narrowed(*value, _input.index.memoryType(instruction.a).limits.addressType));
+                break;
+            case StubResult::TableAddress:
+                _stack.push_back(narrowed(*value, _input.index.tableType(instruction.a).limits.addressType));
+                break;
+            case StubResult::Reference: _stack.push_back(*value); break;
+        }
+    }
+
+    Translation::Outcome Translation::callIndirect(binary::Instruction const& instruction)
+    {
+        // The reference's order, all before the callee's FunctionEntry poll: the element (UndefinedElement
+        // past the table's end), a null one (UninitializedElement), its dispatch row (UndefinedElement past
+        // the store's rows), its type (IndirectCallTypeMismatch). Both element traps name the index.
+        auto const typeIndex = instruction.a;
+        auto const table = instruction.b;
+        auto const& type = _module.types[typeIndex];
+        if (auto typed = calleeTypes(type); !typed)
+            return typed;
+        if (auto checked = checkTables(instruction); !checked)
+            return checked;
+        if (auto reserved = reserve(type.params.size() + type.results.size() + 1, 0); !reserved)
+            return reserved;
+        auto const index = pop();
+        auto const element = checkTable(table, index, runtime::TrapCode::UndefinedElement);
+        auto const reference = emitValue(
+            Operation::LoadTableElement, Type::Ref, std::array { element }, tableElementImmediates(table));
+        auto const isNull = emitValue(Operation::RefIsNull, Type::I32, std::array { reference });
+        emitEffect(Operation::TrapIfSubject,
+                   std::array { isNull, index },
+                   std::array { immediateOf(runtime::TrapCode::UninitializedElement) });
+        auto const row = emitValue(Operation::CheckDispatch,
+                                   Type::Pointer,
+                                   std::array { reference, index },
+                                   std::array { immediateOf(runtime::TrapCode::UndefinedElement) });
+        auto const actual = emitValue(Operation::LoadDispatchType, Type::I32, std::array { row });
+        auto const expected =
+            emitValue(Operation::TypeId, Type::I32, {}, std::array { uint64_t { typeIndex } });
+        trapIf(emitValue(Operation::I32Ne, Type::I32, std::array { actual, expected }),
+               runtime::TrapCode::IndirectCallTypeMismatch);
+        auto const arguments = static_cast<uint32_t>(type.params.size());
+        _arguments.clear();
+        _arguments.push_back(row);
+        auto const passed = top(arguments);
+        _arguments.insert(_arguments.end(), passed.begin(), passed.end());
+        storeCountdown();
+        auto const results = _builder.emit(Operation::CallIndirect,
+                                           _resultScratch,
+                                           _arguments,
+                                           std::array { uint64_t { typeIndex }, uint64_t { table } });
+        _stack.resize(_stack.size() - arguments);
+        _stack.insert(_stack.end(), results.begin(), results.end());
+        loadContext();
+        return {};
+    }
+
+    MemoryValues Translation::memoryValues(uint32_t memory)
+    {
+        // Memory 0's are context values; another memory's are loaded once per block.
+        if (memory == 0)
+            return MemoryValues { .base = _context[std::to_underlying(ContextValue::Memory0Base)],
+                                  .bound = _context[std::to_underlying(ContextValue::Memory0Bound)] };
+        if (auto const found = _memoryValues.find(memory); found != _memoryValues.end())
+            return found->second;
+        auto const immediates = std::array { uint64_t { memory } };
+        auto const values =
+            MemoryValues { .base = emitValue(Operation::MemoryBase, Type::Pointer, {}, immediates),
+                           .bound = emitValue(Operation::MemoryBound, Type::I64, {}, immediates) };
+        _memoryValues.emplace(memory, values);
+        return values;
+    }
+
+    ValueId Translation::checkTable(uint32_t table, ValueId index, runtime::TrapCode code)
+    {
+        // A trap site: the countdown stored first.
+        storeCountdownForTrap();
+        return emitValue(Operation::CheckTable,
+                         Type::Pointer,
+                         std::array { index },
+                         std::array { uint64_t { table }, immediateOf(code) });
+    }
+
+    Translation::Outcome Translation::checkTables(binary::Instruction const& instruction) const
+    {
+        // A table's elements travel as one-word Refs: its element type must be one the compiler compiles
+        // (checkValueType()), as a global's is where global.get meets it.
+        auto const check = [this](uint32_t table) {
+            return checkValueType(_input.index.tableType(table).element, _input.codeIndex);
+        };
+        switch (instruction.opcode)
+        {
+            case binary::Opcode::TableGet:
+            case binary::Opcode::TableSet:
+            case binary::Opcode::TableSize:
+            case binary::Opcode::TableGrow:
+            case binary::Opcode::TableFill: return check(instruction.a);
+            case binary::Opcode::TableInit:
+            case binary::Opcode::CallIndirect: return check(instruction.b);
+            case binary::Opcode::TableCopy:
+                return check(instruction.a).and_then([&] { return check(instruction.b); });
+            default: return {};
+        }
+    }
+
+    ValueId Translation::narrowed(ValueId value, binary::AddressType type)
+    {
+        // A 32-bit memory's or table's size is an I32, its I64's low half.
+        if (type == binary::AddressType::I32)
+            return emitValue(Operation::I32WrapI64, Type::I32, std::array { value });
+        return value;
     }
 
     Translation::Outcome Translation::open(ConstructKind kind, uint32_t index)
@@ -729,7 +1063,7 @@ namespace
             case ConstructKind::Block:
             case ConstructKind::Function: return {};
         }
-        return {};
+        return {}; // uncovered(construct-kind-without-case)
     }
 
     Translation::Outcome Translation::openLoop(Frame& frame)
@@ -1048,12 +1382,7 @@ namespace
         switch (frame.kind)
         {
             case ConstructKind::Function: emitReturn(); break;
-            case ConstructKind::Loop: {
-                auto const edge = createBlock();
-                _builder.jump(edge, {});
-                outcome = fillEdge(edge, depth);
-                break;
-            }
+            case ConstructKind::Loop: outcome = fillEdge(jumpToNewBlock(), depth); break;
             case ConstructKind::Block:
             case ConstructKind::If: outcome = forwardEdge(frame, BranchKind::Jump, {}, {}); break;
         }
@@ -1150,7 +1479,7 @@ namespace
             case ConstructKind::Block:
             case ConstructKind::If: return forwardEdge(frame, BranchKind::Jump, {}, {});
         }
-        return {};
+        return {}; // uncovered(construct-kind-without-case)
     }
 
     Translation::Outcome Translation::forwardEdge(Frame& frame,
@@ -1250,8 +1579,8 @@ namespace
 
     std::span<uint32_t const> Translation::setOf(Frame const& frame) const noexcept
     {
-        if (frame.ordinal == Unnumbered)
-            return {};
+        // Only a loop has a set: its edges pass it.
+        Require(frame.ordinal != Unnumbered);
         return _assignments.locals(frame.ordinal);
     }
 
@@ -1361,6 +1690,7 @@ namespace
 
     void Translation::loadContext()
     {
+        _memoryValues.clear(); // a call or stub may have grown any memory
         for (auto const position: std::views::iota(uint32_t { 0 }, _contextCount))
         {
             auto const& row = intermediate::ContextValueTable[position];
@@ -1403,6 +1733,13 @@ namespace
     {
         Require(count <= _stack.size());
         return std::span { _stack }.last(count);
+    }
+
+    BlockId Translation::jumpToNewBlock()
+    {
+        auto const block = createBlock();
+        _builder.jump(block, {});
+        return block;
     }
 
     BlockId Translation::createBlock(Hotness hotness)

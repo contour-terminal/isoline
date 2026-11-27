@@ -50,13 +50,29 @@ class ModuleIndex
     [[nodiscard]] binary::GlobalType const& globalType(uint32_t global) const noexcept;
 
     /// How many memories the module has, imported and defined.
-    [[nodiscard]] uint32_t memoryCount() const noexcept { return _memoryCount; }
+    [[nodiscard]] uint32_t memoryCount() const noexcept
+    {
+        return static_cast<uint32_t>(_importedMemories.size() + _module->memories.size());
+    }
+
+    /// The type of memory @p memory of the memory index space (Require: within it).
+    [[nodiscard]] binary::MemoryType const& memoryType(uint32_t memory) const noexcept;
+
+    /// How many tables the module imports: the first indices of its table index space.
+    [[nodiscard]] uint32_t importedTableCount() const noexcept
+    {
+        return static_cast<uint32_t>(_importedTables.size());
+    }
+
+    /// The type of table @p table of the table index space (Require: within it).
+    [[nodiscard]] binary::TableType const& tableType(uint32_t table) const noexcept;
 
   private:
     binary::Module const* _module;
     std::pmr::vector<uint32_t> _importedFunctionTypes;
     std::pmr::vector<binary::GlobalType const*> _importedGlobals;
-    uint32_t _memoryCount = 0;
+    std::pmr::vector<binary::MemoryType const*> _importedMemories;
+    std::pmr::vector<binary::TableType const*> _importedTables;
 };
 
 /// What translate() translates, and within which caps.
@@ -92,7 +108,18 @@ struct TranslationInput
 /// and trapping truncation check explicitly with trapIf; Deterministic mode canonicalizes the NaN results
 /// of NumericRuleTable's rows. Dead code emits nothing; a branch hint makes the unlikely successor cold.
 ///
-/// Memory, table, bulk and indirect-call instructions are Task 6's (core::todo until then).
+/// A load or store is checkMemory(index, base, bound) [memory, offset, size] and a load or store of the
+/// guarded address it returns; the index keeps the memory's address type (intermediate/Guards.hpp). A
+/// 64-bit memory's access whose offset + size alone passes 2^64 - 1 traps OutOfBoundsMemoryAccess after
+/// its operands. Memory 0's base and bound are the context values, another memory's memoryBase and
+/// memoryBound, loaded once per block and again after a call or stub. memory.size is the bound shifted by
+/// the page size's log2. memory.grow, the bulk operations, the drops, table.grow and table.fill, and
+/// table.get and table.set of an imported table call their runtime stub (StubCallTable), which reloads
+/// the context values after; a 32-bit memory's or table's size or grow result is narrowed by
+/// i32.wrap_i64. A defined table's table.get and table.set are inline: checkTable
+/// (OutOfBoundsTableAccess), then loadTableElement or storeTableElement. call_indirect is checkTable
+/// (UndefinedElement), loadTableElement, trapIfSubject of a null element (UninitializedElement),
+/// checkDispatch, the type compare (IndirectCallTypeMismatch), then callIndirect of the dispatch row.
 /// @param input The function and its caps.
 /// @param memory The compile's arena, which the function and every temporary allocate from. A refusal of
 ///               it throws std::bad_alloc, which the compile's boundary turns into its error.

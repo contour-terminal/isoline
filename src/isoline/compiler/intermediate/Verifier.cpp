@@ -83,7 +83,7 @@ namespace
             case ImmediateValues::UpTo: return value <= field.maximum;
             case ImmediateValues::PowerOfTwo: return std::has_single_bit(value) && value <= field.maximum;
         }
-        return false;
+        return false; // uncovered(immediate-values-without-case)
     }
 
     /// Every block's ID of @p function, in order.

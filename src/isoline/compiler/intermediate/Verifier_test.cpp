@@ -483,20 +483,6 @@ TEST_CASE("Verifier.typedImmediatesFitTheirTypes")
     // Each row breaks one rule between an instruction's immediates and its types, and nothing else; the
     // last section accepts the cases at the edges of those rules.
     auto const rows = std::vector<TypedRow> {
-        { .name = "memory_size of an f32",
-          .code = VerifierErrorCode::ImmediateValue,
-          .build =
-              [](Fixture& fixture) {
-                  std::ignore = fixture.builder.emit(
-                      Operation::MemorySize, std::array { Type::F32 }, {}, std::array<uint64_t, 2> { 0, 2 });
-              } },
-        { .name = "table_size of a ref",
-          .code = VerifierErrorCode::ImmediateValue,
-          .build =
-              [](Fixture& fixture) {
-                  std::ignore = fixture.builder.emit(
-                      Operation::TableSize, std::array { Type::Ref }, {}, std::array<uint64_t, 2> { 0, 4 });
-              } },
         { .name = "load_global of a pointer",
           .code = VerifierErrorCode::ImmediateValue,
           .build =
@@ -591,7 +577,7 @@ TEST_CASE("Verifier.typedImmediatesFitTheirTypes")
         emitStore(fixture, Type::I64, 1);
         emitStore(fixture, Type::F64, 8);
         std::ignore = fixture.builder.emit(
-            Operation::MemorySize, std::array { Type::I64 }, {}, std::array<uint64_t, 2> { 0, 1 });
+            Operation::TableSize, std::array { Type::I64 }, {}, std::array<uint64_t, 1> { 0 });
         std::ignore = fixture.builder.emit(
             Operation::LoadGlobal, std::array { Type::Ref }, {}, std::array<uint64_t, 2> { 0, 4 });
         std::ignore = fixture.builder.emit(Operation::LoadContext,
@@ -611,5 +597,62 @@ TEST_CASE("Verifier.typedImmediatesFitTheirTypes")
         auto const verified = verify(fixture.function);
         INFO((verified ? std::string {} : describe(verified.error())));
         CHECK(verified.has_value());
+    }
+}
+
+TEST_CASE("Verifier.refusesTheRemainingShapes")
+{
+    SECTION("a block parameter that names no value")
+    {
+        auto fixture = Fixture {};
+        std::ignore = fixture.builder.addParameter(fixture.entry, Type::I32);
+        fixture.builder.ret({});
+        auto const parameters = fixture.function.block(fixture.entry).parameters;
+        fixture.function.operands(parameters)[0] = ValueId { 1'000 };
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::UndefinedValue);
+    }
+    SECTION("a select of two types")
+    {
+        auto fixture = Fixture {};
+        auto const narrow = fixture.i32(1);
+        auto const wide =
+            fixture.builder.emit(Operation::I64Const, std::array { Type::I64 }, {}, constant(2))[0];
+        std::ignore = fixture.builder.emit(Operation::Select, I32Result, std::array { narrow, wide, narrow });
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::OperandType);
+    }
+    SECTION("a fixed result of another type")
+    {
+        auto fixture = Fixture {};
+        auto const one = fixture.i32(1);
+        std::ignore =
+            fixture.builder.emit(Operation::I32Add, std::array { Type::I64 }, std::array { one, one });
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::ResultType);
+    }
+    SECTION("an instruction whose type is not its first result's")
+    {
+        auto fixture = Fixture {};
+        auto const one = fixture.i32(1);
+        std::ignore = fixture.builder.emit(Operation::I32Add, I32Result, std::array { one, one });
+        fixture.function.instruction(fixture.last()).type = Type::I64;
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::ResultType);
+    }
+    SECTION("a branch whose two targets both miss an argument")
+    {
+        auto fixture = Fixture {};
+        auto const condition = fixture.i32(1);
+        auto const taken = fixture.builder.createBlock();
+        auto const fallthrough = fixture.builder.createBlock();
+        std::ignore = fixture.builder.addParameter(taken, Type::I32);
+        std::ignore = fixture.builder.addParameter(fallthrough, Type::I32);
+        fixture.builder.branch(condition, taken, {}, fallthrough, {});
+        for (auto const block: { taken, fallthrough })
+        {
+            fixture.builder.switchTo(block);
+            fixture.builder.ret({});
+        }
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::ArgumentCount);
     }
 }

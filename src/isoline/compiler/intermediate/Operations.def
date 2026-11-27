@@ -172,22 +172,38 @@ ISOLINE_OPERATION(Select, "select", Select, SameAsOperand0, Pure, None)
 ISOLINE_OPERATION(CanonicalizeNan, "canonicalize_nan", Float, SameAsOperand0, Pure, None)
 
 // Memories. checkMemory(index, base, bound) traps unless index + offset + size <= bound, and returns the
-// guarded effective address base + index + offset (0 under misspeculation, SpectreGuard::Enabled).
-// guardAddress(address) is a dominated check's replacement: address + offset, 0 when address is 0.
+// guarded effective address base + index + offset (0 under misspeculation, SpectreGuard::Enabled); its
+// index is the memory's address type, I32 for a 32-bit memory, I64 for a 64-bit one. The guard's exact
+// computation is GuardTable's row and guardMemoryAccess() (Guards.hpp). guardAddress(address) is a
+// dominated check's replacement: address + offset, 0 when address is 0. A load and a store take such an
+// address, their offset added to it. A memory's size is its bound, shifted by its page size; memory 0's
+// base and bound are context values, every other memory's memoryBase and memoryBound.
 ISOLINE_OPERATION(CheckMemory, "check_memory", CheckMemory, Pointer, MayTrap, MemoryAccess)
 ISOLINE_OPERATION(GuardAddress, "guard_address", Pointer, Pointer, Pure, Offset)
 ISOLINE_OPERATION(Load, "load", Pointer, FromImmediate, ReadsMemory, Load)
 ISOLINE_OPERATION(Store, "store", Store, None, WritesMemory, StoreAccess)
-ISOLINE_OPERATION(MemorySize, "memory_size", None, FromImmediate, ReadsContext, MemoryType)
 ISOLINE_OPERATION(MemoryBase, "memory_base", None, Pointer, ReadsContext, Memory)
 ISOLINE_OPERATION(MemoryBound, "memory_bound", None, I64, ReadsContext, Memory)
 
 // Tables. checkTable(index) traps with its `trap` code unless index < the table's size, and returns the
-// guarded address of the element.
+// guarded address of the element (GuardTable's row, guardTableIndex()); an UndefinedElement trap names
+// the index as its subject. A table's element is read and written field by field at its immediates'
+// offsets (runtime::RefLayout), never as one 16-byte copy: loadTableElement packs kind, heap.kind and
+// address into the Ref's word, storeTableElement unpacks them and writes a heap type index of 0, which
+// every compiled Ref has (typed function references are not compiled).
+// tableSize is the table's size as an I64; a 32-bit table's is narrowed by i32.wrap_i64.
 ISOLINE_OPERATION(CheckTable, "check_table", Integer, Pointer, MayTrap, TableCheck)
-ISOLINE_OPERATION(LoadTableElement, "load_table_element", Pointer, Ref, ReadsMemory, Table)
-ISOLINE_OPERATION(StoreTableElement, "store_table_element", StoreReference, None, WritesMemory, Table)
-ISOLINE_OPERATION(TableSize, "table_size", None, FromImmediate, ReadsContext, TableType)
+ISOLINE_OPERATION(LoadTableElement, "load_table_element", Pointer, Ref, ReadsMemory, TableElement)
+ISOLINE_OPERATION(StoreTableElement, "store_table_element", StoreReference, None, WritesMemory, TableElement)
+ISOLINE_OPERATION(TableSize, "table_size", None, I64, ReadsContext, Table)
+
+// Indirect calls. checkDispatch(reference, index) traps with its `trap` code (UndefinedElement, naming
+// the element index as its subject) unless the function address of the non-null reference is below the
+// store's dispatch rows, and returns the guarded address of its row (guardFunctionAddress());
+// loadDispatchType reads the row's TypeId, typeId the TypeId of a type of the module.
+ISOLINE_OPERATION(CheckDispatch, "check_dispatch", RefIndex, Pointer, MayTrap, Trap)
+ISOLINE_OPERATION(LoadDispatchType, "load_dispatch_type", Pointer, I32, ReadsMemory, None)
+ISOLINE_OPERATION(TypeId, "type_id", None, I32, ReadsContext, TypeIndex)
 
 // References: a Ref is one 64-bit word, kind | heap.kind << 8 | address << 32.
 ISOLINE_OPERATION(RefNull, "ref.null", None, Ref, Pure, Heap)
@@ -212,15 +228,17 @@ ISOLINE_OPERATION(PollStored, "poll_stored", None, None, Poll, PollSite)
 ISOLINE_OPERATION(EnterFrame, "enter_frame", None, None, Poll, FrameCost)
 ISOLINE_OPERATION(LeaveFrame, "leave_frame", None, None, Poll, FrameCost)
 
-// Calls: their operands are the arguments (call_indirect's first is the callee's table index), their
-// results the callee's.
+// Calls: their operands are the arguments (call_indirect's first is the callee's dispatch row, which
+// checkDispatch returned), their results the callee's. A stub's operands are its RuntimeStub row's.
 ISOLINE_OPERATION(Call, "call", Variadic, Multiple, Call, Function)
-ISOLINE_OPERATION(CallIndirect, "call_indirect", IndexVariadic, Multiple, Call, CallIndirect)
+ISOLINE_OPERATION(CallIndirect, "call_indirect", PointerVariadic, Multiple, Call, CallIndirect)
 ISOLINE_OPERATION(CallImport, "call_import", Variadic, Multiple, Call, Function)
 ISOLINE_OPERATION(CallStub, "call_stub", Variadic, Multiple, Call, Stub)
 
-// Traps with its `trap` code when its I32 condition is non-zero.
+// Traps with its `trap` code when its I32 condition is non-zero; trapIfSubject also names its second
+// operand, an element index, zero-extended, as the trap's subject (runtime::TrapDetail::Index).
 ISOLINE_OPERATION(TrapIf, "trap_if", I32, None, MayTrap, Trap)
+ISOLINE_OPERATION(TrapIfSubject, "trap_if_subject", ConditionIndex, None, MayTrap, Trap)
 
 // Terminators, one ending every block. A target is a (block, argumentCount) pair of immediates; the
 // arguments of each target follow the fixed operands, target after target. switch's first target is its

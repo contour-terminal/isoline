@@ -111,7 +111,7 @@ namespace
         auto const feature = PositionFeatureTable[static_cast<std::size_t>(position)].feature;
         if (isDeferred(feature))
             return unsupported(feature, std::nullopt);
-        return {};
+        return {}; // uncovered(position-feature-compiled)
     }
 
     /// checkOpcode(), for an instruction in a body or, with no function, in a constant expression.

@@ -88,6 +88,37 @@ struct InstanceContext
     uint32_t moduleInstance = 0;                          ///< The instance's address in its store.
 };
 
+/// A runtime routine generated code calls (callStub's `stub` immediate), by its row in the execution
+/// layer's RuntimeStubTable (rows filled in P5 Task 14), which reaches it through ExecutionState::stubs.
+/// There is no trap stub: a trap is code that leaves through the trampoline's trap exit.
+///
+/// Translation passes a stub its instruction's indices first, each an I32 constant (a memory, a table, a
+/// segment, in the instruction's immediate order), then its WebAssembly operands, every I32 among them
+/// zero-extended to an I64, so that one signature serves 32- and 64-bit memories and tables alike.
+/// memory.grow and table.grow return their old size, or -1, as an I64, which translation narrows for a
+/// 32-bit memory or table; table.get returns the Ref's word. The bulk stubs poll their granules.
+enum class RuntimeStub : uint8_t
+{
+    PollSlow,    ///< A poll's slow path: an interrupt, the step budget, or an observer.
+    MemoryGrow,  ///< memory.grow: (memory, delta) → old size or -1.
+    MemoryFill,  ///< memory.fill: (memory, destination, value, count).
+    MemoryCopy,  ///< memory.copy: (destination memory, source memory, destination, source, count).
+    MemoryInit,  ///< memory.init: (segment, memory, destination, source, count).
+    DataDrop,    ///< data.drop: (segment).
+    TableGrow,   ///< table.grow: (table, initial, delta) → old size or -1.
+    TableFill,   ///< table.fill: (table, destination, value, count).
+    TableCopy,   ///< table.copy: (destination table, source table, destination, source, count).
+    TableInit,   ///< table.init: (segment, table, destination, source, count).
+    ElementDrop, ///< elem.drop: (segment).
+    TableGet,    ///< table.get of an imported table: (table, index) → the element.
+    TableSet,    ///< table.set of an imported table: (table, index, value).
+    CallHost,    ///< A call of a host function, through ExecutionState::hostScratch.
+    FloatRound,  ///< A rounding the CPU cannot do inline (no SSE4.1): numerics:: on the host.
+};
+
+/// The last RuntimeStub enumerator, for checking RuntimeStubTable's size.
+inline constexpr auto LastRuntimeStub = RuntimeStub::FloatRound;
+
 /// A field of PendingAbrupt, in declaration order.
 enum class PendingAbruptField : uint8_t
 {

@@ -483,3 +483,40 @@ TEST_CASE("Function.schemaTypeColumnsMatchTheirFields")
         CHECK((schema.width != AccessWidth::OfValue || !hasType));
     }
 }
+
+TEST_CASE("Function.terminatorOfAnOpenBlock")
+{
+    // A block without a terminator has none: neither an empty one, nor one that ends in a value, nor one
+    // whose only terminator was removed.
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    auto function = Function { memory };
+    auto builder = Builder { function };
+    auto const empty = builder.createBlock();
+    CHECK_FALSE(function.terminator(empty).has_value());
+    auto const open = builder.createBlock();
+    builder.switchTo(open);
+    std::ignore =
+        builder.emit(Operation::I32Const, std::array { Type::I32 }, {}, std::array<uint64_t, 1> { 1 });
+    CHECK_FALSE(function.terminator(open).has_value());
+    builder.ret({});
+    REQUIRE(function.terminator(open).has_value());
+    function.instruction(*function.terminator(open)).operation = Operation::Removed;
+    CHECK_FALSE(function.terminator(open).has_value());
+}
+
+TEST_CASE("Function.tableLookupsAtRunTime")
+{
+    // What the tables answer when asked at run time rather than in a static_assert: the rows in their
+    // enumerator order, and the rules that fix no result type.
+    using isoline::compiler::intermediate::fixedTypeOf;
+    CHECK(isoline::compiler::intermediate::detail::isInEnumeratorOrder(
+        OperationTable,
+        [](isoline::compiler::intermediate::OperationRow const& row) { return row.operation; }));
+    CHECK_FALSE(isoline::compiler::intermediate::detail::isInEnumeratorOrder(
+        OperationTable,
+        [](isoline::compiler::intermediate::OperationRow const&) { return Operation::Trap; }));
+    for (auto const rule:
+         { ResultRule::None, ResultRule::SameAsOperand0, ResultRule::FromImmediate, ResultRule::Multiple })
+        CHECK_FALSE(fixedTypeOf(rule).has_value());
+    CHECK(fixedTypeOf(ResultRule::Pointer) == Type::Pointer);
+}

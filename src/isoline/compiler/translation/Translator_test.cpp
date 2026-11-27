@@ -36,6 +36,7 @@
 #include <isoline/compiler/intermediate/Verifier.hpp>
 #include <isoline/compiler/translation/NumericRules.hpp>
 #include <isoline/compiler/translation/Translator.hpp>
+#include <isoline/compiler/translation/testing/Translation.hpp>
 #include <isoline/numerics/Float.hpp>
 #include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
@@ -75,7 +76,6 @@ using isoline::compiler::intermediate::Function;
 using isoline::compiler::intermediate::Hotness;
 using isoline::compiler::intermediate::Operation;
 using isoline::compiler::intermediate::print;
-using isoline::compiler::intermediate::verify;
 using isoline::compiler::translation::ModuleIndex;
 using isoline::compiler::translation::NumericRunTable;
 using isoline::compiler::translation::translate;
@@ -83,132 +83,7 @@ using isoline::compiler::translation::TranslationInput;
 using isoline::compiler::translation::TruncationBoundTable;
 using isoline::runtime::ExecutionMode;
 using isoline::validate::ValidatedModule;
-
-namespace
-{
-
-/// Whether a test's compile is cancelled before it starts.
-enum class Cancellation : uint8_t
-{
-    Running,   ///< Not cancelled.
-    Cancelled, ///< Cancelled.
-};
-
-/// How a test translates.
-struct Options
-{
-    ExecutionMode mode = ExecutionMode::Production;    ///< The mode.
-    CompileLimits limits {};                           ///< The caps.
-    uint32_t codeIndex = 0;                            ///< The function.
-    Cancellation cancellation = Cancellation::Running; ///< Whether it is cancelled.
-};
-
-/// One function's translation, with the arena and module it lives on.
-struct Translated
-{
-    std::pmr::monotonic_buffer_resource memory {};
-    std::shared_ptr<ValidatedModule const> module {};
-    std::optional<Function> function {};
-    std::optional<CompileError> error {};
-
-    /// The function's text; fails the test unless it translated.
-    [[nodiscard]] std::string text() const
-    {
-        REQUIRE(function.has_value());
-        return print(*function);
-    }
-};
-
-/// Translates function @p options.codeIndex of @p builder's module, which must validate; a translated
-/// function must verify.
-std::unique_ptr<Translated> translateOf(ModuleBuilder const& builder, Options const& options = {})
-{
-    auto result = std::make_unique<Translated>();
-    auto loaded = ValidatedModule::load(builder.build(), FeatureSet::all(), isoline::binary::DecodeLimits {});
-    REQUIRE(loaded.has_value());
-    result->module = std::move(*loaded);
-    auto const index = ModuleIndex { result->module->module(), result->memory };
-    auto cancellation = CompileCancellation {};
-    if (options.cancellation == Cancellation::Cancelled)
-        cancellation.cancel();
-    auto translated = translate(TranslationInput { .module = *result->module,
-                                                   .index = index,
-                                                   .codeIndex = options.codeIndex,
-                                                   .mode = options.mode,
-                                                   .limits = options.limits,
-                                                   .cancellation = cancellation },
-                                result->memory);
-    if (!translated)
-    {
-        result->error = translated.error();
-        return result;
-    }
-    auto const verified = verify(*translated);
-    INFO((verified ? std::string {} : describe(verified.error())) << "\n" << print(*translated));
-    REQUIRE(verified.has_value());
-    result->function.emplace(std::move(*translated));
-    return result;
-}
-
-/// The refusal of @p translated; fails the test if it translated.
-CompileError refusalOf(Translated const& translated)
-{
-    REQUIRE(translated.error.has_value());
-    return *translated.error;
-}
-
-/// A module of the function type @p type and one function of it with @p locals and @p body.
-ModuleBuilder oneFunction(FuncType type, std::vector<ValueType> locals, Bytes body)
-{
-    auto builder = ModuleBuilder {};
-    builder.type(std::move(type)).function(0, std::move(locals), std::move(body));
-    return builder;
-}
-
-/// The lines of @p text.
-std::vector<std::string_view> linesOf(std::string const& text)
-{
-    auto lines = std::vector<std::string_view> {};
-    for (auto const line: std::views::split(text, '\n'))
-        lines.emplace_back(line.begin(), line.end());
-    return lines;
-}
-
-/// The index of the first line of @p lines at or after @p from that contains @p needle; none if none.
-std::optional<std::size_t> lineWith(std::vector<std::string_view> const& lines,
-                                    std::string_view needle,
-                                    std::size_t from = 0)
-{
-    for (auto const index: std::views::iota(from, lines.size()))
-        if (lines[index].contains(needle))
-            return index;
-    return std::nullopt;
-}
-
-/// How often @p needle occurs in @p text.
-std::size_t countOf(std::string const& text, std::string_view needle)
-{
-    auto count = std::size_t { 0 };
-    auto position = text.find(needle);
-    while (position != std::string::npos)
-    {
-        ++count;
-        position = text.find(needle, position + 1);
-    }
-    return count;
-}
-
-/// The instructions of @p function that are @p operation, by index.
-std::vector<uint32_t> instructionsOf(Function const& function, Operation operation)
-{
-    auto found = std::vector<uint32_t> {};
-    for (auto const index: std::views::iota(uint32_t { 0 }, function.instructionCount()))
-        if (function.instruction(index).operation == operation)
-            found.push_back(index);
-    return found;
-}
-
-} // namespace
+using namespace isoline::compiler::translation::testing;
 
 TEST_CASE("Translator.entryPollsThenEntersTheFrame")
 {
@@ -1086,4 +961,300 @@ TEST_CASE("Translator.sealTimeIsLinear", "[.timing]")
     auto const large = seconds[1];
     INFO("translation: " << small << " s at k = 10'000, " << large << " s at k = 20'000");
     CHECK(large / small < 3.0);
+}
+
+namespace
+{
+
+/// One function of every construct whose translation reserves, charges or caps: if with and without an
+/// else (a call in one arm, so the context values differ at the merge), a block of a type index with a
+/// br_if, nested blocks whose br_table reaches the function and whose lists both name one local, a loop of
+/// a type index with a br_if, a loop a br_table reaches, a return, and a block whose end no path reaches.
+ModuleBuilder everyConstruct()
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { I32 }, .results = {} });
+    builder.type(FuncType { .params = { I32 }, .results = { I32 } });
+    builder.function(0,
+                     { I32, I32 },
+                     Bytes {
+                         0x20, 0x00, 0x04, 0x40,                         // local.get 0; if
+                         0x20, 0x00, 0x21, 0x01,                         //   local.set 1
+                         0x20, 0x00, 0x10, 0x01, 0x1A,                   //   call 1; drop
+                         0x05, 0x41, 0x02, 0x21, 0x01, 0x0B,             // else local.set 1 end
+                         0x20, 0x00, 0x04, 0x40, 0x41, 0x03, 0x21, 0x02, // if local.set 2
+                         0x0B,                                           // end
+                         0x41, 0x07, 0x02, 0x01,                         // block (type 1)
+                         0x21, 0x02, 0x20, 0x02, 0x20, 0x00, 0x0D, 0x00, //   br_if 0
+                         0x1A, 0x20, 0x01, 0x0B, 0x1A,                   // end; drop
+                         0x02, 0x40, 0x20, 0x00, 0x21, 0x02,             // block local.set 2
+                         0x02, 0x40, 0x20, 0x01, 0x21, 0x02,             //   block local.set 2
+                         0x20, 0x00, 0x0E, 0x02, 0x00, 0x01, 0x02, 0x0B, //     br_table 0 1 2 end
+                         0x20, 0x00, 0x0D, 0x00, 0x0C, 0x00, 0x0B,       //   br_if 0; br 0 end
+                         0x41, 0x03, 0x03, 0x01,                         // loop (type 1)
+                         0x20, 0x00, 0x21, 0x01, 0x20, 0x00, 0x0D, 0x00, //   br_if 0
+                         0x0B, 0x1A,                                     // end; drop
+                         0x02, 0x40, 0x03, 0x40,                         // block loop
+                         0x20, 0x00, 0x0E, 0x01, 0x00, 0x01, 0x0B, 0x0B, //   br_table 0 1 end end
+                         0x20, 0x00, 0x04, 0x40, 0x0F, 0x0B,             // if return end
+                         0x02, 0x40, 0x00, 0x0B,                         // block unreachable end
+                     });
+    builder.function(1, {}, localGet(0));
+    return builder;
+}
+
+} // namespace
+
+TEST_CASE("Translator.refusesAtEveryCapItReaches")
+{
+    // Every cap swept from 0 up to the value the function needs: each run translates or refuses with the
+    // cap's own code, the first refusal at each site of the body. The translation at the full caps verifies.
+    auto const builder = everyConstruct();
+    REQUIRE(translateOf(builder)->function.has_value());
+    struct Sweep
+    {
+        CompileErrorCode code;
+        std::function<void(CompileLimits&, uint64_t)> set;
+        uint64_t last;
+    };
+    auto const sweeps = std::to_array<Sweep>({
+        { CompileErrorCode::PoolTooLarge,
+          [](CompileLimits& limits, uint64_t value) {
+              limits.maxPoolEntries = static_cast<decltype(limits.maxPoolEntries)>(value);
+          },
+          1'400 },
+        { CompileErrorCode::TooManyBranchArguments,
+          [](CompileLimits& limits, uint64_t value) {
+              limits.maxBranchArguments = static_cast<decltype(limits.maxBranchArguments)>(value);
+          },
+          200 },
+        { CompileErrorCode::TooManyBlockParameters,
+          [](CompileLimits& limits, uint64_t value) {
+              limits.maxBlockParameters = static_cast<decltype(limits.maxBlockParameters)>(value);
+          },
+          20 },
+        { CompileErrorCode::TooManyInstructions,
+          [](CompileLimits& limits, uint64_t value) {
+              limits.maxFunctionInstructions = static_cast<decltype(limits.maxFunctionInstructions)>(value);
+          },
+          300 },
+    });
+    for (auto const& sweep: sweeps)
+    {
+        auto translated = 0;
+        for (auto const value: std::views::iota(uint64_t { 0 }, sweep.last + 1))
+        {
+            auto limits = CompileLimits {};
+            sweep.set(limits, value);
+            auto const result = translateOf(builder, Options { .limits = limits });
+            if (result->function)
+            {
+                ++translated;
+                continue;
+            }
+            INFO("cap " << value);
+            CHECK(result->error->code == sweep.code);
+        }
+        // The largest values translate.
+        CHECK(translated > 0);
+    }
+}
+
+TEST_CASE("Translator.deferredTypesAreRefusedWhereTheyAppear")
+{
+    // A v128 or a reference to a concrete type at each position translation meets one: refused
+    // UnsupportedFeature, never translated as a word it cannot represent.
+    auto const typed =
+        ValueType { .kind = isoline::binary::ValueKind::Ref,
+                    .nullable = isoline::binary::Nullable::Yes,
+                    .heap = { .kind = isoline::binary::AbstractHeapType::Concrete, .typeIndex = 0 } };
+    struct Case
+    {
+        std::string_view name;
+        std::function<ModuleBuilder()> build;
+    };
+    auto const cases = std::vector<Case> {
+        { "a v128 parameter",
+          [&] {
+              return oneFunction(FuncType { .params = { isoline::binary::V128 }, .results = {} }, {}, {});
+          } },
+        { "a v128 result",
+          [&] {
+              return oneFunction(
+                  FuncType { .params = {}, .results = { isoline::binary::V128 } }, {}, { 0x00 });
+          } },
+        { "an opcode of a deferred feature",
+          [&] { return oneFunction(FuncType { .params = {}, .results = {} }, {}, { 0x12, 0x00 }); } },
+        { "a v128 global",
+          [&] {
+              auto builder = oneFunction(FuncType { .params = {}, .results = {} }, {}, { 0x23, 0x00, 0x1A });
+              builder.global(isoline::binary::GlobalType { .type = isoline::binary::V128 },
+                             code({ { 0xFD, 0x0C }, Bytes(16, 0x00) }));
+              return builder;
+          } },
+        { "ref.null of a concrete type",
+          [&] { return oneFunction(FuncType { .params = {}, .results = {} }, {}, { 0xD0, 0x00, 0x1A }); } },
+        { "a call of a v128 result",
+          [&] {
+              auto builder = ModuleBuilder {};
+              builder.type(FuncType { .params = {}, .results = {} });
+              builder.type(FuncType { .params = {}, .results = { isoline::binary::V128 } });
+              builder.function(0, {}, { 0x10, 0x01, 0x1A }).function(1, {}, { 0x00 });
+              return builder;
+          } },
+        { "a call of a typed parameter",
+          [&] {
+              auto builder = ModuleBuilder {};
+              builder.type(FuncType { .params = {}, .results = {} });
+              builder.type(FuncType { .params = { typed }, .results = {} });
+              builder.function(0, {}, { 0xD2, 0x00, 0x10, 0x01 }).function(1, {}, {});
+              builder.element({ 0x03, 0x00, 0x01, 0x00 });
+              return builder;
+          } },
+        { "a call_indirect of a v128 result",
+          [&] {
+              auto builder = ModuleBuilder {};
+              builder.type(FuncType { .params = {}, .results = {} });
+              builder.type(FuncType { .params = {}, .results = { isoline::binary::V128 } });
+              builder.function(0, {}, { 0x41, 0x00, 0x11, 0x01, 0x00, 0x1A });
+              builder.table(
+                  isoline::binary::TableType { .limits = Limits { .min = 1, .max = std::nullopt } });
+              return builder;
+          } },
+        { "a call_indirect of a typed parameter",
+          [&] {
+              auto builder = ModuleBuilder {};
+              builder.type(FuncType { .params = {}, .results = {} });
+              builder.type(FuncType { .params = { typed }, .results = {} });
+              builder.function(0, {}, { 0xD2, 0x00, 0x41, 0x00, 0x11, 0x01, 0x00 });
+              builder.table(
+                  isoline::binary::TableType { .limits = Limits { .min = 1, .max = std::nullopt } });
+              builder.element({ 0x03, 0x00, 0x01, 0x00 });
+              return builder;
+          } },
+        { "a block of a v128 result",
+          [&] {
+              return oneFunction(
+                  FuncType { .params = {}, .results = {} }, {}, { 0x02, 0x7B, 0x00, 0x0B, 0x1A });
+          } },
+        { "a block of a typed parameter",
+          [&] {
+              auto builder = ModuleBuilder {};
+              builder.type(FuncType { .params = {}, .results = {} });
+              builder.type(FuncType { .params = { typed }, .results = {} });
+              builder.function(0, {}, { 0xD2, 0x00, 0x02, 0x01, 0x1A, 0x0B });
+              builder.element({ 0x03, 0x00, 0x01, 0x00 });
+              return builder;
+          } },
+    };
+    for (auto const& entry: cases)
+    {
+        INFO(entry.name);
+        auto const translated = translateOf(entry.build());
+        CHECK(refusalOf(*translated).code == CompileErrorCode::UnsupportedFeature);
+    }
+}
+
+TEST_CASE("Translator.hintsOfDeadCodeAreSkipped")
+{
+    // block { br 0; local.get 0; if nop end } local.get 0; if nop end: the first if is dead code, never
+    // asked for its hint, so the second's lookup steps over it. Its unlikely hint makes its then arm cold.
+    auto builder = oneFunction(FuncType { .params = { I32 }, .results = {} },
+                               {},
+                               { 0x02,
+                                 0x40,
+                                 0x0C,
+                                 0x00,
+                                 0x20,
+                                 0x00,
+                                 0x04,
+                                 0x40,
+                                 0x01,
+                                 0x0B,
+                                 0x0B,
+                                 0x20,
+                                 0x00,
+                                 0x04,
+                                 0x40,
+                                 0x01,
+                                 0x0B });
+    auto section = encodeName(isoline::binary::BranchHintSectionName);
+    section.insert(section.end(), { 0x01, 0x00, 0x02, 0x07, 0x01, 0x00, 0x0E, 0x01, 0x00 });
+    builder.rawSection(0, std::move(section));
+    auto const translated = translateOf(builder);
+    REQUIRE(translated->module->module().branchHints.size() == 2);
+    auto cold = 0;
+    for (auto const block: std::views::iota(uint32_t { 0 }, translated->function->blockCount()))
+        cold += translated->function->block(BlockId { block }).hotness == Hotness::Cold ? 1 : 0;
+    CHECK(cold == 1);
+}
+
+TEST_CASE("Translator.truncationBoundsOnlyForTruncations")
+{
+    using isoline::compiler::translation::truncationBoundsOf;
+    CHECK(truncationBoundsOf(Operation::I32TruncF32S).has_value());
+    CHECK_FALSE(truncationBoundsOf(Operation::I32TruncSatF32S).has_value());
+    CHECK_FALSE(truncationBoundsOf(Operation::I32Add).has_value());
+}
+
+TEST_CASE("Translator.wideConstructsReserveBeforeTheyEmit")
+{
+    // Constructs whose emission is wide where nothing before them emits much: the end of an if without an
+    // else and a br out of a block, each of 1'000 values (pushed by local.get, which emits nothing), a
+    // function's end of 1'000 results, and a call of 1'000 arguments after which nothing reserves (an
+    // unreachable follows). Each reserves its own width, so a pool cap swept by one up to what the function
+    // needs refuses at that construct first, just below the smallest cap that translates.
+    constexpr auto Width = uint32_t { 1'000 };
+    auto pushEvery = Bytes {};
+    for ([[maybe_unused]] auto const value: std::views::iota(uint32_t { 0 }, Width))
+        pushEvery.insert(pushEvery.end(), { 0x20, 0x00 });
+    auto dropEvery = Bytes(Width, 0x1A);
+    // The then arm modifies some locals, so that its end passes more than the else arm's: its reservation
+    // is then the widest of the function.
+    constexpr auto Modified = uint32_t { 50 };
+    auto setSome = Bytes {};
+    for (auto const local: std::views::iota(uint32_t { 1 }, Modified + 1))
+        setSome = code({ setSome, localGet(0), localSet(local) });
+    // Type 0 takes the i32 every function does, type 1 is Width values to Width values.
+    auto const wide = [&](Bytes const& body, std::vector<ValueType> results = {}) {
+        auto builder = ModuleBuilder {};
+        builder.type(FuncType { .params = { I32 }, .results = std::move(results) });
+        builder.type(FuncType { .params = std::vector(Width, I32), .results = std::vector(Width, I32) });
+        builder.function(0, std::vector(Modified, I32), body);
+        return builder;
+    };
+    auto callee = ModuleBuilder {};
+    callee.type(FuncType { .params = { I32 }, .results = {} });
+    callee.type(FuncType { .params = std::vector(Width, I32), .results = {} });
+    callee.function(0, {}, code({ pushEvery, call(1), unreachable() }));
+    callee.function(1, {}, {});
+    auto const builders = std::to_array<ModuleBuilder>({
+        wide(code({ pushEvery, localGet(0), { 0x04, 0x01 }, setSome, { 0x0B }, dropEvery })),
+        wide(code({ pushEvery, { 0x02, 0x01 }, br(0), { 0x0B }, dropEvery })),
+        wide(pushEvery, std::vector(Width, I32)),
+        callee,
+    });
+    for (auto const& builder: builders)
+    {
+        auto const translatesAt = [&builder](uint64_t cap) {
+            auto limits = CompileLimits {};
+            limits.maxPoolEntries = cap;
+            auto const result = translateOf(builder, Options { .limits = limits });
+            if (!result->function)
+                CHECK(result->error->code == CompileErrorCode::PoolTooLarge);
+            return result->function.has_value();
+        };
+        // The smallest cap that translates, by bisection, then every cap of the 64 below it refuses.
+        auto low = uint64_t { 0 };
+        auto high = uint64_t { 1 } << 16U;
+        REQUIRE(translatesAt(high));
+        while (low + 1 < high)
+        {
+            auto const middle = low + ((high - low) / 2);
+            (translatesAt(middle) ? high : low) = middle;
+        }
+        CHECK(high > Width);
+        for (auto const cap: std::views::iota(high - 64, high))
+            CHECK_FALSE(translatesAt(cap));
+    }
 }

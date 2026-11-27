@@ -191,8 +191,10 @@ enum class OperandSignature : uint8_t
     Store,             ///< A Pointer, then the value stored.
     StoreReference,    ///< A Pointer, then the Ref stored.
     CheckMemory,       ///< The index (I32 or I64), the memory's base (Pointer) and bound (I64).
+    ConditionIndex,    ///< An I32 condition, then an index (I32 or I64): a trap's subject.
+    RefIndex,          ///< A Ref, then an index (I32 or I64): a trap's subject.
     Variadic,          ///< Any number of values.
-    IndexVariadic,     ///< An index (I32 or I64), then any number of values.
+    PointerVariadic,   ///< A Pointer, then any number of values.
     ConditionVariadic, ///< An I32 condition or index, then any number of values.
 };
 
@@ -244,9 +246,15 @@ inline constexpr auto OperandSignatureTable = std::to_array<OperandSignatureRow>
     { .signature = OperandSignature::CheckMemory,
       .types = { OperandType::Integer, OperandType::Pointer, OperandType::I64 },
       .count = 3 },
+    { .signature = OperandSignature::ConditionIndex,
+      .types = { OperandType::I32, OperandType::Integer },
+      .count = 2 },
+    { .signature = OperandSignature::RefIndex,
+      .types = { OperandType::Ref, OperandType::Integer },
+      .count = 2 },
     { .signature = OperandSignature::Variadic, .tail = OperandTail::Variadic },
-    { .signature = OperandSignature::IndexVariadic,
-      .types = { OperandType::Integer },
+    { .signature = OperandSignature::PointerVariadic,
+      .types = { OperandType::Pointer },
       .count = 1,
       .tail = OperandTail::Variadic },
     { .signature = OperandSignature::ConditionVariadic,
@@ -290,24 +298,29 @@ enum class ImmediateValues : uint8_t
 /// One field of an instruction's immediates.
 enum class ImmediateField : uint8_t
 {
-    Value,         ///< A constant's bits, zero-extended.
-    Heap,          ///< A binary::AbstractHeapType: ref.null's heap.
-    Function,      ///< A function index of the module.
-    Memory,        ///< A memory index.
-    Table,         ///< A table index.
-    Global,        ///< A global index.
-    TypeIndex,     ///< A type index of the module: call_indirect's expected type.
-    Offset,        ///< A byte offset added to an address.
-    Size,          ///< An access's width in bytes: 1, 2, 4 or 8.
-    Extension,     ///< An Extension.
-    Type,          ///< A Type: a FromImmediate result's.
-    Trap,          ///< A runtime::TrapCode.
-    Site,          ///< A runtime::PollSite.
-    FrameCost,     ///< A frame's stack values (validate::ValidatedModule::frameCost).
-    Stub,          ///< A runtime stub (the execution layer's RuntimeStubTable row).
-    Field,         ///< A ContextValue: what loadContext and storeContext name.
-    Target,        ///< A branch target's BlockId; an ArgumentCount always follows it.
-    ArgumentCount, ///< How many arguments the target before it takes.
+    Value,               ///< A constant's bits, zero-extended.
+    Heap,                ///< A binary::AbstractHeapType: ref.null's heap.
+    Function,            ///< A function index of the module.
+    Memory,              ///< A memory index.
+    Table,               ///< A table index.
+    Global,              ///< A global index.
+    TypeIndex,           ///< A type index of the module: call_indirect's expected type.
+    Offset,              ///< A byte offset added to an address.
+    Size,                ///< An access's width in bytes: 1, 2, 4 or 8.
+    Extension,           ///< An Extension.
+    Type,                ///< A Type: a FromImmediate result's.
+    Trap,                ///< A runtime::TrapCode.
+    Site,                ///< A runtime::PollSite.
+    FrameCost,           ///< A frame's stack values (validate::ValidatedModule::frameCost).
+    Stub,                ///< A runtime stub (the execution layer's RuntimeStubTable row).
+    Field,               ///< A ContextValue: what loadContext and storeContext name.
+    KindOffset,          ///< The byte offset of a table element's kind (runtime::RefLayout::kindOffset).
+    HeapKindOffset,      ///< The byte offset of its heap's kind (runtime::RefLayout::heapKindOffset).
+    HeapTypeIndexOffset, ///< The byte offset of its heap's type index
+                         ///< (runtime::RefLayout::heapTypeIndexOffset).
+    AddressOffset,       ///< The byte offset of its address (runtime::RefLayout::addressOffset).
+    Target,              ///< A branch target's BlockId; an ArgumentCount always follows it.
+    ArgumentCount,       ///< How many arguments the target before it takes.
 };
 
 /// The last ImmediateField enumerator, for checking ImmediateFieldTable's size.
@@ -391,6 +404,22 @@ inline constexpr auto ImmediateFieldTable = std::to_array<ImmediateFieldRow>({
       .name = "field",
       .values = ImmediateValues::UpTo,
       .maximum = std::to_underlying(LastContextValue) },
+    { .field = ImmediateField::KindOffset,
+      .name = "kind_offset",
+      .values = ImmediateValues::UpTo,
+      .maximum = detail::IndexMaximum },
+    { .field = ImmediateField::HeapKindOffset,
+      .name = "heap_kind_offset",
+      .values = ImmediateValues::UpTo,
+      .maximum = detail::IndexMaximum },
+    { .field = ImmediateField::HeapTypeIndexOffset,
+      .name = "heap_type_index_offset",
+      .values = ImmediateValues::UpTo,
+      .maximum = detail::IndexMaximum },
+    { .field = ImmediateField::AddressOffset,
+      .name = "address_offset",
+      .values = ImmediateValues::UpTo,
+      .maximum = detail::IndexMaximum },
     { .field = ImmediateField::Target,
       .name = "target",
       .values = ImmediateValues::UpTo,
@@ -409,14 +438,16 @@ enum class ImmediateSchema : uint8_t
     Heap,         ///< {heap}: ref.null.
     Function,     ///< {function}: ref.func, call, call_import.
     Memory,       ///< {memory}: memoryBase, memoryBound.
-    MemoryType,   ///< {memory, type}: memorySize, whose result is I32 or I64 (memory64).
     MemoryAccess, ///< {memory, offset, size}: checkMemory.
     Load,         ///< {memory, offset, size, extension, type}: load, whose result is a numeric type.
     StoreAccess,  ///< {memory, offset, size}: store, of its value's width or narrower.
     Offset,       ///< {offset}: guardAddress.
     TableCheck,   ///< {table, trap}: checkTable.
-    Table,        ///< {table}: loadTableElement, storeTableElement.
-    TableType,    ///< {table, type}: tableSize, whose result is I32 or I64 (table64).
+    Table,        ///< {table}: tableSize.
+    /// {table, kind_offset, heap_kind_offset, heap_type_index_offset, address_offset}: loadTableElement and
+    /// storeTableElement, which read and write a table element's fields one by one at these offsets.
+    TableElement,
+    TypeIndex,    ///< {type_index}: typeId.
     GlobalType,   ///< {global, type}: loadGlobal, whose result is a numeric type or Ref.
     Global,       ///< {global}: storeGlobal.
     ContextType,  ///< {field, type}: loadContext, whose result is its ContextValue's type.
@@ -464,13 +495,14 @@ namespace detail
     inline constexpr auto HeapFields = std::to_array({ Heap });
     inline constexpr auto FunctionFields = std::to_array({ Function });
     inline constexpr auto MemoryFields = std::to_array({ Memory });
-    inline constexpr auto MemoryTypeFields = std::to_array({ Memory, Type });
     inline constexpr auto MemoryAccessFields = std::to_array({ Memory, Offset, Size });
     inline constexpr auto LoadFields = std::to_array({ Memory, Offset, Size, Extension, Type });
     inline constexpr auto OffsetFields = std::to_array({ Offset });
     inline constexpr auto TableCheckFields = std::to_array({ Table, Trap });
     inline constexpr auto TableFields = std::to_array({ Table });
-    inline constexpr auto TableTypeFields = std::to_array({ Table, Type });
+    inline constexpr auto TableElementFields =
+        std::to_array({ Table, KindOffset, HeapKindOffset, HeapTypeIndexOffset, AddressOffset });
+    inline constexpr auto TypeIndexFields = std::to_array({ TypeIndex });
     inline constexpr auto GlobalTypeFields = std::to_array({ Global, Type });
     inline constexpr auto GlobalFields = std::to_array({ Global });
     inline constexpr auto ContextTypeFields = std::to_array({ Field, Type });
@@ -491,10 +523,6 @@ inline constexpr auto ImmediateSchemaTable = std::to_array<ImmediateSchemaRow>({
     { .schema = ImmediateSchema::Heap, .fixed = detail::HeapFields, .repeated = detail::NoFields },
     { .schema = ImmediateSchema::Function, .fixed = detail::FunctionFields, .repeated = detail::NoFields },
     { .schema = ImmediateSchema::Memory, .fixed = detail::MemoryFields, .repeated = detail::NoFields },
-    { .schema = ImmediateSchema::MemoryType,
-      .fixed = detail::MemoryTypeFields,
-      .repeated = detail::NoFields,
-      .types = IndexTypes },
     { .schema = ImmediateSchema::MemoryAccess,
       .fixed = detail::MemoryAccessFields,
       .repeated = detail::NoFields },
@@ -512,10 +540,10 @@ inline constexpr auto ImmediateSchemaTable = std::to_array<ImmediateSchemaRow>({
       .fixed = detail::TableCheckFields,
       .repeated = detail::NoFields },
     { .schema = ImmediateSchema::Table, .fixed = detail::TableFields, .repeated = detail::NoFields },
-    { .schema = ImmediateSchema::TableType,
-      .fixed = detail::TableTypeFields,
-      .repeated = detail::NoFields,
-      .types = IndexTypes },
+    { .schema = ImmediateSchema::TableElement,
+      .fixed = detail::TableElementFields,
+      .repeated = detail::NoFields },
+    { .schema = ImmediateSchema::TypeIndex, .fixed = detail::TypeIndexFields, .repeated = detail::NoFields },
     { .schema = ImmediateSchema::GlobalType,
       .fixed = detail::GlobalTypeFields,
       .repeated = detail::NoFields,
@@ -666,7 +694,7 @@ static_assert(Operation {} == Operation::Removed, "a value-initialized instructi
         case ResultRule::FromImmediate:
         case ResultRule::Multiple: return std::nullopt;
     }
-    return std::nullopt;
+    return std::nullopt; // uncovered(result-rule-without-case)
 }
 
 /// The row of @p type.
