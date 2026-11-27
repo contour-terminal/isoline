@@ -261,6 +261,114 @@ foreach(row IN LISTS helpRows)
     endif()
 endforeach()
 
+# The contract semantic: rows compilerId|semantic|expectedFlag|expectedErrorRegex, decided over the real
+# semantic rows. Only enforce is selected; every other semantic is a configure error naming its reason,
+# and a compiler without semantic rows is one too.
+set(semanticRows
+    "GNU|enforce|-fcontract-evaluation-semantic=enforce|"
+    "GNU|observe||^\\[isoline\\] the contract semantic observe is refused on GNU: it continues past a violated precondition$"
+    "GNU|ignore||^\\[isoline\\] the contract semantic ignore is refused on GNU: it does not evaluate the check$"
+    "GNU|quick_enforce||^\\[isoline\\] the contract semantic quick_enforce is not offered on GNU: it terminates without a report, so no canary can tell which check fired$"
+    "GNU|maybe||^\\[isoline\\] no contract-semantic row names maybe for GNU$"
+    "Clang|enforce||^\\[isoline\\] no contract-semantic row names enforce for Clang$")
+foreach(row IN LISTS semanticRows)
+    string(REGEX MATCH "^([^|]*)[|]([^|]*)[|]([^|]*)[|](.*)$" matched "${row}")
+    set(expectedFlag "${CMAKE_MATCH_3}")
+    set(expectedError "${CMAKE_MATCH_4}")
+    isoline_contract_semantic(COMPILER "${CMAKE_MATCH_1}" SEMANTIC "${CMAKE_MATCH_2}"
+                              ROWS ${ISOLINE_CONTRACT_SEMANTIC_ROWS} OUT_FLAG flag OUT_ERROR error)
+    math(EXPR caseCount "${caseCount} + 1")
+    if(NOT flag STREQUAL expectedFlag
+       OR (expectedError STREQUAL "" AND NOT error STREQUAL "")
+       OR (NOT expectedError STREQUAL "" AND NOT error MATCHES "${expectedError}"))
+        string(APPEND failures "\n  semantic ${row}\n    got flag '${flag}', error '${error}'")
+    endif()
+endforeach()
+
+# The overrides the configure scan refuses: rows compilerId|text|expectedFlag|expectedReasonRegex, where
+# text is what a variable or property holds (generator expressions are matched as text). An empty
+# expectedFlag is text that overrides nothing.
+set(overrideRows
+    "GNU|-O2 -fcontract-evaluation-semantic=ignore -g|-fcontract-evaluation-semantic=ignore|^does not evaluate the check$"
+    "GNU|-fcontract-evaluation-semantic=observe|-fcontract-evaluation-semantic=observe|^continues past a violated precondition$"
+    "GNU|-fcontract-evaluation-semantic=quick_enforce|-fcontract-evaluation-semantic=quick_enforce|^terminates without a report"
+    "GNU|$<$<CONFIG:Debug>:-fcontracts-definition-check=off>|-fcontracts-definition-check=off|^silences a definition's pre"
+    "GNU|-fno-contracts|-fno-contracts|^turns contracts off"
+    "GNU|-fcontract-evaluation-semantic=enforce -fcontracts||"
+    "GNU|-fcontracts-definition-check=on||"
+    "GNU|||"
+    "Clang|-fcontract-evaluation-semantic=ignore||")
+foreach(row IN LISTS overrideRows)
+    string(REGEX MATCH "^([^|]*)[|]([^|]*)[|]([^|]*)[|](.*)$" matched "${row}")
+    set(expectedFlag "${CMAKE_MATCH_3}")
+    set(expectedReason "${CMAKE_MATCH_4}")
+    isoline_contract_override_in(COMPILER "${CMAKE_MATCH_1}" TEXT "${CMAKE_MATCH_2}" OUT_FLAG flag OUT_REASON reason)
+    math(EXPR caseCount "${caseCount} + 1")
+    if(NOT flag STREQUAL expectedFlag OR NOT reason MATCHES "${expectedReason}")
+        string(APPEND failures "\n  override ${row}\n    got flag '${flag}', reason '${reason}'")
+    endif()
+endforeach()
+
+# The refused flags per compiler: rows compilerId|expectedFlags (space-separated). A compiler without
+# rows refuses nothing, which the configure scan turns into an error for a native-contracts target.
+set(refusedRows
+    "GNU|-fcontract-evaluation-semantic=quick_enforce -fcontract-evaluation-semantic=observe -fcontract-evaluation-semantic=ignore -fcontracts-definition-check=off -fno-contracts"
+    "Clang|"
+    "|")
+foreach(row IN LISTS refusedRows)
+    string(REGEX MATCH "^([^|]*)[|](.*)$" matched "${row}")
+    set(expectedFlags "${CMAKE_MATCH_2}")
+    isoline_contract_refused_flags(COMPILER "${CMAKE_MATCH_1}" OUT refused)
+    set(flags "")
+    foreach(entry IN LISTS refused)
+        string(REGEX MATCH "^[^|]*" flag "${entry}")
+        list(APPEND flags "${flag}")
+    endforeach()
+    list(JOIN flags " " flags)
+    math(EXPR caseCount "${caseCount} + 1")
+    if(NOT flags STREQUAL expectedFlags)
+        string(APPEND failures "\n  refused ${row}\n    got '${flags}'")
+    endif()
+endforeach()
+
+# The generators a native-contracts build accepts: those that write compile_commands.json, which the
+# build-time check reads. Rows generator|accepted.
+set(generatorRows "Ninja|ON" "Ninja Multi-Config|ON" "Unix Makefiles|ON" "Visual Studio 17 2022|OFF" "Xcode|OFF")
+foreach(row IN LISTS generatorRows)
+    string(REGEX MATCH "^([^|]*)[|](.*)$" matched "${row}")
+    set(accepted OFF)
+    if(CMAKE_MATCH_1 IN_LIST ISOLINE_CONTRACT_GENERATORS)
+        set(accepted ON)
+    endif()
+    math(EXPR caseCount "${caseCount} + 1")
+    if(NOT accepted STREQUAL CMAKE_MATCH_2)
+        string(APPEND failures "\n  generator ${row}\n    got ${accepted}")
+    endif()
+endforeach()
+
+# The canary's report rows: compilerId|path|spelling|expectedPrefix|expectedSuffix (the expected values
+# are the rows' regular expressions, compared as text), or NONE where no row applies.
+set(reportRows
+    "GNU|native|contract|contract violation in function [^\n]* at [^\n]*: |\n\\[assertion_kind: assert, semantic: enforce, mode: predicate_false, terminating: yes\\]"
+    "GNU|native|require|Precondition failed[.] |"
+    "GNU|fallback|contract|Precondition failed[.] |"
+    "Clang|fallback|require|Precondition failed[.] |"
+    "MSVC|native|contract|NONE|")
+foreach(row IN LISTS reportRows)
+    string(REGEX MATCH "^([^|]*)[|]([^|]*)[|]([^|]*)[|]([^|]*)[|](.*)$" matched "${row}")
+    set(expectedPrefix "${CMAKE_MATCH_4}")
+    set(expectedSuffix "${CMAKE_MATCH_5}")
+    isoline_contract_report_pattern(COMPILER "${CMAKE_MATCH_1}" PATH "${CMAKE_MATCH_2}" SPELLING "${CMAKE_MATCH_3}"
+                                    OUT_PREFIX prefix OUT_SUFFIX suffix)
+    if(NOT DEFINED prefix)
+        set(prefix NONE)
+    endif()
+    math(EXPR caseCount "${caseCount} + 1")
+    if(NOT prefix STREQUAL expectedPrefix OR NOT "${suffix}" STREQUAL expectedSuffix)
+        string(APPEND failures "\n  report ${row}\n    got '${prefix}' and '${suffix}'")
+    endif()
+endforeach()
+
 get_property(selectionCases GLOBAL PROPERTY selectionCases)
 list(LENGTH selectionCases selectionCaseCount)
 math(EXPR caseCount "${caseCount} + ${selectionCaseCount}")

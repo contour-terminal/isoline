@@ -189,7 +189,7 @@ if(ISOLINE_TESTING)
     # The C API's private headers include its C headers (wasm.h among them): reached through its static
     # library where the C API is built, and left out where it is not.
     set(isolineEnumTablesLinks isoline::cli)
-    set(isolineEnumTablesExcludes "/testing/" "^isoline/meta/reflection/")
+    set(isolineEnumTablesExcludes "/testing/" "^isoline/meta/reflection/" "^isoline/meta/(fallback/)?contracts/")
     if(TARGET isoline::c_static)
         list(APPEND isolineEnumTablesLinks isoline::c_static)
     else()

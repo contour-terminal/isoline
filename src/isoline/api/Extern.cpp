@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/api/Extern.hpp>
 
-#include <core/Assert.hpp>
-
 #include <memory>
 #include <utility>
 
 #include <isoline/api/Store.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::api
 {
@@ -18,7 +17,7 @@ detail::StoreLink::StoreLink(Store const& store, std::weak_ptr<void> alive) noex
 
 Store const& detail::StoreLink::owner() const noexcept
 {
-    Require(isAlive());
+    ISOLINE_PRECONDITION(isAlive());
     return *_store;
 }
 
@@ -29,13 +28,13 @@ StoreId const& detail::StoreLink::store() const noexcept
 
 FuncType const& Function::type() const noexcept
 {
-    Require(_link.isAlive());
+    ISOLINE_PRECONDITION(_link.isAlive());
     return *_type;
 }
 
 FuncType const& Tag::type() const noexcept
 {
-    Require(_link.isAlive());
+    ISOLINE_PRECONDITION(_link.isAlive());
     return *_type;
 }
 

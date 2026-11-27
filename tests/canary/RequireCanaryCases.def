@@ -1,24 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// The canary's cases, one per line: ISOLINE_REQUIRE_CANARY_CASE(function, "name", "check"). The function
+// The canary's cases, one per line: ISOLINE_REQUIRE_CANARY_CASE(function, "name", contract, "check"). The function
 // (RequireCanary.cpp) calls what must fail its Require(); the name is the command-line argument that runs
 // it, and the CTest it becomes (isoline_require_canary.<name>); the check is the CMake regular expression
 // of the Require()'s condition text the test must print. RequireCanary.cpp includes this file for its case
 // table, and tests/CMakeLists.txt reads it for the tests: one list, so the two cannot drift.
-ISOLINE_REQUIRE_CANARY_CASE(engineOfOpenFeatureSet, "engine-open-features", "_config[.]features[.]checkPrerequisites[(][)][.]has_value[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(functionStoreAfterDelete, "function-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(functionTypeAfterDelete, "function-type-after-delete", "_link[.]isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(memoryStoreAfterDelete, "memory-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(globalStoreAfterDelete, "global-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(tableStoreAfterDelete, "table-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(tagStoreAfterDelete, "tag-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(tagTypeAfterDelete, "tag-type-after-delete", "_link[.]isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(importsInstanceAfterDelete, "imports-instance-after-delete", "instance[.]isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(importsFunctionAfterDelete, "imports-function-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(importsMemoryAfterDelete, "imports-memory-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(importsHostTypeConcrete, "imports-host-type-concrete", "Store::checkHostFunctionType[(]type[)][.]has_value[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(importsHostTypeBottom, "imports-host-type-bottom", "Store::checkHostFunctionType[(]type[)][.]has_value[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(hostMemoryStoreAfterDelete, "host-memory-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(hostTableStoreAfterDelete, "host-table-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(hostGlobalStoreAfterDelete, "host-global-store-after-delete", "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(normalizeAnchorOutOfRange, "normalize-anchor-out-of-range", "anchor <= LastSectionAnchor")
+ISOLINE_REQUIRE_CANARY_CASE(engineOfOpenFeatureSet, "engine-open-features", contract, "_config[.]features[.]checkPrerequisites[(][)][.]has_value[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(functionStoreAfterDelete, "function-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(functionTypeAfterDelete, "function-type-after-delete", contract, "_link[.]isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(memoryStoreAfterDelete, "memory-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(globalStoreAfterDelete, "global-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(tableStoreAfterDelete, "table-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(tagStoreAfterDelete, "tag-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(tagTypeAfterDelete, "tag-type-after-delete", contract, "_link[.]isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(importsInstanceAfterDelete, "imports-instance-after-delete", require, "instance[.]isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(importsFunctionAfterDelete, "imports-function-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(importsMemoryAfterDelete, "imports-memory-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(importsHostTypeConcrete, "imports-host-type-concrete", require, "Store::checkHostFunctionType[(]type[)][.]has_value[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(importsHostTypeBottom, "imports-host-type-bottom", require, "Store::checkHostFunctionType[(]type[)][.]has_value[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(hostMemoryStoreAfterDelete, "host-memory-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(hostTableStoreAfterDelete, "host-table-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(hostGlobalStoreAfterDelete, "host-global-store-after-delete", contract, "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(normalizeAnchorOutOfRange, "normalize-anchor-out-of-range", require, "anchor <= LastSectionAnchor")
+// The positions a contract-spelled check must be evaluated in (CheckPositions.hpp), both macros.
+ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionFirst, "precondition-first", contract, "entryRounds == 0")
+ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionInBracelessIf, "precondition-in-braceless-if", contract, "ifRounds == 0")
+ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInBracelessElse, "invariant-in-braceless-else", contract, "elseRounds == 0")
+ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInForBody, "invariant-in-for-body", contract, "forRounds == 0")
+ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInWhileBody, "invariant-in-while-body", contract, "whileRounds == 0")
+ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInDoBody, "invariant-in-do-body", contract, "doRounds == 0")
+ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInRangeForBody, "invariant-in-range-for-body", contract, "rangeRounds == 0")
