@@ -321,7 +321,10 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
 
 GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
 {
-    return append(_globals, GlobalInstance { .type = type, .value = value });
+    // Through assign(), whose check that the value is of the type's kind is the precondition.
+    auto global = GlobalInstance { .type = type, .cell = {} };
+    global.assign(value);
+    return append(_globals, global);
 }
 
 std::expected<TagAddr, LimitExceeded> Store::addTag(TypeId typeId)
@@ -412,7 +415,7 @@ std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
         markValue(reference);
     };
     auto const markGlobal = [&markValue](GlobalInstance const& global) {
-        markValue(global.value);
+        markValue(global.value());
     };
     auto const markSlot = [&worklist, this](ExnAddr address) {
         if (_exceptions[address].slot == ExceptionSlot::Escaped)

@@ -537,7 +537,7 @@ TEST_CASE("Instantiate.globalsAndStart")
     REQUIRE(result.has_value());
     auto const& instance = store.moduleInstance(*result);
     REQUIRE(instance.globals.size() == 1);
-    CHECK(store.global(instance.globals[0]).value == Value { I32 { .bits = 42 } });
+    CHECK(store.global(instance.globals[0]).value() == Value { I32 { .bits = 42 } });
     CHECK(executor.invoked == std::vector { instance.functions[1] });
     auto const& started = store.function(instance.functions[1]);
     CHECK_FALSE(started.isHost());

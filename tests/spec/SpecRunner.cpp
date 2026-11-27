@@ -540,7 +540,7 @@ namespace
             {
                 if (target->kind != ExternKind::Global)
                     return std::unexpected { harnessFailure(std::format("'{}' is no global", action.field)) };
-                return std::vector { _store.global(target->address).value };
+                return std::vector { _store.global(target->address).value() };
             }
 
             if (target->kind != ExternKind::Func)

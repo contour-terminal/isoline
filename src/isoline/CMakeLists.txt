@@ -109,6 +109,7 @@ target_sources(isoline_core
             runtime/LinearMemory.hpp
             runtime/ModuleCode.hpp
             runtime/PollGate.hpp
+            runtime/RawValue.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp

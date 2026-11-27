@@ -24,6 +24,7 @@
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/ModuleCode.hpp>
+#include <isoline/runtime/RawValue.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
@@ -163,11 +164,25 @@ class MemoryInstance
     std::unique_ptr<ILinearMemory> _memory;
 };
 
-/// A global instance.
+/// A global instance: its type and its raw cell, the value's two words (RawValue), which every engine
+/// reads and writes in the same encoding, generated code in place.
 struct GlobalInstance
 {
     binary::GlobalType type; ///< Its type.
-    Value value;             ///< Its current value.
+    RawValue cell;           ///< Its current value, encoded (encodeValue()).
+
+    /// Its current value, decoded as its type.
+    /// @return The value.
+    [[nodiscard]] Value value() const noexcept { return decodeValue(cell, type.type); }
+
+    /// Makes @p value its current value. Precondition (checked): @p value is of its type's kind, as
+    /// validation guarantees global.set's operand and the embedder's checked writes are.
+    /// @param value The value.
+    void assign(Value const& value) noexcept
+    {
+        Require(kindOf(value) == type.type.kind);
+        cell = encodeValue(value);
+    }
 };
 
 /// A tag instance: what marks an exception, and the types of the payload it carries.
@@ -350,7 +365,7 @@ class Store
     ///         Guard when the memory's guard is smaller than StoreServices::requiredGuardBytes.
     [[nodiscard]] std::expected<MemAddr, AllocationError> addMemory(binary::MemoryType type);
 
-    /// Adds a global.
+    /// Adds a global. Precondition (checked): @p value is of type.type's kind (GlobalInstance::assign()).
     ///
     /// Throws std::bad_alloc only when recording the global runs out of memory, and then leaves the store
     /// unchanged.

@@ -151,7 +151,7 @@ Value evaluateConstantExpression(Store const& store,
         switch (instruction.opcode)
         {
             case Opcode::GlobalGet:
-                stack.push_back(store.global(instance.globals.at(instruction.a)).value);
+                stack.push_back(store.global(instance.globals.at(instruction.a)).value());
                 break;
             case Opcode::RefNull: stack.push_back(nullOf(instance, instruction)); break;
             case Opcode::RefFunc: stack.push_back(functionReference(instance, instruction.a)); break;

@@ -29,6 +29,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/ContractViolation.hpp>
 #include <isoline/runtime/testing/PollCounter.hpp>
 #include <isoline/runtime/testing/ProvidedMemory.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
@@ -174,7 +175,7 @@ TEST_CASE("Store.constAccessors")
     CHECK(view.function(function).isHost());
     CHECK(view.table(*table).elements.size() == 1);
     CHECK(view.memory(*memory).bytes().size() == PageSize);
-    CHECK(view.global(global).value == Value { I32 { .bits = 7 } });
+    CHECK(view.global(global).value() == Value { I32 { .bits = 7 } });
     CHECK(&view.global(global) == &store.global(global));
 }
 
@@ -1278,4 +1279,18 @@ TEST_CASE("Store.frameChargesCapTheirSum")
     store.releaseFrame(6);
     CHECK(store.chargedStackValues() == 0);
     CHECK(store.chargeFrame(10).has_value());
+}
+
+// The contract checks: each ends the process on purpose, so the unit run skips them and CTest runs
+// each alone (tests/CMakeLists.txt).
+
+TEST_CASE("Contract.Store.addGlobalOfItsOwnKind", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    std::ignore =
+        store.addGlobal(GlobalType { .type = isoline::binary::I32, .mutability = Mutability::Const },
+                        isoline::runtime::I64 { .bits = 1 });
+    FAIL("SURVIVED: an i32 global added with an i64 value");
 }
