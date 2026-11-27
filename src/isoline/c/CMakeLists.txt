@@ -240,13 +240,16 @@ if(ISOLINE_TESTING)
     target_link_libraries(isoline_c_test PRIVATE isoline::c_static Catch2::Catch2WithMain)
     target_include_directories(isoline_c_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     isoline_apply_target_policy(isoline_c_test TEST)
+    # hardened-stdlib: the tests the clang-libcxx-hardened preset runs, where libc++ traps on a broken
+    # precondition of its own (a string_view longer than PTRDIFF_MAX, an index past the end), so a bound on
+    # host input that the C layer forgets fails there even where ASan sees no bad access.
     add_test(NAME isoline_c_test COMMAND isoline_c_test)
-    set_tests_properties(isoline_c_test PROPERTIES LABELS "c-api;unit" TIMEOUT 300)
+    set_tests_properties(isoline_c_test PROPERTIES LABELS "c-api;unit;hardened-stdlib" TIMEOUT 300)
     # A C++ exception other than std::bad_alloc inside boundary() is a defect, and ends the process rather
     # than becoming an error. The pass is the case's terminate handler's line, not an exit status: a case
     # that merely failed must not pass, and CTest's WILL_FAIL counts a process that aborts as failed.
     add_test(NAME isoline_c_test.logicErrorTerminates COMMAND isoline_c_test "Boundary.logicErrorTerminates")
-    set_tests_properties(isoline_c_test.logicErrorTerminates PROPERTIES LABELS "c-api;unit" TIMEOUT 120
+    set_tests_properties(isoline_c_test.logicErrorTerminates PROPERTIES LABELS "c-api;unit;hardened-stdlib" TIMEOUT 120
                          PASS_REGULAR_EXPRESSION "terminated in boundary[(][)]"
                          FAIL_REGULAR_EXPRESSION "did not end the process")
 

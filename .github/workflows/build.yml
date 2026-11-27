@@ -158,6 +158,31 @@ jobs:
             out/clang-coverage/coverage.lcov
             out/clang-coverage/coverage-html
 
+  linux-clang-libcxx-hardened:
+    # libc++ in its fast hardening mode traps on a broken precondition of its own, such as a string_view
+    # longer than PTRDIFF_MAX, which neither libstdc++ nor ASan reports: the C layer's bounds on host input
+    # (a message length, a vector size) are held to it. The hardened-stdlib label names the tests it runs.
+    name: Linux Clang (hardened libc++)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM ${{ env.LLVM_VERSION }}, its libc++ and Ninja
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get install -qy "libc++-$LLVM_VERSION-dev" "libc++abi-$LLVM_VERSION-dev" ninja-build
+      - name: Configure
+        run: >
+          cmake --preset clang-libcxx-hardened
+          -DCMAKE_C_COMPILER="clang-$LLVM_VERSION"
+          -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
+      - name: Build
+        run: cmake --build --preset clang-libcxx-hardened
+      - name: Test
+        run: ctest --preset clang-libcxx-hardened --output-on-failure --no-tests=error
+
   macos-clang:
     name: macOS Apple Clang
     runs-on: macos-15

@@ -105,6 +105,25 @@
             }
         },
         {
+            "name": "clang-libcxx-hardened",
+            "displayName": "Clang Debug, libc++ in its fast hardening mode",
+            "description": "libc++ checks its preconditions (a string_view's length, an index) and traps on a broken one: a host bug libstdc++ and ASan let pass, such as a view made longer than its bytes, ends the test. Catch2 is built here, since an installed one is built for libstdc++",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "debug"
+            ],
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_CXX_FLAGS": "-stdlib=libc++ -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
+                "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++",
+                "CMAKE_SHARED_LINKER_FLAGS": "-stdlib=libc++",
+                "CMAKE_DISABLE_FIND_PACKAGE_Catch2": "ON",
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
             "name": "gcc-debug",
             "displayName": "GCC Debug",
             "inherits": [
@@ -309,6 +328,12 @@
         { "name": "clang-tsan", "configurePreset": "clang-tsan" },
         { "name": "clang-release", "configurePreset": "clang-release" },
         { "name": "clang-coverage", "configurePreset": "clang-coverage" },
+        {
+            "name": "clang-libcxx-hardened",
+            "configurePreset": "clang-libcxx-hardened",
+            "description": "What the hardened-stdlib label's tests run",
+            "targets": ["isoline_c_test"]
+        },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "configurePreset": "gcc-release" },
         { "name": "macos-clang", "configurePreset": "macos-clang" },
@@ -362,6 +387,17 @@
             }
         },
         { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
+        {
+            "name": "clang-libcxx-hardened",
+            "inherits": "isoline-test-base",
+            "configurePreset": "clang-libcxx-hardened",
+            "description": "The hardened-stdlib label alone: the tests whose host-input bounds a hardened libc++ holds to",
+            "filter": {
+                "include": {
+                    "label": "hardened-stdlib"
+                }
+            }
+        },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "inherits": "isoline-test-common", "configurePreset": "gcc-release" },
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
