@@ -291,11 +291,13 @@ class ResourceStore
     ResourceStore& operator=(ResourceStore const&) = delete;
     ResourceStore(ResourceStore&&) = delete;
     ResourceStore& operator=(ResourceStore&&) = delete;
-    /// Destroys every host resource an own handle of a table holds, then the tables.
+    /// Destroys every host resource an own handle of a table holds, then the tables. Precondition
+    /// (checked): no task is in progress.
     ~ResourceStore();
 
     /// Destroys every host resource an own handle of a table holds, removing the handle: a store's
-    /// teardown, which runs host code only. A second call destroys nothing more.
+    /// teardown, which runs host code only. A second call destroys nothing more. Precondition
+    /// (checked): no task is in progress, so no call is running in the store.
     void destroyHostResources() noexcept;
 
     /// @return The handle budget.

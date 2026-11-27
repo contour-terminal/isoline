@@ -142,6 +142,7 @@ ResourceStore::~ResourceStore()
 
 void ResourceStore::destroyHostResources() noexcept
 {
+    Require(_tasks.size() == 0);
     for (auto const instance: std::views::iota(std::size_t { 0 }, _instances.size()))
     {
         _instances[static_cast<uint32_t>(instance)].handles.forEachSlot([&](uint32_t, HandleEntry& entry) {
@@ -182,7 +183,10 @@ std::expected<std::reference_wrapper<ResourceHandle>, Trap> resourceHandleAt(Res
     auto entry = resources.instances()[instance].handles.get(index);
     if (!entry)
         return std::unexpected { std::move(entry.error()) };
-    // Every entry get() returns is a resource handle until P12 adds the other kinds, which trap here.
+    // Every entry get() returns is a resource handle while FreeSlot is the only other kind. P12 adds
+    // Waitable, WaitableSet, Subtask, stream and future ends and ErrorContext: an entry of those kinds
+    // must trap WrongHandleType here, never reach this std::get.
+    static_assert(std::variant_size_v<HandleEntry> == 2, "P12: trap on the other handle kinds here");
     auto& handle = std::get<ResourceHandle>(entry->get());
     if (handle.type != type)
         return std::unexpected { wrongHandleType(resources.types(), index, type, handle.type) };

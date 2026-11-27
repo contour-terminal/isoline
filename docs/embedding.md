@@ -481,6 +481,16 @@ with the components around them, the outermost component included, where wasm-to
 of component types (100) apart from that of components, so a type nested 100 deep inside the outermost
 component is refused here and accepted there.
 
+A component store's handles are capped by `maxHandles` (1000000), where the component model's
+`definitions.py` caps only each table's indices (2^28 − 1) and has no store-wide cap at all. The cap
+counts handle *slots*, every table's together, plus the handles lent to calls in progress: a table
+keeps a slot it grew by once the handle in it is gone (`definitions.py`'s array never shrinks, and its
+free list hands the slot out again), and gives it back only when the store goes. So the store's handle
+memory is bounded however handles move, at a price the reference does not have: moving handles from
+one instance's table to another's can trap `Handles` at a full budget although fewer handles are live,
+and a call passing a `list<borrow<r>>` of N handles to another instance costs about 3N: the caller's N
+handles, N lends while the call runs, and N slots in the callee's table, which the callee keeps.
+
 ## Interrupts and poll sites
 
 `Store::interrupter()` returns the store's `Interrupter`, shared. `interrupt()` is one release store to

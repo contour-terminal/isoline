@@ -83,7 +83,7 @@ inline constexpr auto TrapCodeTable = std::to_array<TrapCodeRow>({
     { .code = TrapCode::UnknownHandle, .format = "unknown handle index {}" },
     { .code = TrapCode::WrongHandleType,
       .format = "handle index {} used with the wrong type, expected {} but found {}" },
-    { .code = TrapCode::BorrowOutstanding, .format = "borrowed handles remain at the end of the call" },
+    { .code = TrapCode::BorrowOutstanding, .format = "borrow handles still remain at the end of the call" },
     { .code = TrapCode::LendOutstanding, .format = "cannot remove owned resource while borrowed" },
     { .code = TrapCode::OwnExpected, .format = "handle index {} is a borrow where an own is expected" },
     { .code = TrapCode::WrongResource, .format = "resource {} lowered as another resource type" },

@@ -118,7 +118,9 @@ std::expected<void, Trap> resourceDrop(IBuiltinHost& host,
     Require(removed.has_value());
     // The handle is gone before the destructor runs: one that re-enters finds its slot free, and
     // holds no reference into a table it may grow.
-    auto const& implementor = resources.types()[type];
+    // Copied, not referenced: the destructor's guest code may create resource types, and the table
+    // holding the implementor may grow under it.
+    auto const implementor = resources.types()[type];
     if (auto const* const hosted = std::get_if<HostImplementor>(&implementor))
     {
         if (hosted->destructor)

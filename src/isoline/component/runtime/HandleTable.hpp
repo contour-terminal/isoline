@@ -66,9 +66,11 @@ inline constexpr auto HandleTableFirstChunkLength = uint32_t { 64 };
 /// handles lent to the calls in progress (Subtask::addLender()).
 ///
 /// A table charges a slot when it grows and keeps it, freed or not, until it is destroyed: a freed
-/// slot is the table's to reuse (LIFO, as definitions.py's free list), so a table's memory is what its
-/// slots charged, and the store's tables together hold at most the limit's slots, however handles move
-/// between them. Not thread-safe: one store runs one call at a time.
+/// slot is the table's to reuse (LIFO, as definitions.py's free list), so the store's tables together
+/// hold at most the limit's slots, however handles move between them. A table's memory follows its
+/// charged slots, not equal to them: chunks double, so it holds up to about twice its charged slots,
+/// and its first chunk's 64 slots once it has a handle at all (uncharged), plus a 4-byte free-list entry
+/// per freed slot. Not thread-safe: one store runs one call at a time.
 class HandleBudget
 {
   public:

@@ -205,7 +205,7 @@ TEST_CASE("Handles.everyMisuseTraps")
 
         auto const returned = trapIn(resources.tasks().resolve(task));
         CHECK(returned.code == TrapCode::BorrowOutstanding);
-        CHECK(returned.message() == "borrowed handles remain at the end of the call");
+        CHECK(returned.message() == "borrow handles still remain at the end of the call");
         CHECK(resources.tasks().find(task)->state == Task::State::Initial);
 
         REQUIRE(resourceDrop(host, b, r1, index).has_value());
@@ -231,7 +231,8 @@ TEST_CASE("Handles.everyMisuseTraps")
 
     SECTION("a resource lowered as another type")
     {
-        auto lowering = ResourceOperations { resources, b, bindB, BorrowScope { resources.tasks().begin() } };
+        auto const task = resources.tasks().begin();
+        auto lowering = ResourceOperations { resources, b, bindB, BorrowScope { task } };
         auto const foreign = ResourceValue { .type = r2, .rep = 9, .ownership = Ownership::Own };
         auto const trap = trapIn(lowering.lowerOwn(ArenaR, foreign));
         CHECK(trap == trapOf(TrapCode::WrongResource, 9));
@@ -241,6 +242,7 @@ TEST_CASE("Handles.everyMisuseTraps")
         auto const unknown = ResourceValue { .type = ResourceTypeIndex { 99 }, .rep = 9 };
         CHECK(trapIn(lowering.lowerOwn(ArenaR, unknown)) == trap);
         CHECK(resources.instances()[b].handles.length() == 1);
+        resources.tasks().end(task);
     }
 }
 
@@ -463,6 +465,8 @@ TEST_CASE("Handles.hostDestructorRunsOnDrop")
                                  ResourceValue { .type = hosted, .rep = 10, .ownership = Ownership::Borrow })
                     .has_value());
         REQUIRE(resourceNew(host, guest, guestType, 11).has_value());
+        // A teardown runs no call: the task the borrow was lent to has ended (trapped).
+        resources.tasks().end(kept);
         resources.destroyHostResources();
         CHECK(recorder->destroyed == std::vector<uint32_t> { 5, 9 });
         // Destroying the store destroys nothing twice, and runs no guest destructor.
@@ -569,24 +573,31 @@ enum class Op : uint8_t
     Return,
 };
 
-/// How definitions.py's operation ended.
-enum class Outcome : uint8_t
+/// How definitions.py's operation ended: returned a value, or trapped with the TrapCode of the trap_if
+/// that fired (make-handle-vectors.py's TRAP_CODES). Core never ends one of these operations, so it
+/// stands for "returned". One member per code the vectors name.
+struct Outcome
 {
-    Trap,
-    Value,
+    static constexpr auto Value = TrapCode::Core;
+    static constexpr auto UnknownHandle = TrapCode::UnknownHandle;
+    static constexpr auto WrongHandleType = TrapCode::WrongHandleType;
+    static constexpr auto LendOutstanding = TrapCode::LendOutstanding;
+    static constexpr auto OwnExpected = TrapCode::OwnExpected;
+    static constexpr auto BorrowOutstanding = TrapCode::BorrowOutstanding;
 };
 
 /// No destructor ran.
 constexpr auto NoRep = int64_t { -1 };
 
 /// One step of the run: the operation, its resource type (1 or 2), its argument, and what
-/// definitions.py did: trapped, or returned a value, and which representation a destructor got.
+/// definitions.py did: returned a value or trapped (and which trap), and which representation a
+/// destructor got.
 struct HandleVector
 {
     Op op;
     uint32_t type;
     uint32_t argument;
-    Outcome outcome;
+    TrapCode outcome;
     uint32_t value;
     int64_t destroyed;
 };
@@ -660,6 +671,8 @@ TEST_CASE("Handles.matchDefinitions")
         REQUIRE(outcome.has_value() == (vector.outcome == Outcome::Value));
         if (outcome)
             CHECK(*outcome == vector.value);
+        else
+            CHECK(outcome.error().code == vector.outcome);
         auto destroyed = std::vector<int64_t> {};
         for (auto const rep: recorder->destroyed)
             destroyed.push_back(rep);
@@ -669,4 +682,5 @@ TEST_CASE("Handles.matchDefinitions")
               == (vector.destroyed == NoRep ? std::vector<int64_t> {}
                                             : std::vector<int64_t> { vector.destroyed }));
     }
+    resources.tasks().end(task);
 }
