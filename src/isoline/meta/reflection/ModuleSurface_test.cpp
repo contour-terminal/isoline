@@ -75,13 +75,16 @@ namespace nested // a namespace is no name; a public one is a row of its own
     {
         NestedValue,
     };
+
+    void someFunction();
 } // namespace nested
 
 // An alias of an unscoped enumeration of another namespace: its enumerators are that namespace's, not this
 // one's.
 using KindAlias = nested::NestedKind;
 
-using nested::Inner; // a using-declaration is no member at all (UsingDecl, the measured row)
+using nested::Inner;        // a using-declaration is no member at all (UsingDecl, the measured row)
+using nested::someFunction; // nor is one of a function
 
 } // namespace module_surface_fixture
 
@@ -123,6 +126,7 @@ TEST_CASE("ModuleSurface: a namespace's names are those the export lint lists, b
                                 "fixture::nested::Inner",
                                 "fixture::nested::NestedKind",
                                 "fixture::nested::NestedValue",
+                                "fixture::nested::someFunction",
                                 "fixture::open",
                                 "fixture::operator<",
                                 "fixture::storeLimit",

@@ -9,7 +9,7 @@
 // of its own, and the lint classifies the others); an unnamed member is none, but an unscoped enumeration's
 // enumerators are names of its namespace, named or not; an operator function is `operator<symbol>`, as Clang
 // names it. A using-declaration is no member at all (ISOLINE_MODULE_SURFACE_UNREFLECTED_KINDS,
-// cmake/IsolineModules.cmake).
+// cmake/IsolineModuleSurface.cmake).
 
 #include <algorithm>
 #include <meta>

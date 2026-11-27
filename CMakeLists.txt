@@ -47,6 +47,7 @@ include(IsolinePedantic)
 include(IsolineLanguageFeatures)
 include(IsolineCappedTest)
 include(IsolineModules)
+include(IsolineModuleSurface)
 include(IsolineCExports)
 
 if(ISOLINE_TESTING)

@@ -4,8 +4,9 @@
 
 Every case compares the export lint's names of one fixture module (testdata/module-exports/list-names/) with
 the names a stand-in for the reflected surface's program prints: the case's reflected.txt. expected.txt is what
-the comparison prints, the table below its exit status. The measured row --unreflected-kinds is UsingDecl, as
-the real test's (cmake/IsolineModules.cmake).
+the comparison prints, the table below its exit status. A case's umbrella.hpp, where it has one, is the program's
+umbrella (--umbrella). The measured row --unreflected-kinds is UsingDecl, as
+the real test's (cmake/IsolineModuleSurface.cmake).
 
 Usage: python3 -I scripts/compare-module-surface_test.py --clang <clang++> [--work-directory <dir>]
 Without --clang it exits 77, CTest's SKIP_RETURN_CODE.
@@ -41,6 +42,7 @@ CASES = (
     ("listed-not-reflected", PRINTS, 1),
     ("unreflected-kind-reflected", PRINTS, 1),
     ("program-fails", FAILS, 2),
+    ("umbrella-differs", PRINTS, 1),
 )
 
 
@@ -51,9 +53,10 @@ def runCase(clang, workDirectory, row):
     module = workDirectory / name
     shutil.rmtree(module, ignore_errors=True)
     shutil.copytree(MODULE, module)
+    umbrella = ["--umbrella", str(case / "umbrella.hpp")] if (case / "umbrella.hpp").exists() else []
     result = subprocess.run([sys.executable, "-I", str(SCRIPT), "--clang", clang,
                              "--manifest", str(module / "surface.json"), "--work-directory", str(module / "work"),
-                             "--unreflected-kinds", "UsingDecl", "--", *PROGRAMS[program](case)],
+                             *umbrella, "--unreflected-kinds", "UsingDecl", "--", *PROGRAMS[program](case)],
                             capture_output=True, text=True, check=False)
     failures = []
     if result.returncode != expectedExit:

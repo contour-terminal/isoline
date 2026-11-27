@@ -3,8 +3,8 @@
 """Compares a module's surface as two readings of its headers see it: the export lint's and reflection's.
 
 The export lint (check-module-exports.py --list) reads the header set through Clang's AST dump; the reflected
-surface (a program of isoline_add_module_surface_reflection(), cmake/IsolineModules.cmake) is GCC's
-`std::meta::members_of` over the row's public namespaces, printed one qualified name per line. The two are
+surface (a program of isoline_add_module_surface_reflection(), cmake/IsolineModuleSurface.cmake) is
+GCC's `std::meta::members_of` over the row's public namespaces, printed one qualified name per line. The two are
 different compilers' readings of the same headers, so a name only one of them sees is a declaration only
 one compiler compiles (an `#if` on the compiler around a public declaration), or a kind of declaration one
 reading does not report: either is a finding.
@@ -14,14 +14,20 @@ Some kinds of declaration `members_of` does not report at all: the rows of --unr
 out of the comparison, and one the program reflects all the same is a finding too: the measurement no longer
 holds, so the row is stale.
 
+The program's umbrella header (--umbrella) is compared too: it must include exactly the header set's headers, as
+the lint's umbrella does, so that the two read the same headers. A header only one of them reads is a difference.
+
 Exit status: 0 the two agree, 1 differences, 2 a tool error (the lint or the program failed).
 
 Usage: python3 -I scripts/compare-module-surface.py --clang <clang++> --manifest <surface.json>
-           [--work-directory <dir>] [--unreflected-kinds <kind>...] -- <program> [<argument>...]
+           [--work-directory <dir>] [--umbrella <header>] [--unreflected-kinds <kind>...]
+           -- <program> [<argument>...]
 """
 
 import argparse
+import importlib.util
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -39,6 +45,36 @@ UNREFLECTED_REASON = ("a declaration only one compiler sees (an #if on the compi
 
 class ToolError(Exception):
     """A failure of a reading, not a difference: exit status 2."""
+
+
+# An include directive of the umbrella: its spelling, angled.
+INCLUDE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*<([^>\n]+)>", re.MULTILINE)
+
+
+def loadLint():
+    """check-module-exports.py as a module, so that a header's spelling is the lint's (includeSpelling())."""
+    spec = importlib.util.spec_from_file_location("check_module_exports", LINT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def umbrellaDifferences(manifestPath, umbrella):
+    """The lines naming each header the umbrella includes that is no header of the set, and each header of the
+    set it does not include."""
+    lint = loadLint()
+    try:
+        manifest = lint.readManifest(manifestPath.resolve())
+        text = umbrella.read_text(encoding="utf-8")
+    except (lint.ToolError, OSError, UnicodeDecodeError) as error:
+        raise ToolError(f"the umbrella cannot be compared: {error}") from error
+    expected = {lint.includeSpelling(manifest, header) for header in lint.umbrellaHeaders(manifest)}
+    included = set(INCLUDE.findall(text))
+    lines = [f"umbrella: includes {header}, which is no header of the set: the program reads what the lint does not"
+             for header in sorted(included - expected)]
+    lines += [f"umbrella: lacks {header}, a header of the set: the program does not read what the lint does"
+              for header in sorted(expected - included)]
+    return lines
 
 
 def listedKinds(arguments):
@@ -101,6 +137,7 @@ def main():
     parser.add_argument("--clang", required=True, help="the clang++ the export lint runs")
     parser.add_argument("--manifest", required=True, type=pathlib.Path, help="the module's surface.json")
     parser.add_argument("--work-directory", type=pathlib.Path, help="the export lint's work directory")
+    parser.add_argument("--umbrella", type=pathlib.Path, help="the program's umbrella header, to compare too")
     parser.add_argument("--unreflected-kinds", nargs="*", default=[], metavar="KIND",
                         help="the declaration kinds members_of does not report, as measured")
     parser.add_argument("program", nargs="+", help="the program that prints the reflected surface, after --")
@@ -108,10 +145,12 @@ def main():
     try:
         listed = listedKinds(arguments)
         reflected = reflectedNames(arguments.program)
+        umbrellaLines = umbrellaDifferences(arguments.manifest, arguments.umbrella) if arguments.umbrella else []
     except ToolError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_TOOL_ERROR
     lines, compared, leftOut = differences(listed, reflected, arguments.unreflected_kinds)
+    lines = umbrellaLines + lines
     for line in lines:
         print(line)
     leftOutNote = (f"({leftOut} left out: listed only by the kinds members_of does not reflect, "

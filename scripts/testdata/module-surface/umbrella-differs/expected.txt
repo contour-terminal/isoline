@@ -1,0 +1,3 @@
+umbrella: includes isoline/api/Private.hpp, which is no header of the set: the program reads what the lint does not
+umbrella: lacks isoline/runtime/Value.hpp, a header of the set: the program does not read what the lint does
+module surface: 2 differences among 12 names (1 left out: listed only by the kinds members_of does not reflect, UsingDecl)

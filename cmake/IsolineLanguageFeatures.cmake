@@ -944,7 +944,8 @@ endfunction()
 ## `.def` is left out), then every other `.hpp` under their source directories (the private headers)
 ## whose path matches none of EXCLUDE. A table in a new header is therefore checked without a row. An
 ## EXCLUDE pattern that matches no header is a FATAL_ERROR. HEADER_SETS_ONLY leaves the private headers out:
-## the umbrella is then what an importer of the targets' headers sees.
+## the umbrella is then what an importer of the targets' headers sees. The umbrella's path is the target's
+## property ISOLINE_REFLECTION_UMBRELLA.
 function(isoline_add_reflection_check target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "TEST;PROGRAM;HEADER_SETS_ONLY" "UMBRELLA;FEATURE"
                           "SOURCES;LINK_LIBRARIES;HEADER_TARGETS;EXCLUDE;LABELS")
@@ -1044,6 +1045,9 @@ function(isoline_add_reflection_check target)
         file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${target}.umbrella/${arg_UMBRELLA}" CONTENT "${content}"
              @ONLY)
         target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/${target}.umbrella")
+        # Where it is, for a test that compares what the target read (isoline_add_module_surface_reflection()).
+        set_target_properties(${target} PROPERTIES
+            ISOLINE_REFLECTION_UMBRELLA "${CMAKE_CURRENT_BINARY_DIR}/${target}.umbrella/${arg_UMBRELLA}")
     endif()
 endfunction()
 

@@ -484,22 +484,31 @@ each of the row's `NAMESPACES`, the internal ones and any `detail` or `testing` 
 the lint names what it lists (`meta/reflection/ModuleSurface.hpp`; `isoline_meta_reflection_test` checks the
 naming on a fixture). The row's namespaces reach it as a generated row file,
 `ModuleSurfaceNamespaces.def`, so a namespace made public is compared without an edit here
-(`isoline_add_module_surface_reflection()`, `cmake/IsolineModules.cmake`).
+(`isoline_add_module_surface_reflection()`, `cmake/IsolineModuleSurface.cmake`).
 
 The lint test `meta-module-surface.reflection` (`scripts/compare-module-surface.py`) runs the lint's
-`--list` and the program, and fails on every name only one of them sees. The two readings are different
-compilers' (Clang's and GCC's), so such a name is a declaration only one compiler compiles: a public
-function behind `#if defined(__GNUC__) && !defined(__clang__)` is named, as is one behind
-`#if defined(__clang__)`. It runs where reflection is native and the export lint's Clang exists; CI's
-`linux-gcc-cxx26` lane installs that Clang for it. `compare-module-surface-selftest` pins the comparison on the
-lint's fixture module and stand-in programs, on every lane with the lint.
+`--list` and the program, and fails on every whole name only one of them sees, and on every header only one
+of them reads (the program's umbrella against the lint's header set). The two readings are different
+compilers' (Clang's and GCC's), so such a name is a declaration only one compiler compiles: a public function
+behind `#if defined(__GNUC__) && !defined(__clang__)` is named, as is one behind `#if defined(__clang__)`.
+Names are compared, not declarations: an overload that only one compiler sees, of a name both see, is no
+difference. `compare-module-surface-selftest` pins the comparison on the lint's fixture module and stand-in
+programs, on every lane with the lint.
+
+The test registers where reflection is native, the compiler is not Clang (Clang's reading compared with
+itself cannot find a declaration only one compiler compiles), and Python 3 and the export lint's Clang exist
+(`isoline_module_surface_decision()`, pinned by `module-surface-selftest`). Elsewhere the configure prints
+why it is off. `ISOLINE_EXPECT_MODULE_SURFACE=ON` makes that a configure error instead, so the test cannot
+vanish from a lane that expects it: CI's `linux-gcc-cxx26` rows set it, pass the export lint's Clang as the
+pinned `llvm-lint` row of `scripts/tools.lock` (`ISOLINE_MODULE_LINT_CLANG`), and check with `ctest -N` that
+the test is registered.
 
 `members_of` does not report every kind the lint lists. The row `ISOLINE_MODULE_SURFACE_UNREFLECTED_KINDS`
-holds the kinds it was measured not to report: `UsingDecl`, a using-declaration, is no member of the
-namespace (GCC 16.2.1). A name the lint lists only by such a kind is left out of the comparison (56 of
-module isoline's 131 names, 2026-11-27), and one the program reflects all the same fails the test, so a
-compiler that starts reporting the kind makes the row stale visibly. An unscoped enumeration's enumerators
-are not members either; the program reads them through their enumeration, as the lint does.
+holds the kinds it was measured not to report: `UsingDecl`, a using-declaration (of a type or a function),
+is no member of the namespace (GCC 16.2.1). A name the lint lists only by such a kind is left out of the
+comparison, and one the program reflects all the same fails the test, so a compiler that starts reporting
+the kind makes the row stale visibly. An unscoped enumeration's enumerators are not members either; the
+program reads them through their enumeration, as the lint does.
 
 ### What stays a review question
 

@@ -116,6 +116,7 @@ jobs:
             ninja: pinned
             lint: pinned
             languageFeatures: native
+            moduleSurface: "ON"
           # Module isoline over the C++26, contracts-native isoline_core; the preset expects import std.
           - preset: gcc-cxx26-modules
             compiler: g++
@@ -124,6 +125,7 @@ jobs:
             ninja: pinned
             lint: pinned
             languageFeatures: native
+            moduleSurface: "ON"
     env:
       # The pinned tools' cache, in the workspace (ignored by git): a container job's runner.temp names the
       # host's path, not the container's, so actions/cache is given a path relative to the workspace. The tools
@@ -164,14 +166,25 @@ jobs:
           check "$(command -v "${{ matrix.compiler }}")" --tool gcc --expected "${{ matrix.compilerVersion }}"
           if [ -n "$LINT_CLANG" ]; then check "$LINT_CLANG" --tool llvm-lint; fi
       - name: Configure
-        # ISOLINE_EXPECT_LANGUAGE_FEATURES fails the configure unless every feature row's path is this one.
+        # ISOLINE_EXPECT_LANGUAGE_FEATURES fails the configure unless every feature row's path is this one, and
+        # ISOLINE_EXPECT_MODULE_SURFACE unless meta-module-surface.reflection registers.
         run: >
           cmake --preset "${{ matrix.preset }}"
           -DCMAKE_MAKE_PROGRAM="$NINJA_EXECUTABLE"
           -DCMAKE_CXX_COMPILER="${{ matrix.compiler }}"
           -DISOLINE_MODULE_LINT_CLANG="$LINT_CLANG"
           -DISOLINE_EXPECT_LANGUAGE_FEATURES="${{ matrix.languageFeatures }}"
+          -DISOLINE_EXPECT_MODULE_SURFACE="${{ matrix.moduleSurface }}"
           -DISOLINE_FETCH_DEPS=ON
+      - name: Check that the reflected module surface's test is registered
+        if: ${{ matrix.moduleSurface == 'ON' }}
+        run: |
+          listing="$(ctest --preset "${{ matrix.preset }}" -N -R '^meta-module-surface[.]reflection$')"
+          echo "$listing"
+          if ! echo "$listing" | grep -q '^Total Tests: 1$'; then
+            echo "::error::meta-module-surface.reflection is not registered"
+            exit 1
+          fi
       - name: Build
         run: cmake --build --preset "${{ matrix.preset }}"
       - name: Test

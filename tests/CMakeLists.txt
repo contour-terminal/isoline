@@ -327,6 +327,11 @@ set_tests_properties(contract-flags-selftest PROPERTIES LABELS lint TIMEOUT 120)
 add_test(NAME language-features-selftest
          COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/language-features_test.cmake")
 set_tests_properties(language-features-selftest PROPERTIES LABELS lint)
+# Whether the reflected module surface's test registers, and when its absence fails the configure
+# (cmake/IsolineModuleSurface.cmake), one row per case.
+add_test(NAME module-surface-selftest
+         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/module-surface_test.cmake")
+set_tests_properties(module-surface-selftest PROPERTIES LABELS lint)
 
 # The header check's seal, on a fixture project configured with this build's compiler and generator: a
 # target registered after the check fails the configure, naming it; registered before, it configures.
