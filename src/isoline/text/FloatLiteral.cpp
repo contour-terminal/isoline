@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/text/FloatLiteral.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <bit>
 #include <compare>
@@ -15,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/meta/Check.hpp>
 #include <isoline/text/Digits.hpp>
 #include <isoline/text/LiteralError.hpp>
 #include <isoline/text/TextLimits.hpp>
@@ -187,7 +186,7 @@ namespace
         /// @return Its bit width; the number must not be zero.
         [[nodiscard]] uint64_t bitWidth() const noexcept
         {
-            Require(!_limbs.empty());
+            ISOLINE_PRECONDITION(!_limbs.empty());
             return ((_limbs.size() - 1) * 32) + std::bit_width(_limbs.back());
         }
 

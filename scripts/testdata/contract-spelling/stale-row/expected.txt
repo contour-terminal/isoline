@@ -1,0 +1,4 @@
+exit: 1
+scripts/contract-spelling-rows.txt:3: stale row: src/isoline/api/Engine.cpp has no function stop
+scripts/contract-spelling-rows.txt:4: stale row: src/isoline/api/Gone.cpp does not exist
+src/isoline/api/Engine.cpp: its rows count 2 Require/Guarantee (start: 1, stop: 1), but it has 1: lower the row's count, or remove the row

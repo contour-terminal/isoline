@@ -1,0 +1,78 @@
+# The functions that keep Require() (scripts/check-contract-spelling.py; docs/language-features.md).
+#
+# A check in a function that may throw cannot be a contract: a throwing violation handler's exception
+# would let the caller go on past it. Each such function is a row:
+#     file (under src/isoline/) | function | count | reason
+# The reasons: "allocates (std::bad_alloc reaches the P17 boundary)" (it allocates);
+# "calls a function that may throw" (it calls one that is not noexcept); "a throwing interface" (it is not declared
+# noexcept, a lambda or a virtual override among them, though what it calls may not throw). A check in a
+# lambda is its enclosing function's. The rows were made by spelling every check as a contract and
+# building the native lane: its static_assert named each function below.
+api/Imports.cpp | Imports::define | 4 | allocates (std::bad_alloc reaches the P17 boundary)
+api/Module.cpp | Module::describe | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | writeHeapType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | writeValueType | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | writeLimits | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | ModuleEncoder::encodeCode | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | ModuleEncoder::writeFunction | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | ModuleEncoder::branchHintsOnly | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | ModuleEncoder::writeElementSegment | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | ModuleEncoder::writeDataSegment | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/Encoder.cpp | encodeModule | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/NameSection.cpp | byIndex | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/NameSection.cpp | writeValidName | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/NameSection.cpp | encodeNameSection | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+binary/TypeCanon.cpp | canonicalTypeIds | 1 | a throwing interface
+interpreter/Numerics.cpp | operand | 1 | a throwing interface
+interpreter/Numerics.cpp | rowOf | 1 | a throwing interface
+interpreter/ReferenceInterpreter.cpp | Machine::run | 3 | allocates (std::bad_alloc reaches the P17 boundary)
+interpreter/ReferenceInterpreter.cpp | Machine::pop | 1 | a throwing interface
+interpreter/ReferenceInterpreter.cpp | Machine::keepTop | 1 | a throwing interface
+interpreter/ReferenceInterpreter.cpp | Machine::referencedCallee | 1 | calls a function that may throw
+interpreter/ReferenceInterpreter.cpp | Machine::transferToLabel | 1 | calls a function that may throw
+interpreter/ReferenceInterpreter.cpp | Machine::throwReference | 1 | calls a function that may throw
+interpreter/ReferenceInterpreter.cpp | ReferenceInterpreter::invoke | 1 | a throwing interface
+interpreter/ReferenceInterpreter.cpp | ReferenceInterpreter::evaluateConst | 2 | a throwing interface
+interpreter/Simd.cpp | bitsOf | 1 | a throwing interface
+interpreter/Simd.cpp | untrapped | 1 | a throwing interface
+interpreter/Simd.cpp | evaluatorOf | 1 | a throwing interface
+runtime/Instantiate.cpp | Instantiation::Instantiation | 1 | calls a function that may throw
+runtime/Instantiate.cpp | Instantiation::internTypes | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Instantiate.cpp | Instantiation::allocateTags | 1 | calls a function that may throw
+runtime/Instantiate.cpp | Instantiation::fillInitializedTables | 1 | calls a function that may throw
+runtime/Instantiate.cpp | Instantiation::referencesOf | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Instantiate.cpp | Instantiation::resolveExports | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | at | 1 | a throwing interface
+runtime/Store.cpp | append | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | MemoryInstance::MemoryInstance | 1 | a throwing interface
+runtime/Store.cpp | Store::Store | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::internType | 3 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::type | 1 | a throwing interface
+runtime/Store.cpp | Store::addHostFunction | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::addModuleFunction | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::addMemory | 3 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::addTag | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::addException | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::sweepExceptions | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::addModuleInstance | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::exception | 1 | a throwing interface
+text/Annotations.cpp | bytesOf | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/FieldReader.cpp | FieldReader::lookup | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/FieldReader.cpp | FieldReader::readStrings | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/FloatLiteral.cpp | roundQuotient | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/InstructionReader.cpp | InstructionReader::stepIf | 1 | calls a function that may throw
+text/InstructionReader.cpp | InstructionReader::startFolded | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/InstructionReader.cpp | InstructionReader::readImmediates | 1 | calls a function that may throw
+text/InstructionReader.cpp | InstructionReader::readOffsetAndAlignment | 1 | calls a function that may throw
+text/InstructionReader.cpp | InstructionReader::readConstant | 1 | calls a function that may throw
+text/Lexer.cpp | decodeString | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/Lexer.cpp | identifierName | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/ModuleWriter.cpp | Printer::putHeapType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/ModuleWriter.cpp | Printer::putValueType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/ModuleWriter.cpp | Printer::putMemoryArgument | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+validate/Subtyping.cpp | isSubtype | 1 | a throwing interface
+validate/ValidatedModule.cpp | frameCostsOf | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+validate/ValidatedModule.cpp | ValidatedModule::frameShape | 1 | a throwing interface
+validate/ValidatedModule.cpp | ValidatedModule::moduleOf | 1 | a throwing interface
+validate/Validator.cpp | BodyValidator::validate | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+validate/Validator.cpp | validateWatched | 1 | allocates (std::bad_alloc reaches the P17 boundary)

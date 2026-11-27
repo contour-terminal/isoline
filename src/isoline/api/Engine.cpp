@@ -30,7 +30,7 @@ Engine::Engine(EngineConfig config) noexcept: _config { config }
 ThreadPreparation::ThreadPreparation(std::unique_ptr<IThreadResource> resource) noexcept:
     _resource { std::move(resource) }
 {
-    Require(_resource != nullptr);
+    ISOLINE_PRECONDITION(_resource != nullptr);
 }
 
 std::expected<Module, LoadError> Engine::load(std::span<std::byte const> bytes) const noexcept

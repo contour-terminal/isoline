@@ -1,0 +1,2 @@
+exit: 0
+contract-spelling: 1 Require/Guarantee in 1 row(s) of scripts/contract-spelling-rows.txt; installed headers keep 1 Require/Guarantee

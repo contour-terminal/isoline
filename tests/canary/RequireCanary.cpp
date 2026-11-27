@@ -280,6 +280,23 @@ void normalizeAnchorOutOfRange()
                  normalized.customs.size());
 }
 
+/// Store::define() of no host function (api/Store.cpp).
+void storeDefineNullFunction()
+{
+    auto const engine = Engine { configOf(ContractLimits {}, engineRows().front()) };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const defined = store.define(FuncType {}, std::shared_ptr<IHostFunction> {});
+    std::println("Store::define() of no host function returned ({})", defined.has_value());
+}
+
+/// A thread preparation token of no resource (api/Engine.cpp).
+void threadPreparationOfNothing()
+{
+    auto const token = ThreadPreparation { std::unique_ptr<IThreadResource> {} };
+    std::println("ThreadPreparation of no resource was made (empty: {})", token.empty());
+}
+
 /// The check positions (CheckPositions.hpp), each given one round, so that its check fails.
 void positionPreconditionFirst()
 {

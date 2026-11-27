@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/binary/Encoder.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -28,6 +26,7 @@
 #include <isoline/binary/NameSection.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::binary
 {
@@ -297,8 +296,8 @@ namespace
     /// LastSectionAnchor is no anchor (checked: the table is never read out of its bounds).
     [[nodiscard]] SectionWriter const& sectionWriterOf(SectionAnchor anchor) noexcept
     {
-        Require(anchor != SectionAnchor::BeforeFirst);
-        Require(anchor <= LastSectionAnchor);
+        ISOLINE_PRECONDITION(anchor != SectionAnchor::BeforeFirst);
+        ISOLINE_PRECONDITION(anchor <= LastSectionAnchor);
         return SectionWriters[std::to_underlying(anchor) - 1];
     }
 

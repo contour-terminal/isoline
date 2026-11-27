@@ -39,6 +39,8 @@ target_sources(isoline_text
             TopLevel.hpp)
 target_link_libraries(isoline_text PUBLIC isoline::core)
 isoline_apply_target_policy(isoline_text)
+# After the policy, as isoline_core: its checks are spelled through the contracts seam too.
+isoline_apply_language_features(isoline_text)
 
 if(ISOLINE_TESTING)
     # Every *_test.cpp in this directory is one translation unit of the text format's test binary.

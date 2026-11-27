@@ -85,7 +85,8 @@ feature added as one row, and which probes run with which flags.
 
 ## What a native path changes
 
-- **Contracts native:** `isoline_core` compiles as C++26 with the contracts row's flags, then the pinned
+- **Contracts native:** `isoline_core` and `isoline_text`, the libraries whose checks are spelled through the
+  seam, compile as C++26 with the contracts row's flags, then the pinned
   semantic's flag as the last PRIVATE option `isoline_apply_language_features()` adds, and links
   `stdc++exp` PRIVATE. A static library's PRIVATE link items reach consumers as `$<LINK_ONLY:…>`, so an
   installed package links the library without compiling with its flags. The target's compile feature
@@ -143,10 +144,40 @@ by the name at its invocation, so a macro invoked through another macro is not s
 | `src/isoline/**/*.cpp` | a raw `contract_assert` | it bypasses the macros, and their `noexcept` proof |
 | `src/isoline/**/*.{hpp,def}`, installed or private, except the two seam headers | `ISOLINE_PRECONDITION`, `ISOLINE_INVARIANT`, `contract_assert`, and a `pre`/`post` specifier after a declarator (`) pre(`, `) const noexcept post(`; not a call such as `loop.post(`) | contracts stay out of headers until P19 Task 16 |
 | installed headers (every `FILE_SET HEADERS` of `src/isoline/**/CMakeLists.txt`) | `#include <isoline/meta/…>` other than `EnumRows.hpp` | an installed header includes only `meta/EnumRows.hpp` |
+| `src/isoline/**/*.cpp`, tests and `testing/` directories left out | a `Require(` or `Guarantee(` beyond the file's throwing-site rows, fewer than they count, or a row whose file or function is gone | use `ISOLINE_PRECONDITION`/`ISOLINE_INVARIANT` in a `noexcept` function, or add a row |
 
 Comments are never code, and literals are blanked for every pattern but an `#include`. On success the lint
 prints how many `Require()`s the installed headers keep (15): an installed declaration must parse as
 C++23, so they stay until one may carry a contract.
+
+### Which checks are contracts
+
+A check of an implementation file is a contract when it can be one: in a `noexcept` function, with no
+try block around it, its condition only reading. An entry check is `ISOLINE_PRECONDITION`, any other
+`ISOLINE_INVARIANT`. Every other check keeps `Require()`, and its function is a throwing-site row of
+`scripts/contract-spelling-rows.txt`, `file | function | count | reason`, the reason one of three: it
+allocates (`std::bad_alloc` reaches the P17 boundary), it calls a function that may throw, or it is a
+throwing interface (not declared `noexcept`, a lambda or a virtual override among them, though what it
+calls may not throw). The rows were made by spelling every check as a contract and building the native
+lane, whose `static_assert` names each site in a function that may throw.
+
+Fourteen checks, in thirteen functions, are contracts. The entry checks: `Engine::Engine` and `ThreadPreparation`'s constructor
+(`api/Engine.cpp`), `StoreLink::owner()`, `Function::type()` and `Tag::type()` (`api/Extern.cpp`),
+`Store::define()` (`api/Store.cpp`), `sectionWriterOf()`'s two, that its anchor is neither
+`BeforeFirst` nor past `LastSectionAnchor` (`binary/Encoder.cpp`),
+`Store::releaseTrailing()` and `InvocationScope`'s constructor (`runtime/Store.cpp`), and
+`Natural::bitWidth()` (`text/FloatLiteral.cpp`). The others: `Store::call()`'s refusal naming a mismatch
+(`api/Store.cpp`), `shuffle()`'s lane (`interpreter/Simd.cpp`) and `addressOf()`'s value
+(`runtime/Instantiate.cpp`). 84 checks in 68 functions keep `Require()`, as do the 15 of the installed
+headers. The first to become `pre` when installed declarations may carry one (P19 Task 16) are the
+`noexcept` accessors behind installed declarations: `Engine::Engine`, `StoreLink::owner()`,
+`Function::type()` and `Tag::type()`.
+
+A condition only reads: no check interns, allocates or advances anything, so that evaluating it once,
+again, or not at all changes nothing but whether the program ends. The compiler holds half of it, since
+a contract's predicate sees `*this` and the locals as `const`; the rest is a review question, asked of
+every check of the sweep (P19 Task 6). The one condition that interned a type now interns it into a
+local first (`Instantiation::internTypes()`).
 
 ### The semantic is `enforce`
 
@@ -272,7 +303,8 @@ and range-based `for` body.
 ## The installed headers stay C++23
 
 `isoline_apply_language_features()` records every target it is given, on either path, in the global
-property `ISOLINE_LANGUAGE_FEATURE_TARGETS`. Today that is `isoline_core`; another library is one call.
+property `ISOLINE_LANGUAGE_FEATURE_TARGETS`. Today those are `isoline_core` and `isoline_text`; another library is
+one call.
 After all of them are defined, the top-level `CMakeLists.txt` adds one check over all of them,
 `isoline_public_headers_cxx23`. Adding the check seals the registry: a target passed to
 `isoline_apply_language_features()` afterwards would compile with the native features while its headers

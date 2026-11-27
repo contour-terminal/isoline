@@ -21,7 +21,9 @@ ISOLINE_REQUIRE_CANARY_CASE(importsHostTypeBottom, "imports-host-type-bottom", r
 ISOLINE_REQUIRE_CANARY_CASE(hostMemoryStoreAfterDelete, "host-memory-store-after-delete", contract, "isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(hostTableStoreAfterDelete, "host-table-store-after-delete", contract, "isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(hostGlobalStoreAfterDelete, "host-global-store-after-delete", contract, "isAlive[(][)]")
-ISOLINE_REQUIRE_CANARY_CASE(normalizeAnchorOutOfRange, "normalize-anchor-out-of-range", require, "anchor <= LastSectionAnchor")
+ISOLINE_REQUIRE_CANARY_CASE(normalizeAnchorOutOfRange, "normalize-anchor-out-of-range", contract, "anchor <= LastSectionAnchor")
+ISOLINE_REQUIRE_CANARY_CASE(storeDefineNullFunction, "store-define-null-function", contract, "function != nullptr")
+ISOLINE_REQUIRE_CANARY_CASE(threadPreparationOfNothing, "thread-preparation-of-nothing", contract, "_resource != nullptr")
 // The positions a contract-spelled check must be evaluated in (CheckPositions.hpp), both macros.
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionFirst, "precondition-first", contract, "entryRounds == 0")
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionInBracelessIf, "precondition-in-braceless-if", contract, "ifRounds == 0")

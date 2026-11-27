@@ -1,0 +1,2 @@
+exit: 1
+src/isoline/api/Engine.cpp: 1 Require/Guarantee, but its rows count 0: use ISOLINE_PRECONDITION/ISOLINE_INVARIANT in a noexcept function, or add a row

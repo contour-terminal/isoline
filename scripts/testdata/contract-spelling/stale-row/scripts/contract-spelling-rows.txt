@@ -1,0 +1,4 @@
+# file | function | count | reason
+api/Engine.cpp | start | 1 | calls a function that may throw
+api/Engine.cpp | stop | 1 | a throwing interface
+api/Gone.cpp | gone | 1 | a throwing interface
