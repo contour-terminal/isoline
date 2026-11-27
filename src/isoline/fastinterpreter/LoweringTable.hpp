@@ -478,7 +478,7 @@ namespace detail
     inline constexpr auto FusionIndex = spreadFusionRows();
 
     /// Whether @p text is @p parts, concatenated.
-    [[nodiscard]] consteval bool spells(std::string_view text,
+    [[nodiscard]] constexpr bool spells(std::string_view text,
                                         std::initializer_list<std::string_view> parts) noexcept
     {
         for (auto const part: parts)
