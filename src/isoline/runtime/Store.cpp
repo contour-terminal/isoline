@@ -297,6 +297,7 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
         .initialBytes = *initialBytes,
         .maximumBytes = std::min(pages, _limits.maxMemoryBytes / pageBytes) * pageBytes,
         .requiredGuardBytes = _requiredGuardBytes,
+        .requiredTailBytes = requiredTailBytesOf(*initialBytes),
     };
     return _allocator->allocate(request)
         .transform_error([](Refusal refusal) { return embedderRefusal(refusal, AllocationRefusals); })
@@ -306,6 +307,9 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
             Require(memory != nullptr);
             Require(std::as_const(*memory).bytes().size() == request.initialBytes);
             if (memory->guardBytes() < request.requiredGuardBytes)
+                return std::unexpected { Refusal::Guard };
+            // The tail, readable or guarded, that a speculative access past a small memory's end reads.
+            if (!keepsItsTail(*memory))
                 return std::unexpected { Refusal::Guard };
             return memory;
         })

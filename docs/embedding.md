@@ -133,14 +133,23 @@ embedder places guest memory in storage of its own.
   the `requiredGuardBytes` the engine's code needs past the end (`Engine::requiredGuardBytes()`, 0 for
   the interpreters, which check every access). A memory whose `guardBytes()` is smaller is refused with
   `Refusal::Guard`; the guard must hold after every grow, as long as the memory lives.
+- A memory of `size` bytes must keep `MaxAccessWidth − min(size, MaxAccessWidth)` bytes past its end
+  (`requiredTailBytesOf()`), readable (`ILinearMemory::tailBytes()`: storage the memory owns, never the guest's or
+  another object's) or guarded (`guardBytes()`), together, whatever its page size: a memory of no pages needs
+  `MaxAccessWidth`. The fast interpreter's Spectre mask sends an access that fails its bounds check to the
+  memory's base, and code running ahead of the check reads the access's width there, past the end of a memory
+  smaller than it. The store checks `MemoryRequest::requiredTailBytes` when the memory is allocated, refusing it
+  with `Refusal::Guard`, and the rule again after every grow, where a memory that broke it is a contract
+  violation: the grow cannot be undone. A fixed buffer, whose tail shrinks by what each grow adds, keeps the rule
+  once it holds `MaxAccessWidth` bytes with its guard.
 - Growth is the embedder's decision. The store calls `ILinearMemory::grow()` only within the request's
   maximum and the store's budget, and charges the budget only when it succeeds. A memory that declines
   returns `Refusal::Embedder` (`HostMemory` when the host has none), and `memory.grow` returns -1. Any
   other refusal an allocator invents is reported as `Embedder`.
 - `bytes()` may move on every grow; whoever holds a span re-fetches it after every grow and every host
   call. A view of size 0 is valid at any address, even past the end, and views nothing.
-- `HeapMemoryAllocator`, the default, keeps each memory in a `std::vector` without a guard; a store
-  that requires a guard refuses it.
+- `HeapMemoryAllocator`, the default, keeps each memory in a `std::vector` without a guard, and
+  `MaxAccessWidth` zeroed bytes past its end; a store that requires a guard refuses it.
 - An allocator modelled on Contour's provision (the test double `ProvidedMemoryAllocator` is one) hands
   out exactly one memory, in a fixed buffer, and refuses every further request with `Embedder`. A store
   on such an allocator can hold one memory in all: a second instance with a memory, a module of several

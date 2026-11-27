@@ -43,6 +43,7 @@ MemoryRequest requestOf(uint64_t pages)
         .initialBytes = pages * PageSize,
         .maximumBytes = uint64_t { 1 } << 32,
         .requiredGuardBytes = 0,
+        .requiredTailBytes = 0,
     };
 }
 
@@ -70,6 +71,43 @@ TEST_CASE("HeapMemoryAllocator.growsZeroed")
     CHECK(std::ranges::all_of(linear.bytes().first(PageSize),
                               [](std::byte value) { return value == std::byte { 0xFF }; }));
     CHECK(allZero(linear.bytes().subspan(PageSize)));
+}
+
+TEST_CASE("HeapMemoryAllocator.keepsATailPastEveryEnd")
+{
+    // Every memory keeps MaxAccessWidth readable bytes past its end, as its storage reports them, at every
+    // size: a masked access of MaxAccessWidth bytes at the base of a memory of no bytes stays in its storage.
+    auto allocator = HeapMemoryAllocator {};
+    auto request = requestOf(0);
+    request.type.pageSizeLog2 = 0;
+    auto memory = allocator.allocate(request);
+    REQUIRE(memory.has_value());
+    auto& linear = **memory;
+    CHECK(linear.bytes().empty());
+    CHECK(linear.tailBytes() >= isoline::runtime::MaxAccessWidth);
+    CHECK(isoline::runtime::keepsItsTail(linear));
+    for (auto const size: { uint64_t { 1 }, uint64_t { 9 }, uint64_t { 64 } })
+    {
+        INFO("size " << size);
+        REQUIRE(linear.grow(size).has_value());
+        CHECK(linear.bytes().size() == size);
+        CHECK(allZero(linear.bytes()));
+        CHECK(linear.tailBytes() >= isoline::runtime::MaxAccessWidth);
+        CHECK(isoline::runtime::keepsItsTail(linear));
+    }
+}
+
+TEST_CASE("LinearMemory.requiredTailFollowsTheSize")
+{
+    // What an access of MaxAccessWidth bytes at the base reads past a memory of each size; nothing of a
+    // memory of MaxAccessWidth bytes or more.
+    using isoline::runtime::MaxAccessWidth;
+    using isoline::runtime::requiredTailBytesOf;
+    CHECK(requiredTailBytesOf(0) == MaxAccessWidth);
+    CHECK(requiredTailBytesOf(1) == MaxAccessWidth - 1);
+    CHECK(requiredTailBytesOf(MaxAccessWidth - 1) == 1);
+    CHECK(requiredTailBytesOf(MaxAccessWidth) == 0);
+    CHECK(requiredTailBytesOf(PageSize) == 0);
 }
 
 TEST_CASE("HeapMemoryAllocator.refusesWhatNoVectorHolds", "[memory]")

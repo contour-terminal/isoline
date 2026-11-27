@@ -175,8 +175,12 @@ stay below 2^63) and its bytes left would otherwise wrap to a positive count, a 
 the guest chooses; a memory smaller than the access leaves its bytes left after the access negative for every
 offset below 2^63 (`accessMask()`, `Memory.accessMaskAtTheEdges`). What remains is the
 masked access itself, which reads the access's width of bytes at the memory's base: for a memory smaller than
-the access, code ahead of the check may read fewer than that many bytes past its end; the check itself still
-traps. An i32 address is read as 32 bits whatever its slot holds, so the
+the access, code ahead of the check reads past its end: `runtime::MaxAccessWidth` bytes past a memory of none,
+whatever its pages. They are the memory's own: a memory of `size` bytes keeps `MaxAccessWidth − min(size,
+MaxAccessWidth)` bytes past its end, readable or guarded, at every size it grows to (`requiredTailBytesOf()`,
+`ILinearMemory::tailBytes()`). `HeapMemoryAllocator` keeps `MaxAccessWidth` zeroed bytes past every memory's end,
+and the store refuses, with `Refusal::Guard`, an embedder's memory that keeps fewer than its size needs
+(`MemoryRequest::requiredTailBytes`). The check itself still traps. An i32 address is read as 32 bits whatever its slot holds, so the
 one comparison of the i32 check is exact even for a slot left with high bits set
 (`Memory.i32AddressIgnoresTheSlotsHighBits`). Task 19 checks in the optimized handlers' disassembly that the
 select survived.

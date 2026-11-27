@@ -89,6 +89,12 @@ class ProvidedMemoryAllocator final: public IMemoryAllocator
 
         [[nodiscard]] uint64_t guardBytes() const noexcept override { return _allocator->_guardBytes; }
 
+        /// The buffer's bytes past the accessible ones, before the guard: it is sized once, for the largest.
+        [[nodiscard]] uint64_t tailBytes() const noexcept override
+        {
+            return _allocator->_objectBytes - _size;
+        }
+
         [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
         {
             if (_allocator->_decide(newBytes) == GrowDecision::Refuse || newBytes > _allocator->_objectBytes)

@@ -28,8 +28,8 @@ namespace isoline::fastinterpreter
 /// whatever the offset below 2^63. Either would otherwise let a guest choose where a speculative read lands.
 ///
 /// What remains: a masked access reads @p width bytes at the memory's base, so for a memory smaller than
-/// the access, code ahead of the check may read fewer than @p width bytes past its end; the check itself
-/// traps.
+/// the access, code ahead of the check may read up to @p width bytes past its end: the tail every memory
+/// keeps for its size (runtime::requiredTailBytesOf()), never another object's. The check itself traps.
 /// @param effective The offset of the access's first byte: the address plus the static offset.
 /// @param size The memory's size in bytes.
 /// @param width The bytes accessed.

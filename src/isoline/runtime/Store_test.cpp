@@ -982,6 +982,7 @@ class MisreportingAllocator final: public IMemoryAllocator
         [[nodiscard]] std::span<std::byte> bytes() noexcept override { return _bytes; }
         [[nodiscard]] std::span<std::byte const> bytes() const noexcept override { return _bytes; }
         [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
+        [[nodiscard]] uint64_t tailBytes() const noexcept override { return 0; }
         [[nodiscard]] std::expected<void, Refusal> grow(uint64_t) noexcept override
         {
             return std::unexpected { _growRefusal };
@@ -1196,6 +1197,73 @@ TEST_CASE("Store.releaseTrailingReturnsTheBudgets")
     CHECK(store.tableCount() == 2);
 }
 
+TEST_CASE("Store.everyMemoryKeepsTheTailItsSizeNeeds")
+{
+    using isoline::runtime::MaxAccessWidth;
+    using isoline::runtime::requiredTailBytesOf;
+    auto const refused = std::unexpected { AllocationError {
+        AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } } };
+    auto const bytePages = [](uint64_t min, uint64_t max) {
+        return MemoryType { .limits = between(min, max), .pageSizeLog2 = 0 };
+    };
+    auto const noPages = MemoryType { .limits = between(0, 1) };
+
+    // The heap's memories: a masked access of MaxAccessWidth bytes at the base of a memory of no bytes, of
+    // small pages or of large ones, stays within its storage.
+    auto heap = HeapMemoryAllocator {};
+    auto onTheHeap = Store { StoreLimits {}, StoreServices { .allocator = heap } };
+    for (auto const& type: { bytePages(0, 4), noPages })
+    {
+        auto const address = onTheHeap.addMemory(type);
+        REQUIRE(address.has_value());
+        auto const& linear = std::as_const(onTheHeap).memory(*address).storage();
+        CHECK(linear.bytes().empty());
+        CHECK(linear.tailBytes() + linear.guardBytes() >= MaxAccessWidth);
+    }
+
+    // An embedder's memory of exactly its size: refused wherever it holds fewer than MaxAccessWidth bytes,
+    // whatever its pages, taken once it holds that many.
+    auto exact = MisreportingAllocator { std::nullopt, Refusal::Embedder };
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = exact } };
+    CHECK(store.addMemory(bytePages(4, 8)) == refused);
+    CHECK(store.addMemory(bytePages(0, 8)) == refused);
+    CHECK(store.addMemory(noPages) == refused);
+    CHECK(store.memoryCount() == 0);
+    CHECK(store.addMemory(bytePages(MaxAccessWidth, MaxAccessWidth)).has_value());
+    CHECK(store.addMemory(oneToFourPages()).has_value());
+
+    // One byte short, of readable slack and guard together, is refused; exactly enough is taken.
+    for (auto const guard: { uint64_t { 0 }, uint64_t { 1 } })
+    {
+        INFO("guard " << guard);
+        auto shortOfIt = ProvidedMemoryAllocator { MaxAccessWidth - 1 - guard, guard, grantAll };
+        auto withLess = Store { StoreLimits {}, StoreServices { .allocator = shortOfIt } };
+        CHECK(withLess.addMemory(bytePages(0, 1)) == refused);
+        auto enough = ProvidedMemoryAllocator { MaxAccessWidth - guard, guard, grantAll };
+        auto withEnough = Store { StoreLimits {}, StoreServices { .allocator = enough } };
+        CHECK(withEnough.addMemory(bytePages(0, 1)).has_value());
+    }
+
+    // A provided buffer of 16 bytes, whose tail shrinks by what each grow adds, keeps the rule at every size.
+    auto provided = ProvidedMemoryAllocator { 16, 0, grantAll };
+    auto withProvided = Store { StoreLimits {}, StoreServices { .allocator = provided } };
+    auto const address = withProvided.addMemory(bytePages(0, 16));
+    REQUIRE(address.has_value());
+    auto size = uint64_t { 0 };
+    for (auto const target:
+         { uint64_t { 0 }, uint64_t { 1 }, uint64_t { 8 }, uint64_t { 15 }, uint64_t { 16 } })
+    {
+        INFO("size " << target);
+        if (target > size)
+            REQUIRE(withProvided.growMemory(*address, target - size).has_value());
+        size = target;
+        auto const& linear = std::as_const(withProvided).memory(*address).storage();
+        CHECK(linear.bytes().size() == size);
+        CHECK(linear.tailBytes() + linear.guardBytes() >= requiredTailBytesOf(size));
+        CHECK(isoline::runtime::keepsItsTail(linear));
+    }
+}
+
 TEST_CASE("Store.memoryRequestNamesItsBounds")
 {
     /// Allocates on the heap, and keeps the last request.
@@ -1224,13 +1292,17 @@ TEST_CASE("Store.memoryRequestNamesItsBounds")
     CHECK(allocator.last->initialBytes == PageSize);
     CHECK(allocator.last->maximumBytes == 2 * PageSize);
     CHECK(allocator.last->requiredGuardBytes == 0);
+    CHECK(allocator.last->requiredTailBytes == 0);
 
     // Bounded by the store's limit, rounded down to whole pages.
     REQUIRE(store.addMemory(MemoryType { .limits = atLeast(0) }).has_value());
     CHECK(allocator.last->initialBytes == 0);
     CHECK(allocator.last->maximumBytes == 3 * PageSize);
+    // A memory of no bytes needs the whole width past its end, whatever its pages.
+    CHECK(allocator.last->requiredTailBytes == isoline::runtime::MaxAccessWidth);
     REQUIRE(store.addMemory(MemoryType { .limits = atLeast(0), .pageSizeLog2 = 0 }).has_value());
     CHECK(allocator.last->maximumBytes == (3 * PageSize) + 100);
+    CHECK(allocator.last->requiredTailBytes == isoline::runtime::MaxAccessWidth);
 }
 
 TEST_CASE("Store.refusalScopeRestoresTheOuterRecord")
@@ -1358,4 +1430,52 @@ TEST_CASE("Contract.Store.addGlobalOfItsOwnKind", "[.contract]")
         store.addGlobal(GlobalType { .type = isoline::binary::I32, .mutability = Mutability::Const },
                         isoline::runtime::I64 { .bits = 1 });
     FAIL("SURVIVED: an i32 global added with an i64 value");
+}
+
+TEST_CASE("Contract.Store.grownMemoryKeepsItsTail", "[.contract]")
+{
+    // An embedder's memory that drops its tail when it grows breaks ILinearMemory's contract, which the store
+    // checks after the grow: a refusal could not undo it.
+    isoline::runtime::testing::endAtContractViolation();
+    class Shedding final: public isoline::runtime::ILinearMemory
+    {
+      public:
+        [[nodiscard]] std::span<std::byte> bytes() noexcept override
+        {
+            return std::span { _storage }.first(static_cast<std::size_t>(_size));
+        }
+        [[nodiscard]] std::span<std::byte const> bytes() const noexcept override
+        {
+            return std::span { _storage }.first(static_cast<std::size_t>(_size));
+        }
+        [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
+        [[nodiscard]] uint64_t tailBytes() const noexcept override
+        {
+            return _size == 0 ? _storage.size() : 0;
+        }
+        [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
+        {
+            _size = newBytes;
+            return {};
+        }
+
+      private:
+        std::vector<std::byte> _storage = std::vector<std::byte>(64);
+        uint64_t _size = 0;
+    };
+    class SheddingAllocator final: public IMemoryAllocator
+    {
+      public:
+        [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, Refusal> allocate(
+            isoline::runtime::MemoryRequest const& /*request*/) noexcept override
+        {
+            return std::make_unique<Shedding>();
+        }
+    };
+    auto allocator = SheddingAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const address = store.addMemory(MemoryType { .limits = between(0, 4), .pageSizeLog2 = 0 });
+    REQUIRE(address.has_value());
+    std::ignore = store.growMemory(*address, 1);
+    FAIL("SURVIVED: a memory grew past the tail its size needs");
 }

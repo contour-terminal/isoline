@@ -149,16 +149,22 @@ class MemoryInstance
         return std::as_const(*_memory).bytes();
     }
 
+    /// Its storage, read-only: its tail and guard past the end (keepsItsTail()).
+    /// @return The storage.
+    [[nodiscard]] ILinearMemory const& storage() const noexcept { return *_memory; }
+
   private:
     friend class Store;
 
     /// Grows the storage to @p newBytes, zeroed (ILinearMemory::grow()): only the store, which
-    /// charges the growth against its budget, grows a memory.
+    /// charges the growth against its budget, grows a memory. A storage that grew without the tail its new
+    /// size needs (keepsItsTail()) broke ILinearMemory's contract, which is checked: a refusal could not
+    /// undo the grow it already made.
     /// @param newBytes The new size in bytes.
     /// @return Nothing, or the storage's refusal.
     [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept
     {
-        return _memory->grow(newBytes);
+        return _memory->grow(newBytes).transform([this] { Require(keepsItsTail(*_memory)); });
     }
 
     std::unique_ptr<ILinearMemory> _memory;
@@ -362,7 +368,8 @@ class Store
     /// @return Its address; LimitExceeded when the store holds StoreLimits::maxMemories memories
     ///         already or its bytes exceed those left; otherwise an AllocationFailure: TypeMaximum when
     ///         its size is past its type's reach, the allocator's refusal (Embedder, HostMemory), or
-    ///         Guard when the memory's guard is smaller than StoreServices::requiredGuardBytes.
+    ///         Guard when the memory's guard is smaller than StoreServices::requiredGuardBytes, or its tail
+    ///         and guard together than its MemoryRequest::requiredTailBytes.
     [[nodiscard]] std::expected<MemAddr, AllocationError> addMemory(binary::MemoryType type);
 
     /// Adds a global. Precondition (checked): @p value is of type.type's kind (GlobalInstance::assign()).
