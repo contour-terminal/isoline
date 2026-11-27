@@ -55,7 +55,12 @@ struct StoreLimits
     uint32_t maxCallDepth = 10'000;
 
     /// The stack values the frames in progress may cost together, host-nested invocations' included,
-    /// before a call traps with CallStackExhausted: about 100 MiB of values.
+    /// before a call traps with CallStackExhausted. The charge is counted in values, the same in every
+    /// engine; what a value takes in bytes is each engine's own: interpreter::ValueBytes on the
+    /// reference interpreter's stacks (a runtime::Value, its size the standard library's variant's), and on
+    /// the fast interpreter's slot chunks at most fastinterpreter::SlotBytesPerValue, which
+    /// docs/fast-interpreter.md's chunk bound multiplies by up to four. The default, 4 Mi values, is tens of
+    /// MiB on the reference engine.
     ///
     /// A Wasm frame costs validate::ValidatedModule::frameCost(), params + locals + its most operands +
     /// its deepest label nesting + 1, and a host frame hostFrameCost(), params + results + 1: static

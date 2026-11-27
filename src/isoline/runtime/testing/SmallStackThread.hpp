@@ -18,9 +18,10 @@ enum class SmallStackError : uint8_t
     Unavailable, ///< The platform refused a thread of the size (too small for it, or out of resources).
 };
 
-/// The stack a test thread gets on this build, from tests/CMakeLists.txt's row for its flavour: 512 KiB on an
-/// optimized build without sanitizers or coverage, whose dispatch frames -Wframe-larger-than bounds, and more
-/// on any other, whose frames carry redzones and counters.
+/// The stack a test thread gets on this build: its flavour's host-stack row (src/isoline/CMakeLists.txt,
+/// isolineNestingRows), which holds StoreLimits::maxNestedInvocations nestings of the engine that takes the
+/// most (runtime::nestedInvocationBytes(), measured per flavour), with a margin. 512 KiB on a release build,
+/// where the dispatch files' frames are bounded.
 inline constexpr auto SmallStackBytes = std::size_t { ISOLINE_SMALL_STACK_BYTES };
 
 /// Runs @p work on a new thread of @p stackBytes of stack, and returns once it is done: the thread is joined

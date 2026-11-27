@@ -151,17 +151,81 @@ namespace
         LoweredModule const* module = nullptr;     ///< Its module's code.
         LoweredFunction const* function = nullptr; ///< Its own code.
     };
+
+    /// One active Wasm frame of an invocation.
+    struct Frame
+    {
+        LoweredFunction const* function = nullptr; ///< Its code.
+        LoweredModule const* module = nullptr;     ///< Its module's code, which a call by code index reaches.
+        ModuleInstance const* instance = nullptr;  ///< Its instance.
+        uint32_t instanceAddress = 0;              ///< The instance's address: the caller of a host callee.
+        Slot* fp = nullptr;                        ///< Its first slot.
+        Slot* results = nullptr;        ///< Where its results go when it returns: its caller's arguments.
+        Word const* returnPc = nullptr; ///< Where its caller goes on; null for the invocation's own function.
+        std::size_t chunk = 0;          ///< The chunk its slots are in.
+    };
+
+    /// The frame records of an invocation, a stack in blocks of FrameBlockSize: a push never copies the
+    /// records already there, as a growing vector would (64 MiB at once, unpolled, a million frames deep),
+    /// and a record stays where it is until it is popped. The blocks are kept for the frames entered later,
+    /// and freed when the stack ends.
+    class FrameStack
+    {
+      public:
+        /// The records of one block.
+        static constexpr auto FrameBlockSize = std::size_t { 1'024 };
+
+        [[nodiscard]] bool empty() const noexcept { return _size == 0; }
+
+        [[nodiscard]] std::size_t size() const noexcept { return _size; }
+
+        /// The newest record. Precondition: the stack is not empty.
+        [[nodiscard]] Frame& back() noexcept { return at(_size - 1); }
+
+        /// The newest record. Precondition: the stack is not empty.
+        [[nodiscard]] Frame const& back() const noexcept { return at(_size - 1); }
+
+        /// The record @p index from the oldest.
+        [[nodiscard]] Frame& at(std::size_t index) noexcept
+        {
+            return (*_blocks[index / FrameBlockSize])[index % FrameBlockSize];
+        }
+
+        /// The record @p index from the oldest.
+        [[nodiscard]] Frame const& at(std::size_t index) const noexcept
+        {
+            return (*_blocks[index / FrameBlockSize])[index % FrameBlockSize];
+        }
+
+        /// Pushes @p frame, starting a block where the newest is full.
+        void push(Frame const& frame)
+        {
+            if (_size == _blocks.size() * FrameBlockSize)
+                _blocks.push_back(std::make_unique<std::array<Frame, FrameBlockSize>>());
+            at(_size) = frame;
+            ++_size;
+        }
+
+        /// Pops the newest record. Precondition: the stack is not empty.
+        void pop() noexcept { --_size; }
+
+      private:
+        std::vector<std::unique_ptr<std::array<Frame, FrameBlockSize>>> _blocks;
+        std::size_t _size = 0;
+    };
 } // namespace
 
 /// One invocation's execution: its context, its frames and its slot chunks.
 ///
-/// Frames live in a vector, never on the host stack: a call pushes one, a return pops one, and lowered code
-/// runs on in the same dispatch loop, so no depth of Wasm calls recurses on the host stack. A frame's slots
-/// are in a chunk: a callee's frame begins at its arguments, in its caller's chunk, where the whole frame
-/// fits there, and at the start of the next chunk otherwise, its arguments copied there once. A chunk holds
-/// max(MinimumChunkSlots, the frame's slots) slots, is kept for the frames entered later, and is freed when
-/// the invocation ends; a chunk too small for the frame that needs it is replaced, and every chunk after it
-/// freed. So the chunks hold at most twice the slots of the frames active at once, plus one chunk.
+/// Frame records live in a FrameStack, never on the host stack: a call pushes one, a return pops one, and
+/// lowered code runs on in the same dispatch loop, so no depth of Wasm calls recurses on the host stack. A
+/// frame's slots are in a chunk: a callee's frame begins at its arguments, in its caller's chunk, where the
+/// whole frame fits there, and at the start of the next chunk otherwise, its arguments copied there once (a
+/// tail callee alone in its chunk takes that chunk). A chunk holds the frame's slots and at least
+/// chunkSlotsAt() its index, is kept for the frames entered later, and is freed when the invocation ends; a
+/// chunk too small for the frame that needs it is replaced, and every chunk after it freed. The bound this
+/// keeps is docs/fast-interpreter.md's: 2 × A + min(2 × A, MaximumGrownChunkSlots) + FirstChunkSlots slots
+/// per invocation, A the slots of its frames active at once.
 ///
 /// Every frame it entered is given back when it ends, however execution stopped: the depth and the stack
 /// charge of each (~Invocation()).
@@ -196,8 +260,8 @@ class Invocation
     ~Invocation()
     {
         _depth -= static_cast<uint32_t>(_frames.size());
-        for (auto const& frame: _frames)
-            _context.store.releaseFrame(frame.function->frameCost);
+        for (auto const index: std::views::iota(std::size_t { 0 }, _frames.size()))
+            _context.store.releaseFrame(_frames.at(index).function->frameCost);
     }
 
     /// Invokes @p function, of @p type, with @p args and writes its results to @p results: a module
@@ -218,7 +282,7 @@ class Invocation
             return runtime::callHostFunction(
                 _context.store, _executor, *callee.host, std::nullopt, args, results);
         }
-        auto const entered = enterFrame(callee, nullptr, NoChunk, nullptr, nullptr);
+        auto const entered = enterFrame(callee, nullptr, NoChunk, 0, nullptr, nullptr);
         if (!entered)
             return stop(entered.error());
         storeValues(type.params, args, *entered);
@@ -266,7 +330,8 @@ class Invocation
             state.pc += site.words;
             return { .state = state, .flow = Flow::Continue };
         }
-        auto const entered = enterFrame(*callee, arguments, caller.chunk, state.pc + site.words, arguments);
+        auto const entered =
+            enterFrame(*callee, arguments, caller.chunk, caller.chunk + 1, state.pc + site.words, arguments);
         if (!entered)
             return stopping(state, leaveTrapped(_context, state.stepsLeft, entered.error()));
         state.pc = callee->function->code.data();
@@ -287,19 +352,6 @@ class Invocation
     }
 
   private:
-    /// One active Wasm frame of the invocation.
-    struct Frame
-    {
-        LoweredFunction const* function = nullptr; ///< Its code.
-        LoweredModule const* module = nullptr;     ///< Its module's code, which a call by code index reaches.
-        ModuleInstance const* instance = nullptr;  ///< Its instance.
-        uint32_t instanceAddress = 0;              ///< The instance's address: the caller of a host callee.
-        Slot* fp = nullptr;                        ///< Its first slot.
-        Slot* results = nullptr;        ///< Where its results go when it returns: its caller's arguments.
-        Word const* returnPc = nullptr; ///< Where its caller goes on; null for the invocation's own function.
-        std::size_t chunk = 0;          ///< The chunk its slots are in.
-    };
-
     /// The callee of a function address: a host function, or a module function and its code.
     [[nodiscard]] Callee calleeAt(FuncAddr address) const
     {
@@ -371,12 +423,14 @@ class Invocation
     /// @param arguments Its arguments, in consecutive slots of @p argumentsChunk; null for the invocation's
     ///        own function, whose arguments the caller stores into the frame.
     /// @param argumentsChunk The chunk of @p arguments; NoChunk for the invocation's own function.
+    /// @param target The chunk the frame takes where it does not fit after its arguments (place()).
     /// @param returnPc Where the caller goes on; null for the invocation's own function.
     /// @param results Where its results go when it returns; null for the invocation's own function.
     /// @return The frame's first slot; or Trap{CallStackExhausted}, past the depth or the stack budget.
     [[nodiscard]] std::expected<Slot*, Trap> enterFrame(Callee const& callee,
                                                         Slot* arguments,
                                                         std::size_t argumentsChunk,
+                                                        std::size_t target,
                                                         Word const* returnPc,
                                                         Slot* results) noexcept
     {
@@ -385,15 +439,15 @@ class Invocation
         auto const& function = *callee.function;
         if (auto const charged = _context.store.chargeFrame(function.frameCost); !charged)
             return std::unexpected { charged.error() };
-        auto const [fp, chunk] = place(function, arguments, argumentsChunk);
-        _frames.push_back(Frame { .function = &function,
-                                  .module = callee.module,
-                                  .instance = callee.instance,
-                                  .instanceAddress = callee.instanceAddress,
-                                  .fp = fp,
-                                  .results = results != nullptr ? results : fp,
-                                  .returnPc = returnPc,
-                                  .chunk = chunk });
+        auto const [fp, chunk] = place(function, arguments, argumentsChunk, target);
+        _frames.push(Frame { .function = &function,
+                             .module = callee.module,
+                             .instance = callee.instance,
+                             .instanceAddress = callee.instanceAddress,
+                             .fp = fp,
+                             .results = results != nullptr ? results : fp,
+                             .returnPc = returnPc,
+                             .chunk = chunk });
         ++_depth;
         initializeLocals(*callee.instance, function, fp);
         _context.instance = callee.instance;
@@ -402,12 +456,16 @@ class Invocation
     }
 
     /// Where the frame of @p function goes, its arguments at @p arguments in @p argumentsChunk: there, where
-    /// the whole frame fits in the chunk; else at the start of the next chunk, which is reused where it is
-    /// large enough and replaced (every chunk after it freed) where it is not, the arguments copied there.
+    /// the whole frame fits in the chunk; else at the start of chunk @p target, which is reused where it is
+    /// large enough and replaced (every chunk after it freed) where it is not, the arguments copied there
+    /// first. A new chunk holds the frame's slots, and at least chunkSlotsAt(@p target).
+    /// @param target The chunk after the arguments' (a call), or theirs where no other frame is left in it
+    ///        (a tail call), or 0 for the invocation's own function.
     /// @return The frame's first slot, and its chunk.
     [[nodiscard]] std::pair<Slot*, std::size_t> place(LoweredFunction const& function,
                                                       Slot* arguments,
-                                                      std::size_t argumentsChunk) noexcept
+                                                      std::size_t argumentsChunk,
+                                                      std::size_t target) noexcept
     {
         if (argumentsChunk != NoChunk)
         {
@@ -416,19 +474,38 @@ class Invocation
             if (chunk.count() - offset >= function.frameSlots)
                 return { arguments, argumentsChunk };
         }
-        auto const next = argumentsChunk == NoChunk ? std::size_t { 0 } : argumentsChunk + 1;
-        auto const needed = std::max(MinimumChunkSlots, uint64_t { function.frameSlots });
-        if (next >= _chunks.size() || _chunks[next].count() < needed)
+        auto const needed = std::max(chunkSlotsAt(target), uint64_t { function.frameSlots });
+        if (target < _chunks.size() && _chunks[target].count() >= needed)
         {
-            // Every chunk from it on holds no active frame: the frames above the caller are gone.
-            while (_chunks.size() > next)
-                _chunks.pop_back();
-            _chunks.emplace_back(_slotMemory, needed);
-        }
-        auto* const fp = _chunks[next].slots();
-        if (arguments != nullptr)
+            // Only a call reuses a chunk: its arguments are in the chunk before, and a tail callee alone in a
+            // chunk large enough fits after its arguments, at the chunk's start, already.
+            auto* const fp = _chunks[target].slots();
             std::copy_n(arguments, function.paramSlots, fp);
-        return { fp, next };
+            return { fp, target };
+        }
+        // No chunk after the arguments' holds an active frame, so they go before the new one is allocated:
+        // only a tail callee's arguments may be in the chunk it replaces, which is freed once they are
+        // copied.
+        auto const keep = argumentsChunk == target ? target + 1 : target;
+        while (_chunks.size() > keep)
+            _chunks.pop_back();
+        auto replacement = SlotChunk { _slotMemory, needed };
+        if (arguments != nullptr)
+            std::copy_n(arguments, function.paramSlots, replacement.slots());
+        while (_chunks.size() > target)
+            _chunks.pop_back();
+        _chunks.push_back(std::move(replacement));
+        return { _chunks.back().slots(), target };
+    }
+
+    /// The slots a new chunk @p index holds at least: FirstChunkSlots for an invocation's first, twice the
+    /// chunk before for every later one, up to MaximumGrownChunkSlots. So an invocation that calls little
+    /// (a host re-entry, say) holds a small chunk, and one that recurses deep grows to large ones quickly.
+    [[nodiscard]] uint64_t chunkSlotsAt(std::size_t index) const noexcept
+    {
+        if (index == 0)
+            return FirstChunkSlots;
+        return std::min(MaximumGrownChunkSlots, 2 * _chunks[index - 1].count());
     }
 
     /// Sets @p function's declared locals to their defaults: a Zero run's slots to zero, a Null run's
@@ -450,7 +527,7 @@ class Invocation
     void leaveFrame() noexcept
     {
         _context.store.releaseFrame(_frames.back().function->frameCost);
-        _frames.pop_back();
+        _frames.pop();
         --_depth;
     }
 
@@ -487,7 +564,12 @@ class Invocation
                 return stopping(state, leaveReturning(_context, state.stepsLeft, ending.results));
             return resumeCaller(state, ending.returnPc);
         }
-        auto const entered = enterFrame(callee, ending.fp, ending.chunk, ending.returnPc, ending.results);
+        // Where no other frame is left in the ending frame's chunk, the callee takes that chunk, replacing it
+        // where it is too small: a chain of ever larger tail-called frames holds one chunk, not one each.
+        auto const alone = _frames.empty() || _frames.back().chunk != ending.chunk;
+        auto const target = alone ? ending.chunk : ending.chunk + 1;
+        auto const entered =
+            enterFrame(callee, ending.fp, ending.chunk, target, ending.returnPc, ending.results);
         if (!entered)
             return stopping(state, leaveTrapped(_context, state.stepsLeft, entered.error()));
         state.pc = callee.function->code.data();
@@ -547,7 +629,7 @@ class Invocation
     std::pmr::memory_resource* _slotMemory;
     uint64_t _stepsLeft;
     std::vector<SlotChunk> _chunks;    ///< The slot chunks, in the order the frames reached them.
-    std::vector<Frame> _frames;        ///< The active frames, the invocation's own function first.
+    FrameStack _frames;                ///< The active frames, the invocation's own function first.
     std::vector<Value> _hostArguments; ///< A host call's arguments, reused by every host call.
     std::vector<Value> _hostResults;   ///< A host call's results, reused by every host call.
 };

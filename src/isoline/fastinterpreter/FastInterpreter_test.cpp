@@ -68,7 +68,7 @@ using isoline::fastinterpreter::FusionTable;
 using isoline::fastinterpreter::LoweredFunction;
 using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::LoweringRows;
-using isoline::fastinterpreter::MinimumChunkSlots;
+using isoline::fastinterpreter::MaximumGrownChunkSlots;
 using isoline::fastinterpreter::OperationForm;
 using isoline::fastinterpreter::OperationId;
 using isoline::fastinterpreter::OperationTable;
@@ -524,7 +524,7 @@ TEST_CASE("FastInterpreter.runsAFrameOverSixtyFiveThousandSlots")
     auto reference = Harness { module, Reference };
     auto harness = Harness { module, engine };
     CHECK(harness.code()->functions().front().localSlots > 70'000);
-    CHECK(harness.code()->functions().front().frameSlots > MinimumChunkSlots);
+    CHECK(harness.code()->functions().front().frameSlots > MaximumGrownChunkSlots);
     CHECK(harness.result(0) == i64(12));
     CHECK(reference.result(0) == i64(12));
 }
