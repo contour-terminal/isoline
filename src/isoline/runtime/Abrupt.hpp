@@ -28,6 +28,10 @@ enum class MismatchKind : uint8_t
     ForeignReference, ///< A reference to a function or exception this store does not hold.
 };
 
+/// The last MismatchKind enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error details (c/detail/ErrorRows.hpp) number the enumerators up to it.
+inline constexpr auto LastMismatchKind = MismatchKind::ForeignReference;
+
 /// The first value that is not of its type: what is wrong, and where.
 struct ValueMismatch
 {

@@ -66,16 +66,25 @@ endif()
 # No C++ exception crosses the C API and every call across it has its convention: each isoline_
 # declaration is ISOLINE_API ... ISOLINE_CALL ... ISOLINE_NOEXCEPT, each function pointer a header declares
 # is (ISOLINE_CALL* name), each isoline_ definition noexcept and each wasm_ body one detail::boundary() call
-# (scripts/c-api-noexcept.py; its selftest breaks each rule once).
-file(GLOB isolineBoundaryHeaders CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/isoline/c/*.h")
+# and every exported symbol has exactly one definition those checks saw, so none hides behind a macro or is
+# made by one (scripts/c-api-noexcept.py; its selftest breaks each rule once).
+file(GLOB_RECURSE isolineBoundaryHeaders CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/isoline/c/*.h")
 file(GLOB_RECURSE isolineBoundarySources CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/isoline/c/*.cpp")
 list(FILTER isolineBoundarySources EXCLUDE REGEX "_test[.]cpp$")
 add_test(NAME c-api-noexcept-selftest
          COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-noexcept_test.py")
 add_test(NAME c-api-noexcept
          COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-noexcept.py"
+                 --symbols "${PROJECT_SOURCE_DIR}/src/isoline/c/exported-symbols.txt"
                  ${isolineBoundaryHeaders} ${isolineBoundarySources})
 set_tests_properties(c-api-noexcept-selftest c-api-noexcept PROPERTIES LABELS lint)
+
+# docs/c-api.md's Errors section is written by scripts/c-api-error-docs.py from error.h, ErrorCodeRows and the
+# pinned detail lists; the lint fails while the checked-in section differs from what they give.
+add_test(NAME c-api-error-docs
+         COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-error-docs.py" check
+                 --source "${PROJECT_SOURCE_DIR}")
+set_tests_properties(c-api-error-docs PROPERTIES LABELS lint)
 
 # How each object format is inspected: format|export-listing tool|name-reading tool|the file whose names
 # are read|the name it must carry. The tools are looked up by the names given, the first found wins.

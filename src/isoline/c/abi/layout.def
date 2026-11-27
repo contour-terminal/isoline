@@ -96,3 +96,6 @@ ISOLINE_LAYOUT_FIELD(wasm_val_t, of, 8, 8)
 ISOLINE_LAYOUT_STRUCT(wasm_limits_t, 8, 4)
 ISOLINE_LAYOUT_FIELD(wasm_limits_t, min, 0, 4)
 ISOLINE_LAYOUT_FIELD(wasm_limits_t, max, 4, 4)
+
+// error.h: an error's code.
+ISOLINE_LAYOUT_SCALAR(isoline_error_code_t, 4)

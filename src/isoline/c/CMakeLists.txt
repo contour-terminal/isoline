@@ -36,9 +36,11 @@ if(NOT isolineVersionScript MATCHES "^ISOLINE_C_${isolineAbiNamePattern} [{]")
 endif()
 
 set(isolineCSources
-    Abi.cpp)
+    Abi.cpp
+    Error.cpp)
 set(isolineCHeaders
     abi.h
+    error.h
     export.h
     isoline.h)
 set(isolineWasmHeader "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include/wasm.h")
@@ -229,6 +231,10 @@ endif()
 # library, which carries them. The C tests, which see the public headers only, are tests/c/.
 if(ISOLINE_TESTING)
     file(GLOB_RECURSE isolineCTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
+    # The cases out of host memory replace the global operator new, which is the whole program's: their
+    # binary is isoline_c_memory_test, below.
+    set(isolineCHostMemoryTestSources "${CMAKE_CURRENT_SOURCE_DIR}/ErrorHostMemory_test.cpp")
+    list(REMOVE_ITEM isolineCTestSources ${isolineCHostMemoryTestSources})
     # The C test support compiled as C, a callback the C++ tests call through the C API's trampoline.
     add_executable(isoline_c_test ${isolineCTestSources} "${CMAKE_CURRENT_SOURCE_DIR}/testing/CallingConventionProbe.c")
     target_link_libraries(isoline_c_test PRIVATE isoline::c_static Catch2::Catch2WithMain)
@@ -236,4 +242,23 @@ if(ISOLINE_TESTING)
     isoline_apply_target_policy(isoline_c_test TEST)
     add_test(NAME isoline_c_test COMMAND isoline_c_test)
     set_tests_properties(isoline_c_test PROPERTIES LABELS "c-api;unit" TIMEOUT 300)
+    # A C++ exception other than std::bad_alloc inside boundary() is a defect, and ends the process rather
+    # than becoming an error. The pass is the case's terminate handler's line, not an exit status: a case
+    # that merely failed must not pass, and CTest's WILL_FAIL counts a process that aborts as failed.
+    add_test(NAME isoline_c_test.logicErrorTerminates COMMAND isoline_c_test "Boundary.logicErrorTerminates")
+    set_tests_properties(isoline_c_test.logicErrorTerminates PROPERTIES LABELS "c-api;unit" TIMEOUT 120
+                         PASS_REGULAR_EXPRESSION "terminated in boundary[(][)]"
+                         FAIL_REGULAR_EXPRESSION "did not end the process")
+
+    # Out of host memory, under a refusing allocator (tests/memory/AllocationCounter.cpp). TSan's runtime
+    # defines operator new itself, not replaceably, so a TSan build leaves it out, as it does
+    # isoline_memory_test.
+    if(NOT ISOLINE_SANITIZE STREQUAL "thread")
+        add_executable(isoline_c_memory_test ${isolineCHostMemoryTestSources}
+                                             "${PROJECT_SOURCE_DIR}/tests/memory/AllocationCounter.cpp")
+        target_link_libraries(isoline_c_memory_test PRIVATE isoline::c_static Catch2::Catch2WithMain)
+        target_include_directories(isoline_c_memory_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests/memory")
+        isoline_apply_target_policy(isoline_c_memory_test TEST)
+        isoline_add_capped_test(NAME isoline_c_memory_test TARGET isoline_c_memory_test LABELS "c-api;unit" TIMEOUT 120)
+    endif()
 endif()

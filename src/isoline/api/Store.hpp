@@ -92,6 +92,10 @@ enum class InvalidTypeReason : uint8_t
     NonReferenceElement, ///< A table's element type is not a reference type.
 };
 
+/// The last InvalidTypeReason enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastInvalidTypeReason = InvalidTypeReason::NonReferenceElement;
+
 /// A type no entity the host defines may have (Store::define(), defineMemory(), defineTable(),
 /// defineGlobal()): nothing was added to the store.
 struct InvalidType
@@ -119,6 +123,10 @@ enum class MemoryAccessError : uint8_t
     StoreDeleted,  ///< The instance's store is gone: Instance's accessors.
 };
 
+/// The last MemoryAccessError enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastMemoryAccessError = MemoryAccessError::StoreDeleted;
+
 /// Why Store::function(Ref const&) could not name the function a reference refers to.
 enum class FunctionRefError : uint8_t
 {
@@ -127,6 +135,10 @@ enum class FunctionRefError : uint8_t
     UnknownAddress, ///< The store holds no function at its address (another store's reference, say).
 };
 
+/// The last FunctionRefError enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastFunctionRefError = FunctionRefError::UnknownAddress;
+
 /// Why the store could not read or write a global (Store::globalValue(), Store::setGlobal()).
 enum class GlobalAccessError : uint8_t
 {
@@ -134,6 +146,10 @@ enum class GlobalAccessError : uint8_t
     Immutable,     ///< Only a mutable global is set: the global is const.
     ValueMismatch, ///< The value is not of the global's type.
 };
+
+/// The last GlobalAccessError enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastGlobalAccessError = GlobalAccessError::ValueMismatch;
 
 /// Why the store could not read or write a table (Store::tableSize(), Store::tableGet(),
 /// Store::tableSet()).
@@ -144,12 +160,20 @@ enum class TableAccessError : uint8_t
     ValueMismatch, ///< The reference is not of the table's element type.
 };
 
+/// The last TableAccessError enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastTableAccessError = TableAccessError::ValueMismatch;
+
 /// Why Instance::exportAt() could not name an export.
 enum class ExportAccessError : uint8_t
 {
     OutOfRange,   ///< The index is not below the number of the instance's exports.
     StoreDeleted, ///< The instance's store is gone.
 };
+
+/// The last ExportAccessError enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastExportAccessError = ExportAccessError::StoreDeleted;
 
 /// What one store changes about the engine it is made for, fixed at its construction: its limits, and
 /// who observes its polls.

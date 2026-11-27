@@ -11,6 +11,7 @@
 #pragma once
 
 #include <isoline/c/abi.h>
+#include <isoline/c/error.h>
 #include <isoline/c/export.h>
 
 /* After export.h, which gives wasm.h's WASM_API_EXTERN the C API's annotation. */

@@ -23,7 +23,11 @@ A C++ source (.cpp) that implements it:
 Comments, string literals and preprocessor lines are ignored. Given files of neither kind, or files that
 declare and define nothing the rules apply to, it fails: a lint that checks nothing passes nothing.
 
-Usage: c-api-noexcept.py <file>...
+With --symbols, every symbol of the list file (src/isoline/c/exported-symbols.txt) must have exactly one
+definition among the sources that the checks above saw: a definition hidden behind a macro, or made by one,
+is no definition the checks could judge, and so fails.
+
+Usage: c-api-noexcept.py [--symbols <exported-symbols.txt>] <file>...
 """
 
 import pathlib
@@ -41,11 +45,42 @@ ISOLINE_DECLARATION = re.compile(
     r"^ISOLINE_API\s+\S(?:.*\S)?\s*\bISOLINE_CALL\s+isoline_\w+\s*\(.*\)\s*ISOLINE_NOEXCEPT$", re.DOTALL)
 ISOLINE_DEFINITION = re.compile(r"\bISOLINE_CALL\s+isoline_\w+\s*\(.*\)\s*noexcept$", re.DOTALL)
 
-# A function pointer declarator: `(<qualifiers> * <name>)(`, the name possibly absent (an abstract one).
-FUNCTION_POINTER = re.compile(r"\(\s*(?P<prefix>[^()*]*?)\s*\*\s*(?P<name>" + IDENTIFIER + r")?\s*\)\s*\(")
+# A function pointer declarator: `(<convention> * <qualifiers> <name>)(`, the name possibly absent (an
+# abstract one).
+# The pointer itself may be qualified (`(*const f)`), which the convention still precedes.
+FUNCTION_POINTER = re.compile(r"\(\s*(?P<prefix>[^()*]*?)\s*\*\s*(?:(?:const|volatile)\b\s*)*(?P<name>"
+                              + IDENTIFIER + r")?\s*\)\s*\(")
 
-# A wasm_ body's one statement: a call of detail::boundary(), returned or not.
-BOUNDARY_CALL = re.compile(r"^(?:return\s+)?(?:(?:::)?isoline::c::)?detail::boundary\s*\(.*\)$", re.DOTALL)
+# A wasm_ body's one statement: a call of detail::boundary(), returned or not, up to its opening parenthesis;
+# the parenthesis must close at the statement's end (isBoundaryCall()), so nothing follows the call.
+BOUNDARY_CALL = re.compile(r"^(?:return\s+)?(?:(?:::)?isoline::c::)?detail::boundary\s*\(", re.DOTALL)
+
+
+def isBoundaryCall(statement):
+    """Whether the statement is one call of detail::boundary() and nothing else: no comma operator, no
+    other call after it, no operator applied to its result."""
+    match = BOUNDARY_CALL.match(statement)
+    if match is None:
+        return False
+    depth = 0
+    for index in range(match.end() - 1, len(statement)):
+        char = statement[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                return statement[index + 1:].strip() == ""
+    return False
+
+
+def isDigitSeparator(text, index):
+    """Whether the quote at @p index separates digits (4'096, 0xFF'FF), not opens a character literal: it
+    follows a character of a number token that begins with a digit."""
+    start = index
+    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_'."):
+        start -= 1
+    return start < index and text[start].isdigit()
 
 
 def stripped(text):
@@ -83,6 +118,10 @@ def stripped(text):
                 break
             out.append(re.sub(r"[^\n]", " ", text[index:end]))
             index = end
+            continue
+        if char == "'" and isDigitSeparator(text, index):
+            out.append(char)
+            index += 1
             continue
         if char in "\"'":
             end = index + 1
@@ -194,6 +233,7 @@ def sourceProblems(path, text):
     code = stripped(text)
     problems = []
     checked = 0
+    defined = []
     index = 0
     headStart = 0
     while index < len(code):
@@ -215,36 +255,57 @@ def sourceProblems(path, text):
         if name is not None and name.startswith(("wasm_", "isoline_")) \
                 and not head.startswith(("namespace", "struct", "class", "union", "enum")):
             checked += 1
+            defined.append(name)
             where = f"{path}:{lineOf(code, index)}"
             if name.startswith("isoline_") and not ISOLINE_DEFINITION.search(head):
                 problems.append(f"{where}: {name}: a definition is ... ISOLINE_CALL {name}(...) noexcept: {head}")
             if name.startswith("wasm_"):
                 statements = topLevelStatements(code[index + 1:end - 1])
-                if len(statements) != 1 or not BOUNDARY_CALL.match(normalized(statements[0])):
+                if len(statements) != 1 or not isBoundaryCall(normalized(statements[0])):
                     problems.append(f"{where}: {name}: its body is one statement, a call of detail::boundary(); "
                                     f"it has {len(statements)}")
         headStart = end
         index = end
-    return problems, checked
+    return problems, checked, defined
+
+
+def symbolProblems(symbols, defined):
+    """What of the exported symbols lacks exactly one checked definition: a definition the checks did not
+    see (hidden by or made from a macro, or in a file not given) is none, and two are one too many."""
+    problems = []
+    for symbol in symbols:
+        count = defined.count(symbol)
+        if count != 1:
+            problems.append(f"{symbol}: exported, and has {count} checked definitions, not one")
+    return problems
 
 
 def main(arguments):
+    symbolsPath = None
+    if len(arguments) >= 2 and arguments[0] == "--symbols":
+        symbolsPath = pathlib.Path(arguments[1])
+        arguments = arguments[2:]
     if not arguments:
         print(__doc__, file=sys.stderr)
         return 2
     problems = []
     checked = 0
+    defined = []
     for argument in arguments:
         path = pathlib.Path(argument)
         text = path.read_text(encoding="utf-8")
         if path.suffix == ".h":
             found, count = headerProblems(path, text)
         elif path.suffix == ".cpp":
-            found, count = sourceProblems(path, text)
+            found, count, names = sourceProblems(path, text)
+            defined += names
         else:
             found, count = [f"{path}: neither a C header (.h) nor a C++ source (.cpp)"], 0
         problems += found
         checked += count
+    if symbolsPath is not None:
+        symbols = [line.strip() for line in symbolsPath.read_text(encoding="utf-8").splitlines() if line.strip()]
+        problems += symbolProblems(symbols, defined)
     if checked == 0:
         problems.append("no declaration or definition the rules apply to: the files check nothing")
     for problem in problems:

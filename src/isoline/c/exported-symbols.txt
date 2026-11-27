@@ -1,2 +1,10 @@
 isoline_abi_compatible
 isoline_abi_version
+isoline_error_cause
+isoline_error_code
+isoline_error_code_name
+isoline_error_delete
+isoline_error_detail
+isoline_error_message
+isoline_error_message_length
+isoline_error_new

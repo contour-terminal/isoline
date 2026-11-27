@@ -77,8 +77,8 @@ class CApiNoexceptTest(unittest.TestCase):
         result = self.run_(*paths)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def assertReports(self, path, expected):
-        result = self.run_(path)
+    def assertReports(self, path, expected, *options):
+        result = self.run_(*options, path)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn(expected, result.stderr)
 
@@ -87,9 +87,9 @@ class CApiNoexceptTest(unittest.TestCase):
 
     def testTheCApisOwnFilesPass(self):
         root = SCRIPT.parent.parent / "src" / "isoline" / "c"
-        files = sorted(root.glob("*.h")) + [path for path in sorted(root.rglob("*.cpp"))
-                                            if not path.name.endswith("_test.cpp")]
-        self.assertPasses(*files)
+        files = sorted(root.rglob("*.h")) + [path for path in sorted(root.rglob("*.cpp"))
+                                             if not path.name.endswith("_test.cpp")]
+        self.assertPasses("--symbols", root / "exported-symbols.txt", *files)
 
     def testDeclarationWithoutNoexceptIsReported(self):
         header = GOOD_HEADER.replace("isoline_value(void) ISOLINE_NOEXCEPT;", "isoline_value(void);")
@@ -136,6 +136,61 @@ class CApiNoexceptTest(unittest.TestCase):
         source = GOOD_SOURCE.replace("    detail::boundary([&] { delete engine; }, [] {});\n",
                                      "    delete engine;\n")
         self.assertReports(self.write("bad.cpp", source), "wasm_engine_delete: its body is one statement")
+
+    # Ways to fool the checks, each of which once did.
+
+    def testDigitSeparatorOpensNoLiteral(self):
+        # Read as a character literal, the quote of 4'096 would run to the next quote and hide what lies
+        # between, the bad body among it.
+        source = GOOD_SOURCE.replace(
+            "void wasm_engine_delete(wasm_engine_t* engine)\n{\n    detail::boundary([&] { delete engine; }, [] {});\n}\n",
+            "constexpr auto Bytes = 4'096;\nvoid wasm_engine_delete(wasm_engine_t* engine)\n{\n    log();\n"
+            "    detail::boundary([&] { delete engine; }, [] {});\n}\nconstexpr auto More = 1'000;\n")
+        self.assertReports(self.write("bad.cpp", source), "wasm_engine_delete: its body is one statement")
+
+    def testCommaOperatorAfterBoundaryIsReported(self):
+        source = GOOD_SOURCE.replace("    detail::boundary([&] { delete engine; }, [] {});\n",
+                                     "    detail::boundary([&] { delete engine; }, [] {}), log();\n")
+        self.assertReports(self.write("bad.cpp", source), "wasm_engine_delete: its body is one statement")
+
+    def testCallAfterBoundaryIsReported(self):
+        source = GOOD_SOURCE.replace("return isoline::c::detail::boundary([] {", "return isoline::c::detail::boundary([] {", 1)
+        source = source.replace("[] { return nullptr; });", "[] { return nullptr; }) + offset();")
+        self.assertReports(self.write("bad.cpp", source), "wasm_engine_new: its body is one statement")
+
+    def testConstFunctionPointerWithoutConventionIsReported(self):
+        header = GOOD_HEADER.replace("        void (ISOLINE_CALL* finalizer)(void*);\n",
+                                     "        void (*const finalizer)(void*);\n")
+        self.assertReports(self.write("bad.h", header), "finalizer: a function pointer is")
+
+    def testConstFunctionPointerWithConventionPasses(self):
+        header = GOOD_HEADER.replace("        void (ISOLINE_CALL* finalizer)(void*);\n",
+                                     "        void (ISOLINE_CALL* const finalizer)(void*);\n")
+        self.assertPasses(self.write("good.h", header))
+
+    def testMacroGeneratedDefinitionIsReported(self):
+        # A definition a macro makes is none the checks see: the symbol it exports has no checked definition.
+        source = GOOD_SOURCE + ("#define DEFINE_DELETE(name) \\\n    void wasm_##name##_delete(wasm_##name##_t* x) { delete x; }\n"
+                                "DEFINE_DELETE(store)\n")
+        symbols = self.write("symbols.txt", "isoline_value\nwasm_engine_delete\nwasm_engine_new\nwasm_store_delete\n")
+        self.assertReports(self.write("bad.cpp", source), "wasm_store_delete: exported, and has 0 checked definitions",
+                           "--symbols", symbols)
+
+    def testMacroHiddenBodyIsReported(self):
+        source = GOOD_SOURCE + "#define BODY { delete store; }\nvoid wasm_store_delete(wasm_store_t* store) BODY\n"
+        symbols = self.write("symbols.txt", "isoline_value\nwasm_engine_delete\nwasm_engine_new\nwasm_store_delete\n")
+        self.assertReports(self.write("bad.cpp", source), "wasm_store_delete: exported, and has 0 checked definitions",
+                           "--symbols", symbols)
+
+    def testTwoDefinitionsOfASymbolAreReported(self):
+        source = GOOD_SOURCE + "uint32_t ISOLINE_CALL isoline_value() noexcept\n{\n    return 1;\n}\n"
+        symbols = self.write("symbols.txt", "isoline_value\nwasm_engine_delete\nwasm_engine_new\n")
+        self.assertReports(self.write("bad.cpp", source), "isoline_value: exported, and has 2 checked definitions",
+                           "--symbols", symbols)
+
+    def testEverySymbolDefinedOncePasses(self):
+        symbols = self.write("symbols.txt", "isoline_value\nwasm_engine_delete\nwasm_engine_new\n")
+        self.assertPasses("--symbols", symbols, self.write("good.cpp", GOOD_SOURCE))
 
     def testFilesThatCheckNothingFail(self):
         self.assertReports(self.write("empty.h", "#pragma once\n"), "the files check nothing")
