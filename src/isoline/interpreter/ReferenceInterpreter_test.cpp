@@ -15,6 +15,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -1046,8 +1047,10 @@ TEST_CASE("ReferenceInterpreter.hostReentersThroughItsContext")
                                      caller = context.callerInstance();
                                      auto const& exports =
                                          context.store().moduleInstance(caller.value_or(0)).exports;
-                                     auto const inc = std::ranges::find(
-                                         exports, "inc", [](auto const& entry) { return entry.first; });
+                                     auto const inc =
+                                         std::ranges::find(exports,
+                                                           std::string_view { "inc" },
+                                                           [](auto const& entry) { return entry.first; });
                                      auto const args = std::vector<Value> { I32 { 41 } };
                                      return context.invoke(inc->second.address, args, results);
                                  });

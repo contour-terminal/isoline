@@ -254,7 +254,9 @@ if(ISOLINE_TESTING)
     list(REMOVE_ITEM isolineCTestSources ${isolineCHostMemoryTestSources})
     # The C test support compiled as C, a callback the C++ tests call through the C API's trampoline.
     add_executable(isoline_c_test ${isolineCTestSources} "${CMAKE_CURRENT_SOURCE_DIR}/testing/CallingConventionProbe.c")
-    target_link_libraries(isoline_c_test PRIVATE isoline::c_static Catch2::Catch2WithMain)
+    # The tests read the C++ API's headers too (the error rows, the engine), so they link isoline::core for
+    # its interface: its generated headers, and what a native-contracts build asks of their consumers.
+    target_link_libraries(isoline_c_test PRIVATE isoline::c_static isoline::core Catch2::Catch2WithMain)
     target_include_directories(isoline_c_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     isoline_apply_target_policy(isoline_c_test TEST)
     # hardened-stdlib: the tests the clang-libcxx-hardened preset runs, where libc++ traps on a broken
@@ -276,7 +278,7 @@ if(ISOLINE_TESTING)
     if(NOT ISOLINE_SANITIZE STREQUAL "thread")
         add_executable(isoline_c_memory_test ${isolineCHostMemoryTestSources}
                                              "${PROJECT_SOURCE_DIR}/tests/memory/AllocationCounter.cpp")
-        target_link_libraries(isoline_c_memory_test PRIVATE isoline::c_static Catch2::Catch2WithMain)
+        target_link_libraries(isoline_c_memory_test PRIVATE isoline::c_static isoline::core Catch2::Catch2WithMain)
         target_include_directories(isoline_c_memory_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests/memory")
         isoline_apply_target_policy(isoline_c_memory_test TEST)
         isoline_add_capped_test(NAME isoline_c_memory_test TARGET isoline_c_memory_test LABELS "c-api;unit" TIMEOUT 120)
