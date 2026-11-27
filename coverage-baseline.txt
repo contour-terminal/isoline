@@ -200,13 +200,10 @@
 # moved into runtime/ConstantExpression.cpp, taking covered branches along, and instantiate() began to Require that the code
 # it is given is its executor's engine's: the failing sides of those two checks, contract violations a death test covers in
 # runtime/testing/ContractViolation.hpp's subprocess, which the coverage profile does not record. No branch lost its coverage.
-# src/isoline/api/Engine.cpp's branch entry was lowered from 75.00 to 72.72 when Engine's constructor began to Require the
-# reference engine until P4 Task 14b wires the fast one in: the failing side is a contract violation that
-# api/Engine_test.cpp runs in a subprocess, unrecorded. src/isoline/interpreter/Simd.hpp's entry is gone: its lane templates
-# moved into numerics/SimdLanes.hpp, and it now holds only declarations, which have no code to cover.
-# src/isoline/api/Store.cpp's entries are below master's (99.49 lines, 96.15 branches, at b50de78) since makeExecutor() gained the
-# fast engine's case: its lines are the fast-engine-refused exclusion, and its branch the failing side of that case, which no
-# store reaches until Task 14b, so the covered share of the file fell. No branch a test takes lost its coverage.
+# src/isoline/api/Engine.cpp's branch entry is below 100: the failing sides of its constructor's Requires (a feature set not
+# closed, a fast engine of a dispatch the build did not compile) are contract violations that api/Engine_test.cpp runs in
+# subprocesses, unrecorded. src/isoline/interpreter/Simd.hpp's entry is gone: its lane templates moved into
+# numerics/SimdLanes.hpp, and it now holds only declarations, which have no code to cover.
 # src/isoline/runtime/PollGate.hpp's branch entry is 87.50, not 100: its two untaken branches are the failing sides of its
 # Requires (an observed poll with a countdown the store does not hold, a commit of more steps than the budget), contract
 # violations that runtime/PollGate_test.cpp runs in subprocesses, unrecorded.
@@ -287,7 +284,7 @@ src/isoline/Contracts.cpp                        100.00 -
 src/isoline/Features.hpp                           100.00 100.00
 src/isoline/Version.hpp                            100.00 -
 src/isoline/api/CallError.hpp                      100.00 -
-src/isoline/api/Engine.cpp                         100.00 72.72
+src/isoline/api/Engine.cpp                         100.00 80.00
 src/isoline/api/Engine.hpp                         100.00 -
 src/isoline/api/EngineIdentity.hpp                 100.00 -
 src/isoline/api/Extern.cpp                         100.00 66.66
@@ -296,7 +293,7 @@ src/isoline/api/Imports.cpp                        100.00 82.35
 src/isoline/api/Imports.hpp                        100.00 -
 src/isoline/api/Module.cpp                         100.00 91.42
 src/isoline/api/Module.hpp                         100.00 -
-src/isoline/api/Store.cpp                          99.18 95.83
+src/isoline/api/Store.cpp                          99.50 97.02
 src/isoline/api/Store.hpp                          100.00 -
 src/isoline/binary/BranchHints.cpp                 100.00 100.00
 src/isoline/binary/BranchHints.hpp                 100.00 -
@@ -346,27 +343,27 @@ src/isoline/fastinterpreter/Code.cpp               100.00 71.05
 src/isoline/fastinterpreter/Code.hpp               100.00 -
 src/isoline/fastinterpreter/Context.hpp            100.00 100.00
 src/isoline/fastinterpreter/Dispatch.cpp           100.00 -
+src/isoline/fastinterpreter/FastInterpreter.cpp    100.00 91.34
 src/isoline/fastinterpreter/FastInterpreter.cpp    98.59 78.68
-src/isoline/fastinterpreter/FastInterpreter.cpp    99.01 89.93
 src/isoline/fastinterpreter/Listing.cpp            97.14 95.12
 src/isoline/fastinterpreter/LittleEndian.hpp       100.00 -
 src/isoline/fastinterpreter/LittleEndian.hpp       100.00 -
-src/isoline/fastinterpreter/Lowering.cpp           99.11 91.61
+src/isoline/fastinterpreter/Lowering.cpp           99.54 92.49
 src/isoline/fastinterpreter/Lowering.cpp  98.70 90.19
 src/isoline/fastinterpreter/Lowering.hpp           100.00 -
 src/isoline/fastinterpreter/LoweringAllocator.hpp  100.00 -
-src/isoline/fastinterpreter/LoweringTable.hpp      100.00 92.64
+src/isoline/fastinterpreter/LoweringTable.hpp      100.00 95.23
 src/isoline/fastinterpreter/Operations.def         100.00 -
 src/isoline/fastinterpreter/Operations.hpp         100.00 78.57
-src/isoline/fastinterpreter/Operations.hpp         100.00 89.28
+src/isoline/fastinterpreter/Operations.hpp         100.00 91.07
 src/isoline/fastinterpreter/SlotCodec.cpp          100.00 66.66
 src/isoline/fastinterpreter/SlotCodec.cpp          100.00 82.60
 src/isoline/fastinterpreter/SlotCodec.hpp          100.00 92.85
 src/isoline/fastinterpreter/SlotCodec.hpp          100.00 93.75
 src/isoline/fastinterpreter/SwitchDispatch.cpp     100.00 99.85
-src/isoline/fastinterpreter/SwitchDispatch.cpp     100.00 99.87
+src/isoline/fastinterpreter/SwitchDispatch.cpp     100.00 99.89
 src/isoline/fastinterpreter/SwitchDispatchCold.cpp 100.00 50.30
-src/isoline/fastinterpreter/SwitchDispatchCold.cpp 100.00 52.45
+src/isoline/fastinterpreter/SwitchDispatchCold.cpp 100.00 55.15
 src/isoline/fastinterpreter/TailCall.hpp           100.00 100.00
 src/isoline/fastinterpreter/TailCallControl.cpp    100.00 83.33
 src/isoline/fastinterpreter/TailCallExceptions.cpp 100.00 -
@@ -398,13 +395,13 @@ src/isoline/runtime/Instantiate.cpp                100.00 92.98
 src/isoline/runtime/Instantiate.hpp                100.00 -
 src/isoline/runtime/Interrupt.hpp                  100.00 -
 src/isoline/runtime/Limits.hpp                     100.00 -
-src/isoline/runtime/LinearMemory.cpp               90.69 100.00
+src/isoline/runtime/LinearMemory.cpp               91.66 100.00
 src/isoline/runtime/LinearMemory.hpp               100.00 100.00
 src/isoline/runtime/ModuleCode.hpp                 100.00 -
 src/isoline/runtime/PollGate.hpp                   100.00 87.50
 src/isoline/runtime/RawValue.hpp                   100.00 -
 src/isoline/runtime/Segment.hpp                    100.00 100.00
-src/isoline/runtime/Store.cpp                      99.70 84.34
+src/isoline/runtime/Store.cpp                      99.70 84.50
 src/isoline/runtime/Store.cpp                    99.69 84.34
 src/isoline/runtime/Store.hpp                      100.00 86.95
 src/isoline/runtime/Trap.hpp                       100.00 75.00
