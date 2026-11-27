@@ -708,10 +708,11 @@ struct RecursionHarness
 {
     explicit RecursionHarness(isoline::api::ExecutionEngine engine,
                               uint32_t maxNestedCalls = 250,
-                              uint64_t maxLiveValueBytes = uint64_t { 256 } << 20):
+                              uint64_t maxLiveValueBytes = uint64_t { 256 } << 20,
+                              uint32_t engineNesting = 250):
         harness { recursionComponent(),
                   HarnessOptions { .engine = engine,
-                                   .storeLimits = {},
+                                   .storeLimits = storeLimitsOf(engineNesting),
                                    .limits = limitsOf(maxNestedCalls, maxLiveValueBytes) } },
         root { harness.instance(importsOf({ probe })) },
         rec { &liftedExport(*harness.store, root, "rec") }
@@ -731,6 +732,13 @@ struct RecursionHarness
             },
             ArgumentOwnership::Owned,
             [](Values const&) {});
+    }
+
+    [[nodiscard]] static isoline::api::StoreLimits storeLimitsOf(uint32_t engineNesting)
+    {
+        auto limits = isoline::api::StoreLimits {};
+        limits.maxNestedInvocations = engineNesting;
+        return limits;
     }
 
     [[nodiscard]] static isoline::component::ComponentLimits limitsOf(uint32_t maxNestedCalls,
@@ -804,18 +812,39 @@ TEST_CASE("Calls.recursiveSelfCallIsBounded")
 
 TEST_CASE("Calls.nestingPastTheLimitTraps")
 {
-    // One hop past maxNestedCalls traps CallStackExhausted before the host's stack runs out: the store
-    // locks down and every value lifted on the way is released. The component store's default (80) binds
-    // below the engine's maxNestedInvocations (100).
+    // One hop past the store's nesting limit traps CallStackExhausted before the host's stack runs out:
+    // the store locks down and every value lifted on the way is released. The limit is the lower of the
+    // engine's maxNestedInvocations and the component store's maxNestedCalls: the component default (80)
+    // lowers the engine's default (100), and never raises an engine's lower one.
+    struct Row
+    {
+        std::string_view name;
+        uint32_t engineNesting = 0;
+        uint32_t componentNesting = 0;
+        uint32_t limit = 0;
+    };
+    auto const defaultEngine = isoline::api::StoreLimits {}.maxNestedInvocations;
+    auto const defaultComponent = isoline::component::ComponentLimits {}.maxNestedCalls;
+    REQUIRE(defaultComponent < defaultEngine);
+    auto const row = GENERATE_COPY(
+        Row { .name = "component limit", .engineNesting = 250, .componentNesting = 20, .limit = 20 },
+        Row { .name = "the defaults: 100 lowered to 80",
+              .engineNesting = defaultEngine,
+              .componentNesting = defaultComponent,
+              .limit = defaultComponent },
+        Row { .name = "an engine's lower limit kept",
+              .engineNesting = 30,
+              .componentNesting = defaultComponent,
+              .limit = 30 });
     auto const engine = GENERATE(from_range(Engines));
-    auto const limit = GENERATE(uint32_t { 20 }, isoline::component::ComponentLimits {}.maxNestedCalls);
-    CAPTURE(limit);
-    REQUIRE(limit < isoline::api::StoreLimits {}.maxNestedInvocations);
+    CAPTURE(row.name);
     auto const cost = measureHop(engine);
-    auto recursion = RecursionHarness { engine, limit };
+    // rec(n) runs in n + 1 invocations: the outermost and n hops.
+    auto recursion =
+        RecursionHarness { engine, row.componentNesting, uint64_t { 256 } << 20, row.engineNesting };
     auto outcome = isoline::component::runtime::testing::CallOutcome { .result = {} };
-    isoline::component::runtime::testing::runOnStack(stackFor(limit + 10, cost),
-                                                     [&] { outcome = recursion.call(limit + 10, 4096); });
+    isoline::component::runtime::testing::runOnStack(stackFor(row.limit + 1, cost),
+                                                     [&] { outcome = recursion.call(row.limit, 4096); });
     REQUIRE_FALSE(outcome.result.has_value());
     auto const* trap = std::get_if<isoline::component::canonical::Trap>(&outcome.result.error());
     REQUIRE(trap != nullptr);
@@ -824,10 +853,10 @@ TEST_CASE("Calls.nestingPastTheLimitTraps")
     CHECK(recursion.harness.store->state() == StoreState::LockedDown);
     CHECK(recursion.harness.store->liveBytes()->live() == 0);
 
-    // One hop fewer fits.
-    auto fits = RecursionHarness { engine, limit };
-    isoline::component::runtime::testing::runOnStack(stackFor(limit, cost),
-                                                     [&] { outcome = fits.call(limit - 1, 4096); });
+    // At the limit, it fits.
+    auto fits = RecursionHarness { engine, row.componentNesting, uint64_t { 256 } << 20, row.engineNesting };
+    isoline::component::runtime::testing::runOnStack(stackFor(row.limit, cost),
+                                                     [&] { outcome = fits.call(row.limit - 1, 4096); });
     CHECK(u32Result(outcome) == 4096);
 }
 

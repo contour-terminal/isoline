@@ -523,14 +523,16 @@ hops holds one copy of them live at a time. The host running out of memory durin
 `instantiate` reports it as `HostMemoryExhausted`.
 
 **Stack per hop.** Each hop takes host stack on the calling thread, more than a core-only nesting does,
-so the component store's core store nests at most `ComponentLimits::maxNestedCalls` (80) invocations
-in place of the engine's `maxNestedInvocations` (100); one more traps `CallStackExhausted` and locks the
-store down. The thread that calls into a component store needs
+so the component store's core store nests at most the lower of `ComponentLimits::maxNestedCalls` (80)
+and the engine's `maxNestedInvocations` (100): the component limit only ever tightens the engine's, and an
+embedder that chose a lower one for a small stack keeps it. One more traps `CallStackExhausted` and locks
+the store down. The thread that calls into a component store needs
 
     stack >= hops × bytes per hop + reserve
 
-with `hops` = `maxNestedCalls`, the bytes per hop of the build below, and a reserve for what the
-embedder's own frames and the outermost call take (the base column, plus the embedder's frames).
+with `hops` the store's nesting limit (the lower of the two), the bytes per hop of the build below, and
+a reserve for what the embedder's own frames and the outermost call take (the base column, plus the
+embedder's frames).
 Measured with `isoline_component_test "Calls.stackPerHop"` (a lowered import of a lifted export
 calling itself, between depth 10 and 40, on the Reference engine):
 

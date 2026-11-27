@@ -270,7 +270,8 @@ class ComponentStore final: public IBuiltinHost
   public:
     /// An empty, live store.
     /// @param engine The engine whose modules it instantiates; its configuration is copied, and its core
-    ///               store keeps to its store limits but nests at most limits.maxNestedCalls invocations.
+    ///               store keeps to its store limits but nests at most limits.maxNestedCalls invocations
+    ///               (the lower of that and the engine's maxNestedInvocations).
     /// @param allocator Allocates every linear memory; outlives the store.
     /// @param limits The component caps it enforces.
     /// @param observer Observes every poll; none when null; outlives the store.

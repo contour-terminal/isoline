@@ -72,13 +72,14 @@ namespace
     };
 
     /// The store limits a component store's core store keeps to: its engine's, nesting at most
-    /// maxNestedCalls invocations.
+    /// maxNestedCalls invocations, which only ever tightens the engine's maxNestedInvocations: an
+    /// embedder that chose a lower one for a small stack keeps it.
     [[nodiscard]] isoline::api::StoreOptions storeOptions(isoline::api::Engine const& engine,
                                                           ComponentLimits const& limits,
                                                           isoline::api::IPollObserver* observer) noexcept
     {
         auto store = engine.config().store;
-        store.maxNestedInvocations = limits.maxNestedCalls;
+        store.maxNestedInvocations = std::min(store.maxNestedInvocations, limits.maxNestedCalls);
         return isoline::api::StoreOptions { .limits = store, .observer = observer };
     }
 } // namespace

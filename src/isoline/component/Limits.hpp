@@ -79,9 +79,10 @@ struct ComponentLimits
     /// million covers a thousand instantiations of ten thousand imports, far past what toolchains emit.
     uint32_t maxCoreMatchingSteps = 10'000'000;
     /// Per ComponentStore: the invocations in progress at once in its core store, the outermost call and
-    /// every hop a lowered import makes back into a guest; it is the core store's maxNestedInvocations, in
-    /// place of the engine's 100. Each hop takes host stack (docs/embedding.md measures it: 4.6 KB with
-    /// clang, 5.4 KB with MSVC, release builds), so 80 hops fit a 1 MiB thread stack with a 2x margin.
+    /// every hop a lowered import makes back into a guest; the core store nests at most the lower of this
+    /// and the engine's maxNestedInvocations (100 by default), so it only ever tightens the engine's. Each
+    /// hop takes host stack (docs/embedding.md measures it: 4.6 KB with clang, 5.4 KB with MSVC, release
+    /// builds), so 80 hops fit a 1 MiB thread stack with a 2x margin.
     uint32_t maxNestedCalls = 80;
 
     /// Two sets of limits are equal when every limit is.
