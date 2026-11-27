@@ -567,6 +567,17 @@ TEST_CASE("Lowering.everyHostRefusalIsHostMemory")
     REQUIRE(lastRefusal.has_value());
 }
 
+TEST_CASE("Lowering.refusedRecordLeavesTheArenaWhole")
+{
+    // The record's memory refuses after every function is lowered: lower() throws std::bad_alloc, and the
+    // functions, unwound after the throw, return their memory to an arena still alive, though lower() held
+    // its only owner (AddressSanitizer reports a return to a freed arena).
+    auto const module = validated(
+        functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), i32Const(1), op(0x6A) })));
+    auto refusing = RefusingResource { 0 };
+    CHECK_THROWS_AS(std::ignore = lower(*module, LoweringConfig {}, arenaOf(), refusing), std::bad_alloc);
+}
+
 TEST_CASE("Lowering.recordsWhatItTook")
 {
     auto builder = ModuleBuilder {};
