@@ -364,7 +364,7 @@ struct ValidationError
     /// The proposal the validator's FeatureSet lacks that would admit the module past this point: a
     /// second memory's multi-memory, a type of two results' multi-value, a constant i32.add's
     /// extended-const. The error is the one the spec suite expects of a validator without it, and the
-    /// message appends the proposal (appendDisabledFeature()).
+    /// message appends the proposal (isoline::detail::appendDisabledFeature()).
     std::optional<Feature> disabled;
 
     bool operator==(ValidationError const&) const = default;
@@ -390,7 +390,7 @@ struct ValidationError
 
 /// The message the reference interpreter reports for @p error: its row's message, followed by what
 /// its detail names (the index, the size bound, or the operands), and then by the disabled proposal
-/// that would admit the module, when the error names one (appendDisabledFeature()).
+/// that would admit the module, when the error names one (isoline::detail::appendDisabledFeature()).
 /// @param error The error to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(ValidationError const& error)
@@ -416,7 +416,7 @@ struct ValidationError
         }
         return std::string { row.specMessage };
     }();
-    return appendDisabledFeature(message, error.disabled);
+    return isoline::detail::appendDisabledFeature(message, error.disabled);
 }
 
 } // namespace isoline::validate
