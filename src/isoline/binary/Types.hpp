@@ -45,6 +45,9 @@ enum class AbstractHeapType : uint8_t
     Concrete, ///< A defined type, named by HeapType::typeIndex.
 };
 
+/// The last AbstractHeapType enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastAbstractHeapType = AbstractHeapType::Concrete;
+
 /// A heap type: an abstract heap, or a type index when the kind is Concrete.
 ///
 /// In a module, a concrete type index indexes its type section; in the store (runtime::Store), it is
@@ -171,6 +174,9 @@ enum class AddressType : uint8_t
     I64,
 };
 
+/// The last AddressType enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastAddressType = AddressType::I64;
+
 /// The size bounds of a memory (in pages) or a table (in elements).
 struct Limits
 {
@@ -265,6 +271,9 @@ enum class Mutability : uint8_t
     Const,
     Var,
 };
+
+/// The last Mutability enumerator, which sizes the tables indexed by it (meta/EnumTables.def).
+inline constexpr auto LastMutability = Mutability::Var;
 
 /// A global's type: its value type and whether it is mutable.
 struct GlobalType

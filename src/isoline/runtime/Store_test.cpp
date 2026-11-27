@@ -20,6 +20,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Interrupt.hpp>
@@ -809,7 +810,7 @@ TEST_CASE("Store.usedReadsEveryLimit")
         Limit limit;
         uint64_t used;
     };
-    auto const rows = std::to_array<Row>({
+    static constexpr auto Rows = std::to_array<Row>({
         { .limit = Limit::CallDepth, .used = 0 },
         { .limit = Limit::StackValues, .used = 0 },
         { .limit = Limit::NestedInvocations, .used = 0 },
@@ -824,8 +825,9 @@ TEST_CASE("Store.usedReadsEveryLimit")
         { .limit = Limit::Tags, .used = 1 },
         { .limit = Limit::Steps, .used = 0 },
     });
-    static_assert(rows.size() == static_cast<std::size_t>(isoline::runtime::LastLimit) + 1);
-    for (auto const& row: rows)
+    static_assert(isoline::meta::firstMisplacedRow<isoline::runtime::LastLimit>(Rows, &Row::limit)
+                  == isoline::meta::NoMisplacedRow);
+    for (auto const& row: Rows)
     {
         INFO("limit: " << static_cast<int>(row.limit));
         CHECK(store.used(row.limit) == row.used);
@@ -1008,18 +1010,17 @@ TEST_CASE("Store.storageRefusalsAreAttributedToTheEmbedder")
         Refusal allocation; ///< What addMemory reports for it.
         Refusal growth;     ///< What growMemory reports for it.
     };
-    auto const rows = std::to_array<Row>({
+    static constexpr auto Rows = std::to_array<Row>({
         { .reported = Refusal::TypeMaximum, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
         { .reported = Refusal::Limit, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
         { .reported = Refusal::HostMemory, .allocation = Refusal::HostMemory, .growth = Refusal::HostMemory },
         { .reported = Refusal::Guard, .allocation = Refusal::Guard, .growth = Refusal::Embedder },
         { .reported = Refusal::Embedder, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
     });
-    static_assert(rows.size() == static_cast<std::size_t>(isoline::runtime::LastRefusal) + 1);
     // One row per refusal, each at the index of its enumerator, so none is tested twice and none left out.
-    for (auto const index: std::views::iota(std::size_t { 0 }, rows.size()))
-        CHECK(static_cast<std::size_t>(rows[index].reported) == index);
-    for (auto const& row: rows)
+    static_assert(isoline::meta::firstMisplacedRow<isoline::runtime::LastRefusal>(Rows, &Row::reported)
+                  == isoline::meta::NoMisplacedRow);
+    for (auto const& row: Rows)
     {
         INFO("reported: " << static_cast<int>(row.reported));
         auto refusing = MisreportingAllocator { row.reported, row.reported };

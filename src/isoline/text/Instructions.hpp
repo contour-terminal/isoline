@@ -45,6 +45,9 @@ enum class IndexSpace : uint8_t
     Label, ///< The blocks around an instruction, innermost first: one space per instruction.
 };
 
+/// The last IndexSpace enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastIndexSpace = IndexSpace::Label;
+
 /// Which field of binary::Instruction an index immediate goes to.
 enum class InstructionField : uint8_t
 {

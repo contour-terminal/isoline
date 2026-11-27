@@ -22,6 +22,7 @@
 #include <isoline/binary/Encoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/NameSection.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/Lexer.hpp>
 #include <isoline/text/SExpression.hpp>
 #include <isoline/text/TextError.hpp>
@@ -58,7 +59,7 @@ namespace
         TextErrorCode::NameMultipleLocalNames,
     });
 
-    static_assert(MultipleNameErrors.size() == std::to_underlying(NameShape::Indirect) + std::size_t { 1 },
+    static_assert(meta::sizedByEnum<binary::LastNameShape>(MultipleNameErrors.size()),
                   "MultipleNameErrors holds one error per NameShape");
 
     /// What reading a module's annotations works on.
@@ -341,7 +342,7 @@ namespace
         &readNames,
     });
 
-    static_assert(AnnotationReaders.size() == KnownAnnotations.size(),
+    static_assert(meta::sizedByEnum<LastAnnotationKind>(AnnotationReaders.size()),
                   "AnnotationReaders holds one reader per AnnotationKind");
 } // namespace
 

@@ -1,0 +1,2 @@
+# file | function | count | reason
+api/Engine.cpp | start | 1 | allocates (std::bad_alloc reaches the P17 boundary)

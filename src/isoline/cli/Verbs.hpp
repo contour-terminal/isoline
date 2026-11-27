@@ -13,6 +13,7 @@
 #include <isoline/Features.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/cli/FileAccess.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/TextLimits.hpp>
 
 // The verbs of the isoline tool, as table rows: what each is called, what it does, and the function
@@ -48,6 +49,9 @@ enum class Refusal : uint8_t
     TextTooLarge,        ///< The module's text would be larger than the text limit.
     PageSizeNotWritable, ///< A memory's page size is one the text format cannot say.
 };
+
+/// The last Refusal enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastRefusal = Refusal::PageSizeNotWritable;
 
 /// One row of Refusals: a refusal, the exit code it ends the run with, and what it means.
 struct RefusalRow
@@ -103,15 +107,8 @@ inline constexpr auto Refusals = std::to_array<RefusalRow>({
       .meaning = "a page size the text format cannot say" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: Refusals)
-            if (static_cast<std::size_t>(row.refusal) != index++)
-                return false;
-        return index == static_cast<std::size_t>(Refusal::PageSizeNotWritable) + 1;
-    }(),
-    "Refusals must hold one row per Refusal, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastRefusal>(Refusals, &RefusalRow::refusal) == meta::NoMisplacedRow,
+              "Refusals must hold one row per Refusal, at the index of its enumerator");
 
 /// The exit code a refusal ends a run with.
 /// @param refusal The refusal.
@@ -149,6 +146,9 @@ enum class FeatureChoice : uint8_t
     Wasm3, ///< WebAssembly 3.0: FeatureSet::wasm3().
 };
 
+/// The last FeatureChoice enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastFeatureChoice = FeatureChoice::Wasm3;
+
 /// One row of FeatureChoices: a `--features` value and the proposals it names.
 struct FeatureChoiceRow
 {
@@ -163,15 +163,9 @@ inline constexpr auto FeatureChoices = std::to_array<FeatureChoiceRow>({
     { .name = "wasm3", .choice = FeatureChoice::Wasm3, .features = FeatureSet::wasm3().withPrerequisites() },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: FeatureChoices)
-            if (static_cast<std::size_t>(row.choice) != index++)
-                return false;
-        return index == static_cast<std::size_t>(FeatureChoice::Wasm3) + 1;
-    }(),
-    "FeatureChoices must hold one row per FeatureChoice, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastFeatureChoice>(FeatureChoices, &FeatureChoiceRow::choice)
+                  == meta::NoMisplacedRow,
+              "FeatureChoices must hold one row per FeatureChoice, at the index of its enumerator");
 
 /// The proposals a FeatureChoice names.
 /// @param choice The choice.

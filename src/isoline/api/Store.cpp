@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/api/Store.hpp>
 
-#include <core/Assert.hpp>
 #include <core/Overloaded.hpp>
 #include <core/Utils.hpp>
 
@@ -27,6 +26,7 @@
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -290,7 +290,7 @@ std::expected<Instance, InstantiateError> Store::link(
 std::expected<Function, DefineError> Store::define(FuncType const& type,
                                                    std::shared_ptr<IHostFunction> const& function) noexcept
 {
-    Require(function != nullptr);
+    ISOLINE_PRECONDITION(function != nullptr);
     if (auto const definable = checkDefinable(type); !definable)
         return std::unexpected { definable.error() };
     auto pending = std::optional<PendingHost> {};
@@ -560,7 +560,7 @@ std::expected<void, CallError> Store::call(Function const& function,
     if (invoked.entry == runtime::Entry::Refused)
     {
         auto const& failure = std::get<HostFailure>(invoked.outcome.error());
-        Require(failure.mismatch.has_value());
+        ISOLINE_INVARIANT(failure.mismatch.has_value());
         return std::unexpected { CallError { .detail = *failure.mismatch,
                                              .refusedGrowth = invoked.refusedGrowth } };
     }

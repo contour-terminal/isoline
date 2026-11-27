@@ -8,6 +8,8 @@
 #include <string_view>
 #include <utility>
 
+#include <isoline/meta/EnumRows.hpp>
+
 namespace isoline::text
 {
 
@@ -271,18 +273,9 @@ inline constexpr auto TextErrorTable = std::to_array<TextErrorRow>({
       .specMessage = "@metadata.code.branch_hint annotation: unexpected token" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: TextErrorTable)
-        {
-            if (static_cast<std::size_t>(row.code) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastTextErrorCode) + 1;
-    }(),
-    "TextErrorTable must hold one row per TextErrorCode, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastTextErrorCode>(TextErrorTable, &TextErrorRow::code)
+                  == meta::NoMisplacedRow,
+              "TextErrorTable must hold one row per TextErrorCode, at the index of its enumerator");
 
 /// A place in a source text.
 struct SourcePosition

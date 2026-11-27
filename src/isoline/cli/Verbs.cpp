@@ -4,7 +4,6 @@
 #include <core/Overloaded.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <exception>
 #include <expected>
@@ -22,6 +21,7 @@
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/cli/FileAccess.hpp>
+#include <isoline/cli/VerbsTables.hpp>
 #include <isoline/text/ModuleWriter.hpp>
 #include <isoline/text/TextError.hpp>
 #include <isoline/text/TextLimits.hpp>
@@ -186,35 +186,6 @@ namespace
         });
         return format == BinaryFormats.end() ? BinaryFormats.front() : *format;
     }
-
-    /// One row of WriteRefusals: the refusal a WriteError is, and its message, which may place the
-    /// text limit with `{}`.
-    struct WriteRefusal
-    {
-        text::WriteError error;   ///< The writer's error, at its enumerator's index.
-        Refusal refusal;          ///< What it refuses.
-        std::string_view message; ///< The diagnostic after `error: `.
-    };
-
-    /// Every WriteError, as the refusal it is.
-    constexpr auto WriteRefusals = std::to_array<WriteRefusal>({
-        { .error = text::WriteError::TextTooLarge,
-          .refusal = Refusal::TextTooLarge,
-          .message = "its text would be larger than the limit of {} bytes" },
-        { .error = text::WriteError::PageSizeNotWritable,
-          .refusal = Refusal::PageSizeNotWritable,
-          .message = "memory page size 2^32 or more cannot be written as text" },
-    });
-
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: WriteRefusals)
-                if (static_cast<std::size_t>(row.error) != index++)
-                    return false;
-            return index == static_cast<std::size_t>(text::WriteError::PageSizeNotWritable) + 1;
-        }(),
-        "WriteRefusals must hold one row per WriteError, at the index of its enumerator");
 
     /// What a verb writes.
     enum class OutputContent : uint8_t

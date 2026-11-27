@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/runtime/Instantiate.hpp>
 
-#include <core/Assert.hpp>
 #include <core/Utils.hpp>
 
 #include <algorithm>
@@ -20,6 +19,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
@@ -128,7 +128,7 @@ namespace
     {
         if (auto const* i64 = std::get_if<I64>(&value))
             return i64->bits;
-        Require(std::holds_alternative<I32>(value));
+        ISOLINE_INVARIANT(std::holds_alternative<I32>(value));
         return std::get<I32>(value).bits;
     }
 
@@ -195,7 +195,11 @@ namespace
         void internTypes()
         {
             for (auto const [index, type]: core::views::enumerate(module().types))
-                Require(_store.internType(storeForm(type)) == _types[index]);
+            {
+                // Interned outside the check: a check only reads.
+                auto const interned = _store.internType(storeForm(type));
+                Require(interned == _types[index]);
+            }
         }
 
         /// @p type with a concrete type index rewritten to its TypeId.

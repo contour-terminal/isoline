@@ -1,0 +1,860 @@
+#!/usr/bin/env -S python3 -I
+# SPDX-License-Identifier: Apache-2.0
+"""Checks the enum tables reflection cannot reach, from Clang's AST.
+
+The reflection checks (src/isoline/meta/reflection/EnumTablesCheck.cpp) see every table at namespace
+scope of a header. This lint sees the rest: it compiles every first-party source file of a Clang build
+tree (its compile_commands.json) with Clang's JSON AST dump, filtered to Isoline's namespaces, and finds
+every variable whose type is `std::array<Row, N>` after sugar, however it is spelled: `std::to_array`
+with or without its template argument, class template argument deduction, east or west const, a macro
+or a helper that builds it. A variable counts when it is declared in a source file (at namespace scope,
+an anonymous namespace's included, in a function or a class), or in a header anywhere but at namespace
+scope. It is an enum-first table when Row is a class whose first field's type, read from the class's
+declaration (so neither const nor its spelling matters), is a scoped enum.
+
+Every enum-first table must be a row of src/isoline/meta/EnumTables.def:
+
+    ISOLINE_SOURCE_LOCAL_TABLE("<file under src/isoline/>", Table, "reason")
+
+and every such row must name a `std::array` variable that its file declares, so a stale row fails. The
+block between `<!-- source-local-tables:begin -->` and `<!-- source-local-tables:end -->` of
+docs/language-features.md lists the rows, one line each, `` - `<file>`: `Table`, <reason> ``, in the
+registry's order; the lint fails, printing a diff, when it differs, and --update rewrites it.
+
+Tests (`*_test.cpp`), test helpers (any `testing/` directory) and the reflection checks' own sources
+(`meta/reflection/`) are not linted, and the dump holds declarations under a namespace named isoline
+only. So that nothing escapes it, a text pass over the same source files fails on every `std::array` or
+`std::to_array` spelt outside `namespace isoline`: in main(), a global anonymous namespace or any other
+namespace. It reads the code alone (comments, literals and preprocessor directives left out), so a
+file-scope macro that builds a table inside `namespace isoline` is not flagged. The body of a function
+defined by its qualified name under isoline (`int isoline::b::f() {…}`) counts as inside it. The pass sees
+spellings, not types, so these forms escape it: a macro invoked outside the namespace whose expansion
+spells std::array; an alias (`using Arr = std::array<…>`, declared anywhere) used outside it; and
+`std::array` reached without its qualifier (`using namespace std`, `using std::array`). It fails closed
+on the rest: a brace it cannot attribute to isoline (a constructor's member initializers before its body,
+say) puts what follows outside, and is flagged. A field type written through a type alias or a using-declaration comes desugared; a class or
+enum named directly comes as written, and is resolved from the class's scope outwards through its
+enclosing scopes, and failing that by its name alone. One that resolves to more than one kind of type is a tool error, so the lint fails
+closed. The dumps run in parallel (--jobs), and each translation unit's result
+is cached (--cache), keyed by its compile command and the content of the file, of every header under
+src/isoline/ and the generated headers, of the Clang binary that dumps it (as invoked, a wrapper
+included), and of this script: a time stamp alone invalidates nothing.
+
+The same dump serves one more rule, which needs the AST for the same reason: the contracts seam's macros,
+ISOLINE_PRECONDITION and ISOLINE_INVARIANT, are refused inside a try block or a function-try-block (a
+constructor's included), and inside a handler of a try that is itself inside one. A violation handler an
+embedder installs may throw, and in a noexcept function its exception ends the process where the check
+fails, unless a try block around the check catches it and the call goes on (docs/language-features.md).
+A lambda, or a local class's member function, is a function of its own: a macro in a noexcept lambda
+defined inside a try block is not refused, since the lambda's own noexcept boundary ends the process
+before any handler of the enclosing function is reached (the native macro proves the lambda noexcept); a
+try block inside the lambda is refused like any other. A macro is found by the name at the place it is
+invoked, so one invoked through another macro carries that macro's name, and is not seen.
+
+A third rule reads the same macros' expansions: a check only reads, so their condition may not write.
+Inside the expansion it refuses `++`/`--`, an assignment or compound assignment, a call of a non-const
+member function (one whose object the AST does not convert to const, through `.` or `->`, an operator
+included), and a call of a free function with a parameter that is a reference or pointer to non-const,
+read from the callee's type. The compiler sees only part of this: a contract's predicate gets `*this`
+and the locals as const, but a member reached through a pointer or a reference member is not, so
+`contract_assert(_store->intern())` compiles (GCC 16.2.1, measured). Two writes are not seen: a callee
+taking a non-const view by value (a span), and a lambda defined before the check whose operator() is const
+(the default) but writes through a by-reference capture, as `auto const bump = [&count] { return ++count
+> 0; };` then `ISOLINE_INVARIANT(bump())`: the call is a const member call, and the write sits outside the
+expansion (GCC 16.2.1 compiles the same in a contract_assert, measured).
+
+Exit status: 0 clean, 1 findings, 2 a tool error (Clang failed, a row type the lint cannot find, an
+ambiguous field type).
+
+Usage: python3 -I scripts/check-enum-tables.py --compile-commands <compile_commands.json>
+           [--clang <clang++>] [--root <repository>] [--cache <directory>] [--jobs <n>] [--update]
+"""
+
+import argparse
+import concurrent.futures
+import difflib
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+
+SOURCES = pathlib.PurePosixPath("src/isoline")
+REGISTRY = SOURCES / "meta" / "EnumTables.def"
+DOCUMENT = pathlib.PurePosixPath("docs/language-features.md")
+BLOCK = "source-local-tables"
+
+# The dump holds the declarations whose qualified name contains this: Isoline's namespaces.
+DUMP_FILTER = "isoline"
+
+# Bumped when what a cached result means changes.
+CACHE_VERSION = "5"
+
+# The contracts seam's macros, refused inside a try block.
+CONTRACT_MACROS = (b"ISOLINE_PRECONDITION", b"ISOLINE_INVARIANT")
+
+# The declarations that begin a function of their own: a try block outside one does not enclose its body.
+FUNCTION_KINDS = ("FunctionDecl", "CXXMethodDecl", "CXXConstructorDecl", "CXXDestructorDecl",
+                  "CXXConversionDecl", "LambdaExpr", "CXXRecordDecl", "BlockDecl")
+
+# The expressions that may write, as the side-effect rule reads them (writeOf()).
+WRITING_KINDS = ("UnaryOperator", "BinaryOperator", "CompoundAssignOperator", "CXXMemberCallExpr", "CallExpr",
+                 "CXXOperatorCallExpr")
+CONST = re.compile(r"const\b")
+
+
+def typeOf(node):
+    """The type Clang spells for @p node."""
+    return node.get("type", {}).get("qualType", "")
+
+
+def calleeDecl(node):
+    """The declaration a call's callee names (through implicit casts and parentheses), or None."""
+    callee = (node.get("inner") or [None])[0]
+    while isinstance(callee, dict) and callee.get("kind") in ("ImplicitCastExpr", "ParenExpr"):
+        callee = (callee.get("inner") or [None])[0]
+    if isinstance(callee, dict) and callee.get("kind") == "DeclRefExpr":
+        return callee.get("referencedDecl")
+    return None
+
+
+def parametersOf(functionType):
+    """The parameter types of @p functionType, spelled as Clang spells a function: `R (P1, P2) qualifiers`."""
+    depth = 0
+    parameters = None
+    current = ""
+    for character in functionType:
+        if parameters is None:
+            depth += character in "<[" or -(character in ">]")
+            if character == "(" and depth == 0:
+                parameters = []
+            continue
+        if character in "<[(":
+            depth += 1
+        elif character in ">])":
+            if character == ")" and depth == 0:
+                parameters.append(current)
+                break
+            depth -= 1
+        elif character == "," and depth == 0:
+            parameters.append(current)
+            current = ""
+            continue
+        current += character
+    return [parameter.strip() for parameter in parameters or [] if parameter.strip() not in ("", "void", "...")]
+
+
+def writesThrough(parameter):
+    """Whether a parameter of type @p parameter is a reference or pointer to non-const."""
+    depth = 0
+    for character in parameter:
+        if character in "<(":
+            depth += 1
+        elif character in ">)":
+            depth -= 1
+        elif character in "&*" and depth == 0:
+            return CONST.match(parameter) is None
+    return False
+
+
+def writeOf(node):
+    """What @p node, an expression, writes, in words, or None when it only reads."""
+    kind = node.get("kind")
+    if kind == "UnaryOperator" and node.get("opcode") in ("++", "--"):
+        return f"applies {node['opcode']}"
+    if kind == "BinaryOperator" and node.get("opcode") == "=":
+        return "assigns"
+    if kind == "CompoundAssignOperator":
+        return f"assigns with {node.get('opcode')}"
+    if kind == "CXXMemberCallExpr":
+        member = (node.get("inner") or [{}])[0]
+        if member.get("kind") != "MemberExpr":
+            return None
+        objectType = typeOf((member.get("inner") or [{}])[0])
+        constObject = re.match(r"const\b[^*]*\*", objectType) if member.get("isArrow") else CONST.match(objectType)
+        return None if constObject else f"calls the non-const member {member.get('name')}()"
+    if kind in ("CallExpr", "CXXOperatorCallExpr"):
+        declaration = calleeDecl(node)
+        if declaration is None:
+            return None
+        name = declaration.get("name", "?")
+        functionType = typeOf(declaration)
+        # A non-static member is called as a CXXMemberCallExpr, or here as an operator; a static one
+        # through a plain call reads its parameters as a free function does.
+        if kind == "CXXOperatorCallExpr" and declaration.get("kind") == "CXXMethodDecl":
+            qualifiers = functionType[functionType.rfind(")") + 1:]
+            return None if re.search(r"\bconst\b", qualifiers) else f"calls the non-const member {name}()"
+        for parameter in parametersOf(functionType):
+            if writesThrough(parameter):
+                return f"calls {name}(), which takes {parameter}"
+    return None
+
+# Files under src/isoline/ the lint skips: tests, their helpers, and the reflection checks' own sources.
+SKIPPED = (re.compile(r"_test\.cpp$"), re.compile(r"(^|/)testing/"), re.compile(r"^meta/reflection/"))
+
+SOURCE_LOCAL_ROW = re.compile(
+    r'ISOLINE_SOURCE_LOCAL_TABLE\(\s*"([^"]+)"\s*,\s*(\w+)\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)')
+LINE_COMMENT = re.compile(r"//[^\n]*")
+ANONYMOUS = "(anonymous namespace)"
+CV_QUALIFIERS = re.compile(r"\b(const|volatile)\b")
+ELABORATION = re.compile(r"^(enum|struct|class|union)\s+")
+
+# The kinds whose children repeat a declaration made elsewhere: a using-declaration's shadow dumps its
+# target again.
+SHADOWS = ("UsingShadowDecl", "ConstructorUsingShadowDecl", "UsingEnumDecl")
+
+# What a resolved type is.
+SCOPED_ENUM = "scoped enum"
+OTHER = "other"
+
+
+class ToolError(Exception):
+    """A failure of the lint itself, not a finding."""
+
+
+# What the text pass sees of a source file's code: a namespace opening (its name, or none for an
+# anonymous one), any other brace, and a spelling of std::array.
+CODE_TOKEN = re.compile(r"\bnamespace\b\s*(?P<namespace>[\w:\s]*?)\s*\{|(?P<array>\bstd\s*::\s*(?:to_)?array\b)"
+                        r"|(?P<open>\{)|(?P<close>\})")
+# The head of a function defined by its qualified name under isoline (`int isoline::b::f(…)`): its body
+# is inside isoline, though no namespace block encloses it.
+QUALIFIED_DEFINITION = re.compile(r"[^(=]*?(?<![\w:])(?:::)?isoline::(?:\w+::)*~?\w+\s*\(", re.S)
+RAW_STRING = re.compile(r'(?<!\w)(?:u8|u|U|L)?R"([^()\\\s]{0,16})\(')
+WORD_BEFORE = re.compile(r"[\w']*$")
+NAMESPACE = "isoline"
+
+
+def withoutComments(text):
+    return LINE_COMMENT.sub("", text)
+
+
+def codeOnly(text):
+    """@p text, a source file, with its comments, string and character literals and preprocessor
+    directives blanked out, every newline kept so that lines keep their numbers."""
+    output = []
+    index = 0
+    lineStart = True
+    while index < len(text):
+        character = text[index]
+        if character == "\n":
+            output.append(character)
+            index += 1
+            lineStart = True
+            continue
+        if lineStart and character == "#":
+            end = index
+            while end < len(text) and text[end] != "\n":
+                end += 2 if text.startswith("\\\n", end) else 1
+            output.append("".join("\n" if c == "\n" else " " for c in text[index:end]))
+            index = end
+            continue
+        if not character.isspace():
+            lineStart = False
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            end = len(text) if end < 0 else end
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            end = len(text) if end < 0 else end + 2
+        elif raw := RAW_STRING.match(text, index):
+            closing = text.find(")" + raw.group(1) + '"', raw.end())
+            end = len(text) if closing < 0 else closing + len(raw.group(1)) + 2
+        elif character == '"' or (character == "'" and not isDigitSeparator(text, index)):
+            end = index + 1
+            while end < len(text) and text[end] not in (character, "\n"):
+                end += 2 if text[end] == "\\" else 1
+            end += 1
+        else:
+            output.append(character)
+            index += 1
+            continue
+        output.append("".join("\n" if c == "\n" else " " for c in text[index:end]))
+        index = end
+    return "".join(output)
+
+
+def isDigitSeparator(text, index):
+    """Whether the quote at @p index of @p text separates the digits of a number (1'000), rather than
+    opening a character literal (u8'a')."""
+    before = WORD_BEFORE.search(text, max(0, index - 64), index).group()
+    return before[:1].isdigit()
+
+
+def arraysOutsideIsoline(text):
+    """The lines of @p text, a source file, that spell std::array or std::to_array outside namespace
+    isoline, each with its spelling: there the AST dump does not reach."""
+    code = codeOnly(text)
+    stack = []  # per open brace: the namespace's first component ("" when anonymous), or None
+    found = []
+    for match in CODE_TOKEN.finditer(code):
+        if match.group("namespace") is not None:
+            components = splitScopes(match.group("namespace").replace("inline", " ").replace(" ", ""))
+            stack.append(components[0] if components else "")
+        elif match.group("open"):
+            start = max(code.rfind(boundary, 0, match.start()) for boundary in ";{}") + 1
+            stack.append(NAMESPACE if QUALIFIED_DEFINITION.match(code, start, match.start()) else None)
+        elif match.group("close"):
+            if stack:
+                stack.pop()
+        elif not stack or stack[0] != NAMESPACE:
+            found.append((code.count("\n", 0, match.start()) + 1, " ".join(match.group("array").split())))
+    return found
+
+
+def isSkipped(relative):
+    return any(pattern.search(relative) for pattern in SKIPPED)
+
+
+def splitTopLevel(text, separator=","):
+    """@p text split at each @p separator outside angle brackets and parentheses."""
+    parts = []
+    depth = 0
+    current = ""
+    for character in text:
+        if character in "<(":
+            depth += 1
+        elif character in ">)":
+            depth -= 1
+        if character == separator and depth == 0:
+            parts.append(current.strip())
+            current = ""
+        else:
+            current += character
+    parts.append(current.strip())
+    return parts
+
+
+def splitScopes(name):
+    """The components of a qualified name, `::` inside template arguments left alone."""
+    components = []
+    depth = 0
+    current = ""
+    index = 0
+    while index < len(name):
+        character = name[index]
+        if character in "<(":
+            depth += 1
+        elif character in ">)":
+            depth -= 1
+        if depth == 0 and name.startswith("::", index):
+            components.append(current)
+            current = ""
+            index += 2
+            continue
+        current += character
+        index += 1
+    components.append(current)
+    return [component for component in components if component]
+
+
+def cleanType(spelled):
+    """@p spelled without cv-qualifiers, an elaborating keyword or surrounding blanks."""
+    return ELABORATION.sub("", CV_QUALIFIERS.sub("", spelled).strip()).strip()
+
+
+# A standard library's inline namespace, which its types print with: libc++'s `std::__1::array`.
+STANDARD_INLINE_NAMESPACE = re.compile(r"\bstd::__\w+::")
+
+
+def arrayRow(typeName):
+    """The Row of `std::array<Row, N>` (cv-qualified or not), or None for any other type."""
+    name = STANDARD_INLINE_NAMESPACE.sub("std::", cleanType(typeName))
+    if not name.startswith("std::array<") or not name.endswith(">"):
+        return None
+    arguments = splitTopLevel(name[len("std::array<"):-1])
+    return arguments[0] if len(arguments) == 2 else None
+
+
+class Index:
+    """What one translation unit's dump declares: the types, the records' first fields, and every
+    std::array variable, each with its file and scope."""
+
+    def __init__(self, sources, directory):
+        self.sources = sources
+        self.directory = directory
+        self.types = {}      # qualified name -> kind: SCOPED_ENUM, "enum" or "record"
+        self.byLeaf = {}     # leaf name -> qualified names
+        self.records = {}    # qualified name -> (first field's type, record scope) or (None, scope)
+        self.arrays = []     # (file, name, row as written, scope, scope kinds)
+        self.inTry = set()   # (file, offset, token length): a macro invoked inside a try block
+        self.writes = set()  # (file, offset, token length, what): a macro whose condition writes
+        self.texts = {}      # path -> bytes: the files macro names are read from
+        self.currentFile = None
+
+    def addType(self, scope, name, kind):
+        qualified = "::".join(scope + [name])
+        self.types.setdefault(qualified, kind)
+        self.byLeaf.setdefault(name, set()).add(qualified)
+
+    def track(self, value):
+        """Follows the file in force through the locations in @p value, in document order."""
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "includedFrom":
+                    continue
+                if key == "file":
+                    self.currentFile = item
+                elif key != "inner":
+                    self.track(item)
+        elif isinstance(value, list):
+            for item in value:
+                self.track(item)
+
+    def expansionIn(self, node):
+        """Where the macro @p node was expanded from was invoked, as (file, offset, token length), or None
+        for a node that is no macro's; the file in force is left as it was."""
+        begin = node.get("range", {}).get("begin", {})
+        expansion = begin.get("expansionLoc")
+        if expansion is None or "offset" not in expansion:
+            return None
+        before = self.currentFile
+        self.track(begin.get("spellingLoc", {}))
+        self.track(expansion)
+        file = self.currentFile
+        self.currentFile = before
+        return file, expansion["offset"], expansion.get("tokLen", 0)
+
+    def walk(self, root):
+        """Indexes @p root, a top-level declaration of the dump, in document order."""
+        # A stack of (node, scope, scope kinds, inside a try block) to visit, and markers that end
+        # nothing: the scope travels with each node, so leaving one needs no bookkeeping.
+        stack = [(root, [], [], False)]
+        while stack:
+            node, scope, kinds, inTry = stack.pop()
+            if not isinstance(node, dict):
+                continue
+            kind = node.get("kind")
+            if inTry or kind in WRITING_KINDS:
+                expansion = self.expansionIn(node)
+                if expansion is not None and expansion[0] is not None:
+                    if inTry:
+                        self.inTry.add(expansion)
+                    if kind in WRITING_KINDS and self.macroAt(*expansion) is not None:
+                        what = writeOf(node)
+                        if what is not None:
+                            self.writes.add((*expansion, what))
+            self.track(node.get("loc", {}))
+            file = self.currentFile
+            for key, value in node.items():
+                if key not in ("loc", "inner"):
+                    self.track(value)
+            childScope, childKinds = scope, kinds
+            name = node.get("name")
+            if kind == "NamespaceDecl":
+                childScope, childKinds = scope + [name or ANONYMOUS], kinds + ["namespace"]
+            elif kind == "EnumDecl" and name:
+                self.addType(scope, name, SCOPED_ENUM if node.get("scopedEnumTag") else "enum")
+            elif kind in ("CXXRecordDecl", "ClassTemplateSpecializationDecl") and name:
+                childScope, childKinds = self.record(node, scope, kinds, name)
+            elif kind in ("FunctionDecl", "CXXMethodDecl", "CXXConstructorDecl", "CXXDestructorDecl",
+                          "CXXConversionDecl", "LambdaExpr"):
+                childScope, childKinds = scope + [f"{name or 'lambda'}()"], kinds + ["function"]
+            elif kind == "VarDecl" and name:
+                typeName = node.get("type", {})
+                row = arrayRow(typeName.get("desugaredQualType", typeName.get("qualType", "")))
+                if row is not None:
+                    self.arrays.append((file, name, row, list(scope), list(kinds)))
+            if kind in SHADOWS:
+                continue  # it repeats the declaration it brings in, which is indexed where it is declared
+            children = node.get("inner", [])
+            childrenInTry = [inTry and kind not in FUNCTION_KINDS] * len(children)
+            if kind == "CXXTryStmt" and children:
+                childrenInTry[0] = True  # the try block; the handlers are as the try statement is
+            for child, childInTry in reversed(list(zip(children, childrenInTry))):
+                stack.append((child, childScope, childKinds, childInTry))
+
+    def record(self, node, scope, kinds, name):
+        """Indexes a class definition: its name and its first field. The class a definition implicitly
+        declares inside itself is no definition."""
+        if node.get("isImplicit") or not node.get("completeDefinition"):
+            return scope, kinds
+        inner = node.get("inner", [])
+        if node.get("kind") == "ClassTemplateSpecializationDecl":
+            arguments = [child.get("type", {}).get("qualType", "?") for child in inner
+                         if child.get("kind") == "TemplateArgument"]
+            name = f"{name}<{', '.join(arguments)}>"
+        self.addType(scope, name, "record")
+        fields = [child for child in inner if child.get("kind") == "FieldDecl"]
+        first = None
+        if fields:
+            fieldType = fields[0].get("type", {})
+            first = fieldType.get("desugaredQualType", fieldType.get("qualType"))
+        self.records.setdefault("::".join(scope + [name]), (first, list(scope)))
+        return scope + [name], kinds + ["record"]
+
+    def lookup(self, spelled, scope):
+        """The qualified name @p spelled denotes from @p scope, or the candidates when no enclosing
+        scope declares it."""
+        components = splitScopes(spelled)
+        if spelled.startswith("::"):
+            return "::".join(components), None
+        for depth in range(len(scope), -1, -1):
+            base = scope[:depth]
+            qualified = "::".join(base + components)
+            if qualified in self.types:
+                return qualified, None
+        leaf = components[-1]
+        candidates = sorted(name for name in self.byLeaf.get(leaf, ())
+                            if splitScopes(name)[-len(components):] == components)
+        return None, candidates
+
+    def kindOf(self, spelled, scope):
+        """What @p spelled, a type as written in @p scope, is: SCOPED_ENUM or OTHER. A type alias needs no
+        resolving here, nor one a using-declaration brings in: Clang gives a type written through either its
+        desugared, fully qualified spelling. A class or enum named directly is printed as written."""
+        name = cleanType(spelled)
+        if not name or any(mark in name for mark in "*&[(") or name.endswith(">"):
+            return OTHER
+        qualified, candidates = self.lookup(name, scope)
+        if qualified is None:
+            kinds = {self.kindOfDeclared(candidate) for candidate in candidates}
+            if not kinds:
+                return OTHER
+            if len(kinds) > 1:
+                raise ToolError(f"the type {spelled} in {'::'.join(scope)} may be any of {', '.join(candidates)}")
+            return kinds.pop()
+        return self.kindOfDeclared(qualified)
+
+    def kindOfDeclared(self, qualified):
+        return SCOPED_ENUM if self.types.get(qualified) == SCOPED_ENUM else OTHER
+
+    def rowRecord(self, row, scope):
+        """The record @p row names from @p scope: its key in self.records, or None for a row that is no
+        class of Isoline's (a standard type, an enum, a pointer)."""
+        name = cleanType(row)
+        if name in self.records:
+            return name
+        for depth in range(len(scope), -1, -1):
+            qualified = "::".join(scope[:depth] + splitScopes(name))
+            if qualified in self.records:
+                return qualified
+        if name.startswith("std::") or self.kindOf(name, scope) == SCOPED_ENUM or name in ("int", "char"):
+            return None
+        if not any(mark in name for mark in "*&(") and (name.startswith(DUMP_FILTER + "::") or "::" not in name):
+            qualified, candidates = self.lookup(name, scope)
+            if qualified is None and not candidates and "<" not in name:
+                return None
+            raise ToolError(f"no class definition found for the row type {row} (in {'::'.join(scope)})")
+        return None
+
+    def sourcePath(self, file):
+        """The path of @p file under src/isoline/, relative to it, or None for one the lint skips."""
+        path = (self.directory / file).resolve()
+        try:
+            relative = path.relative_to(self.sources).as_posix()
+        except ValueError:
+            return None
+        return None if isSkipped(relative) else relative
+
+    def textOf(self, file):
+        """The bytes of @p file, read once."""
+        path = (self.directory / file).resolve()
+        if path not in self.texts:
+            self.texts[path] = path.read_bytes()
+        return self.texts[path]
+
+    def macroAt(self, file, offset, length):
+        """The contract macro invoked at @p offset of @p file, a source file the lint covers, or None."""
+        if self.sourcePath(file) is None:
+            return None
+        macro = self.textOf(file)[offset:offset + length]
+        return macro.decode() if macro in CONTRACT_MACROS else None
+
+    def contractWrites(self):
+        """Every contract macro the lint is responsible for whose condition writes: (file, line, macro,
+        what it does)."""
+        found = set()
+        for file, offset, length, what in self.writes:
+            macro = self.macroAt(file, offset, length)
+            found.add((self.sourcePath(file), self.textOf(file).count(b"\n", 0, offset) + 1, macro, what))
+        return [list(entry) for entry in sorted(found)]
+
+    def contractsInTry(self):
+        """Every contract macro the lint is responsible for invoked inside a try block: (file, line,
+        macro), read from the file at the place of the invocation."""
+        found = set()
+        texts = {}
+        for file, offset, length in self.inTry:
+            path = (self.directory / file).resolve()
+            try:
+                relative = path.relative_to(self.sources).as_posix()
+            except ValueError:
+                continue
+            if isSkipped(relative):
+                continue
+            if path not in texts:
+                texts[path] = path.read_bytes()
+            text = texts[path]
+            macro = text[offset:offset + length]
+            if macro in CONTRACT_MACROS:
+                found.add((relative, text.count(b"\n", 0, offset) + 1, macro.decode()))
+        return [list(entry) for entry in sorted(found)]
+
+    def result(self):
+        """What the lint is responsible for: every std::array variable, (file, name, whether
+        enum-first), under "tables", and every contract macro inside a try block under "contractsInTry"."""
+        return {"tables": self.tables(), "contractsInTry": self.contractsInTry(),
+                "contractWrites": self.contractWrites()}
+
+    def tables(self):
+        """Every std::array variable the lint is responsible for: (file, name, whether enum-first)."""
+        tables = {}
+        for file, name, row, scope, kinds in self.arrays:
+            if file is None:
+                continue
+            path = (self.directory / file).resolve()
+            try:
+                relative = path.relative_to(self.sources).as_posix()
+            except ValueError:
+                continue
+            if isSkipped(relative):
+                continue
+            if relative.endswith((".hpp", ".h")) and all(kind == "namespace" for kind in kinds) \
+                    and ANONYMOUS not in scope:
+                continue  # a header's namespace scope: the reflection checks' domain
+            record = self.rowRecord(row, scope)
+            enumFirst = False
+            if record is not None:
+                first, recordScope = self.records[record]
+                enumFirst = first is not None and self.kindOf(first, recordScope + [splitScopes(record)[-1]]) \
+                    == SCOPED_ENUM
+            key = (relative, name)
+            tables[key] = tables.get(key, False) or enumFirst
+        return [[file, name, enumFirst] for (file, name), enumFirst in sorted(tables.items())]
+
+
+def readRoots(text):
+    """The dump's top-level JSON values: Clang writes one per declaration the filter matches."""
+    decoder = json.JSONDecoder()
+    whitespace = re.compile(r"\s*")
+    position = whitespace.match(text, 0).end()
+    while position < len(text):
+        value, position = decoder.raw_decode(text, position)
+        yield value
+        position = whitespace.match(text, position).end()
+
+
+def dumpCommand(entry, clang):
+    """The compile command of @p entry, a compile_commands.json row, as a filtered JSON AST dump."""
+    arguments = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
+    dump = [clang or arguments[0]]
+    skipNext = False
+    for argument in arguments[1:]:
+        if skipNext:
+            skipNext = False
+        elif argument in ("-o", "-MF", "-MT", "-MQ"):
+            skipNext = True
+        elif argument in ("-c", "-MD", "-MMD") or argument.startswith("-o"):
+            continue
+        else:
+            dump.append(argument)
+    # -w: the lint judges declarations, not warnings, and a tree's -Werror must not fail it.
+    return dump + ["-w", "-fsyntax-only", "-Xclang", "-ast-dump=json", "-Xclang", "-ast-dump-filter",
+                   "-Xclang", DUMP_FILTER]
+
+
+def lintUnit(relative, arguments, directory, sources):
+    """Dumps one translation unit and indexes it; returns its result, or raises ToolError."""
+    process = subprocess.run(arguments, cwd=directory, capture_output=True, check=False)
+    if process.returncode != 0:
+        errors = [line for line in process.stderr.decode("utf-8", "replace").splitlines() if "error" in line]
+        raise ToolError(f"Clang failed (exit {process.returncode}) on src/isoline/{relative}: "
+                        + " | ".join(errors[:3]))
+    index = Index(pathlib.Path(sources), pathlib.Path(directory))
+    for root in readRoots(process.stdout.decode("utf-8", "replace")):
+        index.walk(root)
+    return index.result()
+
+
+def unitsOf(compileCommands, sources):
+    """The compile_commands.json rows of the first-party source files the lint covers."""
+    entries = json.loads(compileCommands.read_text(encoding="utf-8"))
+    units = {}
+    for entry in entries:
+        path = pathlib.Path(entry["directory"], entry["file"]).resolve()
+        try:
+            relative = path.relative_to(sources).as_posix()
+        except ValueError:
+            continue
+        if relative.endswith(".cpp") and not isSkipped(relative):
+            units.setdefault(relative, entry)
+    return units
+
+
+def treeStamp(root, compileCommands):
+    """What every cached result depends on besides its own file: the content of every header under
+    src/isoline/ and under the build tree's generated include directory, and of this script."""
+    digest = hashlib.sha256(pathlib.Path(__file__).read_bytes())
+    for directory in (root / SOURCES, compileCommands.parent / "include"):
+        if directory.is_dir():
+            for path in sorted(directory.rglob("*")):
+                if path.suffix in (".hpp", ".h", ".def", ".inc") and path.is_file():
+                    digest.update(str(path).encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def compilerIdentity(compiler, identities):
+    """The hash of the binary @p compiler names, memoized in @p identities; a compiler not found is named
+    by its spelling, and its dump fails."""
+    if compiler not in identities:
+        path = shutil.which(compiler)
+        identities[compiler] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() if path \
+            else f"unresolved {compiler}"
+    return identities[compiler]
+
+
+def scan(root, compileCommands, clang, cache, jobs):
+    """Over every translation unit: every std::array variable the lint covers, {(file, name): enum-first},
+    and every contract macro inside a try block, a sorted list of (file, line, macro)."""
+    sources = (root / SOURCES).resolve()
+    units = unitsOf(compileCommands, sources)
+    if not units:
+        raise ToolError(f"{compileCommands} holds no source file under {sources}")
+    stamp = treeStamp(root, compileCommands)
+    identities = {}
+    results = {}
+    pending = {}
+    for relative, entry in sorted(units.items()):
+        arguments = dumpCommand(entry, clang)
+        source = sources / relative
+        key = hashlib.sha256("\0".join([CACHE_VERSION, stamp, compilerIdentity(arguments[0], identities),
+                                        hashlib.sha256(source.read_bytes()).hexdigest(), *arguments])
+                             .encode()).hexdigest()
+        cached = cache / f"{hashlib.sha256(relative.encode()).hexdigest()}.json" if cache else None
+        if cached is not None and cached.is_file():
+            stored = json.loads(cached.read_text(encoding="utf-8"))
+            if stored.get("key") == key:
+                results[relative] = stored["result"]
+                continue
+        pending[relative] = (arguments, entry["directory"], key, cached)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
+        futures = {executor.submit(lintUnit, relative, arguments, directory, str(sources)): relative
+                   for relative, (arguments, directory, _, _) in pending.items()}
+        for future in concurrent.futures.as_completed(futures):
+            relative = futures[future]
+            result = future.result()
+            results[relative] = result
+            _, _, key, cached = pending[relative]
+            if cached is not None:
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                cached.write_text(json.dumps({"key": key, "result": result}), encoding="utf-8")
+    merged = {}
+    inTry = set()
+    writes = set()
+    for result in results.values():
+        for file, name, enumFirst in result["tables"]:
+            merged[(file, name)] = merged.get((file, name), False) or enumFirst
+        inTry.update(tuple(entry) for entry in result["contractsInTry"])
+        writes.update(tuple(entry) for entry in result["contractWrites"])
+    return merged, sorted(inTry), sorted(writes)
+
+
+def contractWritesProblems(writes):
+    """The findings of the side-effect rule, one message each."""
+    return [f"src/isoline/{file}:{line}: {macro} condition {what}: a check only reads; hoist the write into "
+            f"a local before the check" for file, line, macro, what in writes]
+
+
+def contractsInTryProblems(inTry):
+    """The findings of the try-block rule, one message each."""
+    return [f"src/isoline/{file}:{line}: {macro} inside a try block: a throwing violation handler's exception "
+            f"could be caught there, and the call go on past the failed check; check outside the try, or "
+            f"keep Require" for file, line, macro in inTry]
+
+
+def escapedArrays(root, compileCommands):
+    """The findings of the text pass: every std::array spelt outside namespace isoline in a source file
+    the lint covers, one message each."""
+    sources = (root / SOURCES).resolve()
+    problems = []
+    for relative in sorted(unitsOf(compileCommands, sources)):
+        for line, spelling in arraysOutsideIsoline((sources / relative).read_text(encoding="utf-8")):
+            problems.append(f"src/isoline/{relative}:{line}: {spelling} outside namespace isoline, where the "
+                            f"AST lint does not look: move it into namespace isoline")
+    return problems
+
+
+def registryRows(root):
+    """The ISOLINE_SOURCE_LOCAL_TABLE rows of the registry, in order: (file, table, reason)."""
+    return SOURCE_LOCAL_ROW.findall(withoutComments((root / REGISTRY).read_text(encoding="utf-8")))
+
+
+def documentBlock(rows):
+    return [f"- `{file}`: `{table}`, {reason}" for file, table, reason in rows]
+
+
+def splitDocument(text):
+    head, sep, rest = text.partition(f"<!-- {BLOCK}:begin -->\n")
+    inside, sep2, tail = rest.partition(f"<!-- {BLOCK}:end -->")
+    if not sep or not sep2:
+        return None
+    return head + sep, inside, sep2 + tail
+
+
+def check(root, tables, update):
+    """The findings, one message each; with @p update, the document's block is rewritten first."""
+    problems = []
+    rows = registryRows(root)
+    registered = {(file, table) for file, table, _ in rows}
+    for (file, table), enumFirst in sorted(tables.items()):
+        if enumFirst and (file, table) not in registered:
+            problems.append(
+                f"src/isoline/{file}: {table} is an enum-first table reflection cannot reach: move it to a "
+                f"header's namespace scope (and give it its row), or add "
+                f'ISOLINE_SOURCE_LOCAL_TABLE("{file}", {table}, "<why it stays>") to {REGISTRY}')
+    for file, table, _ in rows:
+        if (file, table) not in tables:
+            problems.append(f'{REGISTRY}: ISOLINE_SOURCE_LOCAL_TABLE("{file}", {table}, …) is stale: '
+                            f"src/isoline/{file} declares no std::array {table} the lint covers")
+    document = root / DOCUMENT
+    parts = splitDocument(document.read_text(encoding="utf-8"))
+    if parts is None:
+        problems.append(f"{DOCUMENT}: no block <!-- {BLOCK}:begin --> … <!-- {BLOCK}:end -->")
+        return problems
+    head, inside, tail = parts
+    wanted = documentBlock(rows)
+    actual = inside.splitlines()
+    if actual != wanted:
+        if update:
+            document.write_text(head + "\n".join(wanted) + "\n" + tail, encoding="utf-8")
+        else:
+            diff = "\n".join(difflib.unified_diff(actual, wanted, "document", "registry", lineterm=""))
+            problems.append(f"{DOCUMENT}: the {BLOCK} block differs from the registry's rows "
+                            f"(run with --update):\n{diff}")
+    return problems
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--compile-commands", type=pathlib.Path, required=True)
+    parser.add_argument("--clang", help="the Clang to dump with (default: each command's compiler)")
+    parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parent.parent)
+    parser.add_argument("--cache", type=pathlib.Path, help="where to keep each translation unit's result")
+    parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
+    parser.add_argument("--update", action="store_true", help="rewrite the document's block")
+    arguments = parser.parse_args()
+    try:
+        tables, inTry, writes = scan(arguments.root.resolve(), arguments.compile_commands.resolve(), arguments.clang,
+                             arguments.cache, arguments.jobs)
+    except ToolError as error:
+        print(f"check-enum-tables: {error}", file=sys.stderr)
+        return 2
+    problems = escapedArrays(arguments.root.resolve(), arguments.compile_commands.resolve()) \
+        + check(arguments.root, tables, arguments.update) + contractsInTryProblems(inTry) \
+        + contractWritesProblems(writes)
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    if problems:
+        return 1
+    count = sum(1 for enumFirst in tables.values() if enumFirst)
+    print(f"source-local enum tables: {count} found, each registered; {DOCUMENT} lists them; "
+          f"no contract macro inside a try block, nor one whose condition writes")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

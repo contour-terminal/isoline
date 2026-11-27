@@ -10,6 +10,7 @@
 
 #include <isoline/Features.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::binary
 {
@@ -258,18 +259,9 @@ inline constexpr auto SignatureTable = std::to_array<SignatureRow>({
     detail::mixedRow(OpcodeSignature::V128F64ToV128, ValueKind::V128, ValueKind::F64, ValueKind::V128),
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: SignatureTable)
-        {
-            if (static_cast<std::size_t>(row.signature) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastOpcodeSignature) + 1;
-    }(),
-    "SignatureTable must hold one row per OpcodeSignature, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastOpcodeSignature>(SignatureTable, &SignatureRow::signature)
+                  == meta::NoMisplacedRow,
+              "SignatureTable must hold one row per OpcodeSignature, at the index of its enumerator");
 
 /// The operand and result kinds of @p signature.
 /// @param signature The signature to describe.
@@ -363,6 +355,10 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
+
+/// The last Opcode enumerator, as OpcodeTable counts them. C++23 cannot tell it from the enum's last
+/// enumerator, as both come from Opcodes.def; a reflection check compares the two.
+inline constexpr auto LastOpcode = static_cast<Opcode>(OpcodeCount - 1);
 
 static_assert(OpcodeCount == 471,
               "every WebAssembly 3.0 instruction but GC's, and wide arithmetic's four: 2.0's non-SIMD "

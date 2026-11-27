@@ -19,6 +19,7 @@
 #include <isoline/binary/ByteReader.hpp>
 #include <isoline/binary/ByteWriter.hpp>
 #include <isoline/binary/DecodeError.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::binary
 {
@@ -218,18 +219,9 @@ namespace
           .isEmpty = isIndirectEmpty },
     });
 
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: ShapeCodecs)
-            {
-                if (std::to_underlying(row.shape) != index)
-                    return false;
-                ++index;
-            }
-            return index == std::to_underlying(NameShape::Indirect) + 1U;
-        }(),
-        "ShapeCodecs must hold one row per NameShape, at the index of its enumerator");
+    static_assert(meta::firstMisplacedRow<LastNameShape>(ShapeCodecs, &ShapeCodec::shape)
+                      == meta::NoMisplacedRow,
+                  "ShapeCodecs must hold one row per NameShape, at the index of its enumerator");
 
     /// The ShapeCodecs row of @p row's shape.
     [[nodiscard]] ShapeCodec const& codecOf(NameSubsection const& row) noexcept

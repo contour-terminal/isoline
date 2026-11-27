@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// The api preconditions, each checked as a process of its own: a Require() that fails ends the process,
-// so no Catch2 case can observe it in-process. The case to run is the first argument, one row of
-// CanaryCases each. CTest judges a case by the check's own text on stderr (tests/CMakeLists.txt), which
-// only that Require() prints; the line below it, printed only when the check let the call through,
-// fails it.
+// The api preconditions, each checked as a process of its own: a check that fails ends the process, so no
+// Catch2 case can observe it in-process. The case to run is the first argument, one row of CanaryCases
+// each. CTest judges a case by the check's own text on stderr (tests/CMakeLists.txt), which only that
+// check prints; the line main() prints when the check let the call through fails it. Linked with
+// ThrowingHandler.cpp, a contract's violation handler throws: main() catches what reaches it, which only
+// a contract in a function that may throw lets through.
 #include <algorithm>
 #include <array>
 #include <csignal>
@@ -16,12 +17,16 @@
 #include <print>
 #include <span>
 #include <string_view>
+#include <utility>
 
+#include "CheckPositions.hpp"
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Store.hpp>
 #include <isoline/api/Types.hpp>
 #include <isoline/api/testing/EngineRows.hpp>
+#include <isoline/binary/Encoder.hpp>
+#include <isoline/binary/Module.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 
@@ -29,7 +34,8 @@ namespace
 {
 
 /// Ends the process normally on SIGABRT: CTest fails a test that dies of a signal whatever its output,
-/// so the abort a failed Require() ends with becomes an exit, and the output decides.
+/// so the abort a failed check ends with becomes an exit, and the output decides. std::_Exit() flushes no
+/// stream: what a case prints before its check went out unbuffered, or was flushed.
 extern "C" void exitOnAbort(int /*signal*/)
 {
     std::_Exit(EXIT_FAILURE);
@@ -259,16 +265,97 @@ void hostGlobalStoreAfterDelete()
     wentThrough("a defined Global::store()", deletedHostHandles().global.store().serial());
 }
 
+/// binary::normalize() of a hand-built module whose custom section's anchor is past LastSectionAnchor
+/// (binary/Encoder.cpp): no decoder or text reader makes one, and the section table is not read past its end.
+void normalizeAnchorOutOfRange()
+{
+    auto module = isoline::binary::Module {};
+    module.customs.push_back(
+        isoline::binary::CustomSection { .name = "c",
+                                         .bytes = {},
+                                         .after = static_cast<isoline::binary::SectionAnchor>(
+                                             std::to_underlying(isoline::binary::LastSectionAnchor) + 1) });
+    auto const normalized = isoline::binary::normalize(std::move(module));
+    std::println("binary::normalize() of an anchor past the last returned ({} customs)",
+                 normalized.customs.size());
+}
+
+/// Store::define() of no host function (api/Store.cpp).
+void storeDefineNullFunction()
+{
+    auto const engine = Engine { configOf(ContractLimits {}, engineRows().front()) };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const defined = store.define(FuncType {}, std::shared_ptr<IHostFunction> {});
+    std::println("Store::define() of no host function returned ({})", defined.has_value());
+}
+
+/// A thread preparation token of no resource (api/Engine.cpp).
+void threadPreparationOfNothing()
+{
+    auto const token = ThreadPreparation { std::unique_ptr<IThreadResource> {} };
+    std::println("ThreadPreparation of no resource was made (empty: {})", token.empty());
+}
+
+/// The check positions (CheckPositions.hpp), each given one round, so that its check fails.
+void positionPreconditionFirst()
+{
+    isoline::canary::preconditionFirst(1);
+    wentThrough("ISOLINE_PRECONDITION as a function's first statement", 0);
+}
+
+void positionPreconditionInBracelessIf()
+{
+    isoline::canary::preconditionInBracelessIf(1);
+    wentThrough("ISOLINE_PRECONDITION as a braceless if's body", 0);
+}
+
+void positionInvariantInBracelessElse()
+{
+    isoline::canary::invariantInBracelessElse(1);
+    wentThrough("ISOLINE_INVARIANT as a braceless else's body", 0);
+}
+
+void positionInvariantInForBody()
+{
+    isoline::canary::invariantInForBody(1);
+    wentThrough("ISOLINE_INVARIANT first in a for body", 0);
+}
+
+void positionInvariantInWhileBody()
+{
+    isoline::canary::invariantInWhileBody(1);
+    wentThrough("ISOLINE_INVARIANT first in a while body", 0);
+}
+
+void positionInvariantInDoBody()
+{
+    isoline::canary::invariantInDoBody(1);
+    wentThrough("ISOLINE_INVARIANT first in a do body", 0);
+}
+
+void positionInvariantInRangeForBody()
+{
+    isoline::canary::invariantInRangeForBody(1);
+    wentThrough("ISOLINE_INVARIANT first in a range-based for body", 0);
+}
+
+void positionInvariantInNoexceptLambdaInTry()
+{
+    isoline::canary::invariantInNoexceptLambdaInTry(1);
+    wentThrough("ISOLINE_INVARIANT in a noexcept lambda inside a try block", 0);
+}
+
 /// A case: its name on the command line, and what it calls.
 struct CanaryCase
 {
     std::string_view name; ///< The first argument that runs it.
-    void (*run)();         ///< Calls what must fail its Require().
+    void (*run)();         ///< Calls what must fail its check.
 };
 
 /// Every case, from RequireCanaryCases.def, which tests/CMakeLists.txt reads for the tests.
 constexpr auto CanaryCases = std::to_array<CanaryCase>({
-#define ISOLINE_REQUIRE_CANARY_CASE(function, name, check) { name, function },
+#define ISOLINE_REQUIRE_CANARY_CASE(function, name, spelling, check) { name, function },
 #include "RequireCanaryCases.def"
 #undef ISOLINE_REQUIRE_CANARY_CASE
 });
@@ -286,7 +373,16 @@ int main(int argc, char** argv)
         std::puts("require-canary: usage: isoline_require_canary <case>");
         return EXIT_FAILURE;
     }
-    found->run();
+    try
+    {
+        found->run();
+    }
+    catch (...)
+    {
+        std::println(
+            "require-canary: {}: the check let the call through (the handler's exception was caught)", name);
+        return EXIT_SUCCESS;
+    }
     std::println("require-canary: {}: the check let the call through", name);
     return EXIT_SUCCESS;
 }

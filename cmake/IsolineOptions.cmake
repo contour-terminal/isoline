@@ -26,6 +26,14 @@ option(ISOLINE_FETCH_DEPS
 option(ISOLINE_C_API "Build the C API (wasm.h + isoline.h): the isoline_c shared and static libraries"
        ${PROJECT_IS_TOP_LEVEL})
 
+set(ISOLINE_EXPECT_LANGUAGE_FEATURES "" CACHE STRING
+    "Fail the configure unless every C++26 language feature takes this path: empty (any), native or fallback")
+set_property(CACHE ISOLINE_EXPECT_LANGUAGE_FEATURES PROPERTY STRINGS "" native fallback)
+
 set(ISOLINE_SANITIZE "" CACHE STRING
     "Sanitizer mode for Isoline's own targets: empty, address (ASan + UBSan) or thread")
 set_property(CACHE ISOLINE_SANITIZE PROPERTY STRINGS "" address thread)
+
+# The C++26 language features' options, ISOLINE_<FEATURE> (AUTO, ON or OFF, default AUTO), are defined by
+# cmake/IsolineLanguageFeatures.cmake from its feature rows, so that a feature is one row there; see
+# docs/language-features.md.

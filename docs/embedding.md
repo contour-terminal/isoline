@@ -312,6 +312,32 @@ Contour's `IWasmBackend` contract maps onto these as follows:
 | `CallFailure::HostFailure` | `CallFailure::HostFailure` |
 | `OutOfMemory` at instantiation | `LimitExceeded { Limit::MemoryBytes }`, or `{ Limit::TableElements }` for a table |
 
+### Failed checks
+
+A precondition the embedder breaks (a handle used after its store is gone, an engine configured with a
+feature set not closed over its prerequisites) is a programmer error, not an error value: the check
+reports it and ends the process. Host misuse that C input can reach stays an error value. A check
+reports through one of two channels:
+
+- `Require()` reports through core-cpp's `core::setFailHandler()`, whose handler an embedder may
+  replace, then aborts.
+- Where the compiler has C++26 contracts (GCC 16.2 and later; `docs/language-features.md`), the checks
+  of `noexcept` functions are contracts. They report through the compiler's contract violation handler
+  instead (GCC's default prints the condition to standard error), then terminate. An embedder's fail
+  handler does not see them.
+
+A program may install its own `handle_contract_violation`. A handler that throws is unsupported: every
+contract Isoline compiles sits in a `noexcept` function, so the exception terminates the process where
+the check failed, and never reaches the embedder. Isoline compiles its contracts under the `enforce`
+semantic only, and refuses at configure time a build that would check them under another.
+
+A package built with native contracts links `libstdc++exp`, so its consumer compiles with the GCC release
+that built it (16.2 or later) over libstdc++: libstdc++exp's ABI is that release's alone, and a libc++ or
+MSVC consumer cannot link it at all. `find_package(isoline)` refuses any other toolchain at configure
+time, naming both compilers. A consumer that does not use CMake adds `-lstdc++exp` after the library. A
+package built on the fallback has none of these requirements (`docs/language-features.md`, "The consumer
+side of a native package").
+
 ## Limits
 
 A store keeps to the `StoreLimits` of its engine's configuration, or to those its `StoreOptions`

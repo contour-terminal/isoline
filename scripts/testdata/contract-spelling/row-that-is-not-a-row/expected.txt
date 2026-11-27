@@ -1,0 +1,4 @@
+exit: 1
+scripts/contract-spelling-rows.txt:2: not a row: file | function | count (a positive number) | reason
+scripts/contract-spelling-rows.txt:3: not a row: file | function | count (a positive number) | reason
+scripts/contract-spelling-rows.txt:4: unknown reason "because": one of "allocates (std::bad_alloc reaches the P17 boundary)", "calls a function that may throw", "a throwing interface"

@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 
+#include <isoline/meta/EnumRows.hpp>
+
 namespace isoline
 {
 
@@ -203,18 +205,9 @@ inline constexpr auto FeatureTable = std::to_array<FeatureRow>({
     { .feature = Feature::CustomPageSizes, .name = "custom-page-sizes", .standard = Standard::Proposal },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: FeatureTable)
-        {
-            if (static_cast<std::size_t>(row.feature) != index)
-                return false;
-            ++index;
-        }
-        return index == FeatureCount;
-    }(),
-    "FeatureTable must hold one row per Feature, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastFeature>(FeatureTable, &FeatureRow::feature)
+                  == meta::NoMisplacedRow,
+              "FeatureTable must hold one row per Feature, at the index of its enumerator");
 
 /// The table row describing @p feature.
 /// @param feature The proposal to look up.

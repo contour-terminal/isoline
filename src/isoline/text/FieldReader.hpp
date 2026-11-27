@@ -15,6 +15,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/NameSection.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/Annotations.hpp>
 #include <isoline/text/FunctionTypes.hpp>
 #include <isoline/text/Instructions.hpp>
@@ -62,18 +63,8 @@ inline constexpr auto SpaceRows = std::to_array<SpaceRow>({
     { .space = IndexSpace::Label, .category = "label", .names = binary::NameKind::Label },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: SpaceRows)
-        {
-            if (std::to_underlying(row.space) != index)
-                return false;
-            ++index;
-        }
-        return index == std::to_underlying(IndexSpace::Label) + std::size_t { 1 };
-    }(),
-    "SpaceRows must hold one row per IndexSpace, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastIndexSpace>(SpaceRows, &SpaceRow::space) == meta::NoMisplacedRow,
+              "SpaceRows must hold one row per IndexSpace, at the index of its enumerator");
 
 /// The row of an index space.
 /// @param space The space.

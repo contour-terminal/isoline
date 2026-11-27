@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include <isoline/Features.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::binary
 {
@@ -172,18 +173,9 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::NameIndexOutOfOrder, .specMessage = "name map indices out of order" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: DecodeErrorTable)
-        {
-            if (static_cast<std::size_t>(row.code) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastDecodeErrorCode) + 1;
-    }(),
-    "DecodeErrorTable must hold one row per DecodeErrorCode, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastDecodeErrorCode>(DecodeErrorTable, &DecodeErrorRow::code)
+                  == meta::NoMisplacedRow,
+              "DecodeErrorTable must hold one row per DecodeErrorCode, at the index of its enumerator");
 
 /// A decode failure: what went wrong, where, and what it names.
 ///

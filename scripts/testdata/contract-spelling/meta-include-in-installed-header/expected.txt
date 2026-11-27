@@ -1,0 +1,2 @@
+exit: 1
+src/isoline/api/Engine.hpp:4: meta-include-in-installed-header: an installed header includes only meta/EnumRows.hpp

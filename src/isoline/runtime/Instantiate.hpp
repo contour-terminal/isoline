@@ -11,6 +11,7 @@
 #include <variant>
 
 #include <isoline/binary/Module.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -47,18 +48,9 @@ inline constexpr auto LinkErrorTable = std::to_array<LinkErrorRow>({
     { .code = LinkErrorCode::IncompatibleImportType, .specMessage = "incompatible import type" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: LinkErrorTable)
-        {
-            if (static_cast<std::size_t>(row.code) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastLinkErrorCode) + 1;
-    }(),
-    "LinkErrorTable must hold one row per LinkErrorCode, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastLinkErrorCode>(LinkErrorTable, &LinkErrorRow::code)
+                  == meta::NoMisplacedRow,
+              "LinkErrorTable must hold one row per LinkErrorCode, at the index of its enumerator");
 
 /// The message the spec test suite expects for @p code.
 /// @param code The error to describe.

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/interpreter/Simd.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -20,6 +18,8 @@
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/interpreter/Numerics.hpp>
+#include <isoline/meta/Check.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
@@ -628,7 +628,7 @@ namespace
     using Evaluator = std::
         variant<std::monostate, UnaryFn, BinaryFn, TernaryFn, TestFn, ShiftFn, SplatFn, ExtractFn, ReplaceFn>;
 
-    static_assert(std::variant_size_v<Evaluator> == static_cast<std::size_t>(SimdShape::ReplaceLane) + 1,
+    static_assert(meta::sizedByEnum<LastSimdShape>(std::variant_size_v<Evaluator>),
                   "Evaluator holds one alternative per SimdShape, in its order");
 
     /// One SIMD operator: the instruction and its evaluator.
@@ -1088,7 +1088,7 @@ V128 shuffle(V128 a, V128 b, std::span<std::byte const, 16> lanes) noexcept
     for (auto const index: std::views::iota(0U, LaneCount<uint8_t>))
     {
         auto const lane = std::to_integer<unsigned>(lanes[index]);
-        Require(lane < 2 * LaneCount<uint8_t>);
+        ISOLINE_INVARIANT(lane < 2 * LaneCount<uint8_t>);
         auto const& source = lane < LaneCount<uint8_t> ? a : b;
         setLane<uint8_t>(result, index, laneOf<uint8_t>(source, lane % LaneCount<uint8_t>));
     }

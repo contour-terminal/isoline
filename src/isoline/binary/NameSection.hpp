@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #include <isoline/binary/DecodeError.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 // The name section (WebAssembly 3.0, appendix "Name Section"): debug names for a module's entities.
 // It is advisory: a module whose name section is malformed is still a valid module, so the decoder
@@ -43,8 +46,11 @@ enum class NameKind : uint8_t
     TagParameter, ///< Each tag's parameters, as wasm-tools names them (subsection 13).
 };
 
+/// The last NameKind enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastNameKind = NameKind::TagParameter;
+
 /// The number of NameKind enumerators: the size of NameSection's per-kind arrays.
-inline constexpr auto NameKindCount = std::size_t { std::to_underlying(NameKind::TagParameter) + 1U };
+inline constexpr auto NameKindCount = std::size_t { std::to_underlying(LastNameKind) + 1U };
 
 /// How a name subsection lays out its names.
 enum class NameShape : uint8_t
@@ -53,6 +59,9 @@ enum class NameShape : uint8_t
     Direct,   ///< A name map: an index and a name per entry.
     Indirect, ///< An indirect name map: an index and a name map per entry.
 };
+
+/// The last NameShape enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastNameShape = NameShape::Indirect;
 
 /// One subsection of the name section: what it names, its id, and its layout.
 struct NameSubsection
@@ -83,17 +92,9 @@ inline constexpr auto NameSubsections = std::to_array<NameSubsection>({
 });
 
 static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: NameSubsections)
-        {
-            if (std::to_underlying(row.kind) != index
-                || (index > 0 && row.id <= NameSubsections[index - 1].id))
-                return false;
-            ++index;
-        }
-        return index == NameKindCount;
-    }(),
+    meta::firstMisplacedRow<LastNameKind>(NameSubsections, &NameSubsection::kind) == meta::NoMisplacedRow
+        && std::ranges::adjacent_find(NameSubsections, std::ranges::greater_equal {}, &NameSubsection::id)
+               == NameSubsections.end(),
     "NameSubsections must hold one row per NameKind, at the index of its enumerator, in id order");
 
 /// One entry of a name map: an entity's index and its name.

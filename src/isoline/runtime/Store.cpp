@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/runtime/Store.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -20,6 +18,8 @@
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/Check.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/Limits.hpp>
@@ -569,15 +569,8 @@ uint64_t Store::used(Limit limit) const noexcept
         { .limit = Limit::Steps,
           .held = [](Store const& store) noexcept -> uint64_t { return store._steps; } },
     });
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: Usages)
-                if (static_cast<std::size_t>(row.limit) != index++)
-                    return false;
-            return index == static_cast<std::size_t>(LastLimit) + 1;
-        }(),
-        "Usages must hold one row per Limit, at the index of its enumerator");
+    static_assert(meta::firstMisplacedRow<LastLimit>(Usages, &Usage::limit) == meta::NoMisplacedRow,
+                  "Usages must hold one row per Limit, at the index of its enumerator");
     return Usages[static_cast<std::size_t>(limit)].held(*this);
 }
 
@@ -625,7 +618,7 @@ std::size_t Store::tagCount() const noexcept
 
 void Store::releaseTrailing(TableAddr firstTable, MemAddr firstMemory) noexcept
 {
-    Require(firstTable <= _tables.size() && firstMemory <= _memories.size());
+    ISOLINE_PRECONDITION(firstTable <= _tables.size() && firstMemory <= _memories.size());
     auto const tables = std::ranges::subrange { _tables.begin() + firstTable, _tables.end() };
     for (auto const& table: tables)
         _tableElements -= table.elements.size();
@@ -768,7 +761,7 @@ GrowthRecord const& RefusalScope::record() const noexcept
 InvocationScope::InvocationScope(Store& store) noexcept:
     _store { &store }, _floatEnvironment { *store._roundingMode }
 {
-    Require(_store->checkInvocationNesting().has_value());
+    ISOLINE_PRECONDITION(_store->checkInvocationNesting().has_value());
     // The outermost invocation's budget is fresh; nested ones share it.
     if (_store->_invocationDepth == 0)
         _store->_steps = 0;

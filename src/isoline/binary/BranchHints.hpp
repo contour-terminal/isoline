@@ -7,6 +7,8 @@
 #include <span>
 #include <string_view>
 
+#include <isoline/meta/EnumRows.hpp>
+
 namespace isoline::binary
 {
 
@@ -48,6 +50,9 @@ enum class CustomErrorCode : uint8_t
     BranchHintDuplicateSection, ///< A module holds a second branch hint section.
 };
 
+/// The last CustomErrorCode enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastCustomErrorCode = CustomErrorCode::BranchHintDuplicateSection;
+
 /// One row of CustomErrorTable.
 struct CustomErrorRow
 {
@@ -79,15 +84,9 @@ inline constexpr auto CustomErrorTable = std::to_array<CustomErrorRow>({
       .specMessage = "@metadata.code.branch_hint annotation: duplicate section" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: CustomErrorTable)
-            if (static_cast<std::size_t>(row.code) != index++)
-                return false;
-        return true;
-    }(),
-    "CustomErrorTable must hold one row per CustomErrorCode, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastCustomErrorCode>(CustomErrorTable, &CustomErrorRow::code)
+                  == meta::NoMisplacedRow,
+              "CustomErrorTable must hold one row per CustomErrorCode, at the index of its enumerator");
 
 /// A custom section the decoder refused: what went wrong, and where.
 struct CustomSectionError

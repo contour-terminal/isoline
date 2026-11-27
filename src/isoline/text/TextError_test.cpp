@@ -24,14 +24,9 @@ using isoline::text::TextLimits;
 
 TEST_CASE("TextError.everyRowInOrder", "[TextError]")
 {
-    auto index = std::size_t { 0 };
+    // TextErrorTable's static_assert holds every row at its enumerator's index; each has a message.
     for (auto const& row: TextErrorTable)
-    {
-        CHECK(static_cast<std::size_t>(row.code) == index);
         CHECK_FALSE(row.specMessage.empty());
-        ++index;
-    }
-    CHECK(index == static_cast<std::size_t>(isoline::text::LastTextErrorCode) + 1);
 }
 
 namespace

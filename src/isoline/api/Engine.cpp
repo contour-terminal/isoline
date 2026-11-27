@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/api/Engine.hpp>
 
-#include <core/Assert.hpp>
-
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -13,6 +11,7 @@
 #include <utility>
 #include <variant>
 
+#include <isoline/meta/Check.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::api
@@ -25,13 +24,13 @@ EngineIdentity EngineConfig::identity() const noexcept
 
 Engine::Engine(EngineConfig config) noexcept: _config { config }
 {
-    Require(_config.features.checkPrerequisites().has_value());
+    ISOLINE_PRECONDITION(_config.features.checkPrerequisites().has_value());
 }
 
 ThreadPreparation::ThreadPreparation(std::unique_ptr<IThreadResource> resource) noexcept:
     _resource { std::move(resource) }
 {
-    Require(_resource != nullptr);
+    ISOLINE_PRECONDITION(_resource != nullptr);
 }
 
 std::expected<Module, LoadError> Engine::load(std::span<std::byte const> bytes) const noexcept

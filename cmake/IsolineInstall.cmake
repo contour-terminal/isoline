@@ -177,6 +177,7 @@ function(isoline_install)
         COMPATIBILITY ${compatibility})
     install(FILES "${generated}/isolineConfig.cmake" "${generated}/isolineConfigVersion.cmake"
                   "${PROJECT_SOURCE_DIR}/cmake/isolineComponentNames.cmake"
+                  "${PROJECT_SOURCE_DIR}/cmake/isolineConsumerToolchain.cmake"
         DESTINATION "${ISOLINE_INSTALL_PACKAGE_DIR}"
         COMPONENT ${ISOLINE_INSTALL_COMPONENT})
     message(STATUS "[isoline] install: the package isoline ${PROJECT_VERSION} (${compatibility}), "
@@ -248,6 +249,10 @@ function(isoline_add_install_tests)
     add_test(NAME ${ISOLINE_INSTALL_COMPONENT_NAMES_TEST}
              COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/cmake/install-component-names.cmake")
     set_tests_properties(${ISOLINE_INSTALL_COMPONENT_NAMES_TEST} PROPERTIES LABELS install TIMEOUT 60)
+    # What the package asks of its consumer's toolchain (cmake/isolineConsumerToolchain.cmake), likewise pure.
+    add_test(NAME install-consumer-toolchain
+             COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/cmake/install-consumer-toolchain.cmake")
+    set_tests_properties(install-consumer-toolchain PROPERTIES LABELS install TIMEOUT 60)
     # The build's own development flags, which no installed target may carry (check-install step 4).
     set(forbiddenOptionsFile "${ISOLINE_FORBIDDEN_OPTIONS_FILE}")
     set(isExpectingImportStd OFF)

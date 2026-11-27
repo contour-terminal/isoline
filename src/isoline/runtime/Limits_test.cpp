@@ -21,22 +21,18 @@ using isoline::runtime::StoreLimits;
 
 TEST_CASE("Limits.tablesAreComplete")
 {
-    // Every Limit has a row at its index, every Refusal a text.
-    for (auto const index: std::views::iota(std::size_t { 0 }, LimitTable.size()))
+    // The tables' static_asserts hold every row at its enumerator's index; each Limit has a name and a
+    // unit, each Refusal a text.
+    for (auto const& row: LimitTable)
     {
-        CHECK(static_cast<std::size_t>(LimitTable[index].limit) == index);
-        CHECK_FALSE(LimitTable[index].name.empty());
-        CHECK_FALSE(LimitTable[index].unit.empty());
+        CHECK_FALSE(row.name.empty());
+        CHECK_FALSE(row.unit.empty());
     }
-    for (auto const index: std::views::iota(std::size_t { 0 }, RefusalTable.size()))
-    {
-        CHECK(static_cast<std::size_t>(RefusalTable[index].refusal) == index);
-        CHECK_FALSE(RefusalTable[index].text.empty());
-    }
+    for (auto const& row: RefusalTable)
+        CHECK_FALSE(row.text.empty());
     CHECK(describe(LimitExceeded { Limit::MemoryBytes }) == "memory bytes limit exceeded");
     CHECK(describe(LimitExceeded { Limit::Types }) == "types limit exceeded");
     CHECK(describe(LimitExceeded { Limit::Steps }) == "steps limit exceeded");
-    CHECK(LimitTable.back().limit == Limit::Steps);
     CHECK(describe(Refusal::Limit) == "above the store's limit");
     CHECK(describe(Refusal::Embedder) == "refused by the embedder");
 }
