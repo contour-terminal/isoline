@@ -190,6 +190,7 @@ if(ISOLINE_TESTING)
     # private, but the test helpers' and the checks' own.
     isoline_add_reflection_check(isoline_meta_reflection_test TEST LABELS unit
         SOURCES meta/reflection/EnumReflection_test.cpp meta/reflection/ModuleSurface_test.cpp
+                meta/reflection/CApiReflection_test.cpp
         LINK_LIBRARIES isoline::core)
     # The annotations rehearsal (P19 Task 7): rows derived from enumerator annotations, only where
     # annotations are native.
@@ -214,6 +215,25 @@ if(ISOLINE_TESTING)
         list(APPEND isolineEnumTablesLinks isoline::c_static)
     else()
         list(APPEND isolineEnumTablesExcludes "^isoline/c/")
+    endif()
+    # The C API's enum mirrors and struct members (P19 Task 13), where the C API is built: its C headers read as
+    # C++ beside the tables of the C layer that convert them.
+    if(TARGET isoline::c_static)
+        isoline_add_reflection_check(isoline_c_api_check
+            SOURCES meta/reflection/CApiCheck.cpp
+            LINK_LIBRARIES isoline::c_static isoline::core)
+        # Every C header the C API installs, wasm.h among them, from its header set: a header added there is
+        # one whose enumerations the discovery of CApiCheck.cpp walks, without a row.
+        if(TARGET isoline_c_api_check)
+            _isoline_header_set_include_names(isoline_c_static isolineCApiHeaders "[.]h$")
+            set(isolineCApiUmbrella "// Generated from isoline_c_static's header set (src/isoline/CMakeLists.txt).\n#pragma once\n")
+            foreach(header IN LISTS isolineCApiHeaders)
+                string(APPEND isolineCApiUmbrella "#include <${header}>\n")
+            endforeach()
+            file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/isoline_c_api_check.headers/isoline/meta/reflection/CApiHeaders.hpp"
+                 CONTENT "${isolineCApiUmbrella}" @ONLY)
+            target_include_directories(isoline_c_api_check PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/isoline_c_api_check.headers")
+        endif()
     endif()
     isoline_add_reflection_check(isoline_enum_tables_check
         SOURCES meta/reflection/EnumTablesCheck.cpp

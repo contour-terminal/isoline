@@ -95,7 +95,12 @@ feature added as one row, and which probes run with which flags.
   below), so its interface asks every consumer, the tests and an installed package's included, for the
   contract-consumer row's standard: `cxx_std_26`, which enables contracts on GCC 16.2 without a flag. No
   flag and no semantic is asked. On the fallback path the compile feature stays `cxx_std_23`, and consumers
-  compile as C++23.
+  compile as C++23. The C API's two libraries, `isoline_c_shared` and `isoline_c_static`, compile with the
+  same flags, but their headers are C: a library whose header set holds headers, none of them a `.hpp`, asks
+  its consumers for no C++ standard (their interface keeps `c_std_11`), which `tests/c/CMakeLists.txt` checks
+  at configure through the transitive link interface. The link still asks what it must: a static
+  `isoline_c_static` passes `$<LINK_ONLY:stdc++exp>` on, as `isoline_core` does, while the shared library
+  holds it inside.
 - **Reflection and annotations native:** they only add check translation units of their own.
 
 ## Contracts
@@ -446,8 +451,9 @@ and range-based `for` body.
 ## The installed headers stay C++23
 
 `isoline_apply_language_features()` records every target it is given, on either path, in the global
-property `ISOLINE_LANGUAGE_FEATURE_TARGETS`. Today those are `isoline_core` and `isoline_text`; another library is
-one call.
+property `ISOLINE_LANGUAGE_FEATURE_TARGETS`. Today those are `isoline_core`, `isoline_text` and the C API's two
+libraries (whose C headers the check, which reads `.hpp` files, leaves to `tests/c/`); another library is one
+call.
 After all of them are defined, the top-level `CMakeLists.txt` adds one check over all of them,
 `isoline_public_headers_cxx23`, and, where contracts are native, a second one, `isoline_public_headers_cxx26`.
 Adding the check seals the registry: a target passed to
@@ -485,6 +491,8 @@ same on both paths. Where reflection is native, two targets exist that the fallb
   when one does.
 - `isoline_meta_surface_reflection` prints module isoline's reflected surface, which the lint test
   `meta-module-surface.reflection` compares with the export lint's ("The reflected module surface").
+- `isoline_c_api_check`, where the C API is built, is compile-only too: the C API's enum mirrors and struct
+  members ("The C API's mirrors and layouts").
 
 ### Opcode names
 
@@ -663,7 +671,54 @@ comparison, and one the program reflects all the same fails the test, so a compi
 the kind makes the row stale visibly. An unscoped enumeration's enumerators are not members either; the
 program reads them through their enumeration, as the lint does.
 
+### The C API's mirrors and layouts
+
+The C layer converts each C enumeration through a table of rows (`src/isoline/c/detail/EnumRows.hpp`,
+`ErrorRows.hpp`), and `src/isoline/c/abi/layout.def` describes each struct a caller allocates. C++23 counts a
+table's rows against a C++ enumeration's Last, but a C enumeration has no Last, and `offsetof` checks the
+fields a row names, not the members it leaves out. `isoline_c_api_check` (`meta/reflection/CApiCheck.cpp`)
+reads the C headers as C++ and adds both:
+
+- **Mirrors.** Each `ISOLINE_C_MIRROR(Rows, column, without, aliases, Enums...)` row is one side of a table:
+  the C column and the C enumerations whose constants it holds (Isoline's beside wasm.h's, as the value kinds
+  are), or the C++ column and its enumeration. The column is a member, or a projection of a row, as the type
+  refusals' details are: `isoline_invalid_type_detail_enum` mirrors `EnumErrorRows<api::InvalidTypeReason>`
+  through `detailOf()`, the enumerator plus one. `mirrorProblem()` (`meta/reflection/CApiReflection.hpp`)
+  runs `enumerators_of` over each: every constant is in exactly one row; every row holds one of the
+  constants; two constants of one value fail unless `aliases` lists one of them (`ISOLINE_ERROR_LAST`, the
+  only one), which is then in its constant's row; and `without` lists the constants that are in no row on
+  purpose, each with its reason (`ISOLINE_HEAP_NOT_REFERENCE`, `ISOLINE_VALKIND_INVALID`,
+  `AbstractHeapType::Bot`). A listed constant that gains a row, or is no constant of the side, fails as
+  well. A constant added to `val.h` without a row fails the build naming it, as
+  `compile-fail-c-mirror-constant-without-row` pins.
+- **Every C enumeration is accounted for.** Each mirror row also declares its side, and `cEnumsProblem()`
+  walks the global namespace for the enumerations of the C API's prefixes (`wasm_`, `isoline_`): each is
+  one a row checks, or a row of `UnmirroredCEnums` with its reason. Two are: `isoline_nullability_enum` and
+  `isoline_maximum_kind_enum` have two constants each, which the conversions read through one condition
+  rather than a table (`detail/Convert.cpp`), so there are no rows to mirror; `Types_test.cpp` and the limits
+  cases pin both. A new C enumeration with neither fails the build naming it.
+- **Layouts.** `layoutProblem()` reads every `ISOLINE_LAYOUT_STRUCT`, `ISOLINE_LAYOUT_FIELD` and type row of
+  `layout.def`: the field rows of a struct name each of its members, in declaration order, one row each; the
+  type rows (`ISOLINE_LAYOUT_FIELD_TYPE`, and `ISOLINE_LAYOUT_UNION_MEMBER_TYPE` for each member of an
+  unnamed union, wasm_val_t's `of`) name each member's type as `type_of` sees it; and a row of a struct
+  without a struct row fails as well. `compile-fail-c-layout-member-without-row` pins it.
+
+A C++23 build keeps the checks it had, and one more: the row counts of the C++ side, and `Layout_test.cpp`'s
+offsets, sizes and, through `std::is_same_v`, each type row. What reflection adds is completeness: a C
+constant, a C enumeration or a member without its row.
+
+A mirror checks which constants the rows hold, not which pairs they hold: two rows that swap their C
+constants still hold each constant once. Where a pairing is pinned, it is spelled out rather than read from
+the rows: the heaps' by the `Expected` table of `Types_test.cpp` (`Types.referenceKindIsItsHierarchys`: each
+heap, its kind and its C heap), the error details' by `ErrorDetails_test.cpp`. The extern kinds', the
+mutabilities' and the value kinds' tests read the rows they check, so a swap there is a review question
+(below).
+
 ### What stays a review question
+
+- **A swapped pairing in `ExternKindRows`, `MutabilityRows` or `ValueKindRows`** passes both the mirror and
+  their round-trip tests, which read the rows; wasm.h's numbers for them are upstream's, and a change to a
+  row is reviewed against it. The heaps and the error details are pinned (above).
 
 - **A library table in any `testing` namespace, or any `testing/` directory, is never checked:**
   discovery skips them as test data, and the lint skips them as test helpers.

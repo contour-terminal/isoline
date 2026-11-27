@@ -969,8 +969,13 @@ endfunction()
 
 ## @brief Sets @p outVar to the include names of the `.hpp` files in @p target's HEADER_SET, each
 ## relative to the header base directory it is under, in the set's order. Other files (an X-macro
-## `.def`, which only its includers can compile) are left out.
+## `.def`, which only its includers can compile) are left out. An optional third argument is the regular
+## expression the files must match instead (`[.]h$` for a set of C headers).
 function(_isoline_header_set_include_names target outVar)
+    set(headerPattern "[.]hpp$")
+    if(ARGC GREATER 2)
+        set(headerPattern "${ARGV2}")
+    endif()
     set(includeNames "")
     get_target_property(headers ${target} HEADER_SET)
     if(NOT headers)
@@ -980,7 +985,7 @@ function(_isoline_header_set_include_names target outVar)
     get_target_property(baseDirectories ${target} HEADER_DIRS)
     get_target_property(targetSourceDirectory ${target} SOURCE_DIR)
     foreach(header IN LISTS headers)
-        if(NOT header MATCHES "[.]hpp$")
+        if(NOT header MATCHES "${headerPattern}")
             continue()
         endif()
         cmake_path(ABSOLUTE_PATH header BASE_DIRECTORY "${targetSourceDirectory}" NORMALIZE)

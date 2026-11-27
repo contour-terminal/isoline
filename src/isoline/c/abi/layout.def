@@ -7,6 +7,8 @@
 //     ISOLINE_LAYOUT_STRUCT(type, size, align)
 //     ISOLINE_LAYOUT_FIELD(type, field, offset, size)
 //     ISOLINE_LAYOUT_UPSTREAM_PADDING(type, offset, size)
+//     ISOLINE_LAYOUT_FIELD_TYPE(type, field, fieldType)
+//     ISOLINE_LAYOUT_UNION_MEMBER_TYPE(type, field, member, memberType)
 //
 // SCALAR   a scalar typedef a signature or a field passes: its size, in bytes. wasm.h's enumerations are
 //          such typedefs (uint8_t), never a C enum type, whose size the compiler chooses.
@@ -17,6 +19,16 @@
 //          byte for byte, so its padding is recorded here instead of removed. An isoline_ struct has no
 //          such row: padding its ABI needs is an explicit `reserved` field, which must be zero on input
 //          (a nonzero one is INVALID_ARGUMENT), so that a later minor can give it a meaning.
+// FIELD_TYPE
+//          the type of the field the FIELD row before it names, as its header spells it.
+// UNION_MEMBER_TYPE
+//          for a field of an unnamed union type (wasm_val_t's `of`), which has no FIELD_TYPE row, each member
+//          of the union, in declaration order, and its type.
+//
+// The two type rows are read by the includers that check types (Layout_test.cpp, with std::is_same_v, and
+// the reflection check meta/reflection/CApiCheck.cpp, which also requires a type row for every member of
+// every struct, a union's members included); an includer that leaves them undefined has them read as
+// nothing.
 //
 // The numbers are the same on every target Isoline supports (64-bit only: SysV x86-64, AAPCS64 and
 // Windows x64), because the only field types are the fixed-width integers, size_t, pointers, bool (one
@@ -37,6 +49,14 @@
     || !defined(ISOLINE_LAYOUT_UPSTREAM_PADDING)
     #error "define ISOLINE_LAYOUT_SCALAR, ISOLINE_LAYOUT_STRUCT, ISOLINE_LAYOUT_FIELD and ISOLINE_LAYOUT_UPSTREAM_PADDING before including layout.def"
 #endif
+#ifndef ISOLINE_LAYOUT_FIELD_TYPE
+    #define ISOLINE_LAYOUT_FIELD_TYPE(type, field, fieldType)
+    #define ISOLINE_LAYOUT_FIELD_TYPE_IS_DEFAULTED
+#endif
+#ifndef ISOLINE_LAYOUT_UNION_MEMBER_TYPE
+    #define ISOLINE_LAYOUT_UNION_MEMBER_TYPE(type, field, member, memberType)
+    #define ISOLINE_LAYOUT_UNION_MEMBER_TYPE_IS_DEFAULTED
+#endif
 
 // wasm.h: the kind of a value, whether a global is mutable, and the kind of an extern.
 ISOLINE_LAYOUT_SCALAR(wasm_valkind_t, 1)
@@ -46,56 +66,90 @@ ISOLINE_LAYOUT_SCALAR(wasm_externkind_t, 1)
 // wasm.h: a vector of bytes, WASM_DECLARE_VEC(byte, ).
 ISOLINE_LAYOUT_STRUCT(wasm_byte_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_byte_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_byte_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_byte_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_byte_vec_t, data, wasm_byte_t*)
 
 // wasm.h: every other vector, of the same shape (WASM_DECLARE_VEC), elements by value (val) or own pointers.
 ISOLINE_LAYOUT_STRUCT(wasm_valtype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_valtype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_valtype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_valtype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_valtype_vec_t, data, wasm_valtype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_functype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_functype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_functype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_functype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_functype_vec_t, data, wasm_functype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_globaltype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_globaltype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_globaltype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_globaltype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_globaltype_vec_t, data, wasm_globaltype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_tabletype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_tabletype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_tabletype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_tabletype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_tabletype_vec_t, data, wasm_tabletype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_memorytype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_memorytype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_memorytype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_memorytype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_memorytype_vec_t, data, wasm_memorytype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_tagtype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_tagtype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_tagtype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_tagtype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_tagtype_vec_t, data, wasm_tagtype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_externtype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_externtype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_externtype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_externtype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_externtype_vec_t, data, wasm_externtype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_importtype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_importtype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_importtype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_importtype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_importtype_vec_t, data, wasm_importtype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_exporttype_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_exporttype_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_exporttype_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_exporttype_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_exporttype_vec_t, data, wasm_exporttype_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_val_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_val_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_val_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_val_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_val_vec_t, data, wasm_val_t*)
 ISOLINE_LAYOUT_STRUCT(wasm_frame_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_frame_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_frame_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_frame_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_frame_vec_t, data, wasm_frame_t**)
 ISOLINE_LAYOUT_STRUCT(wasm_extern_vec_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_extern_vec_t, size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_extern_vec_t, size, size_t)
 ISOLINE_LAYOUT_FIELD(wasm_extern_vec_t, data, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_extern_vec_t, data, wasm_extern_t**)
 
 // wasm.h: a value, its kind and the union of its representations.
 ISOLINE_LAYOUT_STRUCT(wasm_val_t, 16, 8)
 ISOLINE_LAYOUT_FIELD(wasm_val_t, kind, 0, 1)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_val_t, kind, wasm_valkind_t)
 ISOLINE_LAYOUT_UPSTREAM_PADDING(wasm_val_t, 1, 7)
 ISOLINE_LAYOUT_FIELD(wasm_val_t, of, 8, 8)
+ISOLINE_LAYOUT_UNION_MEMBER_TYPE(wasm_val_t, of, i32, int32_t)
+ISOLINE_LAYOUT_UNION_MEMBER_TYPE(wasm_val_t, of, i64, int64_t)
+ISOLINE_LAYOUT_UNION_MEMBER_TYPE(wasm_val_t, of, f32, float32_t)
+ISOLINE_LAYOUT_UNION_MEMBER_TYPE(wasm_val_t, of, f64, float64_t)
+ISOLINE_LAYOUT_UNION_MEMBER_TYPE(wasm_val_t, of, ref, struct wasm_ref_t*)
 
 // wasm.h: a table's or a memory's limits.
 ISOLINE_LAYOUT_STRUCT(wasm_limits_t, 8, 4)
 ISOLINE_LAYOUT_FIELD(wasm_limits_t, min, 0, 4)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_limits_t, min, uint32_t)
 ISOLINE_LAYOUT_FIELD(wasm_limits_t, max, 4, 4)
+ISOLINE_LAYOUT_FIELD_TYPE(wasm_limits_t, max, uint32_t)
 
 // error.h: an error's code.
 ISOLINE_LAYOUT_SCALAR(isoline_error_code_t, 4)
@@ -108,7 +162,21 @@ ISOLINE_LAYOUT_SCALAR(isoline_maximum_kind_t, 1)
 // val.h: the 64-bit limits of a memory or table, size first; reserved pads it to its alignment.
 ISOLINE_LAYOUT_STRUCT(isoline_limits64_t, 32, 8)
 ISOLINE_LAYOUT_FIELD(isoline_limits64_t, struct_size, 0, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(isoline_limits64_t, struct_size, size_t)
 ISOLINE_LAYOUT_FIELD(isoline_limits64_t, minimum, 8, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(isoline_limits64_t, minimum, uint64_t)
 ISOLINE_LAYOUT_FIELD(isoline_limits64_t, maximum, 16, 8)
+ISOLINE_LAYOUT_FIELD_TYPE(isoline_limits64_t, maximum, uint64_t)
 ISOLINE_LAYOUT_FIELD(isoline_limits64_t, maximum_kind, 24, 1)
+ISOLINE_LAYOUT_FIELD_TYPE(isoline_limits64_t, maximum_kind, isoline_maximum_kind_t)
 ISOLINE_LAYOUT_FIELD(isoline_limits64_t, reserved, 25, 7)
+ISOLINE_LAYOUT_FIELD_TYPE(isoline_limits64_t, reserved, uint8_t[7])
+
+#ifdef ISOLINE_LAYOUT_FIELD_TYPE_IS_DEFAULTED
+    #undef ISOLINE_LAYOUT_FIELD_TYPE
+    #undef ISOLINE_LAYOUT_FIELD_TYPE_IS_DEFAULTED
+#endif
+#ifdef ISOLINE_LAYOUT_UNION_MEMBER_TYPE_IS_DEFAULTED
+    #undef ISOLINE_LAYOUT_UNION_MEMBER_TYPE
+    #undef ISOLINE_LAYOUT_UNION_MEMBER_TYPE_IS_DEFAULTED
+#endif

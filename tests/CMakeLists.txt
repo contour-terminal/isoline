@@ -188,7 +188,9 @@ set(isolineCompileFailRows
     "annotation-twice|compile-fail/AnnotationTwice.cpp|annotations|Doubled::Twice has 2 FixedText annotations"
     "declaration-contract-may-throw|compile-fail/DeclarationContractMayThrow.cpp|contracts|ISOLINE_PRE/ISOLINE_POST need a noexcept member function"
     "declaration-contract-on-free-function|compile-fail/DeclarationContractOnFreeFunction.cpp|contracts|ISOLINE_PRE/ISOLINE_POST need a noexcept member function"
-    "declaration-contract-on-class-template|compile-fail/DeclarationContractOnClassTemplate.cpp|contracts|ISOLINE_PRE/ISOLINE_POST stay off a class template's members")
+    "declaration-contract-on-class-template|compile-fail/DeclarationContractOnClassTemplate.cpp|contracts|ISOLINE_PRE/ISOLINE_POST stay off a class template's members"
+    "c-mirror-constant-without-row|compile-fail/CMirrorConstantWithoutRow.cpp|reflection|KindRows: fixture_kind_enum::FIXTURE_KIND_ADDED [(]2[)] has no row"
+    "c-layout-member-without-row|compile-fail/CLayoutMemberWithoutRow.cpp|reflection|fixture_limits_t: member added has no ISOLINE_LAYOUT_FIELD row")
 foreach(row IN LISTS isolineCompileFailRows)
     string(REPLACE "|" ";" columns "${row}")
     list(GET columns 0 failName)
