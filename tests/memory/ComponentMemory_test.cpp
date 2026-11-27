@@ -4,12 +4,14 @@
 // that: a vector count reserves nothing, so a count that lies about what follows fails having
 // allocated nothing beyond the decoder's copy of its input; and every item it decodes is charged
 // against maxDecodedItems before it is read, so input made of the smallest items, which the pool holds
-// at many times their size, holds a bounded number of them.
+// at many times their size, holds a bounded number of them: definitions, the elements of their vectors,
+// type declarations and the type scopes they open alike.
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <new>
 #include <optional>
 #include <ranges>
@@ -155,6 +157,30 @@ TEST_CASE("ComponentMemory.smallestItemsHoldAtMostFourTimesTheirInput")
     appendBytes(instanceArguments, { 0x01, 0x00, 0x00 });
     appendBytes(instanceArguments, vectorOf(instanceArgument, Items));
 
+    // The type, core type and canonical sections' items: definitions, the elements of their vectors,
+    // and the declarations of type scopes, which hold a scope of the pool each when they open one.
+    auto typeOf =
+        [](std::initializer_list<uint8_t> head, Bytes const& vector, std::initializer_list<uint8_t> tail) {
+            auto payload = Bytes {};
+            appendBytes(payload, head);
+            appendBytes(payload, vector);
+            appendBytes(payload, tail);
+            return payload;
+        };
+    auto const bools = vectorOf(Bytes { std::byte { 0x7F } }, Items);
+    auto const fields = vectorOf(Bytes { std::byte { 0x00 }, std::byte { 0x7F } }, Items); // "" bool
+    auto const cases = vectorOf(Bytes { std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x00 } }, Items);
+    auto const labels = vectorOf(Bytes { std::byte { 0x00 } }, Items);
+    auto const boolDeclarations = vectorOf(Bytes { std::byte { 0x01 }, std::byte { 0x7F } }, Items);
+    auto const scopeDeclarations = vectorOf(
+        Bytes { std::byte { 0x01 }, std::byte { 0x42 }, std::byte { 0x00 } }, Items); // (type (instance))
+    auto coreExportDeclaration = Bytes {};
+    appendBytes(coreExportDeclaration, { 0x03, 0x00, 0x00, 0x00 }); // (export "" (func (type 0)))
+    auto coreFunctionType = Bytes {};
+    appendBytes(coreFunctionType, { 0x60, 0x01, 0x7F, 0x00 });               // (func (param i32))
+    auto const backpressure = vectorOf(Bytes { std::byte { 0x24 } }, Items); // (canon backpressure.inc)
+    auto const utf8 = vectorOf(Bytes { std::byte { 0x00 } }, Items);         // string-encoding=utf8
+
     struct Shape
     {
         char const* name;
@@ -169,6 +195,24 @@ TEST_CASE("ComponentMemory.smallestItemsHoldAtMostFourTimesTheirInput")
         { .name = "instantiation arguments", .bytes = componentOf({ section(5, instanceArguments) }) },
         { .name = "imports", .bytes = componentOf({ section(10, vectorOf(import, Items)) }) },
         { .name = "sibling components", .bytes = componentOf({ repeated(sibling, Items) }) },
+        { .name = "types", .bytes = componentOf({ section(7, bools) }) },
+        { .name = "record fields", .bytes = componentOf({ section(7, typeOf({ 0x01, 0x72 }, fields, {})) }) },
+        { .name = "variant cases", .bytes = componentOf({ section(7, typeOf({ 0x01, 0x71 }, cases, {})) }) },
+        { .name = "tuple elements", .bytes = componentOf({ section(7, typeOf({ 0x01, 0x6F }, bools, {})) }) },
+        { .name = "enum labels", .bytes = componentOf({ section(7, typeOf({ 0x01, 0x6D }, labels, {})) }) },
+        { .name = "function parameters",
+          .bytes = componentOf({ section(7, typeOf({ 0x01, 0x40 }, fields, { 0x01, 0x00 })) }) },
+        { .name = "instance type declarations",
+          .bytes = componentOf({ section(7, typeOf({ 0x01, 0x42 }, boolDeclarations, {})) }) },
+        { .name = "instance type scopes",
+          .bytes = componentOf({ section(7, typeOf({ 0x01, 0x42 }, scopeDeclarations, {})) }) },
+        { .name = "core types", .bytes = componentOf({ section(3, vectorOf(coreFunctionType, Items)) }) },
+        { .name = "module type declarations",
+          .bytes = componentOf(
+              { section(3, typeOf({ 0x01, 0x50 }, vectorOf(coreExportDeclaration, Items), {})) }) },
+        { .name = "canonical definitions", .bytes = componentOf({ section(8, backpressure) }) },
+        { .name = "canonical options",
+          .bytes = componentOf({ section(8, typeOf({ 0x01, 0x01, 0x00, 0x00 }, utf8, {})) }) },
     };
     for (auto const& shape: shapes)
     {

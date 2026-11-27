@@ -64,10 +64,36 @@ enum class DecodeErrorCode : uint8_t
     DuplicateNameAttribute,
     FeatureDisabled,
     LimitExceeded,
+    InvalidDefinedType,
+    InvalidValueType,
+    InvalidOptionalValueType,
+    ZeroByteRequired,
+    EmptyRecord,
+    EmptyVariant,
+    EmptyTuple,
+    EmptyFlags,
+    EmptyEnum,
+    TooManyFlags,
+    EmptyFixedList,
+    InvalidResultCount,
+    InvalidResults,
+    InvalidDestructor,
+    InvalidCoreValueType,
+    InvalidTypeDeclaration,
+    InvalidModuleTypeDeclaration,
+    InvalidCoreOuterAliasKind,
+    InvalidCoreOuterAliasTarget,
+    InvalidNonFinalSubType,
+    MalformedCoreType,
+    InvalidCanonFunction,
+    InvalidCanonSort,
+    InvalidCanonOption,
+    InvalidBooleanValue,
+    NonZeroReservedByte,
 };
 
 /// The last DecodeErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::LimitExceeded;
+inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::NonZeroReservedByte;
 
 /// How a decode error's message is built from its row's text and the error's subject.
 enum class DecodeErrorDetail : uint8_t
@@ -79,6 +105,9 @@ enum class DecodeErrorDetail : uint8_t
     Attribute,     ///< "duplicate '{keyword}' option in name", the subject a NameAttributeTable index.
     Feature,       ///< The disabled feature's refusal, then its gate in parentheses.
     Limit,         ///< The exceeded limit's message (limitMessage()), the subject from limitSubject().
+    CoreError,     ///< The core decoder's message for the isoline::binary::DecodeErrorCode in subject.
+    /// "invalid leading byte (0x{byte:x}) for canonical function {text}", the subject canonSortSubject().
+    CanonSort,
 };
 
 /// One row of DecodeErrorMessages: an error and how its message reads.
@@ -120,7 +149,8 @@ inline constexpr auto DecodeErrorMessages = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::SectionTooLarge, .text = "section too large" },
     { .code = DecodeErrorCode::SectionSizeMismatch,
       .text = "section size mismatch: unexpected data at the end of the section" },
-    // Isoline's own, for a section whose decoder P11 has not landed yet.
+    // Isoline's own, for a section Isoline decodes nothing of: the 🪙 start and values sections, which their
+    // gate refuses first while P11 refuses 🪙.
     { .code = DecodeErrorCode::UnimplementedSection,
       .text = "section not yet decoded",
       .detail = DecodeErrorDetail::SectionId },
@@ -168,6 +198,75 @@ inline constexpr auto DecodeErrorMessages = std::to_array<DecodeErrorRow>({
       .text = "feature not enabled",
       .detail = DecodeErrorDetail::Feature },
     { .code = DecodeErrorCode::LimitExceeded, .text = "limit exceeded", .detail = DecodeErrorDetail::Limit },
+    { .code = DecodeErrorCode::InvalidDefinedType,
+      .text = "component defined type",
+      .detail = DecodeErrorDetail::LeadingByte },
+    // A valtype that is neither a primitive nor a non-negative s33 type index.
+    { .code = DecodeErrorCode::InvalidValueType,
+      .text = "component value type",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidOptionalValueType,
+      .text = "optional component value type",
+      .detail = DecodeErrorDetail::LeadingByte },
+    // The byte that ends a variant case, once its `refines`.
+    { .code = DecodeErrorCode::ZeroByteRequired,
+      .text = "zero byte required",
+      .detail = DecodeErrorDetail::LeadingByte },
+    // Binary.md's grammar conditions on the vector forms, in wasm-tools' validator's words.
+    { .code = DecodeErrorCode::EmptyRecord, .text = "record type must have at least one field" },
+    { .code = DecodeErrorCode::EmptyVariant, .text = "variant type must have at least one case" },
+    { .code = DecodeErrorCode::EmptyTuple, .text = "tuple type must have at least one type" },
+    { .code = DecodeErrorCode::EmptyFlags, .text = "flags must have at least one entry" },
+    { .code = DecodeErrorCode::EmptyEnum, .text = "enum type must have at least one variant" },
+    { .code = DecodeErrorCode::TooManyFlags, .text = "cannot have more than 32 flags" },
+    // Isoline's own: 🔧 is refused, so wasm-tools' wording was never needed.
+    { .code = DecodeErrorCode::EmptyFixedList, .text = "fixed-length list must have at least one element" },
+    { .code = DecodeErrorCode::InvalidResultCount,
+      .text = "number of results",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidResults,
+      .text = "component function results",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidDestructor,
+      .text = "resource destructor",
+      .detail = DecodeErrorDetail::LeadingByte },
+    // Isoline's own: wasm-tools reads any core value type there and refuses it in validation.
+    { .code = DecodeErrorCode::InvalidCoreValueType,
+      .text = "core value type",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidTypeDeclaration,
+      .text = "component or instance type declaration",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidModuleTypeDeclaration,
+      .text = "type definition",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidCoreOuterAliasKind,
+      .text = "outer alias kind",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidCoreOuterAliasTarget,
+      .text = "outer alias target",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidNonFinalSubType,
+      .text = "non-final sub type",
+      .detail = DecodeErrorDetail::LeadingByte },
+    // A core function or extern type the core decoder refused, in its words; core GC's rec groups
+    // and subtypes are among them, as Isoline's core decodes no GC.
+    { .code = DecodeErrorCode::MalformedCoreType,
+      .text = "malformed core type",
+      .detail = DecodeErrorDetail::CoreError },
+    { .code = DecodeErrorCode::InvalidCanonFunction,
+      .text = "canonical function",
+      .detail = DecodeErrorDetail::LeadingByte },
+    { .code = DecodeErrorCode::InvalidCanonSort,
+      .text = "canonical function",
+      .detail = DecodeErrorDetail::CanonSort },
+    { .code = DecodeErrorCode::InvalidCanonOption,
+      .text = "canonical option",
+      .detail = DecodeErrorDetail::LeadingByte },
+    // `async?`, `sh?` and the reserved byte read as a boolean; the texts are the component model's
+    // test/binary/binary.wast's, whose reserved byte was the boolean `cancellable` once.
+    { .code = DecodeErrorCode::InvalidBooleanValue, .text = "invalid boolean value" },
+    { .code = DecodeErrorCode::NonZeroReservedByte, .text = "non-zero reserved byte" },
 });
 
 static_assert(
@@ -231,6 +330,15 @@ struct DecodeError
     return static_cast<ComponentLimit>(*error.subject & 0xFFU);
 }
 
+/// The subject of an InvalidCanonSort error: the built-in whose sort byte it is, and the byte.
+/// @param opcode The built-in's opcode, which names its CanonBuiltinTable row.
+/// @param byte The sort byte read.
+/// @return The opcode in bits 8-15 and the byte in bits 0-7.
+[[nodiscard]] constexpr uint64_t canonSortSubject(uint8_t opcode, uint8_t byte) noexcept
+{
+    return (uint64_t { opcode } << 8U) | byte;
+}
+
 /// The message wasm-tools reports for @p error, as DecodeErrorMessages and its row's detail build it.
 /// @param error The error to describe.
 /// @return The message the component suites' assertions match.
@@ -247,12 +355,17 @@ struct DecodeError
 /// whatever the input's shape. Vector counts never reserve memory: a vector grows as its
 /// elements decode, so a count larger than its bytes fails with UnexpectedEnd having allocated
 /// nothing for it. Embedded core modules are not decoded (D10): only their range and preamble are
-/// checked. Sections 3 (core types), 7 (types) and 8 (canon) are refused as UnimplementedSection
-/// until P11 Task 2; sections 9 (start) and 12 (values) as FeatureDisabled 🪙.
+/// checked. Component and instance types are scopes of the pool like nested components, read on an
+/// explicit stack too and counted against maxNesting; value types nest only through type indices, so
+/// their depth and effective size are the validator's to bound (maxTypeDepth, maxTypeSize). Core types
+/// are read by the core decoder under every core feature Isoline has (FeatureSet::all()); the
+/// validator narrows them to the engine's. Sections 9 (start) and 12 (values) are refused as
+/// FeatureDisabled 🪙.
 /// @param bytes The component's bytes, from its preamble on.
 /// @param features The gated features whose forms are admitted (decodeAdmits()).
-/// @param limits The caps to enforce: maxComponentBytes, maxNesting, maxDefinitions, maxDecodedItems
-///               and maxNameBytes.
+/// @param limits The caps to enforce: maxComponentBytes, maxNesting, maxTypes (the types and core types
+///               a scope defines, a lower bound of its index spaces of sort type), maxDefinitions,
+///               maxDecodedItems and maxNameBytes.
 /// @return The pool, or the first error, at its absolute offset.
 [[nodiscard]] std::expected<ComponentPool, DecodeError> decodeComponent(std::span<std::byte const> bytes,
                                                                         ComponentFeatureSet features,

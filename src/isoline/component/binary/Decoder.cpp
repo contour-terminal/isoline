@@ -19,8 +19,11 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/Features.hpp>
 #include <isoline/binary/ByteReader.hpp>
 #include <isoline/binary/DecodeError.hpp>
+#include <isoline/binary/Decoder.hpp>
+#include <isoline/binary/Types.hpp>
 #include <isoline/component/Features.hpp>
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Component.hpp>
@@ -194,6 +197,80 @@ namespace
         { .byte = 0x01, .bound = TypeBound::SubResource },
     });
 
+    /// The bytes of `deftype` that open a scope of declarations, and the scope each opens.
+    struct TypeScopeFormRow
+    {
+        uint8_t byte;    ///< The byte.
+        ScopeKind scope; ///< The scope it opens.
+    };
+
+    /// Every form of `deftype` that holds declarations: component and instance types.
+    constexpr auto TypeScopeForms = std::to_array<TypeScopeFormRow>({
+        { .byte = 0x41, .scope = ScopeKind::ComponentType },
+        { .byte = 0x42, .scope = ScopeKind::InstanceType },
+    });
+
+    /// The byte of `deftype` that introduces a resource type.
+    constexpr auto ResourceTypeForm = uint8_t { 0x3F };
+
+    /// The byte of `core:deftype` that introduces a module type; after a 0x00, a non-final subtype.
+    constexpr auto ModuleTypeForm = uint8_t { 0x50 };
+
+    /// The byte that prefixes a non-final core subtype among a component's core types.
+    constexpr auto NonFinalSubTypePrefix = uint8_t { 0x00 };
+
+    /// The two bytes of `core:alias`: the core type sort, then the outer target.
+    constexpr auto CoreOuterAliasSort = uint8_t { 0x10 };
+    constexpr auto CoreOuterAliasTarget = uint8_t { 0x01 };
+
+    /// The bytes of `<T>?`: absent, or present and followed by a T.
+    constexpr auto Absent = uint8_t { 0x00 };
+    constexpr auto Present = uint8_t { 0x01 };
+
+    /// The bytes of `resultlist`: one result type, or none (0x01 0x00).
+    constexpr auto OneResult = uint8_t { 0x00 };
+    constexpr auto NoResults = uint8_t { 0x01 };
+
+    /// The core features a component's core types are decoded under: every one Isoline's core decodes.
+    /// The validator checks them against the engine's.
+    constexpr auto CoreTypeFeatures = isoline::FeatureSet::all();
+
+    /// How many elements a vector form of `defvaltype` may hold, and how its bounds are refused.
+    struct VectorBounds
+    {
+        uint32_t minimum;                ///< The fewest elements.
+        DecodeErrorCode tooFew;          ///< The error for fewer.
+        std::optional<uint32_t> maximum; ///< The most elements, if bounded.
+        DecodeErrorCode tooMany;         ///< The error for more.
+    };
+
+    /// Binary.md's grammar conditions on the vector forms.
+    constexpr auto RecordBounds = VectorBounds { .minimum = 1,
+                                                 .tooFew = DecodeErrorCode::EmptyRecord,
+                                                 .maximum = std::nullopt,
+                                                 .tooMany = DecodeErrorCode::EmptyRecord };
+    constexpr auto VariantBounds = VectorBounds { .minimum = 1,
+                                                  .tooFew = DecodeErrorCode::EmptyVariant,
+                                                  .maximum = std::nullopt,
+                                                  .tooMany = DecodeErrorCode::EmptyVariant };
+    constexpr auto TupleBounds = VectorBounds { .minimum = 1,
+                                                .tooFew = DecodeErrorCode::EmptyTuple,
+                                                .maximum = std::nullopt,
+                                                .tooMany = DecodeErrorCode::EmptyTuple };
+    constexpr auto FlagsBounds = VectorBounds { .minimum = 1,
+                                                .tooFew = DecodeErrorCode::EmptyFlags,
+                                                .maximum = 32,
+                                                .tooMany = DecodeErrorCode::TooManyFlags };
+    constexpr auto EnumBounds = VectorBounds { .minimum = 1,
+                                               .tooFew = DecodeErrorCode::EmptyEnum,
+                                               .maximum = std::nullopt,
+                                               .tooMany = DecodeErrorCode::EmptyEnum };
+    /// Any count: the vectors Binary.md puts no condition on.
+    constexpr auto AnyCount = VectorBounds { .minimum = 0,
+                                             .tooFew = DecodeErrorCode::UnexpectedEnd,
+                                             .maximum = std::nullopt,
+                                             .tooMany = DecodeErrorCode::UnexpectedEnd };
+
     /// The byte of `core:instantiatearg` that names its argument an instance, the one sort allowed.
     constexpr auto CoreInstantiateArgumentKind = uint8_t { 0x12 };
 
@@ -252,7 +329,27 @@ namespace
         [[nodiscard]] Result<void> aliasSection(SectionContext& section);
         [[nodiscard]] Result<void> importSection(SectionContext& section);
         [[nodiscard]] Result<void> exportSection(SectionContext& section);
+        [[nodiscard]] Result<void> coreTypeSection(SectionContext& section);
+        [[nodiscard]] Result<void> typeSection(SectionContext& section);
+        [[nodiscard]] Result<void> canonSection(SectionContext& section);
         [[nodiscard]] Result<void> unimplementedSection(SectionContext& section);
+
+        // The decoders of the compound defvaltypes, one per row of DefinedValueTypeTable; @p offset is
+        // where the type's byte was read.
+        [[nodiscard]] Result<DefinedValueType> recordType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> variantType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> listType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> fixedListType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> tupleType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> flagsType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> enumType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> optionType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> resultType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> ownType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> borrowType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> streamType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> futureType(Reader& reader, uint64_t offset);
+        [[nodiscard]] Result<DefinedValueType> mapType(Reader& reader, uint64_t offset);
 
       private:
         /// One component being read: its pool entry, the reader over what is left of it, its depth.
@@ -262,6 +359,18 @@ namespace
             Reader reader;      ///< Over its sections not yet read.
             uint32_t depth;     ///< Its nesting depth, the outermost at 1.
         };
+
+        /// A scope whose declarations are being read from a type section: the section's component, or
+        /// a component or instance type opened in it.
+        struct TypeScopeFrame
+        {
+            uint32_t scope;     ///< Its index in the pool.
+            uint32_t remaining; ///< Its definitions or declarations not yet read.
+            uint32_t depth;     ///< Its nesting depth, the outermost component at 1.
+        };
+
+        /// The scopes open in one type section, innermost last.
+        using TypeScopeStack = std::vector<TypeScopeFrame>;
 
         [[nodiscard]] Result<void> nextSection(std::size_t frame);
         [[nodiscard]] static Result<void> checkPreamble(Reader reader, LayerKind expected);
@@ -292,12 +401,83 @@ namespace
         [[nodiscard]] Result<ImportDefinition> import(Reader& reader);
         [[nodiscard]] Result<ExportDefinition> exportDefinition(Reader& reader);
 
+        /// Reads a vector whose count must lie within @p bounds, refused at @p offset otherwise.
+        template <typename Read>
+        [[nodiscard]] Result<void> forEach(Reader& reader,
+                                           VectorBounds const& bounds,
+                                           uint64_t offset,
+                                           Read read);
+
+        [[nodiscard]] Result<void> chargeItems(uint64_t count, uint64_t offset);
+        [[nodiscard]] Result<void> countType(uint32_t scope, uint64_t offset);
+        [[nodiscard]] static Result<uint8_t> peek(Reader const& reader);
+        /// Reads a wire boolean, `async?` or `sh?`: 0x00 or 0x01, anything else refused.
+        [[nodiscard]] static Result<bool> boolean(Reader& reader);
+        [[nodiscard]] Result<ValueTypeRef> valueType(Reader& reader) const;
+        [[nodiscard]] Result<std::optional<ValueTypeRef>> optionalValueType(Reader& reader) const;
+        [[nodiscard]] Result<std::optional<ValueTypeRef>> resultList(Reader& reader) const;
+        [[nodiscard]] static Result<CoreValueKind> coreValueKind(Reader& reader);
+        [[nodiscard]] Result<std::vector<std::string>> labels(Reader& reader,
+                                                              VectorBounds const& bounds,
+                                                              uint64_t offset);
+        [[nodiscard]] Result<TypeDefinition> definedType(Reader& reader);
+        [[nodiscard]] Result<FunctionTypeDefinition> functionType(Reader& reader, Asyncness asyncness);
+        [[nodiscard]] static Result<ResourceTypeDefinition> resourceType(Reader& reader);
+        [[nodiscard]] Result<void> typeEntry(Reader& reader,
+                                             TypeScopeFrame const& frame,
+                                             TypeScopeStack& stack);
+        [[nodiscard]] Result<void> declaration(Reader& reader,
+                                               TypeScopeFrame const& frame,
+                                               TypeScopeStack& stack);
+        [[nodiscard]] Result<isoline::binary::FuncType> coreFuncType(Reader& reader);
+        [[nodiscard]] static Result<CoreExternType> coreExternType(Reader& reader);
+        [[nodiscard]] Result<CoreModuleDeclaration> coreModuleDeclaration(Reader& reader);
+        [[nodiscard]] Result<CoreTypeDefinition> coreType(Reader& reader);
+        [[nodiscard]] Result<void> immediate(Reader& reader,
+                                             CanonBuiltinRow const& row,
+                                             Immediate kind,
+                                             CanonDefinition& definition);
+        [[nodiscard]] Result<CanonDefinition> canon(Reader& reader);
+
         ComponentFeatureSet _features;
         ComponentLimits const& _limits;
         ComponentPool _pool;
         std::vector<Frame> _frames;
-        uint64_t _decodedItems = 0; ///< The items charged so far, of the whole pool.
+        uint64_t _decodedItems = 0;        ///< The items charged so far, of the whole pool.
+        std::vector<uint32_t> _typeCounts; ///< The types and core types defined, by pool scope.
     };
+
+    static_assert(std::ranges::all_of(CanonBuiltinTable,
+                                      [](CanonBuiltinRow const& row) {
+                                          return std::ranges::find(row.shape, Immediate::Shared)
+                                                     == row.shape.end()
+                                                 || row.gate == ComponentFeature::SharedThreading;
+                                      }),
+                  "`sh?` reads `shared`, which is 🧵②: only a built-in gated on 🧵② may take it");
+
+    /// A decoder of one compound defvaltype.
+    using DefinedValueTypeDecoder = Result<DefinedValueType> (ComponentDecoder::*)(Reader&, uint64_t);
+
+    /// The decoder of each row of DefinedValueTypeTable, at the row's index.
+    constexpr auto DefinedValueTypeDecoders = std::to_array<DefinedValueTypeDecoder>({
+        &ComponentDecoder::recordType,
+        &ComponentDecoder::variantType,
+        &ComponentDecoder::listType,
+        &ComponentDecoder::fixedListType,
+        &ComponentDecoder::tupleType,
+        &ComponentDecoder::flagsType,
+        &ComponentDecoder::enumType,
+        &ComponentDecoder::optionType,
+        &ComponentDecoder::resultType,
+        &ComponentDecoder::ownType,
+        &ComponentDecoder::borrowType,
+        &ComponentDecoder::streamType,
+        &ComponentDecoder::futureType,
+        &ComponentDecoder::mapType,
+    });
+
+    static_assert(DefinedValueTypeDecoders.size() == DefinedValueTypeTable.size(),
+                  "every row of DefinedValueTypeTable has its decoder");
 
     /// One section: its id, the feature that introduced it, its decoder and its shape.
     struct SectionRow
@@ -313,15 +493,15 @@ namespace
         { .id = 0, .gate = std::nullopt, .decode = &ComponentDecoder::customSection },
         { .id = 1, .gate = std::nullopt, .decode = &ComponentDecoder::coreModuleSection },
         { .id = 2, .gate = std::nullopt, .decode = &ComponentDecoder::coreInstanceSection },
-        { .id = 3, .gate = std::nullopt, .decode = &ComponentDecoder::unimplementedSection },
+        { .id = 3, .gate = std::nullopt, .decode = &ComponentDecoder::coreTypeSection },
         { .id = ComponentSectionId,
           .gate = std::nullopt,
           .decode = &ComponentDecoder::componentSection,
           .shape = SectionShape::Scope },
         { .id = 5, .gate = std::nullopt, .decode = &ComponentDecoder::instanceSection },
         { .id = 6, .gate = std::nullopt, .decode = &ComponentDecoder::aliasSection },
-        { .id = 7, .gate = std::nullopt, .decode = &ComponentDecoder::unimplementedSection },
-        { .id = 8, .gate = std::nullopt, .decode = &ComponentDecoder::unimplementedSection },
+        { .id = 7, .gate = std::nullopt, .decode = &ComponentDecoder::typeSection },
+        { .id = 8, .gate = std::nullopt, .decode = &ComponentDecoder::canonSection },
         // 🪙, which P11 refuses, so their decoders are never reached.
         { .id = 9, .gate = ComponentFeature::Values, .decode = &ComponentDecoder::unimplementedSection },
         { .id = 10, .gate = std::nullopt, .decode = &ComponentDecoder::importSection },
@@ -508,9 +688,22 @@ namespace
     template <typename Read>
     Result<void> ComponentDecoder::forEach(Reader& reader, Read read)
     {
+        return forEach(reader, AnyCount, reader.offset(), std::move(read));
+    }
+
+    template <typename Read>
+    Result<void> ComponentDecoder::forEach(Reader& reader,
+                                           VectorBounds const& bounds,
+                                           uint64_t offset,
+                                           Read read)
+    {
         auto const count = reader.readLength();
         if (!count)
             return std::unexpected { fromCore(count.error()) };
+        if (*count < bounds.minimum)
+            return std::unexpected { DecodeError { bounds.tooFew, offset } };
+        if (bounds.maximum && *count > *bounds.maximum)
+            return std::unexpected { DecodeError { bounds.tooMany, offset } };
         for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, *count))
         {
             if (auto charged = chargeItem(reader.offset()); !charged)
@@ -988,6 +1181,721 @@ namespace
         return definitions(section, [&](Reader& reader) { return exportDefinition(reader); });
     }
 
+    Result<void> ComponentDecoder::chargeItems(uint64_t count, uint64_t offset)
+    {
+        if (count > _limits.maxDecodedItems - std::min<uint64_t>(_decodedItems, _limits.maxDecodedItems))
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::LimitExceeded,
+                offset,
+                limitSubject(ComponentLimit::DecodedItems, _limits.maxDecodedItems) } };
+        _decodedItems += count;
+        return {};
+    }
+
+    Result<void> ComponentDecoder::countType(uint32_t scope, uint64_t offset)
+    {
+        if (_typeCounts.size() <= scope)
+            _typeCounts.resize(std::size_t { scope } + 1);
+        if (_typeCounts[scope] >= _limits.maxTypes)
+            return std::unexpected { DecodeError { DecodeErrorCode::LimitExceeded,
+                                                   offset,
+                                                   limitSubject(ComponentLimit::Types, _limits.maxTypes) } };
+        ++_typeCounts[scope];
+        return {};
+    }
+
+    Result<uint8_t> ComponentDecoder::peek(Reader const& reader)
+    {
+        auto probe = reader;
+        return u8(probe);
+    }
+
+    Result<bool> ComponentDecoder::boolean(Reader& reader)
+    {
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        switch (*byte)
+        {
+            case Absent: return false;
+            case Present: return true;
+            default: return std::unexpected { DecodeError { DecodeErrorCode::InvalidBooleanValue, offset } };
+        }
+    }
+
+    Result<ValueTypeRef> ComponentDecoder::valueType(Reader& reader) const
+    {
+        // A primitive's byte, else a non-negative s33 type index, as wasm-tools reads `valtype`.
+        auto const offset = reader.offset();
+        auto const byte = peek(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        auto const primitive =
+            std::ranges::find(PrimitiveValueTypeTable, *byte, &PrimitiveValueTypeRow::byte);
+        if (primitive != PrimitiveValueTypeTable.end())
+        {
+            if (auto admitted = admit(primitive->gate, offset); !admitted)
+                return std::unexpected { admitted.error() };
+            std::ignore = u8(reader);
+            return ValueTypeRef { primitive->type };
+        }
+        auto const index = reader.readS33();
+        if (!index)
+            return std::unexpected { fromCore(index.error()) };
+        if (*index < 0)
+            return std::unexpected { DecodeError { DecodeErrorCode::InvalidValueType, offset, *byte } };
+        return ValueTypeRef { TypeIndex { .index = static_cast<uint32_t>(*index) } };
+    }
+
+    Result<std::optional<ValueTypeRef>> ComponentDecoder::optionalValueType(Reader& reader) const
+    {
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        switch (*byte)
+        {
+            case Absent: return std::optional<ValueTypeRef> {};
+            case Present:
+                return valueType(reader).transform([](ValueTypeRef type) { return std::optional { type }; });
+            default:
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::InvalidOptionalValueType, offset, *byte } };
+        }
+    }
+
+    Result<std::optional<ValueTypeRef>> ComponentDecoder::resultList(Reader& reader) const
+    {
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        switch (*byte)
+        {
+            case OneResult:
+                return valueType(reader).transform([](ValueTypeRef type) { return std::optional { type }; });
+            case NoResults: {
+                auto const countOffset = reader.offset();
+                auto const count = u8(reader);
+                if (!count)
+                    return std::unexpected { count.error() };
+                if (*count != 0x00)
+                    return std::unexpected { DecodeError {
+                        DecodeErrorCode::InvalidResultCount, countOffset, *count } };
+                return std::optional<ValueTypeRef> {};
+            }
+            default:
+                return std::unexpected { DecodeError { DecodeErrorCode::InvalidResults, offset, *byte } };
+        }
+    }
+
+    Result<CoreValueKind> ComponentDecoder::coreValueKind(Reader& reader)
+    {
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        auto const row = std::ranges::find(CoreValueKindTable, *byte, &CoreValueKindRow::byte);
+        if (row == CoreValueKindTable.end())
+            return std::unexpected { DecodeError { DecodeErrorCode::InvalidCoreValueType, offset, *byte } };
+        return row->kind;
+    }
+
+    Result<std::vector<std::string>> ComponentDecoder::labels(Reader& reader,
+                                                              VectorBounds const& bounds,
+                                                              uint64_t offset)
+    {
+        auto result = std::vector<std::string> {};
+        auto const read = forEach(reader, bounds, offset, [&]() -> Result<void> {
+            return name(reader).transform([&](std::string label) { result.push_back(std::move(label)); });
+        });
+        if (!read)
+            return std::unexpected { read.error() };
+        return result;
+    }
+
+    Result<DefinedValueType> ComponentDecoder::recordType(Reader& reader, uint64_t offset)
+    {
+        auto record = RecordType {};
+        auto const read = forEach(reader, RecordBounds, offset, [&]() -> Result<void> {
+            auto label = name(reader);
+            if (!label)
+                return std::unexpected { label.error() };
+            return valueType(reader).transform([&](ValueTypeRef type) {
+                record.fields.push_back({ .label = std::move(*label), .type = type });
+            });
+        });
+        if (!read)
+            return std::unexpected { read.error() };
+        return DefinedValueType { std::move(record) };
+    }
+
+    Result<DefinedValueType> ComponentDecoder::variantType(Reader& reader, uint64_t offset)
+    {
+        auto variant = VariantType {};
+        auto const read = forEach(reader, VariantBounds, offset, [&]() -> Result<void> {
+            auto label = name(reader);
+            if (!label)
+                return std::unexpected { label.error() };
+            auto const payload = optionalValueType(reader);
+            if (!payload)
+                return std::unexpected { payload.error() };
+            // Once the case's `refines`; it must be zero.
+            auto const zeroOffset = reader.offset();
+            auto const zero = u8(reader);
+            if (!zero)
+                return std::unexpected { zero.error() };
+            if (*zero != 0x00)
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::ZeroByteRequired, zeroOffset, *zero } };
+            variant.cases.push_back({ .label = std::move(*label), .type = *payload });
+            return {};
+        });
+        if (!read)
+            return std::unexpected { read.error() };
+        return DefinedValueType { std::move(variant) };
+    }
+
+    Result<DefinedValueType> ComponentDecoder::listType(Reader& reader, uint64_t /*offset*/)
+    {
+        return valueType(reader).transform(
+            [](ValueTypeRef element) { return DefinedValueType { ListType { .element = element } }; });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::fixedListType(Reader& reader, uint64_t offset)
+    {
+        auto const element = valueType(reader);
+        if (!element)
+            return std::unexpected { element.error() };
+        auto const length = u32(reader);
+        if (!length)
+            return std::unexpected { length.error() };
+        if (*length == 0)
+            return std::unexpected { DecodeError { DecodeErrorCode::EmptyFixedList, offset } };
+        return DefinedValueType { FixedListType { .element = *element, .length = *length } };
+    }
+
+    Result<DefinedValueType> ComponentDecoder::tupleType(Reader& reader, uint64_t offset)
+    {
+        auto tuple = TupleType {};
+        auto const read = forEach(reader, TupleBounds, offset, [&]() -> Result<void> {
+            return valueType(reader).transform([&](ValueTypeRef type) { tuple.elements.push_back(type); });
+        });
+        if (!read)
+            return std::unexpected { read.error() };
+        return DefinedValueType { std::move(tuple) };
+    }
+
+    Result<DefinedValueType> ComponentDecoder::flagsType(Reader& reader, uint64_t offset)
+    {
+        return labels(reader, FlagsBounds, offset).transform([](std::vector<std::string> labels) {
+            return DefinedValueType { FlagsType { .labels = std::move(labels) } };
+        });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::enumType(Reader& reader, uint64_t offset)
+    {
+        return labels(reader, EnumBounds, offset).transform([](std::vector<std::string> labels) {
+            return DefinedValueType { EnumType { .labels = std::move(labels) } };
+        });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::optionType(Reader& reader, uint64_t /*offset*/)
+    {
+        return valueType(reader).transform(
+            [](ValueTypeRef type) { return DefinedValueType { OptionType { .type = type } }; });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::resultType(Reader& reader, uint64_t /*offset*/)
+    {
+        auto const ok = optionalValueType(reader);
+        if (!ok)
+            return std::unexpected { ok.error() };
+        auto const error = optionalValueType(reader);
+        if (!error)
+            return std::unexpected { error.error() };
+        return DefinedValueType { ResultType { .ok = *ok, .error = *error } };
+    }
+
+    Result<DefinedValueType> ComponentDecoder::ownType(Reader& reader, uint64_t /*offset*/)
+    {
+        return u32(reader).transform(
+            [](uint32_t resource) { return DefinedValueType { OwnType { .resource = resource } }; });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::borrowType(Reader& reader, uint64_t /*offset*/)
+    {
+        return u32(reader).transform(
+            [](uint32_t resource) { return DefinedValueType { BorrowType { .resource = resource } }; });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::streamType(Reader& reader, uint64_t /*offset*/)
+    {
+        return optionalValueType(reader).transform([](std::optional<ValueTypeRef> element) {
+            return DefinedValueType { StreamType { .element = element } };
+        });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::futureType(Reader& reader, uint64_t /*offset*/)
+    {
+        return optionalValueType(reader).transform([](std::optional<ValueTypeRef> element) {
+            return DefinedValueType { FutureType { .element = element } };
+        });
+    }
+
+    Result<DefinedValueType> ComponentDecoder::mapType(Reader& reader, uint64_t /*offset*/)
+    {
+        auto const key = valueType(reader);
+        if (!key)
+            return std::unexpected { key.error() };
+        return valueType(reader).transform(
+            [&](ValueTypeRef value) { return DefinedValueType { MapType { .key = *key, .value = value } }; });
+    }
+
+    Result<FunctionTypeDefinition> ComponentDecoder::functionType(Reader& reader, Asyncness asyncness)
+    {
+        auto function =
+            FunctionTypeDefinition { .asyncness = asyncness, .params = {}, .result = std::nullopt };
+        auto const params = forEach(reader, [&]() -> Result<void> {
+            auto label = name(reader);
+            if (!label)
+                return std::unexpected { label.error() };
+            return valueType(reader).transform([&](ValueTypeRef type) {
+                function.params.push_back({ .label = std::move(*label), .type = type });
+            });
+        });
+        if (!params)
+            return std::unexpected { params.error() };
+        auto const result = resultList(reader);
+        if (!result)
+            return std::unexpected { result.error() };
+        function.result = *result;
+        return function;
+    }
+
+    Result<ResourceTypeDefinition> ComponentDecoder::resourceType(Reader& reader)
+    {
+        auto const rep = coreValueKind(reader);
+        if (!rep)
+            return std::unexpected { rep.error() };
+        auto resource = ResourceTypeDefinition { .rep = *rep, .destructor = std::nullopt };
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        switch (*byte)
+        {
+            case Absent: return resource;
+            case Present:
+                return u32(reader).transform([&](uint32_t destructor) {
+                    resource.destructor = destructor;
+                    return resource;
+                });
+            default:
+                return std::unexpected { DecodeError { DecodeErrorCode::InvalidDestructor, offset, *byte } };
+        }
+    }
+
+    Result<TypeDefinition> ComponentDecoder::definedType(Reader& reader)
+    {
+        // Every `deftype` but the scopes, which typeEntry() opens.
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        if (*byte == ResourceTypeForm)
+            return resourceType(reader).transform(
+                [](ResourceTypeDefinition resource) { return TypeDefinition { .type = resource }; });
+        if (auto const form = std::ranges::find(FunctionTypeForms, *byte, &FunctionTypeFormRow::byte);
+            form != FunctionTypeForms.end())
+        {
+            if (auto admitted = admit(form->gate, offset); !admitted)
+                return std::unexpected { admitted.error() };
+            return functionType(reader, form->asyncness).transform([](FunctionTypeDefinition function) {
+                return TypeDefinition { .type = std::move(function) };
+            });
+        }
+        if (auto const primitive =
+                std::ranges::find(PrimitiveValueTypeTable, *byte, &PrimitiveValueTypeRow::byte);
+            primitive != PrimitiveValueTypeTable.end())
+        {
+            if (auto admitted = admit(primitive->gate, offset); !admitted)
+                return std::unexpected { admitted.error() };
+            return TypeDefinition { .type = DefinedValueType { primitive->type } };
+        }
+        auto const row = std::ranges::find(DefinedValueTypeTable, *byte, &DefinedValueTypeRow::byte);
+        if (row == DefinedValueTypeTable.end())
+            return std::unexpected { DecodeError { DecodeErrorCode::InvalidDefinedType, offset, *byte } };
+        if (auto admitted = admit(row->gate, offset); !admitted)
+            return std::unexpected { admitted.error() };
+        auto const decoder =
+            DefinedValueTypeDecoders[static_cast<std::size_t>(row - DefinedValueTypeTable.begin())];
+        return (this->*decoder)(reader, offset).transform([](DefinedValueType type) {
+            return TypeDefinition { .type = std::move(type) };
+        });
+    }
+
+    Result<void> ComponentDecoder::typeEntry(Reader& reader,
+                                             TypeScopeFrame const& frame,
+                                             TypeScopeStack& stack)
+    {
+        auto const offset = reader.offset();
+        auto const byte = peek(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        if (auto const form = std::ranges::find(TypeScopeForms, *byte, &TypeScopeFormRow::byte);
+            form != TypeScopeForms.end())
+        {
+            // A component or instance type: a scope of the pool, its declarations read by the loop of
+            // typeSection() on the stack, never by recursion.
+            if (frame.depth >= _limits.maxNesting)
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::LimitExceeded,
+                    offset,
+                    limitSubject(ComponentLimit::Nesting, _limits.maxNesting) } };
+            std::ignore = u8(reader);
+            auto const count = reader.readLength();
+            if (!count)
+                return std::unexpected { fromCore(count.error()) };
+            if (auto counted = countType(frame.scope, offset); !counted)
+                return counted;
+            auto const scope = static_cast<uint32_t>(_pool.components.size());
+            auto definition = form->scope == ScopeKind::ComponentType
+                                  ? TypeDefinition { .type = ComponentTypeDefinition { .scope = scope } }
+                                  : TypeDefinition { .type = InstanceTypeDefinition { .scope = scope } };
+            if (auto added = addDefinition(frame.scope, offset, std::move(definition)); !added)
+                return added;
+            _pool.components.push_back(Component { .kind = form->scope, .definitions = {} });
+            stack.push_back(TypeScopeFrame { .scope = scope, .remaining = *count, .depth = frame.depth + 1 });
+            return {};
+        }
+        auto type = definedType(reader);
+        if (!type)
+            return std::unexpected { type.error() };
+        if (auto counted = countType(frame.scope, offset); !counted)
+            return counted;
+        return addDefinition(frame.scope, offset, std::move(*type));
+    }
+
+    Result<void> ComponentDecoder::declaration(Reader& reader,
+                                               TypeScopeFrame const& frame,
+                                               TypeScopeStack& stack)
+    {
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        auto const kind = _pool.components[frame.scope].kind;
+        auto const row = std::ranges::find(DeclarationTable, *byte, &DeclarationRow::byte);
+        if (row == DeclarationTable.end() || (row->scope && *row->scope != kind))
+            return std::unexpected { DecodeError { DecodeErrorCode::InvalidTypeDeclaration, offset, *byte } };
+        switch (row->kind)
+        {
+            case DeclarationKind::CoreType: {
+                auto type = coreType(reader);
+                if (!type)
+                    return std::unexpected { type.error() };
+                if (auto counted = countType(frame.scope, offset); !counted)
+                    return counted;
+                return addDefinition(frame.scope, offset, std::move(*type));
+            }
+            case DeclarationKind::Type: return typeEntry(reader, frame, stack);
+            case DeclarationKind::Alias:
+                return alias(reader).and_then([&](AliasDefinition definition) {
+                    return addDefinition(frame.scope, offset, std::move(definition));
+                });
+            case DeclarationKind::Import:
+                return import(reader).and_then([&](ImportDefinition definition) {
+                    return addDefinition(frame.scope, offset, std::move(definition));
+                });
+            case DeclarationKind::Export: {
+                auto exportName = nameAttributes(reader);
+                if (!exportName)
+                    return std::unexpected { exportName.error() };
+                auto const type = externDesc(reader);
+                if (!type)
+                    return std::unexpected { type.error() };
+                return addDefinition(
+                    frame.scope, offset, ExportDeclaration { .name = std::move(*exportName), .type = *type });
+            }
+        }
+        return {};
+    }
+
+    /// The component decoder's error for one the core decoder reported while reading a core type:
+    /// ByteReader's errors as everywhere, the core grammar's own as MalformedCoreType.
+    [[nodiscard]] DecodeError fromCoreType(isoline::binary::DecodeError const& error)
+    {
+        if (std::ranges::find(CoreReadErrors, error.code, &CoreReadErrorRow::core) != CoreReadErrors.end())
+            return fromCore(error);
+        return DecodeError { DecodeErrorCode::MalformedCoreType,
+                             error.offset,
+                             static_cast<uint64_t>(error.code) };
+    }
+
+    Result<isoline::binary::FuncType> ComponentDecoder::coreFuncType(Reader& reader)
+    {
+        auto const offset = reader.offset();
+        auto type = isoline::binary::decodeEmbeddedFuncType(reader, CoreTypeFeatures);
+        if (!type)
+            return std::unexpected { fromCoreType(type.error()) };
+        // Charged once read: the core decoder bounds one type's vectors by maxParams and maxResults.
+        if (auto charged = chargeItems(type->params.size() + type->results.size(), offset); !charged)
+            return std::unexpected { charged.error() };
+        return std::move(*type);
+    }
+
+    Result<CoreExternType> ComponentDecoder::coreExternType(Reader& reader)
+    {
+        auto const import = isoline::binary::decodeEmbeddedExternType(reader, CoreTypeFeatures);
+        if (!import)
+            return std::unexpected { fromCoreType(import.error()) };
+        return CoreExternType { .kind = import->kind,
+                                .typeIndex = import->typeIndex,
+                                .table = import->table,
+                                .memory = import->memory,
+                                .global = import->global };
+    }
+
+    Result<CoreModuleDeclaration> ComponentDecoder::coreModuleDeclaration(Reader& reader)
+    {
+        auto const offset = reader.offset();
+        auto const byte = u8(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        switch (*byte)
+        {
+            case 0x00: {
+                auto module = name(reader);
+                if (!module)
+                    return std::unexpected { module.error() };
+                auto field = name(reader);
+                if (!field)
+                    return std::unexpected { field.error() };
+                return coreExternType(reader).transform([&](CoreExternType type) {
+                    return CoreModuleDeclaration { CoreImportDeclaration {
+                        .module = std::move(*module), .name = std::move(*field), .type = type } };
+                });
+            }
+            case 0x01:
+                // A core:rectype in the core type section's encoding: a bare 0x50 is a subtype here.
+                return coreFuncType(reader).transform([](isoline::binary::FuncType type) {
+                    return CoreModuleDeclaration { CoreTypeDeclaration { .type = std::move(type) } };
+                });
+            case 0x02: {
+                auto const sortOffset = reader.offset();
+                auto const sort = u8(reader);
+                if (!sort)
+                    return std::unexpected { sort.error() };
+                if (*sort != CoreOuterAliasSort)
+                    return std::unexpected { DecodeError {
+                        DecodeErrorCode::InvalidCoreOuterAliasKind, sortOffset, *sort } };
+                auto const targetOffset = reader.offset();
+                auto const target = u8(reader);
+                if (!target)
+                    return std::unexpected { target.error() };
+                if (*target != CoreOuterAliasTarget)
+                    return std::unexpected { DecodeError {
+                        DecodeErrorCode::InvalidCoreOuterAliasTarget, targetOffset, *target } };
+                auto const count = u32(reader);
+                if (!count)
+                    return std::unexpected { count.error() };
+                return u32(reader).transform([&](uint32_t index) {
+                    return CoreModuleDeclaration { CoreOuterAliasDeclaration { .outerCount = *count,
+                                                                               .outerIndex = index } };
+                });
+            }
+            case 0x03: {
+                auto exportName = name(reader);
+                if (!exportName)
+                    return std::unexpected { exportName.error() };
+                return coreExternType(reader).transform([&](CoreExternType type) {
+                    return CoreModuleDeclaration { CoreExportDeclaration { .name = std::move(*exportName),
+                                                                           .type = type } };
+                });
+            }
+            default:
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::InvalidModuleTypeDeclaration, offset, *byte } };
+        }
+    }
+
+    Result<CoreTypeDefinition> ComponentDecoder::coreType(Reader& reader)
+    {
+        // 0x50 is a module type here, so a non-final subtype takes a 0x00 prefix (Binary.md's wart).
+        auto const byte = peek(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        if (*byte == ModuleTypeForm)
+        {
+            std::ignore = u8(reader);
+            auto module = CoreModuleTypeDefinition {};
+            auto const declarations = forEach(reader, [&]() -> Result<void> {
+                return coreModuleDeclaration(reader).transform([&](CoreModuleDeclaration declaration) {
+                    module.declarations.push_back(std::move(declaration));
+                });
+            });
+            if (!declarations)
+                return std::unexpected { declarations.error() };
+            return CoreTypeDefinition { .type = std::move(module) };
+        }
+        if (*byte == NonFinalSubTypePrefix)
+        {
+            std::ignore = u8(reader);
+            auto const formOffset = reader.offset();
+            auto const form = peek(reader);
+            if (!form)
+                return std::unexpected { form.error() };
+            if (*form != ModuleTypeForm)
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::InvalidNonFinalSubType, formOffset, *form } };
+        }
+        return coreFuncType(reader).transform(
+            [](isoline::binary::FuncType type) { return CoreTypeDefinition { .type = std::move(type) }; });
+    }
+
+    Result<void> ComponentDecoder::immediate(Reader& reader,
+                                             CanonBuiltinRow const& row,
+                                             Immediate kind,
+                                             CanonDefinition& definition)
+    {
+        auto const offset = reader.offset();
+        switch (kind)
+        {
+            case Immediate::None: return {};
+            case Immediate::SortByte: {
+                auto const sort = u8(reader);
+                if (!sort)
+                    return std::unexpected { sort.error() };
+                if (*sort != 0x00)
+                    return std::unexpected { DecodeError {
+                        DecodeErrorCode::InvalidCanonSort, offset, canonSortSubject(row.opcode, *sort) } };
+                return {};
+            }
+            case Immediate::Index:
+                return u32(reader).transform([&](uint32_t index) { definition.immediates.push_back(index); });
+            case Immediate::Options:
+                return forEach(reader, [&]() -> Result<void> {
+                    auto const optionOffset = reader.offset();
+                    auto const byte = u8(reader);
+                    if (!byte)
+                        return std::unexpected { byte.error() };
+                    if (*byte >= CanonOptionTable.size())
+                        return std::unexpected { DecodeError {
+                            DecodeErrorCode::InvalidCanonOption, optionOffset, *byte } };
+                    auto const& option = CanonOptionTable[*byte];
+                    if (auto admitted = admit(option.gate, optionOffset); !admitted)
+                        return admitted;
+                    if (option.immediate == OptionImmediate::None)
+                    {
+                        definition.options.push_back({ .kind = option.kind, .index = 0 });
+                        return {};
+                    }
+                    return u32(reader).transform([&](uint32_t index) {
+                        definition.options.push_back({ .kind = option.kind, .index = index });
+                    });
+                });
+            case Immediate::ResultList:
+                return resultList(reader).transform(
+                    [&](std::optional<ValueTypeRef> result) { definition.result = result; });
+            case Immediate::CoreValueType:
+                return coreValueKind(reader).transform([&](CoreValueKind value) {
+                    definition.immediates.push_back(static_cast<uint32_t>(value));
+                });
+            case Immediate::Async:
+                return boolean(reader).transform(
+                    [&](bool isAsync) { definition.immediates.push_back(isAsync ? 1 : 0); });
+            case Immediate::Reserved: {
+                auto const reserved = boolean(reader);
+                if (!reserved)
+                    return std::unexpected { reserved.error() };
+                if (*reserved)
+                    return std::unexpected { DecodeError { DecodeErrorCode::NonZeroReservedByte, offset } };
+                return {};
+            }
+            case Immediate::Shared:
+                // `shared` is 🧵②, the gate of every built-in that reads it (static_assert above).
+                return boolean(reader).transform(
+                    [&](bool isShared) { definition.immediates.push_back(isShared ? 1 : 0); });
+        }
+        return {};
+    }
+
+    Result<CanonDefinition> ComponentDecoder::canon(Reader& reader)
+    {
+        auto const offset = reader.offset();
+        auto const opcode = u8(reader);
+        if (!opcode)
+            return std::unexpected { opcode.error() };
+        auto const row = std::ranges::lower_bound(CanonBuiltinTable, *opcode, {}, &CanonBuiltinRow::opcode);
+        if (row == CanonBuiltinTable.end() || row->opcode != *opcode)
+            return std::unexpected { DecodeError { DecodeErrorCode::InvalidCanonFunction, offset, *opcode } };
+        if (auto admitted = admit(row->gate, offset); !admitted)
+            return std::unexpected { admitted.error() };
+        auto definition = CanonDefinition {
+            .builtin = row->builtin, .immediates = {}, .options = {}, .result = std::nullopt
+        };
+        for (auto const kind: row->shape)
+        {
+            if (auto read = immediate(reader, *row, kind, definition); !read)
+                return std::unexpected { read.error() };
+        }
+        return definition;
+    }
+
+    Result<void> ComponentDecoder::coreTypeSection(SectionContext& section)
+    {
+        return definitions(section, [&](Reader& reader) -> Result<CoreTypeDefinition> {
+            auto const offset = reader.offset();
+            auto type = coreType(reader);
+            if (!type)
+                return type;
+            if (auto counted = countType(section.component, offset); !counted)
+                return std::unexpected { counted.error() };
+            return type;
+        });
+    }
+
+    Result<void> ComponentDecoder::typeSection(SectionContext& section)
+    {
+        // The section's vector and the declarations of every component and instance type in it, on
+        // one explicit stack of scopes: the section's component at the bottom, the innermost type last.
+        auto& reader = section.reader;
+        auto const count = reader.readLength();
+        if (!count)
+            return std::unexpected { fromCore(count.error()) };
+        auto stack = TypeScopeStack { TypeScopeFrame {
+            .scope = section.component, .remaining = *count, .depth = section.depth } };
+        while (!stack.empty())
+        {
+            if (stack.back().remaining == 0)
+            {
+                stack.pop_back();
+                continue;
+            }
+            --stack.back().remaining;
+            // A copy: reading the entry may open a scope, which grows the stack.
+            auto const frame = stack.back();
+            auto const offset = reader.offset();
+            if (auto charged = chargeItem(offset); !charged)
+                return charged;
+            if (auto room = roomForDefinition(frame.scope, offset); !room)
+                return room;
+            auto const read = _pool.components[frame.scope].kind == ScopeKind::Component
+                                  ? typeEntry(reader, frame, stack)
+                                  : declaration(reader, frame, stack);
+            if (!read)
+                return read;
+        }
+        return {};
+    }
+
+    Result<void> ComponentDecoder::canonSection(SectionContext& section)
+    {
+        return definitions(section, [&](Reader& reader) { return canon(reader); });
+    }
+
     Result<void> ComponentDecoder::unimplementedSection(SectionContext& section)
     {
         return std::unexpected { DecodeError {
@@ -1031,6 +1939,21 @@ std::string specMessage(DecodeError const& error)
             if (!limit)
                 return text;
             return limitMessage(*limit, *error.subject >> 8U);
+        }
+        case DecodeErrorDetail::CoreError:
+            if (!error.subject
+                || *error.subject > static_cast<uint64_t>(isoline::binary::LastDecodeErrorCode))
+                return text;
+            return std::string { isoline::binary::specMessage(
+                static_cast<isoline::binary::DecodeErrorCode>(*error.subject)) };
+        case DecodeErrorDetail::CanonSort: {
+            auto const subject = error.subject.value_or(0);
+            auto const opcode = static_cast<uint8_t>(subject >> 8U);
+            auto const builtin = std::ranges::find(CanonBuiltinTable, opcode, &CanonBuiltinRow::opcode);
+            if (builtin == CanonBuiltinTable.end())
+                return text;
+            return std::format(
+                "invalid leading byte (0x{:x}) for {} {}", subject & 0xFFU, row.text, builtin->text);
         }
     }
     return text;

@@ -212,6 +212,102 @@ inline void appendName(Bytes& out, std::string_view name)
     return section(11, payload);
 }
 
+/// The type section of the fixtures: every defvaltype P11 decodes under ComponentFeatureSet::wasi03()
+/// (🔧 and 📝 are refused), the function types, a resource type and the scope forms.
+/// @return The section's bytes.
+[[nodiscard]] inline Bytes typeSection()
+{
+    auto payload = Bytes { std::byte { 0x15 } }; // 21 types
+    appendBytes(payload, { 0x3F, 0x7F, 0x00 });  // (resource (rep i32))
+    appendBytes(payload, { 0x73 });              // string
+    appendBytes(payload, { 0x72, 0x02 });        // (record (field "a" bool) (field "b" u8))
+    appendName(payload, "a");
+    appendBytes(payload, { 0x7F });
+    appendName(payload, "b");
+    appendBytes(payload, { 0x7D });
+    appendBytes(payload, { 0x71, 0x02 }); // (variant (case "x" s8) (case "y"))
+    appendName(payload, "x");
+    appendBytes(payload, { 0x01, 0x7E, 0x00 });
+    appendName(payload, "y");
+    appendBytes(payload, { 0x00, 0x00 });
+    appendBytes(payload, { 0x70, 0x7B });             // (list u16)
+    appendBytes(payload, { 0x6F, 0x02, 0x7C, 0x79 }); // (tuple s16 u32)
+    appendBytes(payload, { 0x6E, 0x02 });             // (flags "f1" "f2")
+    appendName(payload, "f1");
+    appendName(payload, "f2");
+    appendBytes(payload, { 0x6D, 0x01 }); // (enum "e1")
+    appendName(payload, "e1");
+    appendBytes(payload, { 0x6B, 0x7A });                   // (option s32)
+    appendBytes(payload, { 0x6A, 0x01, 0x76, 0x01, 0x75 }); // (result f32 (error f64))
+    appendBytes(payload, { 0x6A, 0x00, 0x00 });             // (result)
+    appendBytes(payload, { 0x69, 0x00 });                   // (own 0)
+    appendBytes(payload, { 0x68, 0x00 });                   // (borrow 0)
+    appendBytes(payload, { 0x66, 0x01, 0x7D });             // (stream u8)
+    appendBytes(payload, { 0x65, 0x00 });                   // (future)
+    appendBytes(payload, { 0x63, 0x73, 0x79 });             // (map string u32)
+    appendBytes(payload, { 0x70, 0x02 });                   // (list 2): a type index
+    appendBytes(payload, { 0x40, 0x01 });                   // (func (param "p" bool) (result u32))
+    appendName(payload, "p");
+    appendBytes(payload, { 0x7F, 0x00, 0x79 });
+    appendBytes(payload, { 0x43, 0x00, 0x01, 0x00 }); // (func async)
+    appendBytes(payload, { 0x41, 0x03 });             // (component: type, import, export)
+    appendBytes(payload, { 0x01, 0x40, 0x00, 0x01, 0x00 });
+    appendBytes(payload, { 0x03 });
+    appendBytes(payload, plainName("i"));
+    appendBytes(payload, { 0x01, 0x00 });
+    appendBytes(payload, { 0x04 });
+    appendBytes(payload, plainName("e"));
+    appendBytes(payload, { 0x01, 0x00 });
+    appendBytes(payload, { 0x42, 0x03 }); // (instance: core type, outer alias, export)
+    appendBytes(payload, { 0x00, 0x60, 0x00, 0x00 });
+    appendBytes(payload, { 0x02, 0x03, 0x02, 0x01, 0x01 });
+    appendBytes(payload, { 0x04 });
+    appendBytes(payload, plainName("t"));
+    appendBytes(payload, { 0x03, 0x00, 0x00 });
+    return section(7, payload);
+}
+
+/// The core type section of the fixtures: a function type and a module type of every declarator.
+/// @return The section's bytes.
+[[nodiscard]] inline Bytes coreTypeSection()
+{
+    auto payload = Bytes {};
+    appendBytes(payload, { 0x02, 0x60, 0x01, 0x7F, 0x01, 0x7E }); // 2 types; (func (param i32) (result i64))
+    appendBytes(payload, { 0x50, 0x05, 0x01, 0x60, 0x00, 0x00 }); // (module (type (func))
+    appendBytes(payload, { 0x00 });                               //   (import "a" "b" (func (type 0)))
+    appendName(payload, "a");
+    appendName(payload, "b");
+    appendBytes(payload, { 0x00, 0x00 });
+    appendBytes(payload, { 0x00 }); //   (import "a" "m" (memory 1))
+    appendName(payload, "a");
+    appendName(payload, "m");
+    appendBytes(payload, { 0x02, 0x00, 0x01 });
+    appendBytes(payload, { 0x02, 0x10, 0x01, 0x01, 0x00 }); //   (alias outer 1 0 (type))
+    appendBytes(payload, { 0x03 });                         //   (export "e" (func (type 0))))
+    appendName(payload, "e");
+    appendBytes(payload, { 0x00, 0x00 });
+    return section(3, payload);
+}
+
+/// The canonical section of the fixtures: lift and lower with options, the resource built-ins and an
+/// async one.
+/// @return The section's bytes.
+[[nodiscard]] inline Bytes canonSection()
+{
+    auto payload = Bytes {};
+    appendBytes(payload, { 0x07 }); // 7 canons
+    appendBytes(
+        payload,
+        { 0x00, 0x00, 0x00, 0x02, 0x03, 0x00, 0x04, 0x01, 0x00 }); // lift 0 (memory 0) (realloc 1), type 0
+    appendBytes(payload, { 0x01, 0x00, 0x00, 0x01, 0x01 });        // lower 0 utf16
+    appendBytes(payload, { 0x02, 0x00 });                          // resource.new 0
+    appendBytes(payload, { 0x03, 0x00 });                          // resource.drop 0
+    appendBytes(payload, { 0x04, 0x00 });                          // resource.rep 0
+    appendBytes(payload, { 0x09, 0x00, 0x79, 0x00 });              // task.return (result u32)
+    appendBytes(payload, { 0x0A, 0x7F, 0x00 });                    // context.get i32 0
+    return section(8, payload);
+}
+
 /// One encoded component the decoder must accept, under ComponentFeatureSet::wasi03().
 struct DecoderFixture
 {
@@ -251,6 +347,9 @@ struct DecoderFixture
                                  section(4, componentOf({ section(1, taggedModule("b")) })),
                                  section(1, taggedModule("c")) }) },
         { .name = "deep", .bytes = nestedComponents(100) },
+        { .name = "types", .bytes = componentOf({ typeSection() }) },
+        { .name = "coreTypes", .bytes = componentOf({ coreTypeSection() }) },
+        { .name = "canon", .bytes = componentOf({ canonSection() }) },
     };
 }
 
