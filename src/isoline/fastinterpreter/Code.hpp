@@ -49,13 +49,51 @@ enum class OperationForm : uint8_t
     Special,     ///< A layout of its own, which the operation documents.
 };
 
+/// The operations a dispatch executes alike: which tail-call handler file holds their handlers, and whether
+/// the switch dispatch runs them inline or out of line (OperationFamilyTable).
+enum class OperationFamily : uint8_t
+{
+    Control,    ///< Moves, constants, branches and leaving the function.
+    Numeric,    ///< The numeric operations and their immediate twins.
+    Variable,   ///< The instance's state reached through the store: globals.
+    Memory,     ///< Linear memory access.
+    Simd,       ///< The vector operations.
+    Exceptions, ///< Throwing and catching.
+};
+
+/// Where the switch dispatch runs the operations of a family.
+enum class SwitchPlacement : uint8_t
+{
+    Inline,    ///< In its loop: the hot operations.
+    OutOfLine, ///< In another translation unit, which the loop calls: the cold ones, kept out of the loop's
+               ///< frame and code.
+};
+
+/// What the dispatches know about one OperationFamily.
+struct OperationFamilyRow
+{
+    OperationFamily family;    ///< The family; equal to the row's index in OperationFamilyTable.
+    std::string_view name;     ///< Its name, as the tail-call handler files' names spell it.
+    SwitchPlacement placement; ///< Where the switch dispatch runs its operations.
+};
+
+/// Every OperationFamily, in enumerator order.
+inline constexpr auto OperationFamilyTable = std::to_array<OperationFamilyRow>({
+    { .family = OperationFamily::Control, .name = "Control", .placement = SwitchPlacement::Inline },
+    { .family = OperationFamily::Numeric, .name = "Numeric", .placement = SwitchPlacement::Inline },
+    { .family = OperationFamily::Variable, .name = "Variable", .placement = SwitchPlacement::OutOfLine },
+    { .family = OperationFamily::Memory, .name = "Memory", .placement = SwitchPlacement::Inline },
+    { .family = OperationFamily::Simd, .name = "Simd", .placement = SwitchPlacement::OutOfLine },
+    { .family = OperationFamily::Exceptions, .name = "Exceptions", .placement = SwitchPlacement::OutOfLine },
+});
+
 /// Every operation lowered code holds, one enumerator per row of Operations.def, in its order.
 ///
 /// The base type is the smallest that holds every row (more than 256 since the fused branches and their
 /// loop twins); an enumerator that outgrows it is a build error, and the row that adds it widens it.
 enum class OperationId : uint16_t
 {
-#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates) Name,
+#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates, Family) Name,
 #include <isoline/fastinterpreter/Operations.def>
 #undef ISOLINE_FAST_OPERATION
 };
@@ -80,18 +118,20 @@ struct OperationRow
     uint32_t slots;        ///< Its 32-bit slot operands, destination first, two to a code word.
     uint32_t immediates;   ///< Its 64-bit immediates, one code word each, after the slot operands.
     uint32_t words; ///< Its fixed size in code words, header included; a br_table adds its labels' records.
+    OperationFamily family; ///< The operations it is executed with.
 };
 
 /// Every operation, one row per OperationId enumerator, in enumerator order.
 inline constexpr auto OperationTable = std::to_array<OperationRow>({
-#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates) \
-    { .id = OperationId::Name,                                      \
-      .name = #Name,                                                \
-      .text = (Text),                                               \
-      .form = OperationForm::Form,                                  \
-      .slots = (Slots),                                             \
-      .immediates = (Immediates),                                   \
-      .words = operationWords((Slots), (Immediates)) },
+#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates, Family) \
+    { .id = OperationId::Name,                                              \
+      .name = #Name,                                                        \
+      .text = (Text),                                                       \
+      .form = OperationForm::Form,                                          \
+      .slots = (Slots),                                                     \
+      .immediates = (Immediates),                                           \
+      .words = operationWords((Slots), (Immediates)),                       \
+      .family = OperationFamily::Family },
 #include <isoline/fastinterpreter/Operations.def>
 #undef ISOLINE_FAST_OPERATION
 });
@@ -111,6 +151,29 @@ namespace detail
 } // namespace detail
 
 static_assert(detail::operationRowsInIdOrder(), "OperationTable holds one row per OperationId, in order");
+
+namespace detail
+{
+    /// Whether every row of OperationFamilyTable sits at the index of its family.
+    [[nodiscard]] consteval bool familyRowsInOrder() noexcept
+    {
+        return std::ranges::all_of(std::views::iota(std::size_t { 0 }, OperationFamilyTable.size()),
+                                   [](std::size_t index) {
+                                       return std::to_underlying(OperationFamilyTable[index].family) == index;
+                                   });
+    }
+} // namespace detail
+
+static_assert(detail::familyRowsInOrder(),
+              "OperationFamilyTable holds one row per OperationFamily, in order");
+
+/// What the table knows about @p family.
+/// @param family The family.
+/// @return Its row of OperationFamilyTable.
+[[nodiscard]] constexpr OperationFamilyRow const& familyRow(OperationFamily family) noexcept
+{
+    return OperationFamilyTable[std::to_underlying(family)];
+}
 
 /// What the table knows about @p id.
 /// @param id The operation.
@@ -138,6 +201,31 @@ inline constexpr auto BranchTargetMask = Word { 0xFFFF'FFFF };
 /// per label and the default last: the target (BranchTargetMask) with the destination slot of the label's
 /// values in the high 32 bits, then the LoopPoll.
 inline constexpr auto BranchTableEntryWords = uint32_t { 2 };
+
+/// The header word of @p operation in code lowered for @p dispatch: its OperationId under Switch, the address
+/// of its handler under TailCall.
+///
+/// Precondition (checked): @p dispatch is available.
+/// @param dispatch The dispatch the code is for.
+/// @param operation The operation.
+/// @return Its header word.
+[[nodiscard]] Word headerWord(Dispatch dispatch, OperationId operation);
+
+/// The operation a header word of code lowered for any available dispatch is the header of: what a listing
+/// reads, whichever dispatch the code is for.
+///
+/// Precondition (checked): @p header is the header word of some operation (headerWord()).
+/// @param header The header word.
+/// @return Its operation.
+[[nodiscard]] OperationId operationOfHeader(Word header);
+
+/// The code words of the operation that @p code starts with: its row's words, and a br_table's records.
+///
+/// Precondition (checked): @p code holds the whole operation.
+/// @param operation The operation, as its header word names it (operationOfHeader()).
+/// @param code The code from its header word on.
+/// @return Its words, header included.
+[[nodiscard]] std::size_t operationExtent(OperationId operation, std::span<Word const> code);
 
 /// The parent of a root OperandNode, and a SiteRecord's operands when the stack below it is empty.
 inline constexpr auto NoNode = std::numeric_limits<uint32_t>::max();

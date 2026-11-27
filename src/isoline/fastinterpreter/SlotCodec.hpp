@@ -60,6 +60,15 @@ inline constexpr auto SlotWidths = std::to_array<uint32_t>({ 1, 2, 2 });
 /// @param slots The slots it goes into.
 void storeValue(runtime::Value const& value, std::span<Slot> slots) noexcept;
 
+/// Whether the reference whose first slot, its tag word, is @p tag is null: its kind, in the tag's low byte
+/// (storeValue()), is runtime::RefKind::Null.
+/// @param tag A reference's first slot.
+/// @return Whether it is a null reference.
+[[nodiscard]] constexpr bool isNullReference(Slot tag) noexcept
+{
+    return static_cast<runtime::RefKind>(tag & 0xFFU) == runtime::RefKind::Null;
+}
+
 /// The value of @p type that storeValue() stored into @p slots.
 ///
 /// Precondition (checked): @p slots is exactly as wide as @p type's SlotClass.

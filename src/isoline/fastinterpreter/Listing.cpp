@@ -41,9 +41,9 @@ std::string describe(LoweredFunction const& function)
     auto offset = std::size_t { 0 };
     while (offset < code.size())
     {
-        Require(code[offset] < OperationCount);
-        auto const& row = operationRow(static_cast<OperationId>(code[offset]));
-        Require(offset + row.words <= code.size());
+        auto const operation = operationOfHeader(code[offset]);
+        auto const& row = operationRow(operation);
+        auto const extent = operationExtent(operation, code.subspan(offset));
         auto const operands = code.subspan(offset + 1, row.words - 1);
         listing += row.text;
         auto separator = std::string_view { " " };
@@ -64,21 +64,15 @@ std::string describe(LoweredFunction const& function)
             listing += std::format("{}#{}", separator, immediate);
             separator = ", ";
         }
-        auto extent = std::size_t { row.words };
         switch (row.form)
         {
             case OperationForm::Branch: listing += std::format(" → @{}", target & BranchTargetMask); break;
             case OperationForm::BranchMove:
                 listing += std::format("{}#{} → @{}", separator, target >> 32U, target & BranchTargetMask);
                 break;
-            case OperationForm::BranchTable: {
-                // The immediates are the values' slot count, then the labels before the default.
-                auto const records = (immediates[1] + 1) * BranchTableEntryWords;
-                Require(records <= code.size() - offset - row.words);
-                describeEntries(listing, code.subspan(offset + row.words, records));
-                extent += records;
+            case OperationForm::BranchTable:
+                describeEntries(listing, code.subspan(offset + row.words, extent - row.words));
                 break;
-            }
             default: break;
         }
         listing += '\n';

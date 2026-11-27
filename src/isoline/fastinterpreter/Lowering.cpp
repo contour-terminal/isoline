@@ -1129,6 +1129,24 @@ namespace
         }
         return stats;
     }
+
+    /// Writes every operation's header word for @p dispatch (headerWord()): lowering emits OperationIds,
+    /// which TailCall code replaces by the addresses of their handlers. One pass over the code, linear.
+    void threadCode(std::pmr::vector<LoweredFunction>& functions, Dispatch dispatch)
+    {
+        for (auto& function: functions)
+        {
+            auto const code = std::span { function.code };
+            auto offset = std::size_t { 0 };
+            while (offset < code.size())
+            {
+                auto const operation = static_cast<OperationId>(code[offset]);
+                auto const extent = operationExtent(operation, code.subspan(offset));
+                code[offset] = headerWord(dispatch, operation);
+                offset += extent;
+            }
+        }
+    }
 } // namespace
 
 uint64_t loweringReservation(binary::Module const& module, uint32_t codeIndex)
@@ -1172,6 +1190,7 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     }
     if (!stats)
         return std::unexpected(stats.error());
+    threadCode(functions, config.dispatch);
     auto const loweredBytes = arena->charged() - chargedBefore;
     // The module's own record comes from the host's memory, not the arena: it owns the arena.
     auto const host = std::pmr::polymorphic_allocator<> { &arena->hostResource() };

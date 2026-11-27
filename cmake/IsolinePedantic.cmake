@@ -225,6 +225,16 @@ function(isoline_apply_build_options target)
                  ${arg_COMPILE} ${arg_CXX_COMPILE} ${arg_C_COMPILE} ${arg_LINK})
 endfunction()
 
+## @brief The compile and link options Isoline's policy gives a C++ target it applies to: the C++ warnings,
+## the float policy, sanitizers and coverage, as isoline_apply_target_policy() applies them. What a
+## configure-time probe compiles with, so that it decides as the real build would.
+##
+## isoline_target_policy_flags(<compileOptionsVar> <linkOptionsVar>)
+function(isoline_target_policy_flags compileOptionsVar linkOptionsVar)
+    set(${compileOptionsVar} ${ISOLINE_COMPILE_OPTIONS} ${ISOLINE_CXX_WARNINGS} PARENT_SCOPE)
+    set(${linkOptionsVar} ${ISOLINE_LINK_OPTIONS} PARENT_SCOPE)
+endfunction()
+
 ## @brief Applies Isoline's warning sets, sanitizers, coverage and clang-tidy to @p target, its options
 ## through isoline_apply_build_options(). The warning set is the language's its sources are written in
 ## (ISOLINE_CXX_WARNINGS, ISOLINE_C_WARNINGS), each to its own compiles where a target has both, so call

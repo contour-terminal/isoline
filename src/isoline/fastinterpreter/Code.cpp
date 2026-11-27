@@ -5,12 +5,17 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <memory>
 #include <memory_resource>
+#include <ranges>
 #include <span>
 #include <utility>
+#include <vector>
+
+#include <isoline/fastinterpreter/Backends.hpp>
 
 namespace isoline::fastinterpreter
 {
@@ -38,7 +43,63 @@ namespace
                       return allocatesFrom(function, arena);
                   });
     }
+
+    /// One handler's header word and its operation: what operationOfHeader() looks TailCall headers up in.
+    struct HeaderOperation
+    {
+        Word header;           ///< The handler's address.
+        OperationId operation; ///< Its operation.
+    };
+
+    /// The TailCall header words with their operations, sorted by word; empty where TailCall is unavailable.
+    [[nodiscard]] std::span<HeaderOperation const> tailCallHeaderOperations()
+    {
+        static auto const sorted = [] {
+            auto const words = tailCallHeaderWords();
+            auto entries = std::vector<HeaderOperation> {};
+            entries.reserve(words.size());
+            for (auto const index: std::views::iota(std::size_t { 0 }, words.size()))
+                entries.push_back({ .header = words[index], .operation = static_cast<OperationId>(index) });
+            std::ranges::sort(entries, {}, &HeaderOperation::header);
+            return entries;
+        }();
+        return sorted;
+    }
 } // namespace
+
+Word headerWord(Dispatch dispatch, OperationId operation)
+{
+    switch (dispatch)
+    {
+        case Dispatch::Switch: return Word { std::to_underlying(operation) };
+        case Dispatch::TailCall: break;
+    }
+    auto const words = tailCallHeaderWords();
+    Require(words.size() == OperationCount);
+    return words[std::to_underlying(operation)];
+}
+
+OperationId operationOfHeader(Word header)
+{
+    if (header < OperationCount)
+        return static_cast<OperationId>(header);
+    auto const entries = tailCallHeaderOperations();
+    auto const found = std::ranges::lower_bound(entries, header, {}, &HeaderOperation::header);
+    Require(found != entries.end() && found->header == header);
+    return found->operation;
+}
+
+std::size_t operationExtent(OperationId operation, std::span<Word const> code)
+{
+    auto const& row = operationRow(operation);
+    Require(row.words <= code.size());
+    if (row.form != OperationForm::BranchTable)
+        return row.words;
+    // Its last immediate is the number of labels before the default, whose record follows theirs.
+    auto const records = (code[row.words - 1] + 1) * BranchTableEntryWords;
+    Require(records <= code.size() - row.words);
+    return row.words + records;
+}
 
 LoweredModule::LoweredModule(std::shared_ptr<std::pmr::memory_resource> arena,
                              std::pmr::vector<LoweredFunction> functions,

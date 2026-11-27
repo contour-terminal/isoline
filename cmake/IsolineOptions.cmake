@@ -41,3 +41,19 @@ set_property(CACHE ISOLINE_SANITIZE PROPERTY STRINGS "" address thread)
 # The C++26 language features' options, ISOLINE_<FEATURE> (AUTO, ON or OFF, default AUTO), are defined by
 # cmake/IsolineLanguageFeatures.cmake from its feature rows, so that a feature is one row there; see
 # docs/language-features.md.
+
+# The fast interpreter's tail-call dispatch (fastinterpreter/CMakeLists.txt): AUTO compiles it where a probe
+# row below passes, OFF never does, which leaves the portable Switch dispatch alone.
+set(ISOLINE_FAST_DISPATCH_TAILCALL AUTO CACHE STRING
+    "The fast interpreter's TailCall dispatch: AUTO (where a probe row passes) or OFF")
+set_property(CACHE ISOLINE_FAST_DISPATCH_TAILCALL PROPERTY STRINGS AUTO OFF)
+
+# The tail-call probe rows, tried in order: a spelling of a guaranteed tail call, and the compiler families
+# (CMAKE_CXX_COMPILER_ID) that have it. The probe compiles the real TailCallControl.cpp with each spelling,
+# with the target policy's own flags and warnings as errors, and the first that compiles is the build's.
+# MSVC has no guaranteed tail call, and GCC has one from 15 on: no row passes on MSVC or GCC 14, nor on GCC
+# with AddressSanitizer, which keeps the handler's locals addressable across the tail call.
+# GCC's row comes first: GCC 15 and later accept Clang's spelling too, and Clang rejects GCC's, so each
+# compiler takes its own row.
+set(ISOLINE_TAILCALL_PROBE_ROWS "gnu::musttail" "clang::musttail")
+set(ISOLINE_TAILCALL_PROBE_FAMILIES "GNU" "Clang AppleClang")
