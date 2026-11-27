@@ -42,7 +42,7 @@ add_library(isoline::core ALIAS isoline_core)
 # fast engine's and the small thread's bytes.
 set(isolineNestingRows
     "release|2304|3072|524288"
-    "debug|8192|7936|2097152"
+    "debug|13056|12544|3145728"
     "address|12288|11264|3145728"
     "thread|10752|9728|3145728"
     "coverage|7424|7168|2097152")
