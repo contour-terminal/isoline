@@ -1959,14 +1959,16 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     // arena's upstream, which the record keeps alive and would release before its own storage is returned.
     // Only its contents come from the arena. A refusal there throws std::bad_alloc, which the embedding API
     // refuses as HostMemoryExhausted; the functions, still here then, return their memory to the arena,
-    // which owner keeps alive until they have.
-    return std::allocate_shared<LoweredModule const>(std::pmr::polymorphic_allocator<> { &recordMemory },
-                                                     std::shared_ptr<std::pmr::memory_resource> { owner },
-                                                     std::move(*functions),
-                                                     config.dispatch,
-                                                     config.mode,
-                                                     loweredBytes,
-                                                     *stats);
+    // which owner keeps alive until they have. The record is allocated as LoweredModule, not as the const
+    // type it is returned as: Apple's libc++ constructs it with a placement new, which takes no pointer to
+    // const.
+    return std::allocate_shared<LoweredModule>(std::pmr::polymorphic_allocator<> { &recordMemory },
+                                               std::shared_ptr<std::pmr::memory_resource> { owner },
+                                               std::move(*functions),
+                                               config.dispatch,
+                                               config.mode,
+                                               loweredBytes,
+                                               *stats);
 }
 
 } // namespace isoline::fastinterpreter
