@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The isoline package, as cmake/IsolineInstall.cmake installs it: core-cpp, re-found at the version
+# this Isoline was built against, then the requested components, or every one installed. A component
+# is a file isoline<Component>Targets.cmake beside this one (component recipe_fixture is
+# isolineRecipeFixtureTargets.cmake, by isolineComponentNames.cmake), so this file names none: what the
+# prefix holds is what there is.
+#
+#   find_package(isoline 0.1 REQUIRED COMPONENTS core)
+#   target_link_libraries(app PRIVATE isoline::core)
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+# major.minor, never EXACT: core-cpp's own version file accepts its patch releases (SameMinorVersion).
+find_dependency(core-cpp @ISOLINE_INSTALL_CORE_CPP_VERSION@)
+
+# The naming rule the build named the files by.
+include("${CMAKE_CURRENT_LIST_DIR}/isolineComponentNames.cmake")
+
+set(_isolineInstalledComponents "")
+file(GLOB _isolineComponentFiles LIST_DIRECTORIES false "${CMAKE_CURRENT_LIST_DIR}/isoline*Targets.cmake")
+foreach(_isolineComponentFile IN LISTS _isolineComponentFiles)
+    get_filename_component(_isolineExportSet "${_isolineComponentFile}" NAME_WE)
+    isoline_component_of_export_set("${_isolineExportSet}" _isolineComponent)
+    list(APPEND _isolineInstalledComponents "${_isolineComponent}")
+    set(_isolineComponentFile_${_isolineComponent} "${_isolineComponentFile}")
+endforeach()
+
+## Loads @p component's targets file, the components its isoline<Component>Requires.cmake names first
+## (derived at install from what its library links, cmake/IsolineInstall.cmake), so the package names no
+## component and no order itself. A targets file loaded twice returns at once (CMake's own guard).
+function(_isoline_load_component component)
+    isoline_component_export_set("${component}" exportSet)
+    string(REGEX REPLACE "Targets$" "Requires" requiresStem "${exportSet}")
+    set(_isolineRequires "")
+    if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/${requiresStem}.cmake")
+        include("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/${requiresStem}.cmake")
+    endif()
+    foreach(required IN LISTS _isolineRequires)
+        if(NOT required IN_LIST _isolineInstalledComponents)
+            message(FATAL_ERROR "isoline: component ${component} needs component ${required}, which "
+                                "${CMAKE_CURRENT_FUNCTION_LIST_DIR} does not hold")
+        endif()
+        _isoline_load_component("${required}")
+    endforeach()
+    include("${_isolineComponentFile_${component}}")
+    # A targets file that misses a target it references says so in isoline_FOUND and
+    # isoline_NOT_FOUND_MESSAGE, which this function's scope would otherwise keep to itself.
+    if(DEFINED isoline_FOUND AND NOT isoline_FOUND)
+        set(isoline_FOUND FALSE PARENT_SCOPE)
+        set(isoline_NOT_FOUND_MESSAGE "${isoline_NOT_FOUND_MESSAGE}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+set(_isolineRequestedComponents ${isoline_FIND_COMPONENTS})
+if(NOT _isolineRequestedComponents)
+    set(_isolineRequestedComponents ${_isolineInstalledComponents})
+endif()
+foreach(_isolineComponent IN LISTS _isolineRequestedComponents)
+    if(_isolineComponent IN_LIST _isolineInstalledComponents)
+        _isoline_load_component("${_isolineComponent}")
+        set(isoline_${_isolineComponent}_FOUND TRUE)
+    else()
+        set(isoline_${_isolineComponent}_FOUND FALSE)
+        if(isoline_FIND_REQUIRED_${_isolineComponent})
+            list(JOIN _isolineInstalledComponents ", " _isolineInstalledList)
+            string(CONCAT isoline_NOT_FOUND_MESSAGE
+                "isoline has no component ${_isolineComponent} in ${CMAKE_CURRENT_LIST_DIR} "
+                "(installed: ${_isolineInstalledList})")
+        endif()
+    endif()
+endforeach()
+
+check_required_components(isoline)
+
+# D11: a Visual Studio generator builds no BMI for an imported module target (cmake-cxxmodules(7)), and
+# CMake itself says nothing until the compiler finds no module. Under one, a target of the consumer that
+# links a module target of the package (isoline::<library>_module, D2's naming) is refused once the
+# consumer's top-level directory is configured; a target that includes the headers is not.
+if(CMAKE_GENERATOR MATCHES "^Visual Studio")
+    function(_isoline_refuse_imported_modules directory)
+        get_property(targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(target IN LISTS targets)
+            foreach(property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+                get_property(links TARGET ${target} PROPERTY ${property})
+                string(REGEX MATCH "isoline::[A-Za-z0-9_]+_module" moduleTarget "${links}")
+                if(moduleTarget)
+                    message(FATAL_ERROR "[isoline] installed C++ modules need a Ninja generator (CMake cannot "
+                                        "build BMIs for imported targets under Visual Studio): ${target} links "
+                                        "${moduleTarget} under the generator ${CMAKE_GENERATOR}.")
+                endif()
+            endforeach()
+        endforeach()
+        get_property(subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+        foreach(subdirectory IN LISTS subdirectories)
+            _isoline_refuse_imported_modules("${subdirectory}")
+        endforeach()
+    endfunction()
+    get_property(_isolineIsRefusalDeferred GLOBAL PROPERTY _ISOLINE_MODULE_REFUSAL_DEFERRED)
+    if(NOT _isolineIsRefusalDeferred)
+        set_property(GLOBAL PROPERTY _ISOLINE_MODULE_REFUSAL_DEFERRED ON)
+        cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}"
+                       CALL _isoline_refuse_imported_modules "${CMAKE_SOURCE_DIR}")
+    endif()
+    unset(_isolineIsRefusalDeferred)
+endif()
+
+unset(_isolineComponent)
+unset(_isolineComponentFile)
+unset(_isolineComponentFiles)
+unset(_isolineExportSet)
+unset(_isolineInstalledComponents)
+unset(_isolineInstalledList)
+unset(_isolineRequestedComponents)

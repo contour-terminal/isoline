@@ -1,0 +1,1 @@
+error: manifest <case>/surface.json lists namespaces as public that are internal: isoline::api::detail (isoline::api::detail ends in `detail`, internal wherever it is), isoline::runtime::api (the manifest lists isoline::runtime as internal)

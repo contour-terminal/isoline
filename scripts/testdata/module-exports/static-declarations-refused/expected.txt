@@ -1,0 +1,6 @@
+TU-local declaration: static VarDecl isoline::runtime::counter (isoline/runtime/Counter.hpp): a public header declares nothing of internal linkage
+TU-local declaration: static VarTemplateDecl isoline::runtime::zero (isoline/runtime/Counter.hpp): a public header declares nothing of internal linkage
+TU-local declaration: anonymous namespace in isoline::runtime::detail (isoline/runtime/Counter.hpp): a public header declares nothing of internal linkage
+TU-local declaration: static FunctionDecl isoline::api::pageCount (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: static FunctionTemplateDecl isoline::api::twice (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

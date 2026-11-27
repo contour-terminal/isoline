@@ -72,11 +72,13 @@ target_sources(isoline_core
             api/Types.hpp
             binary/BranchHints.hpp
             binary/ByteReader.hpp
+            binary/ByteWriter.hpp
             binary/DecodeError.hpp
             binary/DecodeLimits.hpp
             binary/MemoryAccess.hpp
             binary/Decoder.hpp
             binary/Encoder.hpp
+            binary/Encodings.hpp
             binary/Module.hpp
             binary/NameSection.hpp
             binary/Opcode.hpp
@@ -105,11 +107,23 @@ target_sources(isoline_core
             Version.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
+# Header-based like every target but the module consumers: never scanned for module dependencies, whatever
+# CMP0155 says (module isoline is a target of its own, isoline_core_module).
+set_target_properties(isoline_core PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 target_link_libraries(isoline_core PUBLIC core::base)
 isoline_apply_target_policy(isoline_core)
 
 add_subdirectory(text)
 add_subdirectory(cli)
+
+# Module isoline: the public names of isoline_core's header set, re-exported by the generated isoline.cppm.
+# binary, runtime, validate and interpreter are internal: isoline::api re-exports what of them is public.
+isoline_add_module(
+    NAME isoline
+    LIBRARY isoline_core
+    SOURCE isoline.cppm
+    NAMESPACES isoline isoline::api isoline::config
+    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter)
 
 if(ISOLINE_TESTING)
     # Every *_test.cpp under src/isoline/ is one translation unit of the single unit-test binary,

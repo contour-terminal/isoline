@@ -543,7 +543,10 @@ TEST_CASE("ModuleReader.readsOneModuleNode")
 
     CHECK(readError("(module").code == TextErrorCode::UnexpectedToken);
     CHECK(readError("(module) (module)").code == TextErrorCode::UnexpectedToken);
-    CHECK(readError(R"wat((module $"\ef"))wat").code == TextErrorCode::MalformedUtf8);
+    // Out of the macro: in a macro argument, MSVC 19.44 warns of this raw string's `\e` as an unrecognized
+    // escape (C4129, an error under /WX; measured in CI), as it does not of the same string outside one.
+    auto const malformedName = std::string_view { R"wat((module $"\ef"))wat" };
+    CHECK(readError(malformedName).code == TextErrorCode::MalformedUtf8);
 }
 
 TEST_CASE("ModuleReader.tables")

@@ -1,0 +1,3 @@
+TU-local declaration: static anonymous union in isoline::api (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+cannot judge the linkage of VarDecl isoline::runtime::revision (isoline/runtime/Version.hpp): reference to 'revision' is ambiguous: declare it so that its linkage is certain
+error: <case>/module.cppm not written: the surface is undetermined

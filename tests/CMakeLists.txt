@@ -2,6 +2,10 @@
 
 # Suites that are not unit tests of one module.
 add_subdirectory(spec)
+# Isoline through `import isoline;` (ISOLINE_MODULES): the in-tree consumers of the module targets.
+if(ISOLINE_MODULES)
+    add_subdirectory(modules)
+endif()
 
 # The spec runner's self-test: a script with wrong assertions the runner must report and fail on.
 # Two are wrong in their values (1 + 2 is not 4, and dividing by zero is no overflow). The rest pin
@@ -129,6 +133,30 @@ foreach(canaryCase IN LISTS isolineRequireCanaryCases)
         FAIL_REGULAR_EXPRESSION "the check let the call through")
 endforeach()
 
+# The C++ module support table (cmake/IsolineModuleSupport.cmake), in script mode: its floors, refusals
+# and generator rows, and the same-LLVM rule for clang-tidy, each a row of expected verdicts.
+add_test(NAME module-support
+         COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/cmake/module-support_test.cmake")
+set_tests_properties(module-support PROPERTIES LABELS lint TIMEOUT 60)
+
+# How check-install tells that an installed file names a path of the build (tests/cmake/check-install-paths.cmake),
+# in script mode, beside the install tests that use it and registered with or without them.
+add_test(NAME check-install-paths
+         COMMAND "${CMAKE_COMMAND}" "-DWORK_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/check-install-paths"
+                 -P "${PROJECT_SOURCE_DIR}/tests/cmake/check-install-paths_test.cmake")
+set_tests_properties(check-install-paths PROPERTIES LABELS lint TIMEOUT 60)
+# A compiler the table refuses because CMake cannot scan its modules (Apple Clang, clang-cl) gets the
+# tripwire that probes CMake itself, module-scanning-tripwire (cmake/IsolineModules.cmake).
+isoline_add_module_tripwires()
+# The opt-in, from the other side: a build with ISOLINE_MODULES OFF builds nothing of modules (no module
+# target, no scan). It reads the Ninja build files, so it is registered under a Ninja generator only.
+if(NOT ISOLINE_MODULES AND CMAKE_GENERATOR MATCHES "^Ninja")
+    add_test(NAME modules-off-build
+             COMMAND "${CMAKE_COMMAND}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+                     -P "${PROJECT_SOURCE_DIR}/tests/cmake/expect-no-module-build.cmake")
+    set_tests_properties(modules-off-build PROPERTIES LABELS lint TIMEOUT 60)
+endif()
+
 # The coverage ratchet's checker, tested on fixture reports: it needs Python, not a coverage build.
 # The Python tests name the interpreter by its path, not as the imported target Python3::Interpreter:
 # CMake runs an executable target through CMAKE_CROSSCOMPILING_EMULATOR, and a cross build's emulator
@@ -149,6 +177,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME check-conformance-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance_test.py")
     set_tests_properties(check-conformance-selftest PROPERTIES LABELS lint)
+    # The pinned-tool fetcher's lock rows, digest check and cache, on fixture archives: offline.
+    add_test(NAME fetch-tools-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/fetch-tools_test.py")
+    set_tests_properties(fetch-tools-selftest PROPERTIES LABELS lint)
 endif()
 
 # How long the text memory suite may run before its timeout stops it: five minutes natively. Under ASan
@@ -158,6 +190,18 @@ endif()
 set(isolineMemoryTestTimeout 300)
 if(CMAKE_CROSSCOMPILING_EMULATOR)
     set(isolineMemoryTestTimeout 600)
+endif()
+
+# The export lint's self-test, on its fixture cases (scripts/testdata/module-exports/): registered where the
+# lint itself is (module-exports-*, cmake/IsolineModules.cmake), so a lane without the pinned LLVM's Clang
+# gains no skipped test. Run by hand without --clang, it exits 77.
+if(ISOLINE_MODULE_LINT_CLANG)
+    add_test(NAME check-module-exports-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-module-exports_test.py"
+                     --clang "${ISOLINE_MODULE_LINT_CLANG}"
+                     --work-directory "${CMAKE_CURRENT_BINARY_DIR}/check-module-exports-selftest")
+    # Two dozen parses of a few lines each.
+    set_tests_properties(check-module-exports-selftest PROPERTIES LABELS lint TIMEOUT 300 SKIP_RETURN_CODE 77)
 endif()
 
 # The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced

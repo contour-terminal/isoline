@@ -235,7 +235,8 @@ inherited by every preset through `isoline-common` (see `cmake/IsolinePedantic.c
 
 Isoline is a WebAssembly runtime written in C++23 only — **no Rust in its source or build**. Prebuilt
 tools made in Rust may serve as test inputs only (pinned by version and SHA-256 in
-`scripts/tools.lock`); a default build and an offline `ctest` need none of them.
+`scripts/tools.lock`, beside the CMake and Ninja the CI module lanes install); a default build and an
+offline `ctest` need none of them.
 
 - `src/isoline/` — the library, `isoline::core` (target `isoline_core`). Namespace `isoline`, with
   **one sub-namespace per directory** beneath it (`src/isoline/binary/` is `isoline::binary`, and so on).
@@ -244,7 +245,8 @@ tools made in Rust may serve as test inputs only (pinned by version and SHA-256 
 - `cmake/` — `IsolineOptions.cmake` (every `ISOLINE_*` switch), `IsolineDependencies.cmake`
   (core-cpp and Catch2) and `IsolinePedantic.cmake` (warnings, sanitizers, coverage, clang-tidy, applied
   per target by `isoline_apply_target_policy()` so that dependencies are never built with `-Werror`).
-- `scripts/` — the tooling around the build (tool pins, spec-test import, coverage ratchet).
+- `scripts/` — the tooling around the build (tool pins, spec-test import, coverage ratchet, the C++
+  module export lint).
 - `vendor/core-cpp/` — [core-cpp](https://github.com/contour-terminal/core-cpp), the shared C++23
   foundation of the Contour Terminal projects, as a verbatim copy of tag v0.21.0 (the tag Contour
   vendors; the two move in lockstep). When a parent project already defines `core::base`, Isoline

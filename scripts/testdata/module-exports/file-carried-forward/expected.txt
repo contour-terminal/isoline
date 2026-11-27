@@ -1,0 +1,4 @@
+missing: isoline::api::Second (declared in isoline/api/Second.hpp)
+missing: isoline::api::Alpha (declared in isoline/api/Rows.def)
+missing: isoline::api::Beta (declared in isoline/api/Columns.def)
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

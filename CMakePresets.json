@@ -191,6 +191,78 @@
             }
         },
         {
+            "name": "modules",
+            "hidden": true,
+            "description": "C++ modules on (ISOLINE_MODULES): the configure fails on a toolchain cmake/IsolineModuleSupport.cmake refuses",
+            "cacheVariables": {
+                "ISOLINE_MODULES": "ON"
+            }
+        },
+        {
+            "name": "clang-modules",
+            "displayName": "Clang Debug + ASan/UBSan, C++ modules",
+            "inherits": [
+                "modules",
+                "clang-asan"
+            ]
+        },
+        {
+            "name": "clang-modules-release",
+            "displayName": "Clang Release, C++ modules",
+            "inherits": [
+                "modules",
+                "clang-release"
+            ]
+        },
+        {
+            "name": "gcc-modules",
+            "displayName": "GCC Debug, C++ modules",
+            "inherits": [
+                "modules",
+                "gcc-debug"
+            ]
+        },
+        {
+            "name": "msvc-modules",
+            "displayName": "MSVC Debug, C++ modules",
+            "description": "MSVC (64-bit) with C++ modules; run from a Developer Command Prompt",
+            "inherits": [
+                "modules",
+                "msvc-debug"
+            ]
+        },
+        {
+            "name": "msvc-modules-visual-studio",
+            "displayName": "MSVC Debug, C++ modules, Visual Studio generator",
+            "description": "MSVC (64-bit) with C++ modules, built in-tree by the Visual Studio 2026 generator, which picks the compiler and the configuration itself",
+            "inherits": "msvc-modules",
+            "generator": "Visual Studio 18 2026",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": null,
+                "CMAKE_BUILD_TYPE": null
+            }
+        },
+        {
+            "name": "msvc-wine-modules",
+            "displayName": "Windows x64 cross (MSVC under wine) Debug, C++ modules",
+            "description": "Windows x64 from Linux: msvc-wine's cl.exe under wine, with the static CRT and C++ modules; tests run under wine",
+            "inherits": [
+                "modules",
+                "isoline-common",
+                "linux-host",
+                "debug"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-msvc-wine-cross.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON",
+                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+            }
+        },
+        {
             "name": "aarch64-cross-common",
             "hidden": true,
             "description": "Linux aarch64 from an x86_64 Linux host against a Debian sysroot; tests run under qemu-user",
@@ -232,7 +304,13 @@
         { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
         { "name": "clangcl-cross-release", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "configurePreset": "clang-aarch64-cross" },
-        { "name": "clang-aarch64-cross-release", "configurePreset": "clang-aarch64-cross-release" }
+        { "name": "clang-aarch64-cross-release", "configurePreset": "clang-aarch64-cross-release" },
+        { "name": "clang-modules", "configurePreset": "clang-modules" },
+        { "name": "clang-modules-release", "configurePreset": "clang-modules-release" },
+        { "name": "gcc-modules", "configurePreset": "gcc-modules" },
+        { "name": "msvc-modules", "configurePreset": "msvc-modules" },
+        { "name": "msvc-modules-visual-studio", "configurePreset": "msvc-modules-visual-studio", "configuration": "Debug" },
+        { "name": "msvc-wine-modules", "configurePreset": "msvc-wine-modules" }
     ],
     "testPresets": [
         {
@@ -278,6 +356,12 @@
         { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },
         { "name": "clangcl-cross-release", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross" },
-        { "name": "clang-aarch64-cross-release", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross-release" }
+        { "name": "clang-aarch64-cross-release", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross-release" },
+        { "name": "clang-modules", "inherits": "isoline-test-common", "configurePreset": "clang-modules" },
+        { "name": "clang-modules-release", "inherits": "isoline-test-common", "configurePreset": "clang-modules-release" },
+        { "name": "gcc-modules", "inherits": "isoline-test-common", "configurePreset": "gcc-modules" },
+        { "name": "msvc-modules", "inherits": "isoline-test-common", "configurePreset": "msvc-modules" },
+        { "name": "msvc-modules-visual-studio", "inherits": "isoline-test-common", "configurePreset": "msvc-modules-visual-studio", "configuration": "Debug" },
+        { "name": "msvc-wine-modules", "inherits": "isoline-test-common", "configurePreset": "msvc-wine-modules" }
     ]
 }

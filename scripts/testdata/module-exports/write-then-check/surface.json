@@ -1,0 +1,37 @@
+{
+  "name": "isoline",
+  "source": "module.cppm",
+  "headerSet": [
+    "isoline/Features.hpp",
+    "isoline/api/Rows.def",
+    "isoline/api/Store.hpp",
+    "isoline/api/Types.hpp",
+    "isoline/runtime/Value.hpp"
+  ],
+  "headerBaseDirectories": [
+    "."
+  ],
+  "namespaces": [
+    "isoline",
+    "isoline::api"
+  ],
+  "internalNamespaces": [
+    "isoline::runtime"
+  ],
+  "imports": [
+    "base/surface.json"
+  ],
+  "foreignNames": [
+    "core::async::Task",
+    "core::async::Generator"
+  ],
+  "includeDirectories": [
+    ".",
+    "foreign"
+  ],
+  "systemIncludeDirectories": [
+    "foreign"
+  ],
+  "compileDefinitions": [],
+  "cxxStandard": "23"
+}

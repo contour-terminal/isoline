@@ -1,0 +1,2 @@
+precompile failed: <case>/system/Shift.hpp:6:14: error: shift count >= width of type [-Werror,-Wshift-count-overflow]
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

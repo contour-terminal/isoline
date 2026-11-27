@@ -254,7 +254,8 @@ struct DecodeError
 
 /// The message the reference interpreter reports for @p error: its row's message, followed by what
 /// the error names when the row has a detail and the error a subject, and then by the disabled
-/// proposal that would decode the module, when the error names one (appendDisabledFeature()).
+/// proposal that would decode the module, when the error names one
+/// (isoline::detail::appendDisabledFeature()).
 /// @param error The error to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(DecodeError const& error)
@@ -284,7 +285,7 @@ struct DecodeError
         }
         return std::string { row.specMessage };
     }();
-    return appendDisabledFeature(message, error.disabled);
+    return isoline::detail::appendDisabledFeature(message, error.disabled);
 }
 
 } // namespace isoline::binary

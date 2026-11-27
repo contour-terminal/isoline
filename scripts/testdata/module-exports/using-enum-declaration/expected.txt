@@ -1,0 +1,2 @@
+not exportable: UsingEnumDecl isoline::api::<unnamed> (isoline/api/Store.hpp): a using-enum-declaration makes an enumeration's enumerators the namespace's, which no using-declaration of the interface unit names; spell them through the enumeration, or move it into an internal namespace
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

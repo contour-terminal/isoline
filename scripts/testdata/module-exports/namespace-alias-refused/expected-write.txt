@@ -1,0 +1,2 @@
+not exportable: NamespaceAliasDecl isoline::api::runtimeAlias (isoline/api/Store.hpp): a using-declaration cannot name a namespace, so only a declaration in the purview could export the alias, and the interface unit declares nothing; alias it in an internal namespace, or name the namespace
+error: <case>/module.cppm not written: the surface is undetermined

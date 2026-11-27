@@ -1,0 +1,15 @@
+TU-local declaration: non-inline constexpr VarDecl isoline::runtime::pageLimit (isoline/runtime/Limits.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::runtime::detail::tableLimit (isoline/runtime/Limits.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline constexpr VarDecl isoline::api::probe (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::limit (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::cursor (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::aliased (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::sizes (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::emptyStore (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::callback (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline constexpr VarDecl isoline::api::constexprPointer (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::table (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::cursors (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::onLoad (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: static FunctionDecl isoline::api::pageCount (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

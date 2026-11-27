@@ -1,0 +1,22 @@
+{
+  "name": "base",
+  "source": "base.cppm",
+  "headerSet": [
+    "include/base/Value.hpp"
+  ],
+  "headerBaseDirectories": [
+    "include"
+  ],
+  "namespaces": [
+    "base"
+  ],
+  "internalNamespaces": [],
+  "imports": [],
+  "foreignNames": [],
+  "includeDirectories": [
+    "include"
+  ],
+  "systemIncludeDirectories": [],
+  "compileDefinitions": [],
+  "cxxStandard": "23"
+}

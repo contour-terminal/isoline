@@ -1,0 +1,2 @@
+#define ROW(name) inline constexpr int name = 1;
+ROW(Omega)

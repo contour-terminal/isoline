@@ -9,7 +9,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -144,11 +143,14 @@ class Imports
         std::string_view name;   ///< The import field name.
     };
 
-    /// Orders stored names against viewed ones, as ImportName orders its own.
-    friend auto operator<=>(ImportName const& stored, ImportNameView viewed) noexcept
-    {
-        return std::tie(stored.module, stored.name) <=> std::tuple { viewed.module, viewed.name };
-    }
+    /// Orders stored names against viewed ones, as ImportName orders its own. Its return type is spelled
+    /// and its body is in Imports.cpp, the one place that compares the two (find()): a deduced return
+    /// type would make every TU that sees this class deduce it, and an importer of module isoline on
+    /// MSVC then fails with C3889 unless it sees <string_view> itself.
+    /// @param stored The stored names.
+    /// @param viewed The names looked up.
+    /// @return Their order, by module name, then field name.
+    friend std::strong_ordering operator<=>(ImportName const& stored, ImportNameView viewed) noexcept;
 
     /// The definition under @p module and @p name, found without allocating.
     /// @return It, or null when there is none.

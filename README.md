@@ -124,8 +124,39 @@ ctest --preset clang-asan
 Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `gcc-release`, `macos-clang` and `msvc-debug`
 (from a Visual Studio Developer Command Prompt). Every preset builds into `out/<preset>/`.
 
+A top-level build installs as the CMake package `isoline` (`-DISOLINE_INSTALL=OFF` turns that off), with
+the components `core` (`isoline::core`) and `text` (`isoline::text`, the text format). Its one dependency,
+[core-cpp](https://github.com/contour-terminal/core-cpp), is not installed with it: install core-cpp
+first, into the same prefix, built by the same compiler and standard library as the consumer.
+
+```sh
+cmake -S vendor/core-cpp -B out/core-cpp -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCORE_CPP_INSTALL=ON -DCORE_CPP_TESTING=OFF -DCORE_CPP_CATCH2_MAIN=OFF \
+      -DCORE_CPP_BUILD_EXAMPLES=OFF -DCORE_CPP_FETCH_DEPS=OFF \
+      -DCORE_CPP_WITH_TUI=OFF -DCORE_CPP_WITH_TUI_OUTPUT=OFF -DCORE_CPP_WITH_TUI_CORE=OFF \
+      -DCORE_CPP_WITH_TLS=OFF -DCORE_CPP_WITH_SYSTEMD=OFF
+cmake --build out/core-cpp
+cmake --install out/core-cpp --prefix <prefix> --component core-cpp
+cmake --install out/clang-release --prefix <prefix> --component isoline
+```
+
+A consumer configured with `-DCMAKE_PREFIX_PATH=<prefix>` then finds it:
+
+```cmake
+find_package(isoline 0.1 REQUIRED COMPONENTS core)
+target_link_libraries(app PRIVATE isoline::core)
+```
+
 From a Linux host, Isoline also cross-compiles for Windows (clang-cl, tests under wine) and arm64
 (clang, tests under qemu); see [docs/cross-compiling.md](docs/cross-compiling.md).
+
+With `-DISOLINE_MODULES=ON` (CMake 4.3 or newer, a Ninja generator for the installed package), or one of
+the module presets `clang-modules`, `clang-modules-release`, `gcc-modules`, `msvc-modules` and
+`msvc-wine-modules`, the build also offers the C++ module `isoline`: a consumer writes `import isoline;`
+instead of including the headers, and links `isoline::core_module` instead of `isoline::core`. The module
+re-exports every public name of the headers, which stay the one source of truth, and installs as source,
+built in the consumer with its own flags. [docs/modules.md](docs/modules.md) has the supported
+toolchains, `import std;`, and the recipe by which each later public library adds its own module.
 
 Compiles go through a compiler cache when one is installed (Pace's `pace-cc`, else `ccache`). With a
 local `pace-node`, `cmake --preset clang-asan -DPACE_SCHEDULER=127.0.0.1:6674` also dispatches misses

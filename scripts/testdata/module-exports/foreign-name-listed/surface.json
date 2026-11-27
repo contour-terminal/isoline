@@ -1,0 +1,30 @@
+{
+  "name": "isoline",
+  "source": "module.cppm",
+  "headerSet": [
+    "isoline/api/Run.hpp"
+  ],
+  "headerBaseDirectories": [
+    "."
+  ],
+  "namespaces": [
+    "isoline",
+    "isoline::api"
+  ],
+  "internalNamespaces": [
+    "isoline::runtime"
+  ],
+  "imports": [],
+  "foreignNames": [
+    "core::async::Task"
+  ],
+  "includeDirectories": [
+    ".",
+    "foreign"
+  ],
+  "systemIncludeDirectories": [
+    "foreign"
+  ],
+  "compileDefinitions": [],
+  "cxxStandard": "23"
+}

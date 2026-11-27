@@ -1,0 +1,53 @@
+name: Install LLVM from apt.llvm.org
+description: >
+  Installs one LLVM release and the extra packages a job names, through apt.llvm.org's llvm.sh. The
+  script runs under sudo, so it is fetched at a pinned commit of its source repository and checked
+  against its SHA-256 before it runs. The apt repository it adds is trusted through apt.llvm.org's signing
+  key, which is fetched and checked against its pinned fingerprint first and installed where llvm.sh looks
+  for it, so llvm.sh never fetches a key of its own.
+inputs:
+  version:
+    description: The LLVM major version.
+    required: true
+  packages:
+    description: Further apt packages, separated by spaces (their names may use the version).
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Fetch and verify llvm.sh
+      shell: bash
+      env:
+        # The pin: llvm.sh at a commit of opencollab/llvm-jenkins.debian.net, the source apt.llvm.org
+        # serves it from, and that file's SHA-256. Moving the pin is changing both rows.
+        LLVM_SH_URL: https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/076c86e05ebae0ab66edeecd2f0f438ae15de0bb/llvm.sh
+        LLVM_SH_SHA256: da89c676166fd38eebc669b6355c7da27eb3971437059580e86161256d603dc5
+      run: |
+        wget -q -O "$RUNNER_TEMP/llvm.sh" "$LLVM_SH_URL"
+        echo "$LLVM_SH_SHA256  $RUNNER_TEMP/llvm.sh" | sha256sum --check --strict -
+    - name: Fetch and verify apt.llvm.org's signing key
+      shell: bash
+      env:
+        # The key llvm.sh would fetch, and the fingerprint of its one primary key (Sylvestre Ledru, Debian
+        # LLVM packages; checked 2026-11-27). llvm.sh installs no key when this file exists.
+        LLVM_KEY_URL: https://apt.llvm.org/llvm-snapshot.gpg.key
+        LLVM_KEY_FINGERPRINT: 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+        LLVM_KEY_PATH: /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+      run: |
+        wget -q -O "$RUNNER_TEMP/apt.llvm.org.asc" "$LLVM_KEY_URL"
+        fingerprints=$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt.llvm.org.asc" \
+          | awk -F: '$1 == "pub" { primary = 1; next } $1 == "fpr" && primary { print $10; primary = 0 }')
+        if [ "$fingerprints" != "$LLVM_KEY_FINGERPRINT" ]; then
+          echo "::error::$LLVM_KEY_URL holds the primary keys '$fingerprints', not the pinned $LLVM_KEY_FINGERPRINT"
+          exit 1
+        fi
+        sudo install -m 0644 "$RUNNER_TEMP/apt.llvm.org.asc" "$LLVM_KEY_PATH"
+    - name: Install LLVM ${{ inputs.version }}
+      shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        sudo bash "$RUNNER_TEMP/llvm.sh" "$LLVM_VERSION"
+        if [ -n "$PACKAGES" ]; then sudo apt-get install -qy $PACKAGES; fi

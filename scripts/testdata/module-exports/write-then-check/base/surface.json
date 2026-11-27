@@ -1,0 +1,18 @@
+{
+  "name": "isoline.base",
+  "source": "base.cppm",
+  "headerSet": [],
+  "headerBaseDirectories": [
+    "."
+  ],
+  "namespaces": [
+    "isoline"
+  ],
+  "internalNamespaces": [],
+  "imports": [],
+  "foreignNames": [],
+  "includeDirectories": [],
+  "systemIncludeDirectories": [],
+  "compileDefinitions": [],
+  "cxxStandard": "23"
+}

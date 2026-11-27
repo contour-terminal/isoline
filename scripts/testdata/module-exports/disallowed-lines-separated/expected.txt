@@ -1,0 +1,4 @@
+not allowed in the purview: line 18
+not allowed in the purview: line 20
+not allowed in the purview: line 22
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

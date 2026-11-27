@@ -1,0 +1,241 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Isoline through `import isoline;` alone: no Isoline header. Every type a public signature names is
+// spelled here by its own name, so a type that is reachable but not nameable through the module fails to
+// compile (the plan's Review Focus 3). HeaderSide.cpp, linked into the same test, is the header side of
+// includeAndImportShareEntities.
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <memory>
+#include <span>
+#include <variant>
+
+#include "AddModule.hpp"
+
+import isoline;
+
+namespace isoline::modules_test
+{
+
+// HeaderSide.hpp's functions, declared again by the names the import provides: HeaderSide.cpp defines them
+// in a TU that includes Isoline's headers and imports nothing. That the two link, and agree on every value
+// passed between them, is D7's claim: an includer and an importer share Isoline's entities.
+//
+// These declarations are copied by hand, which is an ODR hazard: should one drift from HeaderSide.hpp's,
+// the program holds two declarations of one function that disagree. A parameter type that differs changes
+// the mangled name, so the link fails. A return type that differs does not: the Itanium ABI (Clang, GCC)
+// does not mangle a non-template function's return type, so the program links and calls through the wrong
+// type, undefined behaviour no diagnostic is required for (MSVC mangles it, and fails the link). No
+// static_assert can compare the two: this TU must not include an Isoline header (it would be an
+// include-then-import TU, MixedInclusion_test.cpp's kind), and HeaderSide.cpp must not import. Change both
+// together.
+
+/// Instantiates the add module in a store made by the caller (HeaderSide.hpp).
+/// @param store The store to instantiate in.
+/// @param module The add module.
+/// @return The instance, or the error.
+[[nodiscard]] std::expected<isoline::api::Instance, isoline::api::InstantiateError> instantiateAdd(
+    isoline::api::Store& store, isoline::api::Module const& module);
+
+/// The address of FeatureTable as the header side sees it (HeaderSide.hpp).
+/// @return Its address.
+[[nodiscard]] void const* featureTableAddressFromHeaders() noexcept;
+
+} // namespace isoline::modules_test
+
+namespace
+{
+
+using namespace isoline::api;
+
+/// The value an alternative of a visited error variant reports: which alternative it was.
+enum class Alternative : std::uint8_t
+{
+    ModuleTooLarge,
+    HostMemoryExhausted,
+    DecodeError,
+    ValidationError,
+    EngineMismatch,
+    ForeignImport,
+    LinkError,
+    LimitExceeded,
+    AllocationFailure,
+    CallError,
+    Trap,
+    HostFailure,
+    UncaughtException,
+    ValueMismatch,
+    ImportCountMismatch,
+    InvalidType,
+    ForeignHandle,
+    StoreDeleted,
+};
+
+/// A visitor of every alternative of the API's error variants, each spelled by its name.
+struct AlternativeOf
+{
+    Alternative operator()(ModuleTooLarge const&) const noexcept { return Alternative::ModuleTooLarge; }
+    Alternative operator()(HostMemoryExhausted const&) const noexcept
+    {
+        return Alternative::HostMemoryExhausted;
+    }
+    Alternative operator()(DecodeError const&) const noexcept { return Alternative::DecodeError; }
+    Alternative operator()(ValidationError const&) const noexcept { return Alternative::ValidationError; }
+    Alternative operator()(EngineMismatch const&) const noexcept { return Alternative::EngineMismatch; }
+    Alternative operator()(ForeignImport const&) const noexcept { return Alternative::ForeignImport; }
+    Alternative operator()(LinkError const&) const noexcept { return Alternative::LinkError; }
+    Alternative operator()(LimitExceeded const&) const noexcept { return Alternative::LimitExceeded; }
+    Alternative operator()(AllocationFailure const&) const noexcept { return Alternative::AllocationFailure; }
+    Alternative operator()(CallError const&) const noexcept { return Alternative::CallError; }
+    Alternative operator()(Trap const&) const noexcept { return Alternative::Trap; }
+    Alternative operator()(HostFailure const&) const noexcept { return Alternative::HostFailure; }
+    Alternative operator()(UncaughtException const&) const noexcept { return Alternative::UncaughtException; }
+    Alternative operator()(ValueMismatch const&) const noexcept { return Alternative::ValueMismatch; }
+    Alternative operator()(ImportCountMismatch const&) const noexcept
+    {
+        return Alternative::ImportCountMismatch;
+    }
+    Alternative operator()(InvalidType const&) const noexcept { return Alternative::InvalidType; }
+    Alternative operator()(ForeignHandle const&) const noexcept { return Alternative::ForeignHandle; }
+    Alternative operator()(StoreDeleted const&) const noexcept { return Alternative::StoreDeleted; }
+};
+
+} // namespace
+
+TEST_CASE("Modules.instantiatesAndCalls")
+{
+    auto const engine = Engine { EngineConfig {} };
+    auto const module = engine.load(isoline::consumer::AddModule);
+    REQUIRE(module.has_value());
+
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const instance = store.instantiate(*module, Imports {});
+    REQUIRE(instance.has_value());
+    auto const add = instance->function("add");
+    REQUIRE(add.has_value());
+
+    auto const args = std::array<Value, 2> { I32 { 2 }, I32 { 3 } };
+    auto results = std::array<Value, 1> {};
+    auto const called = instance->call(*add, args, results);
+    REQUIRE(called.has_value());
+    CHECK(results[0] == Value { I32 { 5 } });
+}
+
+TEST_CASE("Modules.includeAndImportShareEntities")
+{
+    // Engine, Module and Store are made here, through the import; the header side instantiates.
+    auto const engine = Engine { EngineConfig {} };
+    auto const module = engine.load(isoline::consumer::AddModule);
+    REQUIRE(module.has_value());
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const instance = isoline::modules_test::instantiateAdd(store, *module);
+    REQUIRE(instance.has_value());
+    auto const add = instance->function("add");
+    REQUIRE(add.has_value());
+
+    auto const args = std::array<Value, 2> { I32 { 2 }, I32 { 3 } };
+    auto results = std::array<Value, 1> {};
+    auto const called = instance->call(*add, args, results);
+    REQUIRE(called.has_value());
+    CHECK(results[0] == Value { I32 { 5 } });
+
+    // An inline variable is one entity in the program: the header side's FeatureTable is the import's.
+    CHECK(isoline::modules_test::featureTableAddressFromHeaders() == &isoline::FeatureTable);
+}
+
+TEST_CASE("Modules.hostFunctionTemplate")
+{
+    // makeHostFunction<F> is instantiated here, in the importer, with a lambda of this TU.
+    auto const doubling =
+        makeHostFunction([](HostContext&,
+                            std::span<Value const> args,
+                            std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+            results[0] = I32 { std::get<I32>(args[0]).bits * 2 };
+            return {};
+        });
+
+    auto const engine = Engine { EngineConfig {} };
+    auto const module = engine.load(isoline::consumer::DoubleImportModule);
+    REQUIRE(module.has_value());
+    auto imports = Imports {};
+    imports.define("env",
+                   "double",
+                   FuncType { .params = { ValueType { .kind = ValueKind::I32 } },
+                              .results = { ValueType { .kind = ValueKind::I32 } } },
+                   doubling);
+
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const instance = store.instantiate(*module, imports);
+    REQUIRE(instance.has_value());
+    auto const imported = instance->function("double");
+    REQUIRE(imported.has_value());
+
+    auto const args = std::array<Value, 1> { I32 { 21 } };
+    auto results = std::array<Value, 1> {};
+    auto const called = instance->call(*imported, args, results);
+    REQUIRE(called.has_value());
+    CHECK(results[0] == Value { I32 { 42 } });
+}
+
+TEST_CASE("Modules.constantsEvaluate")
+{
+    static_assert(isoline::FeatureCount == isoline::FeatureTable.size());
+    static_assert(isoline::version().major == isoline::config::versionMajor);
+    STATIC_CHECK(isoline::FeatureSet::wasm3().has(isoline::Feature::MultiValue));
+}
+
+TEST_CASE("Modules.errorsAreNameable")
+{
+    auto const engine = Engine { EngineConfig {} };
+    auto const truncated = std::span<std::byte const> { isoline::consumer::AddModule }.first(20);
+    auto const module = engine.load(truncated);
+    REQUIRE_FALSE(module.has_value());
+    LoadError const& loadError = module.error();
+    CHECK(std::holds_alternative<DecodeError>(loadError));
+    CHECK_FALSE(isImplementationLimit(loadError));
+    CHECK(std::visit(AlternativeOf {}, loadError) == Alternative::DecodeError);
+
+    auto const instantiateError = InstantiateError { EngineMismatch {} };
+    CHECK(std::visit(AlternativeOf {}, instantiateError) == Alternative::EngineMismatch);
+    auto const defineError = DefineError { HostMemoryExhausted {} };
+    CHECK(std::visit(AlternativeOf {}, defineError) == Alternative::HostMemoryExhausted);
+    auto const callError =
+        CallError { .detail = CallError::Detail { UncaughtException {} }, .refusedGrowth = {} };
+    CHECK(std::visit(AlternativeOf {}, callError.detail) == Alternative::UncaughtException);
+
+    // The members of the configuration, each by the type its declaration names.
+    auto const config = EngineConfig {};
+    FeatureSet const features = config.features;
+    ExecutionEngine const executionEngine = config.engine;
+    ExecutionMode const mode = config.mode;
+    LoadLimits const loadLimits = config.load;
+    DecodeLimits const decodeLimits = loadLimits.decode;
+    std::uint64_t const maxModuleBytes = loadLimits.maxModuleBytes;
+    StoreLimits const storeLimits = config.store;
+    std::uint32_t const maxCallDepth = storeLimits.maxCallDepth;
+    std::uint64_t const maxMemoryBytes = storeLimits.maxMemoryBytes;
+    EngineIdentity const identity = config.identity();
+    CHECK(identity == EngineIdentity { .engine = executionEngine, .mode = mode, .features = features });
+    CHECK(maxCallDepth > 0);
+    CHECK(maxMemoryBytes > 0);
+    CHECK(loadLimits == LoadLimits { .maxModuleBytes = maxModuleBytes, .decode = decodeLimits });
+}
+
+TEST_CASE("Modules.defaultedEqualityThroughImport")
+{
+    auto const identity = EngineConfig {}.identity();
+    CHECK(identity == EngineIdentity { identity });
+    CHECK_FALSE(identity
+                == EngineIdentity { .engine = identity.engine, .mode = identity.mode, .features = {} });
+
+    CHECK(MemorySize { .pages = 1, .bytes = 65'536 } == MemorySize { .pages = 1, .bytes = 65'536 });
+    CHECK_FALSE(MemorySize { .pages = 1, .bytes = 65'536 } == MemorySize { .pages = 2, .bytes = 131'072 });
+}

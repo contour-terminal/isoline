@@ -1,0 +1,1 @@
+error: cannot run Clang <case>/no-such-clang++: No such file or directory
