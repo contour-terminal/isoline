@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
@@ -18,13 +19,16 @@
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
 
+using isoline::binary::AddressType;
 using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
+using isoline::binary::Limits;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
 using isoline::binary::OpcodeTable;
 using isoline::binary::TableType;
 using isoline::binary::ValueKind;
+using isoline::binary::ValueType;
 using isoline::binary::testing::Bytes;
 using isoline::binary::testing::code;
 using isoline::binary::testing::i32Const;
@@ -32,6 +36,8 @@ using isoline::binary::testing::localGet;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::fastinterpreter::FusionRow;
 using isoline::fastinterpreter::FusionTable;
+using isoline::fastinterpreter::IndexedAccess;
+using isoline::fastinterpreter::indexedAccessWord;
 using isoline::fastinterpreter::loweringRow;
 using isoline::fastinterpreter::LoweringRows;
 using isoline::fastinterpreter::LoweringTable;
@@ -41,6 +47,7 @@ using isoline::fastinterpreter::operationRow;
 using isoline::fastinterpreter::testing::encodingOf;
 using isoline::fastinterpreter::testing::functionOf;
 using isoline::fastinterpreter::testing::listingOf;
+using isoline::fastinterpreter::testing::memoryInstruction;
 using isoline::fastinterpreter::testing::op;
 using isoline::fastinterpreter::testing::typesOf;
 
@@ -83,6 +90,13 @@ struct SpecialRowCase
     module.type(
         FuncType { .params = { binary::concreteRef(0, binary::Nullable::Yes) }, .results = { binary::I32 } });
     module.function(1, {}, std::move(body));
+    return module;
+}
+
+/// @p module with a memory of one page, of i32 addresses, added.
+[[nodiscard]] ModuleBuilder withMemory(ModuleBuilder module)
+{
+    module.memory(Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 });
     return module;
 }
 
@@ -173,6 +187,12 @@ struct SpecialRowCase
     add(Opcode::GlobalGet, withGlobal, "global.get s0, #0\nglobal.set s0, #0\nreturn s0\n");
     add(Opcode::GlobalSet, withGlobal, "global.get s0, #0\nglobal.set s0, #0\nreturn s0\n");
     add(Opcode::I32Const, functionOf({}, { binary::I32 }, {}, i32Const(7)), "const64 s0, #7\nreturn s0\n");
+    add(Opcode::MemorySize,
+        withMemory(functionOf({}, { binary::I32 }, {}, { 0x3F, 0x00 })),
+        "memory.size s0, #0\nreturn s0\n");
+    add(Opcode::MemoryGrow,
+        withMemory(functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), { 0x40, 0x00 } }))),
+        "memory.grow s1, s0, #0\nreturn s1\n");
     add(Opcode::I64Const, functionOf({}, { binary::I64 }, {}, { 0x42, 0x07 }), "const64 s0, #7\nreturn s0\n");
     add(Opcode::F32Const,
         functionOf({}, { binary::F32 }, {}, { 0x43, 0x00, 0x00, 0x80, 0x3F }),
@@ -199,7 +219,8 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
         // constant.
         for (auto const& row: LoweringRows)
         {
-            if (row.form == OperationForm::Special)
+            if (row.form == OperationForm::Special || row.form == OperationForm::Load
+                || row.form == OperationForm::Store)
                 continue;
             auto const& info = binary::opcodeInfo(row.opcode);
             INFO(info.text);
@@ -245,6 +266,55 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
             CHECK(loweringRow(row.opcode) == row);
         }
     }
+    SECTION("every Load and Store row, to memory 0 of either address type and to another memory")
+    {
+        // memory 0 of i32 addresses takes the row's operation, of i64 addresses its memory64 twin; memory 1
+        // the indexed operation naming memory 1 and the twin of memory 1's address type.
+        for (auto const& row: LoweringRows)
+        {
+            if (row.form != OperationForm::Load && row.form != OperationForm::Store)
+                continue;
+            auto const& info = binary::opcodeInfo(row.opcode);
+            INFO(info.text);
+            auto const* access = binary::memoryAccessOf(row.opcode);
+            REQUIRE(access != nullptr);
+            auto const load = row.form == OperationForm::Load;
+            for (auto const addressType: { AddressType::I32, AddressType::I64 })
+            {
+                for (auto const memory: { 0U, 1U })
+                {
+                    auto const addressKind = addressType == AddressType::I64 ? binary::I64 : binary::I32;
+                    auto params = std::vector { addressKind };
+                    if (!load)
+                        params.push_back(binary::ValueType { .kind = access->value });
+                    auto const results = load ? std::vector { binary::ValueType { .kind = access->value } }
+                                              : std::vector<ValueType> {};
+                    auto const operands = load ? localGet(0) : code({ localGet(0), localGet(1) });
+                    auto module = functionOf(
+                        params, results, {}, code({ operands, memoryInstruction(row.opcode, 8, memory) }));
+                    if (memory != 0)
+                        module.memory(
+                            Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 });
+                    module.memory(Limits { .min = 1, .max = std::nullopt, .addressType = addressType });
+                    auto const twin = addressType == AddressType::I64 ? row.memory64 : row.operation;
+                    auto const indexed = load ? OperationId::LoadIndexed : OperationId::StoreIndexed;
+                    auto const operation = memory == 0 ? twin : indexed;
+                    auto const immediates =
+                        memory == 0 ? std::string { "#8" }
+                                    : std::format("#8, #{}",
+                                                  indexedAccessWord(
+                                                      IndexedAccess { .memory = memory, .access = twin }));
+                    auto const expected =
+                        load ? std::format(
+                                   "{} s1, s0, {}\nreturn s1\n", operationRow(operation).text, immediates)
+                             : std::format(
+                                   "{} s0, s1, {}\nreturn s2\n", operationRow(operation).text, immediates);
+                    CHECK(listingOf(module) == expected);
+                }
+            }
+            CHECK(loweringRow(row.opcode) == row);
+        }
+    }
     SECTION("every FusionTable row, to a block and to a loop, of slots and of a constant")
     {
         for (auto const& row: FusionTable)
@@ -283,7 +353,35 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
         }
     }
     // An opcode without a row is Special, which a later part of lowering handles.
-    CHECK(loweringRow(Opcode::MemorySize).form == OperationForm::Special);
-    CHECK(loweringRow(Opcode::MemorySize).operation == OperationId::Nop);
+    CHECK(loweringRow(Opcode::MemoryFill).form == OperationForm::Special);
+    CHECK(loweringRow(Opcode::MemoryFill).operation == OperationId::Nop);
     CHECK(OpcodeTable.size() == LoweringTable.size());
+}
+
+TEST_CASE("LoweringRows.namingChecksDecide")
+{
+    // The name checks the static_asserts run, run here too (they are constexpr, for MSVC): each accepts the
+    // rows of the tables and refuses a row naming another instruction's or another family's operation.
+    namespace detail = isoline::fastinterpreter::detail;
+    CHECK(detail::spells("i32.eq.br_if", { "i32.eq", ".", "br_if" }));
+    CHECK_FALSE(detail::spells("i32.eq.br_if", { "i32.ne", ".", "br_if" }));
+    CHECK_FALSE(detail::spells("i32.eq.br_if.loop", { "i32.eq", ".", "br_if" }));
+    for (auto const& row: LoweringRows)
+        if (row.form == OperationForm::Load || row.form == OperationForm::Store)
+            CHECK(detail::memoryRowFits(row));
+    auto swapped = loweringRow(Opcode::I32Load);
+    std::swap(swapped.operation, swapped.memory64);
+    CHECK_FALSE(detail::memoryRowFits(swapped));
+    auto other = loweringRow(Opcode::I32Load);
+    other.memory64 = OperationId::I64LoadMemory64;
+    CHECK_FALSE(detail::memoryRowFits(other));
+    auto indexed = loweringRow(Opcode::I32Load);
+    indexed.memory64 = OperationId::LoadIndexed;
+    CHECK_FALSE(detail::memoryRowFits(indexed));
+    auto narrower = loweringRow(Opcode::I32Load);
+    narrower.memory64 = OperationId::I32Load8S;
+    CHECK_FALSE(detail::memoryRowFits(narrower));
+    auto numeric = loweringRow(Opcode::I32Load);
+    numeric.operation = OperationId::I32Add;
+    CHECK_FALSE(detail::memoryRowFits(numeric));
 }

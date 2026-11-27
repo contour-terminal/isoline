@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
 
@@ -19,17 +20,22 @@ namespace isoline::fastinterpreter
 /// How lowering translates one instruction.
 ///
 /// A Unary, Binary or BinaryImmediate row is lowered by the table alone: its operands are popped,
-/// its result pushed, and `operation` emitted over their slots. A Special row is lowered by code of its
-/// own, and names the operation that code emits for it, or Nop where it emits none or several.
+/// its result pushed, and `operation` emitted over their slots. A Load or Store row, one per scalar row of
+/// binary::MemoryAccessTable, is lowered alike to `operation` for memory 0 of i32 addresses, to `memory64`
+/// for memory 0 of i64 addresses, and to LoadIndexed or StoreIndexed naming either for any other memory. A
+/// Special row is lowered by code of its own, and names the operation that code emits for it, or Nop where
+/// it emits none or several.
 struct LoweringRow
 {
     binary::Opcode opcode; ///< The instruction; equal to the row's index in LoweringTable.
     OperationForm form;    ///< Unary, Binary, BinaryImmediate (a Binary whose constant right operand
-                           ///< folds into `immediate`), or Special.
-    OperationId operation; ///< The operation it lowers to.
+                           ///< folds into `immediate`), Load, Store, or Special.
+    OperationId operation; ///< The operation it lowers to; for Load and Store, of memory 0 of i32 addresses.
     OperationId immediate; ///< For BinaryImmediate, the twin taking the right operand as an immediate;
                            ///< otherwise `operation` again. (No std::optional: libstdc++ 14 cannot copy
                            ///< a disengaged one during constant evaluation, which building the table does.)
+    OperationId memory64;  ///< For Load and Store, the twin of memory 0 of i64 addresses; otherwise
+                           ///< `operation` again.
 
     /// Whether both rows lower alike.
     [[nodiscard]] constexpr bool operator==(LoweringRow const&) const = default;
@@ -40,17 +46,21 @@ namespace detail
     /// The row of a one-operand instruction.
     [[nodiscard]] consteval LoweringRow unaryRow(binary::Opcode opcode, OperationId operation) noexcept
     {
-        return {
-            .opcode = opcode, .form = OperationForm::Unary, .operation = operation, .immediate = operation
-        };
+        return { .opcode = opcode,
+                 .form = OperationForm::Unary,
+                 .operation = operation,
+                 .immediate = operation,
+                 .memory64 = operation };
     }
 
     /// The row of a two-operand instruction without an immediate twin.
     [[nodiscard]] consteval LoweringRow binaryRow(binary::Opcode opcode, OperationId operation) noexcept
     {
-        return {
-            .opcode = opcode, .form = OperationForm::Binary, .operation = operation, .immediate = operation
-        };
+        return { .opcode = opcode,
+                 .form = OperationForm::Binary,
+                 .operation = operation,
+                 .immediate = operation,
+                 .memory64 = operation };
     }
 
     /// The row of a two-operand instruction whose constant right operand folds into @p immediate.
@@ -61,14 +71,34 @@ namespace detail
         return { .opcode = opcode,
                  .form = OperationForm::BinaryImmediate,
                  .operation = operation,
-                 .immediate = immediate };
+                 .immediate = immediate,
+                 .memory64 = operation };
     }
 
     /// The row of an instruction lowered by code of its own, which emits @p operation for it.
     [[nodiscard]] consteval LoweringRow specialRow(binary::Opcode opcode, OperationId operation) noexcept
     {
+        return { .opcode = opcode,
+                 .form = OperationForm::Special,
+                 .operation = operation,
+                 .immediate = operation,
+                 .memory64 = operation };
+    }
+
+    /// The row of a load or store of memory: @p memory32 for memory 0 of i32 addresses, @p memory64 for
+    /// memory 0 of i64 addresses. Its form is the access's (binary::MemoryAccessTable), or Special where
+    /// the opcode accesses no memory, which loweringRowsFitTheirOperations() refuses.
+    [[nodiscard]] consteval LoweringRow memoryRow(binary::Opcode opcode,
+                                                  OperationId memory32,
+                                                  OperationId memory64) noexcept
+    {
+        auto const* access = binary::memoryAccessOf(opcode);
+        auto form = OperationForm::Special;
+        if (access != nullptr)
+            form =
+                access->access == binary::MemoryAccessKind::Load ? OperationForm::Load : OperationForm::Store;
         return {
-            .opcode = opcode, .form = OperationForm::Special, .operation = operation, .immediate = operation
+            .opcode = opcode, .form = form, .operation = memory32, .immediate = memory32, .memory64 = memory64
         };
     }
 } // namespace detail
@@ -112,6 +142,33 @@ inline constexpr auto LoweringRows = std::to_array<LoweringRow>({
     detail::specialRow(binary::Opcode::I64Const, OperationId::Const64),
     detail::specialRow(binary::Opcode::F32Const, OperationId::Const64),
     detail::specialRow(binary::Opcode::F64Const, OperationId::Const64),
+    detail::specialRow(binary::Opcode::MemorySize, OperationId::MemorySize),
+    detail::specialRow(binary::Opcode::MemoryGrow, OperationId::MemoryGrow),
+
+    // Lowered by the table: the scalar loads and stores, each to the operations of its name.
+    detail::memoryRow(binary::Opcode::I32Load, OperationId::I32Load, OperationId::I32LoadMemory64),
+    detail::memoryRow(binary::Opcode::I64Load, OperationId::I64Load, OperationId::I64LoadMemory64),
+    detail::memoryRow(binary::Opcode::F32Load, OperationId::F32Load, OperationId::F32LoadMemory64),
+    detail::memoryRow(binary::Opcode::F64Load, OperationId::F64Load, OperationId::F64LoadMemory64),
+    detail::memoryRow(binary::Opcode::I32Load8S, OperationId::I32Load8S, OperationId::I32Load8SMemory64),
+    detail::memoryRow(binary::Opcode::I32Load8U, OperationId::I32Load8U, OperationId::I32Load8UMemory64),
+    detail::memoryRow(binary::Opcode::I32Load16S, OperationId::I32Load16S, OperationId::I32Load16SMemory64),
+    detail::memoryRow(binary::Opcode::I32Load16U, OperationId::I32Load16U, OperationId::I32Load16UMemory64),
+    detail::memoryRow(binary::Opcode::I64Load8S, OperationId::I64Load8S, OperationId::I64Load8SMemory64),
+    detail::memoryRow(binary::Opcode::I64Load8U, OperationId::I64Load8U, OperationId::I64Load8UMemory64),
+    detail::memoryRow(binary::Opcode::I64Load16S, OperationId::I64Load16S, OperationId::I64Load16SMemory64),
+    detail::memoryRow(binary::Opcode::I64Load16U, OperationId::I64Load16U, OperationId::I64Load16UMemory64),
+    detail::memoryRow(binary::Opcode::I64Load32S, OperationId::I64Load32S, OperationId::I64Load32SMemory64),
+    detail::memoryRow(binary::Opcode::I64Load32U, OperationId::I64Load32U, OperationId::I64Load32UMemory64),
+    detail::memoryRow(binary::Opcode::I32Store, OperationId::I32Store, OperationId::I32StoreMemory64),
+    detail::memoryRow(binary::Opcode::I64Store, OperationId::I64Store, OperationId::I64StoreMemory64),
+    detail::memoryRow(binary::Opcode::F32Store, OperationId::F32Store, OperationId::F32StoreMemory64),
+    detail::memoryRow(binary::Opcode::F64Store, OperationId::F64Store, OperationId::F64StoreMemory64),
+    detail::memoryRow(binary::Opcode::I32Store8, OperationId::I32Store8, OperationId::I32Store8Memory64),
+    detail::memoryRow(binary::Opcode::I32Store16, OperationId::I32Store16, OperationId::I32Store16Memory64),
+    detail::memoryRow(binary::Opcode::I64Store8, OperationId::I64Store8, OperationId::I64Store8Memory64),
+    detail::memoryRow(binary::Opcode::I64Store16, OperationId::I64Store16, OperationId::I64Store16Memory64),
+    detail::memoryRow(binary::Opcode::I64Store32, OperationId::I64Store32, OperationId::I64Store32Memory64),
 
     // Lowered by the table: the numeric instructions, each to the operation of its name.
     detail::unaryRow(binary::Opcode::I32Eqz, OperationId::I32Eqz),
@@ -274,8 +331,25 @@ namespace detail
         });
     }
 
+    /// Whether a Load or Store row's operations are of its form and of the Memory family, and named
+    /// after its instruction: `operation` its text, `memory64` its text and ".memory64". constexpr, not
+    /// consteval: MSVC calls no immediate function from the lambda of loweringRowsFitTheirOperations()
+    /// (C7595), and it is only evaluated in that static_assert.
+    [[nodiscard]] constexpr bool memoryRowFits(LoweringRow const& row) noexcept
+    {
+        auto const text = binary::OpcodeTable[std::to_underlying(row.opcode)].text;
+        auto const fits = [&row](OperationId operation) {
+            auto const& info = operationRow(operation);
+            return info.form == row.form && info.family == OperationFamily::Memory;
+        };
+        auto const memory64 = operationRow(row.memory64).text;
+        return fits(row.operation) && fits(row.memory64) && operationRow(row.operation).text == text
+               && memory64.starts_with(text) && memory64.substr(text.size()) == ".memory64";
+    }
+
     /// Whether every row the table lowers names operations of its own form, over operands the
-    /// instruction's signature has: one for Unary, two for Binary and BinaryImmediate.
+    /// instruction's signature has: one for Unary, two for Binary and BinaryImmediate; a load or store, the
+    /// operations of its access.
     [[nodiscard]] consteval bool loweringRowsFitTheirOperations() noexcept
     {
         return std::ranges::all_of(LoweringRows, [](LoweringRow const& row) {
@@ -284,6 +358,10 @@ namespace detail
                     .paramCount;
             switch (row.form)
             {
+                // A load's or store's operands are its address type's (a Special signature), so its
+                // access row, which gave the form, stands for them.
+                case OperationForm::Load:
+                case OperationForm::Store: return memoryRowFits(row);
                 case OperationForm::Unary:
                     return operands == 1 && operationRow(row.operation).form == OperationForm::Unary;
                 case OperationForm::Binary:
@@ -299,6 +377,37 @@ namespace detail
 
 static_assert(detail::loweringRowsAreUnique(), "LoweringRows holds one row per opcode at most");
 static_assert(detail::loweringRowsFitTheirOperations(), "a lowering row names an operation of another shape");
+
+namespace detail
+{
+    /// Whether every scalar row of binary::MemoryAccessTable has its Load or Store row, and every Memory
+    /// operation is a twin of one: the vector accesses are the SIMD operations'.
+    [[nodiscard]] consteval bool everyScalarAccessIsLowered() noexcept
+    {
+        auto const lowered = [](binary::MemoryAccess const& access) {
+            return std::ranges::any_of(LoweringRows, [&access](LoweringRow const& row) {
+                return row.opcode == access.opcode
+                       && (row.form == OperationForm::Load || row.form == OperationForm::Store);
+            });
+        };
+        auto const twinned = [](OperationRow const& operation) {
+            return std::ranges::any_of(LoweringRows, [&operation](LoweringRow const& row) {
+                return (row.form == OperationForm::Load || row.form == OperationForm::Store)
+                       && (row.operation == operation.id || row.memory64 == operation.id);
+            });
+        };
+        return std::ranges::all_of(binary::MemoryAccessTable,
+                                   [&lowered](binary::MemoryAccess const& access) {
+                                       return access.value == binary::ValueKind::V128 || lowered(access);
+                                   })
+               && std::ranges::all_of(OperationTable, [&twinned](OperationRow const& operation) {
+                      return operation.family != OperationFamily::Memory || twinned(operation);
+                  });
+    }
+} // namespace detail
+
+static_assert(detail::everyScalarAccessIsLowered(),
+              "a scalar load or store without its LoweringRows row, or a memory operation of no row");
 
 /// How lowering translates each instruction, indexed by binary::Opcode.
 inline constexpr auto LoweringTable = detail::spreadLoweringRows();

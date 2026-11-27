@@ -97,6 +97,9 @@ struct Context
     /// The current function's code: branch targets are word offsets from it.
     Word const* code = nullptr;
 
+    /// The store's memoryGeneration() when the registers' memory 0 (State::memory0) was last read: while
+    /// it is the store's still, they are memory 0's bytes and size.
+    uint64_t memoryGeneration = 0;
     /// Where the invocation's function left its results: the first of their slots (Exit::Returned).
     Slot const* results = nullptr;
 
@@ -142,6 +145,20 @@ struct CallSite
 /// @param resultSlot The first slot of its results.
 /// @return The registers of the caller, or how execution stops.
 [[nodiscard]] OutOfLineStep returnFromFunction(State state, uint32_t resultSlot) noexcept;
+
+/// Runs memory.grow of memory @p memory of the current frame's instance, out of line: grows it through the
+/// store (runtime::Store::growMemory()) by the pages in slot @p deltaSlot, writes the old size in pages, or
+/// -1 of the memory's address type where the grow was refused, to slot @p resultSlot, and reads memory 0 into
+/// the registers again where any memory grew. The pc stays at the operation.
+/// @param state The registers.
+/// @param resultSlot The slot of the result.
+/// @param deltaSlot The slot of the pages to add.
+/// @param memory The memory's index in the module.
+/// @return The registers after it; it always goes on.
+[[nodiscard]] OutOfLineStep growMemory(State state,
+                                       uint32_t resultSlot,
+                                       uint32_t deltaSlot,
+                                       uint32_t memory) noexcept;
 
 /// Stops execution with @p trap, out of line: commits the countdown to the store, as every way out of
 /// running code does, and records the trap.

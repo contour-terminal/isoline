@@ -1056,6 +1056,49 @@ TEST_CASE("Store.growingByNothingAsksNobody")
     CHECK(store.memory(*memory).bytes().size() == PageSize);
 }
 
+TEST_CASE("Store.memoryGenerationCountsEveryGrowth")
+{
+    // The generation moves by one per memory that grew, whichever it was, and stays where nothing grew:
+    // refused grows, grows by nothing, and adding a memory.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    CHECK(store.memoryGeneration() == 0);
+    auto const first = store.addMemory(oneToFourPages());
+    REQUIRE(first.has_value());
+    auto const second = store.addMemory(oneToFourPages());
+    REQUIRE(second.has_value());
+    CHECK(store.memoryGeneration() == 0);
+
+    CHECK(store.growMemory(*first, 1) == 1U);
+    CHECK(store.memoryGeneration() == 1);
+    CHECK(store.growMemory(*second, 2) == 1U);
+    CHECK(store.memoryGeneration() == 2);
+
+    CHECK(store.growMemory(*first, 0) == 2U);
+    CHECK(store.growMemory(*first, 3) == std::unexpected { Refusal::TypeMaximum });
+    CHECK(store.memoryGeneration() == 2);
+
+    auto const third = store.addMemory(oneToFourPages());
+    REQUIRE(third.has_value());
+    CHECK(store.memoryGeneration() == 2);
+}
+
+TEST_CASE("Store.memoryGenerationIgnoresARefusingEmbedder")
+{
+    // An embedder that declines the grow leaves the memory, and so the generation, as they were.
+    auto allocator = ProvidedMemoryAllocator { 4 * PageSize, 0, [](uint64_t bytes) {
+                                                  return bytes <= 2 * PageSize ? GrowDecision::Grant
+                                                                               : GrowDecision::Refuse;
+                                              } };
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const memory = store.addMemory(oneToFourPages());
+    REQUIRE(memory.has_value());
+    CHECK(store.growMemory(*memory, 1) == 1U);
+    CHECK(store.memoryGeneration() == 1);
+    CHECK(store.growMemory(*memory, 1) == std::unexpected { Refusal::Embedder });
+    CHECK(store.memoryGeneration() == 1);
+}
+
 TEST_CASE("Store.growthRecordIsPerKind")
 {
     auto allocator = ProvidedMemoryAllocator { PageSize, 0, grantAll };

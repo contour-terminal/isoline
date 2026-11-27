@@ -105,6 +105,18 @@ class Harness
     {
     }
 
+    /// Decodes, validates and instantiates @p builder's module on @p engine, its imports bound to what
+    /// @p imports adds, in a store of @p limits whose memories come from @p allocator.
+    /// @param allocator Allocates the store's memories; must outlive the harness.
+    Harness(ModuleBuilder const& builder,
+            EngineUnderTest engine,
+            Imports const& imports,
+            runtime::IMemoryAllocator& allocator,
+            runtime::StoreLimits limits = {}):
+        Harness { builder, engine, CodeRewrite {}, imports, limits, nullptr, &allocator }
+    {
+    }
+
     /// The executor that runs the module: the reference interpreter, or the fast one.
     [[nodiscard]] runtime::ICodeExecutor& executor() noexcept { return *_executor; }
 
@@ -117,8 +129,11 @@ class Harness
             CodeRewrite const& rewrite,
             Imports const& imports,
             runtime::StoreLimits limits,
-            runtime::IPollObserver* observer):
-        _store { limits, runtime::StoreServices { .allocator = _allocator, .pollObserver = observer } },
+            runtime::IPollObserver* observer,
+            runtime::IMemoryAllocator* allocator = nullptr):
+        _store { limits,
+                 runtime::StoreServices { .allocator = allocator != nullptr ? *allocator : _allocator,
+                                          .pollObserver = observer } },
         _executor { executorOf(engine) }
     {
         auto validated =

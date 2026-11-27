@@ -7,14 +7,18 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <type_traits>
 #include <utility>
 
+#include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/binary/Types.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Context.hpp>
+#include <isoline/fastinterpreter/LittleEndian.hpp>
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
 #include <isoline/numerics/Float.hpp>
@@ -378,7 +382,22 @@ namespace detail
         for (auto const index: std::views::iota(std::size_t { 0 }, LoweringRows.size()))
         {
             auto const& row = LoweringRows[index];
-            if (row.form != OperationForm::Special && (row.operation == id || row.immediate == id))
+            auto const numeric = row.form == OperationForm::Unary || row.form == OperationForm::Binary
+                                 || row.form == OperationForm::BinaryImmediate;
+            if (numeric && (row.operation == id || row.immediate == id))
+                return index;
+        }
+        return NoRow;
+    }
+
+    /// The Load or Store row of LoweringRows whose memory 0 operations @p id is one of, or NoRow.
+    [[nodiscard]] consteval std::size_t memoryRowOf(OperationId id) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, LoweringRows.size()))
+        {
+            auto const& row = LoweringRows[index];
+            auto const memory = row.form == OperationForm::Load || row.form == OperationForm::Store;
+            if (memory && (row.operation == id || row.memory64 == id))
                 return index;
         }
         return NoRow;
@@ -539,6 +558,131 @@ template <OperationId Id>
             detail::decode<typename Signature::Right>(immediateOperand<Id, 0>(state.pc)));
 }
 
+/// The unsigned integer of @p Width bytes: what a memory access of that width moves.
+template <uint32_t Width>
+using MemoryWord = std::conditional_t<
+    Width == 1,
+    uint8_t,
+    std::conditional_t<Width == 2, uint16_t, std::conditional_t<Width == 4, uint32_t, uint64_t>>>;
+
+/// The offset into a memory of @p size bytes of an access of @p Width bytes at @p address + @p offset, or
+/// nullopt where it does not fit, as the reference interpreter decides it; never overflowing.
+///
+/// A memory of i32 addresses has an address and an offset below 2^32 (validation), so their sum and the
+/// width fit 64 bits and one comparison decides. A memory of i64 addresses (memory64) adds the two with a
+/// check for the carry, and compares the width against what is left.
+///
+/// Spectre (docs/fast-interpreter.md): the offset returned is masked by a data-dependent select, all ones
+/// where the access fits and zero where it does not, so that code running ahead of a mispredicted check
+/// reads memory's first bytes and nothing past it. The mask is the sign of the bytes left after the
+/// access, computed from the same bound as the check but not from its outcome, which the compiler knows
+/// on the path the branch takes and would fold away; a memory's size stays below 2^63 (it is allocated).
+template <binary::AddressType Addressing, uint32_t Width>
+[[nodiscard]] inline std::optional<uint64_t> boundsChecked(uint64_t address,
+                                                           uint64_t offset,
+                                                           uint64_t size) noexcept
+{
+    auto const effective = address + offset;
+    auto fits = false;
+    if constexpr (Addressing == binary::AddressType::I32)
+        fits = effective + Width <= size;
+    else
+        fits = effective >= address && size >= Width && effective <= size - Width;
+    if (!fits) [[unlikely]]
+        return std::nullopt;
+    auto const left = static_cast<int64_t>(size - Width - effective);
+    auto const mask = ~static_cast<uint64_t>(left >> 63U);
+    return effective & mask;
+}
+
+/// The access of memory 0 operation @p Id (a Load or Store row's) to the memory @p base of @p size bytes:
+/// a load writes the value it reads, widened as binary::MemoryAccessTable says, to slot operand 0; a store
+/// writes the low bytes of slot operand 1. The pc stays at the operation.
+/// @param offset The access's static offset.
+/// @return Flow::Continue, or what leaving with OutOfBoundsMemoryAccess gives.
+template <OperationId Id>
+[[nodiscard]] inline Flow accessMemory(State& state, std::byte* base, uint64_t size, uint64_t offset) noexcept
+{
+    constexpr auto Row = LoweringRows[detail::memoryRowOf(Id)];
+    constexpr auto Access = *binary::memoryAccessOf(Row.opcode);
+    constexpr auto Addressing = Id == Row.memory64 ? binary::AddressType::I64 : binary::AddressType::I32;
+    constexpr auto Width = uint32_t { Access.width };
+    using Bytes = MemoryWord<Width>;
+    auto* const fp = state.fp;
+    // An i32 address is held zero-extended in its slot (detail::encode()).
+    auto const address = fp[slotOperand<Access.access == binary::MemoryAccessKind::Load ? 1 : 0>(state.pc)];
+    auto const checked = boundsChecked<Addressing, Width>(address, offset, size);
+    if (!checked) [[unlikely]]
+        return leaveTrapped(
+            *state.context, state.stepsLeft, runtime::Trap { runtime::TrapCode::OutOfBoundsMemoryAccess });
+    auto* const bytes = base + *checked;
+    if constexpr (Access.access == binary::MemoryAccessKind::Store)
+        storeLittleEndian<Bytes>(bytes, static_cast<Bytes>(fp[slotOperand<1>(state.pc)]));
+    else
+    {
+        auto const loaded = loadLittleEndian<Bytes>(bytes);
+        auto value = uint64_t { loaded };
+        if constexpr (Access.extension == binary::Extension::Sign)
+            value =
+                static_cast<uint64_t>(static_cast<int64_t>(static_cast<std::make_signed_t<Bytes>>(loaded)));
+        // A 32-bit value is held zero-extended.
+        if constexpr (Access.value == binary::ValueKind::I32 || Access.value == binary::ValueKind::F32)
+            value = static_cast<uint32_t>(value);
+        fp[slotOperand<0>(state.pc)] = value;
+    }
+    return Flow::Continue;
+}
+
+/// A load or store of memory 0 (a Load or Store row's operation): its access to the registers' memory 0.
+template <OperationId Id>
+[[nodiscard]] inline Flow memoryOperation(State& state) noexcept
+{
+    if (auto const flow =
+            accessMemory<Id>(state, state.memory0, state.memory0Size, immediateOperand<Id, 0>(state.pc));
+        flow != Flow::Continue) [[unlikely]]
+        return flow;
+    return next<Id>(state);
+}
+
+namespace detail
+{
+    /// An access of a memory other than memory 0, by the memory 0 operation whose body it runs.
+    using IndexedAccessFunction = Flow (*)(State&, std::byte*, uint64_t, uint64_t) noexcept;
+
+    /// accessMemory() of every memory 0 operation, by OperationId; null for every other operation.
+    [[nodiscard]] consteval std::array<IndexedAccessFunction, OperationCount>
+    indexedAccessFunctions() noexcept
+    {
+        return []<std::size_t... Index>(std::index_sequence<Index...>) {
+            return std::array<IndexedAccessFunction, OperationCount> { [] {
+                // No named constant for the id: MSVC takes one the else branch does not read for unused
+                // (C4189).
+                if constexpr (memoryRowOf(static_cast<OperationId>(Index)) != NoRow)
+                    return IndexedAccessFunction { &accessMemory<static_cast<OperationId>(Index)> };
+                else
+                    return IndexedAccessFunction { nullptr };
+            }()... };
+        }(std::make_index_sequence<OperationCount> {});
+    }
+
+    /// indexedAccessFunctions(), built once.
+    inline constexpr auto IndexedAccessFunctions = indexedAccessFunctions();
+} // namespace detail
+
+/// A load or store of a memory other than memory 0 (LoadIndexed, StoreIndexed): its memory 0 twin's access,
+/// to the memory's bytes as the store holds them now.
+template <OperationId Id>
+[[nodiscard]] inline Flow indexedMemoryOperation(State& state) noexcept
+{
+    auto const named = indexedAccessOf(immediateOperand<Id, 1>(state.pc));
+    auto const bytes = state.context->store.memory(state.context->instance->memories[named.memory]).bytes();
+    auto const access = detail::IndexedAccessFunctions[std::to_underlying(named.access)];
+    if (auto const flow = access(state, bytes.data(), bytes.size(), immediateOperand<Id, 0>(state.pc));
+        flow != Flow::Continue) [[unlikely]]
+        return flow;
+    return next<Id>(state);
+}
+
 /// A comparison fused with the br_if or if that consumes its result (FusionTable): br_if branches when the
 /// comparison holds, if continues at its target when it does not; to a loop label it polls first.
 template <OperationId Id>
@@ -632,7 +776,8 @@ template <OperationId Id>
 }
 
 /// The operations of a body of their own: control without operands, moves, constants, selects, globals,
-/// unconditional branches, if, br_table and return.
+/// the accesses of memories other than memory 0, memory.size and memory.grow, unconditional branches, if,
+/// br_table and return.
 template <OperationId Id>
 [[nodiscard]] inline Flow specialOperation(State& state) noexcept
 {
@@ -694,6 +839,25 @@ template <OperationId Id>
         global.cell.words = { fp[slotOperand<0>(pc)], width == 2 ? fp[slotOperand<0>(pc) + 1] : Slot { 0 } };
         return next<Id>(state);
     }
+    else if constexpr (Id == OperationId::LoadIndexed || Id == OperationId::StoreIndexed)
+        return indexedMemoryOperation<Id>(state);
+    else if constexpr (Id == OperationId::MemorySize)
+    {
+        auto const& memory = state.context->store.memory(
+            state.context->instance->memories[static_cast<std::size_t>(immediateOperand<Id, 0>(pc))]);
+        // Pages of a memory of i32 addresses number below 2^32, so the slot holds them zero-extended.
+        fp[slotOperand<0>(pc)] = std::as_const(memory).bytes().size() / binary::pageSize(memory.type);
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::MemoryGrow)
+    {
+        auto const step = growMemory(state,
+                                     slotOperand<0>(pc),
+                                     slotOperand<1>(pc),
+                                     static_cast<uint32_t>(immediateOperand<Id, 0>(pc)));
+        state = step.state;
+        return next<Id>(state);
+    }
     else if constexpr (Id == OperationId::Select64 || Id == OperationId::Select128)
     {
         // The result goes to the first value's slot, so both values are read before it is written.
@@ -727,6 +891,8 @@ template <OperationId Id>
 {
     if constexpr (operationRow(Id).family == OperationFamily::Numeric)
         return numericOperation<Id>(state);
+    else if constexpr (operationRow(Id).family == OperationFamily::Memory)
+        return memoryOperation<Id>(state);
     else if constexpr (detail::fusionRowOf(Id) != detail::NoRow)
         return fusedBranch<Id>(state);
     else if constexpr (detail::conditionalBranchRowOf(Id) != detail::NoRow)

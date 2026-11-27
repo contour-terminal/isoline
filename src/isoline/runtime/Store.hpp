@@ -611,6 +611,25 @@ class Store
     ///         growthRecord().memory.
     [[nodiscard]] std::expected<uint64_t, Refusal> growMemory(MemAddr address, uint64_t deltaPages);
 
+    /// The generation of the store's memories: what an executor that caches a memory's bytes (its base
+    /// and size) compares, after code it does not control ran, to learn whether it must read them again.
+    ///
+    /// The contract, which every executor may rely on:
+    /// - It starts at 0 and only ever grows, by one per change, so two reads that compare equal saw the
+    ///   same memories; it is 64 bits wide and never wraps in a store's lifetime.
+    /// - Every growMemory() that grows a memory by at least one page increments it, whichever memory of
+    ///   the store grew and whoever asked (memory.grow, a host function, the embedder through the api),
+    ///   and whether or not the storage moved (an embedder-provided memory that moves included): a grow is
+    ///   the only way a memory's bytes() change their data or size (ILinearMemory::grow()).
+    /// - A refused grow, and a grow by zero pages, leave it unchanged, as they leave every memory.
+    /// - Adding a memory (instantiation) and dropping one (releaseTrailing()) leave it unchanged: they
+    ///   change no memory that executing code can have read.
+    /// So, while it is unchanged, MemoryInstance::bytes() of every memory of the store returns the data
+    /// and size it returned when the generation was last read. Like the rest of the store, it is read and
+    /// changed by the one thread that uses the store at a time.
+    /// @return The generation.
+    [[nodiscard]] uint64_t memoryGeneration() const noexcept;
+
     /// Grows a table by @p delta slots holding @p init, as table.grow does, and charges them against
     /// StoreLimits::maxTableElements.
     /// @param address The table's address.
@@ -671,6 +690,7 @@ class Store
     GrowthRecord _growthRecord;       ///< The current refusal scope's first refused grow per kind.
     uint64_t _exceptionValues = 0;    ///< The payload values of every exception held.
     uint64_t _memoryBytes = 0;        ///< The bytes of every memory, charged against maxMemoryBytes.
+    uint64_t _memoryGeneration = 0;   ///< Every successful growth of a memory (memoryGeneration()).
     uint64_t _tableElements = 0;      ///< The slots of every table, charged against maxTableElements.
     uint64_t _typeUnits = 0;          ///< The type units of every interned type, charged against maxTypes.
     uint32_t _hostCalls = 0;          ///< The host functions running, nested ones included.
