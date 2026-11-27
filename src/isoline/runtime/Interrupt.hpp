@@ -174,27 +174,61 @@ enum class PollObservation : uint8_t
     Observing, ///< IPollObserver::onPoll() is running: the store must not change.
 };
 
+/// One entry point a poll observer must not call: it writes the store, which an executor may hold in its
+/// own state across the poll (memory 0's base and bound, a table's view, a global it cached, the countdown).
+struct ObserverRefusalRow
+{
+    std::string_view entryPoint; ///< The entry point, qualified.
+    std::string_view writes;     ///< What it writes.
+};
+
+/// Every entry point that writes the store, which Requires that no poll observer is running
+/// (Store::requireUnobserved(), PollObservation::Idle) and ends the process otherwise. Exhaustive for the
+/// embedder's reach: api::Store reaches the runtime only through these or through read-only paths, and its
+/// own writers are listed. Each row has a contract case of its own (api/ObserverContract_test.cpp, the
+/// "Contract.Observer." rows of tests/CMakeLists.txt). Not listed: the runtime's own poll machinery,
+/// PollGate::lend(), commit() (Store::setStepsTaken()) and settle(), which run around polls and never inside
+/// an observer, and Store::sweepExceptions(), which only addException() calls (checked there too).
+inline constexpr auto ObserverRefusedEntryPoints = std::to_array<ObserverRefusalRow>({
+    { .entryPoint = "runtime::Store::growMemory", .writes = "a memory's size, and maybe its base" },
+    { .entryPoint = "runtime::Store::growTable", .writes = "a table's size, and maybe its elements' place" },
+    { .entryPoint = "runtime::Store::internType", .writes = "the type registry" },
+    { .entryPoint = "runtime::Store::addHostFunction", .writes = "the functions and their dispatch rows" },
+    { .entryPoint = "runtime::Store::addModuleFunction", .writes = "the functions and their dispatch rows" },
+    { .entryPoint = "runtime::Store::addTable", .writes = "the tables" },
+    { .entryPoint = "runtime::Store::addMemory", .writes = "the memories" },
+    { .entryPoint = "runtime::Store::addGlobal", .writes = "the globals" },
+    { .entryPoint = "runtime::Store::addTag", .writes = "the tags" },
+    { .entryPoint = "runtime::Store::addException", .writes = "the exceptions, and may sweep them" },
+    { .entryPoint = "runtime::Store::addModuleInstance", .writes = "the module instances (instantiation)" },
+    { .entryPoint = "runtime::Store::releaseTrailing", .writes = "drops tables and memories" },
+    { .entryPoint = "runtime::Store::poll", .writes = "the step count (a re-entrant poll)" },
+    { .entryPoint = "runtime::Store::chargeFrame", .writes = "the charged stack values" },
+    { .entryPoint = "runtime::Store::releaseFrame", .writes = "the charged stack values" },
+    { .entryPoint = "runtime::Store::bindDispatch", .writes = "a dispatch row" },
+    { .entryPoint = "runtime::InvocationScope", .writes = "anything: an invocation re-enters the guest" },
+    { .entryPoint = "api::Store::setGlobal", .writes = "a global's value" },
+    { .entryPoint = "api::Store::tableSet", .writes = "a table element" },
+    { .entryPoint = "api::Store::memoryRange", .writes = "a memory's bytes (the mutable view)" },
+});
+
 /// Observes every poll of a store: what poll-counting tests and profilers use.
 ///
-/// The observer runs in the middle of an instruction, where an executor holds the store's state in its own
-/// registers: memory 0's base and bound, a table's view, the step countdown. So it must not change the store,
-/// and that is a checked contract, not advice: while onPoll() runs, every entry point that changes the store
-/// Requires that no observer is running (PollObservation::Idle), and a violation ends the process. The
-/// entry points, an exhaustive list of runtime::Store's (api::Store reaches the store only through them):
-///  - growing: growMemory(), growTable();
-///  - adding: internType(), addHostFunction(), addModuleFunction(), addTable(), addMemory(), addGlobal(),
-///    addTag(), addException(), addModuleInstance(), and with them instantiation;
-///  - dropping and sweeping: releaseTrailing(), markEscaped(), the exception sweep;
-///  - executing: poll() (re-entrant), chargeFrame(), releaseFrame(), setStepsTaken(), bindDispatch(),
-///    and every invocation (InvocationScope: invoking a function re-enters the guest, which may grow).
-/// The observer may read the store and may interrupt it (Interrupter::interrupt()).
+/// The observer may read the store and never write it, and that is a checked contract. It runs in the middle
+/// of an instruction, where an executor holds the store's state in its own registers: memory 0's base and
+/// bound, a table's view, globals it cached, the step countdown. A write from the observer would be missed or
+/// would leave a dangling pointer, so while onPoll() runs every entry point of ObserverRefusedEntryPoints
+/// Requires PollObservation::Idle and ends the process otherwise. Reads stay legal:
+/// api::Store::globalValue(), tableGet(), memorySize(), the read-only memoryRange(), and the types; they mark
+/// an escaped exception (Store::markEscaped()), which is bookkeeping that allocates and moves nothing. The
+/// observer may also interrupt the store (Interrupter::interrupt()).
 class IPollObserver
 {
   public:
     virtual ~IPollObserver() = default;
 
-    /// Called at every poll, before the interrupt is checked, on the executing thread. It must not change
-    /// the store (the class's contract, checked).
+    /// Called at every poll, before the interrupt is checked, on the executing thread. It may read the store
+    /// and must not write it (the class's contract, checked).
     /// @param site Where execution polled.
     virtual void onPoll(PollSite site) noexcept = 0;
 };

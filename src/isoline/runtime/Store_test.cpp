@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1610,104 +1609,6 @@ TEST_CASE("Contract.Store.grownMemoryKeepsItsTail", "[.contract]")
     REQUIRE(address.has_value());
     std::ignore = store.growMemory(*address, 1);
     FAIL("SURVIVED: a memory grew past the tail its size needs");
-}
-
-namespace
-{
-
-/// A poll observer that does @p act to its store: what IPollObserver forbids when it changes the store.
-class ActingObserver final: public isoline::runtime::IPollObserver
-{
-  public:
-    explicit ActingObserver(std::function<void(Store&)> act): _act { std::move(act) } {}
-
-    /// The store it acts on, once that exists.
-    void observe(Store& store) noexcept { _store = &store; }
-
-    void onPoll(PollSite /*site*/) noexcept override
-    {
-        if (_store != nullptr)
-            _act(*_store);
-    }
-
-  private:
-    std::function<void(Store&)> _act;
-    Store* _store = nullptr;
-};
-
-/// A store with one memory and one table, observed by an observer that does @p act, then polled: the act
-/// runs while the observer is running.
-void pollActingOn(std::function<void(Store&)> act)
-{
-    auto allocator = HeapMemoryAllocator {};
-    auto observer = ActingObserver { std::move(act) };
-    auto store =
-        Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &observer } };
-    auto const one = Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 };
-    REQUIRE(store.addMemory(MemoryType { .limits = one }).has_value());
-    REQUIRE(store
-                .addTable(TableType { .element = FuncRef, .limits = one },
-                          Ref { .kind = RefKind::Null, .heap = FuncRef.heap, .address = 0 })
-                .has_value());
-    observer.observe(store);
-    std::ignore = store.poll(PollSite::LoopBackEdge);
-}
-
-/// A null funcref.
-Ref nullFunction()
-{
-    return Ref { .kind = RefKind::Null, .heap = FuncRef.heap, .address = 0 };
-}
-
-} // namespace
-
-TEST_CASE("Store.observerMayReadTheStore")
-{
-    // Reading is what an observer may do: no contract fires, and the store changes after it as before.
-    auto pages = uint64_t { 0 };
-    pollActingOn([&](Store& store) { pages = store.memory(0).bytes().size() / 65'536; });
-    CHECK(pages == 1);
-}
-
-TEST_CASE("Contract.Store.observerMustNotGrowMemory", "[.contract]")
-{
-    // An executor holds memory 0's base in a register across a poll: a grow that moves the memory there
-    // leaves it reading freed storage.
-    isoline::runtime::testing::endAtContractViolation();
-    pollActingOn([](Store& store) { std::ignore = store.growMemory(0, 1); });
-    FAIL("SURVIVED: a poll observer grew a memory");
-}
-
-TEST_CASE("Contract.Store.observerMustNotGrowTables", "[.contract]")
-{
-    isoline::runtime::testing::endAtContractViolation();
-    pollActingOn([](Store& store) { std::ignore = store.growTable(0, 1, nullFunction()); });
-    FAIL("SURVIVED: a poll observer grew a table");
-}
-
-TEST_CASE("Contract.Store.observerMustNotAddMemories", "[.contract]")
-{
-    isoline::runtime::testing::endAtContractViolation();
-    pollActingOn([](Store& store) {
-        std::ignore = store.addMemory(MemoryType {
-            .limits = Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 } });
-    });
-    FAIL("SURVIVED: a poll observer added a memory");
-}
-
-TEST_CASE("Contract.Store.observerMustNotInvoke", "[.contract]")
-{
-    // Invoking re-enters the guest, which may grow anything.
-    isoline::runtime::testing::endAtContractViolation();
-    pollActingOn([](Store& store) { auto const invocation = InvocationScope { store }; });
-    FAIL("SURVIVED: a poll observer invoked");
-}
-
-TEST_CASE("Contract.Store.observerMustNotPoll", "[.contract]")
-{
-    isoline::runtime::testing::endAtContractViolation();
-    pollActingOn([](Store& store) { std::ignore = store.poll(PollSite::LoopBackEdge); });
-    FAIL("SURVIVED: a poll observer polled");
 }
 
 TEST_CASE("Contract.Store.lentBudgetForbidsStorePolls", "[.contract]")

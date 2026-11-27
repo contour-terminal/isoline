@@ -840,6 +840,10 @@ class Store
     ///         HostMemory, as growMemory()'s. The first refusal is recorded in growthRecord().table.
     [[nodiscard]] std::expected<uint64_t, Refusal> growTable(TableAddr address, uint64_t delta, Ref init);
 
+    /// Requires that no poll observer is running: what every entry point of ObserverRefusedEntryPoints
+    /// checks first (IPollObserver's contract). Public so that api::Store's writers check it too.
+    void requireUnobserved() const noexcept { Require(_pollObservation == PollObservation::Idle); }
+
   private:
     friend class RefusalScope;
     friend class HostCallScope;
@@ -853,15 +857,7 @@ class Store
 
     /// Records the steps the outermost invocation took: what PollGate::commit() writes back.
     /// @param steps Its steps, at most StoreLimits::maxSteps.
-    void setStepsTaken(uint64_t steps) noexcept
-    {
-        requireUnobserved();
-        _steps = steps;
-    }
-
-    /// Requires that no poll observer is running: what every entry point that changes the store checks
-    /// (IPollObserver's contract).
-    void requireUnobserved() const noexcept { Require(_pollObservation == PollObservation::Idle); }
+    void setStepsTaken(uint64_t steps) noexcept { _steps = steps; }
 
     /// Adds @p function and its dispatch row, whose typeId it writes.
     /// @return Its address.

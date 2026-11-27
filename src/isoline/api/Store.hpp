@@ -379,7 +379,8 @@ class Store
         Memory const& memory) const noexcept;
 
     /// A view of @p length bytes of @p memory from @p offset, valid until the next call into the store or
-    /// grow of the memory, either of which may move it.
+    /// grow of the memory, either of which may move it. A writable view: a poll observer must not take it
+    /// (IPollObserver, checked); the const overload is the read-only one.
     /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
     /// @param offset The first byte's offset.
     /// @param length The number of bytes; 0 views nothing, at any offset.
@@ -387,6 +388,16 @@ class Store
     ///         outside the memory.
     [[nodiscard]] std::expected<std::span<std::byte>, MemoryAccessError> memoryRange(
         Memory const& memory, uint64_t offset, uint64_t length) noexcept;
+
+    /// A read-only view of @p length bytes of @p memory from @p offset, as memoryRange() gives, valid as
+    /// long. What a poll observer may take (IPollObserver: it may read the store, never write it), where the
+    /// writable view is refused.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
+    /// @param offset The first byte's offset.
+    /// @param length The number of bytes; 0 views nothing, at any offset.
+    /// @return As memoryRange().
+    [[nodiscard]] std::expected<std::span<std::byte const>, MemoryAccessError> memoryRange(
+        Memory const& memory, uint64_t offset, uint64_t length) const noexcept;
 
     /// Grows @p memory by @p deltaPages zeroed pages, as memory.grow does: through the guest's own path,
     /// charged against StoreLimits::maxMemoryBytes alike, so that its limits and refusals are the guest's.
@@ -408,7 +419,8 @@ class Store
     /// @return Its value; ForeignHandle for a global of another store.
     [[nodiscard]] std::expected<Value, GlobalAccessError> globalValue(Global const& global) noexcept;
 
-    /// Assigns @p value to @p global, as global.set does.
+    /// Assigns @p value to @p global, as global.set does. Never from a poll observer (IPollObserver,
+    /// checked).
     /// @param global A global of this store: an instance's export, or one defineGlobal() added.
     /// @param value Its new value, of its type.
     /// @return Nothing, or, the global unchanged: ForeignHandle for a global of another store, Immutable
@@ -437,7 +449,8 @@ class Store
     ///         below its size.
     [[nodiscard]] std::expected<Ref, TableAccessError> tableGet(Table const& table, uint64_t index) noexcept;
 
-    /// Assigns @p value to the element at @p index of @p table, as table.set does.
+    /// Assigns @p value to the element at @p index of @p table, as table.set does. Never from a poll observer
+    /// (IPollObserver, checked).
     /// @param table A table of this store: an instance's export, or one defineTable() added.
     /// @param index The element's index.
     /// @param value The element's new value, of the table's element type.

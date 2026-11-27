@@ -411,18 +411,39 @@ std::expected<MemoryType, MemoryAccessError> Store::memoryType(Memory const& mem
     return type;
 }
 
+namespace
+{
+    /// The @p length bytes of @p bytes from @p offset; OutOfBounds when one lies outside.
+    template <typename Byte>
+    [[nodiscard]] std::expected<std::span<Byte>, MemoryAccessError> rangeOf(std::span<Byte> bytes,
+                                                                            uint64_t offset,
+                                                                            uint64_t length) noexcept
+    {
+        if (length == 0)
+            return std::span<Byte> {};
+        if (offset > bytes.size() || length > bytes.size() - offset)
+            return std::unexpected { MemoryAccessError::OutOfBounds };
+        return bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(length));
+    }
+} // namespace
+
 std::expected<std::span<std::byte>, MemoryAccessError> Store::memoryRange(Memory const& memory,
                                                                           uint64_t offset,
                                                                           uint64_t length) noexcept
 {
+    // A view to write through: never from a poll observer (IPollObserver), which may take the const one.
+    _runtime.requireUnobserved();
     if (!memory.isOf(*_id))
         return std::unexpected { MemoryAccessError::ForeignHandle };
-    auto const bytes = _runtime.memory(memory.address()).bytes();
-    if (length == 0)
-        return std::span<std::byte> {};
-    if (offset > bytes.size() || length > bytes.size() - offset)
-        return std::unexpected { MemoryAccessError::OutOfBounds };
-    return bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(length));
+    return rangeOf(_runtime.memory(memory.address()).bytes(), offset, length);
+}
+
+std::expected<std::span<std::byte const>, MemoryAccessError> Store::memoryRange(
+    Memory const& memory, uint64_t offset, uint64_t length) const noexcept
+{
+    if (!memory.isOf(*_id))
+        return std::unexpected { MemoryAccessError::ForeignHandle };
+    return rangeOf(_runtime.memory(memory.address()).bytes(), offset, length);
 }
 
 std::expected<uint64_t, MemoryGrowthError> Store::growMemory(Memory const& memory,
@@ -448,6 +469,7 @@ std::expected<Value, GlobalAccessError> Store::globalValue(Global const& global)
 
 std::expected<void, GlobalAccessError> Store::setGlobal(Global const& global, Value value) noexcept
 {
+    _runtime.requireUnobserved(); // compiled code may hold the global across a poll
     if (!global.isOf(*_id))
         return std::unexpected { GlobalAccessError::ForeignHandle };
     auto& instance = _runtime.global(global.address());
@@ -488,6 +510,7 @@ std::expected<Ref, TableAccessError> Store::tableGet(Table const& table, uint64_
 
 std::expected<void, TableAccessError> Store::tableSet(Table const& table, uint64_t index, Ref value) noexcept
 {
+    _runtime.requireUnobserved(); // an executor may hold the element across a poll
     if (!table.isOf(*_id))
         return std::unexpected { TableAccessError::ForeignHandle };
     auto& instance = _runtime.table(table.address());

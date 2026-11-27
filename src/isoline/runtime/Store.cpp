@@ -468,7 +468,8 @@ std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value>
 
 void Store::markEscaped(Value const& value) noexcept
 {
-    requireUnobserved();
+    // Bookkeeping, not storage: it flips an exception's slot, allocating and moving nothing, so a poll
+    // observer's reads (api::Store::globalValue(), tableGet()) may reach it.
     if (auto const address = exceptionOf(value); address && isLiveException(*address))
         _exceptions[*address].slot = ExceptionSlot::Escaped;
 }
