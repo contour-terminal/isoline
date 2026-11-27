@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -90,6 +92,14 @@ TEST_CASE("Interrupt.stepsChargedPerGranule")
     STATIC_CHECK(stepsCharged(StepCharge::PerGranule, UINT64_MAX) == UINT64_MAX / Granule);
     for (auto const& row: isoline::runtime::StepChargeTable)
         CHECK_FALSE(row.name.empty());
+    // The same rule at run time, where a poll reads it: each charge of the table, in the table's order.
+    for (auto const bytes: { uint64_t { 0 }, uint64_t { 3 } * Granule })
+    {
+        auto const expected =
+            std::array { uint64_t { 0 }, uint64_t { 1 }, std::max(uint64_t { 1 }, bytes / Granule) };
+        for (auto const& row: isoline::runtime::StepChargeTable)
+            CHECK(stepsCharged(row.charge, bytes) == expected.at(static_cast<std::size_t>(row.charge)));
+    }
 }
 
 TEST_CASE("Store.pollNotifiesThenChecksTheInterrupt")
