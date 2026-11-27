@@ -1235,18 +1235,20 @@ TEST_CASE("Validator.loweredParametersSpill")
 
 namespace
 {
-/// withLibrary(), then an instance of @p imports inline exports f0, f1, ... of Nothing, and @p count
-/// instantiations of a module importing each of them from "lib".
-[[nodiscard]] ComponentPool coreInstantiations(uint32_t imports, uint32_t count)
+/// withLibrary(), then an instance of @p imports inline exports f0, f1, ... of Nothing (@p prefix in
+/// place of f), and @p count instantiations of a module importing each of them from "lib".
+[[nodiscard]] ComponentPool coreInstantiations(uint32_t imports,
+                                               uint32_t count,
+                                               std::string const& prefix = "f")
 {
     auto importer = ModuleBuilder {};
     importer.type(FuncType {});
     auto exports = std::vector<CoreInlineExport> {};
     for (auto const index: std::views::iota(uint32_t { 0 }, imports))
     {
-        importer.importFunction("lib", "f" + std::to_string(index), 0);
+        importer.importFunction("lib", prefix + std::to_string(index), 0);
         exports.push_back(CoreInlineExport {
-            .name = "f" + std::to_string(index), .sort = CoreSort::Func, .index = Nothing });
+            .name = prefix + std::to_string(index), .sort = CoreSort::Func, .index = Nothing });
     }
     auto builder = withLibrary();
     auto const instance = builder.coreInlineExports(std::move(exports));
@@ -1286,14 +1288,14 @@ TEST_CASE("Validator.coreMatchingBudget")
     CHECK(specMessage(refused) == std::format("core matching steps exceed the limit of {}", single - 1));
 
     // The crafted case: a module of 100'000 imports instantiated 4'095 times is 4 x 10^8 lookups to
-    // wasm-tools. The default budget of 10^7 refuses it at its hundredth instantiation; a budget of
-    // 10^6, which keeps the suite quick and counts the same, at its ninth: library()'s 9 steps, the
-    // 100'000 inline exports and eight instantiations fit, the ninth's imports do not. Definitions 0-12
-    // are withLibrary()'s eleven, the inline exports and the module; the instantiations follow.
+    // wasm-tools. An instantiation of it costs 199'990 steps here, a lookup and the bytes of its names'
+    // searches each, after the 198'985 of library() and the inline exports: the default budget of 10^7
+    // refuses it at its 50th instantiation, a budget of 10^6, which keeps the suite quick and counts the
+    // same, at its fifth. Definitions 0-12 are withLibrary()'s eleven, the inline exports and the module.
     limits.maxCoreMatchingSteps = 1'000'000;
     auto const crafted = refusal(coreInstantiations(100'000, 4'095), limits);
     CHECK(exceededLimit(crafted) == ComponentLimit::CoreMatchingSteps);
-    CHECK(crafted.position.definition == 13 + 8);
+    CHECK(crafted.position.definition == 13 + 4);
 }
 
 TEST_CASE("Validator.subtypingBudgetSpansValidation")
@@ -1369,4 +1371,23 @@ TEST_CASE("Validator.exportLookupWork")
     INFO(std::format("export lookup work {} at n, {} at 2n", single, twice));
     CHECK(single == uint64_t { 2 } * 500);
     CHECK(twice == 2 * single);
+}
+
+TEST_CASE("Validator.coreMatchingChargesNameBytes")
+{
+    // A lookup compares its name with up to bit_width(n) others: 100 imports of 100 KB names sharing
+    // their prefix, instantiated 4'095 times, are 410'000 lookups but 300 GB compared. The names'
+    // bytes are charged, so at a fixed count twice the name length is twice the steps.
+    auto const steps = [](std::size_t length) {
+        auto const result = validated(coreInstantiations(100, 10, std::string(length, 'n')));
+        REQUIRE(result.has_value());
+        return (*result)->work.coreMatchingSteps;
+    };
+    auto const single = steps(10'000);
+    auto const twice = steps(20'000);
+    INFO(std::format("core matching {} at length n, {} at 2n", single, twice));
+    // Ten instantiations of 100 imports, each name searched among 100 exports (bit_width 7).
+    CHECK(single >= uint64_t { 10 } * 100 * (10'000 * 7 / 64));
+    CHECK(twice * 10 >= single * 19);
+    CHECK(twice * 10 <= single * 21);
 }

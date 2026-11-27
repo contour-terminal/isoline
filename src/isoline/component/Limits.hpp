@@ -71,9 +71,10 @@ struct ComponentLimits
     /// Per component, its core tag index space (MAX_CORE_INDEX_SPACE_ITEMS).
     uint32_t maxCoreTags = 1'000'000;
     /// Per validation, all core instantiations together: one step per import looked up and matched,
-    /// and per export or inline export measured. wasm-tools bounds none of it; a crafted component of
-    /// 4'096 instantiations of a module of 100'000 imports would take 4 x 10^8 lookups. Ten million
-    /// covers a thousand instantiations of ten thousand imports, far past what toolchains emit.
+    /// and per export or inline export measured, plus one per 64 bytes of the names its lookups
+    /// compare (a name's length times the depth of the search). wasm-tools bounds none of it; a crafted
+    /// component of 4'096 instantiations of a module of 100'000 imports would take 4 x 10^8 lookups. Ten
+    /// million covers a thousand instantiations of ten thousand imports, far past what toolchains emit.
     uint32_t maxCoreMatchingSteps = 10'000'000;
 
     /// Two sets of limits are equal when every limit is.
@@ -289,7 +290,7 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .name = "maxCoreMatchingSteps",
       .rule =
           "steps of all core instantiations of one validation: one per import looked up and matched, and per "
-          "export or inline export measured",
+          "export or inline export measured, plus one per 64 bytes of the names its lookups compare",
       .message = "core matching steps exceed the limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t {
           return limits.maxCoreMatchingSteps;

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -495,6 +496,15 @@ namespace
         return shape;
     }
 
+    /// The steps of a binary search for a name of @p bytes bytes among @p entries names: at most
+    /// bit_width(entries) comparisons, each of the name and one byte more at most, a step per
+    /// SubtypingBytesPerStep bytes, as the relation charges the names it compares.
+    [[nodiscard]] uint64_t nameSearchSteps(std::size_t bytes, std::size_t entries) noexcept
+    {
+        return (uint64_t { bytes } + 1) * static_cast<uint64_t>(std::bit_width(entries))
+               / SubtypingBytesPerStep;
+    }
+
     [[nodiscard]] ValidationError limitError(types::TypeLimitError const& error, DefinitionPosition position)
     {
         return ValidationError { .code = ValidationErrorCode::LimitExceeded,
@@ -819,7 +829,7 @@ namespace
                                                DefinitionPosition position);
         [[nodiscard]] Result<void> coreExportAlias(binary::AliasDefinition const& alias,
                                                    DefinitionPosition position);
-        [[nodiscard]] Result<void> chargeCoreMatching(DefinitionPosition position);
+        [[nodiscard]] Result<void> chargeCoreMatching(uint64_t steps, DefinitionPosition position);
         [[nodiscard]] ValidationError relationRefusal(RelationError error,
                                                       ValidationErrorCode code,
                                                       DefinitionPosition position) const;
@@ -2159,12 +2169,19 @@ namespace
         auto const& type = _arena[*module];
         for (auto const& import: type.imports)
         {
-            if (auto charged = chargeCoreMatching(position); !charged)
+            if (auto charged = chargeCoreMatching(
+                    1 + nameSearchSteps(import.module.str().size(), arguments.size()), position);
+                !charged)
                 return std::unexpected { charged.error() };
             auto const argument = arguments.find(import.module.str());
             if (argument == arguments.end())
                 return std::unexpected { namedError(
                     ValidationErrorCode::MissingModuleArgument, import.module.str(), {}, position) };
+            if (auto charged = chargeCoreMatching(
+                    nameSearchSteps(import.name.str().size(), _arena.exportsOf(argument->second).size()),
+                    position);
+                !charged)
+                return std::unexpected { charged.error() };
             auto const* provided = _arena.findExport(argument->second, import.name.str());
             if (provided == nullptr)
                 return std::unexpected { namedError(ValidationErrorCode::ArgumentMissingExport,
@@ -2187,7 +2204,7 @@ namespace
         }
         for (auto const& entry: type.exports)
         {
-            if (auto charged = chargeCoreMatching(position); !charged)
+            if (auto charged = chargeCoreMatching(1, position); !charged)
                 return std::unexpected { charged.error() };
             auto combined =
                 combine(measure,
@@ -2208,7 +2225,9 @@ namespace
         auto names = std::set<std::string_view> {};
         for (auto const& entry: exports.exports)
         {
-            if (auto charged = chargeCoreMatching(position); !charged)
+            if (auto charged =
+                    chargeCoreMatching(1 + nameSearchSteps(entry.name.size(), names.size()), position);
+                !charged)
                 return std::unexpected { charged.error() };
             auto const entity = coreEntityAt(binary::sortOf(entry.sort), entry.index, position);
             if (!entity)
@@ -3090,10 +3109,11 @@ namespace
         return {}; // uncovered(exhaustive-switch)
     }
 
-    Result<void> ComponentValidator::chargeCoreMatching(DefinitionPosition position)
+    Result<void> ComponentValidator::chargeCoreMatching(uint64_t steps, DefinitionPosition position)
     {
         // Isoline's own bound: wasm-tools matches every core instantiation without one.
-        if (++_work.coreMatchingSteps > _limits.maxCoreMatchingSteps)
+        _work.coreMatchingSteps += steps;
+        if (_work.coreMatchingSteps > _limits.maxCoreMatchingSteps)
             return std::unexpected { capError(ComponentLimit::CoreMatchingSteps, _limits, position) };
         return {};
     }
