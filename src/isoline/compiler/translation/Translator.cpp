@@ -76,7 +76,8 @@ namespace
     using intermediate::Unnumbered;
     using intermediate::ValueId;
 
-    /// How many WebAssembly instructions translation visits between two polls of its cancellation.
+    /// How many IR instructions translation emits between two polls of its cancellation: it polls at the
+    /// first WebAssembly instruction boundary at or past each multiple, the first before any.
     constexpr auto CancellationInterval = uint64_t { 65'536 };
 
     /// The pool entries one WebAssembly instruction may append beyond the demand it reserves: its fixed
@@ -116,6 +117,20 @@ namespace
         Reachable,   ///< It is.
     };
 
+    /// How a forward edge leaves its block.
+    enum class BranchKind : uint8_t
+    {
+        Jump,   ///< Unconditionally.
+        Branch, ///< When a condition holds; else to a continuation that takes no arguments.
+    };
+
+    /// Whether the path that reaches a construct's end falls through to it.
+    enum class Fallthrough : uint8_t
+    {
+        Absent,  ///< The code before the end is unreachable.
+        Present, ///< It falls through: the last edge.
+    };
+
     /// Whether a merge position's incoming values differ.
     enum class Merge : uint8_t
     {
@@ -128,7 +143,7 @@ namespace
     {
         ConstructKind kind = ConstructKind::Function; ///< What it is.
         uint32_t bodyIndex = 0;                       ///< Its opening instruction; 0 for the function.
-        uint32_t ordinal = Unnumbered;                ///< Its LoopAssignments ordinal; none for the function.
+        uint32_t ordinal = Unnumbered;                ///< A loop's LoopAssignments ordinal; none otherwise.
         uint32_t height = 0;         ///< The operand stack's height at entry, params excluded.
         uint32_t typesBegin = 0;     ///< Its params, then its results, in _frameTypes.
         uint32_t paramCount = 0;     ///< How many params it takes.
@@ -136,16 +151,35 @@ namespace
         uint32_t label = Unnumbered; ///< The block a branch to it goes to: a loop's header, a block's end.
         uint32_t elseBlock = Unnumbered;         ///< An if's else arm.
         uint32_t edges = Unnumbered;             ///< The first forward edge to its label; none yet.
-        uint32_t snapshotBegin = 0;              ///< An if's entry state in _snapshots: params, set, context.
+        uint32_t snapshotBegin = 0;              ///< An if's entry state in _snapshots: params, context.
+        uint32_t modifiedBegin = 0;              ///< Its list of modifications: _modified from here on.
         std::optional<ValueId> storedAtEntry {}; ///< An if's _storedCountdown at entry.
         ElseArm elseArm = ElseArm::Pending;      ///< An if's arm.
     };
 
-    /// A forward branch to a block's or an if's end, whose arguments the end's seal may narrow.
+    /// A forward branch to a block's or an if's end, whose arguments the end's seal settles.
     struct Edge
     {
         uint32_t instruction = 0;   ///< The jump or branch.
+        uint32_t passedBegin = 0;   ///< The locals it passed, in _passed.
+        uint32_t passedCount = 0;   ///< How many.
         uint32_t next = Unnumbered; ///< The next edge to the same end.
+    };
+
+    /// A local modified on the current path since a construct's entry, in the construct's list.
+    struct Modification
+    {
+        uint32_t local = 0;             ///< The local.
+        ValueId entry {};               ///< Its value at the construct's entry.
+        uint32_t previous = Unnumbered; ///< The local's modification in an outer list, or none.
+    };
+
+    /// A local a forward edge passed: its value on the edge and at the target construct's entry.
+    struct PassedLocal
+    {
+        uint32_t local = 0; ///< The local.
+        ValueId value {};   ///< Its value on the edge.
+        ValueId entry {};   ///< Its value at the construct's entry.
     };
 
     /// The refusal @p code of @p function, with what was requested of which @p limit.
@@ -216,9 +250,16 @@ namespace
         [[nodiscard]] Outcome branchIf(uint32_t index, uint32_t depth);
         [[nodiscard]] Outcome branchTable(binary::Instruction const& instruction);
         void emitReturn();
-        void fillEdge(BlockId edge, uint32_t depth);
-        void forwardEdge(Frame& frame);
-        void forwardBranch(Frame& frame, ValueId condition, BlockId continuation);
+        [[nodiscard]] Outcome fillEdge(BlockId edge, uint32_t depth);
+        [[nodiscard]] Outcome forwardEdge(Frame& frame,
+                                          BranchKind kind,
+                                          std::optional<ValueId> condition,
+                                          std::optional<BlockId> continuation);
+        void edgeValues(Edge const& edge, Frame const& frame, std::pmr::vector<ValueId>& values);
+        void noteModification(uint32_t local, ValueId entry);
+        void dropModifications(uint32_t begin);
+        [[nodiscard]] uint32_t nextStamp() noexcept;
+        [[nodiscard]] Outcome charge(uint64_t arguments);
         [[nodiscard]] uint32_t skipDeadCode(uint32_t index) noexcept;
 
         // --- helpers
@@ -227,7 +268,7 @@ namespace
         [[nodiscard]] std::span<Type const> resultTypes(Frame const& frame) const noexcept;
         [[nodiscard]] std::span<uint32_t const> setOf(Frame const& frame) const noexcept;
         [[nodiscard]] uint64_t widthOf(Frame const& frame, uint32_t values) const noexcept;
-        [[nodiscard]] std::span<ValueId const> mergeArguments(Frame const& frame, uint32_t values);
+        [[nodiscard]] std::span<ValueId const> loopArguments(Frame const& frame);
         [[nodiscard]] BlockId labelOf(Frame& frame);
         [[nodiscard]] Outcome reserve(uint64_t operands, uint64_t immediates) const;
         [[nodiscard]] Outcome checkBlockParameters(uint64_t count) const;
@@ -271,7 +312,16 @@ namespace
         std::pmr::vector<Edge> _edges;
         std::pmr::vector<ValueId> _arguments;
         std::pmr::vector<Merge> _merges;
-        std::pmr::vector<uint32_t> _edgeList; ///< The sealed end's edges, by instruction.
+        std::pmr::vector<uint32_t> _edgeList;     ///< The sealed end's edges.
+        std::pmr::vector<Modification> _modified; ///< Every open construct's list, outermost first.
+        std::pmr::vector<uint32_t> _modifiedAt;   ///< Per local, its innermost modification, or none.
+        std::pmr::vector<PassedLocal> _passed;    ///< Every forward edge's locals.
+        std::pmr::vector<PassedLocal> _union;     ///< The sealed end's locals, each once.
+        std::pmr::vector<uint32_t> _localStamps;  ///< Per local, the stamp of the scan that last saw it.
+        std::pmr::vector<ValueId> _localValues;   ///< Per local, its value on the edge being read.
+        std::pmr::vector<ValueId> _firstValues;   ///< The sealed end's first edge's values.
+        std::pmr::vector<ValueId> _edgeScratch;   ///< Another edge's values.
+        std::pmr::vector<ValueId> _merged;        ///< The values after the end.
         std::pmr::vector<Type> _resultScratch;
         std::pmr::vector<uint32_t> _edgeStamps; ///< Per depth, the br_table that last made its edge.
         std::pmr::vector<uint32_t> _edgeBlocks; ///< Per depth, that edge's block.
@@ -286,6 +336,9 @@ namespace
         Reach _reach = Reach::Reachable;
         uint32_t _nextOrdinal = 0;
         uint32_t _tableStamp = 0;
+        uint32_t _stamp = 0;
+        uint64_t _branchArguments = 0;      ///< Charged against CompileLimits::maxBranchArguments.
+        uint64_t _nextCancellationPoll = 0; ///< The IR instruction count of the next poll.
     };
 
     Translation::Translation(TranslationInput const& input,
@@ -312,6 +365,15 @@ namespace
         _arguments(&memory),
         _merges(&memory),
         _edgeList(&memory),
+        _modified(&memory),
+        _modifiedAt(&memory),
+        _passed(&memory),
+        _union(&memory),
+        _localStamps(&memory),
+        _localValues(&memory),
+        _firstValues(&memory),
+        _edgeScratch(&memory),
+        _merged(&memory),
         _resultScratch(&memory),
         _edgeStamps(&memory),
         _edgeBlocks(&memory),
@@ -336,12 +398,14 @@ namespace
             return std::unexpected { entered.error() };
         auto const& limits = _input.limits;
         auto index = uint32_t { 0 };
-        auto visited = uint64_t { 0 };
         while (index < _body.size())
         {
-            if (visited++ % CancellationInterval == 0
-                && _input.cancellation.state() == CancellationState::Cancelled)
-                return refusal(CompileErrorCode::Cancelled, _input.codeIndex);
+            if (_function.instructionCount() >= _nextCancellationPoll)
+            {
+                if (_input.cancellation.state() == CancellationState::Cancelled)
+                    return refusal(CompileErrorCode::Cancelled, _input.codeIndex);
+                _nextCancellationPoll = _function.instructionCount() + CancellationInterval;
+            }
             if (_reach == Reach::Unreachable)
                 index = skipDeadCode(index);
             if (auto translated = translateInstruction(index); !translated)
@@ -404,6 +468,9 @@ namespace
             _localTypes.insert(_localTypes.end(), run.count, *type);
         }
 
+        _modifiedAt.assign(_locals.size(), Unnumbered);
+        _localStamps.assign(_locals.size(), 0);
+        _localValues.assign(_locals.size(), ValueId {});
         auto frame = Frame { .kind = ConstructKind::Function,
                              .bodyIndex = 0,
                              .typesBegin = 0,
@@ -437,7 +504,8 @@ namespace
                     if (auto reserved = reserve(widthOf(_frames.back(), _frames.back().resultCount), 2);
                         !reserved)
                         return reserved;
-                    forwardEdge(_frames.back());
+                    if (auto passed = forwardEdge(_frames.back(), BranchKind::Jump, {}, {}); !passed)
+                        return passed;
                 }
                 beginElse();
                 return {};
@@ -451,8 +519,14 @@ namespace
             case Opcode::Select:
             case Opcode::SelectTyped: select(); return {};
             case Opcode::LocalGet: _stack.push_back(_locals[instruction.a]); return {};
-            case Opcode::LocalSet: _locals[instruction.a] = pop(); return {};
-            case Opcode::LocalTee: _locals[instruction.a] = _stack.back(); return {};
+            case Opcode::LocalSet:
+                noteModification(instruction.a, _locals[instruction.a]);
+                _locals[instruction.a] = pop();
+                return {};
+            case Opcode::LocalTee:
+                noteModification(instruction.a, _locals[instruction.a]);
+                _locals[instruction.a] = _stack.back();
+                return {};
             case Opcode::GlobalGet: {
                 auto const type = irTypeOf(_input.index.globalType(instruction.a).type, _input.codeIndex);
                 if (!type)
@@ -615,30 +689,28 @@ namespace
             condition = pop();
         auto frame = Frame { .kind = kind,
                              .bodyIndex = index,
-                             .ordinal = _nextOrdinal++,
+                             .ordinal = kind == ConstructKind::Loop ? _nextOrdinal++ : Unnumbered,
                              .height = static_cast<uint32_t>(_stack.size() - params.size()),
                              .typesBegin = static_cast<uint32_t>(_frameTypes.size()),
                              .paramCount = static_cast<uint32_t>(params.size()),
-                             .resultCount = static_cast<uint32_t>(results.size()) };
+                             .resultCount = static_cast<uint32_t>(results.size()),
+                             .modifiedBegin = static_cast<uint32_t>(_modified.size()) };
         if (auto pushed = pushTypes(params); !pushed)
             return pushed;
         if (auto pushed = pushTypes(results); !pushed)
             return pushed;
+        _frames.push_back(frame);
         switch (kind)
         {
-            case ConstructKind::Loop:
-                if (auto opened = openLoop(frame); !opened)
-                    return opened;
-                break;
+            case ConstructKind::Loop: return openLoop(_frames.back());
             case ConstructKind::If:
-                if (auto reserved = reserve(widthOf(frame, frame.paramCount), 8); !reserved)
+                if (auto reserved = reserve(uint64_t { frame.paramCount } + _contextCount, 8); !reserved)
                     return reserved;
-                openIf(frame, index, *condition);
-                break;
+                openIf(_frames.back(), index, *condition);
+                return {};
             case ConstructKind::Block:
-            case ConstructKind::Function: break;
+            case ConstructKind::Function: return {};
         }
-        _frames.push_back(frame);
         return {};
     }
 
@@ -650,14 +722,18 @@ namespace
         if (auto reserved = reserve(4 * width, 2); !reserved)
             return reserved;
         auto const header = createBlock();
-        _builder.jump(header, mergeArguments(frame, frame.paramCount));
+        _builder.jump(header, loopArguments(frame));
         switchTo(header);
-        // Its parameters, in the merge order: the loop's params, its set, the context values.
+        // Its parameters, in the merge order: the loop's params, its set, the context values. Each local
+        // of the set differs from its value before the loop: a modification a branch out of it passes.
         auto const params = paramTypes(frame);
         for (auto const [position, type]: core::views::enumerate(params))
             _stack[frame.height + position] = _builder.addParameter(header, type);
         for (auto const local: setOf(frame))
+        {
+            noteModification(local, _locals[local]);
             _locals[local] = _builder.addParameter(header, _localTypes[local]);
+        }
         for (auto const position: std::views::iota(uint32_t { 0 }, _contextCount))
             _context[position] =
                 _builder.addParameter(header, intermediate::ContextValueTable[position].type);
@@ -673,10 +749,12 @@ namespace
             createBlock(hint == binary::BranchLikelihood::Unlikely ? Hotness::Cold : Hotness::Normal);
         auto const elseArm =
             createBlock(hint == binary::BranchLikelihood::Likely ? Hotness::Cold : Hotness::Normal);
-        // The state the else arm starts from: the params, the if's set and the context values.
+        // The state the else arm starts from: the params and the context values. Its locals are the if's
+        // entry values, which its list of modifications records.
         frame.snapshotBegin = static_cast<uint32_t>(_snapshots.size());
-        auto const entry = mergeArguments(frame, frame.paramCount);
-        _snapshots.insert(_snapshots.end(), entry.begin(), entry.end());
+        auto const params = top(frame.paramCount);
+        _snapshots.insert(_snapshots.end(), params.begin(), params.end());
+        _snapshots.insert(_snapshots.end(), _context.begin(), _context.begin() + _contextCount);
         frame.storedAtEntry = _storedCountdown;
         frame.elseBlock = std::to_underlying(elseArm);
         _builder.branch(condition, thenArm, {}, elseArm, {});
@@ -687,14 +765,12 @@ namespace
     {
         auto& frame = _frames.back();
         Require(frame.kind == ConstructKind::If);
+        dropModifications(frame.modifiedBegin);
         auto const snapshot = std::span { _snapshots }.subspan(frame.snapshotBegin);
         _stack.resize(frame.height);
         _stack.insert(_stack.end(), snapshot.begin(), snapshot.begin() + frame.paramCount);
-        auto position = std::size_t { frame.paramCount };
-        for (auto const local: setOf(frame))
-            _locals[local] = snapshot[position++];
         for (auto const value: std::views::iota(uint32_t { 0 }, _contextCount))
-            _context[value] = snapshot[position++];
+            _context[value] = snapshot[frame.paramCount + value];
         _storedCountdown = frame.storedAtEntry;
         frame.elseArm = ElseArm::Begun;
         switchTo(BlockId { frame.elseBlock });
@@ -717,11 +793,15 @@ namespace
                 _reach = Reach::Unreachable;
                 return {};
             case ConstructKind::Loop: {
+                // A loop's end is no label: its path goes on, its modifications become its parent's.
                 auto const done = frame;
+                if (_reach == Reach::Unreachable)
+                {
+                    dropModifications(done.modifiedBegin);
+                    _stack.resize(done.height);
+                }
                 _frames.pop_back();
                 _frameTypes.resize(done.typesBegin);
-                if (_reach == Reach::Unreachable)
-                    _stack.resize(done.height);
                 return {};
             }
             case ConstructKind::If:
@@ -729,11 +809,8 @@ namespace
                 {
                     // No else: the else arm passes the if's entry state to its end.
                     if (_reach == Reach::Reachable)
-                    {
-                        if (auto reserved = reserve(widthOf(frame, frame.resultCount), 2); !reserved)
-                            return reserved;
-                        forwardEdge(frame);
-                    }
+                        if (auto passed = forwardEdge(frame, BranchKind::Jump, {}, {}); !passed)
+                            return passed;
                     beginElse();
                 }
                 break;
@@ -742,16 +819,36 @@ namespace
         return seal();
     }
 
+    void Translation::edgeValues(Edge const& edge, Frame const& frame, std::pmr::vector<ValueId>& values)
+    {
+        // An edge's operands end with its results, the locals it passed and the context values; a local of
+        // the union it did not pass reaches the end with its value at the construct's entry.
+        auto const& instruction = _function.instruction(edge.instruction);
+        auto const count = _function.immediates(instruction.immediates)[EdgeArgumentCount];
+        auto const arguments = _function.operands(instruction.operands).last(static_cast<std::size_t>(count));
+        auto const stamp = nextStamp();
+        for (auto const& passed: std::span { _passed }.subspan(edge.passedBegin, edge.passedCount))
+        {
+            _localStamps[passed.local] = stamp;
+            _localValues[passed.local] = passed.value;
+        }
+        values.clear();
+        values.insert(values.end(), arguments.begin(), arguments.begin() + frame.resultCount);
+        for (auto const& member: _union)
+            values.push_back(_localStamps[member.local] == stamp ? _localValues[member.local] : member.entry);
+        values.insert(values.end(), arguments.end() - _contextCount, arguments.end());
+    }
+
     Translation::Outcome Translation::seal()
     {
-        // The fallthrough is one more edge to the end.
-        auto const width = widthOf(_frames.back(), _frames.back().resultCount);
-        if (auto reserved = reserve((3 * width) + 4, 2); !reserved)
-            return reserved;
+        auto fallthrough = Fallthrough::Absent;
         if (_reach == Reach::Reachable)
-            forwardEdge(_frames.back());
+        {
+            if (auto passed = forwardEdge(_frames.back(), BranchKind::Jump, {}, {}); !passed)
+                return passed;
+            fallthrough = Fallthrough::Present;
+        }
         auto const frame = _frames.back();
-        _frames.pop_back();
         auto const resultTypes = std::pmr::vector<Type>(
             _frameTypes.begin() + frame.typesBegin + frame.paramCount,
             _frameTypes.begin() + frame.typesBegin + frame.paramCount + frame.resultCount,
@@ -761,70 +858,106 @@ namespace
         _stack.resize(frame.height);
         if (frame.edges == Unnumbered)
         {
+            dropModifications(frame.modifiedBegin);
+            _frames.pop_back();
             _reach = Reach::Unreachable; // no path reaches the end
             return {};
         }
 
-        // Which positions differ between the edges; their values are each edge's last operands.
-        auto const argumentsOf = [this](uint32_t index) {
-            auto const& instruction = _function.instruction(index);
-            auto const count = _function.immediates(instruction.immediates)[EdgeArgumentCount];
-            return _function.operands(instruction.operands).last(static_cast<std::size_t>(count));
-        };
+        // The edges, and the union of the locals they passed, each with its value at the entry.
         _edgeList.clear();
         auto edge = frame.edges;
         while (edge != Unnumbered)
         {
-            _edgeList.push_back(_edges[edge].instruction);
+            _edgeList.push_back(edge);
             edge = _edges[edge].next;
         }
-        auto const first = argumentsOf(_edgeList.front());
-        Require(first.size() == width);
+        auto const unionStamp = nextStamp();
+        _union.clear();
+        for (auto const index: _edgeList)
+            for (auto const& passed:
+                 std::span { _passed }.subspan(_edges[index].passedBegin, _edges[index].passedCount))
+                if (_localStamps[passed.local] != unionStamp)
+                {
+                    _localStamps[passed.local] = unionStamp;
+                    _union.push_back(passed);
+                }
+
+        // Which positions differ between the edges.
+        auto const width = uint64_t { frame.resultCount } + _union.size() + _contextCount;
+        edgeValues(_edges[_edgeList.front()], frame, _firstValues);
         _merges.assign(width, Merge::Same);
-        for (auto const instruction: std::span { _edgeList }.subspan(1))
-            for (auto const [position, value]: core::views::enumerate(argumentsOf(instruction)))
-                if (value != first[position])
+        for (auto const index: std::span { _edgeList }.subspan(1))
+        {
+            edgeValues(_edges[index], frame, _edgeScratch);
+            for (auto const [position, value]: core::views::enumerate(_edgeScratch))
+                if (value != _firstValues[position])
                     _merges[position] = Merge::Differs;
+        }
         auto const parameters = static_cast<uint64_t>(std::ranges::count(_merges, Merge::Differs));
         if (auto checked = checkBlockParameters(parameters); !checked)
             return checked;
+        if (auto charged = charge(parameters * _edgeList.size()); !charged)
+            return charged;
+        if (auto reserved = reserve(((parameters + 1) * _edgeList.size()) + (2 * parameters) + 4, 2);
+            !reserved)
+            return reserved;
 
         // The merged values: a parameter where they differ, the common value where they do not.
         auto const label = BlockId { frame.label };
-        auto const set = setOf(frame);
-        _arguments.assign(first.begin(), first.end());
         auto const typeAt = [&](std::size_t position) {
             if (position < frame.resultCount)
                 return resultTypes[position];
-            if (position < frame.resultCount + set.size())
-                return _localTypes[set[position - frame.resultCount]];
-            return intermediate::ContextValueTable[position - frame.resultCount - set.size()].type;
+            if (position < frame.resultCount + _union.size())
+                return _localTypes[_union[position - frame.resultCount].local];
+            return intermediate::ContextValueTable[position - frame.resultCount - _union.size()].type;
         };
+        _merged.assign(_firstValues.begin(), _firstValues.end());
         for (auto const [position, merge]: core::views::enumerate(_merges))
             if (merge == Merge::Differs)
-                _arguments[position] = _builder.addParameter(label, typeAt(position));
+                _merged[position] = _builder.addParameter(label, typeAt(position));
 
-        // Each edge keeps only the arguments of the parameters, in place.
+        // Each edge passes the parameters' arguments only, in a run of its own.
         for (auto const index: _edgeList)
         {
-            auto& instruction = _function.instruction(index);
-            auto const arguments = _function.operands(instruction.operands).last(width);
-            auto kept = std::size_t { 0 };
+            edgeValues(_edges[index], frame, _edgeScratch);
+            auto const instruction = _edges[index].instruction;
+            auto const& terminator = _function.instruction(instruction);
+            _arguments.clear();
+            if (terminator.operation == Operation::Branch)
+                _arguments.push_back(_function.operands(terminator.operands)[0]);
             for (auto const [position, merge]: core::views::enumerate(_merges))
                 if (merge == Merge::Differs)
-                    arguments[kept++] = arguments[position];
-            _function.immediates(instruction.immediates)[EdgeArgumentCount] = kept;
-            instruction.operands.count -= static_cast<uint32_t>(width - kept);
+                    _arguments.push_back(_edgeScratch[position]);
+            _builder.replaceOperands(instruction, _arguments);
+            _function.immediates(_function.instruction(instruction).immediates)[EdgeArgumentCount] =
+                parameters;
         }
 
+        // The path after the end. A single edge that is the fallthrough leaves the path as it was: its
+        // modifications become the parent's as they are. Otherwise the construct's are undone and the
+        // merged locals that differ from their entry values are the parent's modifications.
+        _frames.pop_back();
         switchTo(label);
         auto position = std::size_t { 0 };
         for ([[maybe_unused]] auto const result: std::views::iota(uint32_t { 0 }, frame.resultCount))
-            _stack.push_back(_arguments[position++]);
-        for (auto const local: set)
-            _locals[local] = _arguments[position++];
+            _stack.push_back(_merged[position++]);
+        if (fallthrough == Fallthrough::Present && _edgeList.size() == 1)
+            position += _union.size();
+        else
+        {
+            dropModifications(frame.modifiedBegin);
+            for (auto const& member: _union)
+            {
+                auto const value = _merged[position++];
+                if (value == member.entry)
+                    continue;
+                noteModification(member.local, member.entry);
+                _locals[member.local] = value;
+            }
+        }
         for (auto const value: std::views::iota(uint32_t { 0 }, _contextCount))
-            _context[value] = _arguments[position++];
+            _context[value] = _merged[position++];
         _storedCountdown.reset();
         _reach = Reach::Reachable;
         return {};
@@ -836,20 +969,21 @@ namespace
         auto const values = frame.kind == ConstructKind::Loop ? frame.paramCount : frame.resultCount;
         if (auto reserved = reserve(widthOf(frame, values), 8); !reserved)
             return reserved;
+        auto outcome = Outcome {};
         switch (frame.kind)
         {
             case ConstructKind::Function: emitReturn(); break;
             case ConstructKind::Loop: {
                 auto const edge = createBlock();
                 _builder.jump(edge, {});
-                fillEdge(edge, depth);
+                outcome = fillEdge(edge, depth);
                 break;
             }
             case ConstructKind::Block:
-            case ConstructKind::If: forwardEdge(frame); break;
+            case ConstructKind::If: outcome = forwardEdge(frame, BranchKind::Jump, {}, {}); break;
         }
         _reach = Reach::Unreachable;
-        return {};
+        return outcome;
     }
 
     Translation::Outcome Translation::branchIf(uint32_t index, uint32_t depth)
@@ -864,19 +998,20 @@ namespace
             createBlock(hint == binary::BranchLikelihood::Likely ? Hotness::Cold : Hotness::Normal);
         auto const takenHotness =
             hint == binary::BranchLikelihood::Unlikely ? Hotness::Cold : Hotness::Normal;
+        auto outcome = Outcome {};
         if ((frame.kind == ConstructKind::Block || frame.kind == ConstructKind::If)
             && takenHotness == Hotness::Normal)
-            forwardBranch(frame, condition, continuation);
+            outcome = forwardEdge(frame, BranchKind::Branch, condition, continuation);
         else
         {
             // A loop's back edge polls, a return leaves the frame, and a cold forward edge is a block of
             // its own: each in a block only the taken branch enters.
             auto const edge = createBlock(takenHotness);
             _builder.branch(condition, edge, {}, continuation, {});
-            fillEdge(edge, depth);
+            outcome = fillEdge(edge, depth);
         }
         switchTo(continuation);
-        return {};
+        return outcome;
     }
 
     Translation::Outcome Translation::branchTable(binary::Instruction const& instruction)
@@ -910,50 +1045,119 @@ namespace
         for (auto const depth: labels.first(labels.size() - 1))
             targets.push_back(BranchTo { .block = BlockId { _edgeBlocks[depth] } });
         _builder.switchOn(index, targets, BranchTo { .block = BlockId { _edgeBlocks[labels.back()] } });
-        for (auto const depth: _edgeDepths)
-            fillEdge(BlockId { _edgeBlocks[depth] }, depth);
         _reach = Reach::Unreachable;
+        for (auto const depth: _edgeDepths)
+            if (auto filled = fillEdge(BlockId { _edgeBlocks[depth] }, depth); !filled)
+                return filled;
         return {};
     }
 
-    void Translation::fillEdge(BlockId edge, uint32_t depth)
+    Translation::Outcome Translation::fillEdge(BlockId edge, uint32_t depth)
     {
         switchTo(edge);
         auto& frame = frameAt(depth);
         switch (frame.kind)
         {
-            case ConstructKind::Function: emitReturn(); break;
+            case ConstructKind::Function: emitReturn(); return {};
             case ConstructKind::Loop: {
+                if (auto charged = charge(uint64_t { frame.paramCount } + setOf(frame).size()); !charged)
+                    return charged;
                 auto const countdown = _context[0];
                 auto const polled = emitValue(Operation::Poll,
                                               Type::I64,
                                               std::array { countdown },
                                               std::array { immediateOf(runtime::PollSite::LoopBackEdge) });
                 _context[0] = polled;
-                _builder.jump(BlockId { frame.label }, mergeArguments(frame, frame.paramCount));
+                _builder.jump(BlockId { frame.label }, loopArguments(frame));
                 _context[0] = countdown;
-                break;
+                return {};
             }
             case ConstructKind::Block:
-            case ConstructKind::If: forwardEdge(frame); break;
+            case ConstructKind::If: return forwardEdge(frame, BranchKind::Jump, {}, {});
+        }
+        return {};
+    }
+
+    Translation::Outcome Translation::forwardEdge(Frame& frame,
+                                                  BranchKind kind,
+                                                  std::optional<ValueId> condition,
+                                                  std::optional<BlockId> continuation)
+    {
+        // The arguments: the results, the locals modified on this path since the construct's entry (the
+        // lists of the construct and of every construct inside it, each local once, its entry value the
+        // outermost list's), and the context values.
+        auto const scanned = _modified.size() - frame.modifiedBegin;
+        if (auto charged = charge(frame.resultCount + scanned); !charged)
+            return charged;
+        _arguments.clear();
+        auto const results = top(frame.resultCount);
+        _arguments.insert(_arguments.end(), results.begin(), results.end());
+        auto const passedBegin = static_cast<uint32_t>(_passed.size());
+        auto const stamp = nextStamp();
+        for (auto const& modification: std::span { _modified }.subspan(frame.modifiedBegin))
+        {
+            if (_localStamps[modification.local] == stamp)
+                continue;
+            _localStamps[modification.local] = stamp;
+            auto const value = _locals[modification.local];
+            _passed.push_back(
+                PassedLocal { .local = modification.local, .value = value, .entry = modification.entry });
+            _arguments.push_back(value);
+        }
+        _arguments.insert(_arguments.end(), _context.begin(), _context.begin() + _contextCount);
+        auto const label = labelOf(frame);
+        switch (kind)
+        {
+            case BranchKind::Jump: _builder.jump(label, _arguments); break;
+            case BranchKind::Branch:
+                // The taken target's arguments are the branch's last operands: the continuation takes none.
+                _builder.branch(*condition, label, _arguments, *continuation, {});
+                break;
+        }
+        _edges.push_back(Edge { .instruction = _function.instructionCount() - 1,
+                                .passedBegin = passedBegin,
+                                .passedCount = static_cast<uint32_t>(_passed.size() - passedBegin),
+                                .next = frame.edges });
+        frame.edges = static_cast<uint32_t>(_edges.size() - 1);
+        return {};
+    }
+
+    void Translation::noteModification(uint32_t local, ValueId entry)
+    {
+        auto const& innermost = _frames.back();
+        auto const previous = _modifiedAt[local];
+        if (previous != Unnumbered && previous >= innermost.modifiedBegin)
+            return; // already in the innermost list
+        _modifiedAt[local] = static_cast<uint32_t>(_modified.size());
+        _modified.push_back(Modification { .local = local, .entry = entry, .previous = previous });
+    }
+
+    void Translation::dropModifications(uint32_t begin)
+    {
+        // Latest first, so that a local listed twice ends at its outermost entry value.
+        while (_modified.size() > begin)
+        {
+            auto const& modification = _modified.back();
+            _locals[modification.local] = modification.entry;
+            _modifiedAt[modification.local] = modification.previous;
+            _modified.pop_back();
         }
     }
 
-    void Translation::forwardEdge(Frame& frame)
+    uint32_t Translation::nextStamp() noexcept
     {
-        auto const label = labelOf(frame);
-        _builder.jump(label, mergeArguments(frame, frame.resultCount));
-        _edges.push_back(Edge { .instruction = _function.instructionCount() - 1, .next = frame.edges });
-        frame.edges = static_cast<uint32_t>(_edges.size() - 1);
+        return ++_stamp;
     }
 
-    void Translation::forwardBranch(Frame& frame, ValueId condition, BlockId continuation)
+    Translation::Outcome Translation::charge(uint64_t arguments)
     {
-        // The taken target's arguments are the branch's last operands: the continuation takes none.
-        auto const label = labelOf(frame);
-        _builder.branch(condition, label, mergeArguments(frame, frame.resultCount), continuation, {});
-        _edges.push_back(Edge { .instruction = _function.instructionCount() - 1, .next = frame.edges });
-        frame.edges = static_cast<uint32_t>(_edges.size() - 1);
+        _branchArguments += arguments;
+        if (_branchArguments > _input.limits.maxBranchArguments)
+            return refusal(CompileErrorCode::TooManyBranchArguments,
+                           _input.codeIndex,
+                           _branchArguments,
+                           _input.limits.maxBranchArguments);
+        return {};
     }
 
     void Translation::emitReturn()
@@ -983,13 +1187,16 @@ namespace
 
     uint64_t Translation::widthOf(Frame const& frame, uint32_t values) const noexcept
     {
-        return uint64_t { values } + setOf(frame).size() + _contextCount;
+        // A loop's edges pass its set; a forward edge at most the modifications listed since its entry.
+        auto const locals =
+            frame.kind == ConstructKind::Loop ? setOf(frame).size() : _modified.size() - frame.modifiedBegin;
+        return uint64_t { values } + locals + _contextCount;
     }
 
-    std::span<ValueId const> Translation::mergeArguments(Frame const& frame, uint32_t values)
+    std::span<ValueId const> Translation::loopArguments(Frame const& frame)
     {
         _arguments.clear();
-        auto const stacked = top(values);
+        auto const stacked = top(frame.paramCount);
         _arguments.insert(_arguments.end(), stacked.begin(), stacked.end());
         for (auto const local: setOf(frame))
             _arguments.push_back(_locals[local]);

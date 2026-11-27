@@ -26,9 +26,15 @@ struct CompileLimits
     /// TooManyBlockParameters.
     uint32_t maxBlockParameters = 100'000;
 
-    /// The most block parameters a function may take over all its blocks, the inner loops' merges
-    /// into their parents counted, refused TooManyBlockParameters.
+    /// The most loop-header parameters a function may take over all its loops (assignedLocalsPerLoop():
+    /// each local a loop assigns, an inner loop's counted in every loop around it), refused
+    /// TooManyBlockParameters.
     uint64_t maxTotalBlockParameters = 4'000'000;
+    /// The most branch arguments a function may pass over all its branches, refused
+    /// TooManyBranchArguments: each branch's results and locals, a loop's back edge its assigned
+    /// locals, a forward edge the locals it modified, and the arguments a merge settles each edge to.
+    /// The context values a branch also passes, at most three, are not counted.
+    uint64_t maxBranchArguments = 16'000'000;
     /// The most entries a function's IR operand pool, or its immediate pool, may hold (a call's
     /// arguments, a branch's, a br_table's targets), refused PoolTooLarge. The default is what a 32-bit
     /// pool index addresses (intermediate::MaxPoolEntries), and nothing larger is honoured.

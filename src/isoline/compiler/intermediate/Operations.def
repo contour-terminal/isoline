@@ -196,7 +196,7 @@ ISOLINE_OPERATION(RefIsNull, "ref.is_null", Ref, I32, Pure, None)
 
 // Globals, through their RawValue cells.
 ISOLINE_OPERATION(LoadGlobal, "load_global", None, FromImmediate, ReadsMemory, GlobalType)
-ISOLINE_OPERATION(StoreGlobal, "store_global", Any, None, WritesMemory, Global)
+ISOLINE_OPERATION(StoreGlobal, "store_global", Wasm, None, WritesMemory, Global)
 
 // The context values (the step countdown, memory 0's base and bound): loaded at entry and after every
 // call or stub, the countdown stored back before every call, stub, exit and trap site.

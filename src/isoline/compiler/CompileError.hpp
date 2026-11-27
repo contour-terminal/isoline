@@ -20,13 +20,14 @@ enum class CompileErrorCode : uint8_t
     FunctionTooLarge,       ///< A body has more units than CompileLimits::maxFunctionBodyUnits.
     TooManyInstructions,    ///< Translation exceeded CompileLimits::maxFunctionInstructions.
     TooManyBlockParameters, ///< A block or function exceeded the block-parameter caps.
-    PoolTooLarge,        ///< A function's operand or immediate pool exceeded CompileLimits::maxPoolEntries.
-    BudgetExceeded,      ///< The compile's arena refused: LoadLimits::maxCompileBytes is spent.
-    HostMemoryExhausted, ///< The compile's arena refused: the host is out of memory.
-    FrameTooLarge,       ///< A native frame exceeds the target's frame rule.
-    ArtifactTooLarge,    ///< The module's code exceeds its artifact cap (CompileLimits).
-    BranchOutOfRange,    ///< A branch's displacement does not fit its encoding.
-    Cancelled,           ///< The compile was cancelled (CompileCancellation).
+    PoolTooLarge, ///< A function's operand or immediate pool exceeded CompileLimits::maxPoolEntries.
+    TooManyBranchArguments, ///< A function's branches pass more than CompileLimits::maxBranchArguments.
+    BudgetExceeded,         ///< The compile's arena refused: LoadLimits::maxCompileBytes is spent.
+    HostMemoryExhausted,    ///< The compile's arena refused: the host is out of memory.
+    FrameTooLarge,          ///< A native frame exceeds the target's frame rule.
+    ArtifactTooLarge,       ///< The module's code exceeds its artifact cap (CompileLimits).
+    BranchOutOfRange,       ///< A branch's displacement does not fit its encoding.
+    Cancelled,              ///< The compile was cancelled (CompileCancellation).
 };
 
 /// The last CompileErrorCode enumerator.
@@ -68,6 +69,9 @@ inline constexpr auto CompileErrorTable = std::to_array<CompileErrorRow>({
       .limit = ImplementationLimit::Yes },
     { .code = CompileErrorCode::PoolTooLarge,
       .text = "operand pool too large",
+      .limit = ImplementationLimit::Yes },
+    { .code = CompileErrorCode::TooManyBranchArguments,
+      .text = "too many branch arguments",
       .limit = ImplementationLimit::Yes },
     { .code = CompileErrorCode::BudgetExceeded,
       .text = "compile memory budget exceeded",

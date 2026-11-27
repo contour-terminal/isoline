@@ -61,6 +61,7 @@ namespace
         { .type = OperandType::Float,
           .admits = static_cast<TypeMask>(maskOf(Type::F32) | maskOf(Type::F64)) },
         { .type = OperandType::Any, .admits = AnyType },
+        { .type = OperandType::Wasm, .admits = WasmTypes },
         { .type = OperandType::SameAsOperand0, .admits = 0 },
     });
     static_assert(detail::isInEnumeratorOrder(OperandTypeTable,

@@ -62,12 +62,16 @@ class ModuleIndex
 /// What translate() translates, and within which caps.
 struct TranslationInput
 {
-    validate::ValidatedModule const& module; ///< The module, validated (and checkModule()d, or refused here).
-    ModuleIndex const& index;                ///< The module's index.
-    uint32_t codeIndex;                      ///< The function, by its index in the code section.
-    runtime::ExecutionMode mode;             ///< Deterministic canonicalizes every NaN result.
-    CompileLimits const& limits;             ///< The caps.
-    CompileCancellation const& cancellation; ///< Polled every 65'536 instructions.
+    /// The module, validated. Translation refuses a deferred feature where it meets one (checkOpcode(),
+    /// checkValueType()), so it needs no checkModule() first.
+    validate::ValidatedModule const& module;
+    ModuleIndex const& index;    ///< The module's index, built once for all its functions.
+    uint32_t codeIndex;          ///< The function, by its index in the code section.
+    runtime::ExecutionMode mode; ///< Deterministic canonicalizes every NaN result.
+    CompileLimits const& limits; ///< The caps.
+    /// Polled before the first instruction and every 65'536 IR instructions after, at a WebAssembly
+    /// instruction boundary.
+    CompileCancellation const& cancellation;
 };
 
 /// Translates one function into SSA.
@@ -77,8 +81,11 @@ struct TranslationInput
 /// check), then loads the context values (the step countdown, and memory 0's base and bound when the
 /// module has a memory), then gives each declared local its zero, a reference local the null of its own
 /// heap. Locals are SSA values: local.get, local.set and local.tee emit nothing. A loop header takes the
-/// loop's parameters, the locals the loop assigns and the context values; a forward merge (a block's or
-/// an if's end) takes only the results and assigned locals whose incoming values differ. Every branch
+/// loop's parameters, the locals the loop assigns (assignedLocalsPerLoop()) and the context values. A
+/// forward edge passes its target's results, the locals modified on its path since the target's entry,
+/// and the context values; the end's merge takes a parameter only where its edges' values differ, a
+/// local an edge did not pass counting as its entry value. Branch arguments are charged against
+/// CompileLimits::maxBranchArguments. Every branch
 /// to a loop goes through a block of its own that polls at LoopBackEdge, so br_if polls only when taken.
 /// Every exit stores the countdown and leaves the frame before returning; every call stores it before
 /// and reloads the context values after; a trap site stores it when it changed since. Integer division
@@ -90,7 +97,8 @@ struct TranslationInput
 /// @param memory The compile's arena, which the function and every temporary allocate from. A refusal of
 ///               it throws std::bad_alloc, which the compile's boundary turns into its error.
 /// @return The function, well-formed (intermediate::verify()); or FunctionTooLarge, TooManyInstructions,
-///         TooManyBlockParameters, PoolTooLarge, UnsupportedFeature or Cancelled, naming the function.
+///         TooManyBlockParameters, TooManyBranchArguments, PoolTooLarge, UnsupportedFeature or Cancelled,
+///         naming the function.
 [[nodiscard]] std::expected<intermediate::Function, CompileError> translate(
     TranslationInput const& input, std::pmr::memory_resource& memory);
 

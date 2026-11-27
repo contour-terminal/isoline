@@ -66,22 +66,23 @@ Bytes nestedLoops(uint32_t depth, Bytes const& body)
 
 TEST_CASE("LoopAssignments.innermostMergesIntoParent")
 {
-    // loop { set 1; loop { set 2; set 2 }; block { set 0 } }: the outer loop holds what its children
-    // assign, each local once, in ascending order; the block is a construct of its own.
-    auto const module = moduleOf(3,
-                                 loop(code({ setLocal(1),
-                                             loop(code({ setLocal(2), setLocal(2) })),
-                                             isoline::binary::testing::block(setLocal(0)) })));
+    // loop { set 1; block { loop { set 2; set 2 } }; block { set 0 } }: the outer loop holds what the
+    // inner one and its blocks assign, each local once, in ascending order; blocks hold no set.
+    auto const module =
+        moduleOf(3,
+                 loop(code({ setLocal(1),
+                             isoline::binary::testing::block(loop(code({ setLocal(2), setLocal(2) }))),
+                             isoline::binary::testing::block(setLocal(0)) })));
     auto memory = std::pmr::monotonic_buffer_resource {};
     auto const assignments = assignedLocalsPerLoop(module->module().code[0].body, 1'000, memory);
     REQUIRE(assignments.has_value());
-    REQUIRE(assignments->constructCount() == 3);
+    REQUIRE(assignments->loopCount() == 2);
     CHECK(std::ranges::equal(assignments->locals(0), std::vector<uint32_t> { 0, 1, 2 }));
     CHECK(std::ranges::equal(assignments->locals(1), std::vector<uint32_t> { 2 }));
-    CHECK(std::ranges::equal(assignments->locals(2), std::vector<uint32_t> { 0 }));
     CHECK(assignments->bodyIndex(0) == 0);
+    CHECK(assignments->bodyIndex(1) == 4);
     CHECK(assignments->firstAtOrAfter(1) == 1);
-    CHECK(assignments->firstAtOrAfter(assignments->bodyIndex(2) + 1) == 3);
+    CHECK(assignments->firstAtOrAfter(5) == 2);
 }
 
 TEST_CASE("LoopAssignments.refusesPastTheTotalCap", "[.hostile]")
@@ -114,7 +115,7 @@ TEST_CASE("LoopAssignments.deepNestingIsIterative")
     auto memory = std::pmr::monotonic_buffer_resource {};
     auto const assignments = assignedLocalsPerLoop(module->module().code[0].body, 4'000'000, memory);
     REQUIRE(assignments.has_value());
-    CHECK(assignments->constructCount() == 100'000);
+    CHECK(assignments->loopCount() == 100'000);
     CHECK(std::ranges::equal(assignments->locals(0), std::vector<uint32_t> { 0 }));
     CHECK(std::ranges::equal(assignments->locals(99'999), std::vector<uint32_t> { 0 }));
 }

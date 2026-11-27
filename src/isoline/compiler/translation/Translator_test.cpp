@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <memory_resource>
 #include <optional>
@@ -33,6 +34,7 @@
 #include <isoline/compiler/translation/NumericRules.hpp>
 #include <isoline/compiler/translation/Translator.hpp>
 #include <isoline/numerics/Float.hpp>
+#include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -276,7 +278,7 @@ TEST_CASE("Translator.trivialMergeHasNoParameter")
             code({ isoline::binary::testing::block(code({ localGet(0), brIf(0) })), localGet(0) })));
         auto const text = translated->text();
         CHECK(countOf(text, "jump b2(v0") == 0);
-        CHECK(text.find("b2():\n"));
+        CHECK(text.contains("b2():\n"));
     }
     SECTION("an assigned local that differs takes one, one that does not none")
     {
@@ -599,11 +601,12 @@ TEST_CASE("Translator.refNullKeepsItsHeap")
     CHECK(countOf(text, "ref.null [heap=1]") == 1);
     CHECK(countOf(text, "heap=0") == 0);
     auto const lines = linesOf(text);
-    auto const merge = lineWith(lines, ":ref");
+    auto const merge = lineWith(lines, ":ref", 1); // past the entry, whose parameter 1 is an externref
     REQUIRE(merge.has_value());
-    auto const parameter = std::string { lines[*merge].substr(lines[*merge].contains('(') + 1) };
+    auto const parameter = std::string { lines[*merge].substr(lines[*merge].find('(') + 1) };
     auto const name = parameter.substr(0, parameter.find(':'));
-    CHECK(text.find("call_import " + name + " [function=0]"));
+    REQUIRE(name.starts_with("v"));
+    CHECK(text.contains("call_import " + name + " [function=0]"));
 }
 
 TEST_CASE("Translator.callWithAThousandArguments")
@@ -773,5 +776,204 @@ TEST_CASE("Translator.refusesPastItsCaps")
         // A v128 local: SIMD is P5b's.
         auto const simd = oneFunction(FuncType {}, { isoline::binary::V128 }, {});
         CHECK(refusalOf(*translateOf(simd)).code == CompileErrorCode::UnsupportedFeature);
+    }
+}
+
+namespace
+{
+
+/// A resource that cancels a compile once it has handed out more than a threshold of bytes: the one way
+/// a single-threaded test reaches a compile between two of its cancellation polls.
+class CancellingResource final: public std::pmr::memory_resource
+{
+  public:
+    CancellingResource(CompileCancellation& cancellation, std::size_t threshold) noexcept:
+        _cancellation { cancellation }, _threshold { threshold }
+    {
+    }
+
+  private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override
+    {
+        _allocated += bytes;
+        if (_allocated > _threshold)
+            _cancellation.cancel();
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override
+    {
+        std::pmr::new_delete_resource()->deallocate(pointer, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
+    {
+        return this == &other;
+    }
+
+    CompileCancellation& _cancellation;
+    std::size_t _threshold;
+    std::size_t _allocated = 0;
+};
+
+/// A body of @p count `i32.const 1; drop`: one IR instruction each.
+Bytes constants(uint32_t count)
+{
+    auto body = Bytes {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
+        body.insert(body.end(), { 0x41, 0x01, 0x1A });
+    return body;
+}
+
+/// Translates function 0 of @p builder's module on @p memory with @p limits and @p cancellation.
+std::expected<Function, CompileError> translateOn(ModuleBuilder const& builder,
+                                                  std::pmr::memory_resource& memory,
+                                                  CompileCancellation const& cancellation,
+                                                  CompileLimits const& limits = {})
+{
+    auto loaded = ValidatedModule::load(builder.build(), FeatureSet::all(), isoline::binary::DecodeLimits {});
+    REQUIRE(loaded.has_value());
+    auto const module = std::move(*loaded);
+    auto const index = ModuleIndex { module->module(), memory };
+    return translate(TranslationInput { .module = *module,
+                                        .index = index,
+                                        .codeIndex = 0,
+                                        .mode = ExecutionMode::Production,
+                                        .limits = limits,
+                                        .cancellation = cancellation },
+                     memory);
+}
+
+/// A switch of @p cases: as many nested blocks, a br_table to each, and case i assigning local i and
+/// returning it. Each case's code follows the end of its block, which only the table's edge reaches.
+ModuleBuilder switchOf(uint32_t cases)
+{
+    auto body = Bytes {};
+    for ([[maybe_unused]] auto const level: std::views::iota(uint32_t { 0 }, cases))
+        body.insert(body.end(), { 0x02, 0x40 });
+    body = code({ body, localGet(0), { 0x0E }, encodeU32(cases - 1) });
+    for (auto const label: std::views::iota(uint32_t { 0 }, cases))
+        body = code({ body, encodeU32(label) });
+    for (auto const label: std::views::iota(uint32_t { 0 }, cases))
+        body = code({ body,
+                      { 0x0B },
+                      i32Const(static_cast<int32_t>(label)),
+                      localSet(label),
+                      localGet(label),
+                      { 0x0F } });
+    return oneFunction(FuncType { .params = { I32 }, .results = { I32 } }, std::vector(cases - 1, I32), body);
+}
+
+} // namespace
+
+TEST_CASE("Translator.cancellationIsPolledEveryIntervalOfIR")
+{
+    // 200'000 IR instructions; the compile is cancelled once the arena has handed out 1 MiB, well after
+    // the first poll: translation stops at a later one. With the threshold out of reach it completes.
+    auto const builder = oneFunction(FuncType { .params = {}, .results = {} }, {}, constants(200'000));
+    {
+        auto cancellation = CompileCancellation {};
+        auto memory = CancellingResource { cancellation, std::size_t { 1 } << 20 };
+        auto const cancelled = translateOn(builder, memory, cancellation);
+        REQUIRE_FALSE(cancelled.has_value());
+        CHECK(cancelled.error() == CompileError { .code = CompileErrorCode::Cancelled, .function = 0 });
+    }
+    {
+        auto cancellation = CompileCancellation {};
+        auto memory = CancellingResource { cancellation, std::numeric_limits<std::size_t>::max() };
+        auto const translated = translateOn(builder, memory, cancellation);
+        REQUIRE(translated.has_value());
+        CHECK(translated->instructionCount() > 200'000);
+    }
+}
+
+TEST_CASE("Translator.switchMergesStayLinear")
+{
+    // A br_table switch of n cases, case i assigning local i: the table's edges pass no locals (nothing is
+    // modified on their path), so no case's block takes a parameter, and the operand pool grows linearly.
+    // Pinned: at most 5 pool entries per case, at n = 500 and at 2n alike (measured 4.01). The design
+    // this replaced passed each block's assigned set on its table edge: n / 2 entries per case.
+    auto const entriesPerCase = [](uint32_t cases) {
+        auto const translated = translateOf(switchOf(cases));
+        auto const& function = *translated->function;
+        for (auto const block: std::views::iota(uint32_t { 1 }, function.blockCount()))
+            CHECK(function.block(BlockId { block }).parameters.count == 0);
+        return static_cast<double>(function.operandPoolSize()) / cases;
+    };
+    auto const small = entriesPerCase(500);
+    auto const large = entriesPerCase(1'000);
+    INFO("pool entries per case: " << small << " at 500 cases, " << large << " at 1'000");
+    CHECK(small <= 5);
+    CHECK(large <= 5);
+    CHECK(large / small < 1.1);
+}
+
+TEST_CASE("Translator.branchArgumentsAreCharged", "[.hostile]")
+{
+    // A loop assigning 5'000 locals, then k × `local.get 0; br_if 0`: each back edge passes the 5'000, so
+    // the function asks for 5'000 k branch arguments from 3 k bytes. It is refused TooManyBranchArguments
+    // at the cap's edge, whatever k: the arena's peak is the same at k and 2k (pinned: within 5 %). Run
+    // capped (tests/CMakeLists.txt), on an arena that refuses past 1 GiB.
+    constexpr auto Locals = uint32_t { 5'000 };
+    auto const peakFor = [](uint32_t branches) {
+        auto inner = Bytes {};
+        for (auto const local: std::views::iota(uint32_t { 1 }, Locals + 1))
+            inner = code({ inner, i32Const(0), localSet(local) });
+        inner.reserve(inner.size() + (std::size_t { 3 } * branches));
+        for ([[maybe_unused]] auto const branch: std::views::iota(uint32_t { 0 }, branches))
+            inner.insert(inner.end(), { 0x20, 0x00, 0x0D, 0x00 });
+        auto const builder =
+            oneFunction(FuncType { .params = { I32 }, .results = {} }, std::vector(Locals, I32), loop(inner));
+        auto arena =
+            isoline::runtime::CountingArena { uint64_t { 1 } << 30, *std::pmr::new_delete_resource() };
+        auto cancellation = CompileCancellation {};
+        auto const refused = translateOn(builder, arena, cancellation);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == CompileErrorCode::TooManyBranchArguments);
+        CHECK(refused.error().limit == 16'000'000);
+        return static_cast<double>(arena.peak());
+    };
+    auto const small = peakFor(100'000);
+    auto const large = peakFor(200'000);
+    INFO("arena peak: " << small << " bytes at 100'000 branches, " << large << " at 200'000");
+    CHECK(large / small < 1.05);
+}
+
+TEST_CASE("Translator.deadPathModificationsAreUndone")
+{
+    SECTION("a block's end reached only by an edge before the assignment")
+    {
+        // block { br_if 0; local 1 = 5; return 7 } local.get 1: after the block, local 1 is its zero.
+        auto const translated = translateOf(oneFunction(
+            FuncType { .params = { I32 }, .results = { I32 } },
+            { I32 },
+            code({ isoline::binary::testing::block(
+                       code({ localGet(0), brIf(0), i32Const(5), localSet(1), i32Const(7), { 0x0F } })),
+                   localGet(1) })));
+        auto const text = translated->text();
+        INFO(text);
+        CHECK(text.contains("  v2 = i32.const [value=0]\n"));
+        CHECK(text.ends_with("  return v2\n"));
+    }
+    SECTION("an else arm starts from the if's entry values")
+    {
+        // if { local 1 = 5 } else { local 2 = local 1 } local.get 2: the else arm reads local 1's zero,
+        // so local 2 is the zero on both arms and takes no parameter; local 1 takes one.
+        auto const translated = translateOf(oneFunction(FuncType { .params = { I32 }, .results = { I32 } },
+                                                        { I32, I32 },
+                                                        code({ localGet(0),
+                                                               { 0x04, 0x40 },
+                                                               i32Const(5),
+                                                               localSet(1),
+                                                               { 0x05 },
+                                                               localGet(1),
+                                                               localSet(2),
+                                                               { 0x0B },
+                                                               localGet(2) })));
+        auto const text = translated->text();
+        INFO(text);
+        CHECK(text.contains(
+            "b1():\n  v3 = i32.const [value=5]\n  jump b3(v3)\nb2():\n  jump b3(v2)\nb3(v4:i32):\n"));
+        CHECK(text.ends_with("  return v2\n"));
     }
 }

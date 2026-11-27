@@ -324,6 +324,14 @@ void Builder::switchOn(ValueId index, std::span<BranchTo const> targets, BranchT
     std::ignore = append(Operation::Switch, {}, parts, immediates);
 }
 
+void Builder::replaceOperands(uint32_t index, std::span<ValueId const> operands)
+{
+    auto& function = *_function;
+    Require(index < function._instructions.size());
+    auto const run = appendRun(function._operands, operands);
+    function._instructions[index].operands = run;
+}
+
 void Builder::ret(std::span<ValueId const> values)
 {
     std::ignore = emit(Operation::Return, {}, values);

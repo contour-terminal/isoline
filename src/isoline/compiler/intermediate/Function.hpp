@@ -280,6 +280,13 @@ class Builder
     /// targets.size(), else to @p fallback.
     void switchOn(ValueId index, std::span<BranchTo const> targets, BranchTo fallback);
 
+    /// Replaces the operands of the instruction at @p index by @p operands, appended to the operand pool
+    /// as a new run; the old run stays unused until compact(). For a pass or a translation that settles a
+    /// terminator's arguments after emitting it, which also updates the argument counts it changes.
+    /// @param index An instruction of the function.
+    /// @param operands Its new operands.
+    void replaceOperands(uint32_t index, std::span<ValueId const> operands);
+
     /// Ends the current block by returning @p values.
     void ret(std::span<ValueId const> values);
 

@@ -158,6 +158,7 @@ enum class OperandType : uint8_t
     Integer,        ///< I32 or I64: an index into a 32- or 64-bit memory or table.
     Float,          ///< F32 or F64.
     Any,            ///< Any type.
+    Wasm,           ///< A type a WebAssembly value takes: a numeric type or Ref (WasmTypes).
     SameAsOperand0, ///< The type of the instruction's first operand.
 };
 
@@ -181,6 +182,7 @@ enum class OperandSignature : uint8_t
     Integer,           ///< One I32 or I64.
     Float,             ///< One F32 or F64.
     Any,               ///< One value of any type.
+    Wasm,              ///< One WebAssembly value: a numeric type or Ref.
     I32I32,            ///< Two I32.
     I64I64,            ///< Two I64.
     F32F32,            ///< Two F32.
@@ -227,6 +229,7 @@ inline constexpr auto OperandSignatureTable = std::to_array<OperandSignatureRow>
     { .signature = OperandSignature::Integer, .types = { OperandType::Integer }, .count = 1 },
     { .signature = OperandSignature::Float, .types = { OperandType::Float }, .count = 1 },
     { .signature = OperandSignature::Any, .types = { OperandType::Any }, .count = 1 },
+    { .signature = OperandSignature::Wasm, .types = { OperandType::Wasm }, .count = 1 },
     { .signature = OperandSignature::I32I32, .types = { OperandType::I32, OperandType::I32 }, .count = 2 },
     { .signature = OperandSignature::I64I64, .types = { OperandType::I64, OperandType::I64 }, .count = 2 },
     { .signature = OperandSignature::F32F32, .types = { OperandType::F32, OperandType::F32 }, .count = 2 },

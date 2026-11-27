@@ -535,6 +535,14 @@ TEST_CASE("Verifier.typedImmediatesFitTheirTypes")
         { .name = "a store of a ref",
           .code = VerifierErrorCode::OperandType,
           .build = [](Fixture& fixture) { emitStore(fixture, Type::Ref, 8); } },
+        { .name = "store_global of a pointer",
+          .code = VerifierErrorCode::OperandType,
+          .build =
+              [](Fixture& fixture) {
+                  auto const address = fixture.builder.addParameter(fixture.entry, Type::Pointer);
+                  std::ignore = fixture.builder.emit(
+                      Operation::StoreGlobal, {}, std::array { address }, std::array<uint64_t, 1> { 0 });
+              } },
         { .name = "load_context of the step countdown as a pointer",
           .code = VerifierErrorCode::ImmediateValue,
           .build =
