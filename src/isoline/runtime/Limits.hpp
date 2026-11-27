@@ -12,6 +12,7 @@
 #include <variant>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::runtime
 {
@@ -214,18 +215,8 @@ inline constexpr auto LimitTable = std::to_array<LimitRow>({
       .value = [](StoreLimits const& limits) noexcept -> uint64_t { return limits.maxSteps; } },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: LimitTable)
-        {
-            if (static_cast<std::size_t>(row.limit) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastLimit) + 1;
-    }(),
-    "LimitTable must hold one row per Limit, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastLimit>(LimitTable, &LimitRow::limit) == meta::NoMisplacedRow,
+              "LimitTable must hold one row per Limit, at the index of its enumerator");
 
 /// The value @p limits gives @p limit.
 /// @param limits The limits.
@@ -267,18 +258,9 @@ inline constexpr auto RefusalTable = std::to_array<RefusalRow>({
     { .refusal = Refusal::Embedder, .text = "refused by the embedder" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: RefusalTable)
-        {
-            if (static_cast<std::size_t>(row.refusal) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastRefusal) + 1;
-    }(),
-    "RefusalTable must hold one row per Refusal, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastRefusal>(RefusalTable, &RefusalRow::refusal)
+                  == meta::NoMisplacedRow,
+              "RefusalTable must hold one row per Refusal, at the index of its enumerator");
 
 /// How @p refusal reads.
 /// @param refusal The refusal.

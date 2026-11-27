@@ -9,6 +9,7 @@
 
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::binary
 {
@@ -73,7 +74,7 @@ namespace detail
     /// widening load, or 0 where a lane is as wide as the access.
     inline constexpr auto MemoryLaneWidthByShape = std::to_array<uint8_t>({ 0, 1, 2, 4, 0, 0, 0 });
 
-    static_assert(MemoryLaneWidthByShape.size() == static_cast<std::size_t>(LastVectorShape) + 1,
+    static_assert(meta::sizedByEnum<LastVectorShape>(MemoryLaneWidthByShape.size()),
                   "MemoryLaneWidthByShape holds one entry per VectorShape");
 } // namespace detail
 

@@ -7,6 +7,8 @@
 #include <span>
 #include <string_view>
 
+#include <isoline/meta/EnumRows.hpp>
+
 namespace isoline::binary
 {
 
@@ -82,15 +84,9 @@ inline constexpr auto CustomErrorTable = std::to_array<CustomErrorRow>({
       .specMessage = "@metadata.code.branch_hint annotation: duplicate section" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: CustomErrorTable)
-            if (static_cast<std::size_t>(row.code) != index++)
-                return false;
-        return index == static_cast<std::size_t>(LastCustomErrorCode) + 1;
-    }(),
-    "CustomErrorTable must hold one row per CustomErrorCode, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastCustomErrorCode>(CustomErrorTable, &CustomErrorRow::code)
+                  == meta::NoMisplacedRow,
+              "CustomErrorTable must hold one row per CustomErrorCode, at the index of its enumerator");
 
 /// A custom section the decoder refused: what went wrong, and where.
 struct CustomSectionError

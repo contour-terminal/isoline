@@ -10,6 +10,8 @@
 #include <string>
 #include <string_view>
 
+#include <isoline/meta/EnumRows.hpp>
+
 namespace isoline::runtime
 {
 
@@ -85,18 +87,8 @@ inline constexpr auto TrapTable = std::to_array<TrapRow>({
     { .code = TrapCode::StepLimitExceeded, .specMessage = "step limit exceeded" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: TrapTable)
-        {
-            if (static_cast<std::size_t>(row.code) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastTrapCode) + 1;
-    }(),
-    "TrapTable must hold one row per TrapCode, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastTrapCode>(TrapTable, &TrapRow::code) == meta::NoMisplacedRow,
+              "TrapTable must hold one row per TrapCode, at the index of its enumerator");
 
 /// A trap: execution stopped, and why.
 struct Trap

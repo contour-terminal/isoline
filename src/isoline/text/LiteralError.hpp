@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/TextError.hpp>
 
 namespace isoline::text
@@ -28,7 +29,7 @@ inline constexpr auto LiteralErrorCodes = std::to_array<TextErrorCode>({
     TextErrorCode::NumberTooLong,      // TooLong
 });
 
-static_assert(LiteralErrorCodes.size() == static_cast<std::size_t>(LastLiteralError) + 1,
+static_assert(meta::sizedByEnum<LastLiteralError>(LiteralErrorCodes.size()),
               "LiteralErrorCodes holds one text error per LiteralError");
 
 /// The text error a literal error is reported as.

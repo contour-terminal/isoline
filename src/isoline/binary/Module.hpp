@@ -362,6 +362,9 @@ enum class SectionAnchor : uint8_t
     Data,        ///< After the data section: at the module's end.
 };
 
+/// The last SectionAnchor enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastSectionAnchor = SectionAnchor::Data;
+
 /// A custom section, kept verbatim, with its place among the other sections.
 struct CustomSection
 {

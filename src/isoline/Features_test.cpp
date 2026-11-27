@@ -1,18 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <core/Utils.hpp>
-
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 
 #include <isoline/Features.hpp>
-
-TEST_CASE("Features.tableIsWellFormed")
-{
-    for (auto const [index, row]: core::views::enumerate(isoline::FeatureTable))
-        CHECK(static_cast<std::size_t>(row.feature) == index);
-    CHECK(isoline::FeatureTable.size() == isoline::FeatureCount);
-}
 
 TEST_CASE("Features.namesAreTheProposalNames")
 {

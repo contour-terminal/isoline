@@ -9,6 +9,7 @@
 #include <span>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::validate
 {
@@ -61,15 +62,9 @@ inline constexpr auto HeapTable = std::to_array<HeapRow>({
       .rank = HeapRank::Defined },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: HeapTable)
-            if (static_cast<std::size_t>(row.kind) != index++)
-                return false;
-        return index == static_cast<std::size_t>(binary::LastAbstractHeapType) + 1;
-    }(),
-    "HeapTable must hold one row per AbstractHeapType, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<binary::LastAbstractHeapType>(HeapTable, &HeapRow::kind)
+                  == meta::NoMisplacedRow,
+              "HeapTable must hold one row per AbstractHeapType, at the index of its enumerator");
 
 /// The row of HeapTable describing @p kind.
 /// @param kind The abstract heap type.

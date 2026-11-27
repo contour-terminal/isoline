@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #include <isoline/binary/DecodeError.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 // The name section (WebAssembly 3.0, appendix "Name Section"): debug names for a module's entities.
 // It is advisory: a module whose name section is malformed is still a valid module, so the decoder
@@ -89,17 +92,9 @@ inline constexpr auto NameSubsections = std::to_array<NameSubsection>({
 });
 
 static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: NameSubsections)
-        {
-            if (std::to_underlying(row.kind) != index
-                || (index > 0 && row.id <= NameSubsections[index - 1].id))
-                return false;
-            ++index;
-        }
-        return index == NameKindCount;
-    }(),
+    meta::firstMisplacedRow<LastNameKind>(NameSubsections, &NameSubsection::kind) == meta::NoMisplacedRow
+        && std::ranges::adjacent_find(NameSubsections, std::ranges::greater_equal {}, &NameSubsection::id)
+               == NameSubsections.end(),
     "NameSubsections must hold one row per NameKind, at the index of its enumerator, in id order");
 
 /// One entry of a name map: an entity's index and its name.

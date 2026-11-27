@@ -13,6 +13,7 @@
 #include <isoline/Features.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/cli/FileAccess.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/TextLimits.hpp>
 
 // The verbs of the isoline tool, as table rows: what each is called, what it does, and the function
@@ -106,15 +107,8 @@ inline constexpr auto Refusals = std::to_array<RefusalRow>({
       .meaning = "a page size the text format cannot say" },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: Refusals)
-            if (static_cast<std::size_t>(row.refusal) != index++)
-                return false;
-        return index == static_cast<std::size_t>(LastRefusal) + 1;
-    }(),
-    "Refusals must hold one row per Refusal, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastRefusal>(Refusals, &RefusalRow::refusal) == meta::NoMisplacedRow,
+              "Refusals must hold one row per Refusal, at the index of its enumerator");
 
 /// The exit code a refusal ends a run with.
 /// @param refusal The refusal.
@@ -169,15 +163,9 @@ inline constexpr auto FeatureChoices = std::to_array<FeatureChoiceRow>({
     { .name = "wasm3", .choice = FeatureChoice::Wasm3, .features = FeatureSet::wasm3().withPrerequisites() },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: FeatureChoices)
-            if (static_cast<std::size_t>(row.choice) != index++)
-                return false;
-        return index == static_cast<std::size_t>(LastFeatureChoice) + 1;
-    }(),
-    "FeatureChoices must hold one row per FeatureChoice, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastFeatureChoice>(FeatureChoices, &FeatureChoiceRow::choice)
+                  == meta::NoMisplacedRow,
+              "FeatureChoices must hold one row per FeatureChoice, at the index of its enumerator");
 
 /// The proposals a FeatureChoice names.
 /// @param choice The choice.

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/Limits.hpp>
@@ -569,15 +570,8 @@ uint64_t Store::used(Limit limit) const noexcept
         { .limit = Limit::Steps,
           .held = [](Store const& store) noexcept -> uint64_t { return store._steps; } },
     });
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: Usages)
-                if (static_cast<std::size_t>(row.limit) != index++)
-                    return false;
-            return index == static_cast<std::size_t>(LastLimit) + 1;
-        }(),
-        "Usages must hold one row per Limit, at the index of its enumerator");
+    static_assert(meta::firstMisplacedRow<LastLimit>(Usages, &Usage::limit) == meta::NoMisplacedRow,
+                  "Usages must hold one row per Limit, at the index of its enumerator");
     return Usages[static_cast<std::size_t>(limit)].held(*this);
 }
 

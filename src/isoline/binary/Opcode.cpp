@@ -8,6 +8,8 @@
 #include <optional>
 #include <span>
 
+#include <isoline/meta/EnumRows.hpp>
+
 namespace isoline::binary
 {
 
@@ -73,18 +75,9 @@ namespace
         }(),
         "every opcode's prefix must have a row in PrefixTable");
 
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: OpcodeTable)
-            {
-                if (static_cast<std::size_t>(row.opcode) != index)
-                    return false;
-                ++index;
-            }
-            return true;
-        }(),
-        "OpcodeTable must hold each Opcode at the index of its enumerator");
+    static_assert(meta::firstMisplacedRow<LastOpcode>(OpcodeTable, &OpcodeInfo::opcode)
+                      == meta::NoMisplacedRow,
+                  "OpcodeTable must hold each Opcode at the index of its enumerator");
 
 } // namespace
 

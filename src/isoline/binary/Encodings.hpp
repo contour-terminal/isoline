@@ -11,6 +11,7 @@
 #include <isoline/Features.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 // The binary format's encodings, as tables: what the decoder reads and the encoder writes, so that one
 // is the other's inverse by construction. Adding an encoding is adding a row here.
@@ -131,15 +132,9 @@ inline constexpr auto ExternKinds = std::to_array<ExternKindRow>({
     { .kind = ExternKind::Tag, .required = Feature::ExceptionHandling },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: ExternKinds)
-            if (static_cast<std::size_t>(row.kind) != index++)
-                return false;
-        return index == static_cast<std::size_t>(LastExternKind) + 1;
-    }(),
-    "ExternKinds holds one row per kind byte, at the index of the ExternKind it decodes to");
+static_assert(meta::firstMisplacedRow<LastExternKind>(ExternKinds, &ExternKindRow::kind)
+                  == meta::NoMisplacedRow,
+              "ExternKinds holds one row per kind byte, at the index of the ExternKind it decodes to");
 
 /// What a try_table's catch clause is, by its kind byte.
 inline constexpr auto CatchKinds = std::to_array<CatchKind>({
@@ -383,7 +378,7 @@ static_assert(
         for (auto const& row: SectionEncodings)
             if (std::to_underlying(row.anchor) != ++anchor)
                 return false;
-        return anchor == std::to_underlying(SectionAnchor::Data);
+        return anchor == std::to_underlying(LastSectionAnchor);
     }(),
     "SectionEncodings lists one row per SectionAnchor after BeforeFirst, in the anchors' order");
 

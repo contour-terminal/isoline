@@ -20,6 +20,7 @@
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/interpreter/Numerics.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
@@ -628,7 +629,7 @@ namespace
     using Evaluator = std::
         variant<std::monostate, UnaryFn, BinaryFn, TernaryFn, TestFn, ShiftFn, SplatFn, ExtractFn, ReplaceFn>;
 
-    static_assert(std::variant_size_v<Evaluator> == static_cast<std::size_t>(LastSimdShape) + 1,
+    static_assert(meta::sizedByEnum<LastSimdShape>(std::variant_size_v<Evaluator>),
                   "Evaluator holds one alternative per SimdShape, in its order");
 
     /// One SIMD operator: the instruction and its evaluator.

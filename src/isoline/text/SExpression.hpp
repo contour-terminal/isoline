@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -12,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/Lexer.hpp>
 #include <isoline/text/TextError.hpp>
 #include <isoline/text/TextLimits.hpp>
@@ -75,17 +78,10 @@ inline constexpr auto KnownAnnotations = std::to_array<KnownAnnotation>({
 });
 
 static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: KnownAnnotations)
-        {
-            if (std::to_underlying(row.kind) != index
-                || (index > 0 && row.id <= KnownAnnotations[index - 1].id))
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastAnnotationKind) + 1;
-    }(),
+    meta::firstMisplacedRow<LastAnnotationKind>(KnownAnnotations, &KnownAnnotation::kind)
+            == meta::NoMisplacedRow
+        && std::ranges::adjacent_find(KnownAnnotations, std::ranges::greater_equal {}, &KnownAnnotation::id)
+               == KnownAnnotations.end(),
     "KnownAnnotations must hold one row per AnnotationKind, at the index of its enumerator, in id order");
 
 /// What an annotation id means.

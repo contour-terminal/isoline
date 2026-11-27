@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 
+#include <isoline/meta/EnumRows.hpp>
+
 // A verb's command line: its options, as table rows, and its one operand, the input.
 namespace isoline::cli
 {
@@ -49,15 +51,9 @@ inline constexpr auto VerbOptions = std::to_array<VerbOptionRow>({
       .help = "The proposals the input may use: all (the default) or wasm3." },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: VerbOptions)
-            if (static_cast<std::size_t>(row.option) != index++)
-                return false;
-        return index == static_cast<std::size_t>(LastVerbOption) + 1;
-    }(),
-    "VerbOptions must hold one row per VerbOption, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastVerbOption>(VerbOptions, &VerbOptionRow::option)
+                  == meta::NoMisplacedRow,
+              "VerbOptions must hold one row per VerbOption, at the index of its enumerator");
 
 /// A verb's command line, parsed.
 struct VerbArguments

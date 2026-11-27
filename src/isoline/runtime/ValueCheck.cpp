@@ -12,6 +12,7 @@
 #include <variant>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -53,15 +54,9 @@ namespace
         { .kind = RefKind::Exn, .top = AbstractHeapType::Exn, .referent = Referent::Exception },
     });
 
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: ReferenceTable)
-                if (static_cast<std::size_t>(row.kind) != index++)
-                    return false;
-            return index == static_cast<std::size_t>(LastRefKind) + 1;
-        }(),
-        "ReferenceTable must hold one row per RefKind, at the index of its enumerator");
+    static_assert(meta::firstMisplacedRow<LastRefKind>(ReferenceTable, &ReferenceRow::kind)
+                      == meta::NoMisplacedRow,
+                  "ReferenceTable must hold one row per RefKind, at the index of its enumerator");
 
     /// Which non-null references of its hierarchy a heap of some rank accepts.
     enum class Acceptance : uint8_t
@@ -87,15 +82,9 @@ namespace
         { .rank = HeapRank::BelowAll, .acceptance = Acceptance::None },
     });
 
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: RankTable)
-                if (static_cast<std::size_t>(row.rank) != index++)
-                    return false;
-            return index == static_cast<std::size_t>(validate::LastHeapRank) + 1;
-        }(),
-        "RankTable must hold one row per HeapRank, at the index of its enumerator");
+    static_assert(meta::firstMisplacedRow<validate::LastHeapRank>(RankTable, &RankRow::rank)
+                      == meta::NoMisplacedRow,
+                  "RankTable must hold one row per HeapRank, at the index of its enumerator");
 
     /// The hierarchy a value's heap belongs to, which the value may name arbitrarily: nullopt for
     /// bot, which belongs to none, and for a heap no AbstractHeapType names.

@@ -14,6 +14,7 @@
 
 #include <isoline/Features.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::validate
 {
@@ -84,11 +85,9 @@ inline constexpr auto AddressBoundTable = std::to_array<AddressBoundRow>({
     { .addressType = binary::AddressType::I64, .tableBound = "2^64-1 for i64" },
 });
 
-static_assert(AddressBoundTable[static_cast<std::size_t>(binary::AddressType::I32)].addressType
-                      == binary::AddressType::I32
-                  && AddressBoundTable[static_cast<std::size_t>(binary::AddressType::I64)].addressType
-                         == binary::AddressType::I64
-                  && AddressBoundTable.size() == static_cast<std::size_t>(binary::LastAddressType) + 1,
+static_assert(meta::firstMisplacedRow<binary::LastAddressType>(AddressBoundTable,
+                                                               &AddressBoundRow::addressType)
+                  == meta::NoMisplacedRow,
               "AddressBoundTable holds one row per AddressType, at the index of its enumerator");
 
 /// The bound a memory size error spells for one address type and page size.
@@ -118,7 +117,7 @@ inline constexpr auto MemoryBoundTable = std::to_array<MemoryBoundRow>({
 [[nodiscard]] constexpr uint32_t memoryBoundRow(binary::AddressType addressType,
                                                 uint8_t pageSizeLog2) noexcept
 {
-    constexpr auto AddressTypeCount = uint32_t { 2 };
+    constexpr auto AddressTypeCount = static_cast<uint32_t>(meta::EnumeratorCount<binary::LastAddressType>);
     auto const bytePages = pageSizeLog2 == 0 ? AddressTypeCount : 0;
     return bytePages + static_cast<uint32_t>(addressType);
 }
@@ -233,16 +232,8 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
 });
 
 static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: ValidationErrorTable)
-        {
-            if (static_cast<std::size_t>(row.code) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastValidationErrorCode) + 1;
-    }(),
+    meta::firstMisplacedRow<LastValidationErrorCode>(ValidationErrorTable, &ValidationErrorRow::code)
+        == meta::NoMisplacedRow,
     "ValidationErrorTable must hold one row per ValidationErrorCode, at the index of its enumerator");
 
 /// ValidationError::function of an error outside any function body: in a type, an import, a table,
@@ -278,14 +269,14 @@ inline constexpr auto AbstractHeapTypeNames = std::to_array<std::string_view>({
     "",
 });
 
-static_assert(AbstractHeapTypeNames.size() == static_cast<std::size_t>(binary::LastAbstractHeapType) + 1,
+static_assert(meta::sizedByEnum<binary::LastAbstractHeapType>(AbstractHeapTypeNames.size()),
               "AbstractHeapTypeNames holds one name per AbstractHeapType");
 
 /// The text format's spelling of a number or vector type, by ValueKind: I32 through V128, every kind
 /// but Ref.
 inline constexpr auto NumberNames = std::to_array<std::string_view>({ "i32", "i64", "f32", "f64", "v128" });
 
-static_assert(NumberNames.size() == static_cast<std::size_t>(binary::ValueKind::V128) + 1,
+static_assert(meta::sizedByEnum<binary::ValueKind::V128>(NumberNames.size()),
               "NumberNames holds one name per ValueKind, I32 through V128");
 
 /// The text format's spelling of @p type, after valid.ml's string_of_valtype: i32, v128,

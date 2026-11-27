@@ -158,6 +158,11 @@
 # src/isoline/c/Error.cpp's line entry was lowered from 99.15 to 96.82 when the immortal error moved into a holder that never
 # destroys it (Task 7 fix round 1): its constructor and destructor, three lines, run at compile time and at exit, and are the
 # immortal-error-lifetime exclusion. No line a test reached lost its coverage.
+#
+# src/isoline/runtime/Store.cpp's line entry was lowered from 99.70 to 99.69 (663 of 665, from 670 of 672) when Store::used()'s
+# check of its Usages table moved onto meta::firstMisplacedRow: the hand-written loop's nine lines, covered because the
+# static_assert sits in a function the tests run, became two. Its two uncovered lines are the ones they were, the bad-alloc
+# exclusion's; no line lost its coverage.
 
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
@@ -247,7 +252,7 @@ src/isoline/runtime/Limits.hpp                   100.00 -
 src/isoline/runtime/LinearMemory.cpp             88.57 100.00
 src/isoline/runtime/LinearMemory.hpp             100.00 -
 src/isoline/runtime/Segment.hpp                  100.00 100.00
-src/isoline/runtime/Store.cpp                    99.70 84.34
+src/isoline/runtime/Store.cpp                    99.69 84.34
 src/isoline/runtime/Store.hpp                    100.00 94.11
 src/isoline/runtime/Trap.hpp                     100.00 75.00
 src/isoline/runtime/Value.hpp                    100.00 94.44

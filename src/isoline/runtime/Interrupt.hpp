@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/runtime/Value.hpp>
 
 namespace isoline::runtime
@@ -143,18 +144,9 @@ inline constexpr auto PollSiteTable = std::to_array<PollSiteRow>({
       .charge = StepCharge::OneStep },
 });
 
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: PollSiteTable)
-        {
-            if (static_cast<std::size_t>(row.site) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(LastPollSite) + 1;
-    }(),
-    "PollSiteTable must hold one row per PollSite, at the index of its enumerator");
+static_assert(meta::firstMisplacedRow<LastPollSite>(PollSiteTable, &PollSiteRow::site)
+                  == meta::NoMisplacedRow,
+              "PollSiteTable must hold one row per PollSite, at the index of its enumerator");
 
 /// Observes every poll of a store: what poll-counting tests and profilers use.
 class IPollObserver

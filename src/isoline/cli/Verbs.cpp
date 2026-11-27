@@ -22,6 +22,7 @@
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/cli/FileAccess.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/ModuleWriter.hpp>
 #include <isoline/text/TextError.hpp>
 #include <isoline/text/TextLimits.hpp>
@@ -206,15 +207,9 @@ namespace
           .message = "memory page size 2^32 or more cannot be written as text" },
     });
 
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: WriteRefusals)
-                if (static_cast<std::size_t>(row.error) != index++)
-                    return false;
-            return index == static_cast<std::size_t>(text::LastWriteError) + 1;
-        }(),
-        "WriteRefusals must hold one row per WriteError, at the index of its enumerator");
+    static_assert(meta::firstMisplacedRow<text::LastWriteError>(WriteRefusals, &WriteRefusal::error)
+                      == meta::NoMisplacedRow,
+                  "WriteRefusals must hold one row per WriteError, at the index of its enumerator");
 
     /// What a verb writes.
     enum class OutputContent : uint8_t

@@ -88,6 +88,7 @@ target_sources(isoline_core
             interpreter/Numerics.hpp
             interpreter/ReferenceInterpreter.hpp
             interpreter/Simd.hpp
+            meta/EnumRows.hpp
             runtime/Abrupt.hpp
             runtime/FloatEnvironment.hpp
             runtime/HostFunction.hpp
@@ -117,13 +118,13 @@ add_subdirectory(text)
 add_subdirectory(cli)
 
 # Module isoline: the public names of isoline_core's header set, re-exported by the generated isoline.cppm.
-# binary, runtime, validate and interpreter are internal: isoline::api re-exports what of them is public.
+# binary, runtime, validate, interpreter and meta are internal: isoline::api re-exports what of them is public.
 isoline_add_module(
     NAME isoline
     LIBRARY isoline_core
     SOURCE isoline.cppm
     NAMESPACES isoline isoline::api isoline::config
-    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter)
+    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta)
 
 # The C API, a library of its own over isoline_core, with its own C++ tests (src/isoline/c/).
 if(ISOLINE_C_API)

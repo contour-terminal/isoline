@@ -8,6 +8,7 @@
 #include <variant>
 
 #include <isoline/api/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 /// The handles of a store's entities: what an instance exports (Instance::exportAt()) and what an
 /// embedder reads and writes through the store (Store::globalValue(), Store::tableGet(), …).
@@ -269,7 +270,7 @@ static_assert(std::is_same_v<ExternAlternative<ExternKind::Table>, Table>, "Exte
 static_assert(std::is_same_v<ExternAlternative<ExternKind::Memory>, Memory>, "Extern follows ExternKind");
 static_assert(std::is_same_v<ExternAlternative<ExternKind::Global>, Global>, "Extern follows ExternKind");
 static_assert(std::is_same_v<ExternAlternative<ExternKind::Tag>, Tag>, "Extern follows ExternKind");
-static_assert(std::variant_size_v<Extern> == std::to_underlying(binary::LastExternKind) + 1,
+static_assert(meta::sizedByEnum<binary::LastExternKind>(std::variant_size_v<Extern>),
               "one Extern alternative per ExternKind");
 
 } // namespace isoline::api
