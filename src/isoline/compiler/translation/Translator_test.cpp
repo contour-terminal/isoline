@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <memory_resource>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1034,31 +1036,40 @@ ModuleBuilder wideUnionOf(uint32_t locals)
     return oneFunction(FuncType { .params = { I32 }, .results = {} }, std::vector(locals, I32), body);
 }
 
-/// The fastest of three translations of @p builder's function 0, in seconds.
-double translationSeconds(ModuleBuilder const& builder)
+/// The fastest translation of function 0 of each of @p builders, in seconds, from runs that interleave
+/// them (each builder once per round, five rounds): a load burst on the machine then slows every builder
+/// alike rather than the one whose runs it happens to overlap.
+std::vector<double> interleavedTranslationSeconds(std::span<ModuleBuilder const> builders)
 {
-    auto loaded = ValidatedModule::load(builder.build(), FeatureSet::all(), isoline::binary::DecodeLimits {});
-    REQUIRE(loaded.has_value());
-    auto const module = std::move(*loaded);
-    auto best = std::numeric_limits<double>::max();
-    for ([[maybe_unused]] auto const run: std::views::iota(0, 3))
+    auto modules = std::vector<std::shared_ptr<ValidatedModule const>> {};
+    for (auto const& builder: builders)
     {
-        auto memory = std::pmr::monotonic_buffer_resource {};
-        auto const index = ModuleIndex { module->module(), memory };
-        auto const cancellation = CompileCancellation {};
-        auto const limits = CompileLimits {};
-        auto const start = std::chrono::steady_clock::now();
-        auto const translated = translate(TranslationInput { .module = *module,
-                                                             .index = index,
-                                                             .codeIndex = 0,
-                                                             .mode = ExecutionMode::Production,
-                                                             .limits = limits,
-                                                             .cancellation = cancellation },
-                                          memory);
-        auto const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        REQUIRE(translated.has_value());
-        best = std::min(best, seconds);
+        auto loaded =
+            ValidatedModule::load(builder.build(), FeatureSet::all(), isoline::binary::DecodeLimits {});
+        REQUIRE(loaded.has_value());
+        modules.push_back(std::move(*loaded));
     }
+    auto best = std::vector<double>(modules.size(), std::numeric_limits<double>::max());
+    for ([[maybe_unused]] auto const round: std::views::iota(0, 5))
+        for (auto const [position, module]: core::views::enumerate(modules))
+        {
+            auto memory = std::pmr::monotonic_buffer_resource {};
+            auto const index = ModuleIndex { module->module(), memory };
+            auto const cancellation = CompileCancellation {};
+            auto const limits = CompileLimits {};
+            auto const start = std::chrono::steady_clock::now();
+            auto const translated = translate(TranslationInput { .module = *module,
+                                                                 .index = index,
+                                                                 .codeIndex = 0,
+                                                                 .mode = ExecutionMode::Production,
+                                                                 .limits = limits,
+                                                                 .cancellation = cancellation },
+                                              memory);
+            auto const seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            REQUIRE(translated.has_value());
+            best[position] = std::min(best[position], seconds);
+        }
     return best;
 }
 
@@ -1069,8 +1080,10 @@ TEST_CASE("Translator.sealTimeIsLinear", "[.timing]")
     // One edge passing k locals and k edges passing none, into one end: the seal costs what the edges
     // passed, k, not edges × union, k². Pinned: doubling k at most triples the translation time. Its own
     // ctest row, run serially (tests/CMakeLists.txt).
-    auto const small = translationSeconds(wideUnionOf(10'000));
-    auto const large = translationSeconds(wideUnionOf(20'000));
+    auto const builders = std::to_array({ wideUnionOf(10'000), wideUnionOf(20'000) });
+    auto const seconds = interleavedTranslationSeconds(builders);
+    auto const small = seconds[0];
+    auto const large = seconds[1];
     INFO("translation: " << small << " s at k = 10'000, " << large << " s at k = 20'000");
     CHECK(large / small < 3.0);
 }
