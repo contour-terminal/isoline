@@ -3,6 +3,7 @@
 
 #include <core/Assert.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -45,6 +47,76 @@ using TypeId = uint32_t;
 
 class IHostFunction; // HostFunction.hpp
 class Store;
+
+/// A memory's bytes as generated code reads them: where they start and how many there are. Laid out
+/// for generated code, which loads both fields at fixed offsets.
+struct MemoryView
+{
+    std::byte* base = nullptr; ///< The first byte.
+    uint64_t bytes = 0;        ///< How many bytes there are: a whole number of pages.
+};
+static_assert(std::is_standard_layout_v<MemoryView> && std::is_trivially_copyable_v<MemoryView>);
+static_assert(offsetof(MemoryView, base) == 0);
+static_assert(offsetof(MemoryView, bytes) == sizeof(std::byte*));
+static_assert(sizeof(MemoryView) == sizeof(std::byte*) + sizeof(uint64_t));
+
+/// A table's slots as generated code reads them: where they start and how many there are. Laid out
+/// for generated code, which loads both fields at fixed offsets.
+struct TableView
+{
+    Ref* data = nullptr; ///< The first slot.
+    uint64_t size = 0;   ///< How many slots there are.
+};
+static_assert(std::is_standard_layout_v<TableView> && std::is_trivially_copyable_v<TableView>);
+static_assert(offsetof(TableView, data) == 0);
+static_assert(offsetof(TableView, size) == sizeof(Ref*));
+static_assert(sizeof(TableView) == sizeof(Ref*) + sizeof(uint64_t));
+
+/// A function's dispatch row: what a call through a function address reaches. The store adds one row
+/// with every function (Store::addHostFunction(), Store::addModuleFunction()) and writes its typeId;
+/// the executor that runs the function's instance writes code and context (Store::bindDispatch()) when
+/// it prepares the instance (ICodeExecutor::prepareInstance()). Laid out for generated code, which
+/// loads every field at a fixed offset.
+struct FunctionDispatch
+{
+    /// The function's entry, the executor's to define; null for a host function, whose calls take the
+    /// host-call path, and for a function no executor bound.
+    void const* code = nullptr;
+    /// What the code runs against, the executor's to define (its instance context); null when unbound.
+    void const* context = nullptr;
+    TypeId typeId = 0; ///< The function's type, which call_indirect compares.
+};
+static_assert(std::is_standard_layout_v<FunctionDispatch> && std::is_trivially_copyable_v<FunctionDispatch>);
+static_assert(offsetof(FunctionDispatch, code) == 0);
+static_assert(offsetof(FunctionDispatch, context) == sizeof(void const*));
+static_assert(offsetof(FunctionDispatch, typeId) == 2 * sizeof(void const*));
+
+/// How many dispatch rows a chunk holds: rows live in chunks of this many, so that adding functions
+/// never moves a row. Function address a is row a % DispatchChunkRows of chunk a / DispatchChunkRows.
+inline constexpr auto DispatchChunkRows = uint32_t { 4'096 };
+
+/// Every function's dispatch row (FunctionDispatch), by function address, as generated code reads
+/// them: through the chunk of a row, then the row in it. The store keeps it at a fixed address
+/// (Store::dispatchView()); adding a function may reallocate chunks, the array of chunk pointers, so
+/// generated code reloads it after every call into the runtime.
+struct DispatchView
+{
+    FunctionDispatch* const* chunks = nullptr; ///< The chunks, each DispatchChunkRows rows.
+    uint32_t rows = 0;                         ///< How many rows exist: every FuncAddr below it.
+};
+static_assert(std::is_standard_layout_v<DispatchView> && std::is_trivially_copyable_v<DispatchView>);
+static_assert(offsetof(DispatchView, chunks) == 0);
+static_assert(offsetof(DispatchView, rows) == sizeof(FunctionDispatch* const*));
+
+/// Who holds a store's execution budget: the steps and stack values left (PollGate::lend()).
+enum class BudgetState : uint8_t
+{
+    /// The store's own counts are current: Store::poll(), chargeFrame() and releaseFrame() may run.
+    Settled,
+    /// Lent to an executor, which counts both down itself until it settles (PollGate::settle()); the
+    /// store's counts are stale, so nothing may poll or charge through it.
+    Lent,
+};
 class ExceptionRootsRegistration;
 
 /// The exception @p value refers to.
@@ -454,12 +526,14 @@ class Store
 
     /// Charges a frame's static stack cost (StoreLimits::maxStackValues): what an executor does at
     /// every callee entry. The charged sum is the store's, so it spans the invocations host
-    /// functions nest: re-entry cannot multiply the cap.
+    /// functions nest: re-entry cannot multiply the cap. Precondition (checked): the budget is
+    /// Settled (budgetState()).
     /// @param cost The frame's cost in stack values.
     /// @return Nothing, the cost charged; or Trap{CallStackExhausted}, nothing charged, when it
     ///         would exceed maxStackValues.
     [[nodiscard]] std::expected<void, Trap> chargeFrame(uint64_t cost) noexcept
     {
+        Require(_budgetState == BudgetState::Settled);
         if (cost > _limits.maxStackValues - _chargedStackValues)
             return trap(TrapCode::CallStackExhausted);
         _chargedStackValues += cost;
@@ -467,10 +541,12 @@ class Store
     }
 
     /// Gives a frame's charge back (chargeFrame()): what an executor does at every frame's end,
-    /// however it ends. Precondition (checked): @p cost is at most what is charged.
+    /// however it ends. Precondition (checked): the budget is Settled (budgetState()), and @p cost is
+    /// at most what is charged.
     /// @param cost The cost chargeFrame() charged for the frame.
     void releaseFrame(uint64_t cost) noexcept
     {
+        Require(_budgetState == BudgetState::Settled);
         Require(cost <= _chargedStackValues);
         _chargedStackValues -= cost;
     }
@@ -478,6 +554,26 @@ class Store
     /// The static stack costs of the frames in progress, over every invocation (chargeFrame()).
     /// @return Their sum; 0 when no frame is in progress.
     [[nodiscard]] uint64_t chargedStackValues() const noexcept { return _chargedStackValues; }
+
+    /// Who holds the execution budget: the store, or an executor it is lent to (PollGate::lend()).
+    /// @return Settled unless a lease is outstanding.
+    [[nodiscard]] BudgetState budgetState() const noexcept { return _budgetState; }
+
+    /// Every function's dispatch row, at an address that stays fixed as long as the store: what
+    /// generated code reads to call through a function address.
+    /// @return The view; its rows are functionCount().
+    [[nodiscard]] DispatchView const& dispatchView() const noexcept { return _dispatchView; }
+
+    /// Binds a module function's dispatch row to its executor's code and context: what an executor
+    /// does for its instance's functions when it prepares the instance
+    /// (ICodeExecutor::prepareInstance()). The row's typeId stays as the store wrote it.
+    ///
+    /// Precondition (checked): @p address is a function of the store, and a module function: a host
+    /// function's row keeps null code, which generated code takes for the host-call path.
+    /// @param address The function's address.
+    /// @param code Its entry, as its executor defines it.
+    /// @param context What its code runs against, as its executor defines it.
+    void bindDispatch(FuncAddr address, void const* code, void const* context) noexcept;
 
     /// How many invocations are in progress (InvocationScope): the outermost and those nested in it.
     /// @return Their count; 0 when none is.
@@ -499,13 +595,15 @@ class Store
 
     /// Polls: what an executor calls at every PollSite. It notifies the poll observer, checks the
     /// interrupt, then charges what the site's PollSiteTable row charges against
-    /// StoreLimits::maxSteps: at one poll, Interrupted beats StepLimitExceeded.
+    /// StoreLimits::maxSteps: at one poll, Interrupted beats StepLimitExceeded. Precondition
+    /// (checked): the budget is Settled (budgetState()).
     /// @param site Where execution polls.
     /// @return Nothing to go on; Trap{Interrupted} once the store was interrupted; or
     ///         Trap{StepLimitExceeded}, no step charged, when the outermost invocation took
     ///         maxSteps steps already.
     [[nodiscard]] std::expected<void, Trap> poll(PollSite site) noexcept
     {
+        Require(_budgetState == BudgetState::Settled);
         if (_pollObserver != nullptr)
             _pollObserver->onPoll(site);
         if (_interrupt->state() == InterruptState::Interrupted)
@@ -671,6 +769,10 @@ class Store
     /// @param steps Its steps, at most StoreLimits::maxSteps.
     void setStepsTaken(uint64_t steps) noexcept { _steps = steps; }
 
+    /// Adds @p function and its dispatch row, whose typeId it writes.
+    /// @return Its address.
+    [[nodiscard]] FuncAddr addFunction(FunctionInstance function);
+
     /// What an exception arena slot holds.
     enum class ExceptionSlot : uint8_t
     {
@@ -714,7 +816,13 @@ class Store
     uint32_t _invocationDepth = 0;    ///< The invocations in progress, nested ones included.
     uint64_t _steps = 0;              ///< The steps the latest outermost invocation took.
     uint64_t _chargedStackValues = 0; ///< The static costs of the frames in progress.
+    BudgetState _budgetState = BudgetState::Settled; ///< Who holds the steps and stack values left.
     std::deque<FunctionInstance> _functions;
+    /// The dispatch rows' chunks, DispatchChunkRows rows each, owned; rows never move.
+    std::vector<std::unique_ptr<std::array<FunctionDispatch, DispatchChunkRows>>> _dispatchChunks;
+    /// The chunks' first rows, in chunk order: what _dispatchView.chunks points at.
+    std::vector<FunctionDispatch*> _dispatchChunkRows;
+    DispatchView _dispatchView; ///< The rows as generated code reads them, at a fixed address.
     std::deque<TableInstance> _tables;
     std::deque<MemoryInstance> _memories;
     std::deque<GlobalInstance> _globals;

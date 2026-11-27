@@ -138,6 +138,57 @@ class StubExecutor final: public isoline::runtime::ICodeExecutor
     ExecutionEngine _engine;
 };
 
+/// Records when the instantiation prepares an instance (ICodeExecutor::prepareInstance()) and what the
+/// store held of it then, and which functions it is asked to invoke, in one order.
+class PreparingExecutor final: public isoline::runtime::ICodeExecutor
+{
+  public:
+    /// What the executor was asked to do.
+    enum class Event : uint8_t
+    {
+        Prepared, ///< prepareInstance() ran.
+        Invoked,  ///< invoke() ran.
+    };
+
+    /// The store's state of the instance when prepareInstance() ran.
+    struct Preparation
+    {
+        uint32_t moduleInstance;              ///< The instance prepared.
+        std::size_t instances;                ///< How many instances the store held.
+        std::vector<FuncAddr> functions;      ///< Its functions.
+        std::size_t globals;                  ///< How many globals it had.
+        std::vector<std::vector<Ref>> tables; ///< Its tables' elements.
+    };
+
+    std::vector<Event> events;             ///< Every event, in order.
+    std::vector<Preparation> preparations; ///< Every preparation, in order.
+
+    [[nodiscard]] ExecutionEngine engine() const noexcept override { return ExecutionEngine::Reference; }
+
+    void prepareInstance(Store& store, uint32_t moduleInstance) noexcept override
+    {
+        events.push_back(Event::Prepared);
+        auto const& instance = store.moduleInstance(moduleInstance);
+        auto tables = std::vector<std::vector<Ref>> {};
+        for (auto const table: instance.tables)
+            tables.push_back(store.table(table).elements);
+        preparations.push_back(Preparation { .moduleInstance = moduleInstance,
+                                             .instances = store.moduleInstanceCount(),
+                                             .functions = instance.functions,
+                                             .globals = instance.globals.size(),
+                                             .tables = std::move(tables) });
+    }
+
+    [[nodiscard]] std::expected<void, Abrupt> invoke(Store& /*store*/,
+                                                     FuncAddr /*function*/,
+                                                     std::span<Value const> /*args*/,
+                                                     std::span<Value> /*results*/) override
+    {
+        events.push_back(Event::Invoked);
+        return {};
+    }
+};
+
 /// Code of the engine it was made for, holding nothing.
 class StubCode final: public isoline::runtime::ModuleCode
 {
@@ -263,6 +314,66 @@ TEST_CASE("Contract.Instantiate.referenceCodeIsNull", "[.contract]")
                               std::make_shared<StubCode const>(ExecutionEngine::Reference),
                               {});
     FAIL("SURVIVED: instantiate accepted code that claims the reference engine");
+}
+
+TEST_CASE("Instantiate.preparesBeforeAnyElementIsWritten")
+{
+    // The executor prepares the instance once its functions and globals exist and before any table is
+    // written: an initialized table's fill, the active segments, the start function. A segment that
+    // traps midway leaves the instance in the store, and its function in an imported table, so the
+    // instance must already be prepared when any other instance can reach that function.
+    auto const nullFunc = Ref { .kind = RefKind::Null, .heap = FuncRef.heap, .address = 0 };
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .importTable("m", "t", TableType { .element = FuncRef, .limits = atLeast(2) })
+        .function(0, {}, {})
+        .function(0, {}, {})
+        .table(TableType { .element = FuncRef, .limits = atLeast(1) }, { 0xD2, 0x00 }) // ref.func 0
+        .global(GlobalType { .type = isoline::binary::I32, .mutability = Mutability::Var }, i32Const(42));
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const imported = store.addTable(TableType { .element = FuncRef, .limits = atLeast(2) }, nullFunc);
+    REQUIRE(imported.has_value());
+    auto const imports = std::vector { ExternValue { .kind = ExternKind::Table, .address = *imported } };
+
+    SECTION("a segment that traps midway")
+    {
+        builder
+            .element({ 0x00, 0x41, 0x01, 0x0B, 0x01, 0x01 })        // t[1] = f1
+            .element({ 0x00, 0x41, 0x01, 0x0B, 0x02, 0x00, 0x00 }); // t[1..3): one slot too far
+        auto executor = PreparingExecutor {};
+        auto const result = instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), imports);
+        CHECK(errorOf(result) == InstantiationError { Trap { TrapCode::OutOfBoundsTableAccess } });
+        REQUIRE(store.moduleInstanceCount() == 1);
+        auto const& instance = store.moduleInstance(0);
+        REQUIRE(executor.preparations.size() == 1);
+        auto const& prepared = executor.preparations.front();
+        CHECK(executor.events == std::vector { PreparingExecutor::Event::Prepared });
+        CHECK(prepared.moduleInstance == 0);
+        CHECK(prepared.instances == 1);
+        CHECK(prepared.functions == instance.functions);
+        CHECK(prepared.functions.size() == 2);
+        CHECK(prepared.globals == 1);
+        // Nothing was written when it prepared; the first segment was written after.
+        CHECK(prepared.tables
+              == std::vector { std::vector { nullFunc, nullFunc }, std::vector { nullFunc } });
+        auto const& elements = store.table(*imported).elements;
+        CHECK(elements[1]
+              == Ref { .kind = RefKind::Func, .heap = FuncRef.heap, .address = instance.functions[1] });
+        CHECK(store.table(instance.tables[1]).elements[0].kind == RefKind::Func);
+    }
+
+    SECTION("before the start function")
+    {
+        builder.start(1);
+        auto executor = PreparingExecutor {};
+        auto const result = instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), imports);
+        REQUIRE(result.has_value());
+        CHECK(executor.events
+              == std::vector { PreparingExecutor::Event::Prepared, PreparingExecutor::Event::Invoked });
+        REQUIRE(executor.preparations.size() == 1);
+        CHECK(executor.preparations.front().moduleInstance == *result);
+    }
 }
 
 TEST_CASE("Instantiate.unknownImport")

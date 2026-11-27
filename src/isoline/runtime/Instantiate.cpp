@@ -342,6 +342,10 @@ namespace
                     allocateTags();
                     return allocateGlobals();
                 })
+                // The instance's functions and globals exist; no table is written yet, so whatever
+                // reaches one of its functions through a table, even after a segment traps, finds the
+                // instance prepared.
+                .transform([this] { _executor.prepareInstance(_store, _address); })
                 .and_then([this] { return fillInitializedTables(); })
                 .and_then([this] { return evaluateElements(); })
                 .transform([this] {

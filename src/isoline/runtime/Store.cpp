@@ -239,18 +239,43 @@ std::expected<FuncAddr, LimitExceeded> Store::addHostFunction(binary::FuncType t
     if (!findType(type) && typeUnits(type) > _limits.maxTypes - used(Limit::Types))
         return std::unexpected { LimitExceeded { .limit = Limit::Types } };
     auto const typeId = internType(std::move(type));
-    return append(_functions,
-                  FunctionInstance {
-                      .typeId = typeId, .moduleInstance = 0, .codeIndex = 0, .host = std::move(function) });
+    return addFunction(FunctionInstance {
+        .typeId = typeId, .moduleInstance = 0, .codeIndex = 0, .host = std::move(function) });
 }
 
 FuncAddr Store::addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32_t codeIndex)
 {
     Require(typeId < _types.size());
-    return append(
-        _functions,
-        FunctionInstance {
-            .typeId = typeId, .moduleInstance = moduleInstance, .codeIndex = codeIndex, .host = {} });
+    return addFunction(FunctionInstance {
+        .typeId = typeId, .moduleInstance = moduleInstance, .codeIndex = codeIndex, .host = {} });
+}
+
+FuncAddr Store::addFunction(FunctionInstance function)
+{
+    // The chunk comes first, so that running out of memory for it adds no function without a row.
+    auto const rows = _dispatchView.rows;
+    if (rows / DispatchChunkRows == _dispatchChunks.size())
+    {
+        _dispatchChunkRows.reserve(_dispatchChunks.size() + 1);
+        _dispatchChunks.push_back(std::make_unique<std::array<FunctionDispatch, DispatchChunkRows>>());
+        _dispatchChunkRows.push_back(_dispatchChunks.back()->data());
+        _dispatchView.chunks = _dispatchChunkRows.data();
+    }
+    auto const typeId = function.typeId;
+    auto const address = append(_functions, std::move(function));
+    _dispatchChunkRows[address / DispatchChunkRows][address % DispatchChunkRows] =
+        FunctionDispatch { .code = nullptr, .context = nullptr, .typeId = typeId };
+    _dispatchView.rows = address + 1;
+    return address;
+}
+
+void Store::bindDispatch(FuncAddr address, void const* code, void const* context) noexcept
+{
+    Require(address < _dispatchView.rows);
+    Require(!_functions[address].isHost());
+    auto& row = _dispatchChunkRows[address / DispatchChunkRows][address % DispatchChunkRows];
+    row.code = code;
+    row.context = context;
 }
 
 std::expected<TableAddr, AllocationError> Store::addTable(binary::TableType type, Ref init)

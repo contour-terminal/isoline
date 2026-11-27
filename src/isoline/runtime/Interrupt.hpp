@@ -43,9 +43,20 @@ class Interrupter
         return static_cast<InterruptState>(_state.load(std::memory_order_acquire));
     }
 
+    /// The interrupt's word itself, for generated code, which tests it at every poll with one plain
+    /// load and no other way: InterruptState::Running is 0, anything else is Interrupted. The load is
+    /// only a hint. Acting on an interrupt goes through Store::poll(), which reads state() with
+    /// acquire, so the argument holds on every target and not by x86-64's store order alone.
+    /// @return The word's address; stable, and valid as long as the interrupter.
+    [[nodiscard]] std::atomic<uint8_t> const* flagForGeneratedCode() const noexcept { return &_state; }
+
   private:
     std::atomic<uint8_t> _state { static_cast<uint8_t>(InterruptState::Running) };
     static_assert(std::atomic<uint8_t>::is_always_lock_free, "interrupt() must be wait-free");
+    static_assert(sizeof(std::atomic<uint8_t>) == sizeof(uint8_t),
+                  "generated code reads the interrupt word as one byte");
+    static_assert(static_cast<uint8_t>(InterruptState::Running) == 0,
+                  "generated code tests the interrupt word against 0");
 };
 
 /// The places every executor polls the store (Store::poll()): the rows of PollSiteTable, in order.

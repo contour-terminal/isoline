@@ -25,6 +25,7 @@
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/PollGate.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -45,6 +46,11 @@ using isoline::binary::TableType;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::runtime::AllocationError;
 using isoline::runtime::AllocationFailure;
+using isoline::runtime::BudgetState;
+using isoline::runtime::DispatchChunkRows;
+using isoline::runtime::DispatchView;
+using isoline::runtime::FuncAddr;
+using isoline::runtime::FunctionDispatch;
 using isoline::runtime::GrowthRecord;
 using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::I32;
@@ -1454,6 +1460,73 @@ TEST_CASE("Store.frameChargesCapTheirSum")
     CHECK(store.chargeFrame(10).has_value());
 }
 
+namespace
+{
+
+/// The dispatch row of @p address in @p view, as generated code finds it: chunk, then row in the chunk.
+FunctionDispatch const& dispatchRowOf(DispatchView const& view, FuncAddr address)
+{
+    REQUIRE(address < view.rows);
+    return view.chunks[address / DispatchChunkRows][address % DispatchChunkRows];
+}
+
+} // namespace
+
+TEST_CASE("Store.dispatchRowsAreStable")
+{
+    // Every function added gets a dispatch row with its TypeId and no code; adding more, across
+    // chunk boundaries, moves no row, and the view at its fixed address counts every one.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const& view = store.dispatchView();
+    CHECK(view.rows == 0);
+    auto const nullary = store.internType(FuncType {});
+    auto const unary = store.internType(FuncType { .params = { isoline::binary::I32 }, .results = {} });
+    auto const host = store.addHostFunction(FuncType {}, isoline::runtime::makeHostFunction(NoHost));
+    REQUIRE(host.has_value());
+    constexpr auto Count = uint32_t { 10'000 };
+    auto addresses = std::vector<FuncAddr> { *host };
+    auto rows = std::vector<FunctionDispatch const*> { &dispatchRowOf(view, *host) };
+    for (auto const index: std::views::iota(uint32_t { 1 }, Count))
+    {
+        auto const address = store.addModuleFunction(index % 2 == 0 ? nullary : unary, 0, index);
+        addresses.push_back(address);
+        rows.push_back(&dispatchRowOf(view, address));
+    }
+    REQUIRE(&store.dispatchView() == &view);
+    CHECK(view.rows == Count);
+    CHECK(view.rows == store.functionCount());
+    for (auto const index: std::views::iota(std::size_t { 0 }, addresses.size()))
+    {
+        auto const address = addresses[index];
+        INFO("function " << address);
+        auto const& current = dispatchRowOf(view, address);
+        REQUIRE(&current == rows[index]);
+        CHECK(current.typeId == store.function(address).typeId);
+        CHECK(current.code == nullptr);
+        CHECK(current.context == nullptr);
+    }
+}
+
+TEST_CASE("Store.bindDispatchWritesTheModuleFunctionsRow")
+{
+    // An executor binds a module function's code and context; no other row changes.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const typeId = store.internType(FuncType {});
+    auto const first = store.addModuleFunction(typeId, 0, 0);
+    auto const second = store.addModuleFunction(typeId, 0, 1);
+    auto const code = std::array<std::byte, 2> {};
+    auto const context = 7;
+    store.bindDispatch(second, &code, &context);
+    auto const& view = store.dispatchView();
+    CHECK(dispatchRowOf(view, second).code == &code);
+    CHECK(dispatchRowOf(view, second).context == &context);
+    CHECK(dispatchRowOf(view, second).typeId == typeId);
+    CHECK(dispatchRowOf(view, first).code == nullptr);
+    CHECK(dispatchRowOf(view, first).context == nullptr);
+}
+
 // The contract checks: each ends the process on purpose, so the unit run skips them and CTest runs
 // each alone (tests/CMakeLists.txt).
 
@@ -1516,4 +1589,64 @@ TEST_CASE("Contract.Store.grownMemoryKeepsItsTail", "[.contract]")
     REQUIRE(address.has_value());
     std::ignore = store.growMemory(*address, 1);
     FAIL("SURVIVED: a memory grew past the tail its size needs");
+}
+
+TEST_CASE("Contract.Store.lentBudgetForbidsStorePolls", "[.contract]")
+{
+    // While the budget is lent the store's step count is stale: a poll through it would charge
+    // against steps generated code has taken already.
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto gate = isoline::runtime::PollGate { store };
+    std::ignore = gate.lend();
+    REQUIRE(store.budgetState() == BudgetState::Lent);
+    std::ignore = store.poll(PollSite::LoopBackEdge);
+    FAIL("SURVIVED: a store poll while the budget was lent");
+}
+
+TEST_CASE("Contract.Store.lentBudgetForbidsChargingFrames", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto gate = isoline::runtime::PollGate { store };
+    std::ignore = gate.lend();
+    std::ignore = store.chargeFrame(1);
+    FAIL("SURVIVED: a frame charged through the store while the budget was lent");
+}
+
+TEST_CASE("Contract.Store.lentBudgetForbidsReleasingFrames", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    REQUIRE(store.chargeFrame(1).has_value());
+    auto gate = isoline::runtime::PollGate { store };
+    std::ignore = gate.lend();
+    store.releaseFrame(1);
+    FAIL("SURVIVED: a frame released through the store while the budget was lent");
+}
+
+TEST_CASE("Contract.Store.bindOnlyModuleFunctions", "[.contract]")
+{
+    // A host function's row keeps null code: compiled call_indirect takes that for CallHost.
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const host = store.addHostFunction(FuncType {}, isoline::runtime::makeHostFunction(NoHost));
+    REQUIRE(host.has_value());
+    auto const code = 1;
+    store.bindDispatch(*host, &code, nullptr);
+    FAIL("SURVIVED: a host function's dispatch row bound to code");
+}
+
+TEST_CASE("Contract.Store.bindOnlyExistingFunctions", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const code = 1;
+    store.bindDispatch(0, &code, nullptr);
+    FAIL("SURVIVED: a dispatch row bound past the last function");
 }

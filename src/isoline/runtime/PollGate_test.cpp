@@ -20,9 +20,11 @@
 #include <isoline/runtime/testing/ContractViolation.hpp>
 #include <isoline/runtime/testing/PollCounter.hpp>
 
+using isoline::runtime::BudgetState;
 using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::InvocationScope;
 using isoline::runtime::IPollObserver;
+using isoline::runtime::Lease;
 using isoline::runtime::Limit;
 using isoline::runtime::PollGate;
 using isoline::runtime::PollSite;
@@ -203,6 +205,99 @@ TEST_CASE("PollGate.unchargedSitesCostNothing")
     CHECK(invoked.store.used(Limit::Steps) == 1);
 }
 
+TEST_CASE("PollGate.lentStepsSettleExactly")
+{
+    // Generated code counts the lent steps down itself; settling writes back what it took, absolutely.
+    auto invoked = InvokedStore { StoreLimits { .maxStackValues = 50, .maxSteps = 100 } };
+    auto& store = invoked.store;
+    auto gate = PollGate { store };
+    REQUIRE(store.budgetState() == BudgetState::Settled);
+    auto const lent = gate.lend();
+    CHECK(store.budgetState() == BudgetState::Lent);
+    CHECK(lent.steps == 100);
+    CHECK(lent.stackValues == 50);
+    auto left = lent;
+    left.steps -= 30;
+    gate.settle(lent, left);
+    CHECK(store.budgetState() == BudgetState::Settled);
+    CHECK(store.used(Limit::Steps) == 30);
+    CHECK(store.chargedStackValues() == 0);
+
+    // The next lease lends what is left, and settling it untouched takes nothing more.
+    auto const again = gate.lend();
+    CHECK(again.steps == 70);
+    gate.settle(again, again);
+    CHECK(store.used(Limit::Steps) == 30);
+    CHECK(store.budgetState() == BudgetState::Settled);
+}
+
+TEST_CASE("PollGate.observerLendsNoSteps")
+{
+    // Under an observer every poll must reach Store::poll(): the lease lends no step, so generated
+    // code takes its slow path at every poll, and settling leaves the store's own count alone.
+    auto counter = PollCounter {};
+    auto invoked = InvokedStore { StoreLimits { .maxStackValues = 50, .maxSteps = 10 }, &counter };
+    auto& store = invoked.store;
+    REQUIRE(store.poll(PollSite::FunctionEntry).has_value());
+    REQUIRE(store.used(Limit::Steps) == 1);
+    auto gate = PollGate { store };
+    auto const lent = gate.lend();
+    CHECK(lent.steps == 0);
+    CHECK(lent.stackValues == 50);
+    gate.settle(lent, lent);
+    CHECK(store.used(Limit::Steps) == 1);
+    CHECK(counter.count(PollSite::FunctionEntry) == 1);
+}
+
+TEST_CASE("PollGate.chargeInOneLeaseReleaseInAnother")
+{
+    // A frame charged under one lease and released under a later one balances, and a frame the store
+    // charged before either lease stays charged throughout: stack values settle absolutely.
+    auto invoked = InvokedStore { StoreLimits { .maxStackValues = 100 } };
+    auto& store = invoked.store;
+    REQUIRE(store.chargeFrame(5).has_value());
+    auto gate = PollGate { store };
+
+    auto const first = gate.lend();
+    CHECK(first.stackValues == 95);
+    auto left = first;
+    left.stackValues -= 12; // a callee's frame, charged inline
+    gate.settle(first, left);
+    CHECK(store.chargedStackValues() == 17);
+
+    auto const second = gate.lend();
+    CHECK(second.stackValues == 83);
+    left = second;
+    left.stackValues += 12; // the same frame, released under this lease
+    gate.settle(second, left);
+    CHECK(store.chargedStackValues() == 5);
+    store.releaseFrame(5);
+    CHECK(store.chargedStackValues() == 0);
+}
+
+TEST_CASE("PollGate.pollAfterExhaustedLeaseSettlesExactly")
+{
+    // maxSteps 5: generated code takes 5 steps inline, then the sixth poll finds the countdown at 0
+    // and takes the slow path, which settles, polls through the store and lends again.
+    auto invoked = InvokedStore { StoreLimits { .maxSteps = 5 } };
+    auto& store = invoked.store;
+    auto gate = PollGate { store };
+    auto const lent = gate.lend();
+    REQUIRE(lent.steps == 5);
+    auto left = lent;
+    for ([[maybe_unused]] auto const poll: std::views::iota(0, 5))
+        --left.steps;
+    gate.settle(lent, left);
+    auto const slow = store.poll(PollSite::LoopBackEdge);
+    REQUIRE_FALSE(slow.has_value());
+    CHECK(slow.error().code == TrapCode::StepLimitExceeded);
+    CHECK(store.used(Limit::Steps) == 5);
+    auto const relent = gate.lend();
+    CHECK(relent.steps == 0);
+    gate.settle(relent, relent);
+    CHECK(store.used(Limit::Steps) == 5);
+}
+
 // The contract tests below end the process at a failed Require, so they are hidden from the unit run:
 // tests/CMakeLists.txt runs each in a process of its own and expects the Require's text
 // (isoline::runtime::testing::endAtContractViolation()).
@@ -229,4 +324,52 @@ TEST_CASE("Contract.PollGate.commitWithinTheBudget", "[.contract]")
     auto gate = PollGate { invoked.store };
     gate.commit(6);
     FAIL("SURVIVED: commit accepted more steps left than maxSteps");
+}
+
+TEST_CASE("Contract.PollGate.lendOnlyWhenSettled", "[.contract]")
+{
+    // A second lease over an unsettled one: the first lease's steps would be counted twice.
+    isoline::runtime::testing::endAtContractViolation();
+    auto invoked = InvokedStore { StoreLimits {} };
+    auto gate = PollGate { invoked.store };
+    std::ignore = gate.lend();
+    std::ignore = gate.lend();
+    FAIL("SURVIVED: a lease was lent over an unsettled one");
+}
+
+TEST_CASE("Contract.PollGate.settleOnlyALease", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    auto invoked = InvokedStore { StoreLimits {} };
+    auto gate = PollGate { invoked.store };
+    gate.settle(Lease { .steps = 0, .stackValues = 0 }, Lease { .steps = 0, .stackValues = 0 });
+    FAIL("SURVIVED: a settle without a lease");
+}
+
+TEST_CASE("Contract.PollGate.settleNoMoreStepsThanLent", "[.contract]")
+{
+    // More steps left than lent: a countdown that went up, which no poll does.
+    isoline::runtime::testing::endAtContractViolation();
+    auto invoked = InvokedStore { StoreLimits { .maxSteps = 10 } };
+    auto& store = invoked.store;
+    REQUIRE(store.poll(PollSite::LoopBackEdge).has_value());
+    auto gate = PollGate { store };
+    auto const lent = gate.lend();
+    auto left = lent;
+    ++left.steps;
+    gate.settle(lent, left);
+    FAIL("SURVIVED: a settle with more steps left than lent");
+}
+
+TEST_CASE("Contract.PollGate.settleWithinTheStackBudget", "[.contract]")
+{
+    // More stack values left than the budget holds: a release of a frame that was never charged.
+    isoline::runtime::testing::endAtContractViolation();
+    auto invoked = InvokedStore { StoreLimits { .maxStackValues = 10 } };
+    auto gate = PollGate { invoked.store };
+    auto const lent = gate.lend();
+    auto left = lent;
+    ++left.stackValues;
+    gate.settle(lent, left);
+    FAIL("SURVIVED: a settle with more stack values left than maxStackValues");
 }

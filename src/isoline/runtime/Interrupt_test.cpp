@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <memory>
 #include <thread>
@@ -35,6 +36,19 @@ TEST_CASE("Interrupter.isWaitFreeAndSticky")
     interrupter.interrupt();
     interrupter.interrupt();
     CHECK(interrupter.state() == InterruptState::Interrupted);
+}
+
+TEST_CASE("Interrupter.flagForGeneratedCodeReadsTheState")
+{
+    // Generated code tests the byte against 0 (Running) at every poll, through one stable address.
+    auto interrupter = Interrupter {};
+    auto const* flag = interrupter.flagForGeneratedCode();
+    REQUIRE(flag != nullptr);
+    CHECK(interrupter.flagForGeneratedCode() == flag);
+    CHECK(flag->load() == 0);
+    interrupter.interrupt();
+    CHECK(flag->load() != 0);
+    CHECK(flag->load() == static_cast<uint8_t>(InterruptState::Interrupted));
 }
 
 TEST_CASE("Interrupt.pollSitesPublishTheirRules")

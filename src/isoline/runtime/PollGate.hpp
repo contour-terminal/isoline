@@ -14,6 +14,14 @@
 namespace isoline::runtime
 {
 
+/// An execution budget lent to generated code (PollGate::lend()): the steps and the stack values
+/// left, which it counts down inline until it settles them back (PollGate::settle()).
+struct Lease
+{
+    uint64_t steps = 0;       ///< The steps left: StoreLimits::maxSteps minus those taken; 0 when observed.
+    uint64_t stackValues = 0; ///< The stack values left: StoreLimits::maxStackValues minus those charged.
+};
+
 /// The executor-local fast path of Store::poll(): the same order (observer, interrupt, step), the same
 /// result and the same charge, with the step budget counted down in the executor's own variable.
 ///
@@ -29,6 +37,11 @@ namespace isoline::runtime
 /// On an observed store every poll goes through Store::poll() itself, so that a poll-counting test
 /// exercises the store's own order, and checks first that the countdown is the store's: an executor
 /// that forgot a commit or a reload fails there, where the differential tests, which observe, see it.
+///
+/// Generated code holds more of the budget than the countdown: it charges and releases its frames'
+/// stack values inline too. It takes both as a Lease (lend()) and gives both back (settle()) around
+/// every call into the runtime and on every way out, and between the two the store's budget is Lent
+/// (Store::budgetState()), so that nothing polls or charges through the store against stale counts.
 class PollGate
 {
   public:
@@ -38,6 +51,7 @@ class PollGate
         _store { &store },
         _interrupt { store._interrupt },
         _maxSteps { store._limits.maxSteps },
+        _maxStackValues { store._limits.maxStackValues },
         _path { store._pollObserver != nullptr ? PollPath::ThroughStore : PollPath::Direct }
     {
     }
@@ -59,6 +73,41 @@ class PollGate
     {
         Require(stepsLeft <= _maxSteps);
         _store->setStepsTaken(_maxSteps - stepsLeft);
+    }
+
+    /// Lends the budget left to generated code: the steps left (reload()), none on an observed store,
+    /// so that every poll there takes the slow path through Store::poll(); and the stack values left.
+    /// The store's budget is Lent until settle().
+    ///
+    /// Precondition (checked): the budget is Settled: a lease over another would count its steps twice.
+    /// @return The lease.
+    [[nodiscard]] Lease lend() noexcept
+    {
+        Require(_store->_budgetState == BudgetState::Settled);
+        _store->_budgetState = BudgetState::Lent;
+        return Lease { .steps = _path == PollPath::Direct ? reload() : 0,
+                       .stackValues = _maxStackValues - _store->_chargedStackValues };
+    }
+
+    /// Settles a lease: makes what generated code left of it the store's budget again, absolutely, so
+    /// that a frame charged under one lease and released under a later one balances. The steps taken
+    /// become StoreLimits::maxSteps minus @p left's steps (commit()), except on an observed store,
+    /// whose own polls counted every step; the stack values charged become
+    /// StoreLimits::maxStackValues minus @p left's. The store's budget is Settled again.
+    ///
+    /// Precondition (checked): the budget is Lent; @p left holds no more steps than @p lent, as no
+    /// poll adds one, and no more stack values than maxStackValues, as no frame is released uncharged.
+    /// @param lent The lease lend() returned.
+    /// @param left What generated code left of it.
+    void settle(Lease const& lent, Lease const& left) noexcept
+    {
+        Require(_store->_budgetState == BudgetState::Lent);
+        Require(left.steps <= lent.steps);
+        Require(left.stackValues <= _maxStackValues);
+        if (_path == PollPath::Direct)
+            commit(left.steps);
+        _store->_chargedStackValues = _maxStackValues - left.stackValues;
+        _store->_budgetState = BudgetState::Settled;
     }
 
     /// Polls, exactly as Store::poll() does: notifies the observer, checks the interrupt, then charges
@@ -104,6 +153,7 @@ class PollGate
     Store* _store;
     Interrupter const* _interrupt;
     uint64_t _maxSteps;
+    uint64_t _maxStackValues;
     PollPath _path;
 };
 

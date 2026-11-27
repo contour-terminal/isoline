@@ -136,6 +136,20 @@ class ICodeExecutor
                                                              FuncAddr function,
                                                              std::span<Value const> args,
                                                              std::span<Value> results) = 0;
+
+    /// Prepares a new instance of code of its engine for running: what an executor that runs code
+    /// through the store's dispatch rows does to bind its instance's functions (Store::bindDispatch()).
+    /// runtime::instantiate() calls it once per instance, once the instance is in the store with its
+    /// functions, tags and globals, and before any table is written (an initializer's fill, the active
+    /// element segments) or the start function runs. So a segment that traps midway, leaving the
+    /// instance's functions in an imported table that other instances call through, leaves the
+    /// instance prepared.
+    ///
+    /// It runs in instantiation's noexcept phase, where running out of memory terminates. The default
+    /// prepares nothing, as an executor that runs code through its own lookups needs.
+    /// @param store The store holding the instance.
+    /// @param moduleInstance The instance's address.
+    virtual void prepareInstance(Store& /*store*/, uint32_t /*moduleInstance*/) noexcept {}
 };
 
 /// Instantiates a module, as the WebAssembly 3.0 spec's instantiate does (Execution, Modules).
