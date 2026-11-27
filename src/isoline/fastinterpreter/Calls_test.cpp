@@ -45,6 +45,7 @@ using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
 using isoline::binary::Mutability;
 using isoline::binary::TableType;
+using isoline::binary::ValueType;
 using isoline::binary::testing::Bytes;
 using isoline::binary::testing::code;
 using isoline::binary::testing::encodeU32;
@@ -908,6 +909,58 @@ TEST_CASE("Calls.tailCallOutOfTheFirstChunkKeepsItsResults")
         // The first chunk and f1's, which replaced it.
         CHECK(memory.allocations() == 2);
         CHECK(memory.held() == 0);
+    }
+}
+
+TEST_CASE("Calls.framesHoldTheirResults")
+{
+    // A function that never pushes its results still receives them in its frame: here 300 of them, more than
+    // FirstChunkSlots, from a host function it tail-calls. Its frame holds its results whatever its body
+    // pushes: one whose whole body is the return_call; the same after a tail chain f0 → f1; and one whose
+    // block's end, and then the function's, are dead code.
+    constexpr auto Results = std::size_t { 300 };
+    auto const many = FuncType { .params = {}, .results = std::vector<ValueType>(Results, binary::I32) };
+    auto const imports = [&many](Store& store) {
+        auto const host =
+            addHost(store,
+                    many,
+                    [](HostContext&, std::span<Value const>, std::span<Value> results) noexcept -> Outcome {
+                        for (auto const index: std::views::iota(std::size_t { 0 }, results.size()))
+                            results[index] = I32 { static_cast<uint32_t>(index) };
+                        return {};
+                    });
+        return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+    };
+    struct Shape
+    {
+        std::string name;
+        std::vector<Bytes> bodies; ///< Functions 1, 2, …; function 1 is invoked.
+    };
+    auto const shapes = std::vector<Shape> {
+        { .name = "a return_call-only function", .bodies = { op(0x12, 0) } },
+        { .name = "after a tail chain", .bodies = { op(0x12, 2), op(0x12, 0) } },
+        { .name = "a dead-code end", .bodies = { code({ { 0x02, 0x40 }, op(0x12, 0), { 0x0B, 0x00 } }) } },
+    };
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    for (auto const& shape: shapes)
+    {
+        INFO(shape.name);
+        auto module = ModuleBuilder {};
+        module.type(many);
+        module.importFunction("env", "many", 0);
+        for (auto const& body: shape.bodies)
+            module.function(0, {}, body);
+        auto harness = Harness { module, fast(dispatch), imports };
+        auto reference = Harness { module, Reference, imports };
+        for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(shape.bodies.size())))
+            CHECK(harness.code()->functions()[index].frameSlots >= Results);
+        auto const outcome = harness.outcome(1);
+        REQUIRE(outcome.has_value());
+        CHECK(outcome->size() == Results);
+        CHECK(outcome->back() == i32(static_cast<int32_t>(Results) - 1));
+        CHECK(outcome == reference.outcome(1));
+        CHECK(harness.store().used(Limit::Steps) == reference.store().used(Limit::Steps));
+        CHECK(harness.store().chargedStackValues() == 0);
     }
 }
 

@@ -324,7 +324,10 @@ namespace
                 else
                     ++_position;
             }
-            _function.frameSlots = _maxTop;
+            // Room for its results too: a frame that never pushes them (its body ends in a return_call, or
+            // its end is dead code) still receives them in its slots, from a host function it tail-calls or
+            // as the invocation's own, from its first slot on.
+            _function.frameSlots = std::max(_maxTop, _function.localSlots + _function.resultSlots);
             // Reserved at the bound; the copy holds what the function needs, and frees the rest.
             _code = LoweringVector<Word>(_code.begin(), _code.end(), _code.get_allocator());
             return _work;
@@ -1144,14 +1147,19 @@ namespace
         uint64_t _work = 0;
     };
 
-    /// The most slots a frame of @p function may take, in 64 bits: its params' and locals' slots, and two
-    /// per operand of its deepest operand stack (validate::FrameShape::maxOperands).
+    /// The most slots a frame of @p function may take, in 64 bits: its params' and locals' slots, then two
+    /// per operand of its deepest operand stack (validate::FrameShape::maxOperands) or its results' slots,
+    /// whichever is more (the frame holds its results, whether or not its body pushes them).
     [[nodiscard]] uint64_t frameSlotsOf(validate::ValidatedModule const& validated, uint32_t codeIndex)
     {
         auto const& module = validated.module();
         auto const& function = module.code[codeIndex];
-        auto slots = uint64_t { 2 } * validated.frameShape(codeIndex).maxOperands;
-        for (auto const& param: module.types.at(function.typeIndex).params)
+        auto const& type = module.types.at(function.typeIndex);
+        auto resultSlots = uint64_t { 0 };
+        for (auto const& result: type.results)
+            resultSlots += widthOf(result);
+        auto slots = std::max(uint64_t { 2 } * validated.frameShape(codeIndex).maxOperands, resultSlots);
+        for (auto const& param: type.params)
             slots += widthOf(param);
         for (auto const& run: function.locals)
             slots += uint64_t { run.count } * widthOf(run.type);
