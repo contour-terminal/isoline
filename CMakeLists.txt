@@ -50,3 +50,6 @@ add_subdirectory(src/isoline)
 if(ISOLINE_TESTING)
     add_subdirectory(tests)
 endif()
+
+# Last, because it installs and exports library targets every directory above has created.
+include(IsolineInstall)

@@ -14,7 +14,12 @@ if(NOT TARGET core::base)
     set(CORE_CPP_TESTING OFF)
     set(CORE_CPP_CATCH2_MAIN OFF)
     set(CORE_CPP_BUILD_EXAMPLES OFF)
-    set(CORE_CPP_INSTALL OFF)
+    # Install rules for core-cpp's targets exactly when Isoline has its own: core-cpp's
+    # CoreCppInstall.cmake says "a parent that exports targets of its own linking core-cpp's turns it
+    # on", because CMake refuses an export set (isolineCoreTargets) whose targets link a target in no
+    # export set. The rules never run with Isoline's: EXCLUDE_FROM_ALL below leaves them out of this
+    # build's install, so Isoline does not install core-cpp; a packager installs it first.
+    set(CORE_CPP_INSTALL ${ISOLINE_INSTALL})
     set(CORE_CPP_WITH_TUI OFF)
     set(CORE_CPP_WITH_TUI_OUTPUT OFF)
     set(CORE_CPP_WITH_TUI_CORE OFF)

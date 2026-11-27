@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The isoline package, as cmake/IsolineInstall.cmake installs it: core-cpp, re-found at the version
+# this Isoline was built against, then the requested components, or every one installed. A component
+# is a file isoline<Component>Targets.cmake beside this one (component recipe_fixture is
+# isolineRecipeFixtureTargets.cmake, by isolineComponentNames.cmake), so this file names none: what the
+# prefix holds is what there is.
+#
+#   find_package(isoline 0.1 REQUIRED COMPONENTS core)
+#   target_link_libraries(app PRIVATE isoline::core)
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+# major.minor, never EXACT: core-cpp's own version file accepts its patch releases (SameMinorVersion).
+find_dependency(core-cpp @ISOLINE_INSTALL_CORE_CPP_VERSION@)
+
+# The naming rule the build named the files by.
+include("${CMAKE_CURRENT_LIST_DIR}/isolineComponentNames.cmake")
+
+set(_isolineInstalledComponents "")
+file(GLOB _isolineComponentFiles LIST_DIRECTORIES false "${CMAKE_CURRENT_LIST_DIR}/isoline*Targets.cmake")
+foreach(_isolineComponentFile IN LISTS _isolineComponentFiles)
+    get_filename_component(_isolineExportSet "${_isolineComponentFile}" NAME_WE)
+    isoline_component_of_export_set("${_isolineExportSet}" _isolineComponent)
+    list(APPEND _isolineInstalledComponents "${_isolineComponent}")
+    set(_isolineComponentFile_${_isolineComponent} "${_isolineComponentFile}")
+endforeach()
+
+set(_isolineRequestedComponents ${isoline_FIND_COMPONENTS})
+if(NOT _isolineRequestedComponents)
+    set(_isolineRequestedComponents ${_isolineInstalledComponents})
+endif()
+foreach(_isolineComponent IN LISTS _isolineRequestedComponents)
+    if(_isolineComponent IN_LIST _isolineInstalledComponents)
+        include("${_isolineComponentFile_${_isolineComponent}}")
+        set(isoline_${_isolineComponent}_FOUND TRUE)
+    else()
+        set(isoline_${_isolineComponent}_FOUND FALSE)
+        if(isoline_FIND_REQUIRED_${_isolineComponent})
+            list(JOIN _isolineInstalledComponents ", " _isolineInstalledList)
+            string(CONCAT isoline_NOT_FOUND_MESSAGE
+                "isoline has no component ${_isolineComponent} in ${CMAKE_CURRENT_LIST_DIR} "
+                "(installed: ${_isolineInstalledList})")
+        endif()
+    endif()
+endforeach()
+
+check_required_components(isoline)
+
+unset(_isolineComponent)
+unset(_isolineComponentFile)
+unset(_isolineComponentFiles)
+unset(_isolineExportSet)
+unset(_isolineInstalledComponents)
+unset(_isolineInstalledList)
+unset(_isolineRequestedComponents)

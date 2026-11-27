@@ -129,6 +129,13 @@ foreach(canaryCase IN LISTS isolineRequireCanaryCases)
         FAIL_REGULAR_EXPRESSION "the check let the call through")
 endforeach()
 
+# How check-install tells that an installed file names a path of the build (tests/cmake/check-install-paths.cmake),
+# in script mode, beside the install tests that use it and registered with or without them.
+add_test(NAME check-install-paths
+         COMMAND "${CMAKE_COMMAND}" "-DWORK_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/check-install-paths"
+                 -P "${PROJECT_SOURCE_DIR}/tests/cmake/check-install-paths_test.cmake")
+set_tests_properties(check-install-paths PROPERTIES LABELS lint TIMEOUT 60)
+
 # The coverage ratchet's checker, tested on fixture reports: it needs Python, not a coverage build.
 # The Python tests name the interpreter by its path, not as the imported target Python3::Interpreter:
 # CMake runs an executable target through CMAKE_CROSSCOMPILING_EMULATOR, and a cross build's emulator

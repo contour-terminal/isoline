@@ -124,6 +124,19 @@ ctest --preset clang-asan
 Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `gcc-release`, `macos-clang` and `msvc-debug`
 (from a Visual Studio Developer Command Prompt). Every preset builds into `out/<preset>/`.
 
+A top-level build installs as the CMake package `isoline` (`-DISOLINE_INSTALL=OFF` turns that off).
+Its one dependency, [core-cpp](https://github.com/contour-terminal/core-cpp), is not installed with
+it: install core-cpp first, from its own build, into the same prefix.
+
+```sh
+cmake --install out/clang-release --prefix <prefix> --component isoline
+```
+
+```cmake
+find_package(isoline 0.1 REQUIRED COMPONENTS core)
+target_link_libraries(app PRIVATE isoline::core)
+```
+
 From a Linux host, Isoline also cross-compiles for Windows (clang-cl, tests under wine) and arm64
 (clang, tests under qemu); see [docs/cross-compiling.md](docs/cross-compiling.md).
 
