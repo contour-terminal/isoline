@@ -127,6 +127,7 @@ struct ObservedApi
         store.defineTable(TableType { .element = FuncRef, .limits = OnePage }, NullFunction).value();
     isoline::api::Global global = store.defineGlobal(MutableI32, I32 { .bits = 7 }).value();
     std::optional<isoline::api::Instance> instance; ///< The instance whose function callActing() calls.
+    std::optional<isoline::api::Function> polls;    ///< Its exported function, which polls at its entry.
 
     /// Calls a function that polls, with @p act run by the observer.
     void callActing(std::function<void(ObservedApi&)> act)
@@ -138,10 +139,10 @@ struct ObservedApi
         auto instantiated = store.instantiate(*module, isoline::api::Imports {});
         REQUIRE(instantiated.has_value());
         instance = std::move(*instantiated);
-        auto const function = instance->function("polls");
-        REQUIRE(function.has_value());
+        polls = instance->function("polls");
+        REQUIRE(polls.has_value());
         observer.actAtNextPoll([this, act = std::move(act)] { act(*this); });
-        REQUIRE(store.call(*function, {}, {}).has_value());
+        REQUIRE(store.call(*polls, {}, {}).has_value());
     }
 };
 
@@ -218,7 +219,7 @@ std::vector<RefusedAct> const& refusedActs()
           [](ObservedApi& a) { std::ignore = a.store.memoryRange(a.memory, 0, 4); } },
         { "api::Instance::call",
           {},
-          [](ObservedApi& a) { std::ignore = a.instance->call(*a.instance->function("polls"), {}, {}); } },
+          [](ObservedApi& a) { std::ignore = a.instance->call(*a.polls, {}, {}); } },
         { "api::Instance::memoryRange",
           {},
           [](ObservedApi& a) { std::ignore = a.instance->memoryRange(a.memory, 0, 4); } },
@@ -278,6 +279,22 @@ TEST_CASE("Observer.mayReadTheStore")
     REQUIRE(element.has_value());
     CHECK(element->kind == RefKind::Null);
     CHECK(bytes == 4);
+}
+
+TEST_CASE("Observer.instanceEntryPointsAreAllowedOutsideThePoll")
+{
+    // The rows refuse Instance::call() and Instance::memoryRange() only while onPoll() runs: on the same
+    // observed store, outside the observer, both succeed (the call polls, and its observer reads).
+    auto observed = ObservedApi {};
+    auto observedReads = 0;
+    observed.callActing([&](ObservedApi&) { ++observedReads; });
+    REQUIRE(observed.instance.has_value());
+    REQUIRE(observed.polls.has_value());
+    CHECK(observed.instance->call(*observed.polls, {}, {}).has_value());
+    auto const bytes = observed.instance->memoryRange(observed.memory, 0, 4);
+    REQUIRE(bytes.has_value());
+    CHECK(bytes->size() == 4);
+    CHECK(observedReads == 1);
 }
 
 TEST_CASE("Contract.Observer.growMemory", "[.contract]")
