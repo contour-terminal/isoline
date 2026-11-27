@@ -1,0 +1,2 @@
+header outside the header set: isoline/api/Forgotten.hpp, beside the set's own: add it to the library's FILE_SET HEADERS, or move it out of the public header directories
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

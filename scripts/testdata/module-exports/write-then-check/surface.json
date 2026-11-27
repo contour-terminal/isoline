@@ -26,9 +26,12 @@
     "core::async::Generator"
   ],
   "includeDirectories": [
-    "."
+    ".",
+    "foreign"
   ],
-  "systemIncludeDirectories": [],
+  "systemIncludeDirectories": [
+    "foreign"
+  ],
   "compileDefinitions": [],
   "cxxStandard": "23"
 }

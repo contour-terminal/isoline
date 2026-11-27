@@ -1,0 +1,6 @@
+TU-local declaration: static VarDecl isoline::runtime::ticks (isoline/runtime/Clock.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::runtime::tickLimit (isoline/runtime/Clock.hpp): a public header declares nothing of internal linkage
+TU-local declaration: static FunctionDecl isoline::runtime::tick (isoline/runtime/Clock.hpp): a public header declares nothing of internal linkage
+TU-local declaration: static VarDecl isoline::api::pageLimit (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+TU-local declaration: non-inline const VarDecl isoline::api::storeLimit (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

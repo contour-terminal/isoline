@@ -72,11 +72,13 @@ target_sources(isoline_core
             api/Types.hpp
             binary/BranchHints.hpp
             binary/ByteReader.hpp
+            binary/ByteWriter.hpp
             binary/DecodeError.hpp
             binary/DecodeLimits.hpp
             binary/MemoryAccess.hpp
             binary/Decoder.hpp
             binary/Encoder.hpp
+            binary/Encodings.hpp
             binary/Module.hpp
             binary/NameSection.hpp
             binary/Opcode.hpp

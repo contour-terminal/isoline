@@ -1,0 +1,29 @@
+{
+  "name": "isoline",
+  "source": "module.cppm",
+  "headerSet": [
+    "isoline/Features.hpp",
+    "isoline/api/Kinds.hpp",
+    "isoline/api/Store.hpp"
+  ],
+  "headerBaseDirectories": [
+    "."
+  ],
+  "namespaces": [
+    "isoline",
+    "isoline::api"
+  ],
+  "internalNamespaces": [
+    "isoline::runtime"
+  ],
+  "imports": [
+    "base/surface.json"
+  ],
+  "foreignNames": [],
+  "includeDirectories": [
+    "."
+  ],
+  "systemIncludeDirectories": [],
+  "compileDefinitions": [],
+  "cxxStandard": "23"
+}

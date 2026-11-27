@@ -1,0 +1,3 @@
+not allowed in the preamble: line 6
+not allowed in the global module fragment: line 12
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

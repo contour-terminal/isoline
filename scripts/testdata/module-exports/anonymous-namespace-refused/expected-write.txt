@@ -1,0 +1,2 @@
+TU-local declaration: anonymous namespace in isoline::api (isoline/api/Store.hpp): a public header declares nothing of internal linkage
+error: <case>/module.cppm not written: the surface is undetermined

@@ -1,0 +1,22 @@
+{
+  "name": "middle",
+  "source": "middle.cppm",
+  "headerSet": [],
+  "headerBaseDirectories": [
+    "include"
+  ],
+  "namespaces": [
+    "middle"
+  ],
+  "internalNamespaces": [],
+  "imports": [
+    "../surface.json"
+  ],
+  "foreignNames": [],
+  "includeDirectories": [
+    "include"
+  ],
+  "systemIncludeDirectories": [],
+  "compileDefinitions": [],
+  "cxxStandard": "23"
+}

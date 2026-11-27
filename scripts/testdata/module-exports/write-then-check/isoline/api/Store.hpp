@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/async/Task.hpp>
+
 namespace isoline::api
 {
 struct Store

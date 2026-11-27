@@ -1,0 +1,5 @@
+unknown declaration kind: FileScopeAsmDecl isoline::runtime::<unnamed> (isoline/runtime/Pairs.hpp)
+TU-local declaration: non-inline const DecompositionDecl isoline::runtime::[lowest, highest] (isoline/runtime/Pairs.hpp): a public header declares nothing of internal linkage
+TU-local declaration: static DecompositionDecl isoline::runtime::[left, right] (isoline/runtime/Pairs.hpp): a public header declares nothing of internal linkage
+cannot judge the linkage of DecompositionDecl isoline::runtime::[width, height] (isoline/runtime/Pairs.hpp): a structured binding's variable has no name the compiler could judge: declare it so that its linkage is certain
+error: <case>/module.cppm not written: the surface is undetermined

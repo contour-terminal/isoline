@@ -1,2 +1,2 @@
-unknown declaration kind: LinkageSpecDecl isoline::api::<unnamed> (isoline/api/Store.hpp)
+unknown declaration kind: FileScopeAsmDecl isoline::api::<unnamed> (isoline/api/Store.hpp)
 hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

@@ -1,0 +1,2 @@
+precompile failed: <case>/module.cppm:14:21: error: using declaration referring to 'probe' with internal linkage cannot be exported
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

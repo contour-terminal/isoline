@@ -6,10 +6,6 @@ struct Store
 {
 };
 
-extern "C++"
-{
-    struct InLinkage
-    {
-    };
-}
+// An asm-declaration: a kind the table has no row for.
+asm("");
 } // namespace isoline::api
