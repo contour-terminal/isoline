@@ -172,6 +172,7 @@ namespace
     [[nodiscard]] std::expected<void, CallError> liftedCall(ComponentStore& store,
                                                             LiftedFunction const& function,
                                                             OnStart onStart,
+                                                            OnLowered onLowered,
                                                             OnResolve onResolve)
     {
         auto const& side = function.side;
@@ -202,9 +203,14 @@ namespace
             return canonical::lowerFlat(context, params, views, canonical::MaxFlatParams, std::nullopt);
         }();
         arguments.reset();
-        // Each realloc re-checks the store itself (GuestMemory::reallocate()).
+        // Each realloc re-checks the store itself (GuestMemory::reallocate()). A failed lowering passed no
+        // own: those it added leave the callee's table.
         if (!flatArgs)
+        {
+            handles.rollBackLoweredOwns();
             return std::unexpected { CallError { std::move(flatArgs.error()) } };
+        }
+        onLowered();
 
         auto const signature =
             canonical::flattenFunction(*side.layouts, type, canonical::FlattenContext::Lift);
@@ -268,13 +274,49 @@ namespace
         }
         if (auto checked = callee.checkResults(store, *built); !checked)
             return std::unexpected { CallError { checked.error() } };
-        return onResolve(std::move(*built));
+        // A lowering of the results that fails passes none of their owns: the callee gets them back.
+        auto const owns = ownsOf(*built);
+        auto delivered = onResolve(std::move(*built));
+        if (!delivered)
+            callee.resultsUndelivered(store, owns);
+        return delivered;
     }
 } // namespace
+
+std::vector<canonical::ResourceValue> ownsOf(canonical::Values const& values)
+{
+    auto owns = std::vector<canonical::ResourceValue> {};
+    auto pending = std::vector<canonical::ValueView> {};
+    for (auto const root: std::views::iota(std::size_t { 0 }, values.rootCount()))
+        pending.push_back(values.root(root));
+    while (!pending.empty())
+    {
+        auto const view = pending.back();
+        pending.pop_back();
+        if (view.kind() == types::ValueKind::Own)
+            owns.push_back(view.resource());
+        else if (view.kind() != types::ValueKind::Borrow && view.childCount() != 0
+                 && view.packedElementBytes().empty())
+            for (auto const child: view.children())
+                pending.push_back(child);
+    }
+    return owns;
+}
 
 std::expected<void, CallError> canonLift(ComponentStore& store,
                                          LiftedFunction const& function,
                                          OnStart onStart,
+                                         OnResolve onResolve) noexcept
+{
+    auto nothing = [] {
+    };
+    return canonLift(store, function, onStart, nothing, onResolve);
+}
+
+std::expected<void, CallError> canonLift(ComponentStore& store,
+                                         LiftedFunction const& function,
+                                         OnStart onStart,
+                                         OnLowered onLowered,
                                          OnResolve onResolve) noexcept
 {
     if (store.state() == StoreState::LockedDown)
@@ -282,7 +324,7 @@ std::expected<void, CallError> canonLift(ComponentStore& store,
     // One invocation: argument reallocs, the callee and post-return share its step budget and record.
     auto const scope = store.coreStore().openInvocation();
     auto const active = ActiveCall { store };
-    auto outcome = liftedCall(store, function, onStart, onResolve);
+    auto outcome = liftedCall(store, function, onStart, onLowered, onResolve);
     if (!outcome)
         store.lockDown();
     return outcome;
@@ -429,7 +471,11 @@ std::expected<void, CallError> LoweredFunction::run(std::span<isoline::api::Valu
         auto lowered =
             canonical::lowerFlat(context, resultTypes(type), views, canonical::MaxFlatResults, resultPointer);
         if (!lowered)
+        {
+            // The owns among the results stay the callee's (hostCall() hands them back to a host).
+            handles.rollBackLoweredOwns();
             return std::unexpected { CallError { std::move(lowered.error()) } };
+        }
         Require(lowered->size() == results.size());
         std::ranges::copy(*lowered, results.begin());
         return {};

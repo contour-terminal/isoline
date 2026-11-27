@@ -83,27 +83,6 @@ namespace
 
     using HostOwnKey = std::pair<uint32_t, uint32_t>;
 
-    /// Every own among @p values, in pre-order. A list of scalars holds none, so it is skipped whole.
-    [[nodiscard]] std::vector<ResourceValue> ownsOf(canonical::Values const& values)
-    {
-        auto owns = std::vector<ResourceValue> {};
-        auto pending = std::vector<canonical::ValueView> {};
-        for (auto const root: std::views::iota(std::size_t { 0 }, values.rootCount()))
-            pending.push_back(values.root(root));
-        while (!pending.empty())
-        {
-            auto const view = pending.back();
-            pending.pop_back();
-            if (view.kind() == types::ValueKind::Own)
-                owns.push_back(view.resource());
-            else if (view.kind() != types::ValueKind::Borrow && view.childCount() != 0
-                     && view.packedElementBytes().empty())
-                for (auto const child: view.children())
-                    pending.push_back(child);
-        }
-        return owns;
-    }
-
     /// The host holds @p owns now: each is counted in the store's table.
     void hold(StoreState& state, std::span<ResourceValue const> owns)
     {
@@ -153,7 +132,7 @@ namespace
         {
             // The store's ComponentStore cannot move while a call runs (checked there). The owns lifted
             // into the arguments left the guest's table: the host holds them (R12).
-            hold(*_state, ownsOf(args));
+            hold(*_state, runtime::ownsOf(args));
             auto context = HostComponentContext { *_state->owner };
             return _function->call(context, args, results);
         }
@@ -162,12 +141,18 @@ namespace
             runtime::ComponentStore&, canonical::Values const& results) noexcept override
         {
             // The owns returned go to the guest: the host must hold each, and holds it no more.
-            if (!release(*_state, ownsOf(results)))
+            if (!release(*_state, runtime::ownsOf(results)))
                 return std::unexpected { isoline::api::HostFailure {
                     .kind = isoline::api::HostFailureKind::ArgumentMismatch,
                     .code = 0,
                     .mismatch = std::nullopt } };
             return {};
+        }
+
+        void resultsUndelivered(runtime::ComponentStore&,
+                                std::span<ResourceValue const> owns) noexcept override
+        {
+            hold(*_state, owns);
         }
 
       private:
@@ -358,7 +343,8 @@ std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
     if (auto checked = checkArguments(store, state->limits, lifted, args); !checked)
         return std::unexpected { std::move(checked.error()) };
     // The owns passed go to the guest's table: the host must hold each, and holds it no more.
-    if (auto released = release(*state, ownsOf(args)); !released)
+    auto const owns = runtime::ownsOf(args);
+    if (auto released = release(*state, owns); !released)
         return std::unexpected { callError(ComponentCallFailure::ArgumentMismatch,
                                            std::move(released.error())) };
     auto results = std::optional<canonical::Values> {};
@@ -369,10 +355,19 @@ std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
         results.emplace(std::move(values));
         return {};
     };
-    if (auto called = runtime::canonLift(store, lifted, start, resolve); !called)
+    // The owns were taken before the call: a lowering that fails passed none, so the host keeps them.
+    auto lowered = false;
+    auto onLowered = [&] {
+        lowered = true;
+    };
+    if (auto called = runtime::canonLift(store, lifted, start, onLowered, resolve); !called)
+    {
+        if (!lowered)
+            hold(*state, owns);
         return std::unexpected { fromRuntime(std::move(called.error())) };
+    }
     // The owns returned left the guest's table: the host holds them (R12).
-    hold(*state, ownsOf(*results));
+    hold(*state, runtime::ownsOf(*results));
     return std::move(*results);
 }
 

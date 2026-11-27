@@ -12,6 +12,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 
@@ -245,7 +246,18 @@ std::expected<uint32_t, Trap> ResourceOperations::lowerOwn(types::ResourceTypeId
     auto const expected = checkLowered(type, value);
     if (!expected)
         return std::unexpected { expected.error() };
-    return table().add(ResourceHandle { .type = *expected, .rep = value.rep, .ownership = Ownership::Own });
+    auto added =
+        table().add(ResourceHandle { .type = *expected, .rep = value.rep, .ownership = Ownership::Own });
+    if (added)
+        _loweredOwns.push_back(*added);
+    return added;
+}
+
+void ResourceOperations::rollBackLoweredOwns() noexcept
+{
+    for (auto const index: _loweredOwns)
+        std::ignore = table().remove(index);
+    _loweredOwns.clear();
 }
 
 std::expected<uint32_t, Trap> ResourceOperations::lowerBorrow(types::ResourceTypeId type, ResourceValue value)

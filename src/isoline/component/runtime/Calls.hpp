@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <isoline/api/Extern.hpp>
 #include <isoline/api/Types.hpp>
@@ -63,6 +64,16 @@ using OnStart = CallbackRef<std::expected<CallArguments, CallError>()>;
 /// the callee's arena; it runs before `post-return`.
 using OnResolve = CallbackRef<std::expected<void, CallError>(canonical::Values)>;
 
+/// Runs once the arguments are lowered into the callee, before it runs: from then on its table holds
+/// the owns among them. A lowering that fails took none (ResourceOperations::rollBackLoweredOwns()).
+using OnLowered = CallbackRef<void()>;
+
+/// Every own among @p values, in pre-order. A list of scalars holds none, so it is skipped whole.
+/// @param values Lifted values.
+/// @return The owns.
+/// @throws std::bad_alloc When they cannot be stored.
+[[nodiscard]] std::vector<canonical::ResourceValue> ownsOf(canonical::Values const& values);
+
 /// Calls a lifted function through the canonical ABI (definitions.py's canon_lift, synchronous).
 ///
 /// It refuses a locked-down store first (CannotEnter, no guest code runs). In one InvocationScope, so
@@ -82,6 +93,19 @@ using OnResolve = CallbackRef<std::expected<void, CallError>(canonical::Values)>
 [[nodiscard]] std::expected<void, CallError> canonLift(ComponentStore& store,
                                                        LiftedFunction const& function,
                                                        OnStart onStart,
+                                                       OnResolve onResolve) noexcept;
+
+/// canonLift(), telling @p onLowered when the arguments are lowered into the callee.
+/// @param store The store.
+/// @param function The function, of @p store.
+/// @param onStart Supplies the arguments.
+/// @param onLowered Runs once they are lowered, before the callee; not when lowering fails.
+/// @param onResolve Takes the results.
+/// @return As canonLift().
+[[nodiscard]] std::expected<void, CallError> canonLift(ComponentStore& store,
+                                                       LiftedFunction const& function,
+                                                       OnStart onStart,
+                                                       OnLowered onLowered,
                                                        OnResolve onResolve) noexcept;
 
 /// Calls any component function: canonLift() for a lifted one; for a host one, its IHostCallee with the

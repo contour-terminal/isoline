@@ -81,6 +81,17 @@ class IHostCallee
         return {};
     }
 
+    /// The results checkResults() passed could not be lowered into the caller: the owns among them are
+    /// in no guest table, so they are the host's again. Nothing by default.
+    /// @param store The store the call runs in.
+    /// @param owns The owns among the results.
+    virtual void resultsUndelivered(ComponentStore& store,
+                                    std::span<canonical::ResourceValue const> owns) noexcept
+    {
+        std::ignore = store;
+        std::ignore = owns;
+    }
+
   protected:
     IHostCallee() = default;
     IHostCallee(IHostCallee const&) = default;

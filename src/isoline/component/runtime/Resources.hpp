@@ -382,6 +382,11 @@ class ResourceOperations final: public canonical::HandleOps
     [[nodiscard]] std::expected<uint32_t, Trap> lowerBorrow(types::ResourceTypeId type,
                                                             ResourceValue value) override;
 
+    /// Undoes a lowering that failed: removes every own handle lowerOwn() added to the side's table, so
+    /// the owns stay with whoever passed them (nothing is destroyed). Only for a lowering no guest code
+    /// has seen the result of: a `realloc` during it may not leave, so it changed no handle.
+    void rollBackLoweredOwns() noexcept;
+
   private:
     /// The handle table of the side's instance.
     [[nodiscard]] HandleTable& table() noexcept;
@@ -394,6 +399,7 @@ class ResourceOperations final: public canonical::HandleOps
     uint32_t _instance;
     ResourceBindings const* _bindings;
     BorrowScope _scope;
+    std::vector<uint32_t> _loweredOwns {}; ///< The own handles lowerOwn() added, by index.
 };
 
 } // namespace isoline::component::runtime

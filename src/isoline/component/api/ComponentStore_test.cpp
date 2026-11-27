@@ -843,12 +843,19 @@ namespace
     auto const core = builder.coreInstantiate(builder.coreModule(coreModule(R"((module
       (import "r" "drop" (func $drop (param i32)))
       (func (export "take") (param i32) (call $drop (local.get 0)))
-      (func (export "take2") (param i32 i32) (call $drop (local.get 0)) (call $drop (local.get 1)))))")),
+      (func (export "take2") (param i32 i32) (call $drop (local.get 0)) (call $drop (local.get 1)))
+      (func (export "take-and-trap") (param i32) unreachable)))")),
                                               { { "r", builtins } });
     std::ignore = builder.exportItem(
         "take",
         Sort::Func,
         builder.canonLift(builder.aliasCoreExport(core, "take", CoreSort::Func),
+                          {},
+                          functionType(builder, { TypeIndex { .index = own } }, std::nullopt)));
+    std::ignore = builder.exportItem(
+        "take-and-trap",
+        Sort::Func,
+        builder.canonLift(builder.aliasCoreExport(core, "take-and-trap", CoreSort::Func),
                           {},
                           functionType(builder, { TypeIndex { .index = own } }, std::nullopt)));
     std::ignore = builder.exportItem(
@@ -1292,4 +1299,203 @@ TEST_CASE("HostResources.guestResourceWithoutDestructor")
     auto const again = store.drop(value);
     REQUIRE_FALSE(again.has_value());
     CHECK(again.error().failure == ComponentCallFailure::ArgumentMismatch);
+}
+
+namespace
+{
+/// A component importing `r` and `make: func() -> own<r>`, whose `run` drops what make returns.
+[[nodiscard]] std::vector<std::byte> callsMake()
+{
+    auto builder = ComponentBuilder {};
+    auto const r =
+        builder.import("r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto const own = builder.type(TypeDefinition { .type = DefinedValueType { OwnType { .resource = r } } });
+    auto const make = builder.import(
+        "make",
+        ExternDesc { .sort = Sort::Func, .index = functionType(builder, {}, TypeIndex { .index = own }) });
+    auto const lowered = builder.coreInlineExports({ CoreInlineExport {
+        .name = "make", .sort = CoreSort::Func, .index = builder.canonLower(make, {}) } });
+    auto const core = builder.coreInstantiate(builder.coreModule(coreModule(R"((module
+      (import "h" "make" (func $make (result i32)))
+      (func (export "run") (drop (call $make)))))")),
+                                              { { "h", lowered } });
+    std::ignore = builder.exportItem("run",
+                                     Sort::Func,
+                                     builder.canonLift(builder.aliasCoreExport(core, "run", CoreSort::Func),
+                                                       {},
+                                                       functionType(builder, {}, std::nullopt)));
+    return builder.build();
+}
+} // namespace
+
+TEST_CASE("HostResources.failedLoweringKeepsTheOwn")
+{
+    // A lowering that traps passes no own: the host still holds each, its drop destroys it once, and the
+    // store's end destroys nothing more.
+    auto harness = ApiHarness {};
+    auto const destructor = std::make_shared<RecordingDestructor>();
+    auto const type = HostResourceType { "r", destructor };
+    auto limits = isoline::component::ComponentLimits {};
+
+    SECTION("an argument past the handle cap")
+    {
+        limits.maxHandles = 0;
+        auto linker = Linker { ComponentConfig {} };
+        require(linker.defineResource("r", type));
+        {
+            auto store = harness.store(limits);
+            auto instance = instanceOf(store.instantiate(harness.load(takesAndDrops()), linker));
+            auto const own = store.hostResource(type, 5, Ownership::Own);
+            REQUIRE(own.has_value());
+            CHECK(trapOf(callWithHandle(instance, "take", *own)) == TrapCode::Handles);
+            CHECK(store.isLockedDown());
+            CHECK(store.drop(*own).has_value());
+            CHECK(destructor->destroyed == std::vector<uint32_t> { 5 });
+        }
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 5 });
+    }
+    SECTION("a callee that traps once it holds the own")
+    {
+        // The own was passed: the guest's table holds it, so the host does not, and the store's end
+        // destroys it once.
+        auto linker = Linker { ComponentConfig {} };
+        require(linker.defineResource("r", type));
+        {
+            auto store = harness.store(limits);
+            auto instance = instanceOf(store.instantiate(harness.load(takesAndDrops()), linker));
+            auto const own = store.hostResource(type, 9, Ownership::Own);
+            REQUIRE(own.has_value());
+            CHECK(trapOf(callWithHandle(instance, "take-and-trap", *own)) == TrapCode::Core);
+            auto const dropped = store.drop(*own);
+            REQUIRE_FALSE(dropped.has_value());
+            CHECK(dropped.error().failure == ComponentCallFailure::ArgumentMismatch);
+            CHECK(destructor->destroyed.empty());
+        }
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 9 });
+    }
+    SECTION("the second of two arguments past the handle cap")
+    {
+        limits.maxHandles = 1;
+        auto linker = Linker { ComponentConfig {} };
+        require(linker.defineResource("r", type));
+        {
+            auto store = harness.store(limits);
+            auto instance = instanceOf(store.instantiate(harness.load(takesAndDrops()), linker));
+            auto const first = store.hostResource(type, 6, Ownership::Own);
+            auto const second = store.hostResource(type, 7, Ownership::Own);
+            REQUIRE(first.has_value());
+            REQUIRE(second.has_value());
+            auto const found = lookup(instance, "take2");
+            REQUIRE(found.has_value());
+            auto arguments = instance.argumentsFor(*found);
+            REQUIRE(arguments.has_value());
+            arguments->resource(*first).resource(*second);
+            auto const built = arguments->finish();
+            REQUIRE(built.has_value());
+            CHECK(trapOf(instance.call(*found, *built)) == TrapCode::Handles);
+            CHECK(store.drop(*first).has_value());
+            CHECK(store.drop(*second).has_value());
+            CHECK(destructor->destroyed == std::vector<uint32_t> { 6, 7 });
+        }
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 6, 7 });
+    }
+    SECTION("the second of two results past the handle cap")
+    {
+        limits.maxHandles = 1;
+        auto linker = Linker { ComponentConfig {} };
+        require(linker.defineResource("r", type));
+        auto ownType = linker.ownType(type);
+        REQUIRE(ownType.has_value());
+        auto pairType = linker.types().intern(isoline::component::types::DefinedType {
+            .kind = ValueKind::Tuple, .children = { *ownType, *ownType } });
+        REQUIRE(pairType.has_value());
+        auto made = std::vector<ResourceValue> {};
+        require(linker.defineFunction(
+            "make2",
+            functionSpec({}, *pairType),
+            hostFunction(
+                [&](HostComponentContext& context, Values const&, ValueBuilder& results) -> HostResult {
+                    results.begin(2);
+                    for (auto const rep: { 10U, 11U })
+                    {
+                        auto fresh = context.newOwn(type, rep);
+                        if (!fresh)
+                            return std::unexpected { embedderFailure() };
+                        made.push_back(*fresh);
+                        results.resource(*fresh);
+                    }
+                    results.end();
+                    return {};
+                })));
+        auto builder = ComponentBuilder {};
+        auto const r = builder.import(
+            "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+        auto const own =
+            builder.type(TypeDefinition { .type = DefinedValueType { OwnType { .resource = r } } });
+        auto const pair = builder.type(TypeDefinition {
+            .type = DefinedValueType {
+                TupleType { .elements = { TypeIndex { .index = own }, TypeIndex { .index = own } } } } });
+        auto const make2 =
+            builder.import("make2",
+                           ExternDesc { .sort = Sort::Func,
+                                        .index = functionType(builder, {}, TypeIndex { .index = pair }) });
+        auto const memory = builder.coreInstantiate(builder.coreModule(coreModule(MemoryModule)), {});
+        auto const lowered = builder.coreInlineExports({ CoreInlineExport {
+            .name = "make2",
+            .sort = CoreSort::Func,
+            .index =
+                builder.canonLower(make2,
+                                   { option(CanonOptionKind::Memory,
+                                            builder.aliasCoreExport(memory, "mem", CoreSort::Memory)) }) } });
+        auto const core = builder.coreInstantiate(builder.coreModule(coreModule(R"((module
+          (import "h" "make2" (func $make2 (param i32)))
+          (func (export "run") (call $make2 (i32.const 64)))))")),
+                                                  { { "h", lowered } });
+        std::ignore =
+            builder.exportItem("run",
+                               Sort::Func,
+                               builder.canonLift(builder.aliasCoreExport(core, "run", CoreSort::Func),
+                                                 {},
+                                                 functionType(builder, {}, std::nullopt)));
+        {
+            auto store = harness.store(limits);
+            auto instance = instanceOf(store.instantiate(harness.load(builder.build()), linker));
+            CHECK(trapOf(callWith(instance, "run")) == TrapCode::Handles);
+            REQUIRE(made.size() == 2);
+            for (auto const& held: made)
+                CHECK(store.drop(held).has_value());
+            CHECK(destructor->destroyed == std::vector<uint32_t> { 10, 11 });
+        }
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 10, 11 });
+    }
+    SECTION("a host function's result past the handle cap")
+    {
+        limits.maxHandles = 0;
+        auto linker = Linker { ComponentConfig {} };
+        require(linker.defineResource("r", type));
+        auto ownType = linker.ownType(type);
+        REQUIRE(ownType.has_value());
+        auto made = std::optional<ResourceValue> {};
+        require(linker.defineFunction(
+            "make",
+            functionSpec({}, *ownType),
+            hostFunction(
+                [&](HostComponentContext& context, Values const&, ValueBuilder& results) -> HostResult {
+                    auto fresh = context.newOwn(type, 8);
+                    if (!fresh)
+                        return std::unexpected { embedderFailure() };
+                    made = *fresh;
+                    results.resource(*fresh);
+                    return {};
+                })));
+        {
+            auto store = harness.store(limits);
+            auto instance = instanceOf(store.instantiate(harness.load(callsMake()), linker));
+            CHECK(trapOf(callWith(instance, "run")) == TrapCode::Handles);
+            REQUIRE(made.has_value());
+            CHECK(store.drop(*made).has_value());
+            CHECK(destructor->destroyed == std::vector<uint32_t> { 8 });
+        }
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 8 });
+    }
 }
