@@ -625,6 +625,7 @@ and the fallback is deleted.
 |---|---|---|
 | `gcc-cxx26` | all three `ON` | the native lane: configure fails unless every feature goes native |
 | `gcc-fallback` | all three `OFF` | the fallback on the same compiler, the local stand-in for a GCC 14 lane |
+| `gcc-cxx26-modules` | `gcc-cxx26`'s, `ISOLINE_MODULES` and `ISOLINE_EXPECT_IMPORT_STD` `ON` | module isoline over a C++26, contracts-native `isoline_core` |
 
 Each has a build and a test preset. `gcc-debug` keeps `AUTO`, so on GCC 16.2 it goes native.
 
@@ -635,7 +636,7 @@ Each has a build and a test preset. `gcc-debug` keeps `AUTO`, so on GCC 16.2 it 
 
 | Job | Compiler | Preset | Path |
 |---|---|---|---|
-| `linux-gcc-cxx26` | GCC 16.2.0 (the `gcc:16.2.0` image, pinned by its index digest) | `gcc-cxx26` | native, required |
+| `linux-gcc-cxx26` | GCC 16.2.0 (the `gcc:16.2.0` image, pinned by its index digest) | `gcc-cxx26`, `gcc-cxx26-modules` | native, required |
 | `linux-gcc` | GCC 14 (Ubuntu 24.04) | `gcc-debug`, `gcc-release` | fallback: "GNU 14.2 is below GNU 16.2" |
 | the Clang, Apple Clang, MSVC and GCC 15 modules jobs | their own | their own | fallback |
 

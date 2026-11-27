@@ -16,7 +16,8 @@ cmake -B build -G Ninja -DISOLINE_MODULES=ON
 ```
 
 Each module preset is an ordinary preset with the module on: `clang-modules` (Clang, Debug, ASan and
-UBSan, clang-tidy), `clang-modules-release`, `gcc-modules`, `msvc-modules` (from a Visual Studio Developer
+UBSan, clang-tidy), `clang-modules-release`, `gcc-modules`, `gcc-cxx26-modules` (GCC 16.2's C++26 reflection
+and contracts, [docs/language-features.md](language-features.md)), `msvc-modules` (from a Visual Studio Developer
 Command Prompt), `msvc-modules-visual-studio` (the same, under the Visual Studio generator) and, from a
 Linux host, `msvc-wine-modules` (MSVC under wine, [docs/cross-compiling.md](cross-compiling.md)).
 
@@ -84,6 +85,7 @@ The module lanes of `.github/workflows/build.yml`, one matrix row per toolchain:
 | `linux-clang-modules` | `clang-22-libc++-install` | Clang 22 | libc++ 22 | Release | all | expected |
 | `linux-clang-modules` | `clang-floor` | Clang 19.1.0, Ninja 1.11.1 | libstdc++ 14 | Release | all | not expected |
 | `linux-gcc-modules` | `gcc-modules` | GCC 15.2 | libstdc++ 15 | Debug | all | expected |
+| `linux-gcc-cxx26` | `gcc-cxx26-modules` | GCC 16.2, C++26 `isoline_core` | libstdc++ 16 | Debug | all | expected |
 | `windows-msvc-modules` | `msvc-modules` | MSVC 19.44 | MSVC STL | Debug, Ninja and Visual Studio 2026 | modules, lint, install | expected (Ninja) |
 
 Two rows run only the tests modules add (the labels `modules`, `lint` and `install`): the rest of the

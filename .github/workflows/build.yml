@@ -115,6 +115,13 @@ jobs:
             cmake: pinned
             ninja: pinned
             languageFeatures: native
+          # Module isoline over the C++26, contracts-native isoline_core; the preset expects import std.
+          - preset: gcc-cxx26-modules
+            compiler: g++
+            compilerVersion: "16.2.0"
+            cmake: pinned
+            ninja: pinned
+            languageFeatures: native
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install the pinned CMake and Ninja
