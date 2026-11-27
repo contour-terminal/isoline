@@ -355,9 +355,9 @@ class Invocation final: public runtime::IExceptionRoots
     /// @param ranges Receives the one range of them.
     void appendExceptionRoots(std::vector<std::span<Value const>>& ranges) const override
     {
-        if (_frames.empty())
-            return;
-        // A sweep runs only under no host function, so only within a throw of the innermost frame.
+        // A sweep runs only under no host function, so only within a throw of the innermost frame: the
+        // invocation's registration outlives its frames, but no sweep reaches it without one.
+        Require(!_frames.empty());
         Require(_throwOffset.has_value());
         auto count = std::size_t { 0 };
         forEachFrameSite([&](Frame const& frame, SiteRecord const& site) {
