@@ -322,9 +322,10 @@ reports through one of two channels:
 - `Require()` reports through core-cpp's `core::setFailHandler()`, whose handler an embedder may
   replace, then aborts.
 - Where the compiler has C++26 contracts (GCC 16.2 and later; `docs/language-features.md`), the checks
-  of `noexcept` functions are contracts. They report through the compiler's contract violation handler
-  instead (GCC's default prints the condition to standard error), then terminate. An embedder's fail
-  handler does not see them.
+  of `noexcept` functions are contracts, and some declarations carry a `pre` or `post` of their own
+  (`Engine`'s constructor, the handles' `type()` and store accessors). They report through the compiler's
+  contract violation handler instead (GCC's default prints the condition to standard error), then
+  terminate. An embedder's fail handler does not see them.
 
 A program linking the C++ API (`isoline::core`) may install its own `handle_contract_violation`. Through the
 C API's shared library it cannot: `libisoline_c.so` exports `wasm_*` and `isoline_*` alone (`isoline_c.map`,
@@ -339,7 +340,25 @@ semantic only, and refuses at configure time a build that would check them under
 A package built with native contracts links `libstdc++exp`, so its consumer compiles with the GCC release
 that built it (16.2 or later) over libstdc++: libstdc++exp's ABI is that release's alone, and a libc++ or
 MSVC consumer cannot link it at all. `find_package(isoline)` refuses any other toolchain at configure
-time, naming both compilers. A consumer that does not use CMake adds `-lstdc++exp` after the library. A
+time, naming both compilers. Its headers' declarations carry those contracts, so every file that
+includes one compiles as C++26, with contracts enabled (GCC 16.2's default there): `isoline::core` asks
+a CMake consumer for it, and `isoline/Contracts.hpp` stops a file compiled without contracts with an
+`#error`. A consumer that does not use CMake passes `-std=c++26` itself, and adds `-lstdc++exp` after the
+library. A program cannot mix a native and a fallback package's objects: each mode's
+headers reference a symbol only that mode's library defines, so the link fails.
+
+A consumer may compile with GCC's `-fcontracts-client-check=pre` (or `=all`), which checks a declaration's
+`pre` at the call site too. Measured on GCC 16.2.1 with a violation handler that throws, called from inside a
+`try` block: the caller-side check runs in a `noexcept` clone of the callee (`<function> [clone
+.contract_wrapper]`), so the exception terminates there, and the caller's `catch` never sees it. That holds
+with the callee's own check switched off (`-fcontracts-definition-check=off`). A caller-side check under the
+consumer's `observe` semantic reports and continues, and Isoline's callee-side check, under its pinned
+`enforce`, then terminates. So the flag can add a report, never let a violated precondition through, and
+Isoline does not refuse it. A native-lane canary pins this: `isoline_require_canary_client_check` is the
+throwing-handler canary with its calls compiled with `-fcontracts-client-check=all`, and every `pre` and
+`post` case must end the process from inside the canary's `try`, so a GCC whose caller-side check lets the
+exception escape fails CI. No macro tells a translation unit compiled with it from one without (measured),
+so `isoline/Contracts.hpp` cannot name it in its `#error`. A
 package built on the fallback has none of these requirements (`docs/language-features.md`, "The consumer
 side of a native package").
 

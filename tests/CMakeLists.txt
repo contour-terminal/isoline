@@ -149,6 +149,23 @@ if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
                           PRIVATE isoline_canary_throwing_handler isoline_canary_check_positions isoline::core
                                   Catch2::Catch2)
     isoline_apply_target_policy(isoline_require_canary_throwing_handler TEST)
+    # The same, its calls compiled with the compiler's caller-side checking of declaration contracts, which a
+    # consumer may turn on: a caller-side `pre` must still end the process, not let the handler's exception
+    # reach the canary's try (docs/embedding.md). Rows: compilerId|flag.
+    set(isolineContractClientCheckRows "GNU|-fcontracts-client-check=all")
+    foreach(row IN LISTS isolineContractClientCheckRows)
+        string(REPLACE "|" ";" columns "${row}")
+        list(GET columns 0 clientCheckCompiler)
+        list(GET columns 1 clientCheckFlag)
+        if(clientCheckCompiler STREQUAL CMAKE_CXX_COMPILER_ID)
+            add_executable(isoline_require_canary_client_check canary/RequireCanary.cpp)
+            target_link_libraries(isoline_require_canary_client_check
+                                  PRIVATE isoline_canary_throwing_handler isoline_canary_check_positions isoline::core
+                                          Catch2::Catch2)
+            target_compile_options(isoline_require_canary_client_check PRIVATE ${clientCheckFlag})
+            isoline_apply_target_policy(isoline_require_canary_client_check TEST)
+        endif()
+    endforeach()
     # The other half of the lambda rule: a macro in a lambda that is not noexcept, inside a noexcept
     # function's try block, does not compile (canary/LambdaMayThrow.cpp). The target is built by its test
     # alone, which passes on the macro's static_assert.
@@ -168,7 +185,10 @@ endif()
 set(isolineCompileFailRows
     "fixed-text-unterminated|compile-fail/FixedTextUnterminated.cpp||fixedTextNeedsANulTerminatedLiteral"
     "annotation-missing|compile-fail/AnnotationMissing.cpp|annotations|Unannotated::Bare has no FixedText annotation"
-    "annotation-twice|compile-fail/AnnotationTwice.cpp|annotations|Doubled::Twice has 2 FixedText annotations")
+    "annotation-twice|compile-fail/AnnotationTwice.cpp|annotations|Doubled::Twice has 2 FixedText annotations"
+    "declaration-contract-may-throw|compile-fail/DeclarationContractMayThrow.cpp|contracts|ISOLINE_PRE/ISOLINE_POST need a noexcept member function"
+    "declaration-contract-on-free-function|compile-fail/DeclarationContractOnFreeFunction.cpp|contracts|ISOLINE_PRE/ISOLINE_POST need a noexcept member function"
+    "declaration-contract-on-class-template|compile-fail/DeclarationContractOnClassTemplate.cpp|contracts|ISOLINE_PRE/ISOLINE_POST stay off a class template's members")
 foreach(row IN LISTS isolineCompileFailRows)
     string(REPLACE "|" ";" columns "${row}")
     list(GET columns 0 failName)
@@ -188,6 +208,10 @@ foreach(row IN LISTS isolineCompileFailRows)
         if(NOT TARGET ${failTarget})
             continue()
         endif()
+        if(failFeature STREQUAL "contracts")
+            # Read as the noexcept rule's check reads the headers: through the proving expansion.
+            target_include_directories(${failTarget} BEFORE PRIVATE "${ISOLINE_CONTRACTS_PROOF_DIR}")
+        endif()
     endif()
     set_target_properties(${failTarget} PROPERTIES EXCLUDE_FROM_ALL ON)
     add_test(NAME compile-fail-${failName}
@@ -197,12 +221,85 @@ foreach(row IN LISTS isolineCompileFailRows)
                          PASS_REGULAR_EXPRESSION "${failMessage}")
 endforeach()
 
+# The consumers of isoline/Contracts.hpp, the generated header that fixes the package's declaration
+# contracts, one compile each (tests/contracts-consumer/Consumer.cpp), built by its test alone and never
+# linked to isoline::core, whose interface would give it the package's flags. Rows:
+# name|path|compilerId|standard|flags|message: where contracts took that path and the compiler is
+# compilerId (`*` any), the unit compiles at the standard with the flags; an empty message expects it to
+# compile, any other the build to fail naming it. A native package refuses a unit compiled without
+# contracts; the fallback asks nothing, so a unit compiled with them reads the same nothing.
+set(isolineContractsConsumerRefusal "isoline was built with declaration contracts [(]ISOLINE_DECLARATION_CONTRACTS is 1[)]")
+set(isolineContractsConsumerRows
+    "cxx23|native|GNU|23||${isolineContractsConsumerRefusal}"
+    "without-contracts|native|GNU|26|-fno-contracts|${isolineContractsConsumerRefusal}"
+    "as-the-package-asks|native|GNU|26||"
+    "cxx23|fallback|*|23||"
+    "with-contracts|fallback|GNU|26|-fcontracts|")
+foreach(row IN LISTS isolineContractsConsumerRows)
+    if(NOT row MATCHES "^([a-z0-9-]+)[|](native|fallback)[|]([^|]+)[|]([0-9]+)[|]([^|]*)[|](.*)$")
+        message(FATAL_ERROR "isolineContractsConsumerRows: malformed row: ${row}")
+    endif()
+    set(consumerName "${CMAKE_MATCH_1}")
+    set(consumerPath "${CMAKE_MATCH_2}")
+    set(consumerCompiler "${CMAKE_MATCH_3}")
+    set(consumerStandard "${CMAKE_MATCH_4}")
+    separate_arguments(consumerFlags UNIX_COMMAND "${CMAKE_MATCH_5}")
+    set(consumerMessage "${CMAKE_MATCH_6}")
+    if(NOT consumerPath STREQUAL ISOLINE_CONTRACTS_PATH
+       OR NOT (consumerCompiler STREQUAL "*" OR consumerCompiler STREQUAL CMAKE_CXX_COMPILER_ID))
+        continue()
+    endif()
+    set(consumerTarget "isoline_contracts_consumer_${consumerName}")
+    string(REPLACE "-" "_" consumerTarget "${consumerTarget}")
+    add_library(${consumerTarget} OBJECT EXCLUDE_FROM_ALL contracts-consumer/Consumer.cpp)
+    target_include_directories(${consumerTarget} PRIVATE "${PROJECT_BINARY_DIR}/include")
+    set(consumerExpected 0)
+    if(consumerPath STREQUAL "native")
+        set(consumerExpected 1)
+    endif()
+    target_compile_definitions(${consumerTarget} PRIVATE ISOLINE_EXPECTED_DECLARATION_CONTRACTS=${consumerExpected})
+    set_target_properties(${consumerTarget} PROPERTIES CXX_STANDARD ${consumerStandard} CXX_STANDARD_REQUIRED ON
+                                                       CXX_EXTENSIONS OFF)
+    target_compile_options(${consumerTarget} PRIVATE ${consumerFlags})
+    isoline_apply_target_policy(${consumerTarget})
+    set_target_properties(${consumerTarget} PROPERTIES CXX_CLANG_TIDY "")
+    add_test(NAME contracts-consumer-${consumerName}
+             COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}" --target ${consumerTarget})
+    set_tests_properties(contracts-consumer-${consumerName} PROPERTIES LABELS unit TIMEOUT 300
+                         RESOURCE_LOCK "${isolineMainBuildTreeLock}")
+    if(NOT consumerMessage STREQUAL "")
+        set_tests_properties(contracts-consumer-${consumerName} PROPERTIES PASS_REGULAR_EXPRESSION "${consumerMessage}")
+    endif()
+endforeach()
+
+# Where contracts are native, the proving <isoline/Contracts.hpp> expands the macros as the installed one does,
+# its noexcept proof aside: the proof reads the declarations as they are installed.
+if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
+    add_test(NAME contracts-expansion
+             COMMAND "${CMAKE_COMMAND}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                     "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/contracts-consumer/Expansion.cpp"
+                     "-DINSTALLED_DIR=${PROJECT_BINARY_DIR}/include" "-DPROOF_DIR=${ISOLINE_CONTRACTS_PROOF_DIR}"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/contracts-expansion.cmake")
+    set_tests_properties(contracts-expansion PROPERTIES LABELS lint TIMEOUT 60)
+    # A consumer of the other mode's header does not link with this mode's library.
+    add_executable(isoline_contracts_mode_mismatch EXCLUDE_FROM_ALL contracts-consumer/Mismatch.cpp)
+    target_include_directories(isoline_contracts_mode_mismatch BEFORE PRIVATE "${ISOLINE_CONTRACTS_SUBSTITUTE_DIR}")
+    target_link_libraries(isoline_contracts_mode_mismatch PRIVATE isoline::core)
+    isoline_apply_target_policy(isoline_contracts_mode_mismatch)
+    set_target_properties(isoline_contracts_mode_mismatch PROPERTIES CXX_CLANG_TIDY "")
+    add_test(NAME contracts-mode-mismatch
+             COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}" --target isoline_contracts_mode_mismatch)
+    set_tests_properties(contracts-mode-mismatch PROPERTIES LABELS unit TIMEOUT 300
+                         RESOURCE_LOCK "${isolineMainBuildTreeLock}"
+                         PASS_REGULAR_EXPRESSION "undefined (reference to|symbol:?) [^\n]*declaration_contracts_0")
+endif()
+
 # The cases, read from the table the canary itself includes, one ISOLINE_REQUIRE_CANARY_CASE line each.
 set(isolineRequireCanaryTable "${CMAKE_CURRENT_SOURCE_DIR}/canary/RequireCanaryCases.def")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${isolineRequireCanaryTable}")
 file(STRINGS "${isolineRequireCanaryTable}" isolineRequireCanaryCases REGEX "^ISOLINE_REQUIRE_CANARY_CASE[(]")
 foreach(canaryCase IN LISTS isolineRequireCanaryCases)
-    if(NOT canaryCase MATCHES "^ISOLINE_REQUIRE_CANARY_CASE[(][A-Za-z]+, \"([a-z-]+)\", (contract|require), \"([^\"]+)\"[)]$")
+    if(NOT canaryCase MATCHES "^ISOLINE_REQUIRE_CANARY_CASE[(][A-Za-z]+, \"([a-z-]+)\", (contract|require|pre|post), \"([^\"]+)\"[)]$")
         message(FATAL_ERROR "RequireCanaryCases.def: malformed case: ${canaryCase}")
     endif()
     set(canaryName "${CMAKE_MATCH_1}")
@@ -215,13 +312,30 @@ foreach(canaryCase IN LISTS isolineRequireCanaryCases)
                             "${ISOLINE_CONTRACTS_PATH}, ${canarySpelling} (cmake/IsolineLanguageFeatures.cmake)")
     endif()
     add_test(NAME isoline_require_canary.${canaryName} COMMAND isoline_require_canary ${canaryName})
-    set_tests_properties(isoline_require_canary.${canaryName} PROPERTIES LABELS unit TIMEOUT 60
-        PASS_REGULAR_EXPRESSION "${canaryPrefix}${canaryCheck}${canarySuffix}"
-        FAIL_REGULAR_EXPRESSION "the check let the call through")
-    if(TARGET isoline_require_canary_throwing_handler AND canarySpelling STREQUAL "contract")
+    isoline_contract_is_unchecked(COMPILER "${CMAKE_CXX_COMPILER_ID}" PATH "${ISOLINE_CONTRACTS_PATH}"
+                                  SPELLING ${canarySpelling} OUT canaryUnchecked)
+    if(canaryUnchecked)
+        # Nothing is compiled to check it on this path: the case passes on the call going through, and a
+        # report of its check fails it.
+        set_tests_properties(isoline_require_canary.${canaryName} PROPERTIES LABELS unit TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "require-canary: ${canaryName}: the check let the call through"
+            FAIL_REGULAR_EXPRESSION "${canaryCheck}")
+    else()
+        set_tests_properties(isoline_require_canary.${canaryName} PROPERTIES LABELS unit TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "${canaryPrefix}${canaryCheck}${canarySuffix}"
+            FAIL_REGULAR_EXPRESSION "the check let the call through")
+    endif()
+    if(TARGET isoline_require_canary_throwing_handler AND NOT canarySpelling STREQUAL "require")
         add_test(NAME isoline_require_canary_throwing_handler.${canaryName}
                  COMMAND isoline_require_canary_throwing_handler ${canaryName})
         set_tests_properties(isoline_require_canary_throwing_handler.${canaryName} PROPERTIES LABELS unit TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "throwing-handler: ${canaryCheck}"
+            FAIL_REGULAR_EXPRESSION "the check let the call through")
+    endif()
+    if(TARGET isoline_require_canary_client_check AND canarySpelling MATCHES "^(pre|post)$")
+        add_test(NAME isoline_require_canary_client_check.${canaryName}
+                 COMMAND isoline_require_canary_client_check ${canaryName})
+        set_tests_properties(isoline_require_canary_client_check.${canaryName} PROPERTIES LABELS unit TIMEOUT 60
             PASS_REGULAR_EXPRESSION "throwing-handler: ${canaryCheck}"
             FAIL_REGULAR_EXPRESSION "the check let the call through")
     endif()
@@ -356,6 +470,17 @@ if(NOT CMAKE_CROSSCOMPILING)
                          PASS_REGULAR_EXPRESSION "${isolineSealMessage}")
     set_tests_properties(language-features-header-check-sealed-early PROPERTIES LABELS lint
                          FAIL_REGULAR_EXPRESSION "${isolineSealMessage}")
+    # The declaration-contracts proof reads the test helpers' headers too: a throwing ISOLINE_PRE in a
+    # testing/ header of the fixture fails its build (where contracts are native).
+    if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
+        add_test(NAME language-features-contracts-proof-reads-testing
+                 COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                         "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/contracts-proof-testing"
+                         "-DGENERATOR=${CMAKE_GENERATOR}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/contracts-proof-testing.cmake")
+        set_tests_properties(language-features-contracts-proof-reads-testing PROPERTIES LABELS lint TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "testing/Throwing[.]hpp:[0-9]+:[0-9]+:[^\n]*required from here")
+    endif()
     # isoline_add_reflection_check()'s FEATURE names a feature row, or the configure fails naming it.
     add_test(NAME language-features-reflection-check-feature
              COMMAND "${CMAKE_COMMAND}"

@@ -308,13 +308,21 @@ module `isoline.recipe_fixture` re-exports `isoline`, and the tests prove each s
      able to spell them.
    - `FOREIGN_NAMES` lists names of another library that the unit re-exports, qualified
      (`core::async::Task`). Any other name outside the module's namespaces fails the lint.
+   - `DEFINED_MACROS` lists the macros a header of the set leaves defined on purpose, for the set's own
+     headers.
+   - Where contracts are native, the manifest names `isoline/Contracts.hpp`'s fallback copy as its
+     substitute: the lint's Clang has no contracts, so the lint reads the copy in its place, through a VFS
+     overlay written beside the manifest ([docs/language-features.md](language-features.md),
+     "Declaration contracts").
 3. **The interface unit** is generated, never written by hand: `cmake --build <build> --target
    isoline_write_module_exports` runs the lint's `--write` for every row, and the result is committed. A new
    row's unit must exist before its first configure: start it as the single line
    `export module <name>;`, configure, then generate it.
 4. **The lint**, the test `module-exports-<name>` (label `lint`), checks the committed unit against the
    headers. Every public name must be exported and none stale, the `export import` lines must equal
-   `IMPORTS`, no macro may be left defined, no conditional directive may read a compiler's macro
+   `IMPORTS`, no macro may be left defined but the row's `DEFINED_MACROS` (module isoline's are
+   `isoline/Contracts.hpp`'s three, which only the set's own headers use; a listed macro no header defines
+   is stale), no conditional directive may read a compiler's macro
    (`__GNUC__`, `__clang__`, `_MSC_VER`, …: a header reads the same on every compiler), nor a macro's
    definition name one, no declaration may be of internal linkage, no public header may be missing from
    the set, and the unit must precompile, the modules it imports first. A header changed without `--write` fails it, naming the name.

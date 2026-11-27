@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Checks how Isoline's sources spell their preconditions (docs/language-features.md).
 
-Two kinds of rule, each a table:
+Three kinds of rule:
 
 - RULES: what a set of files must not spell. Each row names the files it reads (globs under the
   repository, the paths it exempts, and whether it reads only the installed headers), the pattern it
@@ -17,11 +17,14 @@ Two kinds of rule, each a table:
   only a definition has there (a qualifier, a trailing return type, member initializers or the body),
   and every class it is qualified by is named in the file; a lambda's site is its enclosing function's.
 
+- The inline rule (declaration-contract-inline): a declaration contract, ISOLINE_PRE or ISOLINE_POST
+  (<isoline/Contracts.hpp>), sits on a header's declaration that ends there, with `;`, and is not inline,
+  constexpr, consteval, a template's, or a class template's member. Its function is then defined in an implementation file, which
+  evaluates the contract under Isoline's pinned semantic, never under a consumer's.
+
 Comments are never code, and string and character literals are blanked for every pattern but an
 `#include`. Any finding, or a row that is no row, fails the check (exit status 1); a missing rows file is
-an error (2). On success it prints the count of the
-Require()s installed headers keep: they cannot become contracts until an installed declaration may carry
-one.
+an error (2). On success it prints the count of the Require()s installed headers keep.
 
 Usage: python3 -I scripts/check-contract-spelling.py [--root <repository>]
 """
@@ -76,6 +79,29 @@ RULES = (
          forbidden=re.compile(r"\bcontract_assert\b"),
          message="a contract_assert outside the seam: spell it ISOLINE_PRECONDITION or ISOLINE_INVARIANT "
                  "(<isoline/meta/Check.hpp>), whose native expansion proves the function noexcept"),
+    # A declaration contract where the noexcept proof does not read it. The proof
+    # (isoline_declaration_contracts_check, src/isoline/CMakeLists.txt) reads every .hpp under src/isoline/
+    # but its own seam's (meta/reflection/, meta/contracts/, meta/fallback/); so every other file is
+    # refused, the header's own fixtures excepted, which test the proof, its expansion and the refusal.
+    Rule(name="declaration-contract-unproven",
+         globs=("src/**/*.cpp", "src/**/*.def", "src/**/*.h", "src/isoline/meta/reflection/**/*.hpp",
+                "src/isoline/meta/contracts/**/*.hpp", "src/isoline/meta/fallback/**/*.hpp", "tests/**/*.cpp",
+                "tests/**/*.hpp", "tests/**/*.h", "tests/**/*.def"),
+         exempt=("tests/compile-fail/DeclarationContractMayThrow.cpp", "tests/contracts-consumer/Expansion.cpp",
+                 "tests/compile-fail/DeclarationContractOnClassTemplate.cpp",
+                 "tests/compile-fail/DeclarationContractOnFreeFunction.cpp",
+                 "tests/contracts-consumer/Consumer.cpp",
+                 "tests/cmake/contracts-proof-testing/src/isoline/fixture/Api.hpp",
+                 "tests/cmake/contracts-proof-testing/src/isoline/fixture/testing/Throwing.hpp"),
+         scope=Scope.EVERY_FILE,
+         text=Text.CODE,
+         forbidden=re.compile(r"\bISOLINE_(?:PRE|POST)\b"),
+         message="a declaration contract where the noexcept proof (isoline_declaration_contracts_check) does not "
+                 "read it: put it on a declaration in a header under src/isoline/, or spell the check "
+                 "ISOLINE_PRECONDITION or ISOLINE_INVARIANT"),
+    # A raw contract in a header: the body macros, contract_assert, or a contract specifier written out. A
+    # declaration contract is spelled ISOLINE_PRE/ISOLINE_POST (the generated isoline/Contracts.hpp), which
+    # the pattern does not match: `ISOLINE_PRE(` has no word boundary before `PRE`, and is upper case.
     # A contract specifier after a declarator: after its `)`, any run of cv-, ref- and noexcept
     # qualifiers, `override`, `final` and a trailing return type (`) pre(`, `) const & post(`,
     # `) -> T pre(`, `) override pre(`); not a call such as `loop.post(`.
@@ -87,7 +113,8 @@ RULES = (
          forbidden=re.compile(r"\bISOLINE_PRECONDITION\b|\bISOLINE_INVARIANT\b|\bcontract_assert\b"
                               r"|\)(?:\s*(?:\b(?:const|volatile|noexcept|override|final)\b|&&?"
                               r"|->\s*[\w:<>*&, ]*?[\w>*&]))*\s*\b(?:pre|post)\s*\("),
-         message="contracts stay out of headers until P19 Task 16"),
+         message="a contract in a header is spelled ISOLINE_PRE or ISOLINE_POST on a declaration "
+                 "(<isoline/Contracts.hpp>), whose expansion is fixed per package and proves the function noexcept"),
     Rule(name="meta-include-in-installed-header",
          globs=("src/isoline/**/*.hpp", "src/isoline/**/*.def"),
          exempt=(),
@@ -96,6 +123,20 @@ RULES = (
          forbidden=re.compile(r'#\s*include\s*[<"]isoline/meta/(?!EnumRows\.hpp[>"])'),
          message="an installed header includes only meta/EnumRows.hpp"),
 )
+
+# A declaration contract, which the inline rule follows to the end of its declaration.
+DECLARATION_CONTRACT = re.compile(r"\bISOLINE_(?:PRE|POST)\s*\(")
+# What makes a declaration inline, whose function is compiled into each consumer's translation unit: a
+# specifier, or a template, whose definition a header holds. A member of a class template is
+# found by inClassTemplate().
+INLINE_SPECIFIER = re.compile(r"\b(?:inline|constexpr|consteval|template)\b")
+# The head of a template's declaration, which the inline rule looks for before every enclosing class too.
+TEMPLATE_HEAD = re.compile(r"\btemplate\s*<")
+# The headers the inline rule reads: every header, installed or private.
+DECLARATION_CONTRACT_GLOBS = ("src/isoline/**/*.hpp",)
+INLINE_MESSAGE = ("a declaration contract on a function a header defines, or declares inline: its consumers would "
+                  "compile the check under their own semantic. Declare it here and define it in a .cpp, whose "
+                  "contract is checked under Isoline's enforce")
 
 # Why a function keeps Require(): its site cannot be a contract, which needs a noexcept function.
 REASONS = (
@@ -179,6 +220,62 @@ def ruleFindings(root, rules, installed):
             for match in rule.forbidden.finditer(code):
                 line = code.count("\n", 0, match.start()) + 1
                 result.append(f"{relative}:{line}: {rule.name}: {rule.message}")
+    return result
+
+
+def declarationEnd(code, index):
+    """The index of the first character after the declaration contracts that start at @p index of @p code,
+    each `ISOLINE_PRE(…)`/`ISOLINE_POST(…)` and the space around it skipped; -1 if one does not close."""
+    while True:
+        while index < len(code) and code[index].isspace():
+            index += 1
+        match = DECLARATION_CONTRACT.match(code, index)
+        if match is None:
+            return index
+        closing = closingParenthesis(code, match.end() - 1)
+        if closing == -1:
+            return -1
+        index = closing + 1
+
+
+def inClassTemplate(code, index):
+    """Whether @p index of @p code lies inside the braces of a class template, at any depth: an enclosing
+    `{` whose head, from the previous `;`, `{` or `}`, holds `template <`. Its members' contracts are
+    compiled with the template, in each consumer's translation unit."""
+    depth = 0
+    for position in range(index - 1, -1, -1):
+        character = code[position]
+        if character == "}":
+            depth += 1
+        elif character == "{":
+            if depth > 0:
+                depth -= 1
+                continue
+            head = max(code.rfind(boundary, 0, position) for boundary in ";{}") + 1
+            if TEMPLATE_HEAD.search(code, head, position):
+                return True
+    return False
+
+
+def inlineContractFindings(root):
+    """Every declaration contract of a header whose declaration is a definition (a body, member
+    initializers, `= default`), inline (INLINE_SPECIFIER between it and the previous `;`, `{` or `}`), or a
+    member of a class template (inClassTemplate()), as
+    `<path>:<line>: declaration-contract-inline: <message>`."""
+    result = []
+    paths = sorted({path for glob in DECLARATION_CONTRACT_GLOBS for path in root.glob(glob) if path.is_file()})
+    for path in paths:
+        relative = path.relative_to(root).as_posix()
+        code = codeOnly(path.read_text(encoding="utf-8"))
+        position = 0
+        while (match := DECLARATION_CONTRACT.search(code, position)) is not None:
+            end = declarationEnd(code, match.start())
+            position = match.end() if end == -1 else max(end, match.end())
+            start = max(code.rfind(character, 0, match.start()) for character in ";{}") + 1
+            isDefinition = end == -1 or end >= len(code) or code[end] != ";"
+            if isDefinition or INLINE_SPECIFIER.search(code, start, match.start()) or inClassTemplate(code, match.start()):
+                line = code.count("\n", 0, match.start()) + 1
+                result.append(f"{relative}:{line}: declaration-contract-inline: {INLINE_MESSAGE}")
     return result
 
 
@@ -305,7 +402,7 @@ def main(argv=None):
     if not problems:
         rowProblems, counted = rowFindings(root, rows)
         problems += rowProblems
-    problems = sorted(problems) + ruleFindings(root, RULES, installed)
+    problems = sorted(problems) + ruleFindings(root, RULES, installed) + inlineContractFindings(root)
     for problem in problems:
         print(problem)
     if problems:

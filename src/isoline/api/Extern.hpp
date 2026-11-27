@@ -7,6 +7,7 @@
 #include <utility>
 #include <variant>
 
+#include <isoline/Contracts.hpp>
 #include <isoline/api/Types.hpp>
 #include <isoline/meta/EnumRows.hpp>
 
@@ -63,7 +64,7 @@ namespace detail
 
         /// The store. Precondition (checked, aborting): it is alive.
         /// @return The store.
-        [[nodiscard]] Store const& owner() const noexcept;
+        [[nodiscard]] Store const& owner() const noexcept ISOLINE_PRE(isAlive());
 
         /// The identity of the store. Precondition (checked, aborting): the store is alive.
         /// @return The identity.
@@ -100,7 +101,7 @@ class Function
 
     /// Its type, in its store's form. Precondition (checked, aborting): the store is alive.
     /// @return The type, valid as long as the store.
-    [[nodiscard]] FuncType const& type() const noexcept;
+    [[nodiscard]] FuncType const& type() const noexcept ISOLINE_PRE(_link.isAlive());
 
     /// Whether it is a function of the store @p store names. Unlike store(), it may be asked of a
     /// handle whose store is gone: it compares serial numbers, never reading the handle's store.
@@ -235,7 +236,7 @@ class Tag
     /// Its type, in its store's form: its params are the payload's types, and it has no results.
     /// Precondition (checked, aborting): the store is alive.
     /// @return The type, valid as long as the store.
-    [[nodiscard]] FuncType const& type() const noexcept;
+    [[nodiscard]] FuncType const& type() const noexcept ISOLINE_PRE(_link.isAlive());
 
     /// Whether it is a tag of the store @p store names, as Function::isOf() asks it.
     /// @param store A live store's identity.

@@ -254,6 +254,14 @@ class Manifest:
     systemIncludeDirectories: list
     compileDefinitions: list
     cxxStandard: str
+    # The macros a header of the set leaves defined on purpose, for the set's own headers.
+    definedMacros: list = field(default_factory=list)
+    # Header (resolved) -> the file read in its place, by Clang (through vfsOverlay) and the text rules
+    # alike: a native-contracts build's isoline/Contracts.hpp, which a compiler without contracts cannot
+    # read, mapped onto its fallback copy, which declares the same public names.
+    substitutes: dict = field(default_factory=dict)
+    # The Clang VFS overlay that maps them, written beside the manifest, or None where there are none.
+    vfsOverlay: Optional[pathlib.Path] = None
 
 
 @dataclass
@@ -313,6 +321,23 @@ def resolvePath(base, value):
     return path if path.is_absolute() else (base / path)
 
 
+def writeOverlay(path, substitutes):
+    """Writes beside the manifest at @p path the Clang VFS overlay that maps each header of @p substitutes
+    onto its substitute, keeping the header's own path in what Clang reports; returns its path, or None
+    where there is nothing to map."""
+    if not substitutes:
+        return None
+    roots = [{"type": "file", "name": header.as_posix(), "external-contents": substitute.resolve().as_posix()}
+             for header, substitute in substitutes.items()]
+    overlay = path.with_name(path.stem + ".overlay.json")
+    try:
+        overlay.write_text(json.dumps({"version": 0, "use-external-names": False, "roots": roots}, indent=2) + "\n",
+                           encoding="utf-8")
+    except OSError as error:
+        raise ToolError(f"cannot write the VFS overlay {overlay}: {error.strerror}") from error
+    return overlay
+
+
 def readManifest(path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -320,6 +345,8 @@ def readManifest(path):
         raise ToolError(f"unreadable manifest {path}: {error}") from error
     base = path.parent
     try:
+        substitutes = {resolvePath(base, row["header"]).resolve(): resolvePath(base, row["substitute"])
+                       for row in data.get("headerSubstitutes", [])}
         return Manifest(
             path=path,
             name=data["name"],
@@ -335,6 +362,9 @@ def readManifest(path):
                                       for directory in data["systemIncludeDirectories"]],
             compileDefinitions=list(data["compileDefinitions"]),
             cxxStandard=str(data["cxxStandard"]),
+            definedMacros=list(data.get("definedMacros", [])),
+            substitutes=substitutes,
+            vfsOverlay=writeOverlay(path, substitutes),
         )
     except (KeyError, TypeError) as error:
         raise ToolError(f"unreadable manifest {path}: missing or malformed field {error}") from error
@@ -403,7 +433,7 @@ def commonRoot(namespaces):
 
 def compileArguments(manifest):
     """What compiling the module's headers takes, from its manifest: the C++ standard, the include
-    directories (the system ones as -isystem) and the definitions."""
+    directories (the system ones as -isystem), the VFS overlay of substituted headers and the definitions."""
     systemDirectories = [directory.resolve() for directory in manifest.systemIncludeDirectories]
     arguments = [f"-std=c++{manifest.cxxStandard}"]
     for directory in manifest.includeDirectories:
@@ -411,6 +441,8 @@ def compileArguments(manifest):
             arguments.append(f"-I{directory.resolve().as_posix()}")
     for directory in systemDirectories:
         arguments += ["-isystem", directory.as_posix()]
+    if manifest.vfsOverlay is not None:
+        arguments += ["-ivfsoverlay", manifest.vfsOverlay.as_posix()]
     return arguments + [f"-D{definition}" for definition in manifest.compileDefinitions]
 
 
@@ -954,6 +986,14 @@ def splicedText(path, files, splicing=()):
     return INCLUDE_DIRECTIVE.sub(splice, withoutComments(readSource(path)))
 
 
+def readHeaders(manifest, header):
+    """The files the text rules read for @p header: the header itself, and its substitute too, where the
+    manifest's overlay names one. Clang reads the substitute, but the build reads the header, so a rule
+    holds both to it (a native isoline/Contracts.hpp and its fallback copy alike)."""
+    substitute = manifest.substitutes.get(header.resolve())
+    return [header] if substitute is None else [header, substitute]
+
+
 def leftDefinedMacros(manifest):
     """(macro, header) for each macro a header of the set leaves defined: whose last #define no #undef
     follows. A row file is read where its header includes it, so that its directives count for that header,
@@ -961,10 +1001,12 @@ def leftDefinedMacros(manifest):
     files = rowFiles(manifest)
     leftDefined = []
     for header in umbrellaHeaders(manifest):
-        lastDirective = {}
-        for directive, macro in MACRO_DIRECTIVE.findall(splicedText(header, files)):
-            lastDirective[macro] = directive
-        leftDefined += [(macro, header) for macro, directive in lastDirective.items() if directive == "define"]
+        for read in readHeaders(manifest, header):
+            lastDirective = {}
+            for directive, macro in MACRO_DIRECTIVE.findall(splicedText(read, files)):
+                lastDirective[macro] = directive
+            leftDefined += [(macro, header) for macro, directive in lastDirective.items()
+                            if directive == "define" and (macro, header) not in leftDefined]
     return leftDefined
 
 
@@ -975,12 +1017,13 @@ def compilerConditionals(manifest):
     files = rowFiles(manifest)
     found = []
     for header in umbrellaHeaders(manifest):
-        text = splicedText(header, files).replace("\\\n", " ")
-        for keyword, condition in CONDITIONAL_DIRECTIVE.findall(text):
-            macros = list(dict.fromkeys(COMPILER_MACRO.findall(condition)))
-            if macros:
+        for read in readHeaders(manifest, header):
+            text = splicedText(read, files).replace("\\\n", " ")
+            for keyword, condition in CONDITIONAL_DIRECTIVE.findall(text):
+                macros = list(dict.fromkeys(COMPILER_MACRO.findall(condition)))
                 directive = " ".join(f"#{keyword} {condition}".split())
-                found.append((directive, macros, header))
+                if macros and (directive, macros, header) not in found:
+                    found.append((directive, macros, header))
     return found
 
 
@@ -1098,7 +1141,14 @@ def checkImports(context):
 
 def checkMacros(context):
     return [{"macro": macro, "header": shownFile(context.manifest, header)}
-            for macro, header in leftDefinedMacros(context.manifest)]
+            for macro, header in leftDefinedMacros(context.manifest) if macro not in context.manifest.definedMacros]
+
+
+def checkStaleDefinedMacros(context):
+    """A macro the row lists as left defined that no header leaves defined: a rename went unnoticed, or its
+    header is gone."""
+    defined = {macro for macro, _ in leftDefinedMacros(context.manifest)}
+    return [{"macro": macro} for macro in context.manifest.definedMacros if macro not in defined]
 
 
 def checkCompilerConditionals(context):
@@ -1152,6 +1202,8 @@ RULES = (
      "header outside the header set: {header}, beside the set's own: add it to the library's FILE_SET HEADERS, "
      "or move it out of the public header directories"),
     ("macro", checkMacros, "macro left defined: {macro} in {header}"),
+    ("staleDefinedMacro", checkStaleDefinedMacros,
+     "stale DEFINED_MACROS entry: {macro}: no header of the set leaves it defined"),
     ("compilerConditional", checkCompilerConditionals,
      "compiler conditional: `{directive}` in {header} names {macros}: an installed header reads the same on every "
      "compiler"),

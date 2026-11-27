@@ -32,6 +32,7 @@ message(STATUS "[isoline] float control row: ${isolineFloatControl}")
 add_library(isoline::core ALIAS isoline_core)
 target_sources(isoline_core
     PRIVATE
+        Contracts.cpp
         Version.cpp
         api/Engine.cpp
         api/Extern.cpp
@@ -109,6 +110,7 @@ target_sources(isoline_core
             validate/ValidationError.hpp
             validate/Validator.hpp
             Version.hpp
+            "${PROJECT_BINARY_DIR}/include/isoline/Contracts.hpp"
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
 # Header-based like every target but the module consumers: never scanned for module dependencies, whatever
@@ -129,7 +131,9 @@ isoline_add_module(
     LIBRARY isoline_core
     SOURCE isoline.cppm
     NAMESPACES isoline isoline::api isoline::config
-    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta)
+    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta
+    # isoline/Contracts.hpp's: the declarations of the set spell their contracts through them.
+    DEFINED_MACROS ISOLINE_DECLARATION_CONTRACTS ISOLINE_PRE ISOLINE_POST)
 
 # The C API, a library of its own over isoline_core, with its own C++ tests (src/isoline/c/).
 if(ISOLINE_C_API)
@@ -217,4 +221,16 @@ if(ISOLINE_TESTING)
         UMBRELLA isoline/meta/reflection/EnumTablesUmbrella.hpp
         HEADER_TARGETS isoline_core isoline_text isoline_cli
         EXCLUDE ${isolineEnumTablesExcludes})
+    # The noexcept rule of declaration contracts, only where contracts are native: every header of the
+    # libraries, the test helpers' included (Catch2 for their StringMakers), read through the proving
+    # expansion of <isoline/Contracts.hpp> (isoline_add_declaration_contracts_proof()).
+    set(isolineDeclarationContractsExcludes "")
+    if(NOT TARGET isoline::c_static)
+        list(APPEND isolineDeclarationContractsExcludes "^isoline/c/")
+    endif()
+    isoline_add_declaration_contracts_proof(isoline_declaration_contracts_check
+        SOURCES meta/reflection/DeclarationContractsCheck.cpp
+        LINK_LIBRARIES ${isolineEnumTablesLinks} Catch2::Catch2
+        HEADER_TARGETS isoline_core isoline_text isoline_cli
+        EXCLUDE ${isolineDeclarationContractsExcludes})
 endif()

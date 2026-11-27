@@ -19,7 +19,9 @@ CASES = pathlib.Path(__file__).resolve().parent / "testdata" / "contract-spellin
 
 # Every case the fixtures must hold: a case dropped from testdata fails here rather than passing unseen.
 EXPECTED_CASES = {
-    "comments-are-not-code", "contract-in-header", "loop-post-is-not-a-contract",
+    "comments-are-not-code", "contract-in-header", "declaration-contract-inline", "declaration-contract-unproven",
+    "declaration-contracts-pass",
+    "loop-post-is-not-a-contract",
     "meta-include-in-installed-header", "raw-contract-assert-in-cpp", "require-in-cpp",
     "require-over-its-row-count", "row-that-is-not-a-row", "seam-headers-exempt", "stale-row",
     "stale-row-named-like-a-call",

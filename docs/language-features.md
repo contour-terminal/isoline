@@ -3,7 +3,9 @@
 Isoline is a C++23 library. Where a compiler supports C++26 reflection (P2996), annotations (P3394) and
 contracts (P2900), Isoline uses them. Reflection adds compile-time checks of its hand-maintained tables,
 and contracts carry preconditions. Every other compiler builds the same library through a C++23
-fallback. The installed headers stay C++23 on every compiler, and consumers compile as C++23.
+fallback. The installed headers parse as C++23 on every compiler once their declaration contracts
+(`ISOLINE_PRE`, `ISOLINE_POST`) expand to nothing, as they do on the fallback path. Consumers of a fallback
+package compile as C++23; consumers of a native-contracts package compile as C++26.
 
 `cmake/IsolineLanguageFeatures.cmake` decides each feature's path at configure time, and prints one line
 per feature:
@@ -88,11 +90,12 @@ feature added as one row, and which probes run with which flags.
 - **Contracts native:** `isoline_core` and `isoline_text`, the libraries whose checks are spelled through the
   seam, compile as C++26 with the contracts row's flags, then the pinned
   semantic's flag as the last PRIVATE option `isoline_apply_language_features()` adds, and links
-  `stdc++exp` PRIVATE. A static library's PRIVATE link items reach consumers as `$<LINK_ONLY:…>`, so an
-  installed package links the library without compiling with its flags. The target's compile feature
-  stays `cxx_std_23`, so consumers and the tests compile as C++23. That is deliberate: contracts are on
-  wherever supported (owner, Q1), installed builds included, and a C++26 `isoline_core` is what lets the
-  header check fail on its own.
+  `stdc++exp` PRIVATE. A static library's PRIVATE link items reach consumers as `$<LINK_ONLY:…>`. Its
+  headers' declarations then carry contracts (`ISOLINE_PRE`, `ISOLINE_POST`; "Declaration contracts"
+  below), so its interface asks every consumer, the tests and an installed package's included, for the
+  contract-consumer row's standard: `cxx_std_26`, which enables contracts on GCC 16.2 without a flag. No
+  flag and no semantic is asked. On the fallback path the compile feature stays `cxx_std_23`, and consumers
+  compile as C++23.
 - **Reflection and annotations native:** they only add check translation units of their own.
 
 ## Contracts
@@ -146,13 +149,125 @@ by the name at its invocation, so a macro invoked through another macro is not s
 | Files | Refused | Why |
 |---|---|---|
 | `src/isoline/**/*.cpp` | a raw `contract_assert` | it bypasses the macros, and their `noexcept` proof |
-| `src/isoline/**/*.{hpp,def}`, installed or private, except the two seam headers | `ISOLINE_PRECONDITION`, `ISOLINE_INVARIANT`, `contract_assert`, and a `pre`/`post` specifier after a declarator and any qualifiers, ref-qualifiers, `override`, `final` or trailing return type (`) pre(`, `) const & post(`, `) -> T pre(`, `) override pre(`; not a call such as `loop.post(`) | contracts stay out of headers until P19 Task 16 |
+| `src/isoline/**/*.{hpp,def}`, installed or private, except the two seam headers | `ISOLINE_PRECONDITION`, `ISOLINE_INVARIANT`, `contract_assert`, and a `pre`/`post` specifier after a declarator and any qualifiers, ref-qualifiers, `override`, `final` or trailing return type (`) pre(`, `) const & post(`, `) -> T pre(`, `) override pre(`; not a call such as `loop.post(`, nor `ISOLINE_PRE(`) | a contract in a header is `ISOLINE_PRE` or `ISOLINE_POST` on a declaration, whose expansion is fixed per package |
+| `src/**/*.{cpp,def,h}`, `tests/**/*.{cpp,hpp,h,def}` but the header's fixtures, and the seam's headers (`meta/reflection/`, `meta/contracts/`, `meta/fallback/`) | `ISOLINE_PRE`, `ISOLINE_POST` (rule `declaration-contract-unproven`) | the noexcept proof does not read them |
+| `src/isoline/**/*.hpp` | `ISOLINE_PRE`/`ISOLINE_POST` on a declaration that does not end with `;` after them (a body, member initializers, `= default`), or that is `inline`, `constexpr`, `consteval` or a template's, or that sits inside a class template's braces at any depth (rule `declaration-contract-inline`) | its consumers would compile the check under their own semantic |
 | installed headers (every `FILE_SET HEADERS` of `src/isoline/**/CMakeLists.txt`) | `#include <isoline/meta/…>` other than `EnumRows.hpp` | an installed header includes only `meta/EnumRows.hpp` |
 | `src/isoline/**/*.cpp`, tests and `testing/` directories left out | a `Require(` or `Guarantee(` beyond the file's throwing-site rows, fewer than they count, or a row whose file is gone or no longer defines its function (the name before a parameter list a definition's tail follows, not a call) | use `ISOLINE_PRECONDITION`/`ISOLINE_INVARIANT` in a `noexcept` function, or add a row |
 
 Comments are never code, and literals are blanked for every pattern but an `#include`. On success the lint
-prints how many `Require()`s the installed headers keep (15): an installed declaration must parse as
-C++23, so they stay until one may carry a contract.
+prints how many `Require()`s the installed headers keep (15). They are inline header code, where a
+contract would be evaluated under the consumer's semantic, so they stay `Require()`.
+
+### Declaration contracts
+
+The owner's ruling of 2026-11-27 brings declaration contracts forward from Task 16: where contracts are
+native, a precondition or postcondition of a `noexcept` member function may sit on its first declaration,
+in a header, installed ones included. It is spelled through two macros of `<isoline/Contracts.hpp>`:
+
+- `ISOLINE_PRE(cond)` expands to `pre(cond)`.
+- `ISOLINE_POST(result, cond)` expands to `post(result: cond)`.
+
+Both expand to nothing on the fallback path.
+
+**One expansion per installed package.** D3 refused header macros because a consumer's translation unit
+would decide their expansion, and first declarations would differ between units (ill-formed, no
+diagnostic required). `isoline/Contracts.hpp` is therefore generated once per build, into
+`${PROJECT_BINARY_DIR}/include`, and installed with `isoline_core`'s headers. It is a copy of
+`src/isoline/meta/contracts/Contracts.hpp.in` where contracts are native, and of
+`src/isoline/meta/fallback/contracts/Contracts.hpp.in` otherwise. It records the mode as
+`ISOLINE_DECLARATION_CONTRACTS`, `1` or `0`. Nothing a consumer defines or compiles with changes the
+expansion, and no installed header tests a compiler's macro (the export lint's `compilerConditional` rule
+holds).
+
+- **A native package refuses a consumer it cannot be read by.** The native header starts with
+  `#if !defined(__cpp_contracts)` and an `#error`. That is a feature-test macro, not a compiler's: it asks
+  whether this unit can parse the declarations at all, and no expansion depends on it. `isolineConfig.cmake`'s refusal of another compiler is the CMake
+  twin (see "The consumer side of a native package").
+- **A fallback package asks nothing.** Its expansion is empty in every unit, so a consumer compiled with
+  contracts reads the same declarations as one without. The refusal is one-directional for that reason, as
+  the CMake twin is.
+
+The contracts-consumer tests (label `unit`) compile `tests/contracts-consumer/Consumer.cpp` alone, at a row's
+standard and flags, never linked to `isoline::core`. On a native build, a unit compiled as C++23 or with
+`-fno-contracts` must stop at the `#error`, and one compiled as the package asks (C++26) must compile. On a
+fallback build, a C++23 unit and, on GCC, a C++26 unit with `-fcontracts` must compile. Each also checks `ISOLINE_DECLARATION_CONTRACTS` against the path CMake selected.
+
+**The rules of the body macros hold, unweakened:**
+
+- **Only on `noexcept` member functions of no class template, proven by reflection.** The reflection
+  check `isoline_declaration_contracts_check` (`meta/reflection/DeclarationContractsCheck.cpp`,
+  compile-only, where contracts are native; `isoline_add_declaration_contracts_proof()`) reads every
+  header of the libraries, installed, private and the test helpers' (`testing/`) alike. It leaves out only
+  its own seam's (`ISOLINE_DECLARATION_CONTRACTS_PROOF_EXCLUDES`: `meta/reflection/`, `meta/contracts/`,
+  `meta/fallback/contracts/`). The fixture project `tests/cmake/contracts-proof-testing` (test
+  `language-features-contracts-proof-reads-testing`) declares a throwing `ISOLINE_PRE` in a `testing/`
+  header, and its proof must fail to build naming it. It reads them through the *proving expansion* of `<isoline/Contracts.hpp>`
+  (`src/isoline/meta/reflection/ContractsProof.hpp.in`, written to `${PROJECT_BINARY_DIR}/contracts-proof`
+  and put first on the check's include path). There each macro carries a first `pre` whose condition
+  instantiates `isoline::meta::detail::declarationContractOnNoexcept<std::meta::is_noexcept(std::meta::access_context::current().scope())>()`,
+  whose `static_assert` names every declaration contract on a function that may throw. A member function's
+  contract sees the function as its scope. A free function's sees its namespace, which is no function, so
+  it is refused as well (measured). The compile-fail tests `compile-fail-declaration-contract-may-throw` and
+  `compile-fail-declaration-contract-on-free-function` pin both through the same expansion. The same `pre`
+  refuses a member of a class template's specialization
+  (`std::meta::has_template_arguments(std::meta::parent_of(scope))`), whose contract its consumers would
+  compile. GCC 16.2 evaluates a dependent contract only when the member function is instantiated, not
+  when the class is (measured: an explicit instantiation of the class does not reach it), so the lint's
+  `declaration-contract-inline` rule refuses every declaration contract inside a class template's braces
+  by its text too. The installed expansion stays `pre(cond)` alone. The test `contracts-expansion` (label
+  `lint`) preprocesses `tests/contracts-consumer/Expansion.cpp` through both headers, the proof emptied,
+  and fails unless both expand `ISOLINE_PRE`, `ISOLINE_POST` and `ISOLINE_DECLARATION_CONTRACTS` alike. Its proof would need `-freflection` in every consumer, which changes
+  how libstdc++'s headers preprocess and breaks an `import std;` consumer of module isoline (measured).
+  The check never meets the installed expansion: nothing links it. The lint's
+  `declaration-contract-unproven` rule refuses the macros in every file the check does not read: every
+  source file, the seam's headers, and everything under `tests/` but the header's own fixtures.
+- **The body check stays.** A declaration contract is an addition, not a replacement, until Task 16. The
+  functions keep their `ISOLINE_PRECONDITION`, which the fallback path checks. A postcondition is new and
+  has no body check, so on the fallback path it checks nothing.
+- **Never on host misuse reachable from C.** That stays an error value (the cross-plan notes): the C API
+  checks it first.
+- **`enforce` only, and never the consumer's semantic.** GCC 16.2 evaluates a non-inline function's
+  contract in the callee (measured: a caller compiled with `-fcontract-evaluation-semantic=ignore` still
+  terminates). A declaration contract therefore sits only on a function that an implementation file defines,
+  which Isoline compiles under the pinned semantic. The lint's `declaration-contract-inline` rule refuses one
+  on a header's definition, or on an `inline`, `constexpr`, `consteval` or template declaration. That is
+  also why the consumer row carries no semantic.
+
+**Mixed packages do not link.** Each header declares
+`isoline::meta::detail::declaration_contracts_<mode>::declarationContractsMode()` in an inline namespace
+named after `ISOLINE_DECLARATION_CONTRACTS`, and beside it an inline variable that references it (a
+`[[gnu::used]]` constant address where the compiler has the attribute, so a consumer's `-Wglobal-constructors`
+has nothing to report; an initializer that calls it elsewhere, MSVC), so every
+translation unit that sees a declaration contract, through any Isoline header that includes
+`<isoline/Contracts.hpp>`, references its mode's symbol, whether or not it uses anything else of the header
+(`src/isoline/Contracts.cpp` defines the library's). A consumer compiled against a fallback package's headers
+and linked with a native library, or two such objects in one program, fails to link. A shared library linked
+without `-z defs` (`-Wl,--no-undefined`) leaves the symbol unresolved until it is loaded, and then fails at
+load time instead. The test `contracts-mode-mismatch` (native lanes) builds
+`tests/contracts-consumer/Mismatch.cpp`, which reads nothing of the header, against the fallback copy, and
+passes only on the linker's undefined `declaration_contracts_0` (GNU ld's "undefined reference", lld's and
+mold's "undefined symbol"). The namespace is under `isoline::meta`, which discovery skips and module isoline
+keeps internal.
+
+**The conversions,** each with a canary case (below): the four `noexcept` accessors behind installed
+declarations that Task 6 named, `Engine::Engine` (`ISOLINE_PRE(config.features.checkPrerequisites().has_value())`),
+`StoreLink::owner()`, `Function::type()` and `Tag::type()`. Thirteen canary cases reach them, every one
+that reaches `owner()` included. A postcondition bounds the decoder's offsets:
+`ByteReader::offset()`'s `ISOLINE_POST(absolute, absolute >= _baseOffset)` says the offset never wraps.
+The plan's other candidates are not on this branch or cannot be contracts. P5's `encodedSize` family and
+`CodeWords` are Task 10's. The LEB128 writers allocate and are inline. `FixedText`'s sizes are
+`constexpr`, and checked at compile time already. `writtenAnchor()` is a free function, and keeps its body
+checks.
+
+**The export lint reads the fallback copy.** The lint's Clang has no contracts, so it would stop at the
+native header's `#error`. On a native build, the module row's manifest names the fallback copy, written
+to `${PROJECT_BINARY_DIR}/modules/substitutes`, as the header's substitute. The lint maps one onto the
+other through a Clang VFS overlay (`-ivfsoverlay`), and its text rules read the substitute too. Neither
+declares a name; they differ in their macros alone. GCC's reflected surface reads the native header, and
+`meta-module-surface.reflection` compares the two readings.
+The header leaves its three macros defined on purpose. Module isoline's row lists them as
+`DEFINED_MACROS` ([docs/modules.md](modules.md)), because an importer needs none of them.
 
 ### Which checks are contracts
 
@@ -173,9 +288,9 @@ Fourteen checks, in thirteen functions, are contracts. The entry checks: `Engine
 `Natural::bitWidth()` (`text/FloatLiteral.cpp`). The others: `Store::call()`'s refusal naming a mismatch
 (`api/Store.cpp`), `shuffle()`'s lane (`interpreter/Simd.cpp`) and `addressOf()`'s value
 (`runtime/Instantiate.cpp`). 84 checks in 68 functions keep `Require()`, as do the 15 of the installed
-headers. The first to become `pre` when installed declarations may carry one (P19 Task 16) are the
-`noexcept` accessors behind installed declarations: `Engine::Engine`, `StoreLink::owner()`,
-`Function::type()` and `Tag::type()`.
+headers. The `noexcept` accessors behind installed declarations, `Engine::Engine`, `StoreLink::owner()`,
+`Function::type()` and `Tag::type()`, also carry their entry check on the declaration ("Declaration
+contracts", above).
 
 A condition only reads: no check interns, allocates or advances anything, so that evaluating it once,
 again, or not at all changes nothing but whether the program ends. The compiler does not hold this. A
@@ -289,24 +404,34 @@ pass both.
 
 ### Two report channels
 
-Where contracts are native, a contract site that fails reports through the compiler's violation handler
+Where contracts are native, a contract site that fails, a declaration's `pre` or `post` included, reports through the compiler's violation handler
 (GCC's default prints to standard error), then terminates. Every `Require()` still reports through
 core-cpp's `core::setFailHandler()`. An embedder's fail handler therefore sees no contract site on
 GCC 16.2 and later. Both channels end the process. `docs/embedding.md` says the same.
 
 ### The canary
 
-`tests/canary/RequireCanaryCases.def` names each case's spelling, `contract` or `require`, measured by
-running it natively. Report rows (`ISOLINE_CONTRACT_REPORT_ROWS`) give, per compiler, path and spelling,
-what the test expects around the check's condition:
+`tests/canary/RequireCanaryCases.def` names each case's spelling, measured by running it natively. It is
+the check that fires first there: `require`, `contract`, or `pre` or `post` for a declaration contract.
+Report rows (`ISOLINE_CONTRACT_REPORT_ROWS`) give, per compiler, path and spelling, what the test expects
+around the check's condition:
 
 | Compiler | Path | Spelling | Report |
 |---|---|---|---|
 | any | fallback | any | `Precondition failed. <cond>` |
 | GNU | native | require | `Precondition failed. <cond>` |
 | GNU | native | contract | `contract violation in function <signature> at <file>:<line>: <cond>`, then `[assertion_kind: assert, semantic: enforce, mode: predicate_false, terminating: yes]` |
+| GNU | native | pre, post | the same, with `assertion_kind: pre` or `post` |
 
-Where contracts are native, `isoline_require_canary_throwing_handler` runs each `contract` case again,
+A `pre` case is a death test on both paths. Natively the declaration's contract reports. On the fallback
+path the declaration contract is a no-op, and the body check it keeps reports `Precondition failed.`, so
+the case's check regex matches both spellings of the condition (`_?config[.]features…`). A `post` case
+(`byte-reader-offset-wraps`) has no body check. Unchecked rows (`ISOLINE_CONTRACT_UNCHECKED_ROWS`:
+`*|fallback|post`) name where a spelling compiles to no check. There the case passes only on the canary's
+"the check let the call through" line, and a report of its check fails it: on `gcc-fallback` the
+postcondition must be a no-op.
+
+Where contracts are native, `isoline_require_canary_throwing_handler` runs each `contract`, `pre` and `post` case again,
 with a violation handler that prints `throwing-handler: <cond>` and throws (`tests/canary/ThrowingHandler.cpp`).
 The canary's `main()` catches what reaches it and reports that the check let the call through, which
 fails the test. It passes only if no exception leaves the failed check: every contract site in a
@@ -323,7 +448,8 @@ and range-based `for` body.
 property `ISOLINE_LANGUAGE_FEATURE_TARGETS`. Today those are `isoline_core` and `isoline_text`; another library is
 one call.
 After all of them are defined, the top-level `CMakeLists.txt` adds one check over all of them,
-`isoline_public_headers_cxx23`. Adding the check seals the registry: a target passed to
+`isoline_public_headers_cxx23`, and, where contracts are native, a second one, `isoline_public_headers_cxx26`.
+Adding the check seals the registry: a target passed to
 `isoline_apply_language_features()` afterwards would compile with the native features while its headers
 go unchecked, so the configure fails and names the target. The fixture
 `tests/cmake/header-check-sealed` (tests `language-features-header-check-sealed-late` and `-early`)
@@ -335,7 +461,16 @@ header's code is tidied with its library.
 
 The check is built with the tests (`ISOLINE_TESTING`). It fails when an installed header uses C++26
 syntax, such as an annotation, `pre` or `contract_assert`, even where the library itself compiles as
-C++26. It also fails when a header does not include what it uses.
+C++26. It also fails when a header does not include what it uses. Where contracts are native, the
+recorded libraries' interface asks every consumer for C++26 (see "Declaration contracts"), but not
+`isoline_public_headers_cxx23`, which sets `ISOLINE_HEADERS_AS_CXX23` (the interface's compile feature is
+`$<BUILD_INTERFACE:$<$<NOT:$<BOOL:$<TARGET_PROPERTY:ISOLINE_HEADERS_AS_CXX23>>>:cxx_std_26>>`, and
+`cxx_std_26` installed). It still compiles as C++23 there, reading `<isoline/Contracts.hpp>` as its fallback
+copy, first on its include path, so every native lane also proves that the installed headers are C++23 once
+the two macros expand to nothing. Each of its stubs refuses `__cpp_contracts` with an `#error`, so a
+C++26 requirement reaching it fails it on GCC (`__cplusplus` cannot say it: MSVC's C++23 mode reports a
+later value). `isoline_public_headers_cxx26` compiles the same stubs as the consumers
+do, through the installed expansion.
 
 ## What reflection checks
 
@@ -577,6 +712,12 @@ A package whose contracts are native asks more of its consumer than a fallback o
   (`docs/embedding.md`, "Failed checks"). It must not throw: every contract Isoline compiles sits in a
   `noexcept` function.
 
+- **A consumer compiles as C++26.** The headers' declarations carry contracts ("Declaration contracts"),
+  so `isoline::core` exports the contract-consumer row's standard as its interface
+  (`INTERFACE_COMPILE_FEATURES` `cxx_std_26`). GCC 16.2 enables contracts there without a flag. A consumer
+  without CMake passes `-std=c++26` itself. A unit compiled without contracts stops at
+  `isoline/Contracts.hpp`'s `#error`.
+
 None of the native flags reach a consumer: they are build options (`isoline_apply_build_options()`),
 wrapped in `$<BUILD_INTERFACE:…>` and recorded, so `install-forbidden-options` and check-install's leak
 check prove that no exported file holds `-freflection`, `-fcontracts` or the semantic. A package built on
@@ -771,6 +912,19 @@ the pull, which is how to check that a pin is in force.
   the first statement of a `for`, `while`, `do` and range-based `for` body, and a braceless `if` or
   `else`. The native macros are written that way, and the canary's position cases fail otherwise.
 - The last `-fcontract-evaluation-semantic=` on the command line wins.
+- `-std=c++26` defines `__cpp_contracts` (202502) without `-fcontracts`, and `-fno-contracts` undefines it.
+  `__cpp_impl_reflection` needs `-freflection`.
+- A `pre`/`post` on a non-inline function is evaluated in the callee, under the semantic it was compiled
+  with: a caller compiled with `-fcontract-evaluation-semantic=ignore` still terminates.
+- In a member function's `pre`, `std::meta::access_context::current().scope()` is the function, the class
+  complete there (a later private member may be named). In a free function's it is the enclosing namespace,
+  and `std::meta::current_function()` throws ("current scope does not represent a function").
+- A module whose global module fragment was compiled with `-freflection`, imported beside `import std;`
+  built without it, fails to compile ("conflicting type" in `__mbstate_t.h`): `__cpp_impl_reflection`
+  changes what libstdc++'s headers declare. `-std=c++26` and `-std=c++26 -fcontracts` preprocess
+  libstdc++ identically, and define the same macros.
+- A failed `pre` and `post` report `assertion_kind: pre` and `post`. Their violation's comment is the
+  condition's text alone.
 - A violation handler that throws, in a `noexcept` function, terminates there. In a function that may
   throw, the caller can catch the exception and continue.
 - CMake 4.3 knows no C++26 mode of MSVC 19.51, and `try_compile` refuses to generate a project that

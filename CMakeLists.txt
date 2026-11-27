@@ -57,9 +57,10 @@ endif()
 add_subdirectory(src/isoline)
 
 # Every installed header of every target isoline_apply_language_features() saw parses as C++23 on its
-# own, whatever the library compiles as: one check, after all of them are defined.
+# own, whatever the library compiles as, and, where contracts are native, also as the libraries'
+# consumers compile it (C++26, the installed contracts): one check, after all of them are defined.
 if(ISOLINE_TESTING)
-    isoline_add_public_header_check(isoline_public_headers_cxx23)
+    isoline_add_public_header_check(isoline_public_headers_cxx23 CONSUMER_CHECK isoline_public_headers_cxx26)
 endif()
 
 if(ISOLINE_TESTING)

@@ -1,0 +1,11 @@
+{
+  "version": 0,
+  "use-external-names": false,
+  "roots": [
+    {
+      "type": "file",
+      "name": "/home/christianparpart/projects/isoline-p19/scripts/testdata/module-exports/header-substituted-native-read/isoline/Contracts.hpp",
+      "external-contents": "/home/christianparpart/projects/isoline-p19/scripts/testdata/module-exports/header-substituted-native-read/substitute/isoline/Contracts.hpp"
+    }
+  ]
+}

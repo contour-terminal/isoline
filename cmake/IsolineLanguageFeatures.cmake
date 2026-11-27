@@ -24,8 +24,12 @@ if(POLICY CMP0174)
     cmake_policy(SET CMP0174 NEW)
 endif()
 
+## Isoline's source tree, which a feature row's probe path is relative to: this file's, so that a fixture
+## project that includes the module probes Isoline's own probes.
+get_filename_component(ISOLINE_LANGUAGE_FEATURES_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+
 ## Feature rows: feature|compilerId|minimumVersion|standard|flags|linkLibraries|requires|probe|purpose
-## flags and linkLibraries are separated by spaces; probe is relative to the project's source tree;
+## flags and linkLibraries are separated by spaces; probe is relative to Isoline's source tree;
 ## purpose says what Isoline uses the feature for, in the option's help text (a feature's first row
 ## gives it). Features are decided in the order they first appear, so a requirement's rows come before
 ## its users'. The contracts row's flags pin the semantic, so its probe tests the one Isoline uses.
@@ -73,12 +77,33 @@ set(ISOLINE_CONTRACT_REFUSED_FLAG_ROWS
 
 ## Report rows: compilerId|path|spelling|prefix|suffix, `*` matching any. What a failed check prints
 ## around its condition, as CMake regular expressions, by the path contracts took and the spelling of the
-## check's site (ISOLINE_PRECONDITION and ISOLINE_INVARIANT are `contract`, Require() is `require`). The
-## first row that matches applies; the canary's tests are built from them (tests/CMakeLists.txt).
+## check's site (ISOLINE_PRECONDITION and ISOLINE_INVARIANT are `contract`, Require() is `require`,
+## ISOLINE_PRE and ISOLINE_POST on a declaration are `pre` and `post`). The first row that matches applies;
+## the canary's tests are built from them (tests/CMakeLists.txt). On the fallback path a `pre` reports
+## through the body check it keeps.
 set(ISOLINE_CONTRACT_REPORT_ROWS
     "*|fallback|*|Precondition failed[.] |"
     "GNU|native|require|Precondition failed[.] |"
-    "GNU|native|contract|contract violation in function [^\n]* at [^\n]*: |\n\\[assertion_kind: assert, semantic: enforce, mode: predicate_false, terminating: yes\\]")
+    "GNU|native|contract|contract violation in function [^\n]* at [^\n]*: |\n\\[assertion_kind: assert, semantic: enforce, mode: predicate_false, terminating: yes\\]"
+    "GNU|native|pre|contract violation in function [^\n]* at [^\n]*: |\n\\[assertion_kind: pre, semantic: enforce, mode: predicate_false, terminating: yes\\]"
+    "GNU|native|post|contract violation in function [^\n]* at [^\n]*: |\n\\[assertion_kind: post, semantic: enforce, mode: predicate_false, terminating: yes\\]")
+
+## Contract-consumer rows: compilerId|standard. What a package whose contracts are native asks of every
+## translation unit that includes one of its headers: ISOLINE_PRE and ISOLINE_POST are `pre` and `post` there
+## (isoline/Contracts.hpp), so the unit compiles at the standard, which on GCC 16.2 enables contracts
+## without a flag (measured). isoline_apply_language_features() puts it on a library's interface, which
+## exports it. No flag is asked: one that changes how the standard library preprocesses (-freflection
+## does) splits an `import std;` consumer's view of it from module isoline's, and no semantic, since every
+## declaration contract sits on a function an implementation file defines, which evaluates it under
+## Isoline's own (docs/language-features.md, "Declaration contracts").
+set(ISOLINE_CONTRACT_CONSUMER_ROWS
+    "GNU|26")
+
+## Unchecked rows: compilerId|path|spelling, `*` matching any. Where a site of the spelling compiles to no
+## check at all, so that its canary case passes on the call going through: a declaration's ISOLINE_POST
+## has no body check beside it, and on the fallback path it expands to nothing (isoline/Contracts.hpp).
+set(ISOLINE_CONTRACT_UNCHECKED_ROWS
+    "*|fallback|post")
 
 ## @brief Decides the contract semantic @p SEMANTIC on @p COMPILER from the semantic rows.
 ##
@@ -159,7 +184,7 @@ endfunction()
 ## @brief Sets the report a failed check prints around its condition, from the first report row that
 ## matches.
 ##
-## isoline_contract_report_pattern(COMPILER <compilerId> PATH <native|fallback> SPELLING <contract|require>
+## isoline_contract_report_pattern(COMPILER <compilerId> PATH <native|fallback> SPELLING <contract|require|pre|post>
 ##                                 OUT_PREFIX <var> OUT_SUFFIX <var>)
 ## Both are CMake regular expressions; both are unset where no row matches. Pure.
 function(isoline_contract_report_pattern)
@@ -178,6 +203,46 @@ function(isoline_contract_report_pattern)
     endforeach()
     unset(${arg_OUT_PREFIX} PARENT_SCOPE)
     unset(${arg_OUT_SUFFIX} PARENT_SCOPE)
+endfunction()
+
+## @brief Sets OUT_STANDARD to the standard a translation unit including the headers of a native-contracts
+## package compiles at with COMPILER, by the contract-consumer rows; unset where no row names COMPILER.
+##
+## isoline_contract_consumer_standard(COMPILER <compilerId> OUT_STANDARD <var>)
+## Pure.
+function(isoline_contract_consumer_standard)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "COMPILER;OUT_STANDARD" "")
+    foreach(row IN LISTS ISOLINE_CONTRACT_CONSUMER_ROWS)
+        if(NOT row MATCHES "^([^|]*)[|]([0-9]+)$")
+            message(FATAL_ERROR "[isoline] a contract-consumer row is compilerId|standard: ${row}")
+        endif()
+        if(CMAKE_MATCH_1 STREQUAL arg_COMPILER)
+            set(${arg_OUT_STANDARD} "${CMAKE_MATCH_2}" PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+    unset(${arg_OUT_STANDARD} PARENT_SCOPE)
+endfunction()
+
+## @brief Sets OUT to ON where a site of SPELLING compiles to no check with COMPILER on PATH, by the
+## unchecked rows, and to OFF elsewhere.
+##
+## isoline_contract_is_unchecked(COMPILER <compilerId> PATH <native|fallback> SPELLING <spelling> OUT <var>)
+## Pure.
+function(isoline_contract_is_unchecked)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "COMPILER;PATH;SPELLING;OUT" "")
+    foreach(row IN LISTS ISOLINE_CONTRACT_UNCHECKED_ROWS)
+        if(NOT row MATCHES "^([^|]*)[|]([^|]*)[|]([^|]*)$")
+            message(FATAL_ERROR "[isoline] a contract unchecked row has three columns: ${row}")
+        endif()
+        if((CMAKE_MATCH_1 STREQUAL "*" OR CMAKE_MATCH_1 STREQUAL arg_COMPILER)
+           AND (CMAKE_MATCH_2 STREQUAL "*" OR CMAKE_MATCH_2 STREQUAL arg_PATH)
+           AND (CMAKE_MATCH_3 STREQUAL "*" OR CMAKE_MATCH_3 STREQUAL arg_SPELLING))
+            set(${arg_OUT} ON PARENT_SCOPE)
+            return()
+        endif()
+    endforeach()
+    set(${arg_OUT} OFF PARENT_SCOPE)
 endfunction()
 
 ## @brief Sets @p outVar to the features of @p rows, in the order they first appear.
@@ -429,7 +494,7 @@ endfunction()
 ## failed probe. An edit of the probe reconfigures.
 function(_isoline_run_language_feature_probe probe standard flags libraries prefix)
     set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                 "${PROJECT_SOURCE_DIR}/${probe}")
+                 "${ISOLINE_LANGUAGE_FEATURES_ROOT}/${probe}")
     if(NOT "cxx_std_${standard}" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
         set(${prefix}_RESULT failed PARENT_SCOPE)
         set(${prefix}_DIAGNOSTIC
@@ -438,7 +503,7 @@ function(_isoline_run_language_feature_probe probe standard flags libraries pref
         return()
     endif()
     try_compile(probeCompiles
-        SOURCES "${PROJECT_SOURCE_DIR}/${probe}"
+        SOURCES "${ISOLINE_LANGUAGE_FEATURES_ROOT}/${probe}"
         COMPILE_DEFINITIONS ${flags}
         LINK_LIBRARIES ${libraries}
         CXX_STANDARD ${standard}
@@ -590,6 +655,33 @@ function(_isoline_write_check_forwarder directory)
          @ONLY)
 endfunction()
 
+## @brief Generates isoline/Contracts.hpp under @p directory, the installed header that fixes the package's
+## declaration contracts (ISOLINE_DECLARATION_CONTRACTS, ISOLINE_PRE, ISOLINE_POST): a copy of
+## src/isoline/meta/contracts/Contracts.hpp.in where contracts are native, else of
+## src/isoline/meta/fallback/contracts/Contracts.hpp.in. One expansion per build, and so per installed
+## package, never per consumer: no source tests for the feature. Where contracts are native, the proving
+## expansion (src/isoline/meta/reflection/ContractsProof.hpp.in) is written as isoline/Contracts.hpp under
+## @p proofDirectory, which only the reflection check of the noexcept rule reads first, and the fallback
+## copy under @p substituteDirectory, for a tool whose compiler has no contracts to read in
+## the native one's place (the export lint, cmake/IsolineModules.cmake): the two declare the same public
+## names. The GLOBAL property ISOLINE_LINT_HEADER_SUBSTITUTES lists each such pair as `header|substitute`.
+function(_isoline_write_declaration_contracts directory proofDirectory substituteDirectory)
+    set(native "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../src/isoline/meta/contracts/Contracts.hpp.in")
+    set(fallback "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../src/isoline/meta/fallback/contracts/Contracts.hpp.in")
+    set(proof "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../src/isoline/meta/reflection/ContractsProof.hpp.in")
+    file(REMOVE "${substituteDirectory}/isoline/Contracts.hpp" "${proofDirectory}/isoline/Contracts.hpp")
+    if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
+        configure_file("${native}" "${directory}/isoline/Contracts.hpp" COPYONLY)
+        configure_file("${proof}" "${proofDirectory}/isoline/Contracts.hpp" COPYONLY)
+        configure_file("${fallback}" "${substituteDirectory}/isoline/Contracts.hpp" COPYONLY)
+        set_property(GLOBAL PROPERTY ISOLINE_LINT_HEADER_SUBSTITUTES
+                     "${directory}/isoline/Contracts.hpp|${substituteDirectory}/isoline/Contracts.hpp")
+    else()
+        set_property(GLOBAL PROPERTY ISOLINE_LINT_HEADER_SUBSTITUTES "")
+        configure_file("${fallback}" "${directory}/isoline/Contracts.hpp" COPYONLY)
+    endif()
+endfunction()
+
 ## The generators whose compile commands the build-time check reads (CMAKE_EXPORT_COMPILE_COMMANDS):
 ## a native-contracts build with any other is refused at configure time.
 set(ISOLINE_CONTRACT_GENERATORS "Ninja" "Ninja Multi-Config" "Unix Makefiles" "MinGW Makefiles" "MSYS Makefiles")
@@ -599,8 +691,9 @@ set(ISOLINE_CONTRACT_GENERATORS "Ninja" "Ninja Multi-Config" "Unix Makefiles" "M
 ## static library as $<LINK_ONLY:…>, so an installed package links them without compiling with them;
 ## then, where contracts are native, the pinned semantic's flag, the last PRIVATE option this adds. On
 ## either path the target gets the contracts seam's forwarder, <isoline/meta/Check.hpp>, on a PRIVATE
-## include directory. The target's compile features are left as they are: consumers still compile as
-## C++23.
+## include directory. The target's compile features are left as they are: what a library's consumers
+## compile at is isoline_apply_language_features()'s to add (C++26 where its declarations carry contracts),
+## and a test's or a tool's consumers are none.
 ##
 ## Where contracts are native, the target is recorded in the GLOBAL property ISOLINE_CONTRACT_TARGETS,
 ## which the configure scan reads (isoline_refuse_contract_overrides(), scheduled by the first), its
@@ -704,6 +797,23 @@ function(isoline_apply_language_features target)
     endif()
     set_property(GLOBAL APPEND PROPERTY ISOLINE_LANGUAGE_FEATURE_TARGETS ${target})
     _isoline_apply_target_language_features(${target})
+    if(NOT ISOLINE_CONTRACTS_PATH STREQUAL "native")
+        return()
+    endif()
+    # Its headers' declarations carry contracts (isoline/Contracts.hpp): every consumer compiles at the
+    # contract-consumer row's standard, the package's included.
+    isoline_contract_consumer_standard(COMPILER "${CMAKE_CXX_COMPILER_ID}" OUT_STANDARD consumerStandard)
+    if(NOT DEFINED consumerStandard)
+        message(FATAL_ERROR
+            "[isoline] C++26 contracts native on ${CMAKE_CXX_COMPILER_ID}, but no contract-consumer row names it: "
+            "measure what a translation unit including a header with ISOLINE_PRE needs, and add the row "
+            "(ISOLINE_CONTRACT_CONSUMER_ROWS)")
+    endif()
+    # Every consumer but a C++23 header check (ISOLINE_HEADERS_AS_CXX23 on the consumer,
+    # isoline_add_public_header_check()), which reads the headers through the fallback expansion.
+    target_compile_features(${target} INTERFACE
+        "$<BUILD_INTERFACE:$<$<NOT:$<BOOL:$<TARGET_PROPERTY:ISOLINE_HEADERS_AS_CXX23>>>:cxx_std_${consumerStandard}>>"
+        "$<INSTALL_INTERFACE:cxx_std_${consumerStandard}>")
 endfunction()
 
 ## @brief Appends to @p outVar the targets @p item names: an item of LINK_LIBRARIES,
@@ -883,37 +993,63 @@ endfunction()
 
 ## @brief Adds @p checkTarget, an OBJECT library with one generated translation unit per `.hpp` in the
 ## HEADER_SET of each target of ISOLINE_LANGUAGE_FEATURE_TARGETS, each including its header alone,
-## compiled as C++23 without extensions, whatever the libraries themselves compile as. Called once, after
-## every such target is defined; it seals the registry (ISOLINE_HEADER_CHECK_SEALED).
+## compiled as C++23 without extensions, whatever the libraries themselves compile as. Where contracts are
+## native it reads <isoline/Contracts.hpp> as its fallback copy (ISOLINE_CONTRACTS_SUBSTITUTE_DIR, first on
+## its include path), and asks none of the C++26 the libraries' interface asks of every other consumer
+## (ISOLINE_HEADERS_AS_CXX23): the installed headers are C++23 once ISOLINE_PRE and ISOLINE_POST expand to
+## nothing. There CONSUMER_CHECK, where given, is a second such library, compiled as the libraries'
+## consumers are, through the installed expansion. Called once, after every such target is defined; it
+## seals the registry (ISOLINE_HEADER_CHECK_SEALED).
 ##
-## It proves that an installed header parses as C++23 (no reflection, annotation or contract syntax
-## leaks into one) and includes what it uses. Isoline's warning set applies, and a C++26 extension is an
-## error on the target itself, with or without ISOLINE_WERROR. clang-tidy does not run on the generated
-## stubs: each holds one #include, and the header's code is tidied with its library. The libraries are
-## linked for their usage requirements only; an OBJECT library is never linked.
+## isoline_add_public_header_check(<checkTarget> [CONSUMER_CHECK <target>])
+##
+## It proves that an installed header parses as C++23 (no reflection, annotation or contract syntax but
+## the two macros leaks into one) and includes what it uses. Isoline's warning set applies, and a C++26
+## extension is an error on the C++23 target itself, with or without ISOLINE_WERROR. clang-tidy does not
+## run on the generated stubs: each holds one #include, and the header's code is tidied with its library.
+## The libraries are linked for their usage requirements only; an OBJECT library is never linked.
 function(isoline_add_public_header_check checkTarget)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "CONSUMER_CHECK" "")
     # Sealed first: every registration after this point is refused (isoline_apply_language_features).
     set_property(GLOBAL PROPERTY ISOLINE_HEADER_CHECK_SEALED ${checkTarget})
     get_property(targets GLOBAL PROPERTY ISOLINE_LANGUAGE_FEATURE_TARGETS)
-    set(sources "")
+    set(includeNames "")
     foreach(target IN LISTS targets)
-        _isoline_header_set_include_names(${target} includeNames)
+        _isoline_header_set_include_names(${target} names)
+        list(APPEND includeNames ${names})
+    endforeach()
+    if(includeNames STREQUAL "")
+        message(FATAL_ERROR "[isoline] isoline_add_public_header_check: no recorded target has a header set")
+    endif()
+    set(checks ${checkTarget})
+    if(arg_CONSUMER_CHECK AND ISOLINE_CONTRACTS_PATH STREQUAL "native")
+        list(APPEND checks ${arg_CONSUMER_CHECK})
+    endif()
+    foreach(check IN LISTS checks)
+        set(sources "")
+        # The C++23 check refuses contracts, so that the interface's C++26 reaching it fails it (GCC defines
+        # __cpp_contracts at C++26; a feature-test macro, as __cplusplus is past 202302L for MSVC's C++23).
+        set(standardCheck "")
+        if(check STREQUAL checkTarget)
+            set(standardCheck "#if defined(__cpp_contracts)\n#error \"${check} compiles as C++23, without contracts\"\n#endif\n")
+        endif()
         foreach(includeName IN LISTS includeNames)
-            set(source "${CMAKE_CURRENT_BINARY_DIR}/${checkTarget}/${includeName}.cpp")
+            set(source "${CMAKE_CURRENT_BINARY_DIR}/${check}/${includeName}.cpp")
             file(CONFIGURE OUTPUT "${source}"
-                 CONTENT "// Generated by isoline_add_public_header_check(): ${includeName} compiles alone as C++23.\n#include <${includeName}>\n"
+                 CONTENT "// Generated by isoline_add_public_header_check(): ${includeName} compiles alone (${check}).\n#include <${includeName}>\n${standardCheck}"
                  @ONLY)
             list(APPEND sources "${source}")
         endforeach()
+        add_library(${check} OBJECT ${sources})
+        target_link_libraries(${check} PRIVATE ${targets})
+        isoline_apply_target_policy(${check})
+        set_target_properties(${check} PROPERTIES CXX_CLANG_TIDY "")
     endforeach()
-    if(sources STREQUAL "")
-        message(FATAL_ERROR "[isoline] isoline_add_public_header_check: no recorded target has a header set")
+    set_target_properties(${checkTarget} PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+                                                    ISOLINE_HEADERS_AS_CXX23 ON)
+    if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
+        target_include_directories(${checkTarget} BEFORE PRIVATE "${ISOLINE_CONTRACTS_SUBSTITUTE_DIR}")
     endif()
-    add_library(${checkTarget} OBJECT ${sources})
-    set_target_properties(${checkTarget} PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-    target_link_libraries(${checkTarget} PRIVATE ${targets})
-    isoline_apply_target_policy(${checkTarget})
-    set_target_properties(${checkTarget} PROPERTIES CXX_CLANG_TIDY "")
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
         # GCC spells the group c++26-extensions; Clang has both spellings. A flag the compiler lacks is
         # dropped. Clang rejects an annotation as a syntax error regardless.
@@ -1051,10 +1187,45 @@ function(isoline_add_reflection_check target)
     endif()
 endfunction()
 
+## The headers the declaration-contracts proof does not read: its own seam's, which define the macros.
+## scripts/check-contract-spelling.py's declaration-contract-unproven rule refuses ISOLINE_PRE and
+## ISOLINE_POST in every file the proof does not read, so the two change together.
+set(ISOLINE_DECLARATION_CONTRACTS_PROOF_EXCLUDES "^isoline/meta/reflection/" "^isoline/meta/(fallback/)?contracts/")
+
+## @brief Adds @p target, the proof that every declaration contract sits on a noexcept member function of no
+## class template, where contracts are native, and nothing elsewhere: a compile-only reflection check
+## (isoline_add_reflection_check(FEATURE contracts)) whose umbrella,
+## isoline/meta/reflection/DeclarationContractsUmbrella.hpp, includes every header of HEADER_TARGETS, the
+## private and the test helpers' included, but ISOLINE_DECLARATION_CONTRACTS_PROOF_EXCLUDES and EXCLUDE. It
+## reads them through the proving <isoline/Contracts.hpp> (ISOLINE_CONTRACTS_PROOF_DIR, first on its
+## include path). Nothing links it, so the proving expansion never meets the installed one.
+##
+## isoline_add_declaration_contracts_proof(<target> SOURCES <source>... HEADER_TARGETS <target>...
+##                                         [LINK_LIBRARIES <library>...] [EXCLUDE <regex>...])
+function(isoline_add_declaration_contracts_proof target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "SOURCES;HEADER_TARGETS;LINK_LIBRARIES;EXCLUDE")
+    isoline_add_reflection_check(${target} FEATURE contracts
+        SOURCES ${arg_SOURCES}
+        LINK_LIBRARIES ${arg_LINK_LIBRARIES}
+        UMBRELLA isoline/meta/reflection/DeclarationContractsUmbrella.hpp
+        HEADER_TARGETS ${arg_HEADER_TARGETS}
+        EXCLUDE ${ISOLINE_DECLARATION_CONTRACTS_PROOF_EXCLUDES} ${arg_EXCLUDE})
+    if(TARGET ${target})
+        target_include_directories(${target} BEFORE PRIVATE "${ISOLINE_CONTRACTS_PROOF_DIR}")
+    endif()
+endfunction()
+
 if(NOT CMAKE_SCRIPT_MODE_FILE)
     _isoline_define_language_feature_options()
     isoline_select_language_features()
     ## The PRIVATE include directory of the generated contracts seam (_isoline_write_check_forwarder()).
     set(ISOLINE_PRIVATE_INCLUDE_DIR "${PROJECT_BINARY_DIR}/private")
     _isoline_write_check_forwarder("${ISOLINE_PRIVATE_INCLUDE_DIR}")
+    ## Where a native build writes the proving expansion of isoline/Contracts.hpp, for the reflection
+    ## check of the noexcept rule, and its fallback copy, for the export lint
+    ## (_isoline_write_declaration_contracts()).
+    set(ISOLINE_CONTRACTS_PROOF_DIR "${PROJECT_BINARY_DIR}/contracts-proof")
+    set(ISOLINE_CONTRACTS_SUBSTITUTE_DIR "${PROJECT_BINARY_DIR}/modules/substitutes")
+    _isoline_write_declaration_contracts("${PROJECT_BINARY_DIR}/include" "${ISOLINE_CONTRACTS_PROOF_DIR}"
+                                         "${ISOLINE_CONTRACTS_SUBSTITUTE_DIR}")
 endif()
