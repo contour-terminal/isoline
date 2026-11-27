@@ -41,6 +41,8 @@ target_sources(isoline_core
         binary/BranchHints.cpp
         binary/ByteReader.cpp
         binary/Decoder.cpp
+        binary/Encoder.cpp
+        binary/NameSection.cpp
         binary/Opcode.cpp
         binary/TypeCanon.cpp
         interpreter/Numerics.cpp
@@ -74,7 +76,9 @@ target_sources(isoline_core
             binary/DecodeLimits.hpp
             binary/MemoryAccess.hpp
             binary/Decoder.hpp
+            binary/Encoder.hpp
             binary/Module.hpp
+            binary/NameSection.hpp
             binary/Opcode.hpp
             binary/Opcodes.def
             binary/TypeCanon.hpp
@@ -104,20 +108,33 @@ target_compile_features(isoline_core PUBLIC cxx_std_23)
 target_link_libraries(isoline_core PUBLIC core::base)
 isoline_apply_target_policy(isoline_core)
 
+add_subdirectory(text)
+add_subdirectory(cli)
+
 if(ISOLINE_TESTING)
-    # Every *_test.cpp under src/isoline/ is one translation unit of the single unit-test binary.
+    # Every *_test.cpp under src/isoline/ is one translation unit of the single unit-test binary,
+    # except in the directories whose tests link a target of their own and build their own binary.
     # Those under a posix/ directory test what only POSIX systems have (signal dispositions), and are
     # added on those alone, so that no test source checks for the platform.
+    set(isolineSeparateTestDirectories text cli)
     file(GLOB_RECURSE isolineTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
+    foreach(directory IN LISTS isolineSeparateTestDirectories)
+        list(FILTER isolineTestSources EXCLUDE REGEX "/${directory}/[^/]*_test\\.cpp$")
+    endforeach()
     list(FILTER isolineTestSources EXCLUDE REGEX "/posix/[^/]*_test\\.cpp$")
     if(UNIX)
         file(GLOB_RECURSE isolinePosixTestSources CONFIGURE_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/*/posix/*_test.cpp")
         list(APPEND isolineTestSources ${isolinePosixTestSources})
     endif()
+    # A separate directory's posix/ tests are its own binary's too.
+    foreach(directory IN LISTS isolineSeparateTestDirectories)
+        list(FILTER isolineTestSources EXCLUDE REGEX "/${directory}/posix/[^/]*_test\\.cpp$")
+    endforeach()
     add_executable(isoline_test ${isolineTestSources})
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
-    # Where docs/embedding.md is, whose generated blocks PublishedLimits_test checks against the tables.
+    # The source tree, from which tests derive the paths of their data: tests/spec, and docs/embedding.md,
+    # whose generated blocks PublishedLimits_test checks against the tables.
     target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     isoline_apply_target_policy(isoline_test TEST)
     # The [memory] cases (growth past a store's budgets, hostile deltas) run apart, under a hard memory

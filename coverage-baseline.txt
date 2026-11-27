@@ -132,8 +132,31 @@
 # which the canary takes in a process of its own. api/Imports.cpp's branch entry rose from 81.81 to 82.35 although define()
 # of an instance moved its covered switch over ExternKind into Store::entityTypeOf(): resolve() of a memory of
 # another page size is now tested (Externs.importsDefineEveryKind).
+#
+# src/isoline/binary/Encoder.cpp's branch entry was lowered from 94.42 to 93.51 (303 of 324) when encodeBranchHints arrived (P10
+# Task 16): its loop over the hinted functions adds 10 branches, 6 covered, of which the 4 uncovered are its precondition, that
+# every hint names a defined function (:448), failing; without them the file stands at 297 of 314, 94.59. No branch lost its
+# coverage: the 21 uncovered ones are each a Require's failing side or the no-case side of a switch over every enumerator.
+#
+# src/isoline/cli/FileAccess.cpp entered at 95.94 (71 of 74 branches): its 3 uncovered branches are those of the two lines the
+# non-utf8-path exclusion marks (:48, and both operands of :281), core::pathFromUtf8 refusing text that is not UTF-8, which only
+# Windows does; SystemFileAccess.files takes them under wine. An exclusion marks lines, not branches, so they are named here.
+#
+# src/isoline/text/ModuleWriter.cpp's entries were lowered from 99.89 to 98.70 lines (913 of 925) and from 95.87 to 94.49 branches
+# (498 of 527) when innerLimitOf() named every NameKind instead of a default (P10 Task 18, fix round 1): the nine direct kinds'
+# case lines, their break, core::unreachable() and the closing brace are the non-indirect-kind exclusion's 12 lines, and their
+# nine case edges with the switch's no-case side (:267) are the 10 branches no input takes there, where the default was 1, as
+# namesAreInRange() asks only the Indirect rows. No branch lost its coverage; a test of an imported tag's parameter names now
+# takes the one that had none (:283).
+#
+# src/isoline/text/Annotations.cpp's, FieldReader.cpp's and ModuleReader.cpp's branch entries were lowered, to 98.44, 97.89 and 99.03
+# (127 of 129, 233 of 238, 515 of 520), by the final fix wave: their loops over annotations and strings became range-based (the C-style
+# conditions, covered branches, went), and ModuleReader::read(std::string_view) went, its covered dispatch with it. The
+# branches no test takes are the ones that were before, Require failing sides and switches' no-case sides; no branch lost
+# its coverage.
 
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp constant-without-end a constant expression without end: the decoder ends every expression with one
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Opcode.everyRowDecodes runs a module of every row of the opcode table, so an instruction without one aborts that test
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
@@ -142,6 +165,7 @@ exclude src/isoline/interpreter/ReferenceInterpreter.cpp raw-bits rawBits of a v
 exclude src/isoline/interpreter/ReferenceInterpreter.cpp trapping-constant a trapping constant operator: extended-const's add, sub and mul never trap
 exclude src/isoline/runtime/LinearMemory.cpp bad-alloc std::bad_alloc from HeapMemoryAllocator's std::vector or its make_unique: the heap allocator uses the standard allocator, which no test can make fail without exhausting the host (a size past max_size is refused before allocating, which HeapMemoryAllocator.refusesWhatNoVectorHolds covers)
 exclude src/isoline/runtime/Store.cpp bad-alloc std::bad_alloc from a table's std::vector<Ref>: tables use the standard allocator, which no test can make fail without exhausting the host (a size past max_size is refused before allocating, which Instantiate.tableAllocationRefused covers)
+exclude src/isoline/text/ModuleWriter.cpp non-indirect-kind innerLimitOf() of a name kind whose NameSubsections row is not Indirect: every kind has a case and the direct ones end in core::unreachable(), as namesAreInRange() asks it of the Indirect rows only
 exclude src/isoline/validate/Validator.cpp special-default a Special opcode without a case: every one has a case or a MemoryAccessTable row
 
 src/isoline/Features.hpp                         100.00 100.00
@@ -156,20 +180,34 @@ src/isoline/api/Imports.cpp                      100.00 82.35
 src/isoline/api/Imports.hpp                      100.00 -
 src/isoline/api/Module.cpp                       100.00 91.42
 src/isoline/api/Module.hpp                       100.00 -
-src/isoline/api/Store.cpp                        99.49 96.15
+src/isoline/api/Store.cpp                        99.50 96.38
 src/isoline/api/Store.hpp                        100.00 -
 src/isoline/binary/BranchHints.cpp               100.00 100.00
 src/isoline/binary/BranchHints.hpp               100.00 -
 src/isoline/binary/ByteReader.cpp                100.00 98.07
+src/isoline/binary/ByteWriter.hpp                100.00 100.00
 src/isoline/binary/DecodeError.hpp               100.00 91.66
 src/isoline/binary/DecodeLimits.hpp              100.00 -
 src/isoline/binary/Decoder.cpp                   100.00 98.96
+src/isoline/binary/Encoder.cpp                   100.00 93.51
 src/isoline/binary/MemoryAccess.hpp              100.00 100.00
-src/isoline/binary/Module.hpp                    100.00 74.00
+src/isoline/binary/Module.hpp                    100.00 75.92
+src/isoline/binary/NameSection.cpp               100.00 90.32
+src/isoline/binary/NameSection.hpp               100.00 -
 src/isoline/binary/Opcode.cpp                    100.00 100.00
 src/isoline/binary/Opcode.hpp                    100.00 -
 src/isoline/binary/TypeCanon.cpp                 100.00 80.00
 src/isoline/binary/Types.hpp                     100.00 100.00
+src/isoline/cli/EntryPosix.cpp                   100.00 -
+src/isoline/cli/FileAccess.cpp                   98.85 95.94
+src/isoline/cli/FileAccess.hpp                   100.00 -
+src/isoline/cli/HostPosix.cpp                    100.00 -
+src/isoline/cli/IsolineApp.cpp                   100.00 100.00
+src/isoline/cli/VerbArguments.cpp                100.00 100.00
+src/isoline/cli/VerbArguments.hpp                100.00 -
+src/isoline/cli/Verbs.cpp                        100.00 100.00
+src/isoline/cli/Verbs.hpp                        100.00 -
+src/isoline/cli/main.cpp                         100.00 100.00
 src/isoline/interpreter/Numerics.cpp             100.00 95.90
 src/isoline/interpreter/ReferenceInterpreter.cpp 98.50 93.58
 src/isoline/interpreter/ReferenceInterpreter.hpp 100.00 -
@@ -193,10 +231,35 @@ src/isoline/runtime/Store.hpp                    100.00 94.11
 src/isoline/runtime/Trap.hpp                     100.00 75.00
 src/isoline/runtime/Value.hpp                    100.00 94.44
 src/isoline/runtime/ValueCheck.cpp               100.00 100.00
+src/isoline/text/Annotations.cpp                 100.00 98.44
+src/isoline/text/Annotations.hpp                 100.00 -
+src/isoline/text/Digits.hpp                      100.00 100.00
+src/isoline/text/FieldReader.cpp                 100.00 97.89
+src/isoline/text/FieldReader.hpp                 100.00 100.00
+src/isoline/text/FloatLiteral.cpp                100.00 98.48
+src/isoline/text/FunctionTypes.cpp               100.00 100.00
+src/isoline/text/FunctionTypes.hpp               100.00 -
+src/isoline/text/InstructionReader.cpp           100.00 96.17
+src/isoline/text/InstructionReader.hpp           100.00 -
+src/isoline/text/Instructions.cpp                100.00 100.00
+src/isoline/text/Instructions.hpp                100.00 -
+src/isoline/text/IntegerLiteral.cpp              100.00 100.00
+src/isoline/text/Keywords.cpp                    100.00 93.33
+src/isoline/text/Lexer.cpp                       100.00 97.02
+src/isoline/text/Lexer.hpp                       100.00 -
+src/isoline/text/LiteralError.hpp                100.00 -
+src/isoline/text/ModuleReader.cpp                100.00 99.03
+src/isoline/text/ModuleReader.hpp                100.00 -
+src/isoline/text/ModuleWriter.cpp                98.70 94.49
+src/isoline/text/ModuleWriter.hpp                100.00 -
+src/isoline/text/SExpression.cpp                 100.00 97.36
+src/isoline/text/SExpression.hpp                 100.00 100.00
+src/isoline/text/TextError.hpp                   100.00 95.45
+src/isoline/text/TopLevel.cpp                    100.00 100.00
 src/isoline/validate/Subtyping.cpp               100.00 89.65
 src/isoline/validate/Subtyping.hpp               100.00 66.66
 src/isoline/validate/ValidatedModule.cpp         100.00 76.92
 src/isoline/validate/ValidatedModule.hpp         100.00 66.66
 src/isoline/validate/ValidationError.hpp         100.00 96.87
-src/isoline/validate/Validator.cpp               99.80 97.87
+src/isoline/validate/Validator.cpp               99.81 97.98
 src/isoline/validate/Validator.hpp               100.00 -

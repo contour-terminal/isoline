@@ -13,7 +13,9 @@ add_subdirectory(spec)
 # assert_invalid_custom of a module without custom sections, and an instance of an unknown
 # definition fail. Last, an instance of a named module, which names a definition too, passes.
 add_test(NAME spec-selftest COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest" 0 --features wasm2)
-set_tests_properties(spec-selftest PROPERTIES LABELS unit PASS_REGULAR_EXPRESSION "passed 13, failed 9, skipped 0")
+# Each failure is pinned by its line, in order, so that one failing for another reason does not pass.
+set_tests_properties(spec-selftest PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "spec-selftest.wast:8: 'add': expected i32:4, got i32:3.*spec-selftest.wast:9: expected execute failure 'integer overflow', got execute failure 'integer divide by zero'.*spec-selftest.wast:13: expected validate failure 'magic header not detected', got decode failure.*spec-selftest.wast:15: expected decode failure 'type mismatch', got validate failure.*spec-selftest.wast:17: expected instantiate failure 'unknown import', got link failure.*spec-selftest.wast:19: expected link failure 'out of bounds memory access', got instantiate failure.*spec-selftest.wast:28: expected exception failure '', but it succeeded.*spec-selftest.wast:29: expected custom failure 'x', but it succeeded.*spec-selftest.wast:32: no module definition named X.*passed 13, failed 9, skipped 0")
 # The same script, checked for its exit status: a failing script must make the runner fail.
 add_test(NAME spec-selftest-exit
          COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest" 0 --features wasm2)
@@ -25,10 +27,55 @@ set_tests_properties(spec-selftest-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
 add_test(NAME spec-selftest-custom
          COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-custom" 0 --features wasm3)
 set_tests_properties(spec-selftest-custom PROPERTIES LABELS unit
-                     PASS_REGULAR_EXPRESSION "passed 1, failed 2, skipped 0")
+                     PASS_REGULAR_EXPRESSION "spec-selftest-custom.wast:11: expected custom failure '@metadata.code.branch_hint annotation: invalid order', got custom failure '@metadata.code.branch_hint annotation: invalid target'.*spec-selftest-custom.wast:17: expected custom failure '@metadata.code.branch_hint annotation: invalid target', got decode failure 'magic header not detected'.*passed 1, failed 2, skipped 0")
 
-# The pinned skip count: a script of one skip line passes with one skip pinned, and fails with none
-# pinned or two.
+# The native runner: a .wast script against its oracle. Its first module is given as text and its
+# oracle binary agrees, as does the assert_return after it; the oracle's binary of the quote module is
+# deliberately another module's, so its parity check fails at the first byte they differ in; the
+# oracle skips the last command, which counts against one pinned skip.
+add_test(NAME spec-native-parity
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-native/parity" 1 --features wasm3)
+set_tests_properties(spec-native-parity PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "encoding differs from the oracle: 0x20.*passed 2, failed 1, skipped 1")
+# An expected divergence: the oracle records the message Isoline reports where it reports another error
+# of a malformed module first than the reference does. The assertion with that entry passes, the same
+# assertion without it fails, and so does one whose entry is only a prefix of Isoline's message.
+add_test(NAME spec-native-divergence
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-native/divergence" 0 --features wasm3)
+set_tests_properties(spec-native-divergence PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "divergence.wast:7: expected decode failure 'unexpected token', got decode failure 'unknown local [$]x at 1:22 of its quoted text'.*divergence.wast:8: expected the recorded divergence 'unknown local' [(]decode stage[)], got 'unknown local [$]x'.*passed 1, failed 2, skipped 0")
+# A parity divergence the oracle records, where its binary is known to be wrong: the parity check must
+# fail at exactly the recorded offset, and Isoline's encoding must have exactly the recorded digest. The
+# modules whose records hold pass; one whose divergence is at another offset fails, and so do one whose
+# divergence does not occur, one whose encoding changed behind the offset, and one with no encoding. The
+# assert_return still runs.
+add_test(NAME spec-native-recorded-parity
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-native/recorded-parity" 0 --features wasm3)
+set_tests_properties(spec-native-recorded-parity PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "recorded-parity.wast:13: expected the recorded parity divergence at 0x1f, got: encoding differs from the oracle: 0x20.*recorded-parity.wast:14: the recorded parity divergence at 0x20 does not occur: the encodings agree.*recorded-parity.wast:16: the recorded parity divergence at 0x17 is stale: Isoline's encoding is now sha256:3bb6f35edaf603fa5e8679c551c1a37bdbb9264115714e5b9fed3dac45566706, not the recorded sha256:5a9722fe6067e5a2dab1195f5875cbdcc684f8956457e5d02d28c8e7cbdc19d6.*recorded-parity.wast:17: the recorded parity divergence at 0x17 cannot be checked: Isoline produces no encoding.*passed 3, failed 4, skipped 0")
+# The stages of text errors: a syntax error answers assert_malformed, not assert_malformed_custom; and a
+# module given as text reports its error at its line and column in the script, not in the module.
+add_test(NAME spec-native-stages
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-native/stages" 0 --features wasm3)
+set_tests_properties(spec-native-stages PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "expected malformed custom failure 'unknown operator', got decode failure 'unknown operator x at 1:18 of its quoted text'.*stages.wast:6: unexpected failure: unknown operator x at 8:22.*passed 1, failed 2, skipped 0")
+# An oracle whose entries sit on the wrong commands fails the script as a harness failure: here the
+# module's binary is moved onto the assert_return after it.
+add_test(NAME spec-native-shifted
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-native/shifted" 0 --features wasm3)
+set_tests_properties(spec-native-shifted PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "harness failure: the oracle's entry for command 1 [(]line 4[)] names a binary of a module given as text, but the command on line 6 is an assert_return")
+# An oracle that counts other than its script fails the script as a harness failure, running nothing.
+add_test(NAME spec-native-miscount
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-native/miscount" 0 --features wasm3)
+set_tests_properties(spec-native-miscount PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "harness failure: the script holds 2 commands, but its oracle counts 3")
+add_test(NAME spec-native-miscount-exit
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-native/miscount" 0 --features wasm3)
+set_tests_properties(spec-native-miscount-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
+
+# The pinned skip count: a script whose oracle skips its one command passes with one skip pinned, and
+# fails with none pinned or two.
 add_test(NAME spec-skips COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-skips" 1 --features wasm2)
 set_tests_properties(spec-skips PROPERTIES LABELS unit PASS_REGULAR_EXPRESSION "passed 0, failed 0, skipped 1")
 add_test(NAME spec-skips-none COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-skips" 0 --features wasm2)
@@ -104,12 +151,22 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(check-conformance-selftest PROPERTIES LABELS lint)
 endif()
 
+# How long the text memory suite may run before its timeout stops it: five minutes natively. Under ASan
+# it takes 66 seconds on a workstation and 92 to more than 120 on a CI runner, whose speed varies by
+# 1.7 times between runs; its reader cases are a third of that, 200,000 items each. An emulator (qemu,
+# wine) runs it slower still, so a cross build allows ten minutes.
+set(isolineMemoryTestTimeout 300)
+if(CMAKE_CROSSCOMPILING_EMULATOR)
+    set(isolineMemoryTestTimeout 600)
+endif()
+
 # The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced
 # global operator new (AllocationCounter.cpp). The replacement is program-wide, hence a binary of its
 # own. TSan's runtime defines operator new itself, not replaceably, so a TSan build leaves it out; the
 # bounds hold under every other build.
 if(NOT ISOLINE_SANITIZE STREQUAL "thread")
-    add_executable(isoline_memory_test memory/AllocationCounter.cpp memory/MemoryBounds_test.cpp)
+    add_executable(isoline_memory_test
+                   memory/AllocationCounter.cpp memory/AmplifyingModules.cpp memory/MemoryBounds_test.cpp)
     target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_memory_test TEST)
     # The [host-memory] cases refuse allocations at every budget. MSVC's debug STL allocates a container
@@ -126,4 +183,58 @@ if(NOT ISOLINE_SANITIZE STREQUAL "thread")
     # them to. Validator_test counts their type checks, which holds in every build.
     add_test(NAME isoline_branch_cost_test COMMAND isoline_memory_test "[branch-cost]")
     set_tests_properties(isoline_branch_cost_test PROPERTIES LABELS unit TIMEOUT 120)
+
+    # What reading text may hold, measured the same way: a binary of its own, since only it links the
+    # text format, which the core memory test must not.
+    add_executable(isoline_text_memory_test
+                   memory/AllocationCounter.cpp memory/AmplifyingModules.cpp memory/TextMemoryBounds_test.cpp)
+    # core::testing_dialogs sends a Windows CRT assert or abort to stderr instead of a modal dialog, which
+    # would hold the run until its timeout.
+    target_link_libraries(isoline_text_memory_test PRIVATE isoline::text Catch2::Catch2WithMain
+                          core::testing_dialogs)
+    isoline_apply_target_policy(isoline_text_memory_test TEST)
+    add_test(NAME isoline_text_memory_test COMMAND isoline_text_memory_test)
+    set_tests_properties(isoline_text_memory_test PROPERTIES LABELS unit TIMEOUT ${isolineMemoryTestTimeout})
+endif()
+
+# The isoline tool, end to end. Compiling tests/cli/hello.wat gives exactly tests/cli/hello.wasm, which
+# the pinned wasm-tools made once (`wasm-tools parse tests/cli/hello.wat -o tests/cli/hello.wasm`) and
+# which is canonical for this fixture; disassembling it to standard output prints its export; and the
+# tool without arguments prints its usage.
+add_test(NAME cli-compile
+         COMMAND isoline compile "${CMAKE_CURRENT_SOURCE_DIR}/cli/hello.wat" -o "${CMAKE_CURRENT_BINARY_DIR}/hello.wasm")
+set_tests_properties(cli-compile PROPERTIES LABELS unit FIXTURES_SETUP cli-hello)
+add_test(NAME cli-compile-matches
+         COMMAND "${CMAKE_COMMAND}" -E compare_files "${CMAKE_CURRENT_SOURCE_DIR}/cli/hello.wasm"
+                 "${CMAKE_CURRENT_BINARY_DIR}/hello.wasm")
+set_tests_properties(cli-compile-matches PROPERTIES LABELS unit FIXTURES_REQUIRED cli-hello)
+# A path outside ASCII and outside every ANSI code page, given on the command line, names that file: on
+# Windows the tool takes its command line in UTF-16 (wmain), which the cross builds check under wine.
+add_test(NAME cli-compile-non-ascii
+         COMMAND isoline compile "${CMAKE_CURRENT_SOURCE_DIR}/cli/hello.wat"
+                 -o "${CMAKE_CURRENT_BINARY_DIR}/héllo-λ-世界.wasm")
+set_tests_properties(cli-compile-non-ascii PROPERTIES LABELS unit FIXTURES_SETUP cli-non-ascii)
+add_test(NAME cli-compile-non-ascii-matches
+         COMMAND "${CMAKE_COMMAND}" -E compare_files "${CMAKE_CURRENT_SOURCE_DIR}/cli/hello.wasm"
+                 "${CMAKE_CURRENT_BINARY_DIR}/héllo-λ-世界.wasm")
+set_tests_properties(cli-compile-non-ascii-matches PROPERTIES LABELS unit FIXTURES_REQUIRED cli-non-ascii)
+add_test(NAME cli-disassemble
+         COMMAND isoline disassemble "${CMAKE_CURRENT_SOURCE_DIR}/cli/hello.wasm" -o -)
+set_tests_properties(cli-disassemble PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "\\(export \"hello\" \\(func 0\\)\\)")
+add_test(NAME cli-usage COMMAND isoline)
+set_tests_properties(cli-usage PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "isoline: no verb given.*compile.*disassemble")
+# PASS_REGULAR_EXPRESSION ignores the exit status: this checks that it is a failure (IsolineApp_test pins
+# its value, UsageOrIo).
+add_test(NAME cli-usage-exit COMMAND isoline)
+set_tests_properties(cli-usage-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
+# compile refuses to write a binary to a terminal: run under a pseudo-terminal by Python's pty module,
+# on a POSIX host that runs what it builds.
+if(UNIX AND NOT CMAKE_CROSSCOMPILING AND Python3_Interpreter_FOUND)
+    add_test(NAME cli-binary-to-terminal
+             COMMAND "${Python3_EXECUTABLE}" -I -c "import pty, sys; pty.spawn(sys.argv[1:])"
+                     "$<TARGET_FILE:isoline>" compile "${CMAKE_CURRENT_SOURCE_DIR}/cli/hello.wat" -o -)
+    set_tests_properties(cli-binary-to-terminal PROPERTIES LABELS unit
+                         PASS_REGULAR_EXPRESSION "a binary is not written to a terminal")
 endif()

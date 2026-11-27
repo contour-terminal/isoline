@@ -129,7 +129,8 @@ jobs:
           # placeholder record for it, of hash 0 and all counts zero, while the profile holds the record of
           # the binaries that do emit it. llvm-cov drops the placeholder and keeps the real counts.
           objects=(src/isoline/isoline_test -object tests/spec/isoline_spec_runner
-                   -object tests/spec/isoline_isotest_test)
+                   -object tests/spec/isoline_spectest_test -object src/isoline/text/isoline_text_test
+                   -object src/isoline/cli/isoline_cli_test -object src/isoline/cli/isoline)
           ignore='vendor/|_deps/|^/usr/|_test\.cpp$|/out/|/tests/|/testing/'
           "llvm-cov-$LLVM_VERSION" report "${objects[@]}" -instr-profile=isoline.profdata \
             -ignore-filename-regex="$ignore" | tee coverage-summary.txt
