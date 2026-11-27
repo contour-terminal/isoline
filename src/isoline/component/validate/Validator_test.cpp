@@ -1016,9 +1016,10 @@ TEST_CASE("Validator.attributeGateOrder")
         .type = std::nullopt });
     CHECK(refusal(exporting.pool()).disabled == ComponentFeature::CanonicalInterfaceNames);
 
-    // A name with an external id alone, decoded from bytes: the decoder admits the attributed form under
-    // implements, and validation refuses the external id under its own gate (Isoline keeps 🏷️'s two
-    // productions apart, which wasm-tools gates as one).
+    // A name with an external id alone, decoded from bytes. wasm-tools has no feature of its own for
+    // it: its reader admits the attributed form under cm-implements or cm-canon-names
+    // (readers/component/imports.rs:183), and its validator gates the external id on cm-implements
+    // (validator/component.rs:4785-4790).
     auto import = Bytes { std::byte { 0x01 }, std::byte { 0x02 } };
     appendName(import, "a");
     appendBytes(import, { 0x01, 0x02 });
@@ -1027,14 +1028,21 @@ TEST_CASE("Validator.attributeGateOrder")
     auto const bytes = componentOf(
         { section(7, { std::byte { 0x01 }, std::byte { 0x42 }, std::byte { 0x00 } }), section(10, import) });
     auto const implementing = ComponentFeatureSet::defaults().with(ComponentFeature::Implements);
-    auto pool = decodeComponent(bytes, implementing, ComponentLimits {});
-    REQUIRE(pool.has_value());
-    auto const identified = refusal(std::move(*pool), implementing);
-    CHECK(identified.disabled == ComponentFeature::ExternalId);
+    auto implemented = decodeComponent(bytes, implementing, ComponentLimits {});
+    REQUIRE(implemented.has_value());
+    CHECK(accepted(std::move(*implemented), implementing));
+    // Under cm-canon-names alone the reader admits the form, and the validator refuses the external id.
+    auto const canonical = ComponentFeatureSet::defaults().with(ComponentFeature::CanonicalInterfaceNames);
+    auto named = decodeComponent(bytes, canonical, ComponentLimits {});
+    REQUIRE(named.has_value());
+    auto const identified = refusal(std::move(*named), canonical);
+    CHECK(identified.disabled == ComponentFeature::Implements);
     CHECK(specMessage(identified) == "the `cm-implements` feature is not active");
-    auto admitted = decodeComponent(bytes, implementing, ComponentLimits {});
-    REQUIRE(admitted.has_value());
-    CHECK(accepted(std::move(*admitted), implementing.with(ComponentFeature::ExternalId)));
+    // Under neither, the reader refuses the attributed form itself.
+    auto const unread = decodeComponent(bytes, ComponentFeatureSet::defaults(), ComponentLimits {});
+    REQUIRE_FALSE(unread.has_value());
+    CHECK(unread.error().code == isoline::component::binary::DecodeErrorCode::FeatureDisabled);
+    CHECK(unread.error().disabled == ComponentFeature::Implements);
 }
 
 TEST_CASE("Validator.outerAliasesIntoComponentsDeferred")

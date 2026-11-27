@@ -19,7 +19,6 @@ enum class ComponentFeature : uint8_t
     Async,
     Map,
     Implements,
-    ExternalId,
     Values,
     NestedNamespaces,
     MoreAsyncBuiltins,
@@ -66,10 +65,10 @@ struct ComponentFeatureRow
 
 /// Every gated feature, one row per ComponentFeature enumerator, in enumerator order.
 ///
-/// P11 implements what WASI adopted up to 0.3.2 bar concurrency: map, implements and external-id.
-/// Async is decoded and refused by validation until P12; every other gate is refused. wasm-tools
-/// gates external-id under cm-implements, and so words its refusal as that of implements; Isoline
-/// keeps the two apart, as the Explainer lists them as separate productions.
+/// P11 implements what WASI adopted up to 0.3.2 bar concurrency: map and implements, the latter
+/// gating external-id too, as wasm-tools has no feature of its own for it (wasmparser 0.263.0
+/// src/validator/component.rs:4785-4790). Async is decoded and refused by validation until P12; every
+/// other gate is refused. Every name is a flag of wasmparser 0.263.0's src/features.rs.
 inline constexpr auto ComponentFeatureTable = std::to_array<ComponentFeatureRow>({
     { .feature = ComponentFeature::Async,
       .gate = "🔀",
@@ -84,11 +83,6 @@ inline constexpr auto ComponentFeatureTable = std::to_array<ComponentFeatureRow>
     { .feature = ComponentFeature::Implements,
       .gate = "🏷️",
       .name = "cm-implements",
-      .p11 = Implementation::Implemented,
-      .refusal = "the `cm-implements` feature is not active" },
-    { .feature = ComponentFeature::ExternalId,
-      .gate = "🏷️",
-      .name = "cm-external-id",
       .p11 = Implementation::Implemented,
       .refusal = "the `cm-implements` feature is not active" },
     { .feature = ComponentFeature::Values,
@@ -118,7 +112,7 @@ inline constexpr auto ComponentFeatureTable = std::to_array<ComponentFeatureRow>
       .refusal = "requires the component model threading feature" },
     { .feature = ComponentFeature::SharedThreading,
       .gate = "🧵②",
-      .name = "cm-shared-threading",
+      .name = "shared-everything-threads",
       .p11 = Implementation::Refused,
       .refusal = "requires the component model shared threading feature" },
     { .feature = ComponentFeature::FixedLengthLists,
@@ -186,15 +180,14 @@ class ComponentFeatureSet
     /// @return The empty set.
     [[nodiscard]] static constexpr ComponentFeatureSet defaults() noexcept { return ComponentFeatureSet {}; }
 
-    /// What WASI adopted up to 0.3.2: map, implements, external-id and async.
-    /// @return The set of exactly those four features.
+    /// What WASI adopted up to 0.3.2: map, implements (which gates external-id too) and async.
+    /// @return The set of exactly those three features.
     [[nodiscard]] static constexpr ComponentFeatureSet wasi03() noexcept
     {
         return defaults()
             .with(ComponentFeature::Async)
             .with(ComponentFeature::Map)
-            .with(ComponentFeature::Implements)
-            .with(ComponentFeature::ExternalId);
+            .with(ComponentFeature::Implements);
     }
 
     /// This set with one more feature on.

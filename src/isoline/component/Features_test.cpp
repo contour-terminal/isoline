@@ -18,7 +18,7 @@ using isoline::component::validationAdmits;
 TEST_CASE("Features.tableCoversEveryEnumerator")
 {
     CHECK(ComponentFeatureTable.size() == ComponentFeatureCount);
-    CHECK(ComponentFeatureCount == 16);
+    CHECK(ComponentFeatureCount == 15);
     auto index = std::size_t { 0 };
     auto names = std::set<std::string_view> {};
     for (auto const& row: ComponentFeatureTable)
@@ -35,10 +35,38 @@ TEST_CASE("Features.tableCoversEveryEnumerator")
           == ComponentFeatureSet::defaults()
                  .with(ComponentFeature::Map)
                  .with(ComponentFeature::Implements)
-                 .with(ComponentFeature::ExternalId)
                  .with(ComponentFeature::Async));
     for (auto const& row: ComponentFeatureTable)
         CHECK_FALSE(ComponentFeatureSet::defaults().contains(row.feature));
+}
+
+TEST_CASE("Features.namesAreWasmToolsFlags")
+{
+    // Every feature is one of wasm-tools 1.263.0's `--features` flags (wasmparser 0.263.0
+    // src/features.rs, component model rows, kebab-cased), so a suite's features map one to one.
+    auto const flags = std::set<std::string_view> {
+        "cm-async",
+        "cm-async-stackful",
+        "cm-more-async-builtins",
+        "cm-threading",
+        "cm-error-context",
+        "cm-fixed-length-lists",
+        "cm-gc",
+        "cm-map",
+        "cm-implements",
+        "cm-canon-names",
+        "cm-nested-names",
+        "cm-values",
+        "cm64",
+        "cm-accessors",
+        "cm-forward",
+        "shared-everything-threads",
+    };
+    for (auto const& row: ComponentFeatureTable)
+    {
+        INFO(row.name);
+        CHECK(flags.contains(row.name));
+    }
 }
 
 TEST_CASE("Features.p11Support")
@@ -50,8 +78,7 @@ TEST_CASE("Features.p11Support")
             switch (row.feature)
             {
                 case ComponentFeature::Map:
-                case ComponentFeature::Implements:
-                case ComponentFeature::ExternalId: return Implementation::Implemented;
+                case ComponentFeature::Implements: return Implementation::Implemented;
                 case ComponentFeature::Async: return Implementation::Decoded;
                 default: return Implementation::Refused;
             }

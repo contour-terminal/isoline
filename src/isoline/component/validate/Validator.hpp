@@ -321,7 +321,7 @@ inline constexpr auto GatedFormTable = std::to_array<GatedFormRow>({
       .text = "the `cm-canon-names` feature is not active" },
     // wasm-tools gates external-id under cm-implements and words it so.
     { .form = GatedForm::ExternalId, // 4786
-      .feature = ComponentFeature::ExternalId,
+      .feature = ComponentFeature::Implements,
       .text = "the `cm-implements` feature is not active" },
     { .form = GatedForm::AsyncOption, // 2749
       .feature = ComponentFeature::Async,

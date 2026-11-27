@@ -161,7 +161,8 @@ struct NameAttributeRow
 inline constexpr auto NameAttributeTable = std::to_array<NameAttributeRow>({
     { .byte = 0x00, .gate = ComponentFeature::Implements, .keyword = "implements" },
     { .byte = 0x01, .gate = ComponentFeature::CanonicalInterfaceNames, .keyword = "version-suffix" },
-    { .byte = 0x02, .gate = ComponentFeature::ExternalId, .keyword = "external-id" },
+    // wasm-tools gates external-id under cm-implements (component.rs:4785-4790).
+    { .byte = 0x02, .gate = ComponentFeature::Implements, .keyword = "external-id" },
 });
 
 static_assert(NameAttributeTable.size() == std::variant_size_v<Attribute>,

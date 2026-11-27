@@ -471,9 +471,7 @@ TEST_CASE("Decoder.nameAttributes")
 
     // With any attribute's feature, the form decodes, every attribute in it: each attribute's own
     // gate is validation's, as in wasmparser (Validator.externDeclarations).
-    for (auto const feature: { ComponentFeature::Implements,
-                               ComponentFeature::ExternalId,
-                               ComponentFeature::CanonicalInterfaceNames })
+    for (auto const feature: { ComponentFeature::Implements, ComponentFeature::CanonicalInterfaceNames })
     {
         INFO(static_cast<int>(feature));
         auto const decoded = definitionsOf(fixture->bytes, ComponentFeatureSet::defaults().with(feature));
