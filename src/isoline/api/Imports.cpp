@@ -5,11 +5,13 @@
 #include <core/Overloaded.hpp>
 
 #include <algorithm>
+#include <compare>
 #include <memory>
 #include <optional>
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -186,6 +188,11 @@ std::vector<Linkage> Imports::resolve(Module const& module) const
                                                                                   : Linkage::Unsatisfied);
     }
     return linkage;
+}
+
+std::strong_ordering operator<=>(Imports::ImportName const& stored, Imports::ImportNameView viewed) noexcept
+{
+    return std::tie(stored.module, stored.name) <=> std::tuple { viewed.module, viewed.name };
 }
 
 Imports::Definition const* Imports::find(std::string_view module, std::string_view name) const noexcept
