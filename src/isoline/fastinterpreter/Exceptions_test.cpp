@@ -914,6 +914,45 @@ TEST_CASE("Exceptions.limitsHitMidUnwind")
                   == Outcome { std::unexpected { Abrupt { Trap { TrapCode::StepLimitExceeded } } } });
         }
     }
+    SECTION("a step budget exactly the reference's, past an Unwind poll")
+    {
+        // 1'000 frames, each one's call or throw inside four labels: the innermost throws after the last
+        // FunctionEntry, and the outermost catches, past 5'000 items and one Unwind poll, which charges no
+        // step. A budget of exactly the steps the reference takes runs it through, every step of it used; one
+        // fewer runs out.
+        auto chain = withTypesAndTags();
+        chain.function(UnaryI32,
+                       {},
+                       inBlocks(4,
+                                code({ localGet(0),
+                                       { 0x45, 0x04, NoResult }, // i32.eqz if
+                                       i32Const(1),
+                                       throwTag(0),
+                                       end(),
+                                       localGet(0),
+                                       i32Const(1),
+                                       { 0x6B }, // i32.sub
+                                       op(0x10, 0) })));
+        chain.function(UnaryI32,
+                       {},
+                       code({ { 0x02, NoResult },
+                              tryTable(NoResult, { { .kind = CatchKind::CatchAll, .label = 0 } }),
+                              inBlocks(2, code({ localGet(0), op(0x10, 0) })),
+                              end(),
+                              end() }));
+        auto const calls = std::vector<Call> { { .function = 1, .args = { i32(998) } } };
+        auto const unlimited = observe(chain, Reference, calls);
+        REQUIRE(unlimited.outcomes.front() == Outcome { std::vector<Value> {} });
+        REQUIRE(pollsAt(unlimited, PollSite::FunctionEntry) == 1'000);
+        REQUIRE(pollsAt(unlimited, PollSite::Unwind) == 1);
+        auto const steps = unlimited.steps.front();
+        auto const exact = checkAgainstReference(chain, engine, calls, { .maxSteps = steps });
+        CHECK(exact.outcomes.front() == Outcome { std::vector<Value> {} });
+        CHECK(exact.steps.front() == steps);
+        auto const oneShort = checkAgainstReference(chain, engine, calls, { .maxSteps = steps - 1 });
+        CHECK(oneShort.outcomes.front()
+              == Outcome { std::unexpected { Abrupt { Trap { TrapCode::StepLimitExceeded } } } });
+    }
     SECTION("an interrupt at each Unwind poll")
     {
         for (auto const ordinal: { uint64_t { 1 }, uint64_t { 2 } })
