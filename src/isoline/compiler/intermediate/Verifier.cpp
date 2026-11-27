@@ -1,0 +1,420 @@
+// SPDX-License-Identifier: Apache-2.0
+#include <isoline/compiler/intermediate/Verifier.hpp>
+
+#include <core/Assert.hpp>
+#include <core/Utils.hpp>
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <format>
+#include <iterator>
+#include <limits>
+#include <optional>
+#include <ranges>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <isoline/compiler/intermediate/Dominators.hpp>
+
+namespace isoline::compiler::intermediate
+{
+
+namespace
+{
+    /// A value's definition: where it is, by block and by position in the block's list, a parameter at
+    /// position 0 and the instruction listed at i at position i + 1, so that a definition dominates a use
+    /// in its own block exactly when its position is the smaller.
+    struct Definition
+    {
+        uint32_t block = std::numeric_limits<uint32_t>::max(); ///< Its block; the maximum while undefined.
+        uint32_t position = 0;                                 ///< Its position in the block.
+
+        /// Whether the value has a definition.
+        [[nodiscard]] bool isDefined() const noexcept
+        {
+            return block != std::numeric_limits<uint32_t>::max();
+        }
+    };
+
+    /// The types an OperandType admits, as a mask over Type's enumerators.
+    struct OperandTypeRow
+    {
+        OperandType type; ///< The operand type; equal to the row's index.
+        uint8_t admits;   ///< Bit t set when Type t is admitted; 0 for SameAsOperand0, which is no set.
+    };
+
+    /// The bit of @p type in an OperandTypeRow's mask.
+    [[nodiscard]] constexpr uint8_t bitOf(Type type) noexcept
+    {
+        return static_cast<uint8_t>(1U << std::to_underlying(type));
+    }
+
+    /// Every OperandType, in order.
+    constexpr auto OperandTypeTable = std::to_array<OperandTypeRow>({
+        { .type = OperandType::I32, .admits = bitOf(Type::I32) },
+        { .type = OperandType::I64, .admits = bitOf(Type::I64) },
+        { .type = OperandType::F32, .admits = bitOf(Type::F32) },
+        { .type = OperandType::F64, .admits = bitOf(Type::F64) },
+        { .type = OperandType::Ref, .admits = bitOf(Type::Ref) },
+        { .type = OperandType::Pointer, .admits = bitOf(Type::Pointer) },
+        { .type = OperandType::Integer, .admits = static_cast<uint8_t>(bitOf(Type::I32) | bitOf(Type::I64)) },
+        { .type = OperandType::Float, .admits = static_cast<uint8_t>(bitOf(Type::F32) | bitOf(Type::F64)) },
+        { .type = OperandType::Any, .admits = static_cast<uint8_t>((1U << TypeTable.size()) - 1) },
+        { .type = OperandType::SameAsOperand0, .admits = 0 },
+    });
+    static_assert(detail::isInEnumeratorOrder(OperandTypeTable,
+                                              [](OperandTypeRow const& row) { return row.type; })
+                      && OperandTypeTable.back().type == OperandType::SameAsOperand0,
+                  "OperandTypeTable must hold one row per OperandType, at the index of its enumerator");
+
+    /// The Type a single-result rule fixes, for the rules that fix one.
+    [[nodiscard]] constexpr std::optional<Type> fixedTypeOf(ResultRule rule) noexcept
+    {
+        switch (rule)
+        {
+            case ResultRule::I32: return Type::I32;
+            case ResultRule::I64: return Type::I64;
+            case ResultRule::F32: return Type::F32;
+            case ResultRule::F64: return Type::F64;
+            case ResultRule::Ref: return Type::Ref;
+            case ResultRule::Pointer: return Type::Pointer;
+            case ResultRule::None:
+            case ResultRule::SameAsOperand0:
+            case ResultRule::FromImmediate:
+            case ResultRule::Multiple: return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    /// Whether @p begin + @p count stays within a pool of @p size, computed without wrapping.
+    [[nodiscard]] constexpr bool fits(uint32_t begin, uint32_t count, std::size_t size) noexcept
+    {
+        return uint64_t { begin } + count <= size;
+    }
+
+    /// Whether @p value is one of @p field's values.
+    [[nodiscard]] constexpr bool admits(ImmediateFieldRow const& field, uint64_t value) noexcept
+    {
+        switch (field.values)
+        {
+            case ImmediateValues::UpTo: return value <= field.maximum;
+            case ImmediateValues::PowerOfTwo: return std::has_single_bit(value) && value <= field.maximum;
+        }
+        return false;
+    }
+
+    /// Every block's ID of @p function, in order.
+    [[nodiscard]] auto blocksOf(Function const& function) noexcept
+    {
+        return std::views::iota(uint32_t { 0 }, function.blockCount())
+               | std::views::transform([](uint32_t index) { return BlockId { index }; });
+    }
+
+    /// Whether @p schema has a target field.
+    [[nodiscard]] constexpr bool hasTarget(ImmediateSchemaRow const& schema) noexcept
+    {
+        return std::ranges::find(schema.fixed, ImmediateField::Target) != schema.fixed.end()
+               || std::ranges::find(schema.repeated, ImmediateField::Target) != schema.repeated.end();
+    }
+
+    /// The checks of one function, sharing what they learn: the definitions of its values.
+    class Verification
+    {
+      public:
+        explicit Verification(Function const& function):
+            _function { function },
+            _definitions(function.valueCount(), Definition {}, &function.memory()),
+            _isListed(function.instructionCount(), false, &function.memory())
+        {
+        }
+
+        /// Every check, in VerifierErrorCode's order of phases: the structure, then each instruction
+        /// against its row, then dominance.
+        [[nodiscard]] std::expected<void, VerifierError> run()
+        {
+            if (_function.blockCount() == 0)
+                return fault(VerifierErrorCode::NoBlocks, std::nullopt, std::nullopt);
+            for (auto const value: std::views::iota(uint32_t { 0 }, _function.valueCount()))
+                if (!isType(_function.typeOf(ValueId { value })))
+                    return fault(VerifierErrorCode::UnknownType, std::nullopt, std::nullopt);
+            for (auto const block: blocksOf(_function))
+                if (auto checked = checkStructure(block); !checked)
+                    return checked;
+            for (auto const block: blocksOf(_function))
+                for (auto const index: _function.block(block).instructions)
+                    if (_function.instruction(index).operation != Operation::Removed)
+                        if (auto checked = checkRow(index); !checked)
+                            return fault(checked.error(), block, index);
+            return checkDominance();
+        }
+
+      private:
+        /// The fault @p code at @p block and @p instruction.
+        [[nodiscard]] static std::unexpected<VerifierError> fault(
+            VerifierErrorCode code,
+            std::optional<BlockId> block,
+            std::optional<uint32_t> instruction) noexcept
+        {
+            return std::unexpected { VerifierError {
+                .code = code, .block = block, .instruction = instruction } };
+        }
+
+        /// Records @p value's definition at @p block and @p position.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> define(ValueId value,
+                                                                    uint32_t block,
+                                                                    uint32_t position)
+        {
+            if (std::to_underlying(value) >= _definitions.size())
+                return std::unexpected { VerifierErrorCode::UndefinedValue };
+            auto& definition = _definitions[std::to_underlying(value)];
+            if (definition.isDefined())
+                return std::unexpected { VerifierErrorCode::RedefinedValue };
+            definition = Definition { .block = block, .position = position };
+            return {};
+        }
+
+        /// What one block's structure must be: its ranges within their pools, its instructions listed
+        /// once each and known, every value it defines defined once, one terminator and that last.
+        [[nodiscard]] std::expected<void, VerifierError> checkStructure(BlockId blockId)
+        {
+            auto const blockIndex = std::to_underlying(blockId);
+            auto const& block = _function.block(blockId);
+            if (!fits(block.parameters.begin, block.parameters.count, _function.operandPoolSize()))
+                return fault(VerifierErrorCode::RangeOutOfBounds, blockId, std::nullopt);
+            for (auto const parameter: _function.operands(block.parameters))
+                if (auto defined = define(parameter, blockIndex, 0); !defined)
+                    return fault(defined.error(), blockId, std::nullopt);
+
+            // Every index within the function and listed once, before anything is read through one.
+            for (auto const index: block.instructions)
+            {
+                if (index >= _function.instructionCount())
+                    return fault(VerifierErrorCode::InstructionOutOfBounds, blockId, index);
+                if (_isListed[index])
+                    return fault(VerifierErrorCode::InstructionListedTwice, blockId, index);
+                _isListed[index] = true;
+            }
+
+            // The last instruction that is not removed, which must be the one terminator.
+            auto lastLive = std::optional<std::size_t> {};
+            for (auto const [position, index]: core::views::enumerate(block.instructions))
+                if (_function.instruction(index).operation != Operation::Removed)
+                    lastLive = position;
+
+            for (auto const [position, index]: core::views::enumerate(block.instructions))
+            {
+                auto const& instruction = _function.instruction(index);
+                if (instruction.operation == Operation::Removed)
+                    continue;
+                if (!isOperation(instruction.operation))
+                    return fault(VerifierErrorCode::UnknownOperation, blockId, index);
+                if (!fits(instruction.operands.begin, instruction.operands.count, _function.operandPoolSize())
+                    || !fits(
+                        instruction.results.begin, instruction.results.count, _function.operandPoolSize())
+                    || !fits(instruction.immediates.begin,
+                             instruction.immediates.count,
+                             _function.immediatePoolSize()))
+                    return fault(VerifierErrorCode::RangeOutOfBounds, blockId, index);
+                for (auto const result: _function.operands(instruction.results))
+                    if (auto defined = define(result, blockIndex, static_cast<uint32_t>(position + 1));
+                        !defined)
+                        return fault(defined.error(), blockId, index);
+                if (isTerminator(instruction.operation) && position != lastLive)
+                    return fault(VerifierErrorCode::TerminatorNotLast, blockId, index);
+            }
+            if (!lastLive || !isTerminator(_function.instruction(block.instructions[*lastLive]).operation))
+                return fault(VerifierErrorCode::MissingTerminator, blockId, std::nullopt);
+            return {};
+        }
+
+        /// What one instruction must be against its row: its operands defined, its immediates as its
+        /// schema lays them out and each within its field, its targets within the function, its operands
+        /// and results as many and of the types its row says, and each target's arguments its parameters'.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> checkRow(uint32_t index) const
+        {
+            auto const& instruction = _function.instruction(index);
+            for (auto const operand: _function.operands(instruction.operands))
+                if (std::to_underlying(operand) >= _definitions.size()
+                    || !_definitions[std::to_underlying(operand)].isDefined())
+                    return std::unexpected { VerifierErrorCode::UndefinedValue };
+            return checkImmediates(instruction).and_then([&](uint64_t arguments) {
+                return checkOperands(instruction, arguments)
+                    .and_then([&] { return checkResults(instruction); })
+                    .and_then([&] { return checkArguments(instruction); });
+            });
+        }
+
+        /// The fixed fields, then whole repeated groups only, each value within its field, each target
+        /// within the function.
+        /// @return The arguments the targets take, summed; or the fault.
+        [[nodiscard]] std::expected<uint64_t, VerifierErrorCode> checkImmediates(
+            Instruction const& instruction) const
+        {
+            auto const& schema = immediateSchemaRow(operationRow(instruction.operation).immediates);
+            auto const immediates = _function.immediates(instruction.immediates);
+            if (immediates.size() < schema.fixed.size())
+                return std::unexpected { VerifierErrorCode::ImmediateCount };
+            auto const rest = immediates.size() - schema.fixed.size();
+            auto const wholeGroups = schema.repeated.empty() ? rest == 0 : rest % schema.repeated.size() == 0;
+            if (!wholeGroups)
+                return std::unexpected { VerifierErrorCode::ImmediateCount };
+            auto arguments = uint64_t { 0 };
+            for (auto const [position, value]: core::views::enumerate(immediates))
+            {
+                auto const field = immediateFieldAt(schema, position);
+                if (!admits(immediateFieldRow(field), value))
+                    return std::unexpected { VerifierErrorCode::ImmediateValue };
+                if (field == ImmediateField::Target && value >= _function.blockCount())
+                    return std::unexpected { VerifierErrorCode::TargetOutOfBounds };
+                if (field == ImmediateField::ArgumentCount)
+                    arguments += value;
+            }
+            return arguments;
+        }
+
+        /// The fixed operands, of their types, then as many as the targets take, or any number for a
+        /// variadic row without targets.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> checkOperands(Instruction const& instruction,
+                                                                           uint64_t arguments) const
+        {
+            auto const& row = operationRow(instruction.operation);
+            auto const& signature = operandSignatureRow(row.operands);
+            auto const& schema = immediateSchemaRow(row.immediates);
+            auto const operands = _function.operands(instruction.operands);
+            auto const fixed = signature.fixed();
+            auto expectedCount = std::optional<uint64_t> { fixed.size() };
+            if (signature.tail == OperandTail::Variadic)
+                expectedCount = hasTarget(schema) ? std::optional { fixed.size() + arguments } : std::nullopt;
+            if (expectedCount ? operands.size() != *expectedCount : operands.size() < fixed.size())
+                return std::unexpected { VerifierErrorCode::OperandCount };
+            for (auto const [position, expected]: core::views::enumerate(fixed))
+            {
+                auto const type = _function.typeOf(operands[position]);
+                if (expected == OperandType::SameAsOperand0)
+                {
+                    if (type != _function.typeOf(operands[0]))
+                        return std::unexpected { VerifierErrorCode::OperandType };
+                }
+                else if ((OperandTypeTable[std::to_underlying(expected)].admits & bitOf(type)) == 0)
+                    return std::unexpected { VerifierErrorCode::OperandType };
+            }
+            return {};
+        }
+
+        /// None, one or any number of results, of the type the rule gives; the instruction's own type
+        /// its first result's.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> checkResults(
+            Instruction const& instruction) const
+        {
+            auto const& row = operationRow(instruction.operation);
+            auto const results = _function.operands(instruction.results);
+            auto const isSingle = row.result != ResultRule::None && row.result != ResultRule::Multiple;
+            if ((row.result == ResultRule::None && !results.empty()) || (isSingle && results.size() != 1))
+                return std::unexpected { VerifierErrorCode::ResultCount };
+            if (isSingle && _function.typeOf(results[0]) != singleResultType(instruction))
+                return std::unexpected { VerifierErrorCode::ResultType };
+            auto const firstResultType = results.empty() ? Type::I32 : _function.typeOf(results[0]);
+            if (instruction.type != firstResultType)
+                return std::unexpected { VerifierErrorCode::ResultType };
+            return {};
+        }
+
+        /// The type the row of @p instruction, which has a single result, gives it.
+        [[nodiscard]] Type singleResultType(Instruction const& instruction) const
+        {
+            auto const& row = operationRow(instruction.operation);
+            if (row.result == ResultRule::SameAsOperand0)
+                return _function.typeOf(_function.operands(instruction.operands)[0]);
+            if (row.result == ResultRule::FromImmediate)
+            {
+                auto const& fields = immediateSchemaRow(row.immediates).fixed;
+                auto const position = std::ranges::find(fields, ImmediateField::Type) - fields.begin();
+                return static_cast<Type>(
+                    _function.immediates(instruction.immediates)[static_cast<std::size_t>(position)]);
+            }
+            auto const fixed = fixedTypeOf(row.result);
+            Require(fixed.has_value());
+            return *fixed;
+        }
+
+        /// Each target passed as many arguments as it has parameters, each of its parameter's type.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> checkArguments(
+            Instruction const& instruction) const
+        {
+            auto argumentFault = std::optional<VerifierErrorCode> {};
+            _function.forEachTarget(instruction, [&](BranchTarget const& target) {
+                if (argumentFault)
+                    return;
+                auto const parameters = _function.operands(_function.block(target.block).parameters);
+                auto const passed = _function.operands(target.arguments);
+                if (passed.size() != parameters.size())
+                {
+                    argumentFault = VerifierErrorCode::ArgumentCount;
+                    return;
+                }
+                for (auto const [position, argument]: core::views::enumerate(passed))
+                    if (_function.typeOf(argument) != _function.typeOf(parameters[position]))
+                    {
+                        argumentFault = VerifierErrorCode::ArgumentType;
+                        return;
+                    }
+            });
+            if (argumentFault)
+                return std::unexpected { *argumentFault };
+            return {};
+        }
+
+        /// Whether every use is dominated by its value's definition.
+        [[nodiscard]] std::expected<void, VerifierError> checkDominance() const
+        {
+            auto& memory = _function.memory();
+            auto const graph = controlFlowGraphOf(_function, memory);
+            auto const tree = DominatorTree { graph, memory };
+            for (auto const block: blocksOf(_function))
+                for (auto const [position, index]:
+                     core::views::enumerate(_function.block(block).instructions))
+                {
+                    auto const& instruction = _function.instruction(index);
+                    if (instruction.operation == Operation::Removed)
+                        continue;
+                    for (auto const operand: _function.operands(instruction.operands))
+                    {
+                        auto const& definition = _definitions[std::to_underlying(operand)];
+                        auto const isDominated = definition.block == std::to_underlying(block)
+                                                     ? definition.position < position + 1
+                                                     : tree.dominates(BlockId { definition.block }, block);
+                        if (!isDominated)
+                            return fault(VerifierErrorCode::UseNotDominated, block, index);
+                    }
+                }
+            return {};
+        }
+
+        Function const& _function;
+        std::pmr::vector<Definition> _definitions;
+        std::pmr::vector<bool> _isListed;
+    };
+} // namespace
+
+std::string describe(VerifierError const& error)
+{
+    auto text = std::string { VerifierErrorTable[std::to_underlying(error.code)].text };
+    if (error.block)
+        std::format_to(std::back_inserter(text), " in block {}", std::to_underlying(*error.block));
+    if (error.instruction)
+        std::format_to(std::back_inserter(text), " at instruction {}", *error.instruction);
+    return text;
+}
+
+std::expected<void, VerifierError> verify(Function const& function)
+{
+    return Verification { function }.run();
+}
+
+} // namespace isoline::compiler::intermediate

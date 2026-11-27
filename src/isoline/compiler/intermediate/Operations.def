@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The operation table: every operation of the compiler's SSA intermediate representation, one row each.
+//
+//     ISOLINE_OPERATION(Name, "text", Operands, ResultRule, Effect, ImmediateSchema)
+//
+// Name             the Operation enumerator.
+// "text"           its name in the Printer's text: a WebAssembly numeric instruction keeps the text
+//                  format's name, every other operation is spelled in snake case. Unique.
+// Operands         the OperandSignature enumerator naming its operands: a fixed list of operand types,
+//                  or that list followed by any number of further values (the *Variadic rows).
+// ResultRule       the ResultRule enumerator naming its results: none, one of a fixed type, one of its
+//                  first operand's type, one of the type its `type` immediate names, or any number.
+// Effect           the Effect enumerator naming what it does besides computing its results, which the
+//                  passes and the selector read to decide what may be removed, reordered or merged.
+// ImmediateSchema  the ImmediateSchema enumerator naming its immediates, field by field.
+//
+// Adding an operation is adding a row here: the Operation enum, OperationTable, nameOf(), effectOf(),
+// the verifier's checks and the Printer are all generated from or driven by it. The file has no
+// include guard; each includer defines ISOLINE_OPERATION.
+
+// What compact() drops: a removed instruction, still listed in its block until then. The zero value,
+// so that a value-initialized Instruction is one.
+ISOLINE_OPERATION(Removed, "removed", Variadic, Multiple, Pure, None)
+
+// Constants, then one row per WebAssembly scalar numeric instruction, in Opcodes.def's order. A float
+// constant's immediate is its bit pattern.
+ISOLINE_OPERATION(I32Const, "i32.const", None, I32, Pure, Value)
+ISOLINE_OPERATION(I64Const, "i64.const", None, I64, Pure, Value)
+ISOLINE_OPERATION(F32Const, "f32.const", None, F32, Pure, Value)
+ISOLINE_OPERATION(F64Const, "f64.const", None, F64, Pure, Value)
+ISOLINE_OPERATION(I32Eqz, "i32.eqz", I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Eq, "i32.eq", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Ne, "i32.ne", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32LtS, "i32.lt_s", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32LtU, "i32.lt_u", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32GtS, "i32.gt_s", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32GtU, "i32.gt_u", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32LeS, "i32.le_s", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32LeU, "i32.le_u", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32GeS, "i32.ge_s", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32GeU, "i32.ge_u", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I64Eqz, "i64.eqz", I64, I32, Pure, None)
+ISOLINE_OPERATION(I64Eq, "i64.eq", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64Ne, "i64.ne", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64LtS, "i64.lt_s", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64LtU, "i64.lt_u", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64GtS, "i64.gt_s", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64GtU, "i64.gt_u", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64LeS, "i64.le_s", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64LeU, "i64.le_u", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64GeS, "i64.ge_s", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(I64GeU, "i64.ge_u", I64I64, I32, Pure, None)
+ISOLINE_OPERATION(F32Eq, "f32.eq", F32F32, I32, Pure, None)
+ISOLINE_OPERATION(F32Ne, "f32.ne", F32F32, I32, Pure, None)
+ISOLINE_OPERATION(F32Lt, "f32.lt", F32F32, I32, Pure, None)
+ISOLINE_OPERATION(F32Gt, "f32.gt", F32F32, I32, Pure, None)
+ISOLINE_OPERATION(F32Le, "f32.le", F32F32, I32, Pure, None)
+ISOLINE_OPERATION(F32Ge, "f32.ge", F32F32, I32, Pure, None)
+ISOLINE_OPERATION(F64Eq, "f64.eq", F64F64, I32, Pure, None)
+ISOLINE_OPERATION(F64Ne, "f64.ne", F64F64, I32, Pure, None)
+ISOLINE_OPERATION(F64Lt, "f64.lt", F64F64, I32, Pure, None)
+ISOLINE_OPERATION(F64Gt, "f64.gt", F64F64, I32, Pure, None)
+ISOLINE_OPERATION(F64Le, "f64.le", F64F64, I32, Pure, None)
+ISOLINE_OPERATION(F64Ge, "f64.ge", F64F64, I32, Pure, None)
+ISOLINE_OPERATION(I32Clz, "i32.clz", I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Ctz, "i32.ctz", I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Popcnt, "i32.popcnt", I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Add, "i32.add", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Sub, "i32.sub", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Mul, "i32.mul", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32DivS, "i32.div_s", I32I32, I32, MayTrap, None)
+ISOLINE_OPERATION(I32DivU, "i32.div_u", I32I32, I32, MayTrap, None)
+ISOLINE_OPERATION(I32RemS, "i32.rem_s", I32I32, I32, MayTrap, None)
+ISOLINE_OPERATION(I32RemU, "i32.rem_u", I32I32, I32, MayTrap, None)
+ISOLINE_OPERATION(I32And, "i32.and", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Or, "i32.or", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Xor, "i32.xor", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Shl, "i32.shl", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32ShrS, "i32.shr_s", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32ShrU, "i32.shr_u", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Rotl, "i32.rotl", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Rotr, "i32.rotr", I32I32, I32, Pure, None)
+ISOLINE_OPERATION(I64Clz, "i64.clz", I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Ctz, "i64.ctz", I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Popcnt, "i64.popcnt", I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Add, "i64.add", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Sub, "i64.sub", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Mul, "i64.mul", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64DivS, "i64.div_s", I64I64, I64, MayTrap, None)
+ISOLINE_OPERATION(I64DivU, "i64.div_u", I64I64, I64, MayTrap, None)
+ISOLINE_OPERATION(I64RemS, "i64.rem_s", I64I64, I64, MayTrap, None)
+ISOLINE_OPERATION(I64RemU, "i64.rem_u", I64I64, I64, MayTrap, None)
+ISOLINE_OPERATION(I64And, "i64.and", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Or, "i64.or", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Xor, "i64.xor", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Shl, "i64.shl", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64ShrS, "i64.shr_s", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64ShrU, "i64.shr_u", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Rotl, "i64.rotl", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Rotr, "i64.rotr", I64I64, I64, Pure, None)
+ISOLINE_OPERATION(F32Abs, "f32.abs", F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Neg, "f32.neg", F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Ceil, "f32.ceil", F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Floor, "f32.floor", F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Trunc, "f32.trunc", F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Nearest, "f32.nearest", F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Sqrt, "f32.sqrt", F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Add, "f32.add", F32F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Sub, "f32.sub", F32F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Mul, "f32.mul", F32F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Div, "f32.div", F32F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Min, "f32.min", F32F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Max, "f32.max", F32F32, F32, Pure, None)
+ISOLINE_OPERATION(F32Copysign, "f32.copysign", F32F32, F32, Pure, None)
+ISOLINE_OPERATION(F64Abs, "f64.abs", F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Neg, "f64.neg", F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Ceil, "f64.ceil", F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Floor, "f64.floor", F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Trunc, "f64.trunc", F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Nearest, "f64.nearest", F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Sqrt, "f64.sqrt", F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Add, "f64.add", F64F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Sub, "f64.sub", F64F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Mul, "f64.mul", F64F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Div, "f64.div", F64F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Min, "f64.min", F64F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Max, "f64.max", F64F64, F64, Pure, None)
+ISOLINE_OPERATION(F64Copysign, "f64.copysign", F64F64, F64, Pure, None)
+ISOLINE_OPERATION(I32WrapI64, "i32.wrap_i64", I64, I32, Pure, None)
+ISOLINE_OPERATION(I32TruncF32S, "i32.trunc_f32_s", F32, I32, MayTrap, None)
+ISOLINE_OPERATION(I32TruncF32U, "i32.trunc_f32_u", F32, I32, MayTrap, None)
+ISOLINE_OPERATION(I32TruncF64S, "i32.trunc_f64_s", F64, I32, MayTrap, None)
+ISOLINE_OPERATION(I32TruncF64U, "i32.trunc_f64_u", F64, I32, MayTrap, None)
+ISOLINE_OPERATION(I64ExtendI32S, "i64.extend_i32_s", I32, I64, Pure, None)
+ISOLINE_OPERATION(I64ExtendI32U, "i64.extend_i32_u", I32, I64, Pure, None)
+ISOLINE_OPERATION(I64TruncF32S, "i64.trunc_f32_s", F32, I64, MayTrap, None)
+ISOLINE_OPERATION(I64TruncF32U, "i64.trunc_f32_u", F32, I64, MayTrap, None)
+ISOLINE_OPERATION(I64TruncF64S, "i64.trunc_f64_s", F64, I64, MayTrap, None)
+ISOLINE_OPERATION(I64TruncF64U, "i64.trunc_f64_u", F64, I64, MayTrap, None)
+ISOLINE_OPERATION(F32ConvertI32S, "f32.convert_i32_s", I32, F32, Pure, None)
+ISOLINE_OPERATION(F32ConvertI32U, "f32.convert_i32_u", I32, F32, Pure, None)
+ISOLINE_OPERATION(F32ConvertI64S, "f32.convert_i64_s", I64, F32, Pure, None)
+ISOLINE_OPERATION(F32ConvertI64U, "f32.convert_i64_u", I64, F32, Pure, None)
+ISOLINE_OPERATION(F32DemoteF64, "f32.demote_f64", F64, F32, Pure, None)
+ISOLINE_OPERATION(F64ConvertI32S, "f64.convert_i32_s", I32, F64, Pure, None)
+ISOLINE_OPERATION(F64ConvertI32U, "f64.convert_i32_u", I32, F64, Pure, None)
+ISOLINE_OPERATION(F64ConvertI64S, "f64.convert_i64_s", I64, F64, Pure, None)
+ISOLINE_OPERATION(F64ConvertI64U, "f64.convert_i64_u", I64, F64, Pure, None)
+ISOLINE_OPERATION(F64PromoteF32, "f64.promote_f32", F32, F64, Pure, None)
+ISOLINE_OPERATION(I32ReinterpretF32, "i32.reinterpret_f32", F32, I32, Pure, None)
+ISOLINE_OPERATION(I64ReinterpretF64, "i64.reinterpret_f64", F64, I64, Pure, None)
+ISOLINE_OPERATION(F32ReinterpretI32, "f32.reinterpret_i32", I32, F32, Pure, None)
+ISOLINE_OPERATION(F64ReinterpretI64, "f64.reinterpret_i64", I64, F64, Pure, None)
+ISOLINE_OPERATION(I32Extend8S, "i32.extend8_s", I32, I32, Pure, None)
+ISOLINE_OPERATION(I32Extend16S, "i32.extend16_s", I32, I32, Pure, None)
+ISOLINE_OPERATION(I64Extend8S, "i64.extend8_s", I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Extend16S, "i64.extend16_s", I64, I64, Pure, None)
+ISOLINE_OPERATION(I64Extend32S, "i64.extend32_s", I64, I64, Pure, None)
+ISOLINE_OPERATION(I32TruncSatF32S, "i32.trunc_sat_f32_s", F32, I32, Pure, None)
+ISOLINE_OPERATION(I32TruncSatF32U, "i32.trunc_sat_f32_u", F32, I32, Pure, None)
+ISOLINE_OPERATION(I32TruncSatF64S, "i32.trunc_sat_f64_s", F64, I32, Pure, None)
+ISOLINE_OPERATION(I32TruncSatF64U, "i32.trunc_sat_f64_u", F64, I32, Pure, None)
+ISOLINE_OPERATION(I64TruncSatF32S, "i64.trunc_sat_f32_s", F32, I64, Pure, None)
+ISOLINE_OPERATION(I64TruncSatF32U, "i64.trunc_sat_f32_u", F32, I64, Pure, None)
+ISOLINE_OPERATION(I64TruncSatF64S, "i64.trunc_sat_f64_s", F64, I64, Pure, None)
+ISOLINE_OPERATION(I64TruncSatF64U, "i64.trunc_sat_f64_u", F64, I64, Pure, None)
+
+// Parametric: select's operands are its two values, then the I32 condition.
+ISOLINE_OPERATION(Select, "select", Select, SameAsOperand0, Pure, None)
+// Replaces a NaN by the canonical NaN of its type, leaves every other value as it is (Deterministic).
+ISOLINE_OPERATION(CanonicalizeNan, "canonicalize_nan", Float, SameAsOperand0, Pure, None)
+
+// Memories. checkMemory(index, base, bound) traps unless index + offset + size <= bound, and returns the
+// guarded effective address base + index + offset (0 under misspeculation, SpectreGuard::Enabled).
+// guardAddress(address) is a dominated check's replacement: address + offset, 0 when address is 0.
+ISOLINE_OPERATION(CheckMemory, "check_memory", CheckMemory, Pointer, MayTrap, MemoryAccess)
+ISOLINE_OPERATION(GuardAddress, "guard_address", Pointer, Pointer, Pure, Offset)
+ISOLINE_OPERATION(Load, "load", Pointer, FromImmediate, ReadsMemory, Load)
+ISOLINE_OPERATION(Store, "store", Store, None, WritesMemory, MemoryAccess)
+ISOLINE_OPERATION(MemorySize, "memory_size", None, FromImmediate, ReadsContext, MemoryType)
+ISOLINE_OPERATION(MemoryBase, "memory_base", None, Pointer, ReadsContext, Memory)
+ISOLINE_OPERATION(MemoryBound, "memory_bound", None, I64, ReadsContext, Memory)
+
+// Tables. checkTable(index) traps with its `trap` code unless index < the table's size, and returns the
+// guarded address of the element.
+ISOLINE_OPERATION(CheckTable, "check_table", Integer, Pointer, MayTrap, TableCheck)
+ISOLINE_OPERATION(LoadTableElement, "load_table_element", Pointer, Ref, ReadsMemory, Table)
+ISOLINE_OPERATION(StoreTableElement, "store_table_element", StoreReference, None, WritesMemory, Table)
+ISOLINE_OPERATION(TableSize, "table_size", None, FromImmediate, ReadsContext, TableType)
+
+// References: a Ref is one 64-bit word, kind | heap.kind << 8 | address << 32.
+ISOLINE_OPERATION(RefNull, "ref.null", None, Ref, Pure, Heap)
+ISOLINE_OPERATION(RefFunc, "ref.func", None, Ref, ReadsContext, Function)
+ISOLINE_OPERATION(RefIsNull, "ref.is_null", Ref, I32, Pure, None)
+
+// Globals, through their RawValue cells.
+ISOLINE_OPERATION(LoadGlobal, "load_global", None, FromImmediate, ReadsMemory, GlobalType)
+ISOLINE_OPERATION(StoreGlobal, "store_global", Any, None, WritesMemory, Global)
+
+// The context values (the step countdown, memory 0's base and bound): loaded at entry and after every
+// call or stub, the countdown stored back before every call, stub, exit and trap site.
+ISOLINE_OPERATION(LoadContext, "load_context", None, FromImmediate, ReadsContext, ContextType)
+ISOLINE_OPERATION(StoreContext, "store_context", Any, None, Poll, Context)
+
+// The execution budget: poll(countdown) at a PollSite returns the countdown after it; enterFrame and
+// leaveFrame charge and release a frame of `frameCost` stack values, after the call depth.
+ISOLINE_OPERATION(Poll, "poll", I64, I64, Poll, PollSite)
+ISOLINE_OPERATION(EnterFrame, "enter_frame", None, None, Poll, FrameCost)
+ISOLINE_OPERATION(LeaveFrame, "leave_frame", None, None, Poll, FrameCost)
+
+// Calls: their operands are the arguments (call_indirect's first is the callee's table index), their
+// results the callee's.
+ISOLINE_OPERATION(Call, "call", Variadic, Multiple, Call, Function)
+ISOLINE_OPERATION(CallIndirect, "call_indirect", IndexVariadic, Multiple, Call, CallIndirect)
+ISOLINE_OPERATION(CallImport, "call_import", Variadic, Multiple, Call, Function)
+ISOLINE_OPERATION(CallStub, "call_stub", Variadic, Multiple, Call, Stub)
+
+// Traps with its `trap` code when its I32 condition is non-zero.
+ISOLINE_OPERATION(TrapIf, "trap_if", I32, None, MayTrap, Trap)
+
+// Terminators, one ending every block. A target is a (block, argumentCount) pair of immediates; the
+// arguments of each target follow the fixed operands, target after target. switch's first target is its
+// fallback, taken when the index is not below the number of the others.
+ISOLINE_OPERATION(Jump, "jump", Variadic, None, Control, Jump)
+ISOLINE_OPERATION(Branch, "branch", ConditionVariadic, None, Control, Branch)
+ISOLINE_OPERATION(Switch, "switch", ConditionVariadic, None, Control, Switch)
+ISOLINE_OPERATION(Return, "return", Variadic, None, Control, None)
+ISOLINE_OPERATION(Trap, "trap", None, None, Control, Trap)
