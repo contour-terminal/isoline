@@ -23,6 +23,7 @@
 #include <vector>
 
 #include <isoline/component/Limits.hpp>
+#include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 
 namespace isoline::component::canonical
@@ -959,6 +960,10 @@ std::expected<void, ValueError> ValueBuilder::buildScalar(uint64_t bits)
         return std::unexpected { errorHere(
             ValueErrorCode::InvalidValue,
             std::format("case {} of an enum of {}", bits, type.labels.size())) };
+    if (row.shape == ValueShape::Flags && type.labels.size() > MaxFlagLabels)
+        return std::unexpected { errorHere(
+            ValueErrorCode::TooManyFlags,
+            std::format("a flags type of {} labels, more than the {}", type.labels.size(), MaxFlagLabels)) };
     if (row.shape == ValueShape::Flags && (bits >> type.labels.size()) != 0)
         return std::unexpected { errorHere(
             ValueErrorCode::InvalidValue,

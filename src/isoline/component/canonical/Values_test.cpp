@@ -2,7 +2,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -16,10 +18,12 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <isoline/component/Limits.hpp>
+#include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 
@@ -1293,4 +1297,88 @@ TEST_CASE("LiveBytesBudget.chargesAcrossThreads", "[threading]")
     auto destroyer = std::thread { [&values] { values.reset(); } };
     destroyer.join();
     CHECK(shared->live() == 0);
+}
+
+TEST_CASE("Values.flagsPastThirtyTwoLabelsRefused")
+{
+    // Validation refuses a flags type of more than 32 labels, but an embedder's arena may hold one: a
+    // value of it is refused by name, before the bits are shifted by the label count (undefined from
+    // 64 labels on, and silently truncating from 33 to 63).
+    auto types = Types {};
+    auto const flagsOf = [&types](uint32_t count) {
+        auto labels = std::vector<SharedName> {};
+        for (auto const index: std::views::iota(uint32_t { 0 }, count))
+            labels.emplace_back(std::format("f{}", index));
+        return types.intern(DefinedType { .kind = ValueKind::Flags, .labels = std::move(labels) });
+    };
+    auto const most = flagsOf(isoline::component::canonical::MaxFlagLabels);
+    auto const all = build(types, { most }, [](ValueBuilder& builder) { builder.scalar(0xFFFF'FFFFU); });
+    CHECK(all.root(0).flagBits() == 0xFFFF'FFFFU);
+    CHECK(refusal(types, { most }, [](ValueBuilder& builder) { builder.scalar(uint64_t { 1 } << 32U); }).code
+          == ValueErrorCode::InvalidValue);
+
+    for (auto const count: { 33U, 40U, 63U, 64U, 65U, 1000U })
+    {
+        INFO(count);
+        auto const refused =
+            refusal(types, { flagsOf(count) }, [](ValueBuilder& builder) { builder.scalar(0); });
+        CHECK(refused.code == ValueErrorCode::TooManyFlags);
+        CHECK(refused.message()
+              == std::format("too many flags at [0]: a flags type of {} labels, more than the 32", count));
+    }
+}
+
+TEST_CASE("Values.builderIsNeitherCopiedNorMoved")
+{
+    // A moved-from builder's storage would hold no budget, which its next step would dereference.
+    STATIC_CHECK_FALSE(std::is_copy_constructible_v<ValueBuilder>);
+    STATIC_CHECK_FALSE(std::is_move_constructible_v<ValueBuilder>);
+    STATIC_CHECK_FALSE(std::is_copy_assignable_v<ValueBuilder>);
+    STATIC_CHECK_FALSE(std::is_move_assignable_v<ValueBuilder>);
+}
+
+TEST_CASE("ChargedVector.staleHeadroomRetriesExact", "[threading]")
+{
+    // A growth clamps to the headroom it reads, which another thread charging the same budget may take
+    // before the growth charges: the clamped growth is then refused, and the exact one, which fits,
+    // is made instead. Here 400 bytes are held and one more is needed; read while the other thread
+    // holds nothing, the headroom clamps the growth to 800, which fails beside its 1100, where the
+    // exact 401 fits. A capacity of exactly 401 is that retry, and the loop runs until it is seen;
+    // no growth may ever be refused.
+    constexpr auto Limit = uint64_t { 2000 };
+    constexpr auto Held = std::size_t { 400 };
+    constexpr auto Other = uint64_t { 1100 };
+    auto const budget = budgetOf(Limit);
+    auto stop = std::atomic<bool> { false };
+    auto other = std::thread { [&budget, &stop] {
+        while (!stop.load(std::memory_order_relaxed))
+            if (budget->charge(Other))
+                budget->release(Other);
+    } };
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds { 60 };
+    auto const held = std::vector<std::byte>(Held);
+    auto refusals = uint64_t { 0 };
+    auto retries = uint64_t { 0 };
+    auto rounds = uint64_t { 0 };
+    while (retries == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        ++rounds;
+        auto vector = ChargedVector<std::byte> { budget };
+        if (!vector.reserveFor(Held))
+        {
+            ++refusals;
+            continue;
+        }
+        vector.append(held);
+        if (!vector.reserveFor(1))
+            ++refusals;
+        else if (vector.chargedBytes() == Held + 1)
+            ++retries;
+    }
+    stop.store(true, std::memory_order_relaxed);
+    other.join();
+    CAPTURE(rounds);
+    CHECK(refusals == 0);
+    CHECK(retries > 0);
+    CHECK(budget->live() == 0);
 }

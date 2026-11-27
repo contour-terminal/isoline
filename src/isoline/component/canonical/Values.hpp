@@ -104,8 +104,8 @@ class LiveBytesBudget
 ///
 /// It grows geometrically, so filling it costs amortized O(1) per element, but never by more than the
 /// budget has left: a growth the budget cannot afford in full is made exactly as large as needed, and
-/// refused when even that does not fit. While it grows, the old and the new storage are both charged,
-/// as both are allocated.
+/// refused when even that does not fit, also when another thread took the headroom in between. While it
+/// grows, the old and the new storage are both charged, as both are allocated.
 template <typename T>
 class ChargedVector
 {
@@ -159,10 +159,18 @@ class ChargedVector
                                                       .limit = _budget->limit() } };
         auto const needed = size + extra;
         auto const doubled = _capacity > MostElements / 2 ? MostElements : _capacity * 2;
-        auto const capacity = std::max(needed, std::min(doubled, _budget->available() / Unit));
-        auto const bytes = capacity * Unit;
-        if (auto charged = _budget->charge(bytes); !charged)
+        auto capacity = std::max(needed, std::min(doubled, _budget->available() / Unit));
+        // The headroom read above may be stale: another thread charging the same budget since then can
+        // make the clamped growth fail where the exact one fits, so a refused growth retries as needed.
+        auto charged = _budget->charge(capacity * Unit);
+        if (!charged && capacity > needed)
+        {
+            capacity = needed;
+            charged = _budget->charge(capacity * Unit);
+        }
+        if (!charged)
             return std::unexpected { charged.error() };
+        auto const bytes = capacity * Unit;
         try
         {
             _items.reserve(static_cast<std::size_t>(capacity));
@@ -445,6 +453,8 @@ enum class ValueErrorCode : uint8_t
     Budget,       ///< The live-bytes budget refused the storage.
     Unsupported,  ///< A stream, future or error-context value, which P11 does not build.
     TooLarge,     ///< More than 2^32 - 1 nodes, or a string of 2^32 bytes or more.
+    TooManyFlags, ///< A flags value of a type of more than MaxFlagLabels labels, which no 32-bit
+                  ///< flags value holds: validation refuses such a type, but an embedder may intern one.
 };
 
 /// One row of ValueErrorMessages: an error and its text, a format of its path and its detail.
@@ -462,6 +472,7 @@ inline constexpr auto ValueErrorMessages = std::to_array<ValueErrorRow>({
     { .code = ValueErrorCode::Budget, .format = "value at {} refused: {}" },
     { .code = ValueErrorCode::Unsupported, .format = "unsupported value at {}: {}" },
     { .code = ValueErrorCode::TooLarge, .format = "value too large at {}: {}" },
+    { .code = ValueErrorCode::TooManyFlags, .format = "too many flags at {}: {}" },
 });
 
 static_assert(
@@ -733,6 +744,14 @@ class ValueBuilder
                  std::span<types::TypeId const> roots,
                  std::shared_ptr<LiveBytesBudget> budget);
 
+    // Neither copied nor moved: a moved-from builder's storage holds no budget, which its next step
+    // would dereference. It lives where its steps are taken, and finish() hands the values on.
+    ValueBuilder(ValueBuilder const&) = delete;
+    ValueBuilder& operator=(ValueBuilder const&) = delete;
+    ValueBuilder(ValueBuilder&&) = delete;
+    ValueBuilder& operator=(ValueBuilder&&) = delete;
+    ~ValueBuilder() = default;
+
     /// A scalar, an enum's case index or a flags bitmask.
     /// @param bits A scalar's bits at its width (a float's bit pattern, a signed integer's two's
     ///             complement), zero-extended; an enum's case; a flags' bits.
@@ -815,8 +834,9 @@ class ValueBuilder
     void completed() noexcept;
 
     types::TypeArena const* _arena;
-    std::vector<types::TypeId> _rootTypes;
-    std::vector<Frame> _frames {}; ///< At most the root types' depth: maxTypeDepth.
+    std::vector<types::TypeId> _rootTypes; ///< The type of each value to build: root i is built as
+                                           ///< _rootTypes[i], and _nextRoot is the one built next.
+    std::vector<Frame> _frames {};         ///< At most the root types' depth: maxTypeDepth.
     std::size_t _nextRoot = 0;
     ChargedVector<ValueNode> _nodes;
     ChargedVector<std::byte> _pool;
