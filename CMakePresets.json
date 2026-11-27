@@ -181,6 +181,21 @@
             }
         },
         {
+            "name": "msvc-wine-debug",
+            "displayName": "Windows x64 cross (MSVC under wine) Debug",
+            "description": "Windows x64 from Linux: msvc-wine's cl.exe under wine, with the static CRT; tests run under wine",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "debug"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-msvc-wine-cross.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON",
+                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+            }
+        },
+        {
             "name": "clangcl-cross-release",
             "displayName": "Windows x64 cross (clang-cl) Release",
             "description": "Windows x64 from Linux: clang-cl against an msvc-wine install, release STL; tests run under wine",
@@ -256,15 +271,8 @@
             "description": "Windows x64 from Linux: msvc-wine's cl.exe under wine, with the static CRT and C++ modules; tests run under wine",
             "inherits": [
                 "modules",
-                "isoline-common",
-                "linux-host",
-                "debug"
-            ],
-            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-msvc-wine-cross.cmake",
-            "cacheVariables": {
-                "ISOLINE_FETCH_DEPS": "ON",
-                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
-            }
+                "msvc-wine-debug"
+            ]
         },
         {
             "name": "aarch64-cross-common",
@@ -306,6 +314,7 @@
         { "name": "macos-clang", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
+        { "name": "msvc-wine-debug", "configurePreset": "msvc-wine-debug" },
         { "name": "clangcl-cross-release", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "configurePreset": "clang-aarch64-cross-release" },
@@ -358,6 +367,7 @@
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },
+        { "name": "msvc-wine-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-wine-debug" },
         { "name": "clangcl-cross-release", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross-release" },
