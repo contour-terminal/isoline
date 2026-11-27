@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <format>
 #include <initializer_list>
+#include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <ranges>
@@ -28,6 +30,8 @@
 #include <isoline/component/binary/Decoder.hpp>
 #include <isoline/component/binary/testing/Builder.hpp>
 #include <isoline/component/binary/testing/DecoderFixtures.hpp>
+#include <isoline/component/canonical/Values.hpp>
+#include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/ValidatedComponent.hpp>
 #include <isoline/component/validate/Validator.hpp>
 #include <isoline/component/validate/testing/CoreModuleValidator.hpp>
@@ -64,6 +68,7 @@ using isoline::component::validate::ValidationError;
 using isoline::component::validate::ValidationWork;
 using isoline::component::validate::testing::CoreModuleValidator;
 using isoline::testing::AllocationLimit;
+using isoline::testing::AllocationScope;
 
 namespace
 {
@@ -524,4 +529,182 @@ TEST_CASE("Validator.sharedClosedTypeWalkedOnce")
     // The type walked once (its 2'000 functions, a parameter each, and their resource) at either size.
     CHECK(single >= 2'000);
     CHECK(twice - single <= uint64_t { 500 } * 4);
+}
+
+// Component values (P11 Task 9): every byte a Values holds is charged to its store's LiveBytesBudget
+// before the host allocates it, so a guest's deep or wide values are refused by the budget, by name,
+// and never reach the host's allocator beyond it; a count that lies is refused before anything grows;
+// and whatever path a build leaves by, its charge is released.
+
+namespace
+{
+
+using isoline::component::canonical::LiveBytesBudget;
+using isoline::component::canonical::ValueBuilder;
+using isoline::component::canonical::ValueErrorCode;
+using isoline::component::types::DefinedType;
+using isoline::component::types::TypeArena;
+using isoline::component::types::TypeId;
+using isoline::component::types::ValueKind;
+
+/// What a builder holds besides its charged storage: its frame stack (as deep as the type), its root
+/// types, an error's path and detail, and a debug standard library's container proxies.
+constexpr auto FixedBuilderBytes = std::size_t { 64 } * 1024;
+
+/// The value types the cases build.
+struct ValueTypes
+{
+    TypeArena arena { ComponentLimits {} };
+    TypeId string = arena.primitive(ValueKind::String);
+    TypeId bytes =
+        intern(DefinedType { .kind = ValueKind::List, .children = { arena.primitive(ValueKind::U8) } });
+    TypeId strings = intern(DefinedType { .kind = ValueKind::List, .children = { string } });
+    TypeId nested = intern(DefinedType { .kind = ValueKind::List, .children = { strings } });
+    TypeId map = intern(DefinedType { .kind = ValueKind::Map, .children = { string, string } });
+    TypeId records = intern(DefinedType {
+        .kind = ValueKind::List,
+        .children = { intern(DefinedType { .kind = ValueKind::Record,
+                                           .children = { string, arena.primitive(ValueKind::U32) },
+                                           .labels = { "s", "n" } }) } });
+
+    [[nodiscard]] TypeId intern(DefinedType type)
+    {
+        auto const id = arena.intern(std::move(type));
+        REQUIRE(id.has_value());
+        return *id;
+    }
+};
+
+/// What a build under a host allocation limit came to.
+struct BudgetedBuild
+{
+    std::optional<ValueErrorCode> error; ///< The builder's error; empty when it built.
+    Budget budget = Budget::Kept;        ///< Whether the host limit refused an allocation.
+};
+
+} // namespace
+
+TEST_CASE("Values.lyingCountsRefusedBeforeAllocation")
+{
+    // A count of 2^32 - 1 for a list of bytes (4 GiB of pool), of strings (2^32 nodes), of lists of
+    // strings and for a map: each is refused by the store's budget at begin(), while the host lets
+    // the builder allocate no more than its fixed bytes.
+    auto const types = ValueTypes {};
+    for (auto const type: { types.bytes, types.strings, types.nested, types.map })
+    {
+        auto const budget = std::make_shared<LiveBytesBudget>(ComponentLimits {}.maxLiveValueBytes);
+        auto outcome = BudgetedBuild {};
+        try
+        {
+            auto const limit = AllocationLimit { FixedBuilderBytes };
+            auto builder = ValueBuilder { types.arena, std::span { &type, 1 }, budget };
+            builder.begin(std::numeric_limits<uint32_t>::max());
+            if (builder.error())
+                outcome.error = builder.error()->code;
+        }
+        catch (std::bad_alloc const&)
+        {
+            outcome.budget = Budget::Refused;
+        }
+        INFO(std::format("type {}", type.value));
+        CHECK(outcome.budget == Budget::Kept);
+        CHECK(outcome.error == ValueErrorCode::Budget);
+        CHECK(budget->live() == 0);
+    }
+}
+
+TEST_CASE("Values.hostMemoryFollowsTheBudget")
+{
+    // A list of 10'000 lists of 100 strings of 1 KiB (a GiB in all) against a budget of 4 MiB: the
+    // budget refuses a growth by name, the host never holds more than the budget and the builder's
+    // fixed bytes, and the refused build's death leaves the budget empty.
+    constexpr auto Limit = uint64_t { 4 } << 20U;
+    auto const types = ValueTypes {};
+    auto const text = std::string(1024, 'v');
+    auto const budget = std::make_shared<LiveBytesBudget>(Limit);
+    auto outcome = BudgetedBuild {};
+    auto peak = std::size_t { 0 };
+    {
+        auto const scope = AllocationScope {};
+        try
+        {
+            auto const limit = AllocationLimit { Limit + FixedBuilderBytes };
+            auto builder = ValueBuilder { types.arena, std::span { &types.nested, 1 }, budget };
+            builder.begin(10'000);
+            for ([[maybe_unused]] auto const list: std::views::iota(0, 10'000))
+            {
+                builder.begin(100);
+                for ([[maybe_unused]] auto const index: std::views::iota(0, 100))
+                    builder.string(text);
+                builder.end();
+                if (builder.error())
+                    break;
+            }
+            if (builder.error())
+                outcome.error = builder.error()->code;
+        }
+        catch (std::bad_alloc const&)
+        {
+            outcome.budget = Budget::Refused;
+        }
+        peak = scope.peakBytes();
+    }
+    INFO(std::format("host peak {} bytes for a budget of {}", peak, Limit));
+    CHECK(outcome.budget == Budget::Kept);
+    CHECK(outcome.error == ValueErrorCode::Budget);
+    CHECK(peak <= Limit + FixedBuilderBytes);
+    CHECK(budget->live() == 0);
+}
+
+TEST_CASE("Values.unwindReleasesTheCharge", "[host-memory]")
+{
+    // The host refuses an allocation the budget allowed (its limit is far below the budget's): the
+    // std::bad_alloc leaves the builder's step, the builder is destroyed while it unwinds, and the
+    // budget is left as it was before the build.
+    auto const types = ValueTypes {};
+    auto const text = std::string(100, 'u');
+    auto const budget = std::make_shared<LiveBytesBudget>(uint64_t { 64 } << 20U);
+    auto outcome = BudgetedBuild {};
+    try
+    {
+        auto const limit = AllocationLimit { std::size_t { 1 } << 20U };
+        auto builder = ValueBuilder { types.arena, std::span { &types.strings, 1 }, budget };
+        builder.begin(100'000);
+        for ([[maybe_unused]] auto const index: std::views::iota(0, 100'000))
+            builder.string(text);
+        if (builder.error())
+            outcome.error = builder.error()->code;
+    }
+    catch (std::bad_alloc const&)
+    {
+        outcome.budget = Budget::Refused;
+    }
+    CHECK(outcome.budget == Budget::Refused);
+    CHECK_FALSE(outcome.error.has_value());
+    CHECK(budget->live() == 0);
+}
+
+TEST_CASE("Values.buildLinearMemory")
+{
+    // A list of n records of a 16-byte string and a u32, built and held: the host's peak at 2n is
+    // at most 2.2 times its peak at n (each storage grows by doubling, so its peak doubles too).
+    auto const types = ValueTypes {};
+    auto const text = std::string(16, 'r');
+    auto const peakFor = [&](uint32_t records) {
+        auto const budget = std::make_shared<LiveBytesBudget>(ComponentLimits {}.maxLiveValueBytes);
+        auto const scope = AllocationScope {};
+        auto builder = ValueBuilder { types.arena, std::span { &types.records, 1 }, budget };
+        builder.begin(records);
+        for (auto const index: std::views::iota(uint32_t { 0 }, records))
+            builder.begin(2).string(text).scalar(index).end();
+        builder.end();
+        auto const values = builder.finish();
+        REQUIRE(values.has_value());
+        CHECK(values->hostBytes() == budget->live());
+        return scope.peakBytes();
+    };
+    auto const single = peakFor(50'000);
+    auto const twice = peakFor(100'000);
+    INFO(std::format("peak {} bytes at n, {} at 2n", single, twice));
+    CHECK(twice * 10 <= single * 22);
 }
