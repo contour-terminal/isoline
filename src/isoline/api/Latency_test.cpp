@@ -40,6 +40,7 @@ using isoline::api::Imports;
 using isoline::api::IPollObserver;
 using isoline::api::PollSite;
 using isoline::api::Store;
+using isoline::api::StoreOptions;
 using isoline::api::Value;
 using isoline::api::testing::engineRows;
 using isoline::api::testing::contract::addModule;
@@ -229,7 +230,8 @@ TEST_CASE("Latency.interruptToReturnP99", "[.perf]")
     for ([[maybe_unused]] auto const trial: std::views::iota(std::size_t { 0 }, Trials))
     {
         auto observer = FirstPoll {};
-        auto store = Store { engine, allocator, &observer };
+        auto store =
+            Store { engine, allocator, StoreOptions { .limits = std::nullopt, .observer = &observer } };
         auto const instance = store.instantiate(*module, imports);
         REQUIRE(instance.has_value());
         auto const spin = instance->function("spin");

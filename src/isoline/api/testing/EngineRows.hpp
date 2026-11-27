@@ -64,6 +64,19 @@ namespace contract
         return config;
     }
 
+    /// An engine configuration of @p row's engine and features, under the whole of @p limits.
+    /// @param limits The store limits, every one of them.
+    /// @param row The engine and its features.
+    /// @return The configuration.
+    [[nodiscard]] inline EngineConfig configOf(StoreLimits const& limits, EngineRow const& row)
+    {
+        auto config = EngineConfig {};
+        config.features = row.features;
+        config.engine = row.engine;
+        config.store = limits;
+        return config;
+    }
+
     /// An engine configuration of the first engine row (EngineRowTable), under @p limits.
     /// @param limits The store caps.
     /// @param maxSteps The steps a call may take; a backstop only, for the cases that spin.

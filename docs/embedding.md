@@ -35,15 +35,16 @@ auto const called = instance->call(*instance->function("run"), args, results);
 ```
 
 1. **`Engine`** holds an `EngineConfig` and nothing else: the features modules are decoded and
-   validated with, the execution engine and mode, the `LoadLimits` and the `StoreLimits` of every store
-   made for it. The feature set must be closed over its prerequisites (checked);
+   validated with, the execution engine and mode, the `LoadLimits`, and the `StoreLimits` every store
+   made for it keeps to unless it overrides them (`StoreOptions`). The feature set must be closed over its prerequisites (checked);
    `FeatureSet::withPrerequisites()` closes one.
 2. **`Module`** is what `Engine::load()` makes of a module's bytes: decoded, validated and described
    (`imports()`, `exports()`), never linked. A module loads whatever it imports. It carries the
    engine's `EngineIdentity` (engine, mode, features), and only a store of an engine of the same
    identity instantiates it (`EngineMismatch` otherwise).
 3. **`Store`** is where instances live, with their memories, tables, globals, tags and host functions,
-   under one `StoreLimits`. Every limit caps the whole store, all its instances together.
+   under one `StoreLimits`: its engine's, or its own (`StoreOptions`, under *Limits*). Every limit caps
+   the whole store, all its instances together.
 4. **`Instance`** is a handle to one module instance of a store; `Function`, `Table`, `Memory`,
    `Global` and `Tag` (`api/Extern.hpp`) are handles to its exports, and `Extern` is any one of them, a
    `std::variant` with one alternative per `ExternKind`, in that order. All are cheap to copy; what they
@@ -87,7 +88,8 @@ nested-instantiation budget and the errors after the lookup are the same.
 ## Lifetimes
 
 - A `Store` copies its engine's configuration: the `Engine` may be destroyed first.
-- The `IMemoryAllocator` and the `IPollObserver` given to a `Store` must outlive it.
+- The `IMemoryAllocator` and the `IPollObserver` (`StoreOptions::observer`) given to a `Store` must
+  outlive it.
 - A `Module` keeps its validated module alive; its descriptions (`ImportDescription`,
   `ExportDescription`, `EngineIdentity`) point into it and are valid while any copy of the module lives.
   The `const&&` overloads are deleted, so a temporary module's descriptions do not compile.
@@ -300,7 +302,30 @@ Contour's `IWasmBackend` contract maps onto these as follows:
 
 ## Limits
 
-A store keeps to the `StoreLimits` of its engine's configuration, fixed at construction. Each count or
+A store keeps to the `StoreLimits` of its engine's configuration, or to those its `StoreOptions`
+override them with, fixed at construction:
+
+```cpp
+auto limits = engine.config().store;                   // start from the engine's, change what differs
+limits.maxMemoryBytes = uint64_t { 16 } << 20;
+auto store = Store { engine, allocator, StoreOptions { .limits = limits, .observer = nullptr } };
+```
+
+`StoreOptions::limits` replaces the engine's limits whole; `std::nullopt` (the default) keeps them.
+An override binds that store alone, and may raise a limit above the engine's as well as lower it.
+Limits are no part of `EngineIdentity`, so every store of an engine, whatever its overrides,
+instantiates the engine's modules.
+
+No limit is checked against the host's capacity yet, and the constructor refuses none. A limit set past
+what the host can hold turns the guest's trap at the limit into the process's termination
+(`std::bad_alloc` midway through a call, or a stack overflow). Above all, `maxNestedInvocations` bounds
+recursion on the calling thread's stack in every engine, the interpreters included: each
+Wasm → host → Wasm nesting takes host stack, so its value must fit that thread's stack. A fallible
+factory (`Store::create`) is to check it for every engine, against the store's effective limits rather
+than only its engine's, and to report a refusal as a value; so must any engine code that relies on a
+limit (a guard region sized for `maxMemoryBytes`).
+
+Each count or
 size caps the whole store; each refusal names its `Limit`. `Store::used(limit)` reads what the store
 holds of one: the counts and sizes of its entities; the frames' stack values and the invocations in
 progress (0 between calls); and for `Steps`, the steps the latest outermost call or instantiation took,
@@ -388,8 +413,8 @@ At one poll the interrupt is checked before the step charge, so `Interrupted` be
 <!-- poll-sites:end -->
 
 The block is generated from `runtime::PollSiteTable`, as the limits are. An `IPollObserver` given to the
-store sees every poll, on the executing thread, before the interrupt is checked; poll-counting tests
-and profilers use it.
+store (`StoreOptions::observer`) sees every poll, on the executing thread, before the interrupt is
+checked; poll-counting tests and profilers use it.
 
 **Unpolled host operations.** A few operations are the host's work, bounded by a limit or by the
 module's size but not interruptible midway:

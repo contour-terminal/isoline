@@ -285,7 +285,7 @@ class Runtime
         _allocator { allocator ? std::move(allocator) : std::make_unique<HeapMemoryAllocator>() },
         _log { std::make_shared<HostLog>() },
         _imports { hostImports(_log, answer) },
-        _store { _engine, *_allocator, observer }
+        _store { _engine, *_allocator, StoreOptions { .limits = std::nullopt, .observer = observer } }
     {
     }
 

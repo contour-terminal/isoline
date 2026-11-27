@@ -143,10 +143,40 @@ enum class ExportAccessError : uint8_t
     StoreDeleted, ///< The instance's store is gone.
 };
 
-/// A store: where instances live, with their memories, tables, globals and the host functions bound
-/// to them, under the limits of the engine it was made for.
+/// What one store changes about the engine it is made for, fixed at its construction: its limits, and
+/// who observes its polls.
 ///
-/// It copies the engine's configuration, so the Engine may go before it.
+/// None of it is part of EngineIdentity, so a store of any options instantiates every module its
+/// engine loads, and a module of an engine of other limits but the same identity.
+struct StoreOptions
+{
+    /// The limits the store keeps to in place of its engine's (EngineConfig::store); none keeps the
+    /// engine's. They replace the engine's whole, so a store that changes one limit copies
+    /// engine.config().store and sets that field.
+    ///
+    /// They bind this store alone, and may raise a limit above the engine's as well as lower it. Every
+    /// value of every field is a limit a store keeps to, the engine's limits being no bound on them, and
+    /// no limit is checked against the host's capacity: a limit set past what the host can hold turns
+    /// the guest's trap at the limit into the process's termination (std::bad_alloc midway through a
+    /// call, or a stack overflow).
+    ///
+    /// maxNestedInvocations bounds recursion on the calling thread's stack, in every engine, the
+    /// interpreters included: each Wasm → host → Wasm nesting takes host stack. Its value must fit that
+    /// thread's stack (StoreLimits::maxNestedInvocations has the measurements), which the library does
+    /// not check yet; a fallible factory (Store::create) is to check it for every engine. Code of an
+    /// engine that relies on a limit (a guard region sized for maxMemoryBytes, a native stack sized for
+    /// the call limits) must likewise check the store's effective limits, not its engine's.
+    std::optional<StoreLimits> limits;
+
+    /// Observes every poll of the store's executions; none when null. Must outlive the store.
+    IPollObserver* observer = nullptr;
+};
+
+/// A store: where instances live, with their memories, tables, globals and the host functions bound
+/// to them, under the limits of the engine it was made for, or those its StoreOptions override them
+/// with.
+///
+/// It copies what it needs of the engine's configuration, so the Engine may go before it.
 ///
 /// Threads: the store and every handle of it (its instances, and every Function, Memory, Global, Table
 /// and Tag) are one unit, used by one thread at a time; the unit may move between threads between calls.
@@ -167,13 +197,19 @@ enum class ExportAccessError : uint8_t
 class Store
 {
   public:
-    /// An empty store for modules of @p engine.
+    /// An empty store for modules of @p engine, under @p options.
+    ///
+    /// The constructor refuses no limits. Those that must fit the host are not checked yet, above all
+    /// maxNestedInvocations, which bounds recursion on the calling thread's stack in every engine (see
+    /// StoreOptions::limits). The checks are to come with a factory (Store::create) that checks the
+    /// store's effective limits (StoreOptions::limits, else its engine's) and reports a refusal as a
+    /// value.
     /// @param engine The engine: its configuration (limits, identity, guard size) is copied, so it may
     ///               be destroyed before the store.
     /// @param allocator Allocates every linear memory of the store; must outlive it.
-    /// @param observer Observes every poll of the store's executions; none when null. Must outlive it.
+    /// @param options The store's own limits, if it overrides its engine's, and its poll observer.
     /// @throws std::bad_alloc When the host has no memory for the empty store.
-    Store(Engine const& engine, IMemoryAllocator& allocator, IPollObserver* observer = nullptr);
+    Store(Engine const& engine, IMemoryAllocator& allocator, StoreOptions const& options = {});
 
     Store(Store const&) = delete;
     Store(Store&&) = delete;

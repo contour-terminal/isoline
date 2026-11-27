@@ -51,7 +51,8 @@ struct EngineConfig
     /// The limits loading a module enforces.
     LoadLimits load {};
 
-    /// The caps of every store made for this engine.
+    /// The caps of every store made for this engine, unless the store overrides them
+    /// (StoreOptions::limits).
     StoreLimits store {};
 
     /// What a module this configuration loads depends on: the engine, the mode and the features, not

@@ -1057,7 +1057,7 @@ TEST_CASE("Externs.positionalForeignImport", "[api]")
           == InstantiateError { ForeignImport { .index = 1 } });
     CHECK(calls == 0);
     // A module of another engine is refused first, whatever its externs.
-    auto otherConfig = configOf({}, row);
+    auto otherConfig = configOf(ContractLimits {}, row);
     otherConfig.features = isoline::api::FeatureSet::wasm2();
     auto const otherEngine = Engine { otherConfig };
     auto const otherModule = otherEngine.load(sameNameTwoTypes().build());

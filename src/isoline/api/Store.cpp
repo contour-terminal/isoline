@@ -120,13 +120,15 @@ StoreId::StoreId() noexcept: _serial { nextStoreSerial() }
 {
 }
 
-Store::Store(Engine const& engine, IMemoryAllocator& allocator, IPollObserver* observer):
+Store::Store(Engine const& engine, IMemoryAllocator& allocator, StoreOptions const& options):
     _identity { engine.config().identity() },
     _id { std::make_shared<StoreId>() },
-    _runtime { engine.config().store,
+    _runtime { options.limits.value_or(engine.config().store),
                runtime::StoreServices { .allocator = allocator,
+                                        // The engine's guard, never sized from an override (P8: a guard
+                                        // derived from maxMemoryBytes must check the effective limits).
                                         .requiredGuardBytes = engine.requiredGuardBytes(),
-                                        .pollObserver = observer } },
+                                        .pollObserver = options.observer } },
     _executor { makeExecutor(engine.config().engine) },
     _alive { std::make_shared<std::monostate>() }
 {
