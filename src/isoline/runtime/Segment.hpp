@@ -72,6 +72,87 @@ template <GranulePoll Poll, typename Work>
     return {};
 }
 
+/// The items of one granule of a bulk operation over items of type @p T: BulkPollBytes of them, so 65'536
+/// bytes of a memory or BulkPollElements references of a table.
+template <typename T>
+inline constexpr auto GranuleItems = BulkPollBytes / sizeof(T);
+
+/// Fills @p count items of @p target from @p destination with @p value, as memory.fill and table.fill do:
+/// the range is checked before anything is written, so an out-of-bounds fill changes nothing. The fill runs
+/// upwards in granules of GranuleItems<T>, polling before each, so a poll that fails leaves the granules
+/// before it filled.
+///
+/// Every engine runs a fill through it (the reference interpreter and the fast one), so that they poll and
+/// leave partial writes alike.
+/// @param target The memory's bytes or the table's elements.
+/// @param destination The first item filled.
+/// @param count How many items.
+/// @param value What each becomes.
+/// @param outOfBounds The trap an out-of-bounds range ends with.
+/// @param poll Polled before each granule.
+/// @return Nothing, the trap @p outOfBounds, or the poll's error.
+template <typename T, GranulePoll Poll>
+[[nodiscard]] std::expected<void, Trap> fillItems(std::span<T> target,
+                                                  uint64_t destination,
+                                                  uint64_t count,
+                                                  std::type_identity_t<T> const& value,
+                                                  TrapCode outOfBounds,
+                                                  Poll& poll)
+{
+    if (!fits(destination, count, target.size()))
+        return trap(outOfBounds);
+    return forEachGranule(
+        count, GranuleItems<T>, GranuleOrder::Ascending, poll, [&](uint64_t offset, uint64_t size) {
+            std::ranges::fill(target.subspan(static_cast<std::size_t>(destination + offset),
+                                             static_cast<std::size_t>(size)),
+                              value);
+        });
+}
+
+/// Copies @p count items from @p source of @p from to @p destination of @p to, as memory.copy and
+/// table.copy do, @p from and @p to being the same memory or table or two of them: both ranges are checked
+/// before anything is written, so an out-of-bounds copy changes nothing. The copy runs in granules of
+/// GranuleItems<T>, polling before each, in copyOrder()'s order, and within a granule in the same direction,
+/// so that an overlapping copy within one memory or table is correct and a poll that fails leaves the
+/// granules before it copied.
+///
+/// Every engine runs a copy through it (the reference interpreter and the fast one), so that they poll and
+/// leave partial writes alike.
+/// @param from The source's bytes or elements.
+/// @param source The first item copied.
+/// @param to The destination's bytes or elements; may be @p from.
+/// @param destination Where the first item goes.
+/// @param count How many items.
+/// @param outOfBounds The trap either range out of bounds ends with.
+/// @param poll Polled before each granule.
+/// @return Nothing, the trap @p outOfBounds, or the poll's error.
+template <typename T, GranulePoll Poll>
+[[nodiscard]] std::expected<void, Trap> copyItems(std::span<T const> from,
+                                                  uint64_t source,
+                                                  std::type_identity_t<std::span<T>> to,
+                                                  uint64_t destination,
+                                                  uint64_t count,
+                                                  TrapCode outOfBounds,
+                                                  Poll& poll)
+{
+    if (!fits(source, count, from.size()) || !fits(destination, count, to.size()))
+        return trap(outOfBounds);
+    auto const order = copyOrder(source, destination);
+    return forEachGranule(count, GranuleItems<T>, order, poll, [&](uint64_t offset, uint64_t size) {
+        auto const granuleFrom =
+            from.subspan(static_cast<std::size_t>(source + offset), static_cast<std::size_t>(size));
+        auto const granuleTo =
+            to.subspan(static_cast<std::size_t>(destination + offset), static_cast<std::size_t>(size));
+        // A copy onto itself changes nothing, and std::ranges::copy may not overlap it.
+        if (granuleFrom.data() == granuleTo.data())
+            return;
+        if (order == GranuleOrder::Ascending)
+            std::ranges::copy(granuleFrom, granuleTo.begin());
+        else
+            std::ranges::copy_backward(granuleFrom, granuleTo.end());
+    });
+}
+
 /// Copies part of a segment into a table or memory, as table.init and memory.init do, and as
 /// instantiation does with each whole active segment: both ranges are checked before anything is
 /// copied, so an out-of-bounds copy changes nothing. The copy runs in granules of BulkPollBytes
@@ -97,7 +178,7 @@ template <typename T, GranulePoll Poll>
         return trap(outOfBounds);
     // A segment is never the table or memory it is copied into, so the granules go upwards.
     return forEachGranule(
-        count, BulkPollBytes / sizeof(T), GranuleOrder::Ascending, poll, [&](uint64_t offset, uint64_t size) {
+        count, GranuleItems<T>, GranuleOrder::Ascending, poll, [&](uint64_t offset, uint64_t size) {
             std::ranges::copy(
                 segment.subspan(static_cast<std::size_t>(source + offset), static_cast<std::size_t>(size)),
                 target.begin() + static_cast<std::ptrdiff_t>(destination + offset));

@@ -10,7 +10,6 @@
 #include <cfenv>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <limits>
 #include <optional>
@@ -60,7 +59,6 @@ namespace
     using runtime::FuncAddr;
     using runtime::FunctionInstance;
     using runtime::functionReference;
-    using runtime::GranuleOrder;
     using runtime::I32;
     using runtime::I64;
     using runtime::ModuleInstance;
@@ -748,18 +746,9 @@ namespace
             auto const count = popAddress(type);
             auto const value = static_cast<std::byte>(popI32());
             auto const destination = popAddress(type);
-            auto const bytes = target.bytes();
-            if (!fits(destination, count, bytes.size()))
-                return trap(TrapCode::OutOfBoundsMemoryAccess);
             auto poll = granulePoll();
-            return runtime::forEachGranule(count,
-                                           runtime::BulkPollBytes,
-                                           GranuleOrder::Ascending,
-                                           poll,
-                                           [&](uint64_t offset, uint64_t size) {
-                                               std::ranges::fill(bytes.subspan(destination + offset, size),
-                                                                 value);
-                                           });
+            return runtime::fillItems(
+                target.bytes(), destination, count, value, TrapCode::OutOfBoundsMemoryAccess, poll);
         }
 
         [[nodiscard]] Step memoryCopy(Instruction const& instruction)
@@ -772,23 +761,14 @@ namespace
             auto const count = popAddress(countType);
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
-            auto const sourceBytes = sourceMemory.bytes();
-            auto const destinationBytes = destinationMemory.bytes();
-            if (!fits(source, count, sourceBytes.size())
-                || !fits(destination, count, destinationBytes.size()))
-                return trap(TrapCode::OutOfBoundsMemoryAccess);
-            // Granule by granule, in the order that keeps an overlapping copy within one memory
-            // correct; memmove, as one granule may overlap itself.
             auto poll = granulePoll();
-            return runtime::forEachGranule(count,
-                                           runtime::BulkPollBytes,
-                                           runtime::copyOrder(source, destination),
-                                           poll,
-                                           [&](uint64_t offset, uint64_t size) {
-                                               std::memmove(destinationBytes.data() + destination + offset,
-                                                            sourceBytes.data() + source + offset,
-                                                            size);
-                                           });
+            return runtime::copyItems(std::as_const(sourceMemory).bytes(),
+                                      source,
+                                      destinationMemory.bytes(),
+                                      destination,
+                                      count,
+                                      TrapCode::OutOfBoundsMemoryAccess,
+                                      poll);
         }
 
         [[nodiscard]] Step memoryInit(Instruction const& instruction)
@@ -857,18 +837,13 @@ namespace
             auto const count = popAddress(type);
             auto const value = popRef();
             auto const destination = popAddress(type);
-            auto const elements = std::span { target.elements };
-            if (!fits(destination, count, elements.size()))
-                return trap(TrapCode::OutOfBoundsTableAccess);
             auto poll = granulePoll();
-            return runtime::forEachGranule(count,
-                                           runtime::BulkPollElements,
-                                           GranuleOrder::Ascending,
-                                           poll,
-                                           [&](uint64_t offset, uint64_t size) {
-                                               std::ranges::fill(elements.subspan(destination + offset, size),
-                                                                 value);
-                                           });
+            return runtime::fillItems(std::span { target.elements },
+                                      destination,
+                                      count,
+                                      value,
+                                      TrapCode::OutOfBoundsTableAccess,
+                                      poll);
         }
 
         [[nodiscard]] Step tableCopy(Instruction const& instruction)
@@ -881,27 +856,14 @@ namespace
             auto const count = popAddress(countType);
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
-            auto const sourceElements = std::span<Ref const> { sourceTable.elements };
-            auto const destinationElements = std::span { destinationTable.elements };
-            if (!fits(source, count, sourceElements.size())
-                || !fits(destination, count, destinationElements.size()))
-                return trap(TrapCode::OutOfBoundsTableAccess);
-            // Granule by granule, in the order that keeps an overlapping copy within one table
-            // correct, and within a granule in the same direction, as it may overlap itself.
-            auto const order = runtime::copyOrder(source, destination);
             auto poll = granulePoll();
-            return runtime::forEachGranule(
-                count, runtime::BulkPollElements, order, poll, [&](uint64_t offset, uint64_t size) {
-                    auto const from = sourceElements.subspan(source + offset, size);
-                    auto const to = destinationElements.subspan(destination + offset, size);
-                    // A copy onto itself changes nothing, and std::ranges::copy may not overlap it.
-                    if (from.data() == to.data())
-                        return;
-                    if (order == GranuleOrder::Ascending)
-                        std::ranges::copy(from, to.begin());
-                    else
-                        std::ranges::copy_backward(from, to.end());
-                });
+            return runtime::copyItems(std::span<Ref const> { sourceTable.elements },
+                                      source,
+                                      std::span { destinationTable.elements },
+                                      destination,
+                                      count,
+                                      TrapCode::OutOfBoundsTableAccess,
+                                      poll);
         }
 
         [[nodiscard]] Step tableInit(Instruction const& instruction)
