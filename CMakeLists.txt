@@ -58,6 +58,8 @@ if(ISOLINE_TESTING)
     add_subdirectory(tests)
     # Once every directory has added its test binaries.
     isoline_write_coverage_binaries()
+    # A coverage build's report and ratchet, which reads that list.
+    isoline_add_coverage_check()
 endif()
 
 # Last, because it installs and exports library targets every directory above has created.

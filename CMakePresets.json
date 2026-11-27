@@ -386,7 +386,15 @@
                 }
             }
         },
-        { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
+        {
+            "name": "clang-coverage",
+            "inherits": "isoline-test-common",
+            "configurePreset": "clang-coverage",
+            "description": "Every test, each process writing its profile to profiles/ for isoline_coverage_check",
+            "environment": {
+                "LLVM_PROFILE_FILE": "${sourceDir}/out/clang-coverage/profiles/%p.profraw"
+            }
+        },
         {
             "name": "clang-libcxx-hardened",
             "inherits": "isoline-test-base",

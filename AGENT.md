@@ -266,6 +266,8 @@ A defect there is fixed in core-cpp, released, and re-vendored with `MODE=sync` 
 - Linux debug (default): `cmake --preset clang-asan && cmake --build --preset clang-asan` — Clang,
   Debug, AddressSanitizer + UndefinedBehaviorSanitizer, clang-tidy in the build.
 - Release: `clang-release`. Coverage: `clang-coverage` (`-fprofile-instr-generate -fcoverage-mapping`).
+  After `ctest --preset clang-coverage`, `cmake --build --preset clang-coverage --target isoline_coverage_check`
+  writes the report into `out/clang-coverage/` and holds it to `coverage-baseline.txt`, as CI does.
 - GCC: `gcc-debug`, `gcc-release`. macOS: `macos-clang` (Apple Clang). Windows: `msvc-debug`, from a Developer
   Command Prompt.
 - Cross from Linux, tests under an emulator: `clangcl-cross-debug` (Windows x64, wine) and
