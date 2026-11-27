@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <memory_resource>
 #include <utility>
@@ -17,9 +18,11 @@
 
 using isoline::compiler::CompileErrorCode;
 using isoline::compiler::machine::checkFrame;
+using isoline::compiler::machine::checkFrameSize;
 using isoline::compiler::machine::ConstantOperand;
 using isoline::compiler::machine::controlFlowGraphOf;
 using isoline::compiler::machine::EdgeTo;
+using isoline::compiler::machine::FrameLayout;
 using isoline::compiler::machine::FrameRule;
 using isoline::compiler::machine::Hotness;
 using isoline::compiler::machine::Immediate;
@@ -146,8 +149,8 @@ TEST_CASE("MachineFunction.frameRuleBoundsTheFrame")
     constexpr auto Rule = FrameRule { .bytesPerStackValue = 32, .frameOverhead = 256 };
     STATIC_CHECK(maximumFrameBytes(Rule, 0) == 256);
     STATIC_CHECK(maximumFrameBytes(Rule, 1'000) == 32'256);
-    CHECK(checkFrame(Rule, 1'000, 32'256).has_value());
-    auto const refused = checkFrame(Rule, 1'000, 32'257);
+    CHECK(checkFrameSize(Rule, 1'000, 32'256).has_value());
+    auto const refused = checkFrameSize(Rule, 1'000, 32'257);
     REQUIRE_FALSE(refused.has_value());
     CHECK(refused.error().code == CompileErrorCode::FrameTooLarge);
     CHECK(refused.error().requested == 32'257);
@@ -156,9 +159,58 @@ TEST_CASE("MachineFunction.frameRuleBoundsTheFrame")
     // A guest-sized cost saturates rather than wraps, so no frame passes by overflow.
     constexpr auto Largest = std::numeric_limits<uint64_t>::max();
     STATIC_CHECK(maximumFrameBytes(Rule, Largest / 16) == Largest);
-    CHECK(checkFrame(Rule, Largest / 16, Largest).has_value());
+    CHECK(checkFrameSize(Rule, Largest / 16, Largest).has_value());
     // A tight test-only rule, {1, 0}, refuses any frame beyond one byte per value.
-    CHECK_FALSE(checkFrame(FrameRule { .bytesPerStackValue = 1, .frameOverhead = 0 }, 8, 9).has_value());
+    CHECK_FALSE(checkFrameSize(FrameRule { .bytesPerStackValue = 1, .frameOverhead = 0 }, 8, 9).has_value());
+}
+
+TEST_CASE("MachineFunction.framesKeepTheStackAtEveryCall")
+{
+    // The frame's size, return address included, is a multiple of 16: every call (a Wasm callee, a stub,
+    // PollSlow) leaves from the frame's bottom aligned. The outgoing area holds the host convention's shadow
+    // space, and the spills lie above it.
+    constexpr auto Rule = FrameRule { .bytesPerStackValue = 32, .frameOverhead = 256 };
+    auto const& systemV = isoline::compiler::machine::testing::FakeHostConvention;
+    auto const stack = isoline::compiler::machine::testing::FakeStackRule;
+    auto const frame = [](uint64_t total, uint64_t outgoing, uint64_t spillOffset, uint64_t spills) {
+        return FrameLayout { .totalBytes = total,
+                             .calleeSaved = {},
+                             .outgoingBytes = outgoing,
+                             .spillOffset = spillOffset,
+                             .spillBytes = spills };
+    };
+    auto const isBroken = [](std::expected<void, isoline::compiler::CompileError> const& checked) {
+        return !checked.has_value() && checked.error().code == CompileErrorCode::InternalVerificationFailed
+               && checked.error().pass == "frame";
+    };
+    CHECK(checkFrame(Rule, stack, systemV, 10, frame(32, 0, 0, 16)).has_value());
+    // A frame of 8 mod 16 misaligns every call on System V.
+    CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, frame(24, 0, 0, 8))));
+    // Spills that reach into the return address, or are larger than the frame below it.
+    CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, frame(32, 0, 8, 24))));
+    CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, frame(32, 0, 0, 32))));
+    // A frame smaller than what the call pushed.
+    CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, frame(0, 0, 0, 0))));
+    // A target without an alignment rule names none.
+    auto unaligned = systemV;
+    unaligned.stackAlignment = 0;
+    CHECK(
+        isBroken(checkFrame(Rule,
+                            isoline::compiler::machine::StackRule { .alignment = 0, .returnAddressBytes = 8 },
+                            unaligned,
+                            10,
+                            frame(32, 0, 0, 16))));
+    // The size bound still comes first, as FrameTooLarge.
+    auto const tooLarge = checkFrame(Rule, stack, systemV, 0, frame(272, 0, 0, 16));
+    REQUIRE_FALSE(tooLarge.has_value());
+    CHECK(tooLarge.error().code == CompileErrorCode::FrameTooLarge);
+
+    // Microsoft x64-shaped: 32 bytes of shadow space, which the callee may write.
+    auto windows = systemV;
+    windows.shadowSpaceBytes = 32;
+    CHECK(isBroken(checkFrame(Rule, stack, windows, 10, frame(48, 0, 0, 16))));   // no shadow space
+    CHECK(isBroken(checkFrame(Rule, stack, windows, 10, frame(64, 32, 16, 16)))); // spills inside it
+    CHECK(checkFrame(Rule, stack, windows, 10, frame(64, 32, 32, 16)).has_value());
 }
 
 TEST_CASE("MachineFunction.fakeTargetRows")
@@ -169,6 +221,10 @@ TEST_CASE("MachineFunction.fakeTargetRows")
     CHECK(target.allocatable(RegisterClass::General).size() == 2);
     CHECK(target.allocatable(RegisterClass::Float).size() == 2);
     CHECK(target.frameRule() == isoline::compiler::machine::testing::FakeFrameRule);
+    CHECK(target.stackRule() == isoline::compiler::machine::testing::FakeStackRule);
+    CHECK(target.conventionRow(isoline::compiler::machine::Convention::WasmInternal).convention
+          == isoline::compiler::machine::Convention::WasmInternal);
+    CHECK(target.conventionRow(isoline::compiler::machine::Convention::SystemV).shadowSpaceBytes == 0);
     CHECK(FakeTarget { FrameRule { .bytesPerStackValue = 1, .frameOverhead = 0 } }.frameRule().frameOverhead
           == 0);
     auto const divide = target.constraints(opcodeOf(FakeOpcode::Divide));

@@ -40,6 +40,7 @@ TEST_CASE("CompileError.tableIsComplete")
         CompileErrorCode::TooManyBlockParameters, CompileErrorCode::FrameTooLarge,
         CompileErrorCode::ArtifactTooLarge,       CompileErrorCode::BranchOutOfRange,
         CompileErrorCode::PoolTooLarge,           CompileErrorCode::TooManyBranchArguments,
+        CompileErrorCode::LiveSetTooLarge,
     };
     for (auto const& row: CompileErrorTable)
     {
@@ -92,6 +93,7 @@ TEST_CASE("CompileError.everyCodeHasItsExactText")
         { .code = CompileErrorCode::FrameTooLarge, .text = "frame too large" },
         { .code = CompileErrorCode::ArtifactTooLarge, .text = "compiled code too large" },
         { .code = CompileErrorCode::BranchOutOfRange, .text = "branch out of range" },
+        { .code = CompileErrorCode::LiveSetTooLarge, .text = "too many values live across blocks" },
         { .code = CompileErrorCode::Cancelled, .text = "compile cancelled" },
         { .code = CompileErrorCode::InternalVerificationFailed,
           .text = "internal compiler error: ill-formed intermediate code" },

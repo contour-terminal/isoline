@@ -102,13 +102,23 @@ struct Immediate
     [[nodiscard]] constexpr bool operator==(Immediate const&) const noexcept = default;
 };
 
-/// A memory operand: base + index × scale + displacement. Its registers are read (uses) by the instruction.
+/// How a memory operand's index is widened before it is scaled.
+enum class IndexExtension : uint8_t
+{
+    None,         ///< The register's full width.
+    ZeroExtend32, ///< Its low 32 bits, zero-extended (arm64's uxtw; a memory32 index).
+    SignExtend32, ///< Its low 32 bits, sign-extended (arm64's sxtw).
+};
+
+/// A memory operand: base + extend(index) × scale + displacement. Its registers are read (uses) by the
+/// instruction.
 struct MemoryOperand
 {
     RegisterName base {};     ///< The base register; kind None for none.
     RegisterName index {};    ///< The index register; kind None for none.
     uint8_t scale = 1;        ///< The index's scale: 1, 2, 4 or 8.
     int32_t displacement = 0; ///< The displacement; a larger offset is added by an instruction of its own.
+    IndexExtension extension = IndexExtension::None; ///< How the index is widened.
 
     /// Whether both are the same operand.
     [[nodiscard]] constexpr bool operator==(MemoryOperand const&) const noexcept = default;
@@ -185,11 +195,20 @@ struct MachineBlock
     Hotness hotness = Hotness::Normal;       ///< Whether it is expected to run.
 };
 
-/// What a function's frame came to, as the register allocator decides it and the encoder lays it out.
+/// What a function's frame came to, as the register allocator decides it and the encoder lays it out. From
+/// the bottom (the stack pointer every call leaves from) up: the outgoing area (every call's stack arguments,
+/// and the host convention's shadow space, which a callee may write), the spill slots, the callee-saved
+/// registers, and at the top what the call into the function pushed (x86-64's return address).
 struct FrameLayout
 {
-    uint64_t totalBytes = 0;    ///< The frame's size, within the target's FrameRule (checkFrame()).
+    /// The frame's size, from the caller's stack pointer at its call down to the frame's bottom: what the
+    /// call pushed included. Within the target's FrameRule, and a multiple of its stack alignment
+    /// (checkFrame()).
+    uint64_t totalBytes = 0;
     RegisterSet calleeSaved {}; ///< The callee-saved registers the function uses, which its prologue saves.
+    uint64_t outgoingBytes = 0; ///< The outgoing area at the frame's bottom, shadow space included.
+    uint64_t spillOffset = 0;   ///< Where the spill slots begin, from the frame's bottom.
+    uint64_t spillBytes = 0;    ///< How many bytes the spill slots take.
 
     /// Whether both lay a frame out alike.
     [[nodiscard]] bool operator==(FrameLayout const&) const noexcept = default;

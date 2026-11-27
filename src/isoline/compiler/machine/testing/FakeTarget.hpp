@@ -60,7 +60,7 @@ inline constexpr auto FakeFloatRegisters = std::to_array<PhysicalRegister>({
 });
 
 /// FakeTarget's internal convention: both registers of each class carry arguments, the first of each a
-/// result; nothing is callee-saved.
+/// result, the rest of the results in the caller's area; nothing is callee-saved.
 inline constexpr auto FakeConvention = ConventionRow {
     .convention = Convention::WasmInternal,
     .integerArguments = FakeGeneralRegisters,
@@ -72,8 +72,33 @@ inline constexpr auto FakeConvention = ConventionRow {
     .shadowSpaceBytes = 0,
     .stackSlotBytes = 8,
     .stackAlignment = 16,
+    .aggregateResults = AggregateResults::SplitAcrossRegisters,
+    .aggregateRegisterBytes = 0,
     .resultAreaPointer = std::nullopt,
+    .pointerReturned = PointerReturned::No,
 };
+
+/// FakeTarget's host convention, of System V's shape over its registers: g1 callee-saved, two words of
+/// results in registers, a larger aggregate through a hidden pointer in g0, given back in g0.
+inline constexpr auto FakeHostConvention = ConventionRow {
+    .convention = Convention::SystemV,
+    .integerArguments = FakeGeneralRegisters,
+    .floatArguments = FakeFloatRegisters,
+    .integerResults = FakeGeneralRegisters,
+    .floatResults = FakeFloatRegisters,
+    .calleeSaved = RegisterSet::of({ FakeGeneralRegisters[1] }),
+    .slots = ArgumentSlots::Independent,
+    .shadowSpaceBytes = 0,
+    .stackSlotBytes = 8,
+    .stackAlignment = 16,
+    .aggregateResults = AggregateResults::HiddenPointerBeyond,
+    .aggregateRegisterBytes = 16,
+    .resultAreaPointer = std::nullopt,
+    .pointerReturned = PointerReturned::Yes,
+};
+
+/// FakeTarget's stack rule: x86-64's.
+inline constexpr auto FakeStackRule = StackRule { .alignment = 16, .returnAddressBytes = 8 };
 
 /// FakeTarget's frame rule unless a test asks for another: x86-64's numbers.
 inline constexpr auto FakeFrameRule = FrameRule { .bytesPerStackValue = 32, .frameOverhead = 256 };
@@ -273,6 +298,14 @@ class FakeTarget final: public ITarget
 
     [[nodiscard]] FrameRule frameRule() const noexcept override { return _rule; }
 
+    [[nodiscard]] StackRule stackRule() const noexcept override { return FakeStackRule; }
+
+    [[nodiscard]] ConventionRow const& conventionRow(Convention convention) const override
+    {
+        Require(convention == Convention::WasmInternal || convention == Convention::SystemV);
+        return convention == Convention::WasmInternal ? FakeConvention : FakeHostConvention;
+    }
+
     [[nodiscard]] std::span<PhysicalRegister const> allocatable(
         RegisterClass registerClass) const noexcept override
     {
@@ -308,7 +341,8 @@ class FakeTarget final: public ITarget
     void emitEntryTrampoline(CodeBuffer& /*buffer*/) const override {}
 
   private:
-    TargetDescription _description {}; ///< A placeholder: the fake target generates for no machine.
+    /// A placeholder (x86-64, System V): the fake target generates for no machine.
+    TargetDescription _description {};
     FrameRule _rule;
 };
 

@@ -53,6 +53,13 @@ class BlockOrder
     std::pmr::vector<uint32_t> _positions; ///< Per block, its position, or intermediate::Unnumbered.
 };
 
+/// The blocks of @p graph reachable from its entry, in reverse postorder of a depth-first walk that visits
+/// successors in their edges' order. Iterative.
+/// @param graph The graph.
+/// @param memory What the order and the walk's stack allocate from.
+[[nodiscard]] std::pmr::vector<uint32_t> reversePostorderOf(intermediate::ControlFlowGraph const& graph,
+                                                            std::pmr::memory_resource& memory);
+
 /// Lays out @p function's reachable blocks: the entry first, every loop contiguous with its header first,
 /// cold blocks (and loops whose header is cold) at the end of their innermost enclosing loop, or of the
 /// function for those in none; otherwise in reverse postorder. Verifies the result (verifyContiguousLoops()).

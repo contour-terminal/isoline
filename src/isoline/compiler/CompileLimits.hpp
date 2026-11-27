@@ -41,6 +41,12 @@ struct CompileLimits
     /// pool index addresses (intermediate::MaxPoolEntries), and nothing larger is honoured.
     uint64_t maxPoolEntries = std::numeric_limits<uint32_t>::max();
 
+    /// The most live-set bits register allocation's liveness may take for a function, refused
+    /// LiveSetTooLarge before any of them is built: one bit per block for each value live across a block
+    /// boundary (machine::computeLiveIntervals()). Liveness is the one analysis whose size is the product of
+    /// two input dimensions, values × blocks, so it takes a cap of its own: 2^31 bits is 256 MiB of sets,
+    /// which no function of a module within the default caps that is not built to reach it comes near.
+    uint64_t maxLiveSetBits = uint64_t { 1 } << 31U;
     /// The artifact's cap per byte of the module (ValidatedModule's source bytes), checked after each
     /// function, refused ArtifactTooLarge: the module's code may not exceed
     /// max(artifactBytesFloor, artifactBytesPerModuleByte × source bytes).

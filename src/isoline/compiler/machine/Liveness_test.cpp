@@ -4,17 +4,24 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <memory_resource>
 #include <ranges>
 #include <span>
 #include <utility>
 #include <vector>
 
+#include <isoline/compiler/CompileConfig.hpp>
+#include <isoline/compiler/CompileError.hpp>
+#include <isoline/compiler/CompileLimits.hpp>
 #include <isoline/compiler/machine/Linearize.hpp>
 #include <isoline/compiler/machine/Liveness.hpp>
 #include <isoline/compiler/machine/MachineFunction.hpp>
 #include <isoline/compiler/machine/testing/FakeTarget.hpp>
 
+using isoline::compiler::CompileCancellation;
+using isoline::compiler::CompileErrorCode;
+using isoline::compiler::CompileLimits;
 using isoline::compiler::machine::BlockId;
 using isoline::compiler::machine::BlockOrder;
 using isoline::compiler::machine::computeLiveIntervals;
@@ -120,10 +127,13 @@ struct Analysed
     Analysed(MachineFunction const& function, std::pmr::memory_resource& memory):
         loops { function, memory },
         order { linearize(function, loops.loops, memory).value() },
-        live { computeLiveIntervals(function, order, loops.loops, memory) }
+        live {
+            computeLiveIntervals(function, order, loops.loops, CompileLimits {}, cancellation, memory).value()
+        }
     {
     }
 
+    CompileCancellation cancellation;
     LoopsOf loops;
     BlockOrder order;
     LiveIntervals live;
@@ -394,4 +404,267 @@ TEST_CASE("Liveness.memoryOperandsReadTheirRegisters")
     CHECK(usesOf(analysed.live, index) == std::vector<uint32_t> { 4, 6 });
     CHECK(rangesOf(analysed.live, loaded) == std::vector<LiveRange> { { 6, 8 } });
     CHECK(analysed.live.intervals.size() == 3);
+}
+
+namespace
+{
+
+/// Whether @p reg is live over all of each of @p blocks.
+bool coversBlocks(Analysed const& analysed, VirtualRegister reg, std::initializer_list<BlockId> blocks)
+{
+    return std::ranges::all_of(
+        blocks, [&](BlockId block) { return coversRange(analysed.live, reg, analysed.rangeOf(block)); });
+}
+
+} // namespace
+
+TEST_CASE("Liveness.coldBlockPlacedAfterItsSuccessor")
+{
+    // 0: v, c; branch c → 1 (cold), 2. 1 (cold): → 2. 2: x = v + v; return. The cold block is laid out last,
+    // after the block it jumps to: a forward edge that points backwards in the layout. v is live through it.
+    std::pmr::monotonic_buffer_resource memory;
+    auto function = MachineFunction { memory };
+    auto const entry = function.createBlock(Hotness::Normal);
+    auto const cold = function.createBlock(Hotness::Cold);
+    auto const join = function.createBlock(Hotness::Normal);
+    auto const v = general(function);
+    auto const c = general(function);
+    auto const x = general(function);
+    constant(function, entry, v);
+    constant(function, entry, c);
+    terminate(function, entry, to(cold, join), c);
+    terminate(function, cold, to(join));
+    add(function, join, x, v, v);
+    terminate(function, join, {});
+
+    auto const analysed = Analysed { function, memory };
+    REQUIRE(analysed.order.blocks().back() == cold);
+    CHECK(coversBlocks(analysed, v, { cold }));
+    // Nothing else is live in the cold block: c dies at the entry's branch.
+    CHECK_FALSE(touchesRange(analysed.live, c, analysed.rangeOf(cold)));
+}
+
+TEST_CASE("Liveness.lateColdBlockOfTheLinearizeShape")
+{
+    // Linearize.coldBlocksGoToTheEndOfTheirInnermostLoop's function, laid out 0 1 3 4 2 5 7 6: v, defined in
+    // 0 and read in 7, is live through the cold block 6 that follows 7 in the layout, and through the cold
+    // block 2 inside the loop.
+    std::pmr::monotonic_buffer_resource memory;
+    auto function = MachineFunction { memory };
+    auto blocks = std::vector<BlockId> {};
+    for (auto const index: std::views::iota(0, 8))
+        blocks.push_back(function.createBlock(index == 2 || index == 6 ? Hotness::Cold : Hotness::Normal));
+    auto const v = general(function);
+    auto const c = general(function);
+    auto const x = general(function);
+    constant(function, blocks[0], v);
+    constant(function, blocks[0], c);
+    terminate(function, blocks[0], to(blocks[1]));
+    terminate(function, blocks[1], to(blocks[2], blocks[3]), c);
+    terminate(function, blocks[2], to(blocks[4]));
+    terminate(function, blocks[3], to(blocks[4]));
+    terminate(function, blocks[4], to(blocks[1], blocks[5]), c);
+    terminate(function, blocks[5], to(blocks[6], blocks[7]), c);
+    terminate(function, blocks[6], to(blocks[7]));
+    add(function, blocks[7], x, v, v);
+    terminate(function, blocks[7], {});
+
+    auto const analysed = Analysed { function, memory };
+    REQUIRE(analysed.order.blocks().back() == blocks[6]);
+    CHECK(coversBlocks(analysed, v, { blocks[1], blocks[2], blocks[3], blocks[4], blocks[5], blocks[6] }));
+}
+
+TEST_CASE("Liveness.coldLoopPlacedAfterItsExit")
+{
+    // Linearize.coldLoopsMoveWhole's function: 0 → 1, 3; 1 (cold header) → 2; 2 → 1, 3; 3 reads v. Laid out
+    // 0 3 1 2, the edge 2 → 3 points backwards; v is live through the whole cold loop.
+    std::pmr::monotonic_buffer_resource memory;
+    auto function = MachineFunction { memory };
+    auto const entry = function.createBlock(Hotness::Normal);
+    auto const header = function.createBlock(Hotness::Cold);
+    auto const body = function.createBlock(Hotness::Normal);
+    auto const exit = function.createBlock(Hotness::Normal);
+    auto const v = general(function);
+    auto const c = general(function);
+    auto const x = general(function);
+    constant(function, entry, v);
+    constant(function, entry, c);
+    terminate(function, entry, to(header, exit), c);
+    terminate(function, header, to(body));
+    terminate(function, body, to(header, exit), c);
+    add(function, exit, x, v, v);
+    terminate(function, exit, {});
+
+    auto const analysed = Analysed { function, memory };
+    REQUIRE(analysed.order.blocks().back() == body);
+    CHECK(coversBlocks(analysed, v, { header, body }));
+    CHECK(coversBlocks(analysed, c, { header, body }));
+}
+
+TEST_CASE("Liveness.branchHintedJoin")
+{
+    // if (c) [[unlikely]] { y = v } else { y = u }: the unlikely arm goes last, after the join it passes y
+    // to; the join's parameter and the arm's operand are live where the edges need them.
+    std::pmr::monotonic_buffer_resource memory;
+    auto function = MachineFunction { memory };
+    auto const entry = function.createBlock(Hotness::Normal);
+    auto const unlikely = function.createBlock(Hotness::Cold);
+    auto const likely = function.createBlock(Hotness::Normal);
+    auto const join = function.createBlock(Hotness::Normal);
+    auto const v = general(function);
+    auto const u = general(function);
+    auto const c = general(function);
+    auto const p = general(function);
+    auto const w = general(function);
+    constant(function, entry, v);
+    constant(function, entry, u);
+    constant(function, entry, c);
+    terminate(function, entry, to(unlikely, likely), c);
+    terminate(function, unlikely, to(join, std::array { v }));
+    terminate(function, likely, to(join, std::array { u }));
+    function.setParameters(join, std::array { p });
+    add(function, join, w, p, u);
+    terminate(function, join, {});
+
+    auto const analysed = Analysed { function, memory };
+    REQUIRE(analysed.order.blocks().back() == unlikely);
+    CHECK(coversBlocks(analysed, v, { unlikely }));
+    // u is read in the join, so it is live through the unlikely arm too.
+    CHECK(coversBlocks(analysed, u, { likely, unlikely }));
+    // The edge's argument is used at the arm's terminator (M7).
+    auto const& uses = analysed.live.intervals[std::to_underlying(v)].usePositions;
+    CHECK(std::ranges::find(uses, analysed.rangeOf(unlikely).end - 2) != uses.end());
+}
+
+TEST_CASE("Liveness.refusesPastTheLiveSetCap")
+{
+    // The reviewer's shape, scaled down: K values read inside N nested loops need K × blocks live-set bits.
+    // With the cap below that, liveness refuses before it works, naming what it needed.
+    constexpr auto Depth = uint32_t { 50 };
+    constexpr auto Values = uint32_t { 40 };
+    std::pmr::monotonic_buffer_resource memory;
+    auto function = MachineFunction { memory };
+    auto const entry = function.createBlock(Hotness::Normal);
+    auto headers = std::vector<BlockId> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, Depth))
+        headers.push_back(function.createBlock(Hotness::Normal));
+    auto const done = function.createBlock(Hotness::Normal);
+    auto values = std::vector<VirtualRegister> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, Values))
+    {
+        values.push_back(general(function));
+        constant(function, entry, values.back());
+    }
+    auto const c = general(function);
+    constant(function, entry, c);
+    terminate(function, entry, to(headers.front()));
+    for (auto const index: std::views::iota(uint32_t { 0 }, Depth))
+    {
+        auto const sum = general(function);
+        add(function, headers[index], sum, values[index % Values], values[(index + 1) % Values]);
+        auto const next = index + 1 < Depth ? headers[index + 1] : done;
+        terminate(function, headers[index], to(headers[index], next), c);
+    }
+    terminate(function, done, {});
+
+    CompileCancellation cancellation;
+    auto const loops = LoopsOf { function, memory };
+    auto const order = linearize(function, loops.loops, memory);
+    REQUIRE(order.has_value());
+    auto const blockCount = uint64_t { Depth + 2 };
+    auto const needed = blockCount * (Values + 1);
+    auto limits = CompileLimits {};
+    limits.maxLiveSetBits = needed - 1;
+    auto const refused = computeLiveIntervals(function, *order, loops.loops, limits, cancellation, memory);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == CompileErrorCode::LiveSetTooLarge);
+    CHECK(refused.error().requested == needed);
+    CHECK(refused.error().limit == needed - 1);
+    limits.maxLiveSetBits = needed;
+    CHECK(computeLiveIntervals(function, *order, loops.loops, limits, cancellation, memory).has_value());
+}
+
+TEST_CASE("Liveness.pollsTheCancellation")
+{
+    // Cancelled before it starts, liveness stops at its first poll, every 4'096 blocks counted across the
+    // fixpoint and the walk: in the fixpoint for 5'000 blocks in a line, in the walk for 3'000 (the fixpoint
+    // takes each once). A function of fewer blocks finishes.
+    for (auto const length: { 5'000U, 3'000U, 1'000U })
+    {
+        INFO(length << " blocks");
+        std::pmr::monotonic_buffer_resource memory;
+        auto function = MachineFunction { memory };
+        auto blocks = std::vector<BlockId> {};
+        for ([[maybe_unused]] auto const index: std::views::iota(0U, length))
+            blocks.push_back(function.createBlock(Hotness::Normal));
+        for (auto const index: std::views::iota(0U, length))
+        {
+            if (index + 1 < length)
+                terminate(function, blocks[index], to(blocks[index + 1]));
+            else
+                terminate(function, blocks[index], {});
+        }
+        auto const loops = LoopsOf { function, memory };
+        auto const order = linearize(function, loops.loops, memory);
+        REQUIRE(order.has_value());
+        CompileCancellation cancellation;
+        cancellation.cancel();
+        auto const live =
+            computeLiveIntervals(function, *order, loops.loops, CompileLimits {}, cancellation, memory);
+        if (length < 4'096 / 2)
+            CHECK(live.has_value());
+        else
+        {
+            REQUIRE_FALSE(live.has_value());
+            CHECK(live.error().code == CompileErrorCode::Cancelled);
+        }
+    }
+}
+
+TEST_CASE("Liveness.refusesIllFormedFunctions")
+{
+    // A value defined in two blocks, and a layout that splits a loop, are compiler bugs: refused, never run.
+    std::pmr::monotonic_buffer_resource memory;
+    CompileCancellation cancellation;
+    SECTION("a value redefined in another block")
+    {
+        auto function = MachineFunction { memory };
+        auto const entry = function.createBlock(Hotness::Normal);
+        auto const next = function.createBlock(Hotness::Normal);
+        auto const v = general(function);
+        constant(function, entry, v);
+        terminate(function, entry, to(next));
+        constant(function, next, v);
+        terminate(function, next, {}, v);
+        auto const loops = LoopsOf { function, memory };
+        auto const order = linearize(function, loops.loops, memory);
+        REQUIRE(order.has_value());
+        auto const refused =
+            computeLiveIntervals(function, *order, loops.loops, CompileLimits {}, cancellation, memory);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == CompileErrorCode::InternalVerificationFailed);
+        CHECK(refused.error().pass == "liveness");
+    }
+    SECTION("a layout whose loop is not contiguous")
+    {
+        // 0 → 1; 1 → 2, 3; 2 → 1; 3 returns; laid out 0 1 3 2.
+        auto function = MachineFunction { memory };
+        auto const entry = function.createBlock(Hotness::Normal);
+        auto const header = function.createBlock(Hotness::Normal);
+        auto const body = function.createBlock(Hotness::Normal);
+        auto const exit = function.createBlock(Hotness::Normal);
+        auto const c = general(function);
+        constant(function, entry, c);
+        terminate(function, entry, to(header));
+        terminate(function, header, to(body, exit), c);
+        terminate(function, body, to(header));
+        terminate(function, exit, {});
+        auto const loops = LoopsOf { function, memory };
+        auto blocks = std::pmr::vector<BlockId> { { entry, header, exit, body }, &memory };
+        auto const order = BlockOrder { std::move(blocks), 4, memory };
+        auto const refused =
+            computeLiveIntervals(function, order, loops.loops, CompileLimits {}, cancellation, memory);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == CompileErrorCode::InternalVerificationFailed);
+    }
 }

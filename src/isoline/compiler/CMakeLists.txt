@@ -21,6 +21,7 @@ target_sources(isoline_core
         machine/Linearize.cpp
         machine/Liveness.cpp
         machine/MachineFunction.cpp
+        machine/MachineVerifier.cpp
         optimization/BoundsChecks.cpp
         optimization/ConstantFolding.cpp
         optimization/ControlFlow.cpp
@@ -53,6 +54,7 @@ target_sources(isoline_core
             machine/Linearize.hpp
             machine/Liveness.hpp
             machine/MachineFunction.hpp
+            machine/MachineVerifier.hpp
             machine/Registers.hpp
             machine/Target.hpp
             machine/TargetDescription.hpp

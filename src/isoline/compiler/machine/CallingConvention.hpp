@@ -48,23 +48,56 @@ enum class ArgumentSlots : uint8_t
     Shared,
 };
 
-/// One calling convention of a target.
+/// How a convention returns a call's results.
+enum class AggregateResults : uint8_t
+{
+    /// Value by value: each takes the next result register of its class, and once a class's run out, the
+    /// next slot of the caller's result area (Isoline's WasmInternal conventions).
+    SplitAcrossRegisters,
+    /// As one aggregate of stackSlotBytes words (the host-call boundary passes only 32- and 64-bit integers
+    /// and pointers, P5 Decision "Calling conventions are rows"): in the result registers, each value in the
+    /// next of its class, when the aggregate takes at most aggregateRegisterBytes; otherwise wholly in
+    /// memory, through a pointer to the caller's area passed in resultAreaPointer, or as a hidden first
+    /// argument when the row has none (which shifts the arguments by one), and given back in the first
+    /// integer result register when pointerReturned says so. System V AMD64: 16 bytes, rax and rdx or xmm0
+    /// and xmm1, the pointer in rdi and back in rax. Microsoft x64: 8 bytes, rax or xmm0, the pointer in rcx
+    /// and back in rax. AAPCS64: 16 bytes, the pointer in x8, not given back.
+    HiddenPointerBeyond,
+};
+
+/// Whether a callee gives the hidden result pointer back.
+enum class PointerReturned : uint8_t
+{
+    No,  ///< It does not (AAPCS64's x8).
+    Yes, ///< In the first integer result register (System V and Microsoft x64's rax).
+};
+
+/// One calling convention of a target. Every field is required: a row names each, so that no convention
+/// inherits a value meant for another.
 struct ConventionRow
 {
-    Convention convention = Convention::WasmInternal;      ///< Which convention this is.
-    std::span<PhysicalRegister const> integerArguments {}; ///< General-class argument registers, in order.
-    std::span<PhysicalRegister const> floatArguments {};   ///< Float-class argument registers, in order.
-    std::span<PhysicalRegister const> integerResults {};   ///< General-class result registers, in order.
-    std::span<PhysicalRegister const> floatResults {};     ///< Float-class result registers, in order.
-    RegisterSet calleeSaved {}; ///< The registers a callee preserves; every other one a call clobbers.
-    ArgumentSlots slots = ArgumentSlots::Independent; ///< How the classes share argument registers.
-    uint32_t shadowSpaceBytes = 0; ///< Stack the caller reserves below the arguments for the callee.
-    uint32_t stackSlotBytes = 8;   ///< The bytes one stack argument or stacked result takes.
-    uint32_t stackAlignment = 16;  ///< The stack pointer's alignment at a call.
-    /// Where the pointer to a caller-provided result area is passed, when the results outnumber the result
-    /// registers (arm64's x8); none: as a hidden first argument, a Pointer the caller prepends to the
-    /// argument types.
-    std::optional<PhysicalRegister> resultAreaPointer {};
+    Convention convention;                              ///< Which convention this is.
+    std::span<PhysicalRegister const> integerArguments; ///< General-class argument registers, in order.
+    std::span<PhysicalRegister const> floatArguments;   ///< Float-class argument registers, in order.
+    std::span<PhysicalRegister const> integerResults;   ///< General-class result registers, in order.
+    std::span<PhysicalRegister const> floatResults;     ///< Float-class result registers, in order.
+    /// The registers a callee preserves; every other one a call clobbers. A set names registers, not widths:
+    /// how many bytes a save takes is the target's (Microsoft x64 preserves xmm6–15 whole, 128 bits; AAPCS64
+    /// only the low 64 bits of v8–v15, so a V128 value lives across no call in one, P5b's F9).
+    RegisterSet calleeSaved;
+    ArgumentSlots slots;       ///< How the classes share argument registers.
+    uint32_t shadowSpaceBytes; ///< Stack the caller reserves at the bottom of its frame for the callee.
+    uint32_t stackSlotBytes;   ///< The bytes one stack argument or result-area value takes.
+    /// The stack pointer's alignment wherever the convention requires it: at every call on x86-64 (the frame
+    /// may be misaligned between calls), at every instruction boundary on arm64, where the hardware checks
+    /// sp. A frame keeps it by its size (checkFrame()), since every call leaves from the frame's bottom.
+    uint32_t stackAlignment;
+    AggregateResults aggregateResults; ///< How the results are returned.
+    /// HiddenPointerBeyond: the most bytes of results returned in registers; unused otherwise.
+    uint32_t aggregateRegisterBytes;
+    /// Where the pointer to the result area is passed (arm64's x8); none: as a hidden first argument.
+    std::optional<PhysicalRegister> resultAreaPointer;
+    PointerReturned pointerReturned; ///< HiddenPointerBeyond: whether the callee gives the pointer back.
 };
 
 /// Where a convention places one argument or result.
@@ -79,6 +112,14 @@ struct StackOffset
 /// Where one argument or result goes: a register, or a place in memory.
 using ValueLocation = std::variant<PhysicalRegister, StackOffset>;
 
+/// Where a call's results go beyond registers.
+enum class ResultArea : uint8_t
+{
+    None,          ///< Every result is in a register.
+    CallerArea,    ///< SplitAcrossRegisters: the results past the registers, in the caller's area.
+    HiddenPointer, ///< HiddenPointerBeyond: every result, in memory through the hidden pointer.
+};
+
 /// Where a convention places a call's arguments, or its results.
 struct Assignment
 {
@@ -87,6 +128,20 @@ struct Assignment
     /// (shadow space included, rounded to the stack alignment); for results the result area (0 when every
     /// result is in a register).
     uint32_t memoryBytes = 0;
+    ResultArea area = ResultArea::None; ///< For results: where they go beyond registers.
+};
+
+/// Where a convention places a whole call: its results, and its arguments with the hidden result pointer,
+/// when there is one, as the first.
+struct CallAssignment
+{
+    Assignment arguments; ///< The arguments; the hidden pointer's location first when the results take one.
+    Assignment results;   ///< The results.
+    /// Where the pointer to the result area is passed, when the results go through one (CallerArea or
+    /// HiddenPointer): the row's resultAreaPointer, or the first argument's place.
+    std::optional<ValueLocation> resultPointer;
+    /// Where the callee gives the hidden pointer back, when it does.
+    std::optional<PhysicalRegister> returnedPointer;
 };
 
 /// The register class of a value of @p type: General for I32, I64, Ref and Pointer, Float for F32 and F64.
@@ -105,15 +160,26 @@ struct Assignment
                                          std::span<intermediate::Type const> types,
                                          std::pmr::memory_resource& memory);
 
-/// Places the results of @p types under @p row: the result registers of each value's class in order, and
-/// once a class's registers run out, the result area in stackSlotBytes slots.
+/// Places the results of @p types under @p row, as its AggregateResults says.
 /// @param row The convention.
 /// @param types The results' types, in order.
 /// @param memory What the assignment allocates from.
-/// @return Each result's place, and the result area's size (0 when all are in registers).
+/// @return Each result's place, the result area's size (0 when all are in registers) and its kind.
 [[nodiscard]] Assignment assignResults(ConventionRow const& row,
                                        std::span<intermediate::Type const> types,
                                        std::pmr::memory_resource& memory);
+
+/// Places a whole call under @p row: its results, then its arguments, the hidden result pointer first when
+/// the results go through one and the row passes it as an argument (Microsoft x64 shifts the arguments by
+/// one; System V by one integer register; a row with resultAreaPointer shifts nothing).
+/// @param row The convention.
+/// @param parameters The arguments' types, in order, without the hidden pointer.
+/// @param results The results' types, in order.
+/// @param memory What the assignment allocates from.
+[[nodiscard]] CallAssignment assignCall(ConventionRow const& row,
+                                        std::span<intermediate::Type const> parameters,
+                                        std::span<intermediate::Type const> results,
+                                        std::pmr::memory_resource& memory);
 
 /// Which convention the host of one (architecture, ABI) uses.
 struct HostConventionRow

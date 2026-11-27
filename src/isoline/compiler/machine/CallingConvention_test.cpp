@@ -3,6 +3,8 @@
 
 #include <array>
 #include <memory_resource>
+#include <optional>
+#include <span>
 #include <variant>
 #include <vector>
 
@@ -15,14 +17,18 @@ using isoline::compiler::intermediate::Type;
 using isoline::compiler::machine::Architecture;
 using isoline::compiler::machine::ArgumentSlots;
 using isoline::compiler::machine::assignArguments;
+using isoline::compiler::machine::assignCall;
 using isoline::compiler::machine::assignResults;
 using isoline::compiler::machine::Convention;
+using isoline::compiler::machine::ConventionRow;
 using isoline::compiler::machine::CpuFeatures;
 using isoline::compiler::machine::hasHostConvention;
 using isoline::compiler::machine::hostConvention;
 using isoline::compiler::machine::OperatingSystemAbi;
 using isoline::compiler::machine::PhysicalRegister;
+using isoline::compiler::machine::PointerReturned;
 using isoline::compiler::machine::RegisterClass;
+using isoline::compiler::machine::ResultArea;
 using isoline::compiler::machine::StackOffset;
 using isoline::compiler::machine::TargetDescription;
 using isoline::compiler::machine::ValueLocation;
@@ -130,4 +136,84 @@ TEST_CASE("CallingConvention.hostConventionFollowsTheAbiRow")
     CHECK(hasHostConvention(x64(OperatingSystemAbi::Apple)));
     CHECK_FALSE(hasHostConvention(TargetDescription {
         .architecture = Architecture::Arm64, .abi = OperatingSystemAbi::SystemV, .features = {} }));
+}
+
+namespace
+{
+
+/// A Microsoft x64-shaped row over FakeTarget's registers: shared slots, 16 bytes of shadow space, one word
+/// of results in registers, more through a hidden pointer passed first and given back.
+ConventionRow windowsShaped()
+{
+    auto row = isoline::compiler::machine::testing::FakeHostConvention;
+    row.convention = Convention::Windows64;
+    row.slots = ArgumentSlots::Shared;
+    row.shadowSpaceBytes = 16;
+    row.integerResults = std::span { isoline::compiler::machine::testing::FakeGeneralRegisters }.first(1);
+    row.floatResults = std::span { isoline::compiler::machine::testing::FakeFloatRegisters }.first(1);
+    row.aggregateRegisterBytes = 8;
+    return row;
+}
+
+} // namespace
+
+TEST_CASE("CallingConvention.aggregateResultsFollowTheRow")
+{
+    std::pmr::monotonic_buffer_resource memory;
+    auto const& systemV = isoline::compiler::machine::testing::FakeHostConvention;
+
+    SECTION("WasmInternal splits across registers, the rest in the caller's area")
+    {
+        auto const results = assignResults(FakeConvention, std::to_array({ Type::I64, Type::I64 }), memory);
+        CHECK(locationsOf(results) == std::vector<ValueLocation> { g(0), stack(0) });
+        CHECK(results.area == ResultArea::CallerArea);
+    }
+    SECTION("System V returns two words in registers")
+    {
+        auto const twoWords = assignResults(systemV, std::to_array({ Type::I64, Type::I64 }), memory);
+        CHECK(locationsOf(twoWords) == std::vector<ValueLocation> { g(0), g(1) });
+        CHECK(twoWords.area == ResultArea::None);
+        auto const mixed = assignResults(systemV, std::to_array({ Type::I64, Type::F64 }), memory);
+        CHECK(locationsOf(mixed) == std::vector<ValueLocation> { g(0), f(0) });
+    }
+    SECTION("System V returns three words through a hidden pointer in the first integer argument")
+    {
+        auto const call = assignCall(systemV,
+                                     std::to_array({ Type::I32, Type::F64 }),
+                                     std::to_array({ Type::I64, Type::I64, Type::I64 }),
+                                     memory);
+        CHECK(call.results.area == ResultArea::HiddenPointer);
+        CHECK(locationsOf(call.results) == std::vector<ValueLocation> { stack(0), stack(8), stack(16) });
+        CHECK(call.results.memoryBytes == 24);
+        CHECK(locationsOf(call.arguments) == std::vector<ValueLocation> { g(0), g(1), f(0) });
+        CHECK(call.resultPointer == g(0));
+        CHECK(call.returnedPointer == std::get<PhysicalRegister>(g(0)));
+    }
+    SECTION("Microsoft x64 returns anything past one word through a hidden pointer, shifting the arguments")
+    {
+        auto const row = windowsShaped();
+        auto const oneWord =
+            assignCall(row, std::to_array({ Type::F64 }), std::to_array({ Type::I64 }), memory);
+        CHECK(oneWord.results.area == ResultArea::None);
+        CHECK(locationsOf(oneWord.arguments) == std::vector<ValueLocation> { f(0) });
+        CHECK(oneWord.resultPointer == std::nullopt);
+        auto const twoWords = assignCall(
+            row, std::to_array({ Type::F64, Type::I32 }), std::to_array({ Type::I64, Type::I64 }), memory);
+        CHECK(twoWords.results.area == ResultArea::HiddenPointer);
+        // The pointer takes position 0, so the f64 moves to the second float register and the i32 to the
+        // stack.
+        CHECK(locationsOf(twoWords.arguments) == std::vector<ValueLocation> { g(0), f(1), stack(16) });
+        CHECK(twoWords.returnedPointer == std::get<PhysicalRegister>(g(0)));
+    }
+    SECTION("an AAPCS64-shaped row passes the pointer in its own register and shifts nothing")
+    {
+        auto row = systemV;
+        row.resultAreaPointer = PhysicalRegister { .registerClass = RegisterClass::General, .number = 1 };
+        row.pointerReturned = PointerReturned::No;
+        auto const call = assignCall(
+            row, std::to_array({ Type::I32 }), std::to_array({ Type::I64, Type::I64, Type::I64 }), memory);
+        CHECK(locationsOf(call.arguments) == std::vector<ValueLocation> { g(0) });
+        CHECK(call.resultPointer == g(1));
+        CHECK(call.returnedPointer == std::nullopt);
+    }
 }

@@ -16,6 +16,7 @@
 
 #include <isoline/compiler/CompileConfig.hpp>
 #include <isoline/compiler/CompileError.hpp>
+#include <isoline/compiler/machine/CallingConvention.hpp>
 #include <isoline/compiler/machine/CodeBuffer.hpp>
 #include <isoline/compiler/machine/FrameRule.hpp>
 #include <isoline/compiler/machine/MachineFunction.hpp>
@@ -62,6 +63,14 @@ class ITarget
 
     /// The target's bound on a native frame (its FrameRule row).
     [[nodiscard]] virtual FrameRule frameRule() const noexcept = 0;
+
+    /// The target's stack rule: the alignment every call leaves with, and what a call pushes.
+    [[nodiscard]] virtual StackRule stackRule() const noexcept = 0;
+
+    /// The target's row of @p convention: its internal convention's, or its host's
+    /// (hostConvention(description())), which the stubs and the entry trampoline use.
+    /// @param convention WasmInternal or the host convention (Require).
+    [[nodiscard]] virtual ConventionRow const& conventionRow(Convention convention) const = 0;
 
     /// The registers of @p registerClass the allocator may assign, in its order of preference.
     [[nodiscard]] virtual std::span<PhysicalRegister const> allocatable(

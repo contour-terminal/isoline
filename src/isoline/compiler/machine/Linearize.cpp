@@ -40,38 +40,6 @@ namespace
                                                 .pass = "linearize" } };
     }
 
-    /// The blocks of @p graph reachable from the entry, in reverse postorder of a depth-first walk that
-    /// visits successors in their edges' order.
-    [[nodiscard]] std::pmr::vector<uint32_t> reversePostorder(intermediate::ControlFlowGraph const& graph,
-                                                              std::pmr::memory_resource& memory)
-    {
-        auto visited = std::pmr::vector<uint8_t>(graph.blockCount(), 0, &memory);
-        auto order = std::pmr::vector<uint32_t> { &memory };
-        auto stack = std::pmr::vector<Frame> { &memory };
-        visited[0] = 1;
-        stack.push_back(Frame { .block = 0, .next = 0 });
-        while (!stack.empty())
-        {
-            auto const top = stack.size() - 1;
-            auto const successors = graph.successors(BlockId { stack[top].block });
-            if (stack[top].next < successors.size())
-            {
-                auto const successor = std::to_underlying(successors[stack[top].next]);
-                ++stack[top].next;
-                if (visited[successor] == 0)
-                {
-                    visited[successor] = 1;
-                    stack.push_back(Frame { .block = successor, .next = 0 });
-                }
-                continue;
-            }
-            order.push_back(stack[top].block);
-            stack.pop_back();
-        }
-        std::ranges::reverse(order);
-        return order;
-    }
-
     /// Per block, the extent of the loop it heads in @p order (empty for a block that heads none). Loops are
     /// summed innermost first, each into its parent, so that nesting depth costs no walk up the parents.
     [[nodiscard]] std::pmr::vector<LoopExtent> loopExtents(BlockOrder const& order,
@@ -149,6 +117,36 @@ namespace
     };
 } // namespace
 
+std::pmr::vector<uint32_t> reversePostorderOf(intermediate::ControlFlowGraph const& graph,
+                                              std::pmr::memory_resource& memory)
+{
+    auto visited = std::pmr::vector<uint8_t>(graph.blockCount(), 0, &memory);
+    auto order = std::pmr::vector<uint32_t> { &memory };
+    auto stack = std::pmr::vector<Frame> { &memory };
+    visited[0] = 1;
+    stack.push_back(Frame { .block = 0, .next = 0 });
+    while (!stack.empty())
+    {
+        auto const top = stack.size() - 1;
+        auto const successors = graph.successors(BlockId { stack[top].block });
+        if (stack[top].next < successors.size())
+        {
+            auto const successor = std::to_underlying(successors[stack[top].next]);
+            ++stack[top].next;
+            if (visited[successor] == 0)
+            {
+                visited[successor] = 1;
+                stack.push_back(Frame { .block = successor, .next = 0 });
+            }
+            continue;
+        }
+        order.push_back(stack[top].block);
+        stack.pop_back();
+    }
+    std::ranges::reverse(order);
+    return order;
+}
+
 BlockOrder::BlockOrder(std::pmr::vector<BlockId> blocks,
                        uint32_t blockCount,
                        std::pmr::memory_resource& memory):
@@ -180,7 +178,7 @@ std::expected<BlockOrder, CompileError> linearize(MachineFunction const& functio
     auto const blockCount = function.blockCount();
     Require(blockCount > 0);
     auto const graph = controlFlowGraphOf(function, memory);
-    auto const reachable = reversePostorder(graph, memory);
+    auto const reachable = reversePostorderOf(graph, memory);
 
     // Each container (a loop, by its header, or the function, by blockCount) lists its items in reverse
     // postorder: its blocks and the loops nested directly in it, normal ones then cold ones. The entry is

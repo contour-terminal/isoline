@@ -28,7 +28,8 @@ enum class CompileErrorCode : uint8_t
     FrameTooLarge,          ///< A native frame exceeds the target's frame rule.
     ArtifactTooLarge,       ///< The module's code exceeds its artifact cap (CompileLimits).
     BranchOutOfRange,       ///< A branch's displacement does not fit its encoding.
-    Cancelled,              ///< The compile was cancelled (CompileCancellation).
+    LiveSetTooLarge, ///< Liveness would take more than CompileLimits::maxLiveSetBits (values × blocks).
+    Cancelled,       ///< The compile was cancelled (CompileCancellation).
     /// A pass left a function ill-formed (intermediate::verify()): a compiler bug, caught before any of the
     /// function's code is generated, so the module is refused rather than miscompiled.
     InternalVerificationFailed,
@@ -89,6 +90,9 @@ inline constexpr auto CompileErrorTable = std::to_array<CompileErrorRow>({
       .limit = ImplementationLimit::Yes },
     { .code = CompileErrorCode::BranchOutOfRange,
       .text = "branch out of range",
+      .limit = ImplementationLimit::Yes },
+    { .code = CompileErrorCode::LiveSetTooLarge,
+      .text = "too many values live across blocks",
       .limit = ImplementationLimit::Yes },
     { .code = CompileErrorCode::Cancelled, .text = "compile cancelled", .limit = ImplementationLimit::No },
     { .code = CompileErrorCode::InternalVerificationFailed,

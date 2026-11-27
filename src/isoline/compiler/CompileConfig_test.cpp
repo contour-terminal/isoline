@@ -31,6 +31,7 @@ TEST_CASE("CompileConfig.defaults")
     CHECK(limits.maxTotalBlockParameters == 4'000'000);
     CHECK(limits.maxPoolEntries == 4'294'967'295);
     CHECK(limits.maxBranchArguments == 16'000'000);
+    CHECK(limits.maxLiveSetBits == uint64_t { 1 } << 31U);
     CHECK(limits.artifactBytesPerModuleByte == 4);
     CHECK(limits.artifactBytesFloor == uint64_t { 64 } * 1024);
     auto const config = CompileConfig { TargetDescription {}, ExecutionMode::Production };
@@ -55,6 +56,9 @@ TEST_CASE("CompileConfig.equalityCoversEveryField")
     auto limits = base;
     limits.limits.artifactBytesFloor = 1;
     CHECK(limits != base);
+    auto liveSet = base;
+    liveSet.limits.maxLiveSetBits = 1;
+    CHECK(liveSet != base);
 }
 
 TEST_CASE("CompileCancellation.startsRunningAndStaysCancelled")

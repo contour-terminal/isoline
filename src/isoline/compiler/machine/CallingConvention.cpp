@@ -59,8 +59,9 @@ Assignment assignArguments(ConventionRow const& row,
                            std::span<intermediate::Type const> types,
                            std::pmr::memory_resource& memory)
 {
-    auto assignment =
-        Assignment { .locations = std::pmr::vector<ValueLocation> { &memory }, .memoryBytes = 0 };
+    auto assignment = Assignment { .locations = std::pmr::vector<ValueLocation> { &memory },
+                                   .memoryBytes = 0,
+                                   .area = ResultArea::None };
     assignment.locations.reserve(types.size());
     auto integers = std::size_t { 0 };
     auto floats = std::size_t { 0 };
@@ -93,9 +94,14 @@ Assignment assignResults(ConventionRow const& row,
                          std::span<intermediate::Type const> types,
                          std::pmr::memory_resource& memory)
 {
-    auto assignment =
-        Assignment { .locations = std::pmr::vector<ValueLocation> { &memory }, .memoryBytes = 0 };
+    auto assignment = Assignment { .locations = std::pmr::vector<ValueLocation> { &memory },
+                                   .memoryBytes = 0,
+                                   .area = ResultArea::None };
     assignment.locations.reserve(types.size());
+    // A host convention returns an aggregate too large for its registers wholly in memory.
+    auto const aggregateBytes = uint64_t { types.size() } * row.stackSlotBytes;
+    auto const inMemory = row.aggregateResults == AggregateResults::HiddenPointerBeyond
+                          && aggregateBytes > row.aggregateRegisterBytes;
     auto integers = std::size_t { 0 };
     auto floats = std::size_t { 0 };
     auto stored = std::size_t { 0 };
@@ -104,7 +110,7 @@ Assignment assignResults(ConventionRow const& row,
         auto const isFloat = registerClassOf(type) == RegisterClass::Float;
         auto const& registers = isFloat ? row.floatResults : row.integerResults;
         auto& counted = isFloat ? floats : integers;
-        if (counted < registers.size())
+        if (!inMemory && counted < registers.size())
         {
             assignment.locations.emplace_back(registers[counted]);
             ++counted;
@@ -117,7 +123,45 @@ Assignment assignResults(ConventionRow const& row,
         }
     }
     assignment.memoryBytes = slotOffset(0, stored, row.stackSlotBytes);
+    if (inMemory)
+        assignment.area = ResultArea::HiddenPointer;
+    else if (stored != 0)
+        assignment.area = ResultArea::CallerArea;
     return assignment;
+}
+
+CallAssignment assignCall(ConventionRow const& row,
+                          std::span<intermediate::Type const> parameters,
+                          std::span<intermediate::Type const> results,
+                          std::pmr::memory_resource& memory)
+{
+    auto call =
+        CallAssignment { .arguments = Assignment { .locations = std::pmr::vector<ValueLocation> { &memory },
+                                                   .memoryBytes = 0,
+                                                   .area = ResultArea::None },
+                         .results = assignResults(row, results, memory),
+                         .resultPointer = std::nullopt,
+                         .returnedPointer = std::nullopt };
+    if (call.results.area == ResultArea::None || row.resultAreaPointer)
+    {
+        call.arguments = assignArguments(row, parameters, memory);
+        if (call.results.area != ResultArea::None)
+            call.resultPointer = *row.resultAreaPointer;
+    }
+    else
+    {
+        // The hidden pointer is the first argument: the others move up by one.
+        auto shifted = std::pmr::vector<intermediate::Type> { &memory };
+        shifted.reserve(parameters.size() + 1);
+        shifted.push_back(intermediate::Type::Pointer);
+        shifted.insert(shifted.end(), parameters.begin(), parameters.end());
+        call.arguments = assignArguments(row, shifted, memory);
+        call.resultPointer = call.arguments.locations.front();
+    }
+    if (call.results.area == ResultArea::HiddenPointer && row.pointerReturned == PointerReturned::Yes
+        && !row.integerResults.empty())
+        call.returnedPointer = row.integerResults.front();
+    return call;
 }
 
 bool hasHostConvention(TargetDescription const& target) noexcept
