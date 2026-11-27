@@ -702,6 +702,7 @@ set(isolineContractRows
     "Contract.HostCall.resultsAsWideAsTheResults|results\\.size\\(\\) == type\\.results\\.size\\(\\)"
     "Contract.RawValue.globalAssignsItsOwnKind|kindOf\\(value\\) == type\\.type\\.kind"
     "Contract.Store.addGlobalOfItsOwnKind|kindOf\\(value\\) == type\\.type\\.kind"
+    "Contract.Store.grownMemoryKeepsItsTail|keepsItsTail\\(\\*_memory\\)"
     "Contract.Lowering.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), config\\.dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"
     "Contract.Listing.wholeOperations|row\\.words <= code\\.size\\(\\)"
     "Contract.FastInterpreter.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"

@@ -237,6 +237,9 @@
 #   failing sides of its Requires, contract violations SlotCodec_test.cpp runs in subprocesses, unrecorded.
 # - src/isoline/runtime/Store.hpp, branches 94.11 to 90.00 (18 of 20): GlobalInstance::assign() checks the value's
 #   kind, whose failing side is the contract violation Contract.RawValue.globalAssignsItsOwnKind runs in a subprocess.
+# - src/isoline/runtime/Store.hpp, branches 90.00 to 86.95 (20 of 23), when the masked accesses' tail arrived
+#   (fix(runtime) before P4 Task 12): MemoryInstance::grow() checks that the grown storage keeps the tail its size
+#   needs, whose failing side is the contract violation Contract.Store.grownMemoryKeepsItsTail runs in a subprocess.
 # - src/isoline/fastinterpreter/SwitchDispatchCold.cpp, branches 50.30 to 50.29 (343 of 682): Task 9's eight call
 #   operations are inline ones, whose cases in the out-of-line switch are the inline-operation exclusion's, untaken.
 
@@ -383,15 +386,15 @@ src/isoline/runtime/Instantiate.cpp                100.00 92.98
 src/isoline/runtime/Instantiate.hpp                100.00 -
 src/isoline/runtime/Interrupt.hpp                  100.00 -
 src/isoline/runtime/Limits.hpp                     100.00 -
-src/isoline/runtime/LinearMemory.cpp               88.57 100.00
-src/isoline/runtime/LinearMemory.hpp               100.00 -
+src/isoline/runtime/LinearMemory.cpp               90.69 100.00
+src/isoline/runtime/LinearMemory.hpp               100.00 100.00
 src/isoline/runtime/ModuleCode.hpp                 100.00 -
 src/isoline/runtime/PollGate.hpp                   100.00 87.50
 src/isoline/runtime/RawValue.hpp                   100.00 -
 src/isoline/runtime/Segment.hpp                    100.00 100.00
 src/isoline/runtime/Store.cpp                      99.70 84.34
 src/isoline/runtime/Store.cpp                    99.69 84.34
-src/isoline/runtime/Store.hpp                      100.00 90.00
+src/isoline/runtime/Store.hpp                      100.00 86.95
 src/isoline/runtime/Trap.hpp                       100.00 75.00
 src/isoline/runtime/Value.hpp                      100.00 94.44
 src/isoline/runtime/ValueCheck.cpp                 100.00 100.00

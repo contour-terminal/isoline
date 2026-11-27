@@ -162,6 +162,8 @@ class MovingMemory final: public ILinearMemory
 
     [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
 
+    [[nodiscard]] uint64_t tailBytes() const noexcept override { return 0; }
+
     [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
     {
         auto moved = std::vector<std::byte>(static_cast<std::size_t>(newBytes));

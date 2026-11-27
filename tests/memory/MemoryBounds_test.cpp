@@ -455,9 +455,11 @@ class PremadeMemoryAllocator final: public isoline::runtime::IMemoryAllocator
     explicit PremadeMemoryAllocator(std::size_t count)
     {
         auto heap = isoline::runtime::HeapMemoryAllocator {};
-        auto const request = isoline::runtime::MemoryRequest {
-            .type = {}, .initialBytes = PageBytes, .maximumBytes = PageBytes, .requiredGuardBytes = 0
-        };
+        auto const request = isoline::runtime::MemoryRequest { .type = {},
+                                                               .initialBytes = PageBytes,
+                                                               .maximumBytes = PageBytes,
+                                                               .requiredGuardBytes = 0,
+                                                               .requiredTailBytes = 0 };
         for ([[maybe_unused]] auto const index: std::views::iota(std::size_t { 0 }, count))
         {
             auto memory = heap.allocate(request);

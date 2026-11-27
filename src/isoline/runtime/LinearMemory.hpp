@@ -1,17 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
 #include <span>
 
+#include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Limits.hpp>
 
 namespace isoline::runtime
 {
+
+namespace detail
+{
+    /// The widest row of binary::MemoryAccessTable among the accesses an executor reads at a masked offset:
+    /// the scalar ones.
+    [[nodiscard]] consteval uint64_t widestMaskedAccess() noexcept
+    {
+        auto widest = uint64_t { 0 };
+        for (auto const& access: binary::MemoryAccessTable)
+            if (access.value != binary::ValueKind::V128 && access.width > widest)
+                widest = access.width;
+        return widest;
+    }
+} // namespace detail
+
+/// The widest access an executor makes at an offset its Spectre mask chose (fastinterpreter accessMask()): on
+/// a mispredicted bounds check it reads this many bytes at a memory's base, so a memory of fewer bytes is
+/// read past its end, speculatively: MaxAccessWidth bytes past the end of a memory of none. Every memory
+/// keeps the difference readable, or as a guard, after its end (requiredTailBytesOf()).
+inline constexpr auto MaxAccessWidth = detail::widestMaskedAccess();
 
 /// A linear memory's storage: the bytes a memory instance reads and writes, wherever they live.
 ///
@@ -41,6 +63,16 @@ class ILinearMemory
     /// @return The guard's size in bytes.
     [[nodiscard]] virtual uint64_t guardBytes() const noexcept = 0;
 
+    /// How many readable bytes the memory's storage holds after bytes().end(), which no access reaches
+    /// but a speculative one may read (MaxAccessWidth): bytes the memory owns, never the guest's or another
+    /// object's. With guardBytes() they make the tail, which must be at least
+    /// requiredTailBytesOf(bytes().size()) at every size the memory has: when it is allocated, which the
+    /// store checks against MemoryRequest::requiredTailBytes and refuses with Guard, and after every grow(),
+    /// which the store checks too (a contract violation). A tail that shrinks by what a grow adds, as a fixed
+    /// buffer's does, keeps the rule.
+    /// @return The readable bytes past the end; 0 when there are none.
+    [[nodiscard]] virtual uint64_t tailBytes() const noexcept = 0;
+
     /// Grows the memory to @p newBytes, the added bytes zeroed. The store calls it only within the
     /// request's maximumBytes and the store's budget, never to shrink, and charges the budget only
     /// when this succeeds.
@@ -63,7 +95,31 @@ struct MemoryRequest
     /// The guard the store requires after the accessible bytes (StoreServices::requiredGuardBytes); a
     /// memory whose guardBytes() is smaller is refused with Guard.
     uint64_t requiredGuardBytes = 0;
+    /// The bytes past the end a memory of initialBytes must keep, readable (ILinearMemory::tailBytes()) or as
+    /// a guard (ILinearMemory::guardBytes()), together: requiredTailBytesOf(initialBytes), what a speculative
+    /// access at its base reads past its end (MaxAccessWidth). A memory whose tail and guard together are
+    /// smaller is refused with Guard.
+    uint64_t requiredTailBytes = 0;
 };
+
+/// The tail a memory of @p size bytes must keep after its end, readable or as a guard: what an access of
+/// MaxAccessWidth bytes at its base reads past it. Whatever its page size: a memory of no pages has no bytes.
+/// @param size The memory's size in bytes.
+/// @return MaxAccessWidth less @p size, or 0 where the memory holds MaxAccessWidth bytes or more.
+[[nodiscard]] constexpr uint64_t requiredTailBytesOf(uint64_t size) noexcept
+{
+    return MaxAccessWidth - std::min(size, MaxAccessWidth);
+}
+
+/// Whether @p memory keeps the tail its size needs (requiredTailBytesOf()), readable or guarded.
+/// @param memory The memory.
+/// @return Whether its tail and guard together are at least that.
+[[nodiscard]] inline bool keepsItsTail(ILinearMemory const& memory) noexcept
+{
+    auto const required = requiredTailBytesOf(memory.bytes().size());
+    auto const tail = memory.tailBytes();
+    return tail >= required || memory.guardBytes() >= required - tail;
+}
 
 /// Allocates the store's linear memories: the seam an embedder provides its own storage through.
 class IMemoryAllocator
@@ -75,16 +131,18 @@ class IMemoryAllocator
     /// @param request What the memory is and may become.
     /// @return The memory; or why it was refused: Embedder when the embedder declines it, HostMemory
     ///         when the host has no memory for it, Guard when it cannot provide the request's
-    ///         requiredGuardBytes. Any other refusal is the store's alone to decide, so the store
-    ///         reports it as Embedder. A memory must not be null (checked).
+    ///         requiredGuardBytes or requiredTailBytes. Any other refusal is the store's alone to decide, so
+    ///         the store reports it as Embedder. A memory must not be null (checked).
     [[nodiscard]] virtual std::expected<std::unique_ptr<ILinearMemory>, Refusal> allocate(
         MemoryRequest const& request) noexcept = 0;
 };
 
 /// The default allocator: each memory a std::vector on the heap, with no guard region (guardBytes()
-/// is 0), so a store requiring a guard refuses it. A grow resizes the vector and zero-fills the added
-/// bytes in one unpolled host operation, bounded by StoreLimits::maxMemoryBytes; std::bad_alloc, or a
-/// size past what a vector can hold, is refused with HostMemory.
+/// is 0), so a store requiring a guard refuses it, and MaxAccessWidth zeroed bytes after its end at every
+/// size (tailBytes()), so that a speculative access at a small memory's base, even of no bytes, reads only
+/// them. A grow resizes the vector and zero-fills the added bytes in one unpolled host operation, bounded by
+/// StoreLimits::maxMemoryBytes; std::bad_alloc, or a size past what a vector can hold, is refused with
+/// HostMemory.
 class HeapMemoryAllocator final: public IMemoryAllocator
 {
   public:

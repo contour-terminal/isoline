@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <new>
 #include <span>
@@ -36,23 +37,39 @@ namespace
         return {};
     }
 
-    /// A linear memory held in a std::vector: moved by every grow, and with no guard region.
+    /// A linear memory held in a std::vector: moved by every grow, with no guard region, and MaxAccessWidth
+    /// bytes past its end, at every size, that no access writes, so they stay zero, and which become the
+    /// guest's, zero, when it grows over them.
     class HeapLinearMemory final: public ILinearMemory
     {
       public:
-        [[nodiscard]] std::span<std::byte> bytes() noexcept override { return _bytes; }
+        [[nodiscard]] std::span<std::byte> bytes() noexcept override
+        {
+            return std::span { _storage }.first(static_cast<std::size_t>(_size));
+        }
 
-        [[nodiscard]] std::span<std::byte const> bytes() const noexcept override { return _bytes; }
+        [[nodiscard]] std::span<std::byte const> bytes() const noexcept override
+        {
+            return std::span { _storage }.first(static_cast<std::size_t>(_size));
+        }
 
         [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
 
+        [[nodiscard]] uint64_t tailBytes() const noexcept override { return _storage.size() - _size; }
+
         [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
         {
-            return resizeZeroed(_bytes, newBytes);
+            if (newBytes > std::numeric_limits<uint64_t>::max() - Tail)
+                return std::unexpected { Refusal::HostMemory };
+            return resizeZeroed(_storage, newBytes + Tail).transform([&] { _size = newBytes; });
         }
 
       private:
-        std::vector<std::byte> _bytes;
+        /// The bytes kept past the end.
+        static constexpr auto Tail = MaxAccessWidth;
+
+        std::vector<std::byte> _storage; ///< The memory's bytes, then the tail.
+        uint64_t _size = 0;              ///< The accessible bytes.
     };
 } // namespace
 
