@@ -221,6 +221,39 @@ jobs:
       - name: Test
         run: ctest --preset macos-clang --output-on-failure
 
+  # Native arm64: what qemu cannot show, a weakly ordered processor whose instruction fetch is not
+  # coherent with stores, so that code written on one thread and run on others needs the instruction-cache
+  # seam (src/isoline/platform/InstructionCache.hpp). Callgrind runs that case once more: whether
+  # valgrind passes membarrier(SYNC_CORE) through decides whether a callgrind run can execute compiled
+  # code, and a refusal must surface as one, never as success.
+  linux-arm64-clang:
+    name: Linux arm64 Clang
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install LLVM ${{ env.LLVM_VERSION }}, Ninja and Valgrind
+        uses: ./.github/actions/install-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: ninja-build valgrind
+      - name: Configure
+        # clang-tidy runs in the ASan job already.
+        run: >
+          cmake --preset clang-release
+          -DCMAKE_C_COMPILER="clang-$LLVM_VERSION"
+          -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
+          -DISOLINE_CLANG_TIDY=OFF
+          -DISOLINE_FETCH_DEPS=ON
+      - name: Build
+        run: cmake --build --preset clang-release
+      - name: Test
+        run: ctest --preset clang-release --output-on-failure
+      - name: Instruction cache under callgrind
+        run: >
+          valgrind --tool=callgrind --callgrind-out-file=/dev/null
+          out/clang-release/src/isoline/isoline_test "InstructionCache.sealedOnOneThreadRunsOnEight"
+
   windows-msvc:
     name: Windows MSVC
     runs-on: windows-latest

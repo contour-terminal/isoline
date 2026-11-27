@@ -52,12 +52,14 @@ endwhile()
 
 # (kind, system, architecture → the files, `,`-separated).
 set(sourceCases
-    "core" "Linux"   "X64"   "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp"
-    "core" "Linux"   "Arm64" "VirtualMemoryPosix.cpp,HardwareCapabilitiesLinuxArm64.cpp"
-    "core" "Linux"   "Other" "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp"
-    "core" "FreeBSD" "Arm64" "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp"
-    "core" "MacOS"   "Arm64" "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp"
-    "core" "Windows" "Arm64" "VirtualMemoryWindows.cpp,HardwareCapabilitiesNone.cpp"
+    "core" "Linux"   "X64"   "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp,JitMemoryNone.cpp,InstructionCacheCoherent.cpp,MembarrierLinux.cpp"
+    "core" "Linux"   "Arm64" "VirtualMemoryPosix.cpp,HardwareCapabilitiesLinuxArm64.cpp,JitMemoryNone.cpp,InstructionCacheClearCacheArm64.cpp,MembarrierLinux.cpp"
+    "core" "Linux"   "Other" "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp,JitMemoryNone.cpp,InstructionCacheCoherent.cpp,MembarrierLinux.cpp"
+    "core" "FreeBSD" "Arm64" "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp,JitMemoryNone.cpp,InstructionCacheClearCacheArm64.cpp,MembarrierNone.cpp"
+    "core" "MacOS"   "X64"   "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp,JitMemoryMacOS.cpp,InstructionCacheCoherent.cpp,MembarrierNone.cpp"
+    "core" "MacOS"   "Arm64" "VirtualMemoryPosix.cpp,HardwareCapabilitiesNone.cpp,JitMemoryMacOS.cpp,InstructionCacheMacOSArm64.cpp,MembarrierNone.cpp"
+    "core" "Windows" "X64"   "VirtualMemoryWindows.cpp,HardwareCapabilitiesNone.cpp,JitMemoryNone.cpp,InstructionCacheCoherent.cpp,MembarrierNone.cpp"
+    "core" "Windows" "Arm64" "VirtualMemoryWindows.cpp,HardwareCapabilitiesNone.cpp,JitMemoryNone.cpp,InstructionCacheWindowsArm64.cpp,MembarrierNone.cpp"
     "test" "Windows" "X64"   "testing/BackedMemoryWindows.cpp"
     "test" "Linux"   "Arm64" "testing/BackedMemoryPosix.cpp")
 while(sourceCases)

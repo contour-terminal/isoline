@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
@@ -17,6 +18,7 @@
 #include <print>
 #include <span>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "CheckPositions.hpp"
@@ -29,10 +31,14 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
+#include <isoline/platform/InstructionCache.hpp>
+#include <isoline/platform/JitMemory.hpp>
+#include <isoline/platform/Membarrier.hpp>
 #include <isoline/platform/Platform.hpp>
 #include <isoline/platform/PlatformTable.hpp>
 #include <isoline/platform/ThisPlatform.hpp>
 #include <isoline/platform/VirtualMemory.hpp>
+#include <isoline/platform/testing/JitWriteScopeKeys.hpp>
 #include <isoline/platform/testing/RecordingVirtualMemory.hpp>
 
 namespace
@@ -50,10 +56,13 @@ using namespace isoline::api;
 using isoline::api::testing::engineRows;
 using isoline::api::testing::contract::configOf;
 using isoline::api::testing::contract::ContractLimits;
+using isoline::platform::CodeMemoryKind;
 using isoline::platform::DecommitKind;
 using isoline::platform::IVirtualMemory;
+using isoline::platform::JitMapping;
 using isoline::platform::OperatingSystem;
 using isoline::platform::Protection;
+using isoline::platform::SystemJitMemory;
 using isoline::platform::SystemVirtualMemory;
 using isoline::platform::ThisPlatform;
 using isoline::platform::VirtualMemoryError;
@@ -485,6 +494,119 @@ void platformRowOutOfRange()
                              row.codeMemory == isoline::platform::CodeMemoryKind::Unavailable
                                  ? CallResult::Failed
                                  : CallResult::Succeeded);
+}
+
+void jitMappingWritableExecutableWithoutToggle()
+{
+    // The system's mapJit() wherever the row has no per-thread toggle; on the row that has one (macOS
+    // arm64), the same check of macOS x86-64's kind, which it would refuse.
+    if (!isoline::platform::togglesJitPerThread(ThisPlatform.codeMemory))
+    {
+        auto memory = SystemJitMemory {};
+        virtualMemoryWentThrough(
+            "mapJit(ReadWriteExecute) without the toggle",
+            resultOf(memory.mapJit(SystemVirtualMemory {}.pageSize(), JitMapping::ReadWriteExecute)));
+        return;
+    }
+    isoline::platform::detail::requireJitMapping(CodeMemoryKind::MapJitWithProtection,
+                                                 JitMapping::ReadWriteExecute);
+    virtualMemoryWentThrough("requireJitMapping(MapJitWithProtection, ReadWriteExecute)",
+                             CallResult::Succeeded);
+}
+
+void jitAccessWithoutToggle()
+{
+    if (!isoline::platform::togglesJitPerThread(ThisPlatform.codeMemory))
+    {
+        auto memory = SystemJitMemory {};
+        memory.setThreadAccess(isoline::platform::JitAccess::Write);
+        virtualMemoryWentThrough("setThreadAccess(Write) without the toggle", CallResult::Succeeded);
+        return;
+    }
+    isoline::platform::detail::requireJitThreadToggle(CodeMemoryKind::MapJitWithProtection);
+    virtualMemoryWentThrough("requireJitThreadToggle(MapJitWithProtection)", CallResult::Succeeded);
+}
+
+void jitReleaseWithoutMapJit()
+{
+    // The system's release() wherever there is no MAP_JIT, of a region it cannot have mapped; on the
+    // macOS rows, the same check of a row without MAP_JIT.
+    if (!isoline::platform::mapsJit(ThisPlatform.codeMemory))
+    {
+        auto virtualMemory = SystemVirtualMemory {};
+        auto memory = SystemJitMemory {};
+        virtualMemoryWentThrough("release() without MAP_JIT",
+                                 resultOf(memory.release(reservedGranule(virtualMemory))));
+        return;
+    }
+    isoline::platform::detail::requireJitMapping(CodeMemoryKind::ReserveWriteThenExecute,
+                                                 JitMapping::ReadWrite);
+    virtualMemoryWentThrough("requireJitMapping(ReserveWriteThenExecute, ReadWrite)", CallResult::Succeeded);
+}
+
+/// JIT memory that maps nothing and toggles no thread: what the scope case needs, without MAP_JIT.
+class InertJitMemory final: public isoline::platform::IJitMemory
+{
+  public:
+    [[nodiscard]] std::expected<isoline::platform::Region, VirtualMemoryFailure> mapJit(
+        uint64_t /*bytes*/, JitMapping /*mapping*/) noexcept override
+    {
+        return std::unexpected { VirtualMemoryFailure { .error = VirtualMemoryError::ReserveRefused } };
+    }
+
+    void setThreadAccess(isoline::platform::JitAccess /*access*/) noexcept override {}
+
+    [[nodiscard]] std::expected<void, VirtualMemoryFailure> release(
+        isoline::platform::Region /*region*/) noexcept override
+    {
+        return std::unexpected { VirtualMemoryFailure { .error = VirtualMemoryError::ReleaseRefused } };
+    }
+};
+
+void jitScopeEndedOnAnotherThread()
+{
+    // Opened here, ended on another thread, as a coroutine resumed elsewhere would: it could restore only
+    // that thread's view, and leave this one writable.
+    auto memory = InertJitMemory {};
+    auto scope = std::make_unique<isoline::platform::JitWriteScope>(
+        memory, isoline::platform::testing::JitWriteScopeKeys::key());
+    auto ender = std::thread { [&scope] { scope.reset(); } };
+    ender.join();
+    virtualMemoryWentThrough("a JitWriteScope ended on another thread", CallResult::Succeeded);
+}
+
+void codeMemoryRowOutOfRange()
+{
+    auto const& row = isoline::platform::codeMemoryRow(static_cast<CodeMemoryKind>(200));
+    virtualMemoryWentThrough("codeMemoryRow(200)",
+                             row.jit == isoline::platform::JitMappingUse::None ? CallResult::Failed
+                                                                               : CallResult::Succeeded);
+}
+
+void jitMappingOutOfRange()
+{
+    auto const allowed = isoline::platform::allowsJitMapping(CodeMemoryKind::MapJitWithThreadToggle,
+                                                             static_cast<JitMapping>(200));
+    virtualMemoryWentThrough("allowsJitMapping(MapJitWithThreadToggle, 200)",
+                             allowed ? CallResult::Succeeded : CallResult::Failed);
+}
+
+void instructionCacheRowOutOfRange()
+{
+    auto const& row =
+        isoline::platform::instructionCacheRow(static_cast<isoline::platform::InstructionCacheKind>(200));
+    virtualMemoryWentThrough("instructionCacheRow(200)",
+                             row.invalidation == isoline::platform::InstructionCacheInvalidation::None
+                                 ? CallResult::Failed
+                                 : CallResult::Succeeded);
+}
+
+void instructionCacheWithoutMaintenance()
+{
+    auto const membarrier = isoline::platform::makeSystemMembarrier();
+    virtualMemoryWentThrough("makeInstructionCache() without maintenance",
+                             resultOf(isoline::platform::makeInstructionCache(
+                                 isoline::platform::InstructionCacheKind::Coherent, nullptr, *membarrier)));
 }
 
 /// A case: its name on the command line, and what it calls.

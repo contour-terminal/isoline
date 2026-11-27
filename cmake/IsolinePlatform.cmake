@@ -19,6 +19,15 @@ set(ISOLINE_PLATFORM_SOURCE_ROWS
     "core|VirtualMemory|*|*|VirtualMemoryPosix.cpp"
     "core|HardwareCapabilities|Linux|Arm64|HardwareCapabilitiesLinuxArm64.cpp"
     "core|HardwareCapabilities|*|*|HardwareCapabilitiesNone.cpp"
+    "core|JitMemory|MacOS|*|JitMemoryMacOS.cpp"
+    "core|JitMemory|*|*|JitMemoryNone.cpp"
+    "core|InstructionCache|Linux|Arm64|InstructionCacheClearCacheArm64.cpp"
+    "core|InstructionCache|FreeBSD|Arm64|InstructionCacheClearCacheArm64.cpp"
+    "core|InstructionCache|MacOS|Arm64|InstructionCacheMacOSArm64.cpp"
+    "core|InstructionCache|Windows|Arm64|InstructionCacheWindowsArm64.cpp"
+    "core|InstructionCache|*|*|InstructionCacheCoherent.cpp"
+    "core|Membarrier|Linux|*|MembarrierLinux.cpp"
+    "core|Membarrier|*|*|MembarrierNone.cpp"
     "test|BackedMemory|Windows|*|testing/BackedMemoryWindows.cpp"
     "test|BackedMemory|*|*|testing/BackedMemoryPosix.cpp")
 

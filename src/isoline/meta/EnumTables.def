@@ -59,18 +59,26 @@ ISOLINE_ENUM_TABLE(platform::ProtectionTable, platform::LastProtection, platform
 ISOLINE_ENUM_TABLE(platform::BranchTargetProtectionFlags,
                    platform::LastBranchTargetProtectionKind,
                    platform::BranchTargetProtectionFlagRow::kind)
+ISOLINE_ENUM_TABLE(platform::InstructionCacheTable, platform::LastInstructionCacheKind, platform::InstructionCacheRow::kind)
+ISOLINE_ENUM_TABLE(platform::CodeMemoryTable, platform::LastCodeMemoryKind, platform::CodeMemoryRow::kind)
+ISOLINE_ENUM_TABLE(platform::JitMappingTable, platform::LastJitMapping, platform::JitMappingRow::mapping)
 ISOLINE_KEYED_TABLE(platform::PlatformTable, "one row per (operating system, architecture) pair, at platformIndex()")
 ISOLINE_LAST_ENUMERATOR(platform::LastOperatingSystem, "with LastArchitecture, sizes PlatformTable's (system, architecture) pairs")
 ISOLINE_LAST_ENUMERATOR(platform::LastArchitecture, "with LastOperatingSystem, sizes PlatformTable's (system, architecture) pairs")
-ISOLINE_LAST_ENUMERATOR(platform::LastCodeMemoryKind, "a column of PlatformTable; no table is indexed by it")
 ISOLINE_LAST_ENUMERATOR(platform::LastFaultMechanism, "a column of PlatformTable; no table is indexed by it")
-ISOLINE_LAST_ENUMERATOR(platform::LastInstructionCacheKind, "a column of PlatformTable; no table is indexed by it")
 ISOLINE_LAST_ENUMERATOR(platform::LastControlFlowGuardKind, "a column of PlatformTable; no table is indexed by it")
 ISOLINE_LAST_ENUMERATOR(platform::LastUnwindRegistrationKind, "a column of PlatformTable; no table is indexed by it")
 ISOLINE_LAST_ENUMERATOR(platform::LastDecommitKind, "a column of PlatformTable; no table is indexed by it")
 ISOLINE_LAST_ENUMERATOR(platform::LastPageAccess, "a column of ProtectionTable; no table is indexed by it")
 ISOLINE_LAST_ENUMERATOR(platform::LastBranchTargetEnforcement, "a column of ProtectionTable; no table is indexed by it")
 ISOLINE_LAST_ENUMERATOR(platform::LastCommitment, "a column of ProtectionTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastInstructionCacheInvalidation, "a column of InstructionCacheTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastOtherThreadSynchronization, "a column of InstructionCacheTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastThisThreadSynchronization, "a column of InstructionCacheTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastInstructionCacheError, "no table is indexed by it: each enumerator is a refusal InstructionCacheFailure reports")
+ISOLINE_LAST_ENUMERATOR(platform::LastJitMappingUse, "a column of CodeMemoryTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastJitWriteProtection, "a column of CodeMemoryTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastJitAccess, "no table is indexed by it: the two views setThreadAccess() switches between")
 ISOLINE_LAST_ENUMERATOR(platform::LastVirtualMemoryError, "no table is indexed by it: each enumerator is a refusal VirtualMemoryFailure reports")
 
 // isoline::runtime

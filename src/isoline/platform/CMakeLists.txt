@@ -12,11 +12,16 @@ message(STATUS "[isoline] platform sources: ${isolinePlatformSources}")
 target_sources(isoline_core
     PRIVATE
         HardwareCapabilities.cpp
+        InstructionCache.cpp
+        JitMemory.cpp
         VirtualMemory.cpp
         ${isolinePlatformSources}
     PUBLIC FILE_SET HEADERS
         FILES
             HardwareCapabilities.hpp
+            InstructionCache.hpp
+            JitMemory.hpp
+            Membarrier.hpp
             Platform.hpp
             PlatformTable.hpp
             VirtualMemory.hpp

@@ -35,6 +35,15 @@ ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryRefusedProtectNothing, "virtual-memory-
 ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryForeignDecommit, "virtual-memory-foreign-decommit", contract, "decommitsOnThisSystem[(]decommit[)]")
 ISOLINE_REQUIRE_CANARY_CASE(protectionRowOutOfRange, "protection-row-out-of-range", require, "std::to_underlying[(]protection[)] < ProtectionTable[.]size[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(platformRowOutOfRange, "platform-row-out-of-range", require, "std::to_underlying[(]architecture[)] <= std::to_underlying[(]LastArchitecture[)]")
+// JIT memory and the instruction cache (src/isoline/platform/).
+ISOLINE_REQUIRE_CANARY_CASE(jitMappingWritableExecutableWithoutToggle, "jit-mapping-writable-executable-without-toggle", contract, "allowsJitMapping[(]kind, mapping[)]")
+ISOLINE_REQUIRE_CANARY_CASE(jitAccessWithoutToggle, "jit-access-without-toggle", contract, "togglesJitPerThread[(]kind[)]")
+ISOLINE_REQUIRE_CANARY_CASE(jitReleaseWithoutMapJit, "jit-release-without-map-jit", contract, "allowsJitMapping[(]kind, mapping[)]")
+ISOLINE_REQUIRE_CANARY_CASE(jitScopeEndedOnAnotherThread, "jit-scope-ended-on-another-thread", contract, "std::this_thread::get_id[(][)] == _owner")
+ISOLINE_REQUIRE_CANARY_CASE(codeMemoryRowOutOfRange, "code-memory-row-out-of-range", require, "std::to_underlying[(]kind[)] < CodeMemoryTable[.]size[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(jitMappingOutOfRange, "jit-mapping-out-of-range", require, "std::to_underlying[(]mapping[)] < JitMappingTable[.]size[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(instructionCacheRowOutOfRange, "instruction-cache-row-out-of-range", require, "std::to_underlying[(]kind[)] < InstructionCacheTable[.]size[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(instructionCacheWithoutMaintenance, "instruction-cache-without-maintenance", contract, "_maintenance != nullptr")
 // The positions a contract-spelled check must be evaluated in (CheckPositions.hpp), both macros.
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionFirst, "precondition-first", contract, "entryRounds == 0")
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionInBracelessIf, "precondition-in-braceless-if", contract, "ifRounds == 0")
