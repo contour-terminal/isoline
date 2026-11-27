@@ -92,9 +92,6 @@ namespace
         [[nodiscard]] std::expected<void, CompileError> close(std::pmr::vector<LoopAssignments::Run>& runs,
                                                               std::pmr::vector<uint32_t>& pool);
 
-        /// How many loops are open.
-        [[nodiscard]] uint32_t depth() const noexcept { return _depth; }
-
       private:
         /// Adds @p local to the innermost open set unless it holds it.
         [[nodiscard]] std::expected<void, CompileError> join(uint32_t local)

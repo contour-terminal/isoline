@@ -284,7 +284,6 @@ namespace
         // --- helpers
         [[nodiscard]] Frame& frameAt(uint32_t depth) noexcept { return _frames[_frames.size() - 1 - depth]; }
         [[nodiscard]] std::span<Type const> paramTypes(Frame const& frame) const noexcept;
-        [[nodiscard]] std::span<Type const> resultTypes(Frame const& frame) const noexcept;
         [[nodiscard]] std::span<uint32_t const> setOf(Frame const& frame) const noexcept;
         [[nodiscard]] uint64_t widthOf(Frame const& frame, uint32_t values) const noexcept;
         [[nodiscard]] std::span<ValueId const> loopArguments(Frame const& frame);
@@ -1247,11 +1246,6 @@ namespace
     std::span<Type const> Translation::paramTypes(Frame const& frame) const noexcept
     {
         return std::span { _frameTypes }.subspan(frame.typesBegin, frame.paramCount);
-    }
-
-    std::span<Type const> Translation::resultTypes(Frame const& frame) const noexcept
-    {
-        return std::span { _frameTypes }.subspan(frame.typesBegin + frame.paramCount, frame.resultCount);
     }
 
     std::span<uint32_t const> Translation::setOf(Frame const& frame) const noexcept
