@@ -653,8 +653,6 @@ namespace
                                               std::optional<ExternName> const& parsed,
                                               ExternType const& type,
                                               DefinitionPosition position) const;
-        [[nodiscard]] Result<void> attributes(binary::NameAttributes const& name,
-                                              DefinitionPosition position) const;
         [[nodiscard]] std::optional<std::string> resourceFunctionRule(ExternName const& parsed,
                                                                       ExternType const& type,
                                                                       ResourceNames const& resources) const;
@@ -2401,22 +2399,6 @@ namespace
             return std::unexpected { measured.error() };
         frame.measure = *measured;
         frame.exports.push_back(types::NamedExtern { .name = definition.name.name, .type = *exported });
-        return {};
-    }
-
-    Result<void> ComponentValidator::attributes(binary::NameAttributes const& name,
-                                                DefinitionPosition position) const
-    {
-        // validate_extern (component.rs:4709-4790) gates each attribute, in its own order.
-        for (auto const alternative: AttributeCheckOrder)
-        {
-            if (std::ranges::none_of(name.attributes, [&](binary::Attribute const& attribute) {
-                    return attribute.index() == alternative;
-                }))
-                continue;
-            if (auto admitted = admit(AttributeGates[alternative], position); !admitted)
-                return admitted;
-        }
         return {};
     }
 
