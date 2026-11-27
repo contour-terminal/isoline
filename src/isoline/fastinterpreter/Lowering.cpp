@@ -23,6 +23,9 @@
 
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
+#include <isoline/numerics/SimdKernels.hpp>
+#include <isoline/numerics/SimdShape.hpp>
+#include <isoline/runtime/Value.hpp>
 
 namespace isoline::fastinterpreter
 {
@@ -527,14 +530,146 @@ namespace
                                  .type = resultTypeOf(instruction.opcode),
                                  .constant = instruction.c });
                     return;
-                // uncovered-begin(lowering-later-task)
-                default:
-                    core::todo(std::format(
-                        "lowering {}: memory, references, SIMD and exceptions are lowered by later "
-                        "parts of the fast interpreter",
-                        binary::opcodeInfo(instruction.opcode).text));
-                    // uncovered-end(lowering-later-task)
+                case Opcode::V128Const: lowerV128Const(instruction); return;
+                case Opcode::I8x16Shuffle: lowerShuffle(instruction); return;
+                default: break;
             }
+            if (auto const* lane = simdLaneRowOf(instruction.opcode))
+            {
+                lowerLaneOperation(*lane, instruction.lane);
+                return;
+            }
+            if (auto const* wide = wideArithmeticRowOf(instruction.opcode))
+            {
+                lowerWideArithmetic(*wide);
+                return;
+            }
+            if (auto const operation = simdKernelOperationOf(numerics::simdShape(instruction.opcode));
+                operation != OperationId::Nop)
+            {
+                lowerSimdKernel(instruction.opcode, operation);
+                return;
+            }
+            // uncovered-begin(lowering-later-task)
+            core::todo(
+                std::format("lowering {}: exceptions are lowered by a later part of the fast interpreter",
+                            binary::opcodeInfo(instruction.opcode).text));
+        }
+        // uncovered-end(lowering-later-task)
+
+        /// The home slot of the v128 @p entry, once what it holds is there: a forwarded local is moved to it,
+        /// and no v128 is a constant entry (v128.const writes its slots at once). What an operation reads
+        /// from the slots its result replaces, or from the slots it finds right above another operand.
+        [[nodiscard]] uint32_t homed(Entry const& entry)
+        {
+            if (entry.kind == EntryKind::Local)
+                materialize(entry);
+            return entry.slot;
+        }
+
+        /// Lowers v128.const into a fresh slot pair.
+        void lowerV128Const(binary::Instruction const& instruction)
+        {
+            auto const slot = _top;
+            auto const vector = runtime::v128FromBytes(binary::v128LiteralOf(_context.module, instruction));
+            push(Entry { .type = ValueType { .kind = binary::ValueKind::V128 } });
+            emit(OperationId::Const128, { slot }, { vector.lanes[0], vector.lanes[1] });
+        }
+
+        /// Lowers i8x16.shuffle: the result replaces the first operand, which is moved to its home slots
+        /// first, and the 16 lane indices are two immediates, eight to the word.
+        void lowerShuffle(binary::Instruction const& instruction)
+        {
+            auto second = pop();
+            auto first = pop();
+            auto const destination = homed(first);
+            auto const secondSource = readable(second);
+            auto const lanes = runtime::v128FromBytes(binary::v128LiteralOf(_context.module, instruction));
+            emit(
+                OperationId::I8x16Shuffle, { destination, secondSource }, { lanes.lanes[0], lanes.lanes[1] });
+            push(Entry { .type = first.type });
+        }
+
+        /// Lowers a lane operation of @p row at lane @p lane: its result in its first operand's home slot.
+        void lowerLaneOperation(SimdLaneRow const& row, uint8_t lane)
+        {
+            auto const result = resultTypeOf(row.opcode);
+            if (row.shape == numerics::SimdShape::Splat)
+            {
+                auto scalar = pop();
+                emit(row.operation, { scalar.slot, readable(scalar) }, {});
+            }
+            else if (row.shape == numerics::SimdShape::ExtractLane)
+            {
+                auto vector = pop();
+                emit(row.operation, { vector.slot, readable(vector) }, { lane });
+            }
+            else
+            {
+                Require(row.shape == numerics::SimdShape::ReplaceLane);
+                auto scalar = pop();
+                auto vector = pop();
+                auto const vectorSource = readable(vector);
+                emit(row.operation, { vector.slot, vectorSource, readable(scalar) }, { lane });
+            }
+            push(Entry { .type = result });
+        }
+
+        /// Lowers wide arithmetic: its two results, low then high, in its first operand's home slot and the
+        /// slot after it.
+        void lowerWideArithmetic(WideArithmeticRow const& row)
+        {
+            auto const& signature = binary::signatureInfo(binary::opcodeInfo(row.opcode).signature);
+            auto const i64 = ValueType { .kind = binary::ValueKind::I64 };
+            if (signature.paramCount == 4)
+            {
+                auto rightHigh = pop();
+                auto rightLow = pop();
+                auto leftHigh = pop();
+                auto leftLow = pop();
+                auto const leftLowSource = readable(leftLow);
+                auto const leftHighSource = readable(leftHigh);
+                auto const rightLowSource = readable(rightLow);
+                emit(row.operation,
+                     { leftLow.slot, leftLowSource, leftHighSource, rightLowSource, readable(rightHigh) },
+                     {});
+                push(Entry { .type = i64 });
+                push(Entry { .type = i64 });
+                return;
+            }
+            auto right = pop();
+            auto left = pop();
+            auto const leftSource = readable(left);
+            emit(row.operation, { left.slot, leftSource, readable(right) }, {});
+            push(Entry { .type = i64 });
+            push(Entry { .type = i64 });
+        }
+
+        /// Lowers a vector operator of a kernel shape to @p operation, its shape's generic one, whose last
+        /// word is the operator's numerics kernel, resolved here once: its result in its first operand's home
+        /// slot.
+        void lowerSimdKernel(Opcode opcode, OperationId operation)
+        {
+            auto const& signature = binary::signatureInfo(binary::opcodeInfo(opcode).signature);
+            auto const count = signature.paramCount;
+            auto operands = std::array<Entry, 3> {};
+            for (auto& operand: std::span { operands }.first(count) | std::views::reverse)
+                operand = pop();
+            auto sources = std::array<uint32_t, 3> {};
+            for (auto const index: std::views::iota(std::size_t { 0 }, std::size_t { count }))
+                sources[index] = readable(operands[index]);
+            auto const destination = operands[0].slot;
+            auto const kernel = simdKernelWordOf(opcode);
+            Require(kernel != 0);
+            switch (count)
+            {
+                case 1: emit(operation, { destination, sources[0] }, { kernel }); break;
+                case 2: emit(operation, { destination, sources[0], sources[1] }, { kernel }); break;
+                default:
+                    emit(operation, { destination, sources[0], sources[1], sources[2] }, { kernel });
+                    break;
+            }
+            push(Entry { .type = resultTypeOf(opcode) });
         }
 
         /// Lowers a Unary row: its operand's slot to a result in the operand's home slot.
@@ -629,9 +764,9 @@ namespace
                                                                         : binary::ValueKind::I32 };
         }
 
-        /// Emits the load or store of @p row over @p slots, for @p instruction's memory and offset: to memory
-        /// 0, the row's own operation of the memory's address type; to any other memory, @p indexed naming
-        /// the memory and that operation.
+        /// Emits the load or store of @p row over @p slots, for @p instruction's memory, offset and lane: to
+        /// memory 0, the row's own operation of the memory's address type, a lane access's lane after the
+        /// offset; to any other memory, @p indexed naming the memory, that operation and the lane.
         void emitAccess(LoweringRow const& row,
                         binary::Instruction const& instruction,
                         OperationId indexed,
@@ -641,23 +776,34 @@ namespace
             auto const access = _context.memoryAddressTypes[memory] == binary::AddressType::I64
                                     ? row.memory64
                                     : row.operation;
-            if (memory == 0)
-                emit(access, slots, { instruction.c });
-            else
+            auto const lane = binary::memoryAccessOf(row.opcode)->shape == binary::VectorShape::Lane;
+            if (memory != 0)
                 emit(indexed,
                      slots,
                      { instruction.c,
-                       indexedAccessWord(IndexedAccess { .memory = memory, .access = access }) });
+                       indexedAccessWord(
+                           IndexedAccess { .memory = memory, .access = access, .lane = instruction.lane }) });
+            else if (lane)
+                emit(access, slots, { instruction.c, instruction.lane });
+            else
+                emit(access, slots, { instruction.c });
         }
 
-        /// Lowers a Load row: the address's slot to the value, in the address's home slot.
+        /// Lowers a Load row: the address's slot to the value, in the address's home slot. A lane load's
+        /// vector, above the address, is moved to its home slots first, where the access finds it.
         void lowerLoad(LoweringRow const& row, binary::Instruction const& instruction)
         {
+            auto const& access = *binary::memoryAccessOf(row.opcode);
+            auto vector = Entry {};
+            if (access.shape == binary::VectorShape::Lane)
+                vector = pop();
             auto address = pop();
             auto const source = readable(address);
+            if (access.shape == binary::VectorShape::Lane)
+                Require(homed(vector) == address.slot + 1);
             emitAccess(row, instruction, OperationId::LoadIndexed, { address.slot, source });
             // Its signature is its address type's (Special); the value's type is the access's.
-            push(Entry { .type = ValueType { .kind = binary::memoryAccessOf(row.opcode)->value } });
+            push(Entry { .type = ValueType { .kind = access.value } });
         }
 
         /// Lowers a Store row: the value's slot to memory at the address's.

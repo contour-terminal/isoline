@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -25,6 +26,9 @@
 #include <isoline/fastinterpreter/SlotCodec.hpp>
 #include <isoline/numerics/Float.hpp>
 #include <isoline/numerics/Integer.hpp>
+#include <isoline/numerics/SimdKernels.hpp>
+#include <isoline/numerics/SimdLanes.hpp>
+#include <isoline/numerics/SimdShape.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -594,19 +598,98 @@ template <binary::AddressType Addressing, uint32_t Width>
     return effective & accessMask(effective, size, Width);
 }
 
+/// The v128 in the two slots from slot @p slot of the frame @p fp: lane 0's bits first.
+[[nodiscard]] inline runtime::V128 vectorAt(Slot const* fp, uint32_t slot) noexcept
+{
+    return runtime::V128 { .lanes = { fp[slot], fp[slot + 1] } };
+}
+
+/// Writes @p vector to the two slots from slot @p slot of the frame @p fp.
+inline void storeVector(Slot* fp, uint32_t slot, runtime::V128 vector) noexcept
+{
+    fp[slot] = vector.lanes[0];
+    fp[slot + 1] = vector.lanes[1];
+}
+
+/// The v128 a vector load of @p Access reads from @p bytes, its width's worth, little-endian on every host:
+/// the 16 bytes whole; 8 bytes of narrow lanes, each widened as Access says; one lane's worth copied to every
+/// lane, or to lane 0 of a zeroed vector; or, for a lane load, @p vector with lane @p lane replaced.
+template <binary::MemoryAccess Access>
+[[nodiscard]] inline runtime::V128 loadVector(std::byte const* bytes,
+                                              [[maybe_unused]] runtime::V128 vector,
+                                              [[maybe_unused]] uint8_t lane) noexcept
+{
+    using Lane = MemoryWord<Access.memoryLaneWidth()>;
+    if constexpr (Access.shape == binary::VectorShape::Whole)
+        return runtime::V128 { .lanes = { loadLittleEndian<uint64_t>(bytes),
+                                          loadLittleEndian<uint64_t>(bytes + 8) } };
+    else if constexpr (Access.shape == binary::VectorShape::Extend8x8
+                       || Access.shape == binary::VectorShape::Extend16x4
+                       || Access.shape == binary::VectorShape::Extend32x2)
+    {
+        using Wide = MemoryWord<2 * Access.memoryLaneWidth()>;
+        auto result = runtime::V128 {};
+        for (auto const index: std::views::iota(0U, numerics::LaneCount<Wide>))
+            numerics::setLane<Wide>(result,
+                                    index,
+                                    numerics::widened<Wide, Access.extension>(
+                                        loadLittleEndian<Lane>(bytes + (index * sizeof(Lane)))));
+        return result;
+    }
+    else if constexpr (Access.shape == binary::VectorShape::Splat)
+    {
+        auto const value = loadLittleEndian<Lane>(bytes);
+        auto result = runtime::V128 {};
+        for (auto const index: std::views::iota(0U, numerics::LaneCount<Lane>))
+            numerics::setLane<Lane>(result, index, value);
+        return result;
+    }
+    else if constexpr (Access.shape == binary::VectorShape::Zero)
+        return runtime::V128 { .lanes = { uint64_t { loadLittleEndian<Lane>(bytes) }, 0 } };
+    else
+    {
+        static_assert(Access.shape == binary::VectorShape::Lane);
+        numerics::setLane<Lane>(vector, lane, loadLittleEndian<Lane>(bytes));
+        return vector;
+    }
+}
+
+/// Writes what a vector store of @p Access stores of @p vector to @p bytes, little-endian on every host: the
+/// 16 bytes whole, or lane @p lane.
+template <binary::MemoryAccess Access>
+inline void storeVectorBytes(std::byte* bytes, runtime::V128 vector, [[maybe_unused]] uint8_t lane) noexcept
+{
+    if constexpr (Access.shape == binary::VectorShape::Whole)
+    {
+        storeLittleEndian<uint64_t>(bytes, vector.lanes[0]);
+        storeLittleEndian<uint64_t>(bytes + 8, vector.lanes[1]);
+    }
+    else
+    {
+        static_assert(Access.shape == binary::VectorShape::Lane);
+        using Lane = MemoryWord<Access.width>;
+        storeLittleEndian<Lane>(bytes, numerics::laneOf<Lane>(vector, lane));
+    }
+}
+
 /// The access of memory 0 operation @p Id (a Load or Store row's) to the memory @p base of @p size bytes:
 /// a load writes the value it reads, widened as binary::MemoryAccessTable says, to slot operand 0; a store
-/// writes the low bytes of slot operand 1. The pc stays at the operation.
+/// writes the low bytes of slot operand 1. A vector load writes the two slots from slot operand 0, a lane
+/// load reading the vector it changes from the two after them, and a vector store reads the two from slot
+/// operand 1. Scalar and vector alike, the offset is bounds-checked, and masked against speculation, by
+/// boundsChecked() at the access's own width. The pc stays at the operation.
 /// @param offset The access's static offset.
+/// @param lane The lane a lane access reads or writes; ignored by any other.
 /// @return Flow::Continue, or what leaving with OutOfBoundsMemoryAccess gives.
 template <OperationId Id>
-[[nodiscard]] inline Flow accessMemory(State& state, std::byte* base, uint64_t size, uint64_t offset) noexcept
+[[nodiscard]] inline Flow accessMemory(
+    State& state, std::byte* base, uint64_t size, uint64_t offset, [[maybe_unused]] uint8_t lane) noexcept
 {
     constexpr auto Row = LoweringRows[detail::memoryRowOf(Id)];
     constexpr auto Access = *binary::memoryAccessOf(Row.opcode);
     constexpr auto Addressing = Id == Row.memory64 ? binary::AddressType::I64 : binary::AddressType::I32;
     constexpr auto Width = uint32_t { Access.width };
-    using Moved = MemoryWord<Width>;
+    constexpr auto Vector = Access.value == binary::ValueKind::V128;
     auto* const fp = state.fp;
     // An i32 address is held zero-extended in its slot (detail::encode()), and read as 32 bits all the same:
     // the bounds check's single comparison is exact only below 2^32, so no slot a producer left with high
@@ -620,29 +703,48 @@ template <OperationId Id>
         return leaveTrapped(
             *state.context, state.stepsLeft, runtime::Trap { runtime::TrapCode::OutOfBoundsMemoryAccess });
     auto* const bytes = base + *checked;
-    if constexpr (Access.access == binary::MemoryAccessKind::Store)
-        storeLittleEndian<Moved>(bytes, static_cast<Moved>(fp[slotOperand<1>(state.pc)]));
+    if constexpr (Vector && Access.access == binary::MemoryAccessKind::Store)
+        storeVectorBytes<Access>(bytes, vectorAt(fp, slotOperand<1>(state.pc)), lane);
+    else if constexpr (Vector)
+    {
+        // A lane load's vector sits in the two slots above its address, which the result replaces.
+        auto const destination = slotOperand<0>(state.pc);
+        auto vector = runtime::V128 {};
+        if constexpr (Access.shape == binary::VectorShape::Lane)
+            vector = vectorAt(fp, destination + 1);
+        storeVector(fp, destination, loadVector<Access>(bytes, vector, lane));
+    }
     else
     {
-        auto const loaded = loadLittleEndian<Moved>(bytes);
-        auto value = uint64_t { loaded };
-        if constexpr (Access.extension == binary::Extension::Sign)
-            value =
-                static_cast<uint64_t>(static_cast<int64_t>(static_cast<std::make_signed_t<Moved>>(loaded)));
-        // A 32-bit value is held zero-extended.
-        if constexpr (Access.value == binary::ValueKind::I32 || Access.value == binary::ValueKind::F32)
-            value = static_cast<uint32_t>(value);
-        fp[slotOperand<0>(state.pc)] = value;
+        using Moved = MemoryWord<Width>;
+        if constexpr (Access.access == binary::MemoryAccessKind::Store)
+            storeLittleEndian<Moved>(bytes, static_cast<Moved>(fp[slotOperand<1>(state.pc)]));
+        else
+        {
+            auto const loaded = loadLittleEndian<Moved>(bytes);
+            auto value = uint64_t { loaded };
+            if constexpr (Access.extension == binary::Extension::Sign)
+                value = static_cast<uint64_t>(
+                    static_cast<int64_t>(static_cast<std::make_signed_t<Moved>>(loaded)));
+            // A 32-bit value is held zero-extended.
+            if constexpr (Access.value == binary::ValueKind::I32 || Access.value == binary::ValueKind::F32)
+                value = static_cast<uint32_t>(value);
+            fp[slotOperand<0>(state.pc)] = value;
+        }
     }
     return Flow::Continue;
 }
 
-/// A load or store of memory 0 (a Load or Store row's operation): its access to the registers' memory 0.
+/// A load or store of memory 0 (a Load or Store row's operation): its access to the registers' memory 0, at
+/// the lane its second immediate names where it is a lane access.
 template <OperationId Id>
 [[nodiscard]] inline Flow memoryOperation(State& state) noexcept
 {
-    if (auto const flow =
-            accessMemory<Id>(state, state.memory0, state.memory0Size, immediateOperand<Id, 0>(state.pc));
+    auto lane = uint8_t { 0 };
+    if constexpr (operationRow(Id).immediates == 2)
+        lane = static_cast<uint8_t>(immediateOperand<Id, 1>(state.pc));
+    if (auto const flow = accessMemory<Id>(
+            state, state.memory0, state.memory0Size, immediateOperand<Id, 0>(state.pc), lane);
         flow != Flow::Continue) [[unlikely]]
         return flow;
     return next<Id>(state);
@@ -651,7 +753,7 @@ template <OperationId Id>
 namespace detail
 {
     /// An access of a memory other than memory 0, by the memory 0 operation whose body it runs.
-    using IndexedAccessFunction = Flow (*)(State&, std::byte*, uint64_t, uint64_t) noexcept;
+    using IndexedAccessFunction = Flow (*)(State&, std::byte*, uint64_t, uint64_t, uint8_t) noexcept;
 
     /// accessMemory() of every memory 0 operation, by OperationId; null for every other operation.
     [[nodiscard]] consteval std::array<IndexedAccessFunction, OperationCount>
@@ -681,7 +783,8 @@ template <OperationId Id>
     auto const named = indexedAccessOf(immediateOperand<Id, 1>(state.pc));
     auto const bytes = state.context->store.memory(state.context->instance->memories[named.memory]).bytes();
     auto const access = detail::IndexedAccessFunctions[std::to_underlying(named.access)];
-    if (auto const flow = access(state, bytes.data(), bytes.size(), immediateOperand<Id, 0>(state.pc));
+    if (auto const flow =
+            access(state, bytes.data(), bytes.size(), immediateOperand<Id, 0>(state.pc), named.lane);
         flow != Flow::Continue) [[unlikely]]
         return flow;
     return next<Id>(state);
@@ -940,6 +1043,181 @@ template <OperationId Id>
     return step.flow;
 }
 
+/// The numerics kernel a dedicated vector operator runs inline: the same function numerics' table holds for
+/// its instruction (Simd.dedicatedRowsRunTheTablesKernels), called directly rather than through a word.
+/// nullptr for an instruction without a dedicated operator.
+template <binary::Opcode>
+inline constexpr auto SimdInlineKernel = nullptr;
+
+template <>
+inline constexpr numerics::SimdBinaryKernel SimdInlineKernel<binary::Opcode::I32x4Add> =
+    &numerics::mapHalves<&numerics::packedAdd<uint32_t>>;
+template <>
+inline constexpr numerics::SimdBinaryKernel SimdInlineKernel<binary::Opcode::F32x4Mul> =
+    &numerics::mapLanes<runtime::F32, &numerics::fmul<runtime::F32>>;
+
+namespace detail
+{
+    /// The SimdLaneTable row of @p id, or NoRow.
+    [[nodiscard]] consteval std::size_t simdLaneRowOf(OperationId id) noexcept
+    {
+        auto const row = std::ranges::find(SimdLaneTable, id, &SimdLaneRow::operation);
+        return row == SimdLaneTable.end() ? NoRow : static_cast<std::size_t>(row - SimdLaneTable.begin());
+    }
+
+    /// The WideArithmeticTable row of @p id, or NoRow.
+    [[nodiscard]] consteval std::size_t wideArithmeticRowOf(OperationId id) noexcept
+    {
+        auto const row = std::ranges::find(WideArithmeticTable, id, &WideArithmeticRow::operation);
+        return row == WideArithmeticTable.end() ? NoRow
+                                                : static_cast<std::size_t>(row - WideArithmeticTable.begin());
+    }
+
+    /// The instruction whose dedicated Binary row lowers to the vector operator @p id, or NoRow.
+    [[nodiscard]] consteval std::size_t dedicatedSimdRowOf(OperationId id) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, LoweringRows.size()))
+            if (LoweringRows[index].form == OperationForm::Binary && LoweringRows[index].operation == id)
+                return index;
+        return NoRow;
+    }
+} // namespace detail
+
+/// A lane operation (SimdLaneTable): a splat of the scalar slot's low lane bits to every lane, an
+/// extract_lane of the lane its immediate names into a scalar slot, widened as the row says and a 32-bit
+/// scalar zero-extended, or a replace_lane of that lane by the scalar slot's low bits.
+template <OperationId Id>
+[[nodiscard]] inline Flow laneOperation(State& state) noexcept
+{
+    constexpr auto Row = SimdLaneTable[detail::simdLaneRowOf(Id)];
+    using Lane = MemoryWord<Row.laneBytes>;
+    auto* const fp = state.fp;
+    auto const* pc = state.pc;
+    auto const destination = slotOperand<0>(pc);
+    if constexpr (Row.shape == numerics::SimdShape::Splat)
+    {
+        auto const value = static_cast<Lane>(fp[slotOperand<1>(pc)]);
+        auto vector = runtime::V128 {};
+        for (auto const index: std::views::iota(0U, numerics::LaneCount<Lane>))
+            numerics::setLane<Lane>(vector, index, value);
+        storeVector(fp, destination, vector);
+    }
+    else if constexpr (Row.shape == numerics::SimdShape::ExtractLane)
+    {
+        auto const lane = numerics::laneOf<Lane>(vectorAt(fp, slotOperand<1>(pc)),
+                                                 static_cast<unsigned>(immediateOperand<Id, 0>(pc)));
+        if constexpr (sizeof(Lane) < sizeof(uint32_t))
+            fp[destination] = numerics::widened<uint32_t, Row.extension>(lane);
+        else
+            fp[destination] = lane;
+    }
+    else
+    {
+        static_assert(Row.shape == numerics::SimdShape::ReplaceLane);
+        auto vector = vectorAt(fp, slotOperand<1>(pc));
+        numerics::setLane<Lane>(vector,
+                                static_cast<unsigned>(immediateOperand<Id, 0>(pc)),
+                                static_cast<Lane>(fp[slotOperand<2>(pc)]));
+        storeVector(fp, destination, vector);
+    }
+    return next<Id>(state);
+}
+
+/// A vector operation other than a lane operation: an operator of a kernel shape through the kernel its last
+/// word holds, a dedicated operator through its inline kernel, or i8x16.shuffle. Every operand is read before
+/// the result is written, as the result's slots are the first operand's.
+template <OperationId Id>
+[[nodiscard]] inline Flow simdOperation(State& state) noexcept
+{
+    auto* const fp = state.fp;
+    auto const* pc = state.pc;
+    auto const destination = slotOperand<0>(pc);
+    if constexpr (detail::dedicatedSimdRowOf(Id) != detail::NoRow)
+    {
+        constexpr auto Kernel = SimdInlineKernel<LoweringRows[detail::dedicatedSimdRowOf(Id)].opcode>;
+        static_assert(Kernel != nullptr, "a dedicated vector operator runs a kernel of numerics");
+        storeVector(
+            fp, destination, Kernel(vectorAt(fp, slotOperand<1>(pc)), vectorAt(fp, slotOperand<2>(pc))));
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::I8x16Shuffle)
+    {
+        // The 16 lane indices, eight to the word, lane 0 lowest.
+        auto const words = std::array { immediateOperand<Id, 0>(pc), immediateOperand<Id, 1>(pc) };
+        auto lanes = std::array<std::byte, 16> {};
+        for (auto const index: std::views::iota(std::size_t { 0 }, lanes.size()))
+            lanes[index] = static_cast<std::byte>(words[index / 8] >> (8U * (index % 8)));
+        storeVector(fp,
+                    destination,
+                    numerics::shuffle(vectorAt(fp, destination), vectorAt(fp, slotOperand<1>(pc)), lanes));
+        return next<Id>(state);
+    }
+    else
+    {
+        // The kernel lowering resolved, the operation's last word.
+        auto const kernel = immediateOperand<Id, operationRow(Id).immediates - 1>(pc);
+        auto const first = vectorAt(fp, slotOperand<1>(pc));
+        if constexpr (Id == OperationId::SimdUnary)
+            storeVector(fp, destination, std::bit_cast<numerics::SimdUnaryKernel>(kernel)(first));
+        else if constexpr (Id == OperationId::SimdBinary)
+            storeVector(
+                fp,
+                destination,
+                std::bit_cast<numerics::SimdBinaryKernel>(kernel)(first, vectorAt(fp, slotOperand<2>(pc))));
+        else if constexpr (Id == OperationId::SimdTernary)
+            storeVector(fp,
+                        destination,
+                        std::bit_cast<numerics::SimdTernaryKernel>(kernel)(
+                            first, vectorAt(fp, slotOperand<2>(pc)), vectorAt(fp, slotOperand<3>(pc))));
+        else if constexpr (Id == OperationId::SimdTest)
+            fp[destination] = std::bit_cast<numerics::SimdTestKernel>(kernel)(first).bits;
+        else
+        {
+            static_assert(Id == OperationId::SimdShift,
+                          "every vector operation of Operations.def has a body");
+            storeVector(fp,
+                        destination,
+                        std::bit_cast<numerics::SimdShiftKernel>(kernel)(
+                            first, static_cast<uint32_t>(fp[slotOperand<2>(pc)])));
+        }
+        return next<Id>(state);
+    }
+}
+
+/// The wide-arithmetic kernel of an instruction (numerics/Integer.hpp), the same the reference interpreter
+/// runs: two {low, high} pairs to one, or two i64 to their full product. nullptr for any other instruction.
+template <binary::Opcode>
+inline constexpr auto WideKernel = nullptr;
+
+template <>
+inline constexpr auto WideKernel<binary::Opcode::I64Add128> = &numerics::add128;
+template <>
+inline constexpr auto WideKernel<binary::Opcode::I64Sub128> = &numerics::sub128;
+template <>
+inline constexpr auto WideKernel<binary::Opcode::I64MulWideS> = &numerics::mulWideS;
+template <>
+inline constexpr auto WideKernel<binary::Opcode::I64MulWideU> = &numerics::mulWideU;
+
+/// A wide-arithmetic operation (WideArithmeticTable): its kernel over its operands' slots, the result's low
+/// half to its destination slot and the high half to the slot after it, once every operand is read.
+template <OperationId Id>
+[[nodiscard]] inline Flow wideOperation(State& state) noexcept
+{
+    constexpr auto Kernel = WideKernel<WideArithmeticTable[detail::wideArithmeticRowOf(Id)].opcode>;
+    auto* const fp = state.fp;
+    auto const* pc = state.pc;
+    auto result = numerics::Halves {};
+    if constexpr (operationRow(Id).slots == 5)
+        result = Kernel(numerics::Halves { fp[slotOperand<1>(pc)], fp[slotOperand<2>(pc)] },
+                        numerics::Halves { fp[slotOperand<3>(pc)], fp[slotOperand<4>(pc)] });
+    else
+        result = Kernel(fp[slotOperand<1>(pc)], fp[slotOperand<2>(pc)]);
+    auto const destination = slotOperand<0>(pc);
+    fp[destination] = result[0];
+    fp[destination + 1] = result[1];
+    return next<Id>(state);
+}
+
 /// The operations of a body of their own: control without operands, moves, constants, selects, globals,
 /// the accesses of memories other than memory 0, memory.size and memory.grow, the bulk operations, the table
 /// operations, the drops, the reference operations, unconditional branches, if, br_table and return.
@@ -1098,8 +1376,14 @@ template <OperationId Id>
 template <OperationId Id>
 [[nodiscard]] inline Flow operation(State& state) noexcept
 {
-    if constexpr (operationRow(Id).family == OperationFamily::Numeric)
+    if constexpr (detail::wideArithmeticRowOf(Id) != detail::NoRow)
+        return wideOperation<Id>(state);
+    else if constexpr (operationRow(Id).family == OperationFamily::Numeric)
         return numericOperation<Id>(state);
+    else if constexpr (detail::simdLaneRowOf(Id) != detail::NoRow)
+        return laneOperation<Id>(state);
+    else if constexpr (operationRow(Id).family == OperationFamily::Simd)
+        return simdOperation<Id>(state);
     else if constexpr (operationRow(Id).family == OperationFamily::Memory)
         return memoryOperation<Id>(state);
     else if constexpr (detail::fusionRowOf(Id) != detail::NoRow)

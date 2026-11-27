@@ -33,6 +33,7 @@
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/testing/Engines.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
+#include <isoline/fastinterpreter/testing/VectorOperations.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Interrupt.hpp>
@@ -81,6 +82,7 @@ using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::functionOf;
 using isoline::fastinterpreter::testing::handWritten;
 using isoline::fastinterpreter::testing::Harness;
+using isoline::fastinterpreter::testing::isVectorOperation;
 using isoline::fastinterpreter::testing::memoryInstruction;
 using isoline::fastinterpreter::testing::op;
 using isoline::fastinterpreter::testing::operationsOf;
@@ -629,8 +631,8 @@ TEST_CASE("FastInterpreter.entryAllocatesOnlyOnceAdmitted")
 
 TEST_CASE("FastInterpreter.runsTheOperationsNoLoweringEmitsYet")
 {
-    // nop lowers to nothing and v128.const comes with the vector operations, so code written by hand runs
-    // them: (param v128) (result v128), its body nop, const128 s2 #lanes, return s2.
+    // nop lowers to nothing, so code written by hand runs it, beside a const128 into a slot no lowering would
+    // give it: (param v128) (result v128), its body nop, const128 s2 #lanes, return s2.
     auto const dispatch = GENERATE(from_range(availableDispatches()));
     auto const byHand = [dispatch](LoweredModule const& lowered) {
         REQUIRE(lowered.functions().front().frameSlots >= 4);
@@ -1026,8 +1028,10 @@ void checkMemoryOperations(Agreement& agreement)
         {
             INFO((addressType == binary::AddressType::I64 ? "i64" : "i32")
                  << " addresses, memory " << memory);
+            // The v128 accesses are Simd_test.cpp's (isVectorOperation()).
             for (auto const& row: LoweringRows)
-                if (row.form == OperationForm::Load || row.form == OperationForm::Store)
+                if ((row.form == OperationForm::Load || row.form == OperationForm::Store)
+                    && !isVectorOperation(row.operation))
                     checkMemoryAccess(agreement, row, addressType, memory);
             auto const kind = addressType == binary::AddressType::I64 ? binary::I64 : binary::I32;
             auto const size = code({ { 0x3F }, encodeU32(memory) });
@@ -1335,8 +1339,9 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
     // with constants for its right operand.
     for (auto const& row: LoweringRows)
     {
+        // The vector operators' rows are Simd_test.cpp's (isVectorOperation()).
         if (row.form == OperationForm::Special || row.form == OperationForm::Load
-            || row.form == OperationForm::Store)
+            || row.form == OperationForm::Store || isVectorOperation(row.operation))
             continue;
         auto const& info = binary::opcodeInfo(row.opcode);
         INFO(info.text);
@@ -1642,13 +1647,14 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
     checkBulkMemoryOperations(agreement);
     checkTableOperations(agreement);
 
-    // No lowering emits these yet: nop lowers to nothing, and v128.const is lowered with the vector
-    // operations.
-    auto const notEmitted = std::set<OperationId> { OperationId::Nop, OperationId::Const128 };
+    // No lowering emits nop, which lowers to nothing; the vector operations, the v128 accesses and wide
+    // arithmetic are Simd_test.cpp's, which checks that every one of them runs (isVectorOperation()).
     for (auto const& row: OperationTable)
     {
         INFO(row.name);
-        CHECK(agreement.executed().contains(row.id) != notEmitted.contains(row.id));
+        if (isVectorOperation(row.id))
+            continue;
+        CHECK(agreement.executed().contains(row.id) != (row.id == OperationId::Nop));
     }
 }
 

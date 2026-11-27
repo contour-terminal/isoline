@@ -102,8 +102,58 @@ ISOLINE_FAST_OPERATION(I64Store16, "i64.store16", Store, 2, 1, Memory)
 ISOLINE_FAST_OPERATION(I64Store16Memory64, "i64.store16.memory64", Store, 2, 1, Memory)
 ISOLINE_FAST_OPERATION(I64Store32, "i64.store32", Store, 2, 1, Memory)
 ISOLINE_FAST_OPERATION(I64Store32Memory64, "i64.store32.memory64", Store, 2, 1, Memory)
+// The vector loads and stores of memory 0, one per vector row of binary::MemoryAccessTable, alike: a load's
+// destination, two slots, and its address; a store's address and its value's first slot; then the static
+// offset. A lane access's lane index follows it: a lane load replaces that lane of the vector after the
+// address, in the two slots above it (its home slots, where lowering moves it), and a lane store writes that
+// lane.
+ISOLINE_FAST_OPERATION(V128Load, "v128.load", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128LoadMemory64, "v128.load.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load8x8S, "v128.load8x8_s", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load8x8SMemory64, "v128.load8x8_s.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load8x8U, "v128.load8x8_u", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load8x8UMemory64, "v128.load8x8_u.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load16x4S, "v128.load16x4_s", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load16x4SMemory64, "v128.load16x4_s.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load16x4U, "v128.load16x4_u", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load16x4UMemory64, "v128.load16x4_u.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32x2S, "v128.load32x2_s", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32x2SMemory64, "v128.load32x2_s.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32x2U, "v128.load32x2_u", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32x2UMemory64, "v128.load32x2_u.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load8Splat, "v128.load8_splat", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load8SplatMemory64, "v128.load8_splat.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load16Splat, "v128.load16_splat", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load16SplatMemory64, "v128.load16_splat.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32Splat, "v128.load32_splat", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32SplatMemory64, "v128.load32_splat.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load64Splat, "v128.load64_splat", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load64SplatMemory64, "v128.load64_splat.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32Zero, "v128.load32_zero", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load32ZeroMemory64, "v128.load32_zero.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load64Zero, "v128.load64_zero", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load64ZeroMemory64, "v128.load64_zero.memory64", Load, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Load8Lane, "v128.load8_lane", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Load8LaneMemory64, "v128.load8_lane.memory64", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Load16Lane, "v128.load16_lane", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Load16LaneMemory64, "v128.load16_lane.memory64", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Load32Lane, "v128.load32_lane", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Load32LaneMemory64, "v128.load32_lane.memory64", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Load64Lane, "v128.load64_lane", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Load64LaneMemory64, "v128.load64_lane.memory64", Load, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store, "v128.store", Store, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128StoreMemory64, "v128.store.memory64", Store, 2, 1, Memory)
+ISOLINE_FAST_OPERATION(V128Store8Lane, "v128.store8_lane", Store, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store8LaneMemory64, "v128.store8_lane.memory64", Store, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store16Lane, "v128.store16_lane", Store, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store16LaneMemory64, "v128.store16_lane.memory64", Store, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store32Lane, "v128.store32_lane", Store, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store32LaneMemory64, "v128.store32_lane.memory64", Store, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store64Lane, "v128.store64_lane", Store, 2, 2, Memory)
+ISOLINE_FAST_OPERATION(V128Store64LaneMemory64, "v128.store64_lane.memory64", Store, 2, 2, Memory)
 // A load or store of a memory other than memory 0, reached through the store: the slots of its memory 0
-// twin, its static offset, then the memory and that twin (indexedAccessWord()), whose access it runs.
+// twin, its static offset, then the memory, that twin and a lane access's lane (indexedAccessWord()), whose
+// access it runs.
 ISOLINE_FAST_OPERATION(LoadIndexed, "load.indexed", Load, 2, 2, Variable)
 ISOLINE_FAST_OPERATION(StoreIndexed, "store.indexed", Store, 2, 2, Variable)
 // memory.size: the destination slot and the memory's index. memory.grow: the result's slot, then the
@@ -144,6 +194,57 @@ ISOLINE_FAST_OPERATION(RefAsNonNull, "ref.as_non_null", Unary, 2, 0, Control)
 // select: the destination, the two values and the condition
 ISOLINE_FAST_OPERATION(Select64, "select64", Special, 4, 0, Control)
 ISOLINE_FAST_OPERATION(Select128, "select128", Special, 4, 0, Control)
+
+// The vector operations: a v128 takes two slots, lane 0's bits first, and an operation names its first.
+//
+// An operator of a kernel shape (numerics::SimdShape) runs its numerics kernel, which lowering resolved once and
+// wrote as the operation's last word: the destination slot and the operands' slots, then the kernel. A unary
+// operator and a test take one vector, a binary operator two, a ternary three, a shift a vector and its i32
+// count.
+ISOLINE_FAST_OPERATION(SimdUnary, "simd.unary", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(SimdBinary, "simd.binary", Special, 3, 1, Simd)
+ISOLINE_FAST_OPERATION(SimdTernary, "simd.ternary", Special, 4, 1, Simd)
+ISOLINE_FAST_OPERATION(SimdTest, "simd.test", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(SimdShift, "simd.shift", Special, 3, 1, Simd)
+// The dedicated operators, which run the same numerics kernel inline (SimdInlineKernel): the destination slot
+// and the operands' slots, as a Binary row lowers them.
+ISOLINE_FAST_OPERATION(I32x4Add, "i32x4.add", Binary, 3, 0, Simd)
+ISOLINE_FAST_OPERATION(F32x4Mul, "f32x4.mul", Binary, 3, 0, Simd)
+// i8x16.shuffle: the first operand's slots, which lowering moved it to and the result replaces, and the second
+// operand's; then the 16 lane indices, eight bytes to the word, lane 0 lowest.
+ISOLINE_FAST_OPERATION(I8x16Shuffle, "i8x16.shuffle", Special, 2, 2, Simd)
+// The lane operations (SimdLaneTable): a splat's destination and its scalar's slot; an extract_lane's
+// destination and its vector's slot, then the lane; a replace_lane's destination, its vector's and its scalar's
+// slots, then the lane. A scalar of 32 bits is held zero-extended, an extracted i8 or i16 lane widened as its
+// instruction says.
+ISOLINE_FAST_OPERATION(I8x16Splat, "i8x16.splat", Special, 2, 0, Simd)
+ISOLINE_FAST_OPERATION(I16x8Splat, "i16x8.splat", Special, 2, 0, Simd)
+ISOLINE_FAST_OPERATION(I32x4Splat, "i32x4.splat", Special, 2, 0, Simd)
+ISOLINE_FAST_OPERATION(I64x2Splat, "i64x2.splat", Special, 2, 0, Simd)
+ISOLINE_FAST_OPERATION(F32x4Splat, "f32x4.splat", Special, 2, 0, Simd)
+ISOLINE_FAST_OPERATION(F64x2Splat, "f64x2.splat", Special, 2, 0, Simd)
+ISOLINE_FAST_OPERATION(I8x16ExtractLaneS, "i8x16.extract_lane_s", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(I8x16ExtractLaneU, "i8x16.extract_lane_u", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(I16x8ExtractLaneS, "i16x8.extract_lane_s", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(I16x8ExtractLaneU, "i16x8.extract_lane_u", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(I32x4ExtractLane, "i32x4.extract_lane", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(I64x2ExtractLane, "i64x2.extract_lane", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(F32x4ExtractLane, "f32x4.extract_lane", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(F64x2ExtractLane, "f64x2.extract_lane", Special, 2, 1, Simd)
+ISOLINE_FAST_OPERATION(I8x16ReplaceLane, "i8x16.replace_lane", Special, 3, 1, Simd)
+ISOLINE_FAST_OPERATION(I16x8ReplaceLane, "i16x8.replace_lane", Special, 3, 1, Simd)
+ISOLINE_FAST_OPERATION(I32x4ReplaceLane, "i32x4.replace_lane", Special, 3, 1, Simd)
+ISOLINE_FAST_OPERATION(I64x2ReplaceLane, "i64x2.replace_lane", Special, 3, 1, Simd)
+ISOLINE_FAST_OPERATION(F32x4ReplaceLane, "f32x4.replace_lane", Special, 3, 1, Simd)
+ISOLINE_FAST_OPERATION(F64x2ReplaceLane, "f64x2.replace_lane", Special, 3, 1, Simd)
+
+// Wide arithmetic (WideArithmeticTable): the destination slot, whose result's low half it gets and the slot
+// after it the high half, then the operands' slots: add128 and sub128 the low and high halves of each of their
+// two operands, the multiplications their two i64.
+ISOLINE_FAST_OPERATION(I64Add128, "i64.add128", Special, 5, 0, Numeric)
+ISOLINE_FAST_OPERATION(I64Sub128, "i64.sub128", Special, 5, 0, Numeric)
+ISOLINE_FAST_OPERATION(I64MulWideS, "i64.mul_wide_s", Special, 3, 0, Numeric)
+ISOLINE_FAST_OPERATION(I64MulWideU, "i64.mul_wide_u", Special, 3, 0, Numeric)
 
 // Numeric operations: one per numeric instruction, a destination slot and its operands' slots
 ISOLINE_FAST_OPERATION(I32Eqz, "i32.eqz", Unary, 2, 0, Numeric)

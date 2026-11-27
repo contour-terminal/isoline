@@ -57,6 +57,7 @@ using isoline::binary::testing::ModuleBuilder;
 using isoline::fastinterpreter::availableDispatches;
 using isoline::fastinterpreter::FastInterpreter;
 using isoline::fastinterpreter::LoweringConfig;
+using isoline::fastinterpreter::testing::encodingOf;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
 using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
@@ -336,16 +337,6 @@ enum class CrossCall : uint8_t
     ReturnCall, ///< call of a function of its own that return_calls the import.
 };
 
-/// Every scalar row of MemoryAccessTable: the accesses the fast interpreter lowers to its own operations.
-[[nodiscard]] std::vector<MemoryAccess> scalarAccesses()
-{
-    auto rows = std::vector<MemoryAccess> {};
-    for (auto const& row: MemoryAccessTable)
-        if (row.value != ValueKind::V128)
-            rows.push_back(row);
-    return rows;
-}
-
 /// Where an access falls.
 enum class Bounds : uint8_t
 {
@@ -372,14 +363,15 @@ struct EdgeCase
                         .pageSizeLog2 = pageSizeLog2 };
 }
 
-/// The edge cases: every scalar access at the last address it fits and the first it does not, by address
-/// and by offset, of both address types, in memory 0 and in memory 1; then the overflowing sums, and memories
-/// of custom page sizes and of no pages.
+/// The edge cases: every access, scalar and vector, at the last address it fits and the first it does not, by
+/// address and by offset, of both address types, in memory 0 and in memory 1; then the overflowing sums,
+/// memories of custom page sizes and of no pages, and the v128 accesses at the edges of memories of 0, 15, 16
+/// and 17 bytes and at offsets near 2^32 and 2^64.
 [[nodiscard]] std::vector<EdgeCase> edgeCases()
 {
     auto cases = std::vector<EdgeCase> {};
     auto const max = std::numeric_limits<uint64_t>::max();
-    for (auto const& row: scalarAccesses())
+    for (auto const& row: MemoryAccessTable)
     {
         for (auto const type: { AddressType::I32, AddressType::I64 })
         {
@@ -488,6 +480,99 @@ struct EdgeCase
         0,
         0,
         Bounds::Outside);
+    // The v128 accesses of 16 bytes, and narrower ones, in memories of 0, 15, 16 and 17 one-byte pages: a
+    // memory smaller than the access fits it nowhere, a memory of 16 bytes only at 0, of 17 at 0 and 1.
+    for (auto const type: { AddressType::I32, AddressType::I64 })
+    {
+        auto const name = [type](std::string_view what) {
+            return std::format("{}{}", type == AddressType::I64 ? "memory64: " : "", what);
+        };
+        for (auto const bytes: { uint64_t { 0 }, uint64_t { 15 }, uint64_t { 16 }, uint64_t { 17 } })
+        {
+            auto const memory = memoryOf(type, bytes, 0);
+            for (auto const opcode: { Opcode::V128Load, Opcode::V128Store })
+            {
+                auto const text = binary::opcodeInfo(opcode).text;
+                for (auto const address: { uint64_t { 0 }, uint64_t { 1 }, uint64_t { 2 } })
+                    add(name(std::format("{} bytes: {} at {}", bytes, text, address)),
+                        memory,
+                        opcode,
+                        address,
+                        0,
+                        address + 16 <= bytes ? Bounds::Inside : Bounds::Outside);
+                add(name(std::format("{} bytes: {} at offset 1", bytes, text)),
+                    memory,
+                    opcode,
+                    0,
+                    1,
+                    bytes >= 17 ? Bounds::Inside : Bounds::Outside);
+            }
+            for (auto const opcode: { Opcode::V128Load64Splat,
+                                      Opcode::V128Load8x8S,
+                                      Opcode::V128Load32Zero,
+                                      Opcode::V128Load8Lane,
+                                      Opcode::V128Store64Lane })
+            {
+                auto const width = uint64_t { binary::memoryAccessOf(opcode)->width };
+                add(name(std::format(
+                        "{} bytes: {} at the last address", bytes, binary::opcodeInfo(opcode).text)),
+                    memory,
+                    opcode,
+                    bytes >= width ? bytes - width : 0,
+                    0,
+                    bytes >= width ? Bounds::Inside : Bounds::Outside);
+            }
+        }
+    }
+    // Offsets near 2^32: an i32 address and offset whose sum passes 2^32 by less than the access's width.
+    auto const max32 = uint64_t { 0xFFFF'FFFF };
+    add("v128.load: address 2^32-16 and offset 16",
+        memory32,
+        Opcode::V128Load,
+        max32 - 15,
+        16,
+        Bounds::Outside);
+    add("v128.load: address 0 and offset 2^32-1", memory32, Opcode::V128Load, 0, max32, Bounds::Outside);
+    add("v128.store: address 2^32-1 and offset 2^32-1",
+        memory32,
+        Opcode::V128Store,
+        max32,
+        max32,
+        Bounds::Outside);
+    add("v128.load8_lane: address 2^32-1", memory32, Opcode::V128Load8Lane, max32, 0, Bounds::Outside);
+    // Offsets near 2^64: a memory64 address and offset whose sum wraps past 2^64, to an offset that would
+    // fit.
+    add("memory64: v128.load at address 2^64-16", memory64, Opcode::V128Load, max - 15, 0, Bounds::Outside);
+    add("memory64: v128.load of address 16 and offset 2^64-16, summing to 0",
+        memory64,
+        Opcode::V128Load,
+        16,
+        max - 15,
+        Bounds::Outside);
+    add("memory64: v128.store of address 2^64-1 and offset 1, summing to 0",
+        memory64,
+        Opcode::V128Store,
+        max,
+        1,
+        Bounds::Outside);
+    add("memory64: v128.load64_splat of offset 2^64-8 and address 8, summing to 0",
+        memory64,
+        Opcode::V128Load64Splat,
+        8,
+        max - 7,
+        Bounds::Outside);
+    add("memory64: v128.store8_lane at offset 2^64-1",
+        memory64,
+        Opcode::V128Store8Lane,
+        0,
+        max,
+        Bounds::Outside);
+    add("memory64: v128.load at address 2^63",
+        memory64,
+        Opcode::V128Load,
+        uint64_t { 1 } << 63U,
+        0,
+        Bounds::Outside);
     return cases;
 }
 
@@ -500,9 +585,14 @@ struct EdgeCase
     return bytes;
 }
 
+/// A v128 whose every byte is distinct and above 0x80, so that a lane access shows which lane it took.
+constexpr auto EdgeVector = std::to_array<uint8_t>(
+    { 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF });
+
 /// A module of @p edge's memory, at its index after a memory 0 of one page, its bytes patternOf() at its
 /// start and its end, and of one function, (address) -> (value) for a load or (address) -> () for a store
-/// of an all-ones-but-the-top value, doing @p edge's access.
+/// of an all-ones-but-the-top value, or of EdgeVector, doing @p edge's access; a lane access at its last
+/// lane, a lane load changing EdgeVector.
 [[nodiscard]] ModuleBuilder edgeModule(EdgeCase const& edge)
 {
     auto const* row = binary::memoryAccessOf(edge.opcode);
@@ -511,6 +601,7 @@ struct EdgeCase
     auto const addressKind = addressType == AddressType::I64 ? binary::I64 : binary::I32;
     auto module = ModuleBuilder {};
     auto const load = row->access == MemoryAccessKind::Load;
+    auto const lane = row->shape == binary::VectorShape::Lane;
     module.type(FuncType { .params = { addressKind },
                            .results = load ? std::vector { binary::ValueType { .kind = row->value } }
                                            : std::vector<binary::ValueType> {} });
@@ -524,9 +615,15 @@ struct EdgeCase
         module.data(dataSegment(edge.memoryIndex, addressType, 0, patternOf(pattern)));
         module.data(dataSegment(edge.memoryIndex, addressType, size - pattern, patternOf(pattern)));
     }
-    auto const value = load ? Bytes {} : constantOf(row->value, 0x7EDC'BA98'7654'3210);
-    module.function(
-        0, {}, code({ localGet(0), value, memoryInstruction(edge.opcode, edge.offset, edge.memoryIndex) }));
+    auto value = Bytes {};
+    if (row->value == ValueKind::V128 && (!load || lane))
+        value = code({ encodingOf(Opcode::V128Const), Bytes { EdgeVector.begin(), EdgeVector.end() } });
+    else if (!load)
+        value = constantOf(row->value, 0x7EDC'BA98'7654'3210);
+    auto instruction = memoryInstruction(edge.opcode, edge.offset, edge.memoryIndex);
+    if (lane)
+        instruction.push_back(static_cast<uint8_t>((16U / row->width) - 1));
+    module.function(0, {}, code({ localGet(0), value, instruction }));
     return module;
 }
 
@@ -671,8 +768,8 @@ TEST_CASE("Memory.crossInstanceCallSwitchesMemory0")
 
 TEST_CASE("Memory.boundsMatchReferenceAtTheEdges")
 {
-    // Every scalar access at the edges of its memory: in bounds it gives the reference's value and leaves the
-    // reference's bytes; out of bounds it traps with the reference's Trap, and writes nothing.
+    // Every access, scalar and vector, at the edges of its memory: in bounds it gives the reference's value
+    // and leaves the reference's bytes; out of bounds it traps with the reference's Trap, and writes nothing.
     auto const engine = fastEngineOfEachDispatch();
     for (auto const& edge: edgeCases())
     {
@@ -840,6 +937,7 @@ TEST_CASE("Memory.accessMaskAtTheEdges")
     constexpr auto All = std::numeric_limits<uint64_t>::max();
     constexpr auto Half = uint64_t { 1 } << 63U;
     constexpr auto Size = uint64_t { 2 } * PageBytes;
+    constexpr auto Four = uint64_t { 1 } << 32U;
     constexpr auto Rows = std::to_array<Row>({
         { .effective = 0, .size = Size, .width = 4, .mask = All },
         { .effective = Size - 4, .size = Size, .width = 4, .mask = All },
@@ -859,6 +957,24 @@ TEST_CASE("Memory.accessMaskAtTheEdges")
         { .effective = 0, .size = 7, .width = 8, .mask = 0 },
         { .effective = 0, .size = 8, .width = 8, .mask = All },
         { .effective = 1, .size = 8, .width = 8, .mask = 0 },
+        // The v128 accesses' width, in memories of 0, 15, 16 and 17 bytes, and at offsets near 2^32 and 2^64.
+        { .effective = 0, .size = 0, .width = 16, .mask = 0 },
+        { .effective = 0, .size = 15, .width = 16, .mask = 0 },
+        { .effective = Half - 1, .size = 15, .width = 16, .mask = 0 },
+        { .effective = 0, .size = 16, .width = 16, .mask = All },
+        { .effective = 1, .size = 16, .width = 16, .mask = 0 },
+        { .effective = 0, .size = 17, .width = 16, .mask = All },
+        { .effective = 1, .size = 17, .width = 16, .mask = All },
+        { .effective = 2, .size = 17, .width = 16, .mask = 0 },
+        { .effective = Four - 16, .size = Four, .width = 16, .mask = All },
+        { .effective = Four - 15, .size = Four, .width = 16, .mask = 0 },
+        { .effective = Four, .size = Four + 16, .width = 16, .mask = All },
+        { .effective = Four + 1, .size = Four + 16, .width = 16, .mask = 0 },
+        { .effective = All - 15, .size = Size, .width = 16, .mask = 0 },
+        { .effective = All - 14, .size = 16, .width = 16, .mask = 0 },
+        { .effective = All, .size = 17, .width = 16, .mask = 0 },
+        { .effective = Half - 16, .size = Size, .width = 16, .mask = 0 },
+        { .effective = Half + Size - 16, .size = Size, .width = 16, .mask = 0 },
     });
     for (auto const& row: Rows)
     {

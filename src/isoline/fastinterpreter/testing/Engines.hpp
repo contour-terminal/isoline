@@ -27,6 +27,7 @@
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Interrupt.hpp>
@@ -50,6 +51,8 @@ struct EngineUnderTest
     std::optional<Dispatch> dispatch;
     /// What the fast interpreter's slot chunks come from; the global heap when null.
     std::pmr::memory_resource* slotMemory = nullptr;
+    /// The execution mode the fast interpreter's code is lowered for.
+    runtime::ExecutionMode mode = runtime::ExecutionMode::Production;
 };
 
 /// The reference interpreter.
@@ -160,7 +163,7 @@ class Harness
         REQUIRE(validated.has_value());
         _validated = *validated;
         if (engine.dispatch)
-            _code = lowered(_validated, LoweringConfig { .dispatch = *engine.dispatch });
+            _code = lowered(_validated, LoweringConfig { .mode = engine.mode, .dispatch = *engine.dispatch });
         if (rewrite)
         {
             REQUIRE(_code != nullptr);
