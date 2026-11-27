@@ -101,7 +101,8 @@ class PerturbingExecutor final: public runtime::ICodeExecutor
 }
 
 /// The module every perturbation is planted in: it calls a host import, holds a memory, a table, a mutable
-/// global and a tag, and has one export that returns and one that throws.
+/// global, a tag and a passive data and element segment, and has one export that returns, one that throws
+/// and one that drops both segments.
 constexpr auto PerturbedModule = std::string_view { R"(
 (module
   (import "env" "host" (func $host (param i32) (result i32)))
@@ -109,8 +110,11 @@ constexpr auto PerturbedModule = std::string_view { R"(
   (table 2 funcref)
   (global (mut i32) (i32.const 7))
   (tag $tag (param i32))
+  (data $passive "isoline")
+  (elem $elements func $drop)
   (func (export "run") (param i32) (result i32) (call $host (local.get 0)))
   (func (export "throw") (param i32) (throw $tag (local.get 0)))
+  (func $drop (export "drop") (data.drop $passive) (elem.drop $elements))
 ))" };
 
 /// One perturbation per row of ObservationFields: each changes only its field.
@@ -212,7 +216,7 @@ struct PerturbationRow
                   [[maybe_unused]] auto const grown =
                       store.growMemory(instanceOf(store, function).memories.front(), uint64_t { 1 } << 20);
               } },
-        { .field = "liveExceptions",
+        { .field = "exceptions",
           .perturbation =
               [](runtime::Store& store,
                  runtime::ICodeExecutor& /*inner*/,
@@ -224,6 +228,18 @@ struct PerturbationRow
                       [[maybe_unused]] auto const added = store.addException(
                           instanceOf(store, function).tags.front(), { runtime::I32 { 1 } });
                   }
+              } },
+        { .field = "segments",
+          .perturbation =
+              [](runtime::Store& store,
+                 runtime::ICodeExecutor& /*inner*/,
+                 runtime::FuncAddr function,
+                 std::span<runtime::Value> /*results*/,
+                 std::expected<void, runtime::Abrupt>& /*outcome*/) {
+                  // The passive data segment dropped behind the guest's back, as a lost data.drop would
+                  // leave it live.
+                  if (!store.function(function).isHost())
+                      store.moduleInstance(store.function(function).moduleInstance).data.back().reset();
               } },
         { .field = "chargedStackValues",
           .perturbation =
@@ -419,14 +435,17 @@ TEST_CASE("Differential.leavesOutWhatItCannotCompare")
 TEST_CASE("Differential.interruptAtKthPollAgrees", "[memory]")
 {
     // 64 MiB, the whole of FuzzLimits' memory, filled by one memory.fill: 1'024 granules, each polled first.
-    // The call's first poll is its FunctionEntry, so the 300th is the one before granule 299, and 298
-    // granules are written when the interrupt ends the call.
+    // Each call fills with its own number, one more than the call before. The complete calls fill all of it
+    // (1, then 2); the interrupted call after them polls first at its FunctionEntry, so its 300th poll is the
+    // one before granule 299, and it has written 298 granules of 3 when the interrupt ends it.
     constexpr auto Pages = 1'024;
     constexpr auto Granule = std::size_t { 65'536 };
     constexpr auto InterruptAt = uint64_t { 300 };
     auto const module = compiled(std::format(R"(
-        (module (memory {})
-          (func (export "fill") (memory.fill (i32.const 0) (i32.const 0x55) (i32.const {}))))
+        (module (memory {}) (global $value (mut i32) (i32.const 0))
+          (func (export "fill")
+            (global.set $value (i32.add (global.get $value) (i32.const 1)))
+            (memory.fill (i32.const 0) (global.get $value) (i32.const {}))))
     )",
                                              Pages,
                                              Pages * Granule));
@@ -436,8 +455,9 @@ TEST_CASE("Differential.interruptAtKthPollAgrees", "[memory]")
     auto const runner = DifferentialRunner { everyEngine(), Lane::Deterministic, FuzzLimits, plan };
     auto const observations = runner.observe(module, {});
     REQUIRE(observations.has_value());
-    auto expected = std::vector<std::byte>(Pages * Granule);
-    std::ranges::fill(std::span { expected }.first((InterruptAt - 2) * Granule), std::byte { 0x55 });
+    auto expected = std::vector<std::byte>(Pages * Granule, std::byte { DifferentialRunner::CallRounds });
+    std::ranges::fill(std::span { expected }.first((InterruptAt - 2) * Granule),
+                      std::byte { DifferentialRunner::CallRounds + 1 });
     auto const prefix = memoryDigest(expected);
     for (auto const& observation: *observations)
     {
@@ -445,7 +465,8 @@ TEST_CASE("Differential.interruptAtKthPollAgrees", "[memory]")
             continue;
         INFO(observation.participant);
         REQUIRE(observation.observation.has_value());
-        auto const& first = observation.observation->calls.front();
+        // The planned call is the last one, after every complete call.
+        auto const& first = observation.observation->calls.back();
         CHECK(first.outcome
               == CallOutcome { runtime::Abrupt { runtime::Trap { runtime::TrapCode::Interrupted } } });
         CHECK(first.polls[std::to_underlying(runtime::PollSite::BulkGranule)] == InterruptAt - 1);
@@ -454,11 +475,74 @@ TEST_CASE("Differential.interruptAtKthPollAgrees", "[memory]")
     }
 }
 
+TEST_CASE("Differential.interruptsOnlyItsCall")
+{
+    // The planned call comes after every complete call, so the complete ones keep their polls: ten
+    // iterations, nine back-edges each. Only the observed mode has an observer to interrupt with.
+    auto const module = compiled(R"(
+        (module (func (export "count") (param i32) (result i32) (local i32)
+          (loop $again
+            (local.set 1 (i32.add (local.get 1) (i32.const 1)))
+            (br_if $again (i32.lt_u (local.get 1) (i32.const 10))))
+          (local.get 1)))
+    )");
+    auto const runner = DifferentialRunner {
+        { referenceParticipant() }, Lane::Deterministic, FuzzLimits, InterruptionPlan { .interruptAtPoll = 3 }
+    };
+    auto const observations = runner.observe(module, seedBytes(1));
+    REQUIRE(observations.has_value());
+    for (auto const& observation: *observations)
+    {
+        INFO(describe(observation.mode));
+        REQUIRE(observation.observation.has_value());
+        auto const& calls = observation.observation->calls;
+        auto const interrupted = observation.mode == ObservationMode::Observed;
+        REQUIRE(calls.size() == DifferentialRunner::CallRounds + (interrupted ? 1U : 0U));
+        for (auto const& call: std::span { calls }.first(DifferentialRunner::CallRounds))
+        {
+            CHECK(call.outcome == CallOutcome { std::vector<runtime::Value> { runtime::I32 { 10 } } });
+            if (interrupted)
+                CHECK(call.polls[std::to_underlying(runtime::PollSite::LoopBackEdge)] == 9);
+        }
+        if (interrupted)
+        {
+            CHECK(calls.back().outcome
+                  == CallOutcome { runtime::Abrupt { runtime::Trap { runtime::TrapCode::Interrupted } } });
+            CHECK(calls.back().polls[std::to_underlying(runtime::PollSite::LoopBackEdge)] == 2);
+        }
+    }
+}
+
+TEST_CASE("Differential.reportsTheFirstDifferingOffset")
+{
+    // One byte of memory 0 changed, 0x1234 into it: the divergence names the memory, the offset and both
+    // bytes, which a digest alone does not show.
+    auto const module = compiled(PerturbedModule);
+    auto planted = perturbed("planted",
+                             [](runtime::Store& store,
+                                runtime::ICodeExecutor& /*inner*/,
+                                runtime::FuncAddr function,
+                                std::span<runtime::Value> /*results*/,
+                                std::expected<void, runtime::Abrupt>& /*outcome*/) {
+                                 auto const memory = instanceOf(store, function).memories.front();
+                                 store.memory(memory).bytes()[0x1234] = std::byte { 0x5a };
+                             });
+    auto const runner = DifferentialRunner {
+        { referenceParticipant(), std::move(planted) }, Lane::Deterministic, FuzzLimits, InterruptionPlan {}
+    };
+    auto const outcome = runner.run(module, seedBytes(1));
+    REQUIRE_FALSE(outcome.has_value());
+    CHECK(outcome.error().field == "memoryHashes");
+    CHECK(outcome.error().expected.contains("memory 0 offset 0x1234: 0x00"));
+    CHECK(outcome.error().actual.contains("memory 0 offset 0x1234: 0x5a"));
+}
+
 TEST_CASE("Differential.agreesOnTheEdges")
 {
     // The hard edges, written by hand: calls to the depth limit, accesses at the bounds, bulk operations of
     // many granules, exceptions through many frames and sweeps, host imports, numbers at their edges, and
-    // every branch to a loop. Each with seeds that pick other arguments, and half of them interrupted.
+    // every branch to a loop. Each with seeds that pick other arguments, and an interrupted call after the
+    // rest.
     constexpr auto Seeds = uint64_t { 8 };
     auto edges = std::vector<std::filesystem::path> {};
     for (auto const& entry:

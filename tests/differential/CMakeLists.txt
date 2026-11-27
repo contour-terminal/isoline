@@ -4,11 +4,14 @@
 # compared exactly (DifferentialRunner.hpp), and Wasmtime is the oracle of results and traps
 # (WasmtimeOracle.hpp). Runtime level: it links the engines, not the api.
 
-# The platform's half of ProcessRunner, one row per platform.
+# The platform's half of ProcessRunner, and of the child that ends abnormally for its test: one row per
+# platform.
 if(WIN32)
     set(isolineProcessRunnerSource ProcessRunnerWindows.cpp)
+    set(isolineChildAbortSource testing/ChildAbortWindows.cpp)
 else()
     set(isolineProcessRunnerSource ProcessRunnerPosix.cpp)
+    set(isolineChildAbortSource testing/ChildAbortPosix.cpp)
 endif()
 
 add_library(isoline_differential STATIC
@@ -25,8 +28,10 @@ add_executable(isoline-differential-replay Replay.cpp)
 target_link_libraries(isoline-differential-replay PRIVATE isoline_differential)
 isoline_apply_target_policy(isoline-differential-replay TEST)
 
-# A child for ProcessRunner's test: it prints its arguments and exits with the status its first names.
-add_executable(isoline_differential_child testing/Child.cpp)
+# A child for ProcessRunner's test: it prints its arguments and exits with the status its first names, or
+# aborts, or sleeps past the test's deadline.
+add_executable(isoline_differential_child testing/Child.cpp ${isolineChildAbortSource})
+target_include_directories(isoline_differential_child PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/testing")
 isoline_apply_target_policy(isoline_differential_child TEST)
 
 add_executable(isoline_differential_test
@@ -54,9 +59,23 @@ isoline_add_capped_test(NAME isoline_differential_test_memory TARGET isoline_dif
 
 # The generated corpus (scripts/make-differential-corpus.py, never committed) on every engine, and Wasmtime
 # as the oracle where scripts/fetch-tools.py has fetched it. Label differential, which the test presets
-# leave out: CI's differential job runs it, as `ctest -L differential` does locally. It skips (exit status
-# 4) while out/corpus/differential does not exist.
-math(EXPR isolineCorpusTimeout "7200 * ${ISOLINE_TEST_TIMEOUT_FACTOR}")
-add_test(NAME isoline_differential_corpus COMMAND isoline_differential_test "[differential]")
-set_tests_properties(isoline_differential_corpus PROPERTIES
-                     LABELS differential TIMEOUT ${isolineCorpusTimeout} SKIP_RETURN_CODE 4)
+# leave out: CI's differential job runs it, as `ctest -L differential -j<cores>` does locally. One test per
+# shard, a contiguous run of seeds each, so that ctest runs them side by side. Lane 1 replays every module;
+# lane 2 and the oracle replay the seeds divisible by ISOLINE_DIFFERENTIAL_SAMPLE: 8 on a pull request, 1
+# (everything) in the nightly run. Each skips (exit status 4) while out/corpus/differential does not exist.
+set(ISOLINE_DIFFERENTIAL_SHARDS 8 CACHE STRING "How many ctest entries the differential corpus is split into")
+set(ISOLINE_DIFFERENTIAL_SAMPLE 8 CACHE STRING
+    "Lane 2 and the Wasmtime oracle replay the corpus seeds divisible by this: 8 on pull requests, 1 nightly")
+math(EXPR isolineCorpusTimeout "3600 * ${ISOLINE_TEST_TIMEOUT_FACTOR}")
+math(EXPR isolineLastShard "${ISOLINE_DIFFERENTIAL_SHARDS} - 1")
+foreach(shard RANGE ${isolineLastShard})
+    set(name isoline_differential_corpus.${shard})
+    add_test(NAME ${name} COMMAND isoline_differential_test "CorpusReplay.everyCorpusModuleAgrees")
+    set_tests_properties(${name} PROPERTIES
+                         LABELS differential TIMEOUT ${isolineCorpusTimeout} SKIP_RETURN_CODE 4
+                         ENVIRONMENT "ISOLINE_DIFFERENTIAL_SHARD=${shard};ISOLINE_DIFFERENTIAL_SHARDS=${ISOLINE_DIFFERENTIAL_SHARDS};ISOLINE_DIFFERENTIAL_SAMPLE=${ISOLINE_DIFFERENTIAL_SAMPLE}")
+endforeach()
+# Wasmtime on the edge modules, where ISOLINE_WASMTIME names it; skipped without it.
+add_test(NAME isoline_differential_oracle_edges COMMAND isoline_differential_test
+         "WasmtimeOracle.agreesWithTheReferenceOnTheEdges")
+set_tests_properties(isoline_differential_oracle_edges PROPERTIES LABELS differential SKIP_RETURN_CODE 4)

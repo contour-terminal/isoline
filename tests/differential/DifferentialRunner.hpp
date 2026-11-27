@@ -107,11 +107,29 @@ class DifferentialRunner
     [[nodiscard]] std::expected<std::vector<ParticipantObservation>, Applicability> observe(
         std::span<std::byte const> module, std::span<std::byte const> argumentSeed) const;
 
-    /// Compares what observe() returned: each participant's observation with the first participant's of
-    /// the same mode, field by field. What run() does after observing.
-    /// @param observations observe()'s observations of one module.
+    /// observe(), taking the first participant's observations from @p first instead of observing it again:
+    /// what another lane's runner observed of the same module and seed. Precondition: the first participant
+    /// is the same engine in both runners, and one whose code does not depend on the lane (the reference,
+    /// which runs the validated module itself), so that its observations are the same in every lane.
+    /// @param module The module's bytes.
+    /// @param argumentSeed What the calls' arguments are derived from.
+    /// @param first Observations of the first participant, in each mode; one missing is observed.
+    /// @return As observe().
+    [[nodiscard]] std::expected<std::vector<ParticipantObservation>, Applicability> observe(
+        std::span<std::byte const> module,
+        std::span<std::byte const> argumentSeed,
+        std::span<ParticipantObservation const> first) const;
+
+    /// Compares what observe() returned of @p module: each participant's observation with the first
+    /// participant's of the same mode, field by field. What run() does after observing. A memory divergence
+    /// names the first offset that differs, from both participants run once more.
+    /// @param module The module's bytes.
+    /// @param argumentSeed The seed observe() was given.
+    /// @param observations observe()'s observations of the module.
     /// @return Nothing, or the first divergence.
     [[nodiscard]] std::expected<void, Divergence> compare(
+        std::span<std::byte const> module,
+        std::span<std::byte const> argumentSeed,
         std::span<ParticipantObservation const> observations) const;
 
   private:

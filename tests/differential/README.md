@@ -8,15 +8,18 @@ For each call it compares the following, in this order (`Comparison.hpp`'s `Obse
 
 - the exception the call threw, and the call's outcome, with NaN bits compared;
 - the steps charged, and the polls of each site;
-- a digest of every memory, then every global and every table element;
+- a digest of every memory (a divergence names the first differing offset), then every global and every
+  table element;
 - the refused grows;
-- the live exceptions;
+- every live exception, with its tag and payload;
+- which data and element segments are dropped;
 - the stack values still charged;
 - the calls into the recording host.
 
 The instantiation is compared the same way. Each participant runs twice: once unobserved, through the
-engines' fast paths, and once with a poll observer. An `InterruptionPlan` can raise the interrupt at the
-k-th poll of each call.
+engines' fast paths, and once with a poll observer. An `InterruptionPlan` adds one more call to the
+observed run, after every complete one: an export the seed picks, interrupted at its k-th poll. The
+interrupt is never lowered, so that call is the last, and every call before it keeps its polls.
 
 The recording host (`RecordingHost.hpp`) binds every import alike in each store. Its functions derive
 their results from their arguments, fail one call in 64, re-enter the guest through an export of the
@@ -42,10 +45,21 @@ Wasmtime is the oracle of results and traps for import-free modules whose export
 
 ## Running the corpus
 
+The replay is `ISOLINE_DIFFERENTIAL_SHARDS` ctest entries (8 by default), one per contiguous run of seeds,
+for `ctest -j`. Lane 1 replays every module. Lane 2 and Wasmtime replay the seeds divisible by
+`ISOLINE_DIFFERENTIAL_SAMPLE`: 8 on a pull request, 1 in the nightly run (`differential-nightly.yml`). The
+reference is observed once per module and reused by lane 2. Each shard prints what it counted: modules by
+whether they are compared, calls, the oracle's verdicts and why it had no answer, and what was reached. It
+fails on a divergence, a module Isoline refuses (wasm-tools validated each), fewer compared modules, calls
+or oracle agreements than measured, and any fault of the harness (the oracle's process, module file,
+unmapped trap, unparsed output, or an error of Wasmtime's that is neither a trap nor one of its limits in
+`WasmtimeLimitRows`). Calls Wasmtime refused for one of its limits while Isoline returned results are
+counted and printed.
+
 ```sh
 python3 -I scripts/make-differential-corpus.py            # out/corpus/differential/<seed>.wasm
 ISOLINE_WASMTIME=$(python3 -I scripts/fetch-tools.py --tool wasmtime) \
-    ctest --test-dir out/clang-release -L differential --output-on-failure
+    ctest --test-dir out/clang-release -L differential -j4 --output-on-failure
 ```
 
 ## Reproducing and minimizing a divergence

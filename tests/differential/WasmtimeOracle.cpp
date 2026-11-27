@@ -46,6 +46,8 @@ namespace
     constexpr auto TrapPrefix = std::string_view { "wasm trap: " };
     /// What Wasmtime reports for an exception that escapes the call.
     constexpr auto ThrownMessage = std::string_view { "thrown Wasm exception" };
+    /// The status a shell, and a child that could not execute its program, exits with.
+    constexpr auto CannotExecute = 127;
     /// Wasmtime's trap when its timeout (an epoch interrupt) ends the call.
     constexpr auto InterruptMessage = std::string_view { "interrupt" };
     /// The canonical NaNs, which Wasmtime's command line spells `nan` and prints as `NaN`.
@@ -345,12 +347,17 @@ std::expected<OracleResult, OracleError> WasmtimeOracle::call(std::span<std::byt
         return std::unexpected { OracleError { .kind = OracleErrorKind::Ineligible,
                                                .detail = std::string { name } } };
 
+    // A command-line argument ends at its first NUL, so such a name would invoke another export.
+    if (name.contains('\0'))
+        return std::unexpected { OracleError { .kind = OracleErrorKind::Unrepresentable,
+                                               .detail = "the export's name holds a NUL" } };
     auto arguments = wasmtimeFlags(_timeout);
     auto const file = _files->write(module);
     if (!file)
         return std::unexpected { OracleError { .kind = OracleErrorKind::ModuleFile,
                                                .detail = file.error() } };
-    arguments.insert(arguments.end(), { std::string { "--invoke" }, std::string { name }, file->string() });
+    // One argument, so that a name that starts like an option ("-") is still the option's value.
+    arguments.insert(arguments.end(), { std::format("--invoke={}", name), file->string() });
     for (auto const& argument: args)
     {
         auto text = argumentText(argument);
@@ -360,9 +367,14 @@ std::expected<OracleResult, OracleError> WasmtimeOracle::call(std::span<std::byt
         arguments.push_back(std::move(*text));
     }
 
-    auto const ran = _runner->run(_wasmtime, arguments);
+    auto const ran = _runner->run(_wasmtime, arguments, _timeout + ProcessGrace);
     if (!ran)
-        return std::unexpected { OracleError { .kind = OracleErrorKind::Process, .detail = ran.error() } };
+        return std::unexpected { OracleError { .kind = OracleErrorKind::Process,
+                                               .detail = ran.error().detail } };
+    if (ran->exitCode == CannotExecute || (ran->exitCode != 0 && linesOf(ran->standardError).empty()))
+        return std::unexpected { OracleError {
+            .kind = OracleErrorKind::Process,
+            .detail = std::format("exit status {}: {}", ran->exitCode, ran->standardError) } };
     for (auto const line: linesOf(ran->standardError))
     {
         auto const at = line.find(TrapPrefix);
@@ -383,8 +395,14 @@ std::expected<OracleResult, OracleError> WasmtimeOracle::call(std::span<std::byt
             return OracleThrown {};
     }
     if (ran->exitCode != 0)
-        return std::unexpected { OracleError { .kind = OracleErrorKind::Unparsed,
+    {
+        auto const isLimit = std::ranges::any_of(WasmtimeLimitRows, [&ran](WasmtimeLimitRow const& row) {
+            return ran->standardError.contains(row.message);
+        });
+        return std::unexpected { OracleError { .kind = isLimit ? OracleErrorKind::Refused
+                                                               : OracleErrorKind::Rejected,
                                                .detail = ran->standardError } };
+    }
     auto const lines = linesOf(ran->standardOutput);
     if (lines.size() != type->results.size())
         return std::unexpected { OracleError { .kind = OracleErrorKind::Unparsed,

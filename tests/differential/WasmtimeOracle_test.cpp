@@ -4,14 +4,17 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -21,6 +24,7 @@
 #include "ProcessRunner.hpp"
 #include "TrapMapping.hpp"
 #include "WasmtimeOracle.hpp"
+#include "testing/RecordedRunner.hpp"
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -29,43 +33,11 @@
 
 using namespace isoline;
 using namespace isoline::differential;
+using isoline::differential::testing::NamedModuleFiles;
+using isoline::differential::testing::RecordedRunner;
 
 namespace
 {
-
-/// Replays a recorded run of Wasmtime, and keeps the arguments it was asked to run with.
-class RecordedRunner final: public IProcessRunner
-{
-  public:
-    explicit RecordedRunner(ProcessResult recorded): _recorded { std::move(recorded) } {}
-
-    [[nodiscard]] std::expected<ProcessResult, std::string> run(
-        std::filesystem::path const& program, std::span<std::string const> arguments) override
-    {
-        _program = program;
-        _arguments.assign(arguments.begin(), arguments.end());
-        return _recorded;
-    }
-
-    [[nodiscard]] std::filesystem::path const& program() const noexcept { return _program; }
-    [[nodiscard]] std::vector<std::string> const& arguments() const noexcept { return _arguments; }
-
-  private:
-    ProcessResult _recorded;
-    std::filesystem::path _program;
-    std::vector<std::string> _arguments;
-};
-
-/// Module files that are never written: each module is named /modules/module.wasm.
-class NamedModuleFiles final: public IModuleFiles
-{
-  public:
-    [[nodiscard]] std::expected<std::filesystem::path, std::string> write(
-        std::span<std::byte const> /*module*/) override
-    {
-        return std::filesystem::path { "/modules/module.wasm" };
-    }
-};
 
 [[nodiscard]] std::vector<std::byte> compiled(std::string_view text)
 {
@@ -90,7 +62,7 @@ constexpr auto ScalarModule =
     std::string_view { R"((module (func (export "f") (param i32 i64 f32 f64) (result i32) (i32.const 0))))" };
 
 [[nodiscard]] std::expected<OracleResult, OracleError> callRecorded(
-    ProcessResult recorded,
+    std::expected<ProcessResult, ProcessError> recorded,
     std::string_view module = ScalarModule,
     std::vector<runtime::Value> args = { runtime::I32 {}, runtime::I64 {}, runtime::F32 {}, runtime::F64 {} })
 {
@@ -153,12 +125,38 @@ TEST_CASE("WasmtimeOracle.reportsWhatItCannotMap")
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().kind == OracleErrorKind::Exhausted);
     }
-    SECTION("a failure that is no trap")
+    SECTION("a limit of its own, which a WasmtimeLimitRows row names")
+    {
+        // Wasmtime 50.0.3's error for a table of 10^11 elements, as it printed it.
+        auto const result = callRecorded(ProcessResult {
+            .exitCode = 1,
+            .standardOutput = {},
+            .standardError = "Error: out of memory (failed to allocate 800000000000 bytes)\n" });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Refused);
+    }
+    SECTION("an option it does not know: a fault of the harness, never a limit")
+    {
+        auto const result =
+            callRecorded(ProcessResult { .exitCode = 2,
+                                         .standardOutput = {},
+                                         .standardError = "error: unexpected argument '--frobnicate' "
+                                                          "found\n\nUsage: wasmtime run [OPTIONS] "
+                                                          "<WASM>...\n" });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Rejected);
+        CHECK(OracleErrorRows[std::to_underlying(result.error().kind)].fault == OracleFault::HarnessFault);
+    }
+    SECTION("a feature it refuses to validate")
     {
         auto const result = callRecorded(ProcessResult {
-            .exitCode = 1, .standardOutput = {}, .standardError = "Error: unknown option\n" });
+            .exitCode = 1,
+            .standardOutput = {},
+            .standardError =
+                "Error: failed to compile\n\nCaused by:\n    0: WebAssembly translation error\n    1: "
+                "Invalid input WebAssembly code at offset 9: exceptions support is not enabled\n" });
         REQUIRE_FALSE(result.has_value());
-        CHECK(result.error().kind == OracleErrorKind::Unparsed);
+        CHECK(result.error().kind == OracleErrorKind::Rejected);
     }
     SECTION("results it cannot read")
     {
@@ -173,6 +171,93 @@ TEST_CASE("WasmtimeOracle.reportsWhatItCannotMap")
             callRecorded(ProcessResult { .exitCode = 0, .standardOutput = "", .standardError = {} });
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().kind == OracleErrorKind::Unparsed);
+    }
+}
+
+TEST_CASE("WasmtimeOracle.reportsAProcessThatFailed")
+{
+    // Each a fault of the harness, never of the guest: the oracle could not ask Wasmtime at all.
+    SECTION("it does not start")
+    {
+        auto const result = callRecorded(std::unexpected {
+            ProcessError { .kind = ProcessErrorKind::NotStarted, .detail = "no such file" } });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Process);
+    }
+    SECTION("it runs past the deadline")
+    {
+        auto const result = callRecorded(
+            std::unexpected { ProcessError { .kind = ProcessErrorKind::TimedOut, .detail = "killed" } });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Process);
+    }
+    SECTION("it crashes")
+    {
+        auto const result = callRecorded(
+            std::unexpected { ProcessError { .kind = ProcessErrorKind::Killed, .detail = "signal 11" } });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Process);
+    }
+    SECTION("a shell's cannot-execute status")
+    {
+        auto const result = callRecorded(
+            ProcessResult { .exitCode = 127, .standardOutput = {}, .standardError = "cannot execute\n" });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Process);
+    }
+    SECTION("a failure that says nothing")
+    {
+        auto const result =
+            callRecorded(ProcessResult { .exitCode = 1, .standardOutput = {}, .standardError = {} });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Process);
+    }
+}
+
+TEST_CASE("WasmtimeOracle.givesWasmtimeADeadlinePastItsOwnTimeout")
+{
+    auto runner =
+        RecordedRunner { ProcessResult { .exitCode = 0, .standardOutput = "0\n", .standardError = {} } };
+    auto files = NamedModuleFiles {};
+    auto const oracle = WasmtimeOracle { "/tools/wasmtime", runner, files, std::chrono::seconds { 4 } };
+    auto const result =
+        oracle.call(compiled(ScalarModule),
+                    "f",
+                    { { runtime::I32 {}, runtime::I64 {}, runtime::F32 {}, runtime::F64 {} } });
+    REQUIRE(result.has_value());
+    CHECK(runner.timeout() > std::chrono::seconds { 4 });
+}
+
+TEST_CASE("WasmtimeOracle.namesEveryFaultOfTheHarness")
+{
+    // One row per OracleErrorKind, in order; the harness's own faults are the ones a replay fails on.
+    REQUIRE(OracleErrorRows.size() == std::to_underlying(LastOracleErrorKind) + 1);
+    for (auto const index: std::views::iota(std::size_t { 0 }, OracleErrorRows.size()))
+        CHECK(std::to_underlying(OracleErrorRows[index].kind) == index);
+    auto const faults = std::vector<OracleErrorKind> { OracleErrorKind::ModuleFile,
+                                                       OracleErrorKind::Process,
+                                                       OracleErrorKind::Rejected,
+                                                       OracleErrorKind::UnmappedTrap,
+                                                       OracleErrorKind::Unparsed };
+    for (auto const& row: OracleErrorRows)
+    {
+        INFO(row.name);
+        CHECK((row.fault == OracleFault::HarnessFault) == std::ranges::contains(faults, row.kind));
+    }
+}
+
+TEST_CASE("WasmtimeOracle.everyLimitRowIsRefused")
+{
+    // Each row of Wasmtime's own limits, as the last line of its error: Refused, and no other kind.
+    for (auto const& row: WasmtimeLimitRows)
+    {
+        INFO(row.message);
+        auto const result =
+            callRecorded(ProcessResult { .exitCode = 1,
+                                         .standardOutput = {},
+                                         .standardError = std::format("Error: {} (detail)\n", row.message) });
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Refused);
     }
 }
 
@@ -244,7 +329,7 @@ TEST_CASE("WasmtimeOracle.passesArgumentsAsWasmtimeTakesThem")
     CHECK(runner.program() == std::filesystem::path { "/tools/wasmtime" });
     auto expected = wasmtimeFlags(std::chrono::seconds { 7 });
     expected.insert(expected.end(),
-                    { "--invoke", "f", "/modules/module.wasm", "-1", "-9223372036854775808", "nan", "-inf" });
+                    { "--invoke=f", "/modules/module.wasm", "-1", "-9223372036854775808", "nan", "-inf" });
     CHECK(runner.arguments() == expected);
     CHECK(std::ranges::find(expected, "cranelift-enable-nan-canonicalization=true") != expected.end());
     CHECK(expected[2].contains("relaxed-simd-deterministic=y"));
@@ -276,6 +361,31 @@ TEST_CASE("WasmtimeOracle.refusesWhatItCannotRun")
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().kind == OracleErrorKind::Ineligible);
     }
+    SECTION("an export whose name holds a NUL, which no command-line argument can")
+    {
+        // The argument would end at the NUL and name another export: "" here, which returns 7.
+        auto runner =
+            RecordedRunner { ProcessResult { .exitCode = 0, .standardOutput = "7\n", .standardError = {} } };
+        auto files = NamedModuleFiles {};
+        auto const oracle = WasmtimeOracle { "/tools/wasmtime", runner, files };
+        auto const module = compiled(
+            R"((module (func (export "\00a") (result i32) (i32.const 1)) (func (export "") (result i32) (i32.const 7))))");
+        auto const result = oracle.call(module, std::string_view { "\0a", 2 }, {});
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().kind == OracleErrorKind::Unrepresentable);
+        CHECK(runner.arguments().empty());
+    }
+    SECTION("an export named like an option, which Wasmtime would read as one")
+    {
+        auto runner =
+            RecordedRunner { ProcessResult { .exitCode = 0, .standardOutput = "1\n", .standardError = {} } };
+        auto files = NamedModuleFiles {};
+        auto const oracle = WasmtimeOracle { "/tools/wasmtime", runner, files };
+        auto const module = compiled(R"((module (func (export "-") (result i32) (i32.const 1))))");
+        auto const result = oracle.call(module, "-", {});
+        REQUIRE(result.has_value());
+        CHECK(std::ranges::contains(runner.arguments(), std::string { "--invoke=-" }));
+    }
     SECTION("no such export")
     {
         auto const result = callRecorded(ProcessResult {}, R"((module (func (export "g"))))", {});
@@ -290,9 +400,13 @@ TEST_CASE("WasmtimeOracle.agreesWithTheReferenceOnTheEdges", "[differential]")
     auto const wasmtime = core::LiveEnvironment {}.get("ISOLINE_WASMTIME");
     if (!wasmtime)
         SKIP("ISOLINE_WASMTIME is not set");
-    auto runner = ProcessRunner { std::filesystem::temp_directory_path() };
-    auto files =
-        DirectoryModuleFiles { std::filesystem::temp_directory_path() / "isoline-differential-oracle" };
+    if (wasmtime->empty() || !std::filesystem::is_regular_file(*wasmtime))
+        FAIL(std::format("ISOLINE_WASMTIME={} names no file: the fetch failed", *wasmtime));
+    // The build's own directory, removed afterwards.
+    auto const scratch = std::filesystem::current_path() / "oracle-edges";
+    std::filesystem::create_directories(scratch);
+    auto runner = ProcessRunner { scratch };
+    auto files = DirectoryModuleFiles { scratch / "modules" };
     auto const oracle = WasmtimeOracle { std::filesystem::path { *wasmtime }, runner, files };
     auto agreed = std::size_t { 0 };
     for (auto const name: { "calls.wat", "memory.wat", "bulk.wat", "exceptions.wat", "numbers.wat" })
@@ -312,4 +426,6 @@ TEST_CASE("WasmtimeOracle.agreesWithTheReferenceOnTheEdges", "[differential]")
         }
     }
     CHECK(agreed > 50);
+    auto ignored = std::error_code {};
+    std::filesystem::remove_all(scratch, ignored);
 }

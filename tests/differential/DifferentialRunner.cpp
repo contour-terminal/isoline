@@ -71,7 +71,15 @@ namespace
         return mode == ObservationMode::Observed ? "observed" : "unobserved";
     }
 
-    /// Counts the polls of each call, and raises the store's interrupt at the planned poll of each.
+    /// Whether a call is the one the InterruptionPlan interrupts.
+    enum class CallKind : uint8_t
+    {
+        Complete,    ///< Runs as far as it goes on its own.
+        Interrupted, ///< The planned call: interrupted at the plan's poll.
+    };
+
+    /// Counts the polls of each call, and raises the store's interrupt at the planned poll of the planned
+    /// call.
     class CallObserver final: public runtime::IPollObserver
     {
       public:
@@ -85,10 +93,12 @@ namespace
         }
 
         /// Starts counting a call afresh.
-        void beginCall() noexcept
+        /// @param kind Whether it is the call to interrupt.
+        void beginCall(CallKind kind) noexcept
         {
             _polls = {};
             _pollsOfCall = 0;
+            _kind = kind;
         }
 
         /// The polls of each site since beginCall().
@@ -101,7 +111,7 @@ namespace
         {
             ++_polls[std::to_underlying(site)];
             ++_pollsOfCall;
-            if (_plan.interruptAtPoll && *_plan.interruptAtPoll == _pollsOfCall && _interrupter)
+            if (_kind == CallKind::Interrupted && _plan.interruptAtPoll == _pollsOfCall && _interrupter)
                 _interrupter->interrupt();
         }
 
@@ -110,10 +120,14 @@ namespace
         std::shared_ptr<runtime::Interrupter> _interrupter;
         std::array<uint64_t, runtime::PollSiteTable.size()> _polls {};
         uint64_t _pollsOfCall = 0;
+        CallKind _kind = CallKind::Complete;
     };
 
-    /// Reads what an Observation holds of the store after a call: the instance's memories, globals and
-    /// tables (when there is an instance), and what the store charges.
+    /// Each memory's bytes after one call: what a memory divergence is diffed from.
+    using MemoryBytes = std::vector<std::vector<std::byte>>;
+
+    /// Reads what an Observation holds of the store after a call: the instance's memories, globals, tables
+    /// and segments (when there is an instance), and what the store charges and holds.
     void readState(runtime::Store const& store,
                    std::optional<uint32_t> instance,
                    runtime::GrowthRecord const& growth,
@@ -121,8 +135,17 @@ namespace
     {
         observation.steps = store.used(runtime::Limit::Steps);
         observation.growth = growth;
-        observation.liveExceptions = store.liveExceptions();
         observation.chargedStackValues = store.chargedStackValues();
+        // Every address an exception can have is below the store's limit of them.
+        for (auto const address: std::views::iota(
+                 runtime::ExnAddr { 0 }, static_cast<runtime::ExnAddr>(store.limits().maxExceptions)))
+        {
+            if (!store.isLiveException(address))
+                continue;
+            auto const& exception = store.exception(address);
+            observation.exceptions.push_back(
+                LiveException { .address = address, .tag = exception.tag, .payload = exception.payload });
+        }
         if (auto const* abrupt = std::get_if<runtime::Abrupt>(&observation.outcome))
         {
             if (auto const* thrown = std::get_if<runtime::Thrown>(abrupt))
@@ -140,6 +163,27 @@ namespace
             observation.globals.push_back(store.global(global).value());
         for (auto const table: module.tables)
             observation.tables.push_back(store.table(table).elements);
+        auto const stateOf = [](auto const& segment) {
+            return segment.has_value() ? SegmentState::Live : SegmentState::Dropped;
+        };
+        for (auto const& segment: module.data)
+            observation.segments.data.push_back(stateOf(segment));
+        for (auto const& segment: module.elements)
+            observation.segments.elements.push_back(stateOf(segment));
+    }
+
+    /// Each memory of the instance, copied.
+    [[nodiscard]] MemoryBytes memoryBytesOf(runtime::Store const& store, std::optional<uint32_t> instance)
+    {
+        auto bytes = MemoryBytes {};
+        if (!instance)
+            return bytes;
+        for (auto const memory: store.moduleInstance(*instance).memories)
+        {
+            auto const view = store.memory(memory).bytes();
+            bytes.emplace_back(view.begin(), view.end());
+        }
+        return bytes;
     }
 
     /// The size of the instance's memory 0, which the arguments aim near.
@@ -151,6 +195,14 @@ namespace
         return ArgumentContext { .memoryBytes = store.memory(module.memories.front()).bytes().size() };
     }
 
+    /// What observing a participant may also keep: the memories after one call (FieldDifference::call's
+    /// numbering), for diffing a memory divergence.
+    struct Capture
+    {
+        std::size_t call = 0; ///< The call.
+        MemoryBytes bytes;    ///< Its memories, once observed.
+    };
+
     /// Everything one participant does with one module in one lane and observation mode.
     [[nodiscard]] std::optional<ModuleObservation> observeParticipant(
         Participant const& participant,
@@ -159,7 +211,8 @@ namespace
         ObservationMode mode,
         runtime::StoreLimits const& limits,
         InterruptionPlan const& interruptions,
-        std::span<std::byte const> argumentSeed)
+        std::span<std::byte const> argumentSeed,
+        Capture* capture = nullptr)
     {
         auto executor = participant.makeExecutor();
         auto const code = participant.lowerModule(validated, modeOf(lane));
@@ -188,7 +241,7 @@ namespace
                 imports.error());
             return result;
         }
-        observer.beginCall();
+        observer.beginCall(CallKind::Complete);
         auto const instantiated = runtime::instantiateReporting(store, *executor, validated, code, *imports);
         result.instantiated.hostTrace = host.takeTrace();
         result.instantiated.polls = observer.polls();
@@ -206,35 +259,78 @@ namespace
                 instantiated.instance.error());
         }
         readState(store, instance, instantiated.refusedGrowth, result.instantiated);
+        if (capture != nullptr && capture->call == 0)
+            capture->bytes = memoryBytesOf(store, instance);
         if (!instance)
             return result;
 
-        auto ordinal = uint64_t { 0 };
+        auto functions = std::vector<std::pair<std::string_view, runtime::FuncAddr>> {};
+        for (auto const& [name, value]: store.moduleInstance(*instance).exports)
+        {
+            if (value.kind == binary::ExternKind::Func)
+                functions.emplace_back(name, value.address);
+        }
+        // Every function export CallRounds times, then the planned call, when it is observed and there is
+        // one.
+        auto schedule = std::vector<std::pair<std::size_t, CallKind>> {};
         for ([[maybe_unused]] auto const round:
              std::views::iota(uint32_t { 0 }, DifferentialRunner::CallRounds))
         {
-            for (auto const& [name, value]: store.moduleInstance(*instance).exports)
-            {
-                if (value.kind != binary::ExternKind::Func)
-                    continue;
-                auto stream = ArgumentStream { argumentSeed, ordinal++ };
-                auto const& type = store.functionType(value.address);
-                auto const args = argumentsFor(stream, type.params, contextOf(store, *instance));
-                auto results = std::vector<runtime::Value>(type.results.size());
-                auto& call = result.calls.emplace_back();
-                call.exportName = name;
-                observer.beginCall();
-                auto const invoked = runtime::invokeChecked(store, *executor, value.address, args, results);
-                call.hostTrace = host.takeTrace();
-                call.polls = observer.polls();
-                if (invoked.outcome)
-                    call.outcome = std::move(results);
-                else
-                    call.outcome = invoked.outcome.error();
-                readState(store, instance, invoked.refusedGrowth, call);
-            }
+            for (auto const index: std::views::iota(std::size_t { 0 }, functions.size()))
+                schedule.emplace_back(index, CallKind::Complete);
+        }
+        if (mode == ObservationMode::Observed && interruptions.interruptAtPoll && !functions.empty())
+            schedule.emplace_back(interruptions.exportPick % functions.size(), CallKind::Interrupted);
+
+        auto ordinal = uint64_t { 0 };
+        for (auto const& [index, kind]: schedule)
+        {
+            auto const& [name, function] = functions[index];
+            auto stream = ArgumentStream { argumentSeed, ordinal++ };
+            auto const& type = store.functionType(function);
+            auto const args = argumentsFor(stream, type.params, contextOf(store, *instance));
+            auto results = std::vector<runtime::Value>(type.results.size());
+            auto& call = result.calls.emplace_back();
+            call.exportName = name;
+            observer.beginCall(kind);
+            auto const invoked = runtime::invokeChecked(store, *executor, function, args, results);
+            call.hostTrace = host.takeTrace();
+            call.polls = observer.polls();
+            if (invoked.outcome)
+                call.outcome = std::move(results);
+            else
+                call.outcome = invoked.outcome.error();
+            readState(store, instance, invoked.refusedGrowth, call);
+            if (capture != nullptr && capture->call == result.calls.size())
+                capture->bytes = memoryBytesOf(store, instance);
         }
         return result;
+    }
+
+    /// Where two memories' bytes first differ, as text for both sides; empty when they do not.
+    [[nodiscard]] std::pair<std::string, std::string> firstDifference(MemoryBytes const& expected,
+                                                                      MemoryBytes const& actual)
+    {
+        for (auto const memory: std::views::iota(std::size_t { 0 }, std::min(expected.size(), actual.size())))
+        {
+            auto const& left = expected[memory];
+            auto const& right = actual[memory];
+            auto const [at, other] = std::ranges::mismatch(left, right);
+            if (at == left.end() && other == right.end())
+                continue;
+            auto const offset = static_cast<std::size_t>(at - left.begin());
+            auto const show = [memory, offset](std::vector<std::byte> const& bytes) {
+                if (offset >= bytes.size())
+                    return std::format(
+                        "memory {} offset {:#x}: past its end ({} bytes)", memory, offset, bytes.size());
+                return std::format("memory {} offset {:#x}: {:#04x}",
+                                   memory,
+                                   offset,
+                                   std::to_integer<unsigned>(bytes[offset]));
+            };
+            return { show(left), show(right) };
+        }
+        return {};
     }
 
     [[nodiscard]] std::shared_ptr<runtime::ModuleCode const> lowerForFast(
@@ -308,6 +404,14 @@ DifferentialRunner::DifferentialRunner(std::vector<Participant> participants,
 std::expected<std::vector<ParticipantObservation>, Applicability> DifferentialRunner::observe(
     std::span<std::byte const> module, std::span<std::byte const> argumentSeed) const
 {
+    return observe(module, argumentSeed, {});
+}
+
+std::expected<std::vector<ParticipantObservation>, Applicability> DifferentialRunner::observe(
+    std::span<std::byte const> module,
+    std::span<std::byte const> argumentSeed,
+    std::span<ParticipantObservation const> first) const
+{
     auto const validated = loadForComparison(module);
     if (!validated)
         return std::unexpected { validated.error() };
@@ -316,6 +420,14 @@ std::expected<std::vector<ParticipantObservation>, Applicability> DifferentialRu
     {
         for (auto const& participant: _participants)
         {
+            auto const reused = std::ranges::find_if(first, [&](ParticipantObservation const& observation) {
+                return observation.mode == mode && observation.participant == participant.name;
+            });
+            if (&participant == &_participants.front() && reused != first.end())
+            {
+                observations.push_back(*reused);
+                continue;
+            }
             observations.push_back(ParticipantObservation {
                 .participant = participant.name,
                 .mode = mode,
@@ -332,10 +444,12 @@ std::expected<void, Divergence> DifferentialRunner::run(std::span<std::byte cons
     auto const observations = observe(module, argumentSeed);
     if (!observations)
         return {};
-    return compare(*observations);
+    return compare(module, argumentSeed, *observations);
 }
 
 std::expected<void, Divergence> DifferentialRunner::compare(
+    std::span<std::byte const> module,
+    std::span<std::byte const> argumentSeed,
     std::span<ParticipantObservation const> observations) const
 {
     auto const* expected = static_cast<ParticipantObservation const*>(nullptr);
@@ -361,11 +475,51 @@ std::expected<void, Divergence> DifferentialRunner::compare(
         }
         if (!actual.observation)
             continue;
-        if (auto difference = differential::compare(*expected->observation, *actual.observation))
-            return std::unexpected { Divergence { .participant = who,
-                                                  .field = std::move(difference->field),
-                                                  .expected = std::move(difference->expected),
-                                                  .actual = std::move(difference->actual) } };
+        auto difference = differential::compare(*expected->observation, *actual.observation);
+        if (!difference)
+            continue;
+        if (difference->field == "memoryHashes")
+        {
+            // A digest says that a memory differs, not where: both participants once more, keeping the
+            // memories of that call.
+            auto const participantNamed = [this](std::string_view name) {
+                return std::ranges::find(_participants, name, &Participant::name);
+            };
+            auto const validated = loadForComparison(module);
+            auto expectedCapture = Capture { .call = difference->call, .bytes = {} };
+            auto actualCapture = Capture { .call = difference->call, .bytes = {} };
+            if (validated)
+            {
+                [[maybe_unused]] auto const expectedAgain =
+                    observeParticipant(*participantNamed(expected->participant),
+                                       *validated,
+                                       _lane,
+                                       actual.mode,
+                                       _limits,
+                                       _interruptions,
+                                       argumentSeed,
+                                       &expectedCapture);
+                [[maybe_unused]] auto const actualAgain =
+                    observeParticipant(*participantNamed(actual.participant),
+                                       *validated,
+                                       _lane,
+                                       actual.mode,
+                                       _limits,
+                                       _interruptions,
+                                       argumentSeed,
+                                       &actualCapture);
+            }
+            auto [expectedAt, actualAt] = firstDifference(expectedCapture.bytes, actualCapture.bytes);
+            if (!expectedAt.empty())
+            {
+                difference->expected += std::format(" ({})", expectedAt);
+                difference->actual += std::format(" ({})", actualAt);
+            }
+        }
+        return std::unexpected { Divergence { .participant = who,
+                                              .field = std::move(difference->field),
+                                              .expected = std::move(difference->expected),
+                                              .actual = std::move(difference->actual) } };
     }
     return {};
 }

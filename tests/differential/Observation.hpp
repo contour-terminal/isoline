@@ -94,6 +94,32 @@ struct ThrownException
     [[nodiscard]] bool operator==(ThrownException const&) const = default;
 };
 
+/// An exception the store holds after a call: its address, its tag and its payload.
+struct LiveException
+{
+    runtime::ExnAddr address = 0;        ///< Its store address.
+    runtime::TagAddr tag = 0;            ///< Its tag's store address.
+    std::vector<runtime::Value> payload; ///< Its payload.
+    /// Whether both are the same exception.
+    [[nodiscard]] bool operator==(LiveException const&) const = default;
+};
+
+/// Whether a passive segment can still be read.
+enum class SegmentState : uint8_t
+{
+    Live,    ///< Not dropped: memory.init and table.init read it.
+    Dropped, ///< Dropped by data.drop or elem.drop, or an active segment after instantiation.
+};
+
+/// The state of an instance's segments: what data.drop and elem.drop change.
+struct SegmentStates
+{
+    std::vector<SegmentState> data;     ///< Each data segment, by segment index.
+    std::vector<SegmentState> elements; ///< Each element segment, by segment index.
+    /// Whether both are in the same state.
+    [[nodiscard]] bool operator==(SegmentStates const&) const = default;
+};
+
 /// What one participant did in one export call, or in the instantiation: everything compared, each field
 /// exactly (Comparison.hpp's ObservationFields, one row per field).
 struct Observation
@@ -114,8 +140,10 @@ struct Observation
     std::vector<std::vector<runtime::Ref>> tables;
     /// The first refused memory.grow and table.grow of the call, and why.
     runtime::GrowthRecord growth;
-    /// The exceptions the store holds after the call.
-    std::size_t liveExceptions = 0;
+    /// The exceptions the store holds after the call, by ascending address.
+    std::vector<LiveException> exceptions;
+    /// The instance's data and element segments: which a call dropped.
+    SegmentStates segments;
     /// The stack values still charged after the call: zero, unless a frame leaked its charge.
     uint64_t chargedStackValues = 0;
     /// The calls of the recording host's functions during the call, in order (RecordingHost).
@@ -145,13 +173,19 @@ struct Divergence
     std::string actual;   ///< The diverging participant's.
 };
 
-/// When an observer interrupts each call: derived from the argument seed by a fuzzer.
+/// Which call an observer interrupts: derived from the argument seed by a fuzzer.
+///
+/// The interrupt is level-triggered and never lowered (runtime::Interrupter), so the interrupted call is one
+/// more call after every complete one: those keep their polls, and the interrupted one is the last the store
+/// runs.
 struct InterruptionPlan
 {
-    /// The poll of each call (and of the instantiation), counted from 1, at which the store's interrupt is
-    /// raised; none by default. The interrupt is level-triggered (runtime::Interrupter), so every later call
-    /// ends at its first poll.
+    /// The poll of the interrupted call, counted from 1, at which the store's interrupt is raised; none (no
+    /// interrupted call) by default.
     std::optional<uint64_t> interruptAtPoll;
+    /// Which exported function the interrupted call calls: this, modulo the function exports, in export
+    /// order.
+    uint64_t exportPick = 0;
 };
 
 } // namespace isoline::differential

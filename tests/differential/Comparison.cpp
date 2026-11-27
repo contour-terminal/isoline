@@ -227,6 +227,25 @@ std::string describe(std::span<std::vector<runtime::Ref> const> tables)
     });
 }
 
+std::string describe(std::span<LiveException const> exceptions)
+{
+    return listOf(exceptions, [](LiveException const& exception) {
+        return std::format("@{} tag @{} payload {}",
+                           exception.address,
+                           exception.tag,
+                           describe(std::span<runtime::Value const> { exception.payload }));
+    });
+}
+
+std::string describe(SegmentStates const& segments)
+{
+    auto const state = [](SegmentState segment) {
+        return std::string { segment == SegmentState::Live ? "live" : "dropped" };
+    };
+    return std::format(
+        "data {}, elements {}", listOf(segments.data, state), listOf(segments.elements, state));
+}
+
 std::string describe(std::span<uint64_t const> items)
 {
     return listOf(items, [](uint64_t item) { return std::format("{:#018x}", item); });
@@ -244,22 +263,24 @@ std::optional<FieldDifference> compare(ModuleObservation const& expected, Module
                                  .expected = expected.instantiation,
                                  .actual = actual.instantiation };
     auto const compareCall = [](Observation const& expectedCall,
-                                Observation const& actualCall) -> std::optional<FieldDifference> {
+                                Observation const& actualCall,
+                                std::size_t call) -> std::optional<FieldDifference> {
         for (auto const& field: ObservationFields)
         {
             if (!field.agree(expectedCall, actualCall))
                 return FieldDifference { .field = std::string { field.name },
+                                         .call = call,
                                          .expected = inCall(expectedCall, field.show(expectedCall)),
                                          .actual = inCall(actualCall, field.show(actualCall)) };
         }
         return std::nullopt;
     };
-    if (auto difference = compareCall(expected.instantiated, actual.instantiated))
+    if (auto difference = compareCall(expected.instantiated, actual.instantiated, 0))
         return difference;
     for (auto const index:
          std::views::iota(std::size_t { 0 }, std::min(expected.calls.size(), actual.calls.size())))
     {
-        if (auto difference = compareCall(expected.calls[index], actual.calls[index]))
+        if (auto difference = compareCall(expected.calls[index], actual.calls[index], index + 1))
             return difference;
     }
     if (expected.calls.size() != actual.calls.size())
