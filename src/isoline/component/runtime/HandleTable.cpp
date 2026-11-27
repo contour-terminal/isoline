@@ -97,9 +97,11 @@ std::expected<uint32_t, Trap> HandleTable::add(HandleEntry entry)
         }
         catch (...)
         {
+            // uncovered-begin(chunk-allocation)
             _budget->release(1);
             throw;
         }
+        // uncovered-end(chunk-allocation)
     }
     _chunks[chunk][offset] = entry;
     ++_length;

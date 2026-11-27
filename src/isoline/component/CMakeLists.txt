@@ -25,6 +25,8 @@ target_sources(isoline_component
         runtime/HandleTable.cpp
         runtime/ComponentPlan.cpp
         runtime/Resources.cpp
+        runtime/ComponentStore.cpp
+        runtime/Calls.cpp
         validate/Validator.cpp
         api/Component.cpp
     PUBLIC FILE_SET HEADERS
@@ -50,6 +52,8 @@ target_sources(isoline_component
             runtime/HandleTable.hpp
             runtime/ComponentPlan.hpp
             runtime/Resources.hpp
+            runtime/ComponentStore.hpp
+            runtime/Calls.hpp
             validate/Validator.hpp
             api/Component.hpp)
 target_compile_features(isoline_component PUBLIC cxx_std_23)
@@ -61,8 +65,15 @@ if(ISOLINE_TESTING)
     # binary; isoline_test leaves them out.
     file(GLOB_RECURSE isolineComponentTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
     add_executable(isoline_component_test ${isolineComponentTestSources})
-    target_link_libraries(isoline_component_test PRIVATE isoline::component Catch2::Catch2WithMain)
+    # The store and call tests write their core modules in the text format.
+    target_link_libraries(isoline_component_test PRIVATE isoline::component isoline::text Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_component_test TEST)
+    # Calls.recursiveSelfCallIsBounded nests 100 component calls on the main thread, about 16 KiB of
+    # stack each in an unoptimised MSVC build: past Windows' default 1 MiB, so the binary reserves the
+    # 8 MiB a Linux main thread has.
+    if(MSVC)
+        target_link_options(isoline_component_test PRIVATE /STACK:8388608)
+    endif()
     add_test(NAME isoline_component_test COMMAND isoline_component_test)
     set_tests_properties(isoline_component_test PROPERTIES LABELS unit TIMEOUT 600)
 endif()

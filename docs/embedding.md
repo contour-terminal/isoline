@@ -503,6 +503,23 @@ one instance's table to another's can trap `Handles` at a full budget although f
 and a call passing a `list<borrow<r>>` of N handles to another instance costs about 3N: the caller's N
 handles, N lends while the call runs, and N slots in the callee's table, which the callee keeps.
 
+A component store (`component::runtime::ComponentStore`) holds every core instance of every component
+instance in one core `Store`, of its engine's limits, allocator and interrupter. Instantiating runs the
+component's plans on an explicit stack, so nesting takes no host stack, and counts each component
+instance (`maxComponentInstances`), core instance (`maxCoreInstances`) and plan step, a frame's slots
+included (`maxInstantiationSteps`), before what it counts is created. All core instantiations of one
+`instantiate` share one invocation, so one step budget, start functions included. A refusal before the
+first step (a store already instantiating or calling, code of another engine, imports that do not fit,
+no instance left) changes nothing; **any failure after it locks the store down**, as does any failure of
+a component call: a trap, an interrupt, the step limit, an uncaught core exception, a host function's
+failure, and a nested trap even when a host function swallowed it. A locked-down store runs no guest code
+again (`CannotEnter`); core instances alone keep the core contract, staying callable after a trap. The
+embedder drops the store and instantiates afresh. One component call runs in one invocation scope, so the
+argument `realloc`s, the callee and `post-return` share one step budget; synchronous re-entrance, a host
+function calling back into the store, is allowed, and each such hop is one nested invocation against
+`maxNestedInvocations`. Arguments a call lifts are destroyed once lowered into the callee, so a chain of
+hops holds one copy of them live at a time.
+
 ## Interrupts and poll sites
 
 `Store::interrupter()` returns the store's `Interrupter`, shared. `interrupt()` is one release store to

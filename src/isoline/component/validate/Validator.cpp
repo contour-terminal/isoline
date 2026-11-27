@@ -1667,9 +1667,9 @@ namespace
             case AbstractHeapType::NoExn: return coreGate(CoreFeatureGate::ExceptionReference, position);
             case AbstractHeapType::NoFunc:
             case AbstractHeapType::NoExtern: return coreGate(CoreFeatureGate::BottomReference, position);
-            case AbstractHeapType::Bot: break; // never decoded
+            case AbstractHeapType::Bot: return {}; // uncovered(bottom-heap)
         }
-        return {};
+        return {}; // uncovered(exhaustive-switch)
     }
 
     Result<void> ComponentValidator::declaredFunctionType(isoline::binary::FuncType const& type,

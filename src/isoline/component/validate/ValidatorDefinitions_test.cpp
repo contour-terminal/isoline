@@ -2235,6 +2235,17 @@ TEST_CASE("Validator.declaredCoreTypesKeepToTheEngine")
                                        .kind = ExternKind::Table,
                                        .table = { .element = isoline::binary::FuncRef, .limits = {} } }) };
     CHECK(validatedUnder(plainTable, FeatureSet::all().without(Feature::ReferenceTypes)).has_value());
+    // A table of any other element type needs what its element type needs.
+    auto const exnTable =
+        Case { .gate = CoreFeatureGate::ExceptionReference,
+               .functionType = std::nullopt,
+               .declarations = importing(CoreExternType {
+                   .kind = ExternKind::Table,
+                   .table = { .element = reference(AbstractHeapType::Exn), .limits = {} } }) };
+    auto const exnGate = CoreFeatureGateTable[static_cast<std::size_t>(CoreFeatureGate::ExceptionReference)];
+    auto const refusedTable = validatedUnder(exnTable, FeatureSet::all().without(exnGate.feature));
+    REQUIRE_FALSE(refusedTable.has_value());
+    CHECK(refusedTable.error().subject == static_cast<uint64_t>(CoreFeatureGate::ExceptionReference));
     // Exports of a second memory add none: only imports count against the cap of one.
     auto const exportsOnly =
         Case { .gate = CoreFeatureGate::MultipleMemories,

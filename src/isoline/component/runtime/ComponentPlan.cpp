@@ -206,8 +206,8 @@ namespace
         // A core type is static; a custom section adds no index (introducedSort()), and an export
         // declaration belongs to a type scope, which has no plan.
         void plan(binary::CoreTypeDefinition const&, binary::Sort, uint32_t) noexcept {}
-        void plan(binary::CustomDefinition const&, binary::Sort, uint32_t) noexcept {}
-        void plan(binary::ExportDeclaration const&, binary::Sort, uint32_t) noexcept {}
+        void plan(binary::CustomDefinition const&, binary::Sort, uint32_t) noexcept {}  // uncovered(no-sort)
+        void plan(binary::ExportDeclaration const&, binary::Sort, uint32_t) noexcept {} // uncovered(no-sort)
 
         validate::ScopeInfo const& _info;
         std::vector<uint32_t> const& _ordinals;

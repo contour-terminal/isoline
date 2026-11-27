@@ -89,6 +89,7 @@ TEST_CASE("HandleTable.budgetIsStoreWide")
     // fourth anywhere is refused. A freed slot is its table's to reuse; the budget gets it back when
     // the table goes.
     auto budget = HandleBudget { 3 };
+    CHECK(budget.limit() == 3);
     auto first = HandleTable { budget };
     {
         auto second = HandleTable { budget };

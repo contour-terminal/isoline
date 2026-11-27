@@ -185,4 +185,13 @@ runtime::ComponentPlans const& Component::plans() const& noexcept
     return _state->plans;
 }
 
+runtime::ComponentCode Component::code() const
+{
+    return runtime::ComponentCode { .owner = _state,
+                                    .validated = _state->validated.get(),
+                                    .plans = &_state->plans,
+                                    .modules = _state->coreModules,
+                                    .engine = _state->engine };
+}
+
 } // namespace isoline::component::api

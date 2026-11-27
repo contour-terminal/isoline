@@ -14,6 +14,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -96,7 +97,14 @@ class RecordingLoader final: public ICoreModuleLoader
     isoline::api::Engine const* _engine;
 };
 
-/// A validator that throws std::bad_alloc at its @ref throwAt th call, as the host running out of memory.
+/// What a ThrowingValidator throws.
+enum class Thrown : uint8_t
+{
+    BadAlloc,    ///< std::bad_alloc, the host out of memory.
+    LengthError, ///< std::length_error, a container asked for more than its max_size().
+};
+
+/// A validator that throws at its @ref throwAt th call, as the host running out of memory.
 class ThrowingValidator final: public isoline::component::validate::ICoreModuleValidator
 {
   public:
@@ -104,13 +112,18 @@ class ThrowingValidator final: public isoline::component::validate::ICoreModuleV
     validate(std::span<std::byte const> bytes) override
     {
         if (_inner.calls() == throwAt)
+        {
+            if (thrown == Thrown::LengthError)
+                throw std::length_error { "too long" };
             throw std::bad_alloc {};
+        }
         return _inner.validate(bytes);
     }
 
     [[nodiscard]] isoline::FeatureSet coreFeatures() const noexcept override { return _inner.coreFeatures(); }
 
-    std::size_t throwAt = 0; ///< The call (counted from 0) that throws.
+    std::size_t throwAt = 0;          ///< The call (counted from 0) that throws.
+    Thrown thrown = Thrown::BadAlloc; ///< What it throws.
 
   private:
     CoreModuleValidator _inner { isoline::api::EngineConfig {}.features };
@@ -256,6 +269,11 @@ TEST_CASE("Component.hostMemoryExhaustedIsARefusal")
         Component::load(loading.engine, modulesComponent(3).build(), {}, loading.loader, validator);
     std::ignore = errorOf<isoline::api::HostMemoryExhausted>(loaded);
     CHECK(loading.loader.keys.empty());
+    // And std::length_error, which a container past its max_size() throws.
+    auto lengthError = ThrowingValidator {};
+    lengthError.thrown = Thrown::LengthError;
+    std::ignore = errorOf<isoline::api::HostMemoryExhausted>(
+        Component::load(loading.engine, modulesComponent(3).build(), {}, loading.loader, lengthError));
 }
 
 TEST_CASE("Component.moduleOfAnotherEngineRefused")
@@ -365,6 +383,15 @@ TEST_CASE("Component.malformedNestedModuleIsNamed")
     CHECK(error.coreModule->ordinal == 1);
     CHECK(std::holds_alternative<isoline::api::DecodeError>(error.coreModule->error));
     CHECK(loading.loader.keys.empty());
+
+    // The production validator names the same refusal.
+    auto engineValidator = EngineCoreModuleValidator { loading.engine };
+    auto const refused =
+        Component::load(loading.engine, builder.build(), {}, loading.loader, engineValidator);
+    auto const engineError = errorOf<ValidationError>(refused);
+    CHECK(engineError.code == ValidationErrorCode::CoreModuleRefused);
+    REQUIRE(engineError.coreModule.has_value());
+    CHECK(std::holds_alternative<isoline::api::DecodeError>(engineError.coreModule->error));
 }
 
 TEST_CASE("Component.engineLoaderAndValidator")

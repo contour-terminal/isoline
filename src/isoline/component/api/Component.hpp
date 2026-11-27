@@ -18,6 +18,7 @@
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Decoder.hpp>
 #include <isoline/component/runtime/ComponentPlan.hpp>
+#include <isoline/component/runtime/ComponentStore.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/ValidatedComponent.hpp>
 #include <isoline/component/validate/Validator.hpp>
@@ -216,6 +217,12 @@ class Component
     [[nodiscard]] runtime::ComponentPlans const& plans() const& noexcept;
     /// Deleted: as imports().
     [[nodiscard]] runtime::ComponentPlans const& plans() const&& = delete;
+
+    /// What a runtime::ComponentStore instantiates of it: its plans, modules and validated form, with
+    /// a share of its state that keeps them alive.
+    /// @return The code.
+    /// @throws std::bad_alloc When the engine identity's copy cannot be stored.
+    [[nodiscard]] runtime::ComponentCode code() const;
 
   private:
     struct State;
