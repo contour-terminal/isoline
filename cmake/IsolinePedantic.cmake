@@ -80,13 +80,14 @@ set(_isolineMsvcCWarnings
 #  - GCC and Clang: -ffp-contract=off.
 #  - MSVC: /fp:precise, its default, named explicitly; since Visual Studio 2022 17.0 it generates no
 #    contractions (only /fp:contract or /fp:fast does).
-#  - clang-cl: /fp:precise is Clang's -ffp-model=precise there, which contracts within an expression,
-#    so the GCC-style flag follows it, passed through /clang:.
+#  - clang-cl: its default is Clang's -ffp-model=precise, which contracts within an expression, so the
+#    GCC-style flag turns contraction off, passed through /clang:. Not after an explicit /fp:precise:
+#    Clang reports overriding the model it names (-Woverriding-option), which /WX makes an error.
 #  - Any other front end stops the configure: it has no row, and its default may contract (Intel's
 #    icx and icpx default to -fp-model=fast), so building with it would change results silently.
 set(_isolineGnuStyleFloatPolicy -ffp-contract=off)
 set(_isolineMsvcFloatPolicy /fp:precise)
-set(_isolineClangClFloatPolicy /fp:precise /clang:-ffp-contract=off)
+set(_isolineClangClFloatPolicy /clang:-ffp-contract=off)
 if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     set(_isolineFloatPolicy ${_isolineClangClFloatPolicy})
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
