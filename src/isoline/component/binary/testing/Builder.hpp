@@ -22,49 +22,6 @@
 namespace isoline::component::binary::testing
 {
 
-/// The number of index spaces of a component, one per Sort.
-inline constexpr auto SortCount = static_cast<std::size_t>(Sort::Instance) + 1;
-
-/// The index space a definition adds an index to, as Binary.md's index spaces count definitions.
-/// @param definition A definition or declaration.
-/// @return Its sort, or nothing for a custom section, which adds none.
-[[nodiscard]] inline std::optional<Sort> introducedSort(Definition const& definition)
-{
-    return std::visit(
-        [](auto const& alternative) -> std::optional<Sort> {
-            using Alternative = std::remove_cvref_t<decltype(alternative)>;
-            if constexpr (std::is_same_v<Alternative, CoreModuleDefinition>)
-                return Sort::CoreModule;
-            else if constexpr (std::is_same_v<Alternative, CoreInstanceDefinition>)
-                return Sort::CoreInstance;
-            else if constexpr (std::is_same_v<Alternative, CoreTypeDefinition>)
-                return Sort::CoreType;
-            else if constexpr (std::is_same_v<Alternative, NestedComponent>)
-                return Sort::Component;
-            else if constexpr (std::is_same_v<Alternative, InstanceDefinition>)
-                return Sort::Instance;
-            else if constexpr (std::is_same_v<Alternative, AliasDefinition>)
-                return alternative.sort;
-            else if constexpr (std::is_same_v<Alternative, TypeDefinition>)
-                return Sort::Type;
-            else if constexpr (std::is_same_v<Alternative, CanonDefinition>)
-                // `canon lift` defines a component function; every other built-in a core function.
-                return alternative.builtin == CanonBuiltin::Lift ? Sort::Func : Sort::CoreFunc;
-            else if constexpr (std::is_same_v<Alternative, ImportDefinition>)
-                return alternative.type.sort;
-            else if constexpr (std::is_same_v<Alternative, ExportDefinition>)
-                return alternative.item.sort;
-            else if constexpr (std::is_same_v<Alternative, ExportDeclaration>)
-                return alternative.type.sort;
-            else
-            {
-                static_assert(std::is_same_v<Alternative, CustomDefinition>, "every alternative has a case");
-                return std::nullopt;
-            }
-        },
-        definition);
-}
-
 /// A name without attributes.
 /// @param name The name.
 /// @return It, as `nameattributes` of the plain form.

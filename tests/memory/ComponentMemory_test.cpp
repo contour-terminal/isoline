@@ -29,8 +29,10 @@
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Decoder.hpp>
 #include <isoline/component/binary/testing/Builder.hpp>
+#include <isoline/component/binary/testing/ComponentFixtures.hpp>
 #include <isoline/component/binary/testing/DecoderFixtures.hpp>
 #include <isoline/component/canonical/Values.hpp>
+#include <isoline/component/runtime/ComponentPlan.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/ValidatedComponent.hpp>
 #include <isoline/component/validate/Validator.hpp>
@@ -706,5 +708,67 @@ TEST_CASE("Values.buildLinearMemory")
     auto const single = peakFor(50'000);
     auto const twice = peakFor(100'000);
     INFO(std::format("peak {} bytes at n, {} at 2n", single, twice));
+    CHECK(twice * 10 <= single * 22);
+}
+
+// The plans' share: one plan per component definition, each definition a step or none, so planning holds
+// memory linear in the component however often it instantiates its children.
+
+using isoline::component::binary::CoreInlineExport;
+using isoline::component::binary::CoreSort;
+using isoline::component::binary::testing::doublingComponent;
+using isoline::component::runtime::buildPlans;
+
+namespace
+{
+
+/// The most buildPlans() holds at once for @p builder's component, validated beforehand.
+std::size_t planningPeak(ComponentBuilder const& builder)
+{
+    auto coreModules = CoreModuleValidator {};
+    auto const validated =
+        validateComponent(builder.pool(), ComponentFeatureSet::wasi03(), ComponentLimits {}, coreModules);
+    REQUIRE(validated.has_value());
+    auto const scope = AllocationScope {};
+    auto const plans = buildPlans(**validated);
+    CHECK(plans.plans.size() == (*validated)->pool.components.size());
+    return scope.peakBytes();
+}
+
+} // namespace
+
+TEST_CASE("ComponentPlan.linearInInputMemory")
+{
+    // n levels each instantiating the previous twice, which inlining would make 2^(n - 1) instances of:
+    // planning 2n levels holds at most 2.2 times what n levels hold.
+    auto const single = planningPeak(doublingComponent(45));
+    auto const twice = planningPeak(doublingComponent(90));
+    INFO(std::format("peak {} bytes at n, {} at 2n", single, twice));
+    CHECK(twice * 10 <= single * 22);
+}
+
+TEST_CASE("ComponentPlan.longNamesCopiedOnce")
+{
+    // A core instance of n inline exports with 1'000-byte names, each aliased once: a plan copies each
+    // name once per definition naming it, so 2n exports hold at most 2.2 times what n hold.
+    auto const peakFor = [](uint32_t exports) {
+        auto builder = ComponentBuilder {};
+        auto const type = builder.type(TypeDefinition { .type = FunctionTypeDefinition {} });
+        auto const function = builder.import("f", ExternDesc { .sort = Sort::Func, .index = type });
+        auto const lowered = builder.canonLower(function, {});
+        auto entries = std::vector<CoreInlineExport> {};
+        for (auto const index: std::views::iota(uint32_t { 0 }, exports))
+            entries.push_back(CoreInlineExport { .name = std::format("{}{}", std::string(1'000, 'n'), index),
+                                                 .sort = CoreSort::Func,
+                                                 .index = lowered });
+        auto const instance = builder.coreInlineExports(entries);
+        for (auto const& entry: entries)
+            std::ignore = builder.aliasCoreExport(instance, entry.name, CoreSort::Func);
+        return planningPeak(builder);
+    };
+    auto const single = peakFor(2'000);
+    auto const twice = peakFor(4'000);
+    INFO(std::format("peak {} bytes at n, {} at 2n", single, twice));
+    CHECK(single >= std::size_t { 2'000 } * 2 * 1'000);
     CHECK(twice * 10 <= single * 22);
 }
