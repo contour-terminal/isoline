@@ -51,7 +51,9 @@ and --check's precompile reports the using-declaration it cannot resolve.
 `export namespace N { using N::leaf; }` blocks, and comments; nothing else), compares its `export import`
 lines with the row's imports and its names outside the module's namespaces with the row's foreign names,
 scans the header set for macros a header leaves defined (macros do not cross a module; a row file is read
-where its header includes it, as the preprocessor reads it), and finally
+where its header includes it, as the preprocessor reads it) and for conditional directives that read a
+compiler's macro, or definitions of a macro that names one (COMPILER_MACROS: a declaration only one compiler
+sees is one neither the lint nor another compiler's module build can tell from a missing name), and finally
 precompiles the unit as an importer's build would, its imported modules first, so that what Clang refuses
 to export (an entity of internal linkage) is a finding too.
 
@@ -203,6 +205,20 @@ GRAMMAR = (
 
 # A preprocessor directive that defines or undefines a macro, as the macro scan of the header set reads it.
 MACRO_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*(define|undef)[ \t]+([A-Za-z_]\w*)", re.MULTILINE)
+# A conditional directive and its condition, or a macro definition and its body, continuation lines joined before
+# it is read: a macro whose body names a compiler's macro hides a compiler's check from the conditional that reads it.
+CONDITIONAL_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|elifdef|elifndef|define)\b[ \t]*(.*)$",
+                                   re.MULTILINE)
+# The macros that name a compiler (its identity or its version), which no conditional directive of the header set
+# may read: a public header reads the same on every compiler, and a platform or compiler difference lives in a
+# CMake-selected file or a data row instead. A declaration behind one is seen by one compiler only, which neither
+# the export lint (Clang) nor another compiler's module build can tell from a missing name. Adding a compiler is a row.
+COMPILER_MACROS = (
+    "__GNUC__", "__GNUC_MINOR__", "__GNUC_PATCHLEVEL__", "__GNUG__",
+    "__clang__", "__clang_major__", "__clang_minor__", "__clang_patchlevel__",
+    "_MSC_VER", "_MSC_FULL_VER",
+)
+COMPILER_MACRO = re.compile(r"(?<![\w])(" + "|".join(re.escape(macro) for macro in COMPILER_MACROS) + r")(?![\w])")
 # An include directive, as the macro scan splices row files: its spelling, quoted or angled.
 INCLUDE_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*[<\"]([^>\"\n]+)[>\"]", re.MULTILINE)
 
@@ -952,6 +968,22 @@ def leftDefinedMacros(manifest):
     return leftDefined
 
 
+def compilerConditionals(manifest):
+    """(directive, macros, header) for each conditional directive of the set that reads a compiler's macro
+    (COMPILER_MACROS), and each macro definition whose body names one, comments and literals left out. A row file is read where its header includes it, as
+    leftDefinedMacros() reads it, so that its directives are that header's."""
+    files = rowFiles(manifest)
+    found = []
+    for header in umbrellaHeaders(manifest):
+        text = splicedText(header, files).replace("\\\n", " ")
+        for keyword, condition in CONDITIONAL_DIRECTIVE.findall(text):
+            macros = list(dict.fromkeys(COMPILER_MACRO.findall(condition)))
+            if macros:
+                directive = " ".join(f"#{keyword} {condition}".split())
+                found.append((directive, macros, header))
+    return found
+
+
 def precompile(manifest, clang, workDirectory, built, importing=()):
     """Precompiles @p manifest's interface unit to a BMI in @p workDirectory, each module it imports first
     (with their own manifests' arguments), as an importer's build would. @p built maps the module names
@@ -1069,6 +1101,11 @@ def checkMacros(context):
             for macro, header in leftDefinedMacros(context.manifest)]
 
 
+def checkCompilerConditionals(context):
+    return [{"directive": directive, "macros": ", ".join(macros), "header": shownFile(context.manifest, header)}
+            for directive, macros, header in compilerConditionals(context.manifest)]
+
+
 def checkPrecompile(context):
     diagnostic = precompile(context.manifest, context.clang, context.workDirectory, {})
     return [] if diagnostic is None else [{"diagnostic": diagnostic}]
@@ -1115,6 +1152,9 @@ RULES = (
      "header outside the header set: {header}, beside the set's own: add it to the library's FILE_SET HEADERS, "
      "or move it out of the public header directories"),
     ("macro", checkMacros, "macro left defined: {macro} in {header}"),
+    ("compilerConditional", checkCompilerConditionals,
+     "compiler conditional: `{directive}` in {header} names {macros}: an installed header reads the same on every "
+     "compiler"),
 )
 # The tiers of rules --check applies, in order; a tier runs only where every tier before it found nothing.
 # The generated form says the unit is not what --write writes, which every finding of the first tier

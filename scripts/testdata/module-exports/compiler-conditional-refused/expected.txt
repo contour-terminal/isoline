@@ -1,0 +1,7 @@
+compiler conditional: `#if defined(__GNUC__) && !defined(__clang__)` in isoline/api/Store.hpp names __GNUC__, __clang__: an installed header reads the same on every compiler
+compiler conditional: `#ifdef _MSC_VER` in isoline/api/Store.hpp names _MSC_VER: an installed header reads the same on every compiler
+compiler conditional: `#elif __GNUC__ >= 15 || defined(__clang__)` in isoline/api/Store.hpp names __GNUC__, __clang__: an installed header reads the same on every compiler
+compiler conditional: `#if __clang_major__ > 20` in isoline/api/Store.hpp names __clang_major__: an installed header reads the same on every compiler
+compiler conditional: `#define ISO_GCC (defined(__GNUC__) && !defined(__clang__))` in isoline/api/Store.hpp names __GNUC__, __clang__: an installed header reads the same on every compiler
+compiler conditional: `#ifndef __clang__` in isoline/api/Store.hpp names __clang__: an installed header reads the same on every compiler
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

@@ -314,10 +314,12 @@ module `isoline.recipe_fixture` re-exports `isoline`, and the tests prove each s
    `export module <name>;`, configure, then generate it.
 4. **The lint**, the test `module-exports-<name>` (label `lint`), checks the committed unit against the
    headers. Every public name must be exported and none stale, the `export import` lines must equal
-   `IMPORTS`, no macro may be left defined, no declaration may be of internal linkage, no public header may
-   be missing from the set, and the unit must precompile, the modules it imports first. A header changed
-   without `--write` fails it, naming the name. `--list [--kinds <kind>...]` prints the public names it
-   reads, each with the declaration kinds that declare it; where reflection is native, the test
+   `IMPORTS`, no macro may be left defined, no conditional directive may read a compiler's macro
+   (`__GNUC__`, `__clang__`, `_MSC_VER`, …: a header reads the same on every compiler), nor a macro's
+   definition name one, no declaration may be of internal linkage, no public header may be missing from
+   the set, and the unit must precompile, the modules it imports first. A header changed without `--write` fails it, naming the name.
+   `--list [--kinds <kind>...]` prints the public names it reads, each with the declaration kinds that
+   declare it; where reflection is native, the test
    `meta-module-surface.reflection` compares them with GCC's reading of the same headers
    ([docs/language-features.md](language-features.md), "The reflected module surface").
 5. **The install row**, one row of `ISOLINE_INSTALL_LIBRARIES` (`cmake/IsolineInstallRows.cmake`): the

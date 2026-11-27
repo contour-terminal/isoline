@@ -1,0 +1,4 @@
+// The store's limits, a row file Store.hpp includes.
+#ifndef __clang__
+inline constexpr int gccLimit = 1;
+#endif

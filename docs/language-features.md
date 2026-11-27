@@ -513,6 +513,16 @@ are not members either; the program reads them through their enumeration, as the
   is missing its row goes unnoticed. Its own C++23 size check still holds.
 - **A `KEYED` table's relation is not checked.** Reflection checks that the table is registered and that
   its row still starts with a scoped enum, not that its rows hold the relation the reason names.
+- **A using-declaration only GCC sees is seen by neither reading of the module surface:** Clang skips it,
+  and `members_of` reports no using-declaration. What closes the hole is the export lint's rule
+  `compilerConditional`, which refuses every conditional directive of the header set that reads a compiler's
+  macro (`__GNUC__`, `__clang__`, `_MSC_VER` and their version macros, `COMPILER_MACROS`), and every macro the
+  header set defines whose body names one (`#define ISO_GCC (defined(__GNUC__) && !defined(__clang__))`, read
+  by a later `#if ISO_GCC`). What stays open is a condition on a macro defined outside the header set from a
+  compiler's (in a dependency's header, such as core-cpp's, or on the command line), which the rule cannot
+  tell from any other macro. The other direction, a declaration Clang sees and another compiler does not, is the module
+  lanes': the interface unit exports it by a using-declaration, which fails to compile on GCC
+  (`linux-gcc-modules`, `gcc-cxx26-modules`) and MSVC (`windows-msvc-modules`).
 
 ## The consumer side of a native package
 

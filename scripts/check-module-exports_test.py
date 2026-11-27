@@ -95,6 +95,7 @@ CASES = (
     ("global-scope-internal-reexported", CHECK, 1, {}),
     ("anonymous-namespace-type-exported", CHECK, 1, {}),
     ("public-macro", CHECK, 1, {}),
+    ("compiler-conditional-refused", CHECK, 1, {}),
     ("macro-undefined-at-end", CHECK, 0, {}),
     ("foreign-name-unlisted", CHECK, 1, {}),
     ("foreign-name-listed", CHECK, 0, {}),
