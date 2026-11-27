@@ -68,6 +68,7 @@ using isoline::runtime::TrapCode;
 using isoline::runtime::Value;
 using isoline::runtime::testing::GrowDecision;
 using isoline::runtime::testing::ProvidedMemoryAllocator;
+using isoline::runtime::testing::ReallocatingMemoryAllocator;
 
 namespace
 {
@@ -985,7 +986,8 @@ class MisreportingAllocator final: public IMemoryAllocator
         [[nodiscard]] std::span<std::byte const> bytes() const noexcept override { return _bytes; }
         [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
         [[nodiscard]] uint64_t tailBytes() const noexcept override { return 0; }
-        [[nodiscard]] std::expected<void, Refusal> grow(uint64_t) noexcept override
+        [[nodiscard]] std::expected<void, Refusal> grow(
+            isoline::runtime::GrowRequest const& /*request*/) noexcept override
         {
             return std::unexpected { _growRefusal };
         }
@@ -1016,7 +1018,7 @@ TEST_CASE("Store.storageRefusalsAreAttributedToTheEmbedder")
         { .reported = Refusal::TypeMaximum, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
         { .reported = Refusal::Limit, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
         { .reported = Refusal::HostMemory, .allocation = Refusal::HostMemory, .growth = Refusal::HostMemory },
-        { .reported = Refusal::Guard, .allocation = Refusal::Guard, .growth = Refusal::Embedder },
+        { .reported = Refusal::Guard, .allocation = Refusal::Guard, .growth = Refusal::Guard },
         { .reported = Refusal::Embedder, .allocation = Refusal::Embedder, .growth = Refusal::Embedder },
     });
     // One row per refusal, each at the index of its enumerator, so none is tested twice and none left out.
@@ -1265,6 +1267,40 @@ TEST_CASE("Store.everyMemoryKeepsTheTailItsSizeNeeds")
     }
 }
 
+TEST_CASE("Store.growRefusesATailTheMemoryCannotKeep")
+{
+    // An embedder's memory that keeps 4 bytes past its end after a grow: a grow to a size that needs more is
+    // refused with Guard, recorded, and leaves the memory, its generation and the store's budget as they
+    // were; the request asks for exactly the new size's tail, so a size that needs 4 is taken.
+    using isoline::runtime::MaxAccessWidth;
+    auto allocator = ReallocatingMemoryAllocator { MaxAccessWidth, 4 };
+    auto store =
+        Store { StoreLimits { .maxMemoryBytes = MaxAccessWidth }, StoreServices { .allocator = allocator } };
+    auto const address = store.addMemory(MemoryType { .limits = between(0, 64), .pageSizeLog2 = 0 });
+    REQUIRE(address.has_value());
+    auto const& linear = std::as_const(store).memory(*address).storage();
+    auto const* const data = linear.bytes().data();
+    auto const generation = store.memoryGeneration();
+
+    for (auto const delta: { uint64_t { 1 }, MaxAccessWidth - 5 })
+    {
+        INFO("delta " << delta);
+        CHECK(store.growMemory(*address, delta) == std::unexpected { Refusal::Guard });
+        CHECK(store.growthRecord() == GrowthRecord { .memory = Refusal::Guard, .table = std::nullopt });
+        CHECK(linear.bytes().empty());
+        CHECK(linear.bytes().data() == data);
+        CHECK(linear.tailBytes() == MaxAccessWidth);
+        CHECK(store.memoryGeneration() == generation);
+    }
+
+    // Exactly the slack's worth of tail, then the whole budget: nothing was charged for the refusals.
+    CHECK(store.growMemory(*address, MaxAccessWidth - 4) == 0U);
+    CHECK(linear.bytes().size() == MaxAccessWidth - 4);
+    CHECK(store.growMemory(*address, 4) == MaxAccessWidth - 4);
+    CHECK(linear.bytes().size() == MaxAccessWidth);
+    CHECK(store.memoryGeneration() == generation + 2);
+}
+
 TEST_CASE("Store.memoryRequestNamesItsBounds")
 {
     /// Allocates on the heap, and keeps the last request.
@@ -1454,9 +1490,11 @@ TEST_CASE("Contract.Store.grownMemoryKeepsItsTail", "[.contract]")
         {
             return _size == 0 ? _storage.size() : 0;
         }
-        [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
+        /// Grows whatever tail the request asks for: it lies.
+        [[nodiscard]] std::expected<void, Refusal> grow(
+            isoline::runtime::GrowRequest const& request) noexcept override
         {
-            _size = newBytes;
+            _size = request.newBytes;
             return {};
         }
 

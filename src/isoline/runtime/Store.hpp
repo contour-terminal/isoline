@@ -156,15 +156,18 @@ class MemoryInstance
   private:
     friend class Store;
 
-    /// Grows the storage to @p newBytes, zeroed (ILinearMemory::grow()): only the store, which
-    /// charges the growth against its budget, grows a memory. A storage that grew without the tail its new
-    /// size needs (keepsItsTail()) broke ILinearMemory's contract, which is checked: a refusal could not
+    /// Grows the storage to @p newBytes, zeroed, asking it for the tail the new size needs
+    /// (ILinearMemory::grow(), GrowRequest): only the store, which charges the growth against its budget,
+    /// grows a memory. A storage that cannot keep that tail refuses with Guard; one that grew without it
+    /// anyway (keepsItsTail()) lied, breaking ILinearMemory's contract, which is checked: a refusal could not
     /// undo the grow it already made.
     /// @param newBytes The new size in bytes.
     /// @return Nothing, or the storage's refusal.
     [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept
     {
-        return _memory->grow(newBytes).transform([this] { Require(keepsItsTail(*_memory)); });
+        return _memory->grow(GrowRequest { .newBytes = newBytes }).transform([this] {
+            Require(keepsItsTail(*_memory));
+        });
     }
 
     std::unique_ptr<ILinearMemory> _memory;

@@ -72,6 +72,7 @@ using runtime::IPollObserver;
 using runtime::PollSite;
 
 // --- Memory allocation ---
+using runtime::GrowRequest;
 using runtime::HeapMemoryAllocator;
 using runtime::ILinearMemory;
 using runtime::IMemoryAllocator;

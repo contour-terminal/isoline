@@ -57,11 +57,16 @@ namespace
 
         [[nodiscard]] uint64_t tailBytes() const noexcept override { return _storage.size() - _size; }
 
-        [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
+        /// Keeps Tail bytes past every end, at least what any size needs (requiredTailBytesOf()), so it never
+        /// refuses with Guard.
+        [[nodiscard]] std::expected<void, Refusal> grow(GrowRequest const& request) noexcept override
         {
-            if (newBytes > std::numeric_limits<uint64_t>::max() - Tail)
+            static_assert(Tail >= requiredTailBytesOf(0));
+            if (request.newBytes > std::numeric_limits<uint64_t>::max() - Tail)
                 return std::unexpected { Refusal::HostMemory };
-            return resizeZeroed(_storage, newBytes + Tail).transform([&] { _size = newBytes; });
+            return resizeZeroed(_storage, request.newBytes + Tail).transform([&] {
+                _size = request.newBytes;
+            });
         }
 
       private:
@@ -79,7 +84,7 @@ std::expected<std::unique_ptr<ILinearMemory>, Refusal> HeapMemoryAllocator::allo
     try
     {
         auto memory = std::make_unique<HeapLinearMemory>();
-        return memory->grow(request.initialBytes).transform([&] {
+        return memory->grow(GrowRequest { .newBytes = request.initialBytes }).transform([&] {
             return std::unique_ptr<ILinearMemory> { std::move(memory) };
         });
     }

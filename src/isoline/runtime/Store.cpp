@@ -122,7 +122,7 @@ namespace
         std::to_array({ Refusal::Embedder, Refusal::HostMemory, Refusal::Guard });
 
     /// The refusals ILinearMemory::grow() may report.
-    constexpr auto GrowRefusals = std::to_array({ Refusal::Embedder, Refusal::HostMemory });
+    constexpr auto GrowRefusals = std::to_array({ Refusal::Embedder, Refusal::HostMemory, Refusal::Guard });
 
     /// @p refusal as the embedder's allocator or memory reported it, attributed to whom it belongs:
     /// one of @p documented stays as it is; any other (TypeMaximum, Limit) is the store's alone to

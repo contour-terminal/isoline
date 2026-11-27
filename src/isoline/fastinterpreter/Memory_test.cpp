@@ -36,6 +36,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/ProvidedMemory.hpp>
 
 using isoline::binary::AddressType;
 using isoline::binary::ExternKind;
@@ -165,9 +166,14 @@ class MovingMemory final: public ILinearMemory
 
     [[nodiscard]] uint64_t tailBytes() const noexcept override { return 0; }
 
-    [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
+    /// Moves to a buffer of exactly the new size; it keeps no tail, so it refuses, with Guard, a size that
+    /// needs one.
+    [[nodiscard]] std::expected<void, Refusal> grow(
+        isoline::runtime::GrowRequest const& request) noexcept override
     {
-        auto moved = std::vector<std::byte>(static_cast<std::size_t>(newBytes));
+        if (request.requiredTailBytes > 0)
+            return std::unexpected { Refusal::Guard };
+        auto moved = std::vector<std::byte>(static_cast<std::size_t>(request.newBytes));
         std::ranges::copy(_buffers.back(), moved.begin());
         std::ranges::fill(_buffers.back(), RetiredByte);
         _buffers.push_back(std::move(moved));
@@ -877,6 +883,30 @@ TEST_CASE("Memory.sizeAndGrowMatchReference")
             }
         }
     }
+}
+
+TEST_CASE("Memory.growRefusedForItsTailReturnsMinusOne")
+{
+    // A memory of byte pages whose embedder keeps no tail after a grow: memory.grow to a size under
+    // MaxAccessWidth needs a tail, so the store refuses it with Guard and the guest sees -1, the size
+    // unchanged, on every engine; a grow to MaxAccessWidth bytes needs none and is taken.
+    auto const engine = referenceAndFastEngineOfEachDispatch();
+    auto allocator =
+        isoline::runtime::testing::ReallocatingMemoryAllocator { isoline::runtime::MaxAccessWidth, 0 };
+    auto module = ModuleBuilder {};
+    module.type(FuncType { .params = { binary::I32 }, .results = { binary::I32, binary::I32 } });
+    module.memory(MemoryType { .limits = Limits { .min = 0, .max = 64, .addressType = AddressType::I32 },
+                               .pageSizeLog2 = 0 });
+    module.function(0, {}, code({ localGet(0), { 0x40, 0x00 }, { 0x3F, 0x00 } }));
+    auto harness = Harness { module, engine, Harness::Imports {}, allocator };
+    auto const widest = static_cast<uint32_t>(isoline::runtime::MaxAccessWidth);
+    for (auto const delta: { 1U, widest - 1 })
+    {
+        INFO("delta " << delta);
+        CHECK(harness.outcome(0, { I32 { delta } })
+              == std::vector<Value> { I32 { std::numeric_limits<uint32_t>::max() }, I32 { 0 } });
+    }
+    CHECK(harness.outcome(0, { I32 { widest } }) == std::vector<Value> { I32 { 0 }, I32 { widest } });
 }
 
 TEST_CASE("Memory.importedMemoryGrownByItsExporter")
