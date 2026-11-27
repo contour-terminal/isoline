@@ -1,0 +1,4 @@
+exit: 1
+src/isoline/c/Wasm.cpp:4: contract-in-c-api: a contract in the C API, which a C caller's misuse would reach: check the argument and return an error value (detail/Boundary.hpp), as every isoline_ and wasm_ function does
+src/isoline/c/Wasm.cpp:9: contract-in-c-api: a contract in the C API, which a C caller's misuse would reach: check the argument and return an error value (detail/Boundary.hpp), as every isoline_ and wasm_ function does
+src/isoline/c/detail/Handles.hpp:10: contract-in-c-api: a contract in the C API, which a C caller's misuse would reach: check the argument and return an error value (detail/Boundary.hpp), as every isoline_ and wasm_ function does

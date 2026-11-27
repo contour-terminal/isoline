@@ -63,6 +63,10 @@ function(_isoline_c_library target type core)
     target_compile_features(${target} INTERFACE c_std_11)
     target_link_libraries(${target} PRIVATE ${core})
     isoline_apply_target_policy(${target})
+    # After the policy, as isoline_core's: the native features' flags follow the warning set. The boundary's
+    # noexcept functions would be natural contract sites, but host misuse a C caller can reach stays an error
+    # value (plan P17a), never a contract: no ISOLINE_PRECONDITION or ISOLINE_PRE checks a C argument.
+    isoline_apply_language_features(${target})
 endfunction()
 
 ## @brief Appends to @p outVar @p target and the static libraries it links, transitively, in link order.

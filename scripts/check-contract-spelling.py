@@ -115,6 +115,17 @@ RULES = (
                               r"|->\s*[\w:<>*&, ]*?[\w>*&]))*\s*\b(?:pre|post)\s*\("),
          message="a contract in a header is spelled ISOLINE_PRE or ISOLINE_POST on a declaration "
                  "(<isoline/Contracts.hpp>), whose expansion is fixed per package and proves the function noexcept"),
+    # The C API's boundary: host misuse a C caller reaches is an error value (plan P17a), never a contract,
+    # which would end the process. Its noexcept functions look like natural contract sites, so the rule
+    # refuses every spelling of one there, the body macros and the declaration contracts alike.
+    Rule(name="contract-in-c-api",
+         globs=("src/isoline/c/**/*.cpp", "src/isoline/c/**/*.hpp"),
+         exempt=(),
+         scope=Scope.EVERY_FILE,
+         text=Text.CODE,
+         forbidden=re.compile(r"\bISOLINE_(?:PRECONDITION|INVARIANT|PRE|POST)\b"),
+         message="a contract in the C API, which a C caller's misuse would reach: check the argument and "
+                 "return an error value (detail/Boundary.hpp), as every isoline_ and wasm_ function does"),
     Rule(name="meta-include-in-installed-header",
          globs=("src/isoline/**/*.hpp", "src/isoline/**/*.def"),
          exempt=(),
@@ -387,6 +398,20 @@ def installedRequires(root, installed):
                for header in sorted(installed) if (root / header).is_file())
 
 
+# A finding's place: `<path>:<line>: …`.
+FINDING_PLACE = re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+): ")
+
+
+def findingOrder(finding):
+    """The key findings print in: their path, as `/`-separated text, then their line, then the rest; so
+    that the order is the same on every operating system, whatever order its filesystem walks a tree in or
+    its paths compare in (Windows' are case-insensitive)."""
+    place = FINDING_PLACE.match(finding)
+    if place is None:
+        return (finding, 0, finding)
+    return (place.group("path").replace("\\", "/"), int(place.group("line")), finding)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parent.parent,
@@ -402,7 +427,8 @@ def main(argv=None):
     if not problems:
         rowProblems, counted = rowFindings(root, rows)
         problems += rowProblems
-    problems = sorted(problems) + ruleFindings(root, RULES, installed) + inlineContractFindings(root)
+    problems = sorted(problems + ruleFindings(root, RULES, installed) + inlineContractFindings(root),
+                      key=findingOrder)
     for problem in problems:
         print(problem)
     if problems:

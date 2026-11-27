@@ -226,7 +226,8 @@ fallback build, a C++23 unit and, on GCC, a C++26 unit with `-fcontracts` must c
   functions keep their `ISOLINE_PRECONDITION`, which the fallback path checks. A postcondition is new and
   has no body check, so on the fallback path it checks nothing.
 - **Never on host misuse reachable from C.** That stays an error value (the cross-plan notes): the C API
-  checks it first.
+  checks it first. The lint's rule `contract-in-c-api` refuses every contract spelling (`ISOLINE_PRECONDITION`,
+  `ISOLINE_INVARIANT`, `ISOLINE_PRE`, `ISOLINE_POST`) under `src/isoline/c/`.
 - **`enforce` only, and never the consumer's semantic.** GCC 16.2 evaluates a non-inline function's
   contract in the callee (measured: a caller compiled with `-fcontract-evaluation-semantic=ignore` still
   terminates). A declaration contract therefore sits only on a function that an implementation file defines,

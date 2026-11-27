@@ -787,7 +787,9 @@ endfunction()
 ## records it in the GLOBAL property ISOLINE_LANGUAGE_FEATURE_TARGETS, whose installed headers
 ## isoline_add_public_header_check() checks. Every target passed here, on either path, is recorded.
 ## Once that check has run, the registry is sealed: a target arriving later would compile with the
-## native features and its headers unchecked, so it is a FATAL_ERROR.
+## native features and its headers unchecked, so it is a FATAL_ERROR. Where contracts are native, a target
+## asks its consumers for the contract-consumer row's standard, but one whose header set is C headers alone
+## (the C API's), which asks nothing.
 function(isoline_apply_language_features target)
     get_property(sealedBy GLOBAL PROPERTY ISOLINE_HEADER_CHECK_SEALED)
     if(sealedBy)
@@ -798,6 +800,13 @@ function(isoline_apply_language_features target)
     set_property(GLOBAL APPEND PROPERTY ISOLINE_LANGUAGE_FEATURE_TARGETS ${target})
     _isoline_apply_target_language_features(${target})
     if(NOT ISOLINE_CONTRACTS_PATH STREQUAL "native")
+        return()
+    endif()
+    # A declaration contract is spelled in a C++ header only: a library whose header set holds headers, none of
+    # them a `.hpp` (the C API's, C headers alone), asks nothing of its consumers, which may be C.
+    get_target_property(headers ${target} HEADER_SET)
+    _isoline_header_set_include_names(${target} cxxHeaders)
+    if(headers AND cxxHeaders STREQUAL "")
         return()
     endif()
     # Its headers' declarations carry contracts (isoline/Contracts.hpp): every consumer compiles at the
