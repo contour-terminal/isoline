@@ -687,6 +687,47 @@ TEST_CASE("Exceptions.sweepChargesLikeReference", "[memory]")
     }
 }
 
+TEST_CASE("Exceptions.sweepReadsRunsOfResultsAndParams")
+{
+    // f1 returns an i32 and an exnref; f2 keeps both, a run of a call's results, below a call of f0, whose
+    // throws and catches sweep a store of 16 exceptions; f3 hands both to an if as its params, and calls f0
+    // in either arm, the else's holding them as a run of params. Each sweep reads them as the reference's
+    // operand stack holds them.
+    auto const engine = fastEngineOfEachDispatch();
+    auto module = withTypesAndTags();
+    module.type(FuncType { .params = { binary::I32, binary::ExnRef }, .results = {} }); // 8
+    module.function(Nullary, { binary::I32 }, throwAndCatchRounds(40));
+    module.function(ToI32AndExn,
+                    {},
+                    code({ { 0x02, ToI32AndExn },
+                           tryTable(NoResult, { { .kind = CatchKind::CatchRef, .tag = 0, .label = 0 } }),
+                           i32Const(42),
+                           throwTag(0),
+                           end(),
+                           { 0x00 },
+                           end() }));
+    module.function(Nullary, {}, code({ op(0x10, 1), op(0x10, 0), { 0x1A, 0x1A } }));
+    module.function(UnaryI32,
+                    {},
+                    code({ op(0x10, 1),
+                           localGet(0),
+                           { 0x04, 0x08 }, // if (param i32 exnref)
+                           op(0x10, 0),
+                           { 0x1A, 0x1A, 0x05 }, // drop drop else
+                           op(0x10, 0),
+                           { 0x1A, 0x1A }, // drop drop
+                           end() }));
+    for (auto const& call: std::to_array<Call>({ { .function = 2, .args = {} },
+                                                 { .function = 3, .args = { i32(1) } },
+                                                 { .function = 3, .args = { i32(0) } } }))
+    {
+        INFO("function " << call.function);
+        auto const reference = checkAgainstReference(module, engine, { call }, { .maxExceptions = 16 });
+        CHECK(reference.outcomes.front() == Outcome { std::vector<Value> {} });
+        CHECK(pollsAt(reference, PollSite::Sweep) > 0);
+    }
+}
+
 TEST_CASE("Exceptions.unwoundFramesHoldNoRoots")
 {
     // A callee catches an exception into its local and throws another out; its caller catches that, then
@@ -962,6 +1003,37 @@ TEST_CASE("Exceptions.limitsHitMidUnwind")
                 auto counter = PollCounter { isoline::runtime::testing::PollTrigger {
                     .site = PollSite::Unwind, .ordinal = ordinal } };
                 auto harness = Harness { module, under, StoreLimits {}, &counter };
+                counter.interruptAtTrigger(harness.store().interrupter());
+                auto const outcome = harness.outcome(1);
+                CHECK(harness.store().chargedStackValues() == 0);
+                return std::pair { outcome, harness.store().used(Limit::Steps) };
+            };
+            auto const reference = interrupted(Reference);
+            CHECK(reference.first
+                  == Outcome { std::unexpected { Abrupt { Trap { TrapCode::Interrupted } } } });
+            CHECK(interrupted(engine) == reference);
+        }
+    }
+    SECTION("an interrupt at an Unwind poll among a try_table's clauses")
+    {
+        // f1 calls the thrower inside a try_table of eight clauses of tag 1, which do not match, inside
+        // blocks: over these block counts the 4'096th item, where the Unwind poll comes, is each clause in
+        // turn, and an interrupt there ends the invocation as the reference's does.
+        for (auto const blocks: std::views::iota(uint32_t { 4'086 }, uint32_t { 4'096 }))
+        {
+            INFO(blocks << " blocks");
+            auto clauses = withTypesAndTags();
+            clauses.function(Nullary, {}, code({ i32Const(1), throwTag(0) }));
+            auto const notMatching = Clause { .kind = CatchKind::Catch, .tag = 1, .label = 0 };
+            clauses.function(Nullary,
+                             {},
+                             code({ tryTable(NoResult, std::vector<Clause>(8, notMatching)),
+                                    inBlocks(blocks, op(0x10, 0)),
+                                    end() }));
+            auto const interrupted = [&](EngineUnderTest under) {
+                auto counter = PollCounter { isoline::runtime::testing::PollTrigger {
+                    .site = PollSite::Unwind, .ordinal = 1 } };
+                auto harness = Harness { clauses, under, StoreLimits {}, &counter };
                 counter.interruptAtTrigger(harness.store().interrupter());
                 auto const outcome = harness.outcome(1);
                 CHECK(harness.store().chargedStackValues() == 0);
