@@ -10,6 +10,8 @@
 #    includes or a module it imports, and std for `import std;`. A mode that imports is scanned for module
 #    dependencies and needs a build with ISOLINE_MODULES; one that imports std needs a toolchain with a std
 #    module, too (D9). A mode that imports nothing must not be scanned.
+#  - source: a `.c` source makes a project of C alone (`project(... LANGUAGES C)`), which asks the package
+#    for its C interface and must be given no C++ toolchain; any other source, a C++ project.
 #  - install components: the components check-install installs into the prefix, |-separated.
 #  - The import modes need CMake 4.3, the modules floor (D8); the header modes run on the header lanes'
 #    CMake.
@@ -25,6 +27,8 @@ set(ISOLINE_CONSUMER_MODES
     "import-fixture" "install-import-fixture-consumer" "4.3"  "FixtureConsumer.cpp" "isoline.recipe_fixture"
         "isoline|isoline-test-fixture"
     "c"              "install-c-consumer"              "3.25" "CConsumer.cpp"       "c"
+        "isoline|isoline-c"
+    "c-only"         "install-c-only-consumer"         "3.25" "CConsumer.c"         "c"
         "isoline|isoline-c")
 
 # What a mode may use: (name, how: include or import, the package component that holds it, the target the
@@ -89,6 +93,11 @@ function(isoline_consumer_mode mode outPrefix)
         set(${outPrefix}Test "${rowTest}" PARENT_SCOPE)
         set(${outPrefix}MinimumCMake "${rowMinimumCMake}" PARENT_SCOPE)
         set(${outPrefix}Source "${rowSource}" PARENT_SCOPE)
+        if(rowSource MATCHES "[.]c$")
+            set(${outPrefix}Language C PARENT_SCOPE)
+        else()
+            set(${outPrefix}Language CXX PARENT_SCOPE)
+        endif()
         set(${outPrefix}Components "${components}" PARENT_SCOPE)
         set(${outPrefix}PackageComponents "${packageComponents}" PARENT_SCOPE)
         set(${outPrefix}LinkTargets "${linkTargets}" PARENT_SCOPE)

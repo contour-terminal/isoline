@@ -5,6 +5,7 @@
 #   cmake -DBUILD_DIR=<isoline build> -DSOURCE_DIR=<isoline> -DPREFIX=<empty prefix>
 #         -DCONSUMER_SOURCE=<tests/consumer> -DMODE=<mode> -DFORBIDDEN_OPTIONS_FILE=<list file>
 #         [-DCXX_COMPILER=<c>] [-DCXX_FLAGS=<flags>] [-DSTDLIB_MODULES_JSON=<json>]
+#         [-DC_COMPILER=<cc>] [-DC_FLAGS=<flags>] (the consumer of a mode whose source is C)
 #         [-DGENERATOR=<g>] [-DGENERATOR_PLATFORM=<p>]
 #         [-DGENERATOR_TOOLSET=<t>] [-DGENERATOR_IS_MULTI_CONFIG=ON|OFF] [-DMAKE_PROGRAM=<p>] [-DMT=<mt>] [-DAR=<ar>]
 #         [-DRANLIB=<ranlib>] [-DCONFIG=<config>]
@@ -128,24 +129,48 @@ set(toolchainRows
     -A                       "${GENERATOR_PLATFORM}"
     -T                       "${GENERATOR_TOOLSET}"
     -DCMAKE_MAKE_PROGRAM=    "${MAKE_PROGRAM}"
-    -DCMAKE_CXX_COMPILER=    "${CXX_COMPILER}"
-    -DCMAKE_CXX_FLAGS=       "${CXX_FLAGS}"
-    -DCMAKE_CXX_STDLIB_MODULES_JSON= "${STDLIB_MODULES_JSON}"
     -DCMAKE_MT=              "${MT}"
     -DCMAKE_AR=              "${AR}"
     -DCMAKE_RANLIB=          "${RANLIB}")
-set(toolchainArgs "")
-while(toolchainRows)
-    list(POP_FRONT toolchainRows argument value)
-    if(value STREQUAL "")
-        continue()
-    endif()
-    if(argument MATCHES "=$")
-        list(APPEND toolchainArgs "${argument}${value}")
-    else()
-        list(APPEND toolchainArgs "${argument}" "${value}")
-    endif()
-endwhile()
+# The compiler rows, per language: a project of C alone (a mode whose source is C) is given the C compiler
+# and nothing of C++, which it would warn it does not read.
+set(cxxCompilerRows
+    -DCMAKE_CXX_COMPILER=    "${CXX_COMPILER}"
+    -DCMAKE_CXX_FLAGS=       "${CXX_FLAGS}"
+    -DCMAKE_CXX_STDLIB_MODULES_JSON= "${STDLIB_MODULES_JSON}")
+set(cCompilerRows
+    -DCMAKE_C_COMPILER=      "${C_COMPILER}"
+    -DCMAKE_C_FLAGS=         "${C_FLAGS}")
+set(consumerCompilerRows "${cxxCompilerRows}")
+if(NOT CORE_CPP_ONLY AND modeLanguage STREQUAL "C")
+    set(consumerCompilerRows "${cCompilerRows}")
+endif()
+## Appends the rows of the list @p rowsVar (argument, value pairs; an empty value is left out) to @p outVar as
+## arguments. The rows are passed by name: an empty value would vanish from an argument list.
+function(_check_install_arguments outVar rowsVar)
+    set(arguments ${${outVar}})
+    set(rows "${${rowsVar}}")
+    while(rows)
+        list(POP_FRONT rows argument value)
+        if(value STREQUAL "")
+            continue()
+        endif()
+        if(argument MATCHES "=$")
+            list(APPEND arguments "${argument}${value}")
+        else()
+            list(APPEND arguments "${argument}" "${value}")
+        endif()
+    endwhile()
+    set(${outVar} "${arguments}" PARENT_SCOPE)
+endfunction()
+set(commonToolchainArgs "")
+_check_install_arguments(commonToolchainArgs toolchainRows)
+# What every project but the consumer is configured with (core-cpp, the package probes: C++), and the
+# consumer's own.
+set(toolchainArgs ${commonToolchainArgs})
+_check_install_arguments(toolchainArgs cxxCompilerRows)
+set(consumerToolchainArgs ${commonToolchainArgs})
+_check_install_arguments(consumerToolchainArgs consumerCompilerRows)
 # A multi-config generator chooses the configuration when building, and warns that a
 # CMAKE_BUILD_TYPE it does not read is unused.
 set(configArgs "")
@@ -153,6 +178,7 @@ set(testConfigArgs "")
 if(CONFIG)
     if(NOT GENERATOR_IS_MULTI_CONFIG)
         list(APPEND toolchainArgs "-DCMAKE_BUILD_TYPE=${CONFIG}")
+        list(APPEND consumerToolchainArgs "-DCMAKE_BUILD_TYPE=${CONFIG}")
     endif()
     set(configArgs --config "${CONFIG}")
     set(testConfigArgs --build-config "${CONFIG}")
@@ -406,7 +432,7 @@ function(check_install_no_match what output pattern)
 endfunction()
 
 check_install_step("configuring tests/consumer in mode ${MODE}" configureOutput
-    "${CMAKE_COMMAND}" -S "${CONSUMER_SOURCE}" -B "${consumerBuild}" ${toolchainArgs} ${isolationArgs}
+    "${CMAKE_COMMAND}" -S "${CONSUMER_SOURCE}" -B "${consumerBuild}" ${consumerToolchainArgs} ${isolationArgs}
     "-DCMAKE_PREFIX_PATH=${PREFIX}" "-DISOLINE_CONSUMER_MODE=${MODE}")
 
 # import std, where the consumer found it unavailable: a skip, or a failure where the lane expects it.

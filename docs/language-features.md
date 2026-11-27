@@ -501,8 +501,12 @@ A package whose contracts are native asks more of its consumer than a fallback o
   both compilers, where the consumer's is another or another major.minor release, or C++ is not enabled
   (`cmake/isolineConsumerToolchain.cmake`; `install-consumer-toolchain`, label `install`, pins its
   cases). A static `isoline::core` carries `$<LINK_ONLY:stdc++exp>`, so the link needs nothing more.
+- **The C API's component asks nothing of the toolchain.** A consumer that asks `find_package(isoline)` for
+  components with a C interface alone (`c`, whose header set holds no `.hpp`) links the shared library,
+  which holds `libstdc++exp` inside it: a C program configures without C++, and any compiler links it
+  (`install-c-only-consumer`, a project of C alone).
 - **A consumer without CMake adds `-lstdc++exp`** to its link line, after `-lisoline_core`, and compiles
-  with the same GCC release.
+  with the same GCC release. `pkg-config --static isoline-c` names it in `Libs.private` already.
 - **An embedder may define `handle_contract_violation`** to report a failed check its own way
   (`docs/embedding.md`, "Failed checks"). It must not throw: every contract Isoline compiles sits in a
   `noexcept` function.

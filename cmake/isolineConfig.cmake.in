@@ -18,21 +18,6 @@ find_dependency(core-cpp @ISOLINE_INSTALL_CORE_CPP_VERSION@)
 # The naming rule the build named the files by.
 include("${CMAKE_CURRENT_LIST_DIR}/isolineComponentNames.cmake")
 
-# The toolchain this build asks of its consumer: where its contracts are native, the compiler that built it,
-# at its major.minor release (cmake/isolineConsumerToolchain.cmake), refused at configure, not at link.
-include("${CMAKE_CURRENT_LIST_DIR}/isolineConsumerToolchain.cmake")
-set(isoline_CONTRACTS_PATH "@ISOLINE_CONTRACTS_PATH@")
-set(isoline_CXX_COMPILER_ID "@CMAKE_CXX_COMPILER_ID@")
-set(isoline_CXX_COMPILER_VERSION "@CMAKE_CXX_COMPILER_VERSION@")
-isoline_consumer_toolchain_refusal(CONTRACTS_PATH "${isoline_CONTRACTS_PATH}" BUILT_ID "${isoline_CXX_COMPILER_ID}"
-                                   BUILT_VERSION "${isoline_CXX_COMPILER_VERSION}"
-                                   CONSUMER_ID "${CMAKE_CXX_COMPILER_ID}"
-                                   CONSUMER_VERSION "${CMAKE_CXX_COMPILER_VERSION}" OUT _isolineToolchainRefusal)
-if(_isolineToolchainRefusal)
-    message(FATAL_ERROR "[isoline] ${_isolineToolchainRefusal}")
-endif()
-unset(_isolineToolchainRefusal)
-
 set(_isolineInstalledComponents "")
 file(GLOB _isolineComponentFiles LIST_DIRECTORIES false "${CMAKE_CURRENT_LIST_DIR}/isoline*Targets.cmake")
 foreach(_isolineComponentFile IN LISTS _isolineComponentFiles)
@@ -72,6 +57,25 @@ set(_isolineRequestedComponents ${isoline_FIND_COMPONENTS})
 if(NOT _isolineRequestedComponents)
     set(_isolineRequestedComponents ${_isolineInstalledComponents})
 endif()
+# The toolchain this build asks of its consumer: where its contracts are native, the compiler that built it,
+# at its major.minor release (cmake/isolineConsumerToolchain.cmake), refused at configure, not at link. A
+# consumer asking only for components with a C interface (ISOLINE_INSTALL_C_COMPONENTS) is asked nothing.
+include("${CMAKE_CURRENT_LIST_DIR}/isolineConsumerToolchain.cmake")
+set(isoline_CONTRACTS_PATH "@ISOLINE_CONTRACTS_PATH@")
+set(isoline_CXX_COMPILER_ID "@CMAKE_CXX_COMPILER_ID@")
+set(isoline_CXX_COMPILER_VERSION "@CMAKE_CXX_COMPILER_VERSION@")
+set(isoline_C_COMPONENTS "@ISOLINE_INSTALL_C_COMPONENTS@")
+isoline_consumer_toolchain_refusal(CONTRACTS_PATH "${isoline_CONTRACTS_PATH}" BUILT_ID "${isoline_CXX_COMPILER_ID}"
+                                   BUILT_VERSION "${isoline_CXX_COMPILER_VERSION}"
+                                   CONSUMER_ID "${CMAKE_CXX_COMPILER_ID}"
+                                   CONSUMER_VERSION "${CMAKE_CXX_COMPILER_VERSION}"
+                                   COMPONENTS ${_isolineRequestedComponents} C_COMPONENTS ${isoline_C_COMPONENTS}
+                                   OUT _isolineToolchainRefusal)
+if(_isolineToolchainRefusal)
+    message(FATAL_ERROR "[isoline] ${_isolineToolchainRefusal}")
+endif()
+unset(_isolineToolchainRefusal)
+
 foreach(_isolineComponent IN LISTS _isolineRequestedComponents)
     if(_isolineComponent IN_LIST _isolineInstalledComponents)
         _isoline_load_component("${_isolineComponent}")

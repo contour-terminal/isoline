@@ -67,7 +67,7 @@ if(isolineConsumerImportsStd)
     endif()
 endif()
 
-project(isoline_consumer LANGUAGES CXX)
+project(isoline_consumer LANGUAGES ${isolineConsumerLanguage})
 
 # The standard library the compiler uses (libstdc++, libc++; empty where CMake does not tell, as for MSVC),
 # which check-install's rows of tolerated diagnostics are keyed by. CMake determines it with the compiler
@@ -77,6 +77,8 @@ if(CMAKE_CXX_STANDARD_LIBRARY)
         "The C++ standard library of the consumer's compiler, or empty")
 endif()
 
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -85,6 +87,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(isoline 0.1 REQUIRED COMPONENTS ${isolineConsumerPackageComponents})
 message(STATUS "isoline consumer: mode ${ISOLINE_CONSUMER_MODE}, "
                "isoline ${isoline_VERSION} from ${isoline_DIR}")
+# A mode of C alone proves the package asks a C program for no C++: nothing may have enabled it, the package
+# and what it finds beneath it (core-cpp) included.
+get_property(isolineConsumerLanguages GLOBAL PROPERTY ENABLED_LANGUAGES)
+if(isolineConsumerLanguage STREQUAL "C" AND "CXX" IN_LIST isolineConsumerLanguages)
+    message(FATAL_ERROR "ISOLINE_CONSUMER_MODE=${ISOLINE_CONSUMER_MODE} is a project of C alone, but CXX is enabled")
+endif()
 
 enable_testing()
 
