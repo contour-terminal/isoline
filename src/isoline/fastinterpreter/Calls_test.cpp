@@ -10,6 +10,7 @@
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <print>
 #include <ranges>
 #include <span>
 #include <string>
@@ -29,10 +30,14 @@
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/ModuleCode.hpp>
+#include <isoline/runtime/NestedInvocationBytes.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/runtime/testing/PollCounter.hpp>
+#include <isoline/runtime/testing/SmallStackThread.hpp>
+#include <isoline/runtime/testing/StackAddress.hpp>
 
 using isoline::binary::AbstractHeapType;
 using isoline::binary::ExternKind;
@@ -47,8 +52,9 @@ using isoline::binary::testing::i32Const;
 using isoline::binary::testing::localGet;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::fastinterpreter::availableDispatches;
+using isoline::fastinterpreter::FirstChunkSlots;
 using isoline::fastinterpreter::LoweringConfig;
-using isoline::fastinterpreter::MinimumChunkSlots;
+using isoline::fastinterpreter::MaximumGrownChunkSlots;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
 using isoline::fastinterpreter::testing::Harness;
@@ -190,18 +196,23 @@ class Recursive
             recursiveGuest(recursion),
             engine,
             [this](Store& store) {
-                auto const host = addHost(store,
-                                          unaryI32(),
-                                          [this](HostContext& context,
-                                                 std::span<Value const> args,
-                                                 std::span<Value> results) noexcept -> Outcome {
-                                              return context.invoke(_harness->function(Guest), args, results);
-                                          });
+                auto const host =
+                    addHost(store,
+                            unaryI32(),
+                            [this](HostContext& context,
+                                   std::span<Value const> args,
+                                   std::span<Value> results) noexcept -> Outcome {
+                                // Where this nesting's host frame is, on the real stack.
+                                if (_hostStack.size() < _hostStack.capacity())
+                                    _hostStack.push_back(isoline::runtime::testing::stackAddress());
+                                return context.invoke(_harness->function(Guest), args, results);
+                            });
                 return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
             },
             limits,
             observer) }
     {
+        _hostStack.reserve(256);
     }
 
     /// Invokes f(@p n).
@@ -217,8 +228,22 @@ class Recursive
 
     [[nodiscard]] Harness& harness() noexcept { return *_harness; }
 
+    /// The most host stack one nesting of host re-entry took: the largest distance between the host frames of
+    /// consecutive nestings (the stack grows down on every target, but the distance is taken either way).
+    [[nodiscard]] std::size_t nestingStackBytes() const noexcept
+    {
+        auto most = std::uintptr_t { 0 };
+        for (auto const index: std::views::iota(std::size_t { 1 }, _hostStack.size()))
+            most = std::max(most,
+                            std::max(_hostStack[index - 1], _hostStack[index])
+                                - std::min(_hostStack[index - 1], _hostStack[index]));
+        return static_cast<std::size_t>(most);
+    }
+
   private:
     std::unique_ptr<Harness> _harness;
+    /// Each host call's frame address, in call order; reserved up front, so the host allocates nothing.
+    std::vector<std::uintptr_t> _hostStack;
 };
 
 /// What one run of a recursive guest showed: how it ended, the steps, the entries and the stack left charged.
@@ -286,6 +311,34 @@ class PeakResource final: public std::pmr::memory_resource
     uint64_t _allocations = 0;
 };
 
+/// The most bytes one invocation's slot chunks may hold, its frames active at once taking @p activeSlots
+/// slots: docs/fast-interpreter.md's bound, 2 × A + min(2 × A, MaximumGrownChunkSlots) + FirstChunkSlots
+/// slots.
+[[nodiscard]] uint64_t chunkBytesBound(uint64_t activeSlots) noexcept
+{
+    return ((2 * activeSlots) + std::min(2 * activeSlots, MaximumGrownChunkSlots) + FirstChunkSlots)
+           * sizeof(isoline::fastinterpreter::Slot);
+}
+
+/// The slots of @p harness's function @p codeIndex's frame.
+[[nodiscard]] uint64_t frameSlotsOf(Harness const& harness, uint32_t codeIndex)
+{
+    REQUIRE(harness.code() != nullptr);
+    return harness.code()->functions()[codeIndex].frameSlots;
+}
+
+/// A function of (i32, i32) -> i32 whose operand stack rises @p height constants high, then returns
+/// a + b + its one declared i32 local, with @p tail at its end: a call or a tail call of something of its
+/// type.
+[[nodiscard]] Bytes highFunction(std::size_t height, Bytes const& tail)
+{
+    auto body = code({ localGet(0), localGet(1), op(0x6A) });
+    for ([[maybe_unused]] auto const index: std::views::iota(std::size_t { 0 }, height))
+        body.insert(body.end(), { 0x41, 0x01 }); // i32.const 1
+    body.insert(body.end(), height, 0x1A);       // drop
+    return code({ body, localGet(2), op(0x6A), tail });
+}
+
 } // namespace
 
 TEST_CASE("Calls.sameExhaustionPointAsReference")
@@ -319,10 +372,31 @@ TEST_CASE("Calls.tiesFollowTheEntryOrder")
     // Where the steps run out at the very entry the depth or the stack budget refuses, the FunctionEntry poll
     // comes first: StepLimitExceeded, on both engines, after the same steps.
     auto const engine = anyFastEngine();
+    SECTION("a tail call into a costlier callee")
+    {
+        // f0 return_calls f1, whose frame is past the stack budget f0's fits: f0's charge is given back, and
+        // then the steps and the stack run out at f1's entry together.
+        auto module = ModuleBuilder {};
+        module.type(FuncType { .params = { binary::I32, binary::I32 }, .results = { binary::I32 } });
+        module.function(0, { binary::I32 }, code({ localGet(0), localGet(1), op(0x12, 1) }));
+        module.function(0, { binary::I32 }, highFunction(100, {}));
+        auto const costs = validated(module);
+        auto const limit = StoreLimits { .maxStackValues = costs->frameCost(0) };
+        auto exhausted = Harness { module, Reference, limit };
+        REQUIRE(exhausted.trap(0, { i32(1), i32(2) }) == TrapCode::CallStackExhausted);
+        auto tie = limit;
+        tie.maxSteps = exhausted.store().used(Limit::Steps) - 1;
+        auto reference = Harness { module, Reference, tie };
+        auto harness = Harness { module, engine, tie };
+        CHECK(reference.trap(0, { i32(1), i32(2) }) == TrapCode::StepLimitExceeded);
+        CHECK(harness.trap(0, { i32(1), i32(2) }) == TrapCode::StepLimitExceeded);
+        CHECK(harness.store().used(Limit::Steps) == reference.store().used(Limit::Steps));
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
     for (auto const& [recursion, kind]: recursions())
     {
         if (recursion == Recursion::ReturnCall)
-            continue; // A tail call deepens nothing: no depth or stack limit binds it.
+            continue; // A tail call into its own kind deepens nothing; the section above ties one.
         for (auto const& limit: { StoreLimits { .maxCallDepth = 40 }, StoreLimits { .maxStackValues = 800 } })
         {
             INFO(kind << " at depth " << limit.maxCallDepth << ", stack " << limit.maxStackValues);
@@ -570,6 +644,32 @@ TEST_CASE("Calls.indirectCallTraps")
         CHECK(harness.store().chargedStackValues() == 0);
     }
     CHECK(Harness { module, engine }.result(0, { i32(0) }) == i32(7));
+    SECTION("a table of 64-bit addresses")
+    {
+        // The index is the whole slot: 2^32 is past the table, not element 0.
+        auto wide = ModuleBuilder {};
+        wide.type(unaryI32());
+        wide.type(FuncType { .params = { binary::I64 }, .results = { binary::I32 } });
+        wide.table(TableType {
+            .element = binary::FuncRef,
+            .limits = { .min = 1, .max = std::nullopt, .addressType = binary::AddressType::I64 } });
+        wide.function(1, {}, code({ i32Const(7), localGet(0), { 0x11, 0x00, 0x00 } }));
+        wide.function(0, {}, localGet(0));
+        wide.element(code({ { 0x02, 0x00 }, { 0x42, 0x00, 0x0B }, { 0x00, 0x01, 0x01 } }));
+        auto const index = [](uint64_t value) {
+            return Value { isoline::runtime::I64 { value } };
+        };
+        for (auto const value: { uint64_t { 0 }, uint64_t { 1 } << 32U, uint64_t { 1 } })
+        {
+            auto reference = Harness { wide, Reference };
+            auto harness = Harness { wide, engine };
+            CHECK(harness.outcome(0, { index(value) }) == reference.outcome(0, { index(value) }));
+            CHECK(harness.store().used(Limit::Steps) == reference.store().used(Limit::Steps));
+        }
+        CHECK(Harness { wide, engine }.trap(0, { index(uint64_t { 1 } << 32U) })
+              == TrapCode::UndefinedElement);
+        CHECK(Harness { wide, engine }.result(0, { index(0) }) == i32(7));
+    }
 }
 
 TEST_CASE("Calls.stackChargeIsReleasedOnTrap")
@@ -654,20 +754,13 @@ TEST_CASE("Calls.newChunkCopiesOnlyTheArguments")
     // stay within twice the stack budget plus one chunk.
     // f3 is f1 at 68'000, and f4(a, b) calls f1, f3 and f1 again: f3's frame does not fit the chunk f1 left,
     // which is replaced; the second f1's fits the replacement, which is reused.
-    auto const highFunction = [](std::size_t height) {
-        auto body = code({ localGet(0), localGet(1), op(0x6A) });
-        for ([[maybe_unused]] auto const index: std::views::iota(std::size_t { 0 }, height))
-            body.insert(body.end(), { 0x41, 0x01 }); // i32.const 1
-        body.insert(body.end(), height, 0x1A);       // drop
-        return code({ body, localGet(2), op(0x6A), op(0x10, 2) });
-    };
     auto module = ModuleBuilder {};
     module.type(FuncType { .params = { binary::I32, binary::I32 }, .results = { binary::I32 } });
     module.type(unaryI32());
     module.function(0, {}, code({ localGet(0), localGet(1), op(0x10, 1), i32Const(1), op(0x6A) }));
-    module.function(0, { binary::I32 }, highFunction(66'000));
+    module.function(0, { binary::I32 }, highFunction(66'000, op(0x10, 2)));
     module.function(1, { binary::I32 }, code({ localGet(0), i32Const(10), op(0x6A) }));
-    module.function(0, { binary::I32 }, highFunction(68'000));
+    module.function(0, { binary::I32 }, highFunction(68'000, op(0x10, 2)));
     module.function(0,
                     {},
                     code({ localGet(0),
@@ -696,7 +789,12 @@ TEST_CASE("Calls.newChunkCopiesOnlyTheArguments")
     // argument, low in f1's frame, and fits in f1's chunk.
     CHECK(memory.allocations() == 4);
     CHECK(memory.held() == 0);
-    CHECK(memory.peak() <= (2 * limits.maxStackValues * 8) + (MinimumChunkSlots * 8));
+    // f1's frame over the whole of f0's: a bound on the frames active at once.
+    auto const active = frameSlotsOf(harness, 0) + frameSlotsOf(harness, 1) + frameSlotsOf(harness, 2);
+    CHECK(memory.peak() <= chunkBytesBound(active));
+    // Every value is a number, one slot each, so that is within twice the stack budget plus one grown chunk.
+    CHECK(chunkBytesBound(active)
+          <= ((2 * limits.maxStackValues) + MaximumGrownChunkSlots + FirstChunkSlots) * 8);
     auto replaced = PeakResource {};
     auto replacing = Harness { module, EngineUnderTest { .dispatch = dispatch, .slotMemory = &replaced } };
     CHECK(replacing.result(4, { i32(3), i32(4) }) == i32(51));
@@ -708,15 +806,17 @@ TEST_CASE("Calls.newChunkCopiesOnlyTheArguments")
     CHECK(replaced.held() == 0);
 }
 
-TEST_CASE("Calls.deepRecursionDoesNotRecurseOnTheHostStack")
+TEST_CASE("Calls.deepRecursionDoesNotRecurseOnTheHostStack", "[.memory]")
 {
-    // A million Wasm frames deep, on whatever host stack the process has: tests/stack/StackLimit.cmake runs
-    // this case again under a 1 MiB stack on Linux. The depth limit binds, not the stack budget.
+    // A million Wasm frames deep, under a 1 MiB main-thread stack on Linux: hidden from the unit run, it runs
+    // alone under the memory caps, tests/stack/StackLimit.cmake's row. The depth limit binds, not the stack
+    // budget, and the slot chunks stay within their bound.
     constexpr auto Depth = uint32_t { 1'000'000 };
-    auto const engine = anyFastEngine();
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
     auto const cost = validated(recursiveGuest(Recursion::Call))->frameCost(0);
+    auto memory = PeakResource {};
     auto guest = Recursive { Recursion::Call,
-                             engine,
+                             EngineUnderTest { .dispatch = dispatch, .slotMemory = &memory },
                              StoreLimits { .maxCallDepth = Depth,
                                            .maxStackValues = (uint64_t { Depth } + 1) * cost } };
     auto const outcome = guest.run(2 * static_cast<int32_t>(Depth));
@@ -724,6 +824,99 @@ TEST_CASE("Calls.deepRecursionDoesNotRecurseOnTheHostStack")
     CHECK(outcome.error() == Abrupt { Trap { TrapCode::CallStackExhausted } });
     CHECK(guest.entries() == Value { I32 { Depth } });
     CHECK(guest.store().chargedStackValues() == 0);
+    CHECK(memory.held() == 0);
+    CHECK(memory.peak() <= chunkBytesBound(uint64_t { Depth } * frameSlotsOf(guest.harness(), 0)));
+}
+
+TEST_CASE("Calls.tailChainKeepsOneChunk")
+{
+    // f0 return_calls f1, f1 f2, and so on, each frame larger than the last and past the chunk the one before
+    // left: each callee takes its predecessor's chunk, which no other frame holds, so the chain holds one
+    // chunk (and, while it is replaced, the smaller one it replaces), not one per frame. Run alone, and
+    // called by a driver whose frame stays in the first chunk.
+    constexpr auto Steps = uint32_t { 6 };
+    auto module = ModuleBuilder {};
+    module.type(FuncType { .params = { binary::I32, binary::I32 }, .results = { binary::I32 } });
+    for (auto const index: std::views::iota(uint32_t { 0 }, Steps))
+    {
+        auto const last = index + 1 == Steps;
+        module.function(0,
+                        { binary::I32 },
+                        highFunction(66'000 + (std::size_t { index } * 10'000),
+                                     last ? Bytes {} : code({ i32Const(1), op(0x12, index + 1) })));
+    }
+    module.function(0, {}, code({ localGet(0), localGet(1), op(0x10, 0), i32Const(1), op(0x6A) }));
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    auto reference = Harness { module, Reference };
+    for (auto const& [entry, driverSlots]: { std::pair { 0U, false }, std::pair { Steps, true } })
+    {
+        INFO("entry " << entry);
+        auto memory = PeakResource {};
+        auto harness = Harness { module, EngineUnderTest { .dispatch = dispatch, .slotMemory = &memory } };
+        CHECK(harness.result(entry, { i32(3), i32(4) }) == reference.result(entry, { i32(3), i32(4) }));
+        // One chain frame at a time, the largest the last, beside the driver's.
+        auto const active =
+            frameSlotsOf(harness, Steps - 1) + (driverSlots ? frameSlotsOf(harness, Steps) : 0);
+        CHECK(memory.peak() <= chunkBytesBound(active));
+        CHECK(memory.held() == 0);
+    }
+}
+
+TEST_CASE("Calls.nestedInvocationsHoldSmallChunks")
+{
+    // StoreLimits::maxNestedInvocations levels of host re-entry, one small frame each: every nested
+    // invocation's first chunk is FirstChunkSlots, not a grown chunk, so the slot memory is the bound of
+    // each.
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    auto memory = PeakResource {};
+    auto guest = Recursive { Recursion::HostReentry,
+                             EngineUnderTest { .dispatch = dispatch, .slotMemory = &memory },
+                             {} };
+    auto const levels = StoreLimits {}.maxNestedInvocations;
+    CHECK(guest.run(static_cast<int32_t>(levels) - 1)
+          == std::vector<Value> { i32(static_cast<int32_t>(levels) - 1) });
+    CHECK(memory.allocations() == levels);
+    CHECK(memory.held() == 0);
+    CHECK(memory.peak() <= levels * chunkBytesBound(frameSlotsOf(guest.harness(), 0)));
+    CHECK(memory.peak() == levels * FirstChunkSlots * sizeof(isoline::fastinterpreter::Slot));
+}
+
+TEST_CASE("Calls.nestingStackCostIsPublished")
+{
+    // The host stack one nesting of host re-entry takes, measured between the host frames of consecutive
+    // nestings, is within the engine's published row; and the rows of every engine, for maxNestedInvocations
+    // nestings, fit the tests' small thread.
+    auto const engines = std::vector<std::pair<isoline::runtime::ExecutionEngine, EngineUnderTest>> {
+        { isoline::runtime::ExecutionEngine::Reference, Reference },
+        { isoline::runtime::ExecutionEngine::Fast, fast(GENERATE(from_range(availableDispatches()))) },
+    };
+    for (auto const& [identity, engine]: engines)
+    {
+        auto guest = Recursive { Recursion::HostReentry, engine, {} };
+        REQUIRE(guest.run(20).has_value());
+        auto const measured = guest.nestingStackBytes();
+        INFO("flavour " << isoline::runtime::NestedInvocationFlavour << ", measured " << measured);
+        CHECK(measured > 0);
+        CHECK(measured <= isoline::runtime::nestedInvocationBytes(identity));
+        CHECK(isoline::runtime::nestedInvocationBytes(identity) * StoreLimits {}.maxNestedInvocations
+              <= isoline::runtime::testing::SmallStackBytes);
+    }
+}
+
+TEST_CASE("Calls.measureNestingStack", "[.measure]")
+{
+    // What src/isoline/CMakeLists.txt's host-stack rows are measured with: prints the host stack one nesting
+    // takes on each engine of this build.
+    auto measure = [](EngineUnderTest engine) {
+        auto guest = Recursive { Recursion::HostReentry, engine, {} };
+        REQUIRE(guest.run(20).has_value());
+        return guest.nestingStackBytes();
+    };
+    std::print(
+        "nesting stack ({}): reference {}", isoline::runtime::NestedInvocationFlavour, measure(Reference));
+    for (auto const dispatch: availableDispatches())
+        std::print(", fast {}", measure(fast(dispatch)));
+    std::println("");
 }
 
 TEST_CASE("Calls.embedderCallsAHostFunctionDirectly")
@@ -768,11 +961,12 @@ TEST_CASE("Calls.embedderCallsAHostFunctionDirectly")
     auto const instance = harness.store().function(harness.function(1)).moduleInstance;
     for (auto const& [function, result]: { std::pair { 1U, 2 }, std::pair { 2U, 2 }, std::pair { 3U, 12 } })
     {
+        // Read before the reference runs the same host function, which records its own caller.
         caller.reset();
         CHECK(harness.result(function, { i32(1) }) == i32(result));
-        CHECK(harness.result(function, { i32(1) }) == reference.result(function, { i32(1) }));
         REQUIRE(caller.has_value());
         CHECK(*caller == std::optional { instance });
+        CHECK(reference.result(function, { i32(1) }) == i32(result));
         CHECK(harness.store().chargedStackValues() == 0);
     }
 }

@@ -6,6 +6,7 @@
 #include <memory_resource>
 #include <span>
 
+#include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Dispatch.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -16,8 +17,18 @@
 namespace isoline::fastinterpreter
 {
 
-/// The fewest slots a slot chunk holds: a frame that needs more gets a chunk of its own size.
-inline constexpr auto MinimumChunkSlots = uint64_t { 65'536 };
+/// The fewest slots an invocation's first slot chunk holds: what each nested invocation costs at least
+/// (docs/fast-interpreter.md, "Calls, frames and the slot stack"). A frame that needs more gets a chunk of
+/// its own size.
+inline constexpr auto FirstChunkSlots = uint64_t { 256 };
+
+/// The most slots a slot chunk grows to by doubling the one before it: each later chunk holds at least twice
+/// its predecessor's slots, up to this, and at least its first frame's.
+inline constexpr auto MaximumGrownChunkSlots = uint64_t { 65'536 };
+
+/// The bytes a value the stack budget charges (StoreLimits::maxStackValues) takes in a frame's slots at the
+/// most: two slots, for a vector or a reference; a number takes one.
+inline constexpr auto SlotBytesPerValue = uint64_t { 2 * sizeof(Slot) };
 
 /// Runs code lowered once, at load (lower()), through one dispatch: the fast interpreter.
 ///
@@ -35,14 +46,15 @@ inline constexpr auto MinimumChunkSlots = uint64_t { 65'536 };
 /// invokes the guest again nests an invocation of its own, within the same depth count and step budget. A
 /// tail call ends its caller's frame, its charge given back, before the callee enters.
 ///
-/// A frame's slots live in a slot chunk of the invocation, of at least MinimumChunkSlots slots, so a frame of
-/// any size runs: a callee's frame begins at its arguments where it fits in its caller's chunk, and starts
-/// the next chunk otherwise, its arguments copied there once. The chunks come from an injected memory
-/// resource, and only once the frame's entry checks passed; they hold at most twice the slots of the frames
-/// active at once, plus one chunk. Its declared locals start as their type's default: zero, or the null of
-/// their heap, which a concrete heap names by the running instance's TypeId, never by an index baked into the
-/// shared code. Running out of host memory for a frame's slots terminates, as running out of it does in
-/// runtime::invokeChecked().
+/// A frame's slots live in a slot chunk of the invocation, so a frame of any size runs: a callee's frame
+/// begins at its arguments where it fits in its caller's chunk, and starts the next chunk otherwise, its
+/// arguments copied there once; a tail callee left alone in its chunk takes that chunk. Chunks grow from
+/// FirstChunkSlots by doubling up to MaximumGrownChunkSlots, or to the frame's size. They come from an
+/// injected memory resource, only once the frame's entry checks passed; per invocation they hold at most
+/// 2 × A + min(2 × A, MaximumGrownChunkSlots) + FirstChunkSlots slots, A its active frames' slots. Its
+/// declared locals start as their type's default: zero, or the null of their heap, which a concrete heap
+/// names by the running instance's TypeId, never by an index baked into the shared code. Running out of host
+/// memory for a frame's slots terminates, as running out of it does in runtime::invokeChecked().
 ///
 /// An instance is not thread-safe: its depth counter belongs to one thread at a time. Threads that execute
 /// concurrently each use an interpreter of their own.

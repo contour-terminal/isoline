@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
@@ -13,6 +14,12 @@
 
 namespace isoline::interpreter
 {
+
+/// The bytes a value the stack budget charges (runtime::StoreLimits::maxStackValues) takes on the reference
+/// interpreter's operand and locals stacks: one runtime::Value, whose size is the standard library's
+/// variant's (it differs between libstdc++, libc++ and the MSVC STL), beside what the vectors hold in
+/// reserve.
+inline constexpr auto ValueBytes = sizeof(runtime::Value);
 
 /// Executes Wasm by the spec's small-step semantics, for clarity. Never a production engine.
 ///

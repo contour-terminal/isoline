@@ -30,6 +30,52 @@ else()
 endif()
 message(STATUS "[isoline] float control row: ${isolineFloatControl}")
 add_library(isoline::core ALIAS isoline_core)
+
+# The host-stack rows, one per build flavour: the bytes one nested invocation takes at the most on the
+# reference and on the fast engine (runtime/NestedInvocationBytes.hpp, generated from the row), and the stack
+# of the tests' small threads (runtime/testing/SmallStackThread.hpp's SmallStackBytes). The engines' bytes are
+# the most the hidden case Calls.measureNestingStack measured on the flavour's builds (docs/fast-interpreter.md
+# lists each), rounded up by half again to a multiple of 256; Calls.nestingStackCostIsPublished checks every
+# build against its row. The small thread holds maxNestedInvocations (100) nestings of the larger engine twice
+# over, rounded up to a MiB; a release build's is 512 KiB, where the dispatch files' frames are bounded
+# (-Wframe-larger-than=4096, fastinterpreter/CMakeLists.txt). A row is the flavour, then the reference's, the
+# fast engine's and the small thread's bytes.
+set(isolineNestingRows
+    "release|2304|3072|524288"
+    "debug|8192|7936|2097152"
+    "address|12288|11264|3145728"
+    "thread|10752|9728|3145728"
+    "coverage|7424|7168|2097152")
+# The flavour: an instrumented build's (address, thread, coverage) first, then an optimized single-config GCC
+# or Clang build's (release); every other is debug, a multi-config generator's included, which may build
+# unoptimized, and MSVC's, whose frames no option bounds.
+if(ISOLINE_SANITIZE)
+    set(isolineNestingFlavour "${ISOLINE_SANITIZE}")
+elseif(ISOLINE_COVERAGE)
+    set(isolineNestingFlavour coverage)
+elseif(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$"
+       AND (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU"
+            OR (NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")))
+    set(isolineNestingFlavour release)
+else()
+    set(isolineNestingFlavour debug)
+endif()
+foreach(row IN LISTS isolineNestingRows)
+    string(REPLACE "|" ";" fields "${row}")
+    list(GET fields 0 flavour)
+    if(flavour STREQUAL isolineNestingFlavour)
+        set(ISOLINE_NESTING_FLAVOUR "${flavour}")
+        list(GET fields 1 ISOLINE_NESTING_REFERENCE_BYTES)
+        list(GET fields 2 ISOLINE_NESTING_FAST_BYTES)
+        list(GET fields 3 isolineSmallStackBytes)
+    endif()
+endforeach()
+if(NOT ISOLINE_NESTING_FLAVOUR)
+    message(FATAL_ERROR "[isoline] no host-stack row for the build flavour '${isolineNestingFlavour}'")
+endif()
+message(STATUS "[isoline] host-stack row: ${ISOLINE_NESTING_FLAVOUR}")
+configure_file(runtime/NestedInvocationBytes.hpp.in
+               "${PROJECT_BINARY_DIR}/include/isoline/runtime/NestedInvocationBytes.hpp" @ONLY)
 target_sources(isoline_core
     PRIVATE
         Contracts.cpp
@@ -123,7 +169,8 @@ target_sources(isoline_core
             validate/Validator.hpp
             Version.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/Contracts.hpp"
-            "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
+            "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp"
+            "${PROJECT_BINARY_DIR}/include/isoline/runtime/NestedInvocationBytes.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
 # Header-based like every target but the module consumers: never scanned for module dependencies, whatever
 # CMP0155 says (module isoline is a target of its own, isoline_core_module).
@@ -183,22 +230,16 @@ if(ISOLINE_TESTING)
     else()
         list(APPEND isolineTestSources runtime/testing/SmallStackThreadPosix.cpp)
     endif()
+    # The compiler's half of runtime/testing/StackAddress.hpp: GCC and Clang's frame-address builtin, or MSVC's
+    # (and clang-cl's) return-address intrinsic.
+    if(MSVC)
+        list(APPEND isolineTestSources runtime/testing/StackAddressMsvc.cpp)
+    else()
+        list(APPEND isolineTestSources runtime/testing/StackAddressGnu.cpp)
+    endif()
     add_executable(isoline_test ${isolineTestSources})
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
-    # The stack of the tests' small threads (SmallStackBytes), per build flavour: 512 KiB where the dispatch
-    # files' frames are bounded (-Wframe-larger-than=4096 on an optimized GCC or Clang build without
-    # sanitizers or coverage, fastinterpreter/CMakeLists.txt), 16 MiB on every other, whose frames carry
-    # redzones and counters or are unbounded (they record their sizes with -fstack-usage instead).
-    set(isolineSmallStackBounded 524288)
-    set(isolineSmallStackUnbounded 16777216)
-    if((CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU" OR (NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT
-                                                                AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
-       AND NOT ISOLINE_SANITIZE AND NOT ISOLINE_COVERAGE)
-        set(isolineSmallStackBytes
-            "$<IF:$<CONFIG:Release,RelWithDebInfo,MinSizeRel>,${isolineSmallStackBounded},${isolineSmallStackUnbounded}>")
-    else()
-        set(isolineSmallStackBytes ${isolineSmallStackUnbounded})
-    endif()
+    # The stack of the tests' small threads (SmallStackBytes): the host-stack row's, above.
     target_compile_definitions(isoline_test PRIVATE ISOLINE_SMALL_STACK_BYTES=${isolineSmallStackBytes})
     if(NOT WIN32)
         find_package(Threads REQUIRED)

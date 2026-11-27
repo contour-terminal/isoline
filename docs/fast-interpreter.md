@@ -63,13 +63,30 @@ checked only at checkpoints would let the peak pass it.
 
 **Calls never recurse on the host stack.** A call operation hands its call to the executor out of line
 (`callFunction()`), which pushes a frame record of the invocation and returns the callee's registers; the
-same dispatch loop then runs the callee, and a return pops the record and resumes the caller. A million
-Wasm frames are a million records in a vector, on any host stack: `Calls.deepRecursionDoesNotRecurseOnTheHostStack`
-runs a million frames deep, and `tests/stack/StackLimit.cmake` runs it again under a 1 MiB main-thread stack on
-Linux. Only a host function that invokes the guest again nests on the host stack, one invocation per level,
-which `StoreLimits::maxNestedInvocations` bounds; `Dispatch.nestedInvocationsFitASmallThread` runs every level on
-a small thread (`runtime/testing/SmallStackThread.hpp`: 512 KiB where the dispatch files' frames are bounded,
-larger in sanitizer, coverage and unoptimized builds).
+same dispatch loop then runs the callee, and a return pops the record and resumes the caller. The records are
+a stack in blocks of 1'024, so a push never copies the records below it (a growing vector would copy 64 MiB at
+once, a million frames deep, with no poll). A million Wasm frames are a million records, on any host stack:
+`Calls.deepRecursionDoesNotRecurseOnTheHostStack` runs a million frames deep, alone, under the memory caps and,
+on Linux, a 1 MiB main-thread stack (`tests/stack/StackLimit.cmake`).
+
+**Only a host function that invokes the guest again nests on the host stack**, one invocation per level, which
+`StoreLimits::maxNestedInvocations` bounds. What one nesting takes is measured per engine and build flavour
+(the hidden case `Calls.measureNestingStack`, the distance between the host frames of consecutive nestings) and
+published as `runtime::nestedInvocationBytes()`, generated from the flavour's row in `src/isoline/CMakeLists.txt`:
+the most measured, rounded up by half again. `Calls.nestingStackCostIsPublished` checks every build against its
+row, and `Dispatch.nestedInvocationsFitASmallThread` runs every level on a small thread
+(`runtime/testing/SmallStackThread.hpp`) of the flavour's row. Measured, in bytes per nesting (the fast engine's
+under Switch and TailCall):
+
+| Flavour | Builds measured | Reference | Fast | Published (reference, fast) | Small thread |
+|---|---|---|---|---|---|
+| release | clang-release | 1'472 | 1'984, 2'016 | 2'304, 3'072 | 512 KiB |
+| debug | gcc-debug; clangcl-cross-debug (wine); clang-aarch64-cross (qemu) | 3'712; 5'344; 4'784 | 3'344, 3'440; 4'992, 5'168; 4'656, 4'752 | 8'192, 7'936 | 2 MiB |
+| address | clang-asan | 8'096 | 7'104, 7'424 | 12'288, 11'264 | 3 MiB |
+| thread | clang-tsan | 7'040 | 6'400, 6'320 | 10'752, 9'728 | 3 MiB |
+| coverage | clang-coverage | 4'816 | 4'624, 4'704 | 7'424, 7'168 | 2 MiB |
+
+A multi-config generator's build and MSVC's take the debug row: their frames no option bounds.
 
 **Every frame enters through one routine, in the reference interpreter's order.** The call operation names
 its callee by data (`CallTable`): a function of the caller's own module by code index, with no look-up
@@ -92,13 +109,32 @@ the store. The embedder's own invocation of a host function polls at FunctionEnt
 with no caller instance.
 
 **The slot stack is per invocation and chunked.** A callee's frame begins at its arguments, in the caller's
-frame, where the whole frame fits in the caller's chunk; otherwise it starts the next chunk, and its
-arguments, and nothing else, are copied there. A chunk holds `max(MinimumChunkSlots, frame slots)` slots, is
-kept for the frames entered later, and is freed when the invocation ends; a chunk too small for the frame
-that needs it is replaced, and every chunk after it freed. Each chunk but the last either holds a frame its
-own size, or was left because the next frame did not fit, so the chunks hold at most twice the slots of the
-frames active at once, plus one chunk. A frame takes at most two slots per value its charge counts (one per
-number, two per vector or reference), so the slot stack is at most `2 × maxStackValues` slots plus one chunk
-where every value is a number, and `4 × maxStackValues` plus one chunk in the worst case.
-(`Calls.newChunkCopiesOnlyTheArguments`). Running out of host memory for a chunk terminates, as running out
-of it does anywhere in `runtime::invokeChecked()`.
+frame, where the whole frame fits in the caller's chunk; otherwise it starts the next chunk, and its arguments,
+and nothing else, are copied there. A tail callee left alone in its chunk (no other frame of the invocation is
+in it) takes that chunk instead, replacing it where it is too small, so a chain of ever larger tail-called frames
+holds one chunk, not one per frame (`Calls.tailChainKeepsOneChunk`). An invocation's first chunk holds at least
+`FirstChunkSlots` (256) slots, and every later one at least twice the one before it, up to
+`MaximumGrownChunkSlots` (65'536), and at least its first frame's slots. A chunk is kept for the frames entered
+later and freed when the invocation ends; a chunk too small for the frame that needs it is replaced, every chunk
+after it freed first.
+
+The bound, per invocation in progress, with A the slots of its frames active at once (each frame's whole
+`frameSlots`, though a caller's frame and its callee's overlap at the arguments):
+
+    chunk slots ≤ 2 × A + min(2 × A, MaximumGrownChunkSlots) + FirstChunkSlots
+
+Each chunk but the last was left because the next frame did not fit after the frames in it, so it holds fewer
+slots than its own frames and the next chunk's first frame together: all of them hold fewer than 2 × A. The last
+holds its first frame, or at most twice the chunk before it, at most `MaximumGrownChunkSlots`; or, as an
+invocation's first, `FirstChunkSlots`. While a tail callee's chunk is replaced, the smaller chunk it replaces is
+held too, until the arguments are copied. So each nested invocation of one small frame costs `FirstChunkSlots`
+(2 KiB), not a grown chunk (`Calls.nestedInvocationsHoldSmallChunks`, 100 levels).
+
+The stack budget is charged in values, the same in every engine (`StoreLimits::maxStackValues`); a value takes one
+slot as a number and two as a vector or a reference (`SlotBytesPerValue`, 16 bytes), and A is at most the active
+frames' charge in slots: at most `2 × maxStackValues`, and `maxStackValues` where every value is a number. So
+the slot chunks hold at most `4 × maxStackValues` slots, plus, per invocation in progress, `FirstChunkSlots`
+and one grown chunk's worth (`min(2 × A, MaximumGrownChunkSlots)`, A that invocation's); and `2 × maxStackValues`
+plus the same where every value is a number (`Calls.newChunkCopiesOnlyTheArguments`). The reference interpreter takes
+`interpreter::ValueBytes` (one `runtime::Value`) per value. Running out of host memory for a chunk or a block of
+frame records terminates, as running out of it does anywhere in `runtime::invokeChecked()`.
