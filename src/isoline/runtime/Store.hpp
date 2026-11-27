@@ -630,6 +630,13 @@ class Store
     /// @return The generation.
     [[nodiscard]] uint64_t memoryGeneration() const noexcept;
 
+    /// Where memoryGeneration() is kept: for generated code (P5), which loads the generation itself rather
+    /// than calling memoryGeneration(). The address is stable for the store's lifetime (a store is neither
+    /// copied nor moved), the value is the one memoryGeneration() returns and follows its contract, and it is
+    /// written only by growMemory(), on the thread that uses the store.
+    /// @return The counter's address.
+    [[nodiscard]] uint64_t const* memoryGenerationAddress() const noexcept;
+
     /// Grows a table by @p delta slots holding @p init, as table.grow does, and charges them against
     /// StoreLimits::maxTableElements.
     /// @param address The table's address.
