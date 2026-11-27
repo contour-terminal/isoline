@@ -82,6 +82,7 @@ target_sources(isoline_core
             binary/Module.hpp
             binary/NameSection.hpp
             binary/Opcode.hpp
+            binary/OpcodeNames.hpp
             binary/Opcodes.def
             binary/TypeCanon.hpp
             binary/Types.hpp

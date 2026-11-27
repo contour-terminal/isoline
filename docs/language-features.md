@@ -123,6 +123,25 @@ same on both paths. Where reflection is native, two targets exist that the fallb
 - `isoline_enum_tables_check` is compile-only: its `static_assert`s are the check, and the build fails
   when one does.
 
+### Opcode names
+
+Every compiler checks `Opcodes.def`'s names, in `binary/Opcode.cpp`: an instruction's enumerator is its
+text in PascalCase, each part between a `.` or a `_` capitalized and the separators dropped
+(`i64.extend_i32_s` is `I64ExtendI32S`), which `binary::namedByRule()` decides. The one exception is a
+row of `OpcodeNameExceptions`, with its reason: `SelectTyped`, whose text `select_t` names it after the
+binary grammar's `select t*`, as typed select shares `select`'s text. A name that follows neither, an
+exception row for a name the rule already holds for, and a row no instruction uses each fail the build.
+The checks (`firstMisnamedOpcode()`, `firstUnusedException()`) live beside the rule, over spans, and are
+tested on fixtures of their own. A C++23 `static_assert` cannot compute its message, so the failure names
+the offender by index alone, in the comparison the compiler prints (`the comparison reduces to
+'(96 == 471)'`): an opcode's index is its row of `Opcodes.def`, from zero.
+
+`OpcodeNames` and `OpcodeTexts` (`binary/OpcodeNames.hpp`, generated from `Opcodes.def`) are `SIZED`
+rows indexed by `Opcode`. An enumerator added to the enum by hand, after `Opcodes.def`'s `#include`,
+builds on every C++23 compiler; reflection names it, from `OpcodeTable`'s row and from these. That each
+enumerator's identifier is its `OpcodeNames` entry cannot differ while both come from `Opcodes.def`; the
+reflection switch checks it once the enum is no longer generated.
+
 ### The registry
 
 `EnumTables.def` has one row per table that an enum indexes, sizes or keys, and one for each `Last` constant that none of those checks:
@@ -189,10 +208,14 @@ the class's declaration, is a scoped enum. The lint fails on an enum-first table
 row whose file declares no such variable, and when this list differs from the rows. The dump holds
 Isoline's namespaces alone, so the lint also fails on every `std::array` or `std::to_array` a source
 file spells outside `namespace isoline` (in `main()`, a global anonymous namespace or another
-namespace), read from the code with comments, literals and preprocessor directives left out. It runs on
-Clang trees (the other compilers build the same sources, linted on CI's Clang lanes), in parallel, and
-caches each translation unit's result in the build tree, keyed by the content of the file, the headers
-and the script rather than their time stamps. `check-enum-tables-selftest` lints a fixture of every
+namespace), read from the code with comments, literals and preprocessor directives left out. A
+function defined by its qualified name under isoline (`int isoline::b::f() {…}`) counts as inside. The
+pass sees spellings, so a macro invoked outside the namespace, an alias such as `using Arr =
+std::array<…>` used outside it, and an unqualified `array` (`using namespace std`) escape it; a brace it
+cannot attribute to isoline, such as a constructor's member initializers, fails closed. It runs on Clang
+trees (the other compilers build the same sources, linted on CI's Clang lanes), in parallel, and caches
+each translation unit's result in the build tree, keyed by the content of the file, the headers, the
+Clang binary and the script rather than their time stamps. `check-enum-tables-selftest` lints a fixture of every
 declaration form with the tree's Clang.
 
 <!-- source-local-tables:begin -->

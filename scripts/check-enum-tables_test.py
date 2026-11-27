@@ -174,7 +174,8 @@ DOC_LINE = "- `lib/Simple.cpp`: `Registered`, the reason"
 
 
 # Arrays outside namespace isoline, where the dump does not reach: each is flagged by its line, whatever
-# its row; the mentions in comments, strings and a file-scope macro are not.
+# its row, xisoline's included; the mentions in comments, strings and a file-scope macro are not, nor
+# those in a function defined by its name under isoline.
 ESCAPED = """\
 #include <array>
 #define ISOLINE_FIXTURE_MACRO(name) constexpr auto name = std::to_array<int>({ 1 });
@@ -183,10 +184,11 @@ namespace
 {
 constexpr auto InGlobalAnonymous = std::to_array<int>({ 1 });
 } // namespace
-namespace other
+namespace xisoline
 {
 std::array<int, 1> const InOther { 1 };
-} // namespace other
+int defined();
+} // namespace xisoline
 namespace isoline::lib
 {
 ISOLINE_FIXTURE_MACRO(FromMacroInside)
@@ -194,15 +196,30 @@ constexpr auto Separated = std::to_array<int>({ 1'0 });
 constexpr auto Brace = '}';
 constexpr auto Raw = R"x(" } std::array ")x";
 constexpr auto Inside = std::to_array<int>({ Separated[0] });
+int qualified();
 } // namespace isoline::lib
+int isoline::lib::qualified()
+{
+    constexpr auto InQualified = std::to_array<int>({ 1 });
+    return InQualified[0];
+}
+int xisoline::defined()
+{
+    constexpr auto InOtherQualified = std::to_array<int>({ 1 });
+    return InOtherQualified[0];
+}
 int main()
 {
     char const* text = "std::array in a string";
     constexpr auto InMain = std::to_array<int>({ 1 });
     return InMain[0] + Inside[0] + (text != nullptr ? 0 : 1);
 }
+int const Global = isoline::lib::qualified() + [] {
+    constexpr auto InLambda = std::to_array<int>({ 1 });
+    return InLambda[0];
+}();
 """
-ESCAPED_LINES = {6, 10, 23}
+ESCAPED_LINES = {6, 10, 29, 35, 39}
 
 
 def document(lines):
@@ -321,6 +338,17 @@ class CheckEnumTablesTest(unittest.TestCase):
         source.write_text("namespace isoline { int broken = ; }\n", encoding="utf-8")
         os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         self.assertEqual(self.run_check("--cache", str(cache)).returncode, 2)
+
+    def test_cachedResultIsDroppedWhenClangChanges(self):
+        cache = self.root / "cache"
+        wrapper = self.root / "clang-wrapper"
+        real = shutil.which(CLANG)
+        wrapper.write_text(f'#!/bin/sh\nexec "{real}" "$@"\n', encoding="utf-8")
+        wrapper.chmod(0o755)
+        self.assertEqual(self.run_check("--cache", str(cache), "--clang", str(wrapper)).returncode, 0)
+        # Another compiler behind the same path, failing: the cached result no longer stands for it.
+        wrapper.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        self.assertEqual(self.run_check("--cache", str(cache), "--clang", str(wrapper)).returncode, 2)
 
     def test_cachedResultIsDroppedWhenAHeaderChanges(self):
         cache = self.root / "cache"

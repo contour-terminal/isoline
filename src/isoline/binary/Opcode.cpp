@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 
+#include <isoline/binary/OpcodeNames.hpp>
 #include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::binary
@@ -78,6 +79,19 @@ namespace
     static_assert(meta::firstMisplacedRow<LastOpcode>(OpcodeTable, &OpcodeInfo::opcode)
                       == meta::NoMisplacedRow,
                   "OpcodeTable must hold each Opcode at the index of its enumerator");
+
+    static_assert(OpcodeNames.size() == OpcodeCount, "OpcodeNames must hold one name per Opcode");
+    static_assert(OpcodeTexts.size() == OpcodeCount, "OpcodeTexts must hold one text per Opcode");
+
+    // C++23 cannot compute a static_assert's message, so each check names its first offender by index
+    // alone, in the comparison the compiler prints: an opcode's is its row of Opcodes.def, from zero.
+    static_assert(firstMisnamedOpcode(OpcodeNames, OpcodeTexts, OpcodeNameExceptions) == OpcodeCount,
+                  "every Opcode's name must be its text in PascalCase (namedByRule), or have exactly one row "
+                  "of OpcodeNameExceptions and none otherwise; the index is the first that does not");
+    static_assert(firstUnusedException(OpcodeNames, OpcodeTexts, OpcodeNameExceptions)
+                      == OpcodeNameExceptions.size(),
+                  "every row of OpcodeNameExceptions must name exactly one Opcode, by name and text, that "
+                  "the naming rule does not hold for; the index is the first that does not");
 
 } // namespace
 

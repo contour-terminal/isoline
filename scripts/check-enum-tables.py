@@ -26,12 +26,19 @@ Tests (`*_test.cpp`), test helpers (any `testing/` directory) and the reflection
 only. So that nothing escapes it, a text pass over the same source files fails on every `std::array` or
 `std::to_array` spelt outside `namespace isoline`: in main(), a global anonymous namespace or any other
 namespace. It reads the code alone (comments, literals and preprocessor directives left out), so a
-file-scope macro that builds a table inside `namespace isoline` is not flagged. A field type written through a type alias or a using-declaration comes desugared; a class or
+file-scope macro that builds a table inside `namespace isoline` is not flagged. The body of a function
+defined by its qualified name under isoline (`int isoline::b::f() {…}`) counts as inside it. The pass sees
+spellings, not types, so these forms escape it: a macro invoked outside the namespace whose expansion
+spells std::array; an alias (`using Arr = std::array<…>`, declared anywhere) used outside it; and
+`std::array` reached without its qualifier (`using namespace std`, `using std::array`). It fails closed
+on the rest: a brace it cannot attribute to isoline (a constructor's member initializers before its body,
+say) puts what follows outside, and is flagged. A field type written through a type alias or a using-declaration comes desugared; a class or
 enum named directly comes as written, and is resolved from the class's scope outwards through its
 enclosing scopes, and failing that by its name alone. One that resolves to more than one kind of type is a tool error, so the lint fails
 closed. The dumps run in parallel (--jobs), and each translation unit's result
 is cached (--cache), keyed by its compile command and the content of the file, of every header under
-src/isoline/ and the generated headers, and of this script: a time stamp alone invalidates nothing.
+src/isoline/ and the generated headers, of the Clang binary that dumps it (as invoked, a wrapper
+included), and of this script: a time stamp alone invalidates nothing.
 
 Exit status: 0 clean, 1 findings, 2 a tool error (Clang failed, a row type the lint cannot find, an
 ambiguous field type).
@@ -49,6 +56,7 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -61,7 +69,7 @@ BLOCK = "source-local-tables"
 DUMP_FILTER = "isoline"
 
 # Bumped when what a cached result means changes.
-CACHE_VERSION = "2"
+CACHE_VERSION = "3"
 
 # Files under src/isoline/ the lint skips: tests, their helpers, and the reflection checks' own sources.
 SKIPPED = (re.compile(r"_test\.cpp$"), re.compile(r"(^|/)testing/"), re.compile(r"^meta/reflection/"))
@@ -90,6 +98,9 @@ class ToolError(Exception):
 # anonymous one), any other brace, and a spelling of std::array.
 CODE_TOKEN = re.compile(r"\bnamespace\b\s*(?P<namespace>[\w:\s]*?)\s*\{|(?P<array>\bstd\s*::\s*(?:to_)?array\b)"
                         r"|(?P<open>\{)|(?P<close>\})")
+# The head of a function defined by its qualified name under isoline (`int isoline::b::f(…)`): its body
+# is inside isoline, though no namespace block encloses it.
+QUALIFIED_DEFINITION = re.compile(r"[^(=]*?(?<![\w:])(?:::)?isoline::(?:\w+::)*~?\w+\s*\(", re.S)
 RAW_STRING = re.compile(r'(?<!\w)(?:u8|u|U|L)?R"([^()\\\s]{0,16})\(')
 WORD_BEFORE = re.compile(r"[\w']*$")
 NAMESPACE = "isoline"
@@ -162,7 +173,8 @@ def arraysOutsideIsoline(text):
             components = splitScopes(match.group("namespace").replace("inline", " ").replace(" ", ""))
             stack.append(components[0] if components else "")
         elif match.group("open"):
-            stack.append(None)
+            start = max(code.rfind(boundary, 0, match.start()) for boundary in ";{}") + 1
+            stack.append(NAMESPACE if QUALIFIED_DEFINITION.match(code, start, match.start()) else None)
         elif match.group("close"):
             if stack:
                 stack.pop()
@@ -474,6 +486,16 @@ def treeStamp(root, compileCommands):
     return digest.hexdigest()
 
 
+def compilerIdentity(compiler, identities):
+    """The hash of the binary @p compiler names, memoized in @p identities; a compiler not found is named
+    by its spelling, and its dump fails."""
+    if compiler not in identities:
+        path = shutil.which(compiler)
+        identities[compiler] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() if path \
+            else f"unresolved {compiler}"
+    return identities[compiler]
+
+
 def scan(root, compileCommands, clang, cache, jobs):
     """Every std::array variable the lint covers, over every translation unit: (file, name, enum-first)."""
     sources = (root / SOURCES).resolve()
@@ -481,13 +503,15 @@ def scan(root, compileCommands, clang, cache, jobs):
     if not units:
         raise ToolError(f"{compileCommands} holds no source file under {sources}")
     stamp = treeStamp(root, compileCommands)
+    identities = {}
     results = {}
     pending = {}
     for relative, entry in sorted(units.items()):
         arguments = dumpCommand(entry, clang)
         source = sources / relative
-        key = hashlib.sha256("\0".join([CACHE_VERSION, stamp, hashlib.sha256(source.read_bytes()).hexdigest(),
-                                        *arguments]).encode()).hexdigest()
+        key = hashlib.sha256("\0".join([CACHE_VERSION, stamp, compilerIdentity(arguments[0], identities),
+                                        hashlib.sha256(source.read_bytes()).hexdigest(), *arguments])
+                             .encode()).hexdigest()
         cached = cache / f"{hashlib.sha256(relative.encode()).hexdigest()}.json" if cache else None
         if cached is not None and cached.is_file():
             stored = json.loads(cached.read_text(encoding="utf-8"))

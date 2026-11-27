@@ -42,6 +42,8 @@ ISOLINE_ENUM_TABLE(binary::NameSubsections, binary::LastNameKind, binary::NameSu
 ISOLINE_ENUM_TABLE(binary::OpcodeTable, binary::LastOpcode, binary::OpcodeInfo::opcode)
 ISOLINE_ENUM_TABLE(binary::SignatureTable, binary::LastOpcodeSignature, binary::SignatureRow::signature)
 ISOLINE_SIZED_TABLE(binary::detail::MemoryLaneWidthByShape, binary::LastVectorShape)
+ISOLINE_SIZED_TABLE(binary::OpcodeNames, binary::LastOpcode)
+ISOLINE_SIZED_TABLE(binary::OpcodeTexts, binary::LastOpcode)
 ISOLINE_KEYED_TABLE(binary::OpcodeCrossRequirements, "one row per (instruction, second proposal) pair")
 ISOLINE_KEYED_TABLE(binary::MemoryAccessTable, "one row per load or store instruction, a subset of Opcode")
 ISOLINE_KEYED_TABLE(binary::ElementForms, "indexed by the element segment's flag byte; a mode repeats")
