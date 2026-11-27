@@ -56,10 +56,18 @@ enum class ValidationErrorCode : uint8_t
     ResourceOutsideComponent,
     InvalidResourceRepresentation,
     ResourceRepresentationI64,
+    InvalidExternName,
+    InvalidExternNameUse,
+    ConflictingExternName,
+    ImplementsNameNotPlain,
+    ImplementsNotInstance,
+    InvalidImplementsName,
+    ImplementsNotInterface,
+    InvalidImplementsVersion,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::ResourceRepresentationI64;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::InvalidImplementsVersion;
 
 /// How a validation error's message is built from its row's text and the error's fields.
 enum class ValidationErrorDetail : uint8_t
@@ -70,6 +78,8 @@ enum class ValidationErrorDetail : uint8_t
     Deferred, ///< The text formatted with the DeferredForm in subject's DeferredFormTable text.
     Limit,    ///< The exceeded limit's message (limitMessage()), the subject from binary::limitSubject().
     Refusal,  ///< The error's name: a gated form's refusal, wasm-tools' text for that site.
+    Extern,   ///< The text formatted with the ExternKind in subject's word, the name and previous.
+    Named,    ///< The text formatted with the name and previous.
 };
 
 /// One row of ValidationErrorMessages: an error and how its message reads.
@@ -155,6 +165,31 @@ inline constexpr auto ValidationErrorMessages = std::to_array<ValidationErrorRow
     // 🐘's refusal in wasm-tools' words for a resource; disabled names ComponentFeature::Memory64.
     { .code = ValidationErrorCode::ResourceRepresentationI64,
       .text = "resources with `i64` require the `cm64` feature to be enabled" },
+    // validate_extern (component.rs:4709-4880): an Extern row's {0} is "import" or "export", {1} the
+    // name, {2} previous: the grammar's refusal (nameErrorMessage()), the rule's, or the earlier name.
+    { .code = ValidationErrorCode::InvalidExternName,
+      .text = "{0} name `{1}` is not a valid extern name\n{2}",
+      .detail = ValidationErrorDetail::Extern },
+    { .code = ValidationErrorCode::InvalidExternNameUse,
+      .text = "{0} name `{1}` is not valid\n{2}",
+      .detail = ValidationErrorDetail::Extern },
+    { .code = ValidationErrorCode::ConflictingExternName,
+      .text = "{0} name `{1}` conflicts with previous name `{2}`",
+      .detail = ValidationErrorDetail::Extern },
+    // A Named row's {0} is the name, {1} previous: the grammar's refusal of the implemented name.
+    { .code = ValidationErrorCode::ImplementsNameNotPlain,
+      .text = "name `{0}` is not valid with `implements`",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::ImplementsNotInstance, .text = "only instances can have an `implements`" },
+    { .code = ValidationErrorCode::InvalidImplementsName,
+      .text = "`{0}` is not a valid name\n{1}",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::ImplementsNotInterface,
+      .text = "name `{0}` must be an interface",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::InvalidImplementsVersion,
+      .text = "{1}",
+      .detail = ValidationErrorDetail::Named },
 });
 
 static_assert(
@@ -171,8 +206,8 @@ static_assert(
     "ValidationErrorMessages must hold one row per ValidationErrorCode, at the index of its enumerator");
 
 /// A form validateComponent() does not validate yet, and so refuses as NotYetValidated: never accepted
-/// unchecked. Task 7 (and Task 5, for names) removes a row as it validates the form, and the compiler
-/// then names each place that refuses it.
+/// unchecked. Task 7 removes a row as it validates the form, and the compiler then names each place
+/// that refuses it.
 enum class DeferredForm : uint8_t
 {
     CanonicalFunctions,
@@ -186,8 +221,7 @@ enum class DeferredForm : uint8_t
     CoreTypeDefinitions,
     ResourceDestructors,
     CoreModuleTypes,
-    ExternNames,
-    DuplicateExternNames,
+    ResourceFunctionNames,
 };
 
 /// One row of DeferredFormTable: a deferred form and how its refusal names it.
@@ -212,9 +246,10 @@ inline constexpr auto DeferredFormTable = std::to_array<DeferredFormRow>({
     { .form = DeferredForm::CoreTypeDefinitions, .text = "core type definitions" },
     { .form = DeferredForm::ResourceDestructors, .text = "resource destructors" },
     { .form = DeferredForm::CoreModuleTypes, .text = "core module types" },
-    // The externname grammar beyond a plain label (Task 5's parseExternName).
-    { .form = DeferredForm::ExternNames, .text = "extern names other than a plain label" },
-    { .form = DeferredForm::DuplicateExternNames, .text = "extern names not strongly unique" },
+    // The rules of a `[constructor]`, `[method]` or `[static]` name: a function, whose signature names
+    // a resource of the scope (validate, component.rs:4884-4990), checked with Task 7's index spaces.
+    { .form = DeferredForm::ResourceFunctionNames,
+      .text = "extern names of `[constructor]`, `[method]` or `[static]` functions" },
 });
 
 static_assert(
@@ -226,7 +261,7 @@ static_assert(
                 return false;
             ++index;
         }
-        return index == static_cast<std::size_t>(DeferredForm::DuplicateExternNames) + 1;
+        return index == static_cast<std::size_t>(DeferredForm::ResourceFunctionNames) + 1;
     }(),
     "DeferredFormTable must hold one row per DeferredForm, at the index of its enumerator");
 
@@ -568,7 +603,9 @@ struct ValidationError
     binary::DefinitionPosition position; ///< The definition at which it was found.
     std::optional<uint64_t> subject {};  ///< An index, a LabelKind or a limit; see ValidationErrorDetail.
     std::string name {};                 ///< The name or gated form it names, if any.
-    std::string previous {};             ///< For DuplicateLabel: the earlier, conflicting name.
+    /// For DuplicateLabel and ConflictingExternName: the earlier, conflicting name; for the other
+    /// Extern and Named codes, the refusal the message ends with.
+    std::string previous {};
     std::optional<ComponentFeature> disabled {};  ///< For FeatureDisabled: the feature not admitted.
     std::optional<CoreModuleError> coreModule {}; ///< For CoreModuleRefused: the module and its refusal.
 };
@@ -617,11 +654,15 @@ class ICoreModuleValidator
 /// What this validates fully: the type section's definitions in every scope (defined value types with
 /// their label, count and key rules; function types; resource types bar their destructors; component
 /// and instance types), outer aliases of sort type, the imports and export declarations of type scopes
-/// and the imports of components, and the embedded core modules, through @p coreModules. Everything
-/// else is refused as NotYetValidated, naming its DeferredForm, after its gated forms are checked:
-/// every other definition; an extern name other than a plain label, or one not strongly unique; and an
-/// outer type alias into a component of a type that may refer to a resource (a resource, a value type
-/// holding a handle, a function, component or instance type). Nothing is accepted unchecked.
+/// and the imports of components with their names (the externname grammar, an interface's version,
+/// `implements`, strong uniqueness), and the embedded core modules, through @p coreModules. Resources
+/// are generative: an import or export declaration of an instance type that defines resources mints
+/// them afresh (wasm-tools' prepare_instance_import and prepare_instance_export), and every component
+/// and instance type records where it binds its resources. Everything else is refused as
+/// NotYetValidated, naming its DeferredForm, after its gated forms are checked: every other definition;
+/// a `[constructor]`, `[method]` or `[static]` name; and an outer type alias into a component of a type
+/// that may refer to a resource (a resource, a value or function type holding a handle, a component or
+/// instance type). Nothing is accepted unchecked.
 ///
 /// Precondition: @p pool is well formed, as decodeComponent() and testing::ComponentBuilder lay pools
 /// out (entry 0 a component; each nested component and type scope a later entry of its kind).

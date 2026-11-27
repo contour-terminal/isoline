@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -372,30 +373,106 @@ struct FunctionTypeInfo
     std::vector<std::pair<std::string, TypeId>> params {}; ///< The parameters, labelled, in order.
     std::optional<TypeId> result {};                       ///< The result's type, if any.
     TypeMeasure measure {};                                ///< Computed by TypeArena::add().
+    /// The handles its parameters and result hold; computed by TypeArena::add().
+    HandleContent handles = HandleContent::None;
 
     /// Two function types are equal when every field is.
     bool operator==(FunctionTypeInfo const&) const = default;
 };
 
-/// A component type: its imports and exports, in declaration order.
+/// Whether a function, component or instance type names a resource type anywhere inside it.
+enum class ResourceReference : uint8_t
+{
+    None, ///< No resource, so no resource substitution changes it.
+    Some, ///< At least one, bound inside the type or not.
+};
+
+/// Where a component or instance type binds one of its resources: the resource, and the path of
+/// extern indices that leads to the `(sub resource)` declaring it (wasm-tools' resource paths,
+/// ComponentType::imported_resources, wasmparser 0.263.0 src/validator/component_types.rs:1015-1040).
+///
+/// The first index is into the type's imports or exports; each further one is into the exports of the
+/// instance type the previous one names.
+struct ResourcePath
+{
+    ResourceTypeId resource;       ///< The resource bound.
+    std::vector<uint32_t> path {}; ///< The extern indices leading to its declaration.
+
+    /// Two paths are equal when their resources and indices are.
+    bool operator==(ResourcePath const&) const = default;
+};
+
+/// A component type: its imports and exports, in declaration order, and the resources it binds.
+///
+/// Its imported resources are universally quantified: an instantiation supplies them. Its defined
+/// resources are existential: each instantiation mints them afresh (validate::freshResourcesFor()).
 struct ComponentTypeInfo
 {
-    std::vector<NamedExtern> imports {}; ///< The imports, in order.
-    std::vector<NamedExtern> exports {}; ///< The exports, in order.
-    TypeMeasure measure {};              ///< Computed by TypeArena::add().
+    std::vector<NamedExtern> imports {};            ///< The imports, in order.
+    std::vector<NamedExtern> exports {};            ///< The exports, in order.
+    std::vector<ResourcePath> importedResources {}; ///< Its imported resources; paths into imports.
+    std::vector<ResourcePath> definedResources {};  ///< Its defined resources; paths into exports.
+    TypeMeasure measure {};                         ///< Computed by TypeArena::add().
+    /// Whether an import or export names a resource; computed by TypeArena::add().
+    ResourceReference resources = ResourceReference::None;
 
     /// Two component types are equal when every field is.
     bool operator==(ComponentTypeInfo const&) const = default;
 };
 
-/// An instance type: its exports, in declaration order.
+/// An instance type: its exports, in declaration order, and the resources it defines.
+///
+/// Only an instance type as declared defines resources, through `(export "r" (type (sub resource)))`;
+/// importing or exporting an instance of it mints them afresh, so the instance's own type defines none
+/// (wasm-tools' ComponentInstanceType::defined_resources).
 struct InstanceTypeInfo
 {
-    std::vector<NamedExtern> exports {}; ///< The exports, in order.
-    TypeMeasure measure {};              ///< Computed by TypeArena::add().
+    std::vector<NamedExtern> exports {};           ///< The exports, in order.
+    std::vector<ResourcePath> definedResources {}; ///< The resources it defines; paths into exports.
+    TypeMeasure measure {};                        ///< Computed by TypeArena::add().
+    /// Whether an export names a resource; computed by TypeArena::add().
+    ResourceReference resources = ResourceReference::None;
 
     /// Two instance types are equal when every field is.
     bool operator==(InstanceTypeInfo const&) const = default;
+};
+
+/// Which resource type stands for which: each mapped resource is replaced by its image, every other is
+/// kept. Ordered by resource, so a lookup is O(log n) whatever the resources are.
+class ResourceSubstitution
+{
+  public:
+    /// Maps @p from to @p to, replacing an earlier image of @p from.
+    /// @param from The resource replaced.
+    /// @param to Its image.
+    void bind(ResourceTypeId from, ResourceTypeId to) { _images.insert_or_assign(from, to); }
+
+    /// The image of a resource.
+    /// @param from A resource.
+    /// @return Its image, or nothing when it is not mapped.
+    [[nodiscard]] std::optional<ResourceTypeId> find(ResourceTypeId from) const
+    {
+        auto const entry = _images.find(from);
+        if (entry == _images.end())
+            return std::nullopt;
+        return entry->second;
+    }
+
+    /// The image of a resource, itself when it is not mapped.
+    /// @param from A resource.
+    /// @return Its image.
+    [[nodiscard]] ResourceTypeId apply(ResourceTypeId from) const { return find(from).value_or(from); }
+
+    /// Every mapping, ordered by the resource replaced.
+    /// @return The resources and their images.
+    [[nodiscard]] std::map<ResourceTypeId, ResourceTypeId> const& images() const noexcept { return _images; }
+
+    /// The number of resources mapped.
+    /// @return The count.
+    [[nodiscard]] std::size_t size() const noexcept { return _images.size(); }
+
+  private:
+    std::map<ResourceTypeId, ResourceTypeId> _images;
 };
 
 /// A resource type's definition: its representation and destructor, as its definition gives them; an
@@ -412,8 +489,9 @@ struct ResourceTypeInfo
 /// A type past one of the arena's caps: which cap, and its value for the refusal's text.
 struct TypeLimitError
 {
-    ComponentLimit limit = ComponentLimit::TypeSize; ///< TypeDepth, TypeSize, Types or ResourceTypes.
-    uint64_t value = 0;                              ///< The cap's value.
+    /// TypeDepth, TypeSize, Types, ResourceTypes or SubstitutedTypes.
+    ComponentLimit limit = ComponentLimit::TypeSize;
+    uint64_t value = 0; ///< The cap's value.
 
     /// Two errors are equal when their limits and values are.
     bool operator==(TypeLimitError const&) const = default;
@@ -429,15 +507,17 @@ struct TypeLimitError
 /// TypeInfo::combine, wasmparser 0.263.0 src/validator/types.rs:238-247): a type whose depth exceeds
 /// ComponentLimits::maxTypeDepth, or whose effective size reaches ComponentLimits::maxTypeSize, is
 /// refused, so no type the arena holds is deeper or larger, and nothing ever walks it recursively. The
-/// arena holds one entry per type added, at most one per definition its validation interns, so its
-/// memory is linear in the component's.
+/// arena holds one entry per type added: at most one per definition its validation interns, plus at
+/// most maxSubstitutedTypes that its resource substitutions create, so its memory is linear in the
+/// component's.
 ///
 /// An arena is movable and not copyable: its TypeArenaId names exactly one set of types.
 class TypeArena
 {
   public:
     /// An arena holding the primitives only, each at the TypeId of its ValueKind.
-    /// @param limits The caps it enforces: maxTypeDepth, maxTypeSize and maxResourceTypes.
+    /// @param limits The caps it enforces: maxTypeDepth, maxTypeSize, maxResourceTypes and
+    ///               maxSubstitutedTypes.
     /// @throws std::bad_alloc When the primitives cannot be stored.
     explicit TypeArena(ComponentLimits const& limits);
 
@@ -491,6 +571,18 @@ class TypeArena
     /// @return Its id, or the cap it exceeds.
     [[nodiscard]] std::expected<InstanceTypeId, TypeLimitError> add(InstanceTypeInfo type);
 
+    /// Rewrites an extern type with @p substitution applied to every resource it names: each value,
+    /// function, component and instance type naming a mapped resource is replaced by a copy naming its
+    /// image (wasm-tools' remap_component_entity, wasmparser 0.263.0 src/validator/component_types.rs).
+    /// Types naming none are kept, so the work is the number of types that name a resource, each
+    /// rewritten once however often it is shared; it walks an explicit stack, never recursing.
+    /// @param type An extern type whose types the arena holds.
+    /// @param substitution The resources to replace.
+    /// @return The rewritten type, or SubstitutedTypes once maxSubstitutedTypes types were created by
+    ///         the arena's substitutions in all, or the cap a rewritten type exceeds.
+    [[nodiscard]] std::expected<ExternType, TypeLimitError> substitute(
+        ExternType const& type, ResourceSubstitution const& substitution);
+
     /// Mints a fresh resource type, distinct from every other.
     /// @param definition Its representation and destructor.
     /// @return Its id, or ResourceTypes once maxResourceTypes are held.
@@ -534,6 +626,16 @@ class TypeArena
     /// @return The count.
     [[nodiscard]] std::size_t structuralComparisons() const noexcept { return _store->comparisons; }
 
+    /// Whether a type names a resource anywhere inside it, from the flags computed when it was added:
+    /// never a walk.
+    /// @param type A type the arena holds (checked).
+    /// @return true for a resource, and for a type that holds a handle or names a resource.
+    [[nodiscard]] bool namesResource(AnyTypeId type) const;
+
+    /// The types the arena's resource substitutions have created so far.
+    /// @return The count, at most maxSubstitutedTypes.
+    [[nodiscard]] std::size_t substitutedTypes() const noexcept { return _substitutedTypes; }
+
   private:
     [[nodiscard]] std::expected<TypeMeasure, TypeLimitError> measureChildren(
         std::vector<std::optional<TypeId>> const& children) const;
@@ -542,6 +644,8 @@ class TypeArena
     uint32_t _maxTypeDepth;
     uint32_t _maxTypeSize;
     uint32_t _maxResourceTypes;
+    uint32_t _maxSubstitutedTypes;
+    std::size_t _substitutedTypes = 0;
     /// The value types, on the heap so that the index's order, which reads them, survives a move.
     struct ValueStore
     {

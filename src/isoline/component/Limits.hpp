@@ -44,6 +44,12 @@ struct ComponentLimits
     uint32_t maxHandles = 1'000'000;
     /// Per ComponentStore: the host bytes of every live Values.
     uint64_t maxLiveValueBytes = uint64_t { 256 } << 20;
+    /// Steps of one validate::TypeRelation: each pair of types it compares, and each import or export
+    /// it looks up by name; its memo holds at most one entry per step.
+    uint32_t maxSubtypingSteps = 1'000'000;
+    /// Per TypeArena: the types its resource substitutions create (each instantiation, and each import
+    /// or export of an instance type that defines resources, rewrites the types that name them).
+    uint32_t maxSubstitutedTypes = 1'000'000;
 
     /// Two sets of limits are equal when every limit is.
     bool operator==(ComponentLimits const&) const = default;
@@ -67,10 +73,12 @@ enum class ComponentLimit : uint8_t
     ResourceTypes,
     Handles,
     LiveValueBytes,
+    SubtypingSteps,
+    SubstitutedTypes,
 };
 
 /// The last ComponentLimit enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastComponentLimit = ComponentLimit::LiveValueBytes;
+inline constexpr auto LastComponentLimit = ComponentLimit::SubstitutedTypes;
 
 /// The number of ComponentLimit enumerators, as LastComponentLimit counts them.
 inline constexpr auto ComponentLimitCount = static_cast<std::size_t>(LastComponentLimit) + 1;
@@ -173,6 +181,21 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .rule = "host bytes of every live Values of one ComponentStore",
       .message = "live value bytes exceed the limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxLiveValueBytes; } },
+    // Isoline's own: wasm-tools bounds neither, and walks its types recursively.
+    { .limit = ComponentLimit::SubtypingSteps,
+      .name = "maxSubtypingSteps",
+      .rule = "steps of one type relation (validation's subtype checks, a linker's resolve): each pair of "
+              "types it compares and each import or export it looks up by name",
+      .message = "subtyping steps exceed the limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxSubtypingSteps; } },
+    { .limit = ComponentLimit::SubstitutedTypes,
+      .name = "maxSubstitutedTypes",
+      .rule = "types the resource substitutions of one type arena create: each instantiation, and each "
+              "import or export of an instance type that defines resources, rewrites the types naming them",
+      .message = "substituted types exceed the limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t {
+          return limits.maxSubstitutedTypes;
+      } },
 });
 
 static_assert(

@@ -24,6 +24,7 @@
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/binary/Decoder.hpp>
 #include <isoline/component/types/TypeArena.hpp>
+#include <isoline/component/validate/Names.hpp>
 
 namespace isoline::component::validate
 {
@@ -54,60 +55,6 @@ namespace
     static_assert(componentFeatureRow(ComponentFeature::FixedLengthLists).p11 != Implementation::Implemented,
                   "implementing fixed-length lists needs their validation here reviewed and tested");
 
-    /// Whether @p label is in kebab case, as wasmparser 0.263.0 defines it (KebabStr::is_kebab_case,
-    /// src/validator/names.rs:68-92): words of lower- or upper-case letters and digits, one case per
-    /// word, separated by single hyphens; only the first word must begin with a letter.
-    [[nodiscard]] bool isKebabCase(std::string_view label) noexcept
-    {
-        auto lower = false;
-        auto upper = false;
-        auto first = true;
-        auto digit = false;
-        for (auto const character: label)
-        {
-            auto const isLower = character >= 'a' && character <= 'z';
-            auto const isUpper = character >= 'A' && character <= 'Z';
-            auto const isDigit = character >= '0' && character <= '9';
-            auto const inWord = lower || upper;
-            if (isLower && !inWord)
-                lower = true;
-            else if (isUpper && !inWord)
-                upper = true;
-            else if (isDigit && !inWord && !first)
-                digit = true;
-            else if ((isLower && lower) || (isUpper && upper))
-                continue;
-            else if (isDigit && inWord)
-                digit = true;
-            else if (character == '-' && (inWord || digit))
-            {
-                lower = false;
-                upper = false;
-                first = false;
-                digit = false;
-            }
-            else
-                return false;
-        }
-        return !label.empty() && !label.ends_with('-');
-    }
-
-    /// The form of @p label strong uniqueness compares (KebabStr::canonical_chars): hyphens dropped,
-    /// ASCII letters lowered, so "a-B-c" and "abc" are the same label.
-    [[nodiscard]] std::string canonicalLabel(std::string_view label)
-    {
-        auto canonical = std::string {};
-        canonical.reserve(label.size());
-        for (auto const character: label)
-        {
-            if (character == '-')
-                continue;
-            canonical.push_back(
-                character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a') : character);
-        }
-        return canonical;
-    }
-
     /// The labels of one type, or the names of one scope's imports or exports, so far, for the
     /// uniqueness rule: each by its canonical form, mapped to its first spelling, which a conflict
     /// names. Ordered, not hashed, so no crafted set of labels makes the check quadratic.
@@ -119,7 +66,16 @@ namespace
         /// @return Nothing when it is new, else the earlier label's spelling.
         [[nodiscard]] std::optional<std::string> insert(std::string const& label)
         {
-            auto const [entry, inserted] = _labels.try_emplace(canonicalLabel(label), label);
+            return insertKeyed(canonicalLabel(label), label);
+        }
+
+        /// Adds a name under the key uniqueness compares it by, or names the earlier one of that key.
+        /// @param key The name's key (strongUniquenessKey()).
+        /// @param name The name, as encoded.
+        /// @return Nothing when it is new, else the earlier name's spelling.
+        [[nodiscard]] std::optional<std::string> insertKeyed(std::string key, std::string const& name)
+        {
+            auto const [entry, inserted] = _labels.try_emplace(std::move(key), name);
             if (inserted)
                 return std::nullopt;
             return entry->second;
@@ -144,18 +100,30 @@ namespace
         uint64_t outerAliasTypeSize = 0;
         LabelSet importNames {}; ///< Its import names, for strong uniqueness.
         LabelSet exportNames {}; ///< Its export names, for strong uniqueness.
+        /// Where its imports bind resources: `(sub resource)` imports and the fresh resources of
+        /// imported instances.
+        std::vector<types::ResourcePath> importedResources {};
+        /// Where its export declarations bind resources, likewise (type scopes only).
+        std::vector<types::ResourcePath> definedResources {};
     };
 
-    /// Whether an extern declaration imports or exports.
-    enum class ExternDirection : uint8_t
-    {
-        Import,
-        Export,
-    };
+    // A version suffix is refused while 🔗 is, so the rules past its gate (only instances, not empty,
+    // an interface name or implements, the canonical version) are not here yet.
+    static_assert(componentFeatureRow(ComponentFeature::CanonicalInterfaceNames).p11
+                      != Implementation::Implemented,
+                  "implementing canonical interface names needs the version suffix rules here");
 
     /// The attributes in the order wasm-tools checks them (validate_extern, component.rs:4721-4790),
     /// whatever their encoded order: by their Attribute alternative.
     constexpr auto AttributeCheckOrder = std::to_array<std::size_t>({ 1, 0, 2 });
+
+    /// The Attribute alternative of `implements`, whose rules follow its gate.
+    constexpr auto ImplementsAlternative = std::size_t { 0 };
+
+    static_assert(std::is_same_v<std::variant_alternative_t<1, binary::Attribute>, binary::VersionSuffix>
+                      && std::is_same_v<std::variant_alternative_t<0, binary::Attribute>, binary::Implements>
+                      && std::is_same_v<std::variant_alternative_t<2, binary::Attribute>, binary::ExternalId>,
+                  "AttributeCheckOrder checks the version suffix, then implements, then the external id");
 
     /// The kinds a map key may be: Binary.md's `keytype`, the primitives but floats and error-context.
     [[nodiscard]] constexpr bool isKeyKind(ValueKind kind) noexcept
@@ -280,8 +248,20 @@ namespace
                                                            DefinitionPosition position);
         [[nodiscard]] Result<void> declare(binary::NameAttributes const& name,
                                            binary::ExternDesc const& type,
-                                           ExternDirection direction,
+                                           ExternKind kind,
                                            DefinitionPosition position);
+        [[nodiscard]] Result<types::ExternType> freshen(types::InstanceTypeId instance,
+                                                        ExternKind kind,
+                                                        uint32_t externIndex,
+                                                        DefinitionPosition position);
+        [[nodiscard]] Result<void> name(binary::NameAttributes const& name,
+                                        types::ExternType const& type,
+                                        ExternKind kind,
+                                        DefinitionPosition position);
+        [[nodiscard]] Result<void> implements(binary::NameAttributes const& name,
+                                              std::optional<ExternName> const& parsed,
+                                              types::ExternType const& type,
+                                              DefinitionPosition position) const;
         [[nodiscard]] Result<void> attributes(binary::NameAttributes const& name,
                                               DefinitionPosition position) const;
         [[nodiscard]] Result<void> alias(binary::AliasDefinition const& alias, DefinitionPosition position);
@@ -360,23 +340,30 @@ namespace
         switch (frame.kind)
         {
             case binary::ScopeKind::Component:
+                // A concrete component's defined resources are its exported ones, which Task 7's
+                // export definitions bind.
                 if (_frames.empty())
-                    _rootType = types::ComponentTypeInfo { .imports = std::move(frame.imports),
-                                                           .exports = std::move(frame.exports),
-                                                           .measure = frame.measure };
+                    _rootType =
+                        types::ComponentTypeInfo { .imports = std::move(frame.imports),
+                                                   .exports = std::move(frame.exports),
+                                                   .importedResources = std::move(frame.importedResources),
+                                                   .measure = frame.measure };
                 return {};
             case binary::ScopeKind::ComponentType: {
-                auto const added = _arena.add(types::ComponentTypeInfo { .imports = std::move(frame.imports),
-                                                                         .exports = std::move(frame.exports),
-                                                                         .measure = {} });
+                auto const added = _arena.add(
+                    types::ComponentTypeInfo { .imports = std::move(frame.imports),
+                                               .exports = std::move(frame.exports),
+                                               .importedResources = std::move(frame.importedResources),
+                                               .definedResources = std::move(frame.definedResources) });
                 if (!added)
                     return std::unexpected { limitError(added.error(), frame.origin) };
                 return pushType(*added, frame.origin);
             }
             case binary::ScopeKind::InstanceType: {
-                Require(frame.imports.empty());
+                Require(frame.imports.empty() && frame.importedResources.empty());
                 auto const added = _arena.add(
-                    types::InstanceTypeInfo { .exports = std::move(frame.exports), .measure = {} });
+                    types::InstanceTypeInfo { .exports = std::move(frame.exports),
+                                              .definedResources = std::move(frame.definedResources) });
                 if (!added)
                     return std::unexpected { limitError(added.error(), frame.origin) };
                 return pushType(*added, frame.origin);
@@ -396,9 +383,9 @@ namespace
                 else if constexpr (std::is_same_v<Alternative, binary::NestedComponent>)
                     return open(alternative.index, binary::ScopeKind::Component, position);
                 else if constexpr (std::is_same_v<Alternative, binary::ImportDefinition>)
-                    return declare(alternative.name, alternative.type, ExternDirection::Import, position);
+                    return declare(alternative.name, alternative.type, ExternKind::Import, position);
                 else if constexpr (std::is_same_v<Alternative, binary::ExportDeclaration>)
-                    return declare(alternative.name, alternative.type, ExternDirection::Export, position);
+                    return declare(alternative.name, alternative.type, ExternKind::Export, position);
                 else if constexpr (std::is_same_v<Alternative, binary::AliasDefinition>)
                     return alias(alternative, position);
                 else if constexpr (std::is_same_v<Alternative, binary::CoreModuleDefinition>)
@@ -481,10 +468,11 @@ namespace
 
     bool ComponentValidator::mayReferToResource(AnyTypeId type) const
     {
-        // A value type refers to a resource only through a handle; a resource is one; function,
-        // component and instance types are left to Task 7's walk.
-        if (auto const* value = std::get_if<TypeId>(&type))
-            return _arena[*value].handles != types::HandleContent::None;
+        // A value or function type refers to a resource only through a handle; a resource is one;
+        // component and instance types, which may bind the resources they name, are left to Task 7's
+        // free-variable walk.
+        if (std::holds_alternative<TypeId>(type) || std::holds_alternative<types::FunctionTypeId>(type))
+            return _arena.namesResource(type);
         return true;
     }
 
@@ -938,35 +926,196 @@ namespace
 
     Result<void> ComponentValidator::declare(binary::NameAttributes const& name,
                                              binary::ExternDesc const& type,
-                                             ExternDirection direction,
+                                             ExternKind kind,
                                              DefinitionPosition position)
     {
-        // add_import/add_export: the type first (check_type_ref), then its index (add_entity), then the
-        // name and the measure (validate_extern). The name's grammar and uniqueness are Tasks 5 and 7's.
-        auto const declared = externType(type, position);
+        // add_import/add_export: the type first (check_type_ref), then its index and, for an instance
+        // type that defines resources, fresh ones (add_entity), then the name (validate_extern), then
+        // the measure.
+        auto declared = externType(type, position);
         if (!declared)
             return std::unexpected { declared.error() };
+        auto const externIndex = static_cast<uint32_t>(
+            (kind == ExternKind::Import ? current().imports : current().exports).size());
+        auto& resources =
+            kind == ExternKind::Import ? current().importedResources : current().definedResources;
         if (auto const* bound = std::get_if<types::TypeExtern>(&*declared))
         {
             if (auto pushed = pushType(bound->type, position); !pushed)
                 return pushed;
+            // add_entity (component.rs:741-779): a `(sub resource)` introduces its resource here.
+            if (type.bound == binary::TypeBound::SubResource)
+                resources.push_back(types::ResourcePath {
+                    .resource = std::get<types::ResourceTypeId>(bound->type), .path = { externIndex } });
         }
-        // The externname grammar beyond a plain label is Task 5's, and strong uniqueness of the rest
-        // Task 7's: anything they would decide is refused until then, not accepted unchecked.
-        if (!isKebabCase(name.name))
-            return std::unexpected { deferredError(DeferredForm::ExternNames, position) };
-        auto& names = direction == ExternDirection::Import ? current().importNames : current().exportNames;
-        if (names.insert(name.name))
-            return std::unexpected { deferredError(DeferredForm::DuplicateExternNames, position) };
-        if (auto checked = attributes(name, position); !checked)
-            return checked;
+        if (auto const* instance = std::get_if<types::InstanceTypeId>(&*declared))
+        {
+            auto fresh = freshen(*instance, kind, externIndex, position);
+            if (!fresh)
+                return std::unexpected { fresh.error() };
+            declared = *fresh;
+        }
+        if (auto named = this->name(name, *declared, kind, position); !named)
+            return named;
         auto& frame = current();
         auto measured = combine(frame.measure, _arena.measure(*declared), position);
         if (!measured)
             return std::unexpected { measured.error() };
         frame.measure = *measured;
-        auto& externs = direction == ExternDirection::Import ? frame.imports : frame.exports;
+        auto& externs = kind == ExternKind::Import ? frame.imports : frame.exports;
         externs.push_back(types::NamedExtern { .name = name.name, .type = *declared });
+        return {};
+    }
+
+    Result<types::ExternType> ComponentValidator::freshen(types::InstanceTypeId instance,
+                                                          ExternKind kind,
+                                                          uint32_t externIndex,
+                                                          DefinitionPosition position)
+    {
+        // prepare_instance_import and prepare_instance_export (component.rs:1060-1168): the resources an
+        // instance type defines are minted afresh for each import or export of an instance of it, and
+        // become the scope's own, imported or defined, at their paths below this extern; the instance
+        // itself then defines none.
+        auto const defined = _arena[instance].definedResources;
+        if (defined.empty())
+            return types::ExternType { instance };
+        auto fresh = types::ResourceSubstitution {};
+        auto& resources =
+            kind == ExternKind::Import ? current().importedResources : current().definedResources;
+        for (auto const& [resource, path]: defined)
+        {
+            auto const minted = _arena.newResource(_arena[resource]);
+            if (!minted)
+                return std::unexpected { limitError(minted.error(), position) };
+            fresh.bind(resource, *minted);
+            auto prefixed = types::ResourcePath { .resource = *minted, .path = { externIndex } };
+            prefixed.path.insert(prefixed.path.end(), path.begin(), path.end());
+            resources.push_back(std::move(prefixed));
+        }
+        auto exports = _arena[instance].exports;
+        for (auto& entry: exports)
+        {
+            auto substituted = _arena.substitute(entry.type, fresh);
+            if (!substituted)
+                return std::unexpected { limitError(substituted.error(), position) };
+            entry.type = *substituted;
+        }
+        auto const added = _arena.add(types::InstanceTypeInfo { .exports = std::move(exports) });
+        if (!added)
+            return std::unexpected { limitError(added.error(), position) };
+        return types::ExternType { *added };
+    }
+
+    [[nodiscard]] ValidationError externError(ValidationErrorCode code,
+                                              ExternKind kind,
+                                              std::string const& name,
+                                              std::string previous,
+                                              DefinitionPosition position)
+    {
+        return ValidationError { .code = code,
+                                 .position = position,
+                                 .subject = static_cast<uint64_t>(kind),
+                                 .name = name,
+                                 .previous = std::move(previous) };
+    }
+
+    [[nodiscard]] ValidationError namedError(ValidationErrorCode code,
+                                             std::string const& name,
+                                             std::string previous,
+                                             DefinitionPosition position)
+    {
+        return ValidationError {
+            .code = code, .position = position, .name = name, .previous = std::move(previous)
+        };
+    }
+
+    Result<void> ComponentValidator::name(binary::NameAttributes const& name,
+                                          types::ExternType const& type,
+                                          ExternKind kind,
+                                          DefinitionPosition position)
+    {
+        // validate_extern (component.rs:4709-4880): the grammar; the attributes, in wasm-tools' order,
+        // with implements' rules; the name's own rules (an interface's version); strong uniqueness among
+        // the scope's imports, or its exports. Exact-string uniqueness, which wasm-tools checks last,
+        // cannot fail once strong uniqueness holds: equal names have equal keys.
+        auto parsed = parseExternName(name.name, _features);
+        if (!parsed && parsed.error().code != NameErrorCode::InvalidVersion)
+        {
+            auto refused = externError(ValidationErrorCode::InvalidExternName,
+                                       kind,
+                                       name.name,
+                                       nameErrorMessage(parsed.error()),
+                                       position);
+            refused.disabled = parsed.error().disabled;
+            return std::unexpected { std::move(refused) };
+        }
+        auto const grammatical = parsed ? std::optional<ExternName> { *parsed } : std::nullopt;
+        for (auto const alternative: AttributeCheckOrder)
+        {
+            if (std::ranges::none_of(name.attributes, [&](binary::Attribute const& attribute) {
+                    return attribute.index() == alternative;
+                }))
+                continue;
+            if (auto admitted = admit(AttributeGates[alternative], position); !admitted)
+                return admitted;
+            if (alternative == ImplementsAlternative)
+            {
+                if (auto checked = implements(name, grammatical, type, position); !checked)
+                    return checked;
+            }
+        }
+        if (!parsed)
+            return std::unexpected { externError(ValidationErrorCode::InvalidExternNameUse,
+                                                 kind,
+                                                 name.name,
+                                                 nameErrorMessage(parsed.error()),
+                                                 position) };
+        if (parsed->kind != NameKind::Plain && parsed->kind != NameKind::Interface)
+            return std::unexpected { deferredError(DeferredForm::ResourceFunctionNames, position) };
+        auto& names = kind == ExternKind::Import ? current().importNames : current().exportNames;
+        if (auto previous = names.insertKeyed(strongUniquenessKey(*parsed), name.name))
+            return std::unexpected { externError(ValidationErrorCode::ConflictingExternName,
+                                                 kind,
+                                                 name.name,
+                                                 std::move(*previous),
+                                                 position) };
+        return {};
+    }
+
+    Result<void> ComponentValidator::implements(binary::NameAttributes const& name,
+                                                std::optional<ExternName> const& parsed,
+                                                types::ExternType const& type,
+                                                DefinitionPosition position) const
+    {
+        // validate_extern's implements arm (component.rs:4757-4783): a bare plain name, an instance,
+        // and an interface name implemented, its version valid. A name whose version is invalid is an
+        // interface name, so not plain.
+        if (!parsed || parsed->kind != NameKind::Plain)
+            return std::unexpected { namedError(
+                ValidationErrorCode::ImplementsNameNotPlain, name.name, {}, position) };
+        if (!std::holds_alternative<types::InstanceTypeId>(type))
+            return std::unexpected { namedError(
+                ValidationErrorCode::ImplementsNotInstance, name.name, {}, position) };
+        auto const implemented =
+            std::ranges::find_if(name.attributes, [](binary::Attribute const& attribute) {
+                return std::holds_alternative<binary::Implements>(attribute);
+            });
+        Require(implemented != name.attributes.end());
+        auto const& interfaceName = std::get<binary::Implements>(*implemented).interfaceName;
+        auto const interface = parseExternName(interfaceName, _features);
+        if (!interface && interface.error().code != NameErrorCode::InvalidVersion)
+            return std::unexpected { namedError(ValidationErrorCode::InvalidImplementsName,
+                                                interfaceName,
+                                                nameErrorMessage(interface.error()),
+                                                position) };
+        if (interface && interface->kind != NameKind::Interface)
+            return std::unexpected { namedError(
+                ValidationErrorCode::ImplementsNotInterface, interfaceName, {}, position) };
+        if (!interface)
+            return std::unexpected { namedError(ValidationErrorCode::InvalidImplementsVersion,
+                                                interfaceName,
+                                                nameErrorMessage(interface.error()),
+                                                position) };
         return {};
     }
 
@@ -1163,6 +1312,13 @@ std::string specMessage(ValidationError const& error)
             return std::vformat(row.text, std::make_format_args(DeferredFormTable[subject].text));
         }
         case ValidationErrorDetail::Refusal: return error.name;
+        case ValidationErrorDetail::Extern: {
+            Require(subject < ExternKindWords.size());
+            return std::vformat(row.text,
+                                std::make_format_args(ExternKindWords[subject], error.name, error.previous));
+        }
+        case ValidationErrorDetail::Named:
+            return std::vformat(row.text, std::make_format_args(error.name, error.previous));
         case ValidationErrorDetail::Label: {
             Require(subject < LabelKindTable.size());
             auto const& kind = LabelKindTable[subject];

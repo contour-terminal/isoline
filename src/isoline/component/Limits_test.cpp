@@ -51,6 +51,8 @@ TEST_CASE("Limits.valuesReadTheirField")
     limits.maxResourceTypes = 12;
     limits.maxHandles = 13;
     limits.maxLiveValueBytes = 14;
+    limits.maxSubtypingSteps = 15;
+    limits.maxSubstitutedTypes = 16;
     for (auto const& row: LimitTable)
         CHECK(limitValue(limits, row.limit) == static_cast<uint64_t>(row.limit) + 1);
 

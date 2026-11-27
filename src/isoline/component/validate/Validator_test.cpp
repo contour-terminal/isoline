@@ -870,10 +870,10 @@ TEST_CASE("Validator.canonRefusalsAreWasmToolsTexts")
           == "canonical option `callback` requires the component model async feature");
 }
 
-TEST_CASE("Validator.externNamesDeferred")
+TEST_CASE("Validator.externNames")
 {
-    // The externname grammar beyond a plain label is Task 5's, strong uniqueness Task 7's: until
-    // then both refuse, never accept unchecked.
+    // validate_extern's name rules, in wasm-tools 1.263.0's words (measured with `wasm-tools validate`
+    // where the suites have no vector).
     auto const importing = [](std::vector<std::string> names) {
         auto builder = ComponentBuilder {};
         auto const function = builder.type(TypeDefinition { .type = functionOf({}) });
@@ -882,17 +882,49 @@ TEST_CASE("Validator.externNamesDeferred")
                 builder.import(std::move(name), ExternDesc { .sort = Sort::Func, .index = function });
         return builder.pool();
     };
-    CHECK(accepted(importing({ "a", "b-c", "d1" })));
-    for (auto const& name: { "A b", "wasi:cli/run@0.2.0", "[method]r.f", "" })
+    CHECK(accepted(
+        importing({ "a", "b-c", "d1", "XY", "wasi:cli/run@0.2.0", "wasi:cli/run", "ns:p/i@1.0.0-rc.1+b" })));
+    struct Vector
+    {
+        std::string_view name;
+        std::string_view message;
+    };
+    for (auto const& [name, message]: std::vector<Vector> {
+             { .name = "A b",
+               .message = "import name `A b` is not a valid extern name\n`A b` is not in kebab case" },
+             { .name = "", .message = "import name `` is not a valid extern name\n`` is not in kebab case" },
+             { .name = "a:B/c",
+               .message = "import name `a:B/c` is not a valid extern name\n"
+                          "character `B` is not lowercase in package name/namespace" },
+             { .name = "a:b/c/d",
+               .message =
+                   "import name `a:b/c/d` is not a valid extern name\ntrailing characters found: `/d`" },
+             { .name = "a:b/c@0.3",
+               .message =
+                   "import name `a:b/c@0.3` is not valid\n"
+                   "invalid interface version: unexpected end of input while parsing minor version number" },
+             { .name = "[method]r.f",
+               .message =
+                   "not yet validated: extern names of `[constructor]`, `[method]` or `[static]` functions" },
+             { .name = "[get]a",
+               .message = "import name `[get]a` is not a valid extern name\n"
+                          "`[get]` and `[set]` names require the component model accessors feature" },
+         })
     {
         INFO(name);
-        auto const refused = refusal(importing({ name }));
-        CHECK(refused.code == ValidationErrorCode::NotYetValidated);
-        CHECK(specMessage(refused) == "not yet validated: extern names other than a plain label");
+        CHECK(refusalText(importing({ std::string { name } })) == message);
     }
+    auto const accessor = refusal(importing({ "[set]a" }));
+    CHECK(accessor.code == ValidationErrorCode::InvalidExternName);
+    CHECK(accessor.disabled == ComponentFeature::GettersSetters);
+
+    // Strong uniqueness, among the imports (naming.wast; names.rs's vectors).
     auto const duplicate = refusal(importing({ "a-b", "AB" }));
-    CHECK(specMessage(duplicate) == "not yet validated: extern names not strongly unique");
+    CHECK(specMessage(duplicate) == "import name `AB` conflicts with previous name `a-b`");
     CHECK(duplicate.position.definition == 2);
+    CHECK(refusalText(importing({ "a:b/c", "a:b/C" }))
+          == "import name `a:b/C` conflicts with previous name `a:b/c`");
+    CHECK(accepted(importing({ "a:b/c@1.0.0", "a:b/c@2.0.0", "a:b/c" })));
 
     // Imports and exports are named apart: a component type may import and export "a".
     auto declarations = TypeScopeBuilder {};
@@ -908,7 +940,52 @@ TEST_CASE("Validator.externNamesDeferred")
     std::ignore = twice.exportItem("A", ExternDesc { .sort = Sort::Func, .index = twiceFunction });
     auto exported = ComponentBuilder {};
     std::ignore = exported.instanceType(std::move(twice));
-    CHECK(specMessage(refusal(exported.pool())) == "not yet validated: extern names not strongly unique");
+    CHECK(refusalText(exported.pool()) == "export name `A` conflicts with previous name `a`");
+}
+
+TEST_CASE("Validator.implements")
+{
+    // implements.wast's vectors (wasm-tools 1.263.0 tests/cli/component-model/implements.wast:35-99).
+    auto const features = ComponentFeatureSet::defaults().with(ComponentFeature::Implements);
+    auto const implementing = [](std::vector<std::pair<std::string, std::string>> names,
+                                 Sort sort = Sort::Instance) {
+        auto builder = ComponentBuilder {};
+        auto const type = sort == Sort::Instance ? builder.instanceType(TypeScopeBuilder {})
+                                                 : builder.type(TypeDefinition { .type = functionOf({}) });
+        for (auto& [name, interface]: names)
+        {
+            auto attributes = std::vector<isoline::component::binary::Attribute> {};
+            if (!interface.empty() || name == "empty")
+                attributes.emplace_back(Implements { .interfaceName = interface });
+            std::ignore = builder.definition(isoline::component::binary::ImportDefinition {
+                .name = NameAttributes { .name = name == "empty" ? "a" : name,
+                                         .attributes = std::move(attributes) },
+                .type = ExternDesc { .sort = sort, .index = type } });
+        }
+        return builder.pool();
+    };
+    CHECK(accepted(
+        implementing({ { "a", "a:b/c" }, { "b", "a:b/c" }, { "c", "a:b/c@1.0.0" }, { "a:b/c", "" } }),
+        features));
+    CHECK(refusalText(implementing({ { "a", "not-valid" } }), features)
+          == "name `not-valid` must be an interface");
+    CHECK(refusalText(implementing({ { "empty", "" } }), features)
+          == "`` is not a valid name\n`` is not in kebab case");
+    CHECK(refusalText(implementing({ { "a", "a:b/c" }, { "a", "a:b/c" } }), features)
+          == "import name `a` conflicts with previous name `a`");
+    CHECK(refusalText(implementing({ { "a", "" }, { "a", "a:b/c" } }), features)
+          == "import name `a` conflicts with previous name `a`");
+    CHECK(refusalText(implementing({ { "a", "a:b/c" } }, Sort::Func), features)
+          == "only instances can have an `implements`");
+    CHECK(refusalText(implementing({ { "a1:b/c", "a2:b/c" } }), features)
+          == "name `a1:b/c` is not valid with `implements`");
+    CHECK(refusalText(implementing({ { "a", "a:b/c@0.3" } }), features)
+          == "invalid interface version: unexpected end of input while parsing minor version number");
+    // The grammar comes before every attribute, the version after them.
+    CHECK(refusalText(implementing({ { "A b", "a:b/c" } }))
+          == "import name `A b` is not a valid extern name\n`A b` is not in kebab case");
+    auto const gatedFirst = refusal(implementing({ { "a:b/c@0.3", "a:b/c" } }));
+    CHECK(gatedFirst.disabled == ComponentFeature::Implements);
 }
 
 TEST_CASE("Validator.attributeGateOrder")
@@ -963,9 +1040,15 @@ TEST_CASE("Validator.outerAliasesIntoComponentsDeferred")
           }))
           == deferred);
     CHECK(refusalText(crossing([](ComponentBuilder& builder) {
-              return builder.type(TypeDefinition { .type = functionOf({}) });
+              auto const resource = builder.resource();
+              auto const own = builder.type(defined(OwnType { .resource = resource }));
+              return builder.type(
+                  TypeDefinition { .type = functionOf({ LabeledType { .label = "r", .type = at(own) } }) });
           }))
           == deferred);
+    // A function type holding no handle refers to no resource: its flag says so, computed when added.
+    CHECK(accepted(crossing(
+        [](ComponentBuilder& builder) { return builder.type(TypeDefinition { .type = functionOf({}) }); })));
     CHECK(refusalText(
               crossing([](ComponentBuilder& builder) { return builder.instanceType(TypeScopeBuilder {}); }))
           == deferred);

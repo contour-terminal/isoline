@@ -153,6 +153,49 @@ TEST_CASE("TypeArena.handlesPropagate")
     CHECK_FALSE(holds(arena[arena.primitive(ValueKind::String)].handles, HandleContent::Own));
 }
 
+TEST_CASE("TypeArena.resourceFlags")
+{
+    // Whether a type names a resource is a flag computed when it is added, which substitution and the
+    // outer-alias rule read instead of walking the type.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const resource = arena.newResource(ResourceTypeInfo {});
+    REQUIRE(resource.has_value());
+    auto const own = interned(arena, DefinedType { .kind = ValueKind::Own, .resource = *resource });
+    auto const u32 = arena.primitive(ValueKind::U32);
+    auto const takesOwn = arena.add(FunctionTypeInfo { .params = { { "r", u32 } }, .result = own });
+    auto const takesU32 = arena.add(FunctionTypeInfo { .params = { { "r", u32 } } });
+    REQUIRE(takesOwn.has_value());
+    REQUIRE(takesU32.has_value());
+    CHECK(holds(arena[*takesOwn].handles, HandleContent::Own));
+    CHECK(arena[*takesU32].handles == HandleContent::None);
+    CHECK(arena.namesResource(*takesOwn));
+    CHECK_FALSE(arena.namesResource(*takesU32));
+    CHECK(arena.namesResource(*resource));
+    CHECK_FALSE(arena.namesResource(u32));
+
+    using isoline::component::types::InstanceTypeInfo;
+    using isoline::component::types::ResourcePath;
+    auto const plain = arena.add(InstanceTypeInfo { .exports = { { "f", *takesU32 } } });
+    auto const exportsResource =
+        arena.add(InstanceTypeInfo { .exports = { { "r", TypeExtern { .type = *resource } } } });
+    auto const defines = arena.add(
+        InstanceTypeInfo { .exports = { { "f", *takesU32 } },
+                           .definedResources = { ResourcePath { .resource = *resource, .path = { 0 } } } });
+    REQUIRE(plain.has_value());
+    REQUIRE(exportsResource.has_value());
+    REQUIRE(defines.has_value());
+    CHECK_FALSE(arena.namesResource(*plain));
+    CHECK(arena.namesResource(*exportsResource));
+    CHECK(arena.namesResource(*defines));
+    auto const component =
+        arena.add(ComponentTypeInfo { .imports = { { "i", *plain } }, .exports = { { "f", *takesOwn } } });
+    auto const plainComponent = arena.add(ComponentTypeInfo { .imports = { { "i", *plain } } });
+    REQUIRE(component.has_value());
+    REQUIRE(plainComponent.has_value());
+    CHECK(arena.namesResource(*component));
+    CHECK_FALSE(arena.namesResource(*plainComponent));
+}
+
 TEST_CASE("TypeArena.resourcesAreNominal")
 {
     auto limits = ComponentLimits {};

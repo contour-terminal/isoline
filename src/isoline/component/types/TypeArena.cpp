@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <map>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -67,6 +68,7 @@ TypeArena::TypeArena(ComponentLimits const& limits):
     _maxTypeDepth { limits.maxTypeDepth },
     _maxTypeSize { limits.maxTypeSize },
     _maxResourceTypes { limits.maxResourceTypes },
+    _maxSubstitutedTypes { limits.maxSubstitutedTypes },
     _store { std::make_unique<ValueStore>() },
     _index { StructuralOrder { .store = _store.get() } }
 {
@@ -212,6 +214,12 @@ std::expected<FunctionTypeId, TypeLimitError> TypeArena::add(FunctionTypeInfo ty
     if (!measure)
         return std::unexpected { measure.error() };
     type.measure = *measure;
+    type.handles = HandleContent::None;
+    for (auto const& child: children)
+    {
+        if (child)
+            type.handles = type.handles | (*this)[*child].handles;
+    }
     _functions.push_back(std::move(type));
     return FunctionTypeId { .value = static_cast<uint32_t>(_functions.size() - 1) };
 }
@@ -232,6 +240,29 @@ namespace
         }
         return measure;
     }
+
+    /// Whether any of @p externs names a resource.
+    [[nodiscard]] ResourceReference referencesOf(TypeArena const& arena,
+                                                 std::vector<NamedExtern> const& externs)
+    {
+        for (auto const& entry: externs)
+        {
+            auto const named = std::visit(
+                [&](auto const& alternative) -> bool {
+                    using Alternative = std::remove_cvref_t<decltype(alternative)>;
+                    if constexpr (std::is_same_v<Alternative, ValueExtern>)
+                        return arena.namesResource(alternative.type);
+                    else if constexpr (std::is_same_v<Alternative, TypeExtern>)
+                        return arena.namesResource(alternative.type);
+                    else
+                        return arena.namesResource(alternative);
+                },
+                entry.type);
+            if (named)
+                return ResourceReference::Some;
+        }
+        return ResourceReference::None;
+    }
 } // namespace
 
 std::expected<ComponentTypeId, TypeLimitError> TypeArena::add(ComponentTypeInfo type)
@@ -243,6 +274,10 @@ std::expected<ComponentTypeId, TypeLimitError> TypeArena::add(ComponentTypeInfo 
     if (!measure)
         return std::unexpected { measure.error() };
     type.measure = *measure;
+    type.resources = referencesOf(*this, type.imports) == ResourceReference::Some
+                             || !type.importedResources.empty() || !type.definedResources.empty()
+                         ? ResourceReference::Some
+                         : referencesOf(*this, type.exports);
     _components.push_back(std::move(type));
     return ComponentTypeId { .value = static_cast<uint32_t>(_components.size() - 1) };
 }
@@ -253,6 +288,8 @@ std::expected<InstanceTypeId, TypeLimitError> TypeArena::add(InstanceTypeInfo ty
     if (!measure)
         return std::unexpected { measure.error() };
     type.measure = *measure;
+    type.resources =
+        type.definedResources.empty() ? referencesOf(*this, type.exports) : ResourceReference::Some;
     _instances.push_back(std::move(type));
     return InstanceTypeId { .value = static_cast<uint32_t>(_instances.size() - 1) };
 }
@@ -324,6 +361,240 @@ TypeMeasure TypeArena::measure(ExternType const& type) const
                 return measure(AnyTypeId { entry });
         },
         type);
+}
+
+bool TypeArena::namesResource(AnyTypeId type) const
+{
+    return std::visit(
+        [&](auto const id) -> bool {
+            using Id = std::remove_cvref_t<decltype(id)>;
+            if constexpr (std::is_same_v<Id, TypeId> || std::is_same_v<Id, FunctionTypeId>)
+                return (*this)[id].handles != HandleContent::None;
+            else if constexpr (std::is_same_v<Id, ResourceTypeId>)
+            {
+                std::ignore = (*this)[id];
+                return true;
+            }
+            else
+                return (*this)[id].resources == ResourceReference::Some;
+        },
+        type);
+}
+
+namespace
+{
+    /// The type an extern type names, by which it is rewritten.
+    [[nodiscard]] AnyTypeId namedType(ExternType const& type)
+    {
+        return std::visit(
+            [](auto const& alternative) -> AnyTypeId {
+                using Alternative = std::remove_cvref_t<decltype(alternative)>;
+                if constexpr (std::is_same_v<Alternative, ValueExtern>)
+                    return alternative.type;
+                else if constexpr (std::is_same_v<Alternative, TypeExtern>)
+                    return alternative.type;
+                else
+                    return alternative;
+            },
+            type);
+    }
+
+    /// @p type naming @p replacement in place of the type it named.
+    [[nodiscard]] ExternType renamed(ExternType const& type, AnyTypeId replacement)
+    {
+        return std::visit(
+            [&](auto const& alternative) -> ExternType {
+                using Alternative = std::remove_cvref_t<decltype(alternative)>;
+                if constexpr (std::is_same_v<Alternative, ValueExtern>)
+                    return ValueExtern { .type = std::get<TypeId>(replacement) };
+                else if constexpr (std::is_same_v<Alternative, TypeExtern>)
+                    return TypeExtern { .type = replacement };
+                else
+                    return std::get<Alternative>(replacement);
+            },
+            type);
+    }
+
+    /// The types a type names directly, each of which is rewritten before it.
+    void childrenOf(TypeArena const& arena, AnyTypeId type, std::vector<AnyTypeId>& children)
+    {
+        auto const externs = [&](std::vector<NamedExtern> const& list) {
+            for (auto const& entry: list)
+                children.push_back(namedType(entry.type));
+        };
+        std::visit(
+            [&](auto const id) {
+                using Id = std::remove_cvref_t<decltype(id)>;
+                if constexpr (std::is_same_v<Id, TypeId>)
+                {
+                    for (auto const& child: arena[id].children)
+                    {
+                        if (child)
+                            children.emplace_back(*child);
+                    }
+                }
+                else if constexpr (std::is_same_v<Id, FunctionTypeId>)
+                {
+                    auto const& function = arena[id];
+                    for (auto const& [label, param]: function.params)
+                        children.emplace_back(param);
+                    if (function.result)
+                        children.emplace_back(*function.result);
+                }
+                else if constexpr (std::is_same_v<Id, InstanceTypeId>)
+                    externs(arena[id].exports);
+                else if constexpr (std::is_same_v<Id, ComponentTypeId>)
+                {
+                    externs(arena[id].imports);
+                    externs(arena[id].exports);
+                }
+            },
+            type);
+    }
+
+    /// The resource paths of @p paths, each resource replaced by its image.
+    [[nodiscard]] std::vector<ResourcePath> substitutedPaths(std::vector<ResourcePath> paths,
+                                                             ResourceSubstitution const& substitution)
+    {
+        for (auto& entry: paths)
+            entry.resource = substitution.apply(entry.resource);
+        return paths;
+    }
+} // namespace
+
+std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const& type,
+                                                                ResourceSubstitution const& substitution)
+{
+    // Post-order over an explicit stack: a type is rebuilt once every type it names has its image in
+    // `images`. A type naming no resource is its own image and is never visited, nor is anything
+    // beneath it; a shared type is visited once.
+    if (substitution.size() == 0)
+        return type;
+    auto images = std::map<AnyTypeId, AnyTypeId> {};
+    auto const imageOf = [&](AnyTypeId id) -> std::optional<AnyTypeId> {
+        if (auto const* resource = std::get_if<ResourceTypeId>(&id))
+            return AnyTypeId { substitution.apply(*resource) };
+        if (!namesResource(id))
+            return id;
+        auto const entry = images.find(id);
+        if (entry == images.end())
+            return std::nullopt;
+        return entry->second;
+    };
+    auto const imageExtern = [&](ExternType const& entry) {
+        return renamed(entry, *imageOf(namedType(entry)));
+    };
+    auto const imageExterns = [&](std::vector<NamedExtern> list) {
+        for (auto& entry: list)
+            entry.type = imageExtern(entry.type);
+        return list;
+    };
+    auto const charge = [&]() -> std::expected<void, TypeLimitError> {
+        if (_substitutedTypes >= _maxSubstitutedTypes)
+            return std::unexpected { TypeLimitError { .limit = ComponentLimit::SubstitutedTypes,
+                                                      .value = _maxSubstitutedTypes } };
+        ++_substitutedTypes;
+        return {};
+    };
+    auto const rebuild = [&](AnyTypeId id) -> std::expected<AnyTypeId, TypeLimitError> {
+        if (auto charged = charge(); !charged)
+            return std::unexpected { charged.error() };
+        return std::visit(
+            [&](auto const typed) -> std::expected<AnyTypeId, TypeLimitError> {
+                using Id = std::remove_cvref_t<decltype(typed)>;
+                if constexpr (std::is_same_v<Id, TypeId>)
+                {
+                    auto copy = (*this)[typed];
+                    for (auto& child: copy.children)
+                    {
+                        if (child)
+                            child = std::get<TypeId>(*imageOf(*child));
+                    }
+                    if (copy.resource)
+                        copy.resource = substitution.apply(*copy.resource);
+                    return intern(std::move(copy)).transform([](TypeId added) {
+                        return AnyTypeId { added };
+                    });
+                }
+                else if constexpr (std::is_same_v<Id, FunctionTypeId>)
+                {
+                    auto copy = (*this)[typed];
+                    for (auto& [label, param]: copy.params)
+                        param = std::get<TypeId>(*imageOf(param));
+                    if (copy.result)
+                        copy.result = std::get<TypeId>(*imageOf(*copy.result));
+                    return add(std::move(copy)).transform([](FunctionTypeId added) {
+                        return AnyTypeId { added };
+                    });
+                }
+                else if constexpr (std::is_same_v<Id, InstanceTypeId>)
+                {
+                    auto const& original = (*this)[typed];
+                    auto copy = InstanceTypeInfo {
+                        .exports = imageExterns(original.exports),
+                        .definedResources = substitutedPaths(original.definedResources, substitution),
+                    };
+                    return add(std::move(copy)).transform([](InstanceTypeId added) {
+                        return AnyTypeId { added };
+                    });
+                }
+                else if constexpr (std::is_same_v<Id, ComponentTypeId>)
+                {
+                    auto const& original = (*this)[typed];
+                    auto copy = ComponentTypeInfo {
+                        .imports = imageExterns(original.imports),
+                        .exports = imageExterns(original.exports),
+                        .importedResources = substitutedPaths(original.importedResources, substitution),
+                        .definedResources = substitutedPaths(original.definedResources, substitution),
+                    };
+                    return add(std::move(copy)).transform([](ComponentTypeId added) {
+                        return AnyTypeId { added };
+                    });
+                }
+                else
+                {
+                    Require(false);
+                    return typed;
+                }
+            },
+            id);
+    };
+
+    // Types form a DAG, so a type not yet rebuilt is never on the path to itself: each is expanded
+    // once, and the work is the number of edges among the types naming a resource.
+    struct Pending
+    {
+        AnyTypeId type;
+        std::vector<AnyTypeId> children {};
+        std::size_t next = 0;
+    };
+    auto const pending = [&](AnyTypeId id) {
+        auto entry = Pending { .type = id };
+        childrenOf(*this, id, entry.children);
+        return entry;
+    };
+    auto stack = std::vector<Pending> {};
+    if (auto const root = namedType(type); !imageOf(root))
+        stack.push_back(pending(root));
+    while (!stack.empty())
+    {
+        auto& top = stack.back();
+        while (top.next < top.children.size() && imageOf(top.children[top.next]))
+            ++top.next;
+        if (top.next < top.children.size())
+        {
+            auto const child = top.children[top.next];
+            stack.push_back(pending(child)); // invalidates `top`
+            continue;
+        }
+        auto const current = top.type;
+        stack.pop_back();
+        auto const image = rebuild(current);
+        if (!image)
+            return std::unexpected { image.error() };
+        images.emplace(current, *image);
+    }
+    return imageExtern(type);
 }
 
 } // namespace isoline::component::types
