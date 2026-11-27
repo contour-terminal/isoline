@@ -29,6 +29,7 @@ TEST_CASE("CompileConfig.defaults")
     CHECK(limits.maxFunctionInstructions == 4'000'000);
     CHECK(limits.maxBlockParameters == 100'000);
     CHECK(limits.maxTotalBlockParameters == 4'000'000);
+    CHECK(limits.maxPoolEntries == 4'294'967'295);
     CHECK(limits.artifactBytesPerModuleByte == 4);
     CHECK(limits.artifactBytesFloor == uint64_t { 64 } * 1024);
     auto const config = CompileConfig { TargetDescription {}, ExecutionMode::Production };

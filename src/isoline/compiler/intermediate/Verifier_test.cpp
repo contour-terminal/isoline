@@ -11,6 +11,7 @@
 #include <ranges>
 #include <set>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -21,8 +22,11 @@
 using isoline::compiler::intermediate::BlockId;
 using isoline::compiler::intermediate::BranchTo;
 using isoline::compiler::intermediate::Builder;
+using isoline::compiler::intermediate::ContextValue;
 using isoline::compiler::intermediate::describe;
+using isoline::compiler::intermediate::Extension;
 using isoline::compiler::intermediate::Function;
+using isoline::compiler::intermediate::Hotness;
 using isoline::compiler::intermediate::Operation;
 using isoline::compiler::intermediate::OperationCount;
 using isoline::compiler::intermediate::Type;
@@ -119,6 +123,12 @@ TEST_CASE("Verifier.rejectsEachErrorCode")
                   fixture.builder.ret({});
                   fixture.function.block(fixture.entry).parameters = { .begin = 1, .count = 1 };
               } },
+        { .code = VerifierErrorCode::UnknownHotness,
+          .build =
+              [](Fixture& fixture) {
+                  fixture.builder.ret({});
+                  fixture.function.block(fixture.entry).hotness = static_cast<Hotness>(2);
+              } },
         { .code = VerifierErrorCode::InstructionOutOfBounds,
           .build =
               [](Fixture& fixture) {
@@ -176,6 +186,8 @@ TEST_CASE("Verifier.rejectsEachErrorCode")
               } },
         { .code = VerifierErrorCode::TargetOutOfBounds,
           .build = [](Fixture& fixture) { fixture.builder.jump(BlockId { 50 }, {}); } },
+        { .code = VerifierErrorCode::TargetIsEntry,
+          .build = [](Fixture& fixture) { fixture.builder.jump(fixture.entry, {}); } },
         { .code = VerifierErrorCode::OperandCount,
           .build =
               [](Fixture& fixture) {
@@ -226,6 +238,21 @@ TEST_CASE("Verifier.rejectsEachErrorCode")
                   fixture.builder.jump(target, std::array { wide });
                   fixture.builder.switchTo(target);
                   fixture.builder.ret({});
+              } },
+        { .code = VerifierErrorCode::ReturnsDisagree,
+          .build =
+              [](Fixture& fixture) {
+                  // One arm returns an i32, the other an i64.
+                  auto& builder = fixture.builder;
+                  auto const condition = builder.addParameter(fixture.entry, Type::I32);
+                  auto const left = builder.createBlock();
+                  auto const right = builder.createBlock();
+                  builder.branch(condition, left, {}, right, {});
+                  builder.switchTo(left);
+                  builder.ret(std::array { fixture.i32(1) });
+                  builder.switchTo(right);
+                  builder.ret(std::array {
+                      builder.emit(Operation::I64Const, std::array { Type::I64 }, {}, constant(1))[0] });
               } },
         { .code = VerifierErrorCode::UseNotDominated,
           .build =
@@ -279,7 +306,10 @@ TEST_CASE("Verifier.hostileFunctionsAreRefusedNotRead")
     SECTION("a target that claims 2^32 - 1 arguments")
     {
         auto fixture = Fixture {};
-        fixture.builder.jump(fixture.entry, {});
+        auto const next = fixture.builder.createBlock();
+        fixture.builder.jump(next, {});
+        fixture.builder.switchTo(next);
+        fixture.builder.ret({});
         fixture.function.immediates(fixture.function.instruction(0).immediates)[1] =
             std::numeric_limits<uint32_t>::max();
         CHECK(refusal(fixture.function).code == VerifierErrorCode::OperandCount);
@@ -355,7 +385,8 @@ TEST_CASE("Verifier.hostileFunctionsAreRefusedNotRead")
     {
         auto fixture = Fixture {};
         auto const one = fixture.i32(1);
-        fixture.builder.ret({});
+        auto const two = fixture.i32(2);
+        fixture.builder.ret(std::array { two });
         auto const orphan = fixture.builder.createBlock();
         fixture.builder.switchTo(orphan);
         fixture.builder.ret(std::array { one });
@@ -374,6 +405,7 @@ TEST_CASE("Verifier.everyCodeHasItsExactText")
         { .code = VerifierErrorCode::NoBlocks, .text = "function has no blocks" },
         { .code = VerifierErrorCode::UnknownType, .text = "value of unknown type" },
         { .code = VerifierErrorCode::RangeOutOfBounds, .text = "range out of its pool" },
+        { .code = VerifierErrorCode::UnknownHotness, .text = "block of unknown hotness" },
         { .code = VerifierErrorCode::InstructionOutOfBounds, .text = "instruction index out of bounds" },
         { .code = VerifierErrorCode::InstructionListedTwice, .text = "instruction listed twice" },
         { .code = VerifierErrorCode::UnknownOperation, .text = "unknown operation" },
@@ -384,12 +416,14 @@ TEST_CASE("Verifier.everyCodeHasItsExactText")
         { .code = VerifierErrorCode::ImmediateCount, .text = "immediate count mismatch" },
         { .code = VerifierErrorCode::ImmediateValue, .text = "immediate out of range" },
         { .code = VerifierErrorCode::TargetOutOfBounds, .text = "branch target out of bounds" },
+        { .code = VerifierErrorCode::TargetIsEntry, .text = "branch to the entry block" },
         { .code = VerifierErrorCode::OperandCount, .text = "operand count mismatch" },
         { .code = VerifierErrorCode::OperandType, .text = "operand type mismatch" },
         { .code = VerifierErrorCode::ResultCount, .text = "result count mismatch" },
         { .code = VerifierErrorCode::ResultType, .text = "result type mismatch" },
         { .code = VerifierErrorCode::ArgumentCount, .text = "branch argument count mismatch" },
         { .code = VerifierErrorCode::ArgumentType, .text = "branch argument type mismatch" },
+        { .code = VerifierErrorCode::ReturnsDisagree, .text = "returns disagree" },
         { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
     });
     REQUIRE(expected.size() == VerifierErrorCodeCount);
@@ -399,5 +433,175 @@ TEST_CASE("Verifier.everyCodeHasItsExactText")
         INFO(text);
         CHECK(std::to_underlying(code) == index);
         CHECK(describe(VerifierError { .code = code }) == text);
+    }
+}
+
+namespace
+{
+
+/// One instruction whose immediates disagree with its types, and the code verify() refuses it with.
+struct TypedRow
+{
+    std::string_view name;               ///< What is wrong with it.
+    VerifierErrorCode code;              ///< The refusal.
+    std::function<void(Fixture&)> build; ///< Emits it into the entry block, which it does not end.
+};
+
+/// The immediates of a load of @p size bytes into @p type, extended as @p extension says.
+std::array<uint64_t, 5> loadOf(uint64_t size, Extension extension, Type type)
+{
+    return { 0, 0, size, std::to_underlying(extension), std::to_underlying(type) };
+}
+
+/// A load from a Pointer parameter of the entry with @p immediates, its result of @p type.
+void emitLoad(Fixture& fixture, Type type, std::array<uint64_t, 5> const& immediates)
+{
+    auto const address = fixture.builder.addParameter(fixture.entry, Type::Pointer);
+    std::ignore =
+        fixture.builder.emit(Operation::Load, std::array { type }, std::array { address }, immediates);
+}
+
+/// A store of @p size bytes of a parameter of @p type.
+void emitStore(Fixture& fixture, Type type, uint64_t size)
+{
+    auto const address = fixture.builder.addParameter(fixture.entry, Type::Pointer);
+    auto const value = fixture.builder.addParameter(fixture.entry, type);
+    std::ignore = fixture.builder.emit(
+        Operation::Store, {}, std::array { address, value }, std::array<uint64_t, 3> { 0, 0, size });
+}
+
+/// The immediates of a context value @p value of @p type.
+std::array<uint64_t, 2> contextOf(ContextValue value, Type type)
+{
+    return { std::to_underlying(value), std::to_underlying(type) };
+}
+
+} // namespace
+
+TEST_CASE("Verifier.typedImmediatesFitTheirTypes")
+{
+    // Each row breaks one rule between an instruction's immediates and its types, and nothing else; the
+    // last section accepts the cases at the edges of those rules.
+    auto const rows = std::vector<TypedRow> {
+        { .name = "memory_size of an f32",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) {
+                  std::ignore = fixture.builder.emit(
+                      Operation::MemorySize, std::array { Type::F32 }, {}, std::array<uint64_t, 2> { 0, 2 });
+              } },
+        { .name = "table_size of a ref",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) {
+                  std::ignore = fixture.builder.emit(
+                      Operation::TableSize, std::array { Type::Ref }, {}, std::array<uint64_t, 2> { 0, 4 });
+              } },
+        { .name = "load_global of a pointer",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) {
+                  std::ignore = fixture.builder.emit(Operation::LoadGlobal,
+                                                     std::array { Type::Pointer },
+                                                     {},
+                                                     std::array<uint64_t, 2> { 0, 5 });
+              } },
+        { .name = "an 8-byte load into an i32",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) { emitLoad(fixture, Type::I32, loadOf(8, Extension::Zero, Type::I32)); } },
+        { .name = "a 4-byte load into an f64",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) { emitLoad(fixture, Type::F64, loadOf(4, Extension::Zero, Type::F64)); } },
+        { .name = "a sign-extending 4-byte load into an f64",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) { emitLoad(fixture, Type::F64, loadOf(4, Extension::Sign, Type::F64)); } },
+        { .name = "a sign-extending load of an i32's full width",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) { emitLoad(fixture, Type::I32, loadOf(4, Extension::Sign, Type::I32)); } },
+        { .name = "a load into a ref",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) { emitLoad(fixture, Type::Ref, loadOf(8, Extension::Zero, Type::Ref)); } },
+        { .name = "a 2-byte store of an f64",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build = [](Fixture& fixture) { emitStore(fixture, Type::F64, 2); } },
+        { .name = "an 8-byte store of an i32",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build = [](Fixture& fixture) { emitStore(fixture, Type::I32, 8); } },
+        { .name = "a store of a ref",
+          .code = VerifierErrorCode::OperandType,
+          .build = [](Fixture& fixture) { emitStore(fixture, Type::Ref, 8); } },
+        { .name = "load_context of the step countdown as a pointer",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) {
+                  std::ignore = fixture.builder.emit(Operation::LoadContext,
+                                                     std::array { Type::Pointer },
+                                                     {},
+                                                     contextOf(ContextValue::StepCountdown, Type::Pointer));
+              } },
+        { .name = "store_context of memory 0's base",
+          .code = VerifierErrorCode::ImmediateValue,
+          .build =
+              [](Fixture& fixture) {
+                  auto const base = fixture.builder.addParameter(fixture.entry, Type::Pointer);
+                  std::ignore = fixture.builder.emit(
+                      Operation::StoreContext,
+                      {},
+                      std::array { base },
+                      std::array<uint64_t, 1> { std::to_underlying(ContextValue::Memory0Base) });
+              } },
+        { .name = "store_context of an i32 countdown",
+          .code = VerifierErrorCode::OperandType,
+          .build =
+              [](Fixture& fixture) {
+                  std::ignore = fixture.builder.emit(
+                      Operation::StoreContext,
+                      {},
+                      std::array { fixture.i32(1) },
+                      std::array<uint64_t, 1> { std::to_underlying(ContextValue::StepCountdown) });
+              } },
+    };
+    for (auto const& row: rows)
+    {
+        INFO(row.name);
+        auto fixture = Fixture {};
+        row.build(fixture);
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == row.code);
+    }
+    SECTION("the edges of every rule are accepted")
+    {
+        auto fixture = Fixture {};
+        emitLoad(fixture, Type::I32, loadOf(1, Extension::Sign, Type::I32));
+        emitLoad(fixture, Type::I64, loadOf(8, Extension::Zero, Type::I64));
+        emitLoad(fixture, Type::F32, loadOf(4, Extension::Zero, Type::F32));
+        emitStore(fixture, Type::I64, 1);
+        emitStore(fixture, Type::F64, 8);
+        std::ignore = fixture.builder.emit(
+            Operation::MemorySize, std::array { Type::I64 }, {}, std::array<uint64_t, 2> { 0, 1 });
+        std::ignore = fixture.builder.emit(
+            Operation::LoadGlobal, std::array { Type::Ref }, {}, std::array<uint64_t, 2> { 0, 4 });
+        std::ignore = fixture.builder.emit(Operation::LoadContext,
+                                           std::array { Type::Pointer },
+                                           {},
+                                           contextOf(ContextValue::Memory0Base, Type::Pointer));
+        auto const countdown = fixture.builder.emit(Operation::LoadContext,
+                                                    std::array { Type::I64 },
+                                                    {},
+                                                    contextOf(ContextValue::StepCountdown, Type::I64))[0];
+        std::ignore =
+            fixture.builder.emit(Operation::StoreContext,
+                                 {},
+                                 std::array { countdown },
+                                 std::array<uint64_t, 1> { std::to_underlying(ContextValue::StepCountdown) });
+        fixture.builder.ret({});
+        auto const verified = verify(fixture.function);
+        INFO((verified ? std::string {} : describe(verified.error())));
+        CHECK(verified.has_value());
     }
 }

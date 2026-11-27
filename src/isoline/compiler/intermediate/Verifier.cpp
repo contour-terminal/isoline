@@ -42,55 +42,31 @@ namespace
         }
     };
 
-    /// The types an OperandType admits, as a mask over Type's enumerators.
+    /// The types an OperandType admits.
     struct OperandTypeRow
     {
         OperandType type; ///< The operand type; equal to the row's index.
-        uint8_t admits;   ///< Bit t set when Type t is admitted; 0 for SameAsOperand0, which is no set.
+        TypeMask admits;  ///< The types it admits; none for SameAsOperand0, which is no set.
     };
-
-    /// The bit of @p type in an OperandTypeRow's mask.
-    [[nodiscard]] constexpr uint8_t bitOf(Type type) noexcept
-    {
-        return static_cast<uint8_t>(1U << std::to_underlying(type));
-    }
 
     /// Every OperandType, in order.
     constexpr auto OperandTypeTable = std::to_array<OperandTypeRow>({
-        { .type = OperandType::I32, .admits = bitOf(Type::I32) },
-        { .type = OperandType::I64, .admits = bitOf(Type::I64) },
-        { .type = OperandType::F32, .admits = bitOf(Type::F32) },
-        { .type = OperandType::F64, .admits = bitOf(Type::F64) },
-        { .type = OperandType::Ref, .admits = bitOf(Type::Ref) },
-        { .type = OperandType::Pointer, .admits = bitOf(Type::Pointer) },
-        { .type = OperandType::Integer, .admits = static_cast<uint8_t>(bitOf(Type::I32) | bitOf(Type::I64)) },
-        { .type = OperandType::Float, .admits = static_cast<uint8_t>(bitOf(Type::F32) | bitOf(Type::F64)) },
-        { .type = OperandType::Any, .admits = static_cast<uint8_t>((1U << TypeTable.size()) - 1) },
+        { .type = OperandType::I32, .admits = maskOf(Type::I32) },
+        { .type = OperandType::I64, .admits = maskOf(Type::I64) },
+        { .type = OperandType::F32, .admits = maskOf(Type::F32) },
+        { .type = OperandType::F64, .admits = maskOf(Type::F64) },
+        { .type = OperandType::Ref, .admits = maskOf(Type::Ref) },
+        { .type = OperandType::Pointer, .admits = maskOf(Type::Pointer) },
+        { .type = OperandType::Integer, .admits = IndexTypes },
+        { .type = OperandType::Float,
+          .admits = static_cast<TypeMask>(maskOf(Type::F32) | maskOf(Type::F64)) },
+        { .type = OperandType::Any, .admits = AnyType },
         { .type = OperandType::SameAsOperand0, .admits = 0 },
     });
     static_assert(detail::isInEnumeratorOrder(OperandTypeTable,
                                               [](OperandTypeRow const& row) { return row.type; })
                       && OperandTypeTable.back().type == OperandType::SameAsOperand0,
                   "OperandTypeTable must hold one row per OperandType, at the index of its enumerator");
-
-    /// The Type a single-result rule fixes, for the rules that fix one.
-    [[nodiscard]] constexpr std::optional<Type> fixedTypeOf(ResultRule rule) noexcept
-    {
-        switch (rule)
-        {
-            case ResultRule::I32: return Type::I32;
-            case ResultRule::I64: return Type::I64;
-            case ResultRule::F32: return Type::F32;
-            case ResultRule::F64: return Type::F64;
-            case ResultRule::Ref: return Type::Ref;
-            case ResultRule::Pointer: return Type::Pointer;
-            case ResultRule::None:
-            case ResultRule::SameAsOperand0:
-            case ResultRule::FromImmediate:
-            case ResultRule::Multiple: return std::nullopt;
-        }
-        return std::nullopt;
-    }
 
     /// Whether @p begin + @p count stays within a pool of @p size, computed without wrapping.
     [[nodiscard]] constexpr bool fits(uint32_t begin, uint32_t count, std::size_t size) noexcept
@@ -151,6 +127,8 @@ namespace
                     if (_function.instruction(index).operation != Operation::Removed)
                         if (auto checked = checkRow(index); !checked)
                             return fault(checked.error(), block, index);
+            if (auto agreed = checkReturns(); !agreed)
+                return agreed;
             return checkDominance();
         }
 
@@ -187,6 +165,8 @@ namespace
             auto const& block = _function.block(blockId);
             if (!fits(block.parameters.begin, block.parameters.count, _function.operandPoolSize()))
                 return fault(VerifierErrorCode::RangeOutOfBounds, blockId, std::nullopt);
+            if (std::to_underlying(block.hotness) > std::to_underlying(Hotness::Cold))
+                return fault(VerifierErrorCode::UnknownHotness, blockId, std::nullopt);
             for (auto const parameter: _function.operands(block.parameters))
                 if (auto defined = define(parameter, blockIndex, 0); !defined)
                     return fault(defined.error(), blockId, std::nullopt);
@@ -245,6 +225,7 @@ namespace
                     return std::unexpected { VerifierErrorCode::UndefinedValue };
             return checkImmediates(instruction).and_then([&](uint64_t arguments) {
                 return checkOperands(instruction, arguments)
+                    .and_then([&] { return checkTypedImmediates(instruction); })
                     .and_then([&] { return checkResults(instruction); })
                     .and_then([&] { return checkArguments(instruction); });
             });
@@ -272,6 +253,8 @@ namespace
                     return std::unexpected { VerifierErrorCode::ImmediateValue };
                 if (field == ImmediateField::Target && value >= _function.blockCount())
                     return std::unexpected { VerifierErrorCode::TargetOutOfBounds };
+                if (field == ImmediateField::Target && value == 0)
+                    return std::unexpected { VerifierErrorCode::TargetIsEntry };
                 if (field == ImmediateField::ArgumentCount)
                     arguments += value;
             }
@@ -301,9 +284,61 @@ namespace
                     if (type != _function.typeOf(operands[0]))
                         return std::unexpected { VerifierErrorCode::OperandType };
                 }
-                else if ((OperandTypeTable[std::to_underlying(expected)].admits & bitOf(type)) == 0)
+                else if (!holds(OperandTypeTable[std::to_underlying(expected)].admits, type))
                     return std::unexpected { VerifierErrorCode::OperandType };
             }
+            return {};
+        }
+
+        /// The immediate of @p field in @p instruction, which its schema holds among its fixed fields.
+        /// @return Its value; none when the schema has no such fixed field.
+        [[nodiscard]] std::optional<uint64_t> immediateOf(Instruction const& instruction,
+                                                          ImmediateField field) const
+        {
+            auto const& fields = immediateSchemaRow(operationRow(instruction.operation).immediates).fixed;
+            auto const found = std::ranges::find(fields, field);
+            if (found == fields.end())
+                return std::nullopt;
+            return _function.immediates(
+                instruction.immediates)[static_cast<std::size_t>(found - fields.begin())];
+        }
+
+        /// What the immediates must agree on with the instruction's types: a `type` immediate within the
+        /// schema's types; a `field` immediate's ContextValue as the `type` immediate, or, without one, as
+        /// the stored operand, which must be a ContextValue generated code writes; an access's `size` at
+        /// most its type's width, exactly it for a float, and a sign extension only when narrower.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> checkTypedImmediates(
+            Instruction const& instruction) const
+        {
+            auto const& schema = immediateSchemaRow(operationRow(instruction.operation).immediates);
+            auto const operands = _function.operands(instruction.operands);
+            auto const type = immediateOf(instruction, ImmediateField::Type).transform([](uint64_t value) {
+                return static_cast<Type>(value);
+            });
+            if (type && !holds(schema.types, *type))
+                return std::unexpected { VerifierErrorCode::ImmediateValue };
+            if (auto const field = immediateOf(instruction, ImmediateField::Field))
+            {
+                auto const& context = contextValueRow(static_cast<ContextValue>(*field));
+                if (type && *type != context.type)
+                    return std::unexpected { VerifierErrorCode::ImmediateValue };
+                if (!type && context.access != ContextAccess::ReadWrite)
+                    return std::unexpected { VerifierErrorCode::ImmediateValue };
+                if (!type && _function.typeOf(operands[0]) != context.type)
+                    return std::unexpected { VerifierErrorCode::OperandType };
+            }
+            if (schema.width == AccessWidth::None)
+                return {};
+            auto const accessType =
+                schema.width == AccessWidth::OfType ? *type : _function.typeOf(operands[1]);
+            if (!holds(NumberTypes, accessType))
+                return std::unexpected { VerifierErrorCode::OperandType };
+            auto const size = immediateOf(instruction, ImmediateField::Size).value_or(0);
+            auto const bytes = typeRow(accessType).bytes;
+            auto const isSignExtended = immediateOf(instruction, ImmediateField::Extension)
+                                        == std::optional { uint64_t { std::to_underlying(Extension::Sign) } };
+            if (size > bytes || (isFloat(accessType) && size != bytes) || (isSignExtended && size == bytes))
+                return std::unexpected { VerifierErrorCode::ImmediateValue };
             return {};
         }
 
@@ -367,6 +402,31 @@ namespace
             });
             if (argumentFault)
                 return std::unexpected { *argumentFault };
+            return {};
+        }
+
+        /// Whether every return returns as many values as the first, in block order, of the same types.
+        [[nodiscard]] std::expected<void, VerifierError> checkReturns() const
+        {
+            auto first = std::optional<std::span<ValueId const>> {};
+            for (auto const block: blocksOf(_function))
+                for (auto const index: _function.block(block).instructions)
+                {
+                    auto const& instruction = _function.instruction(index);
+                    if (instruction.operation != Operation::Return)
+                        continue;
+                    auto const values = _function.operands(instruction.operands);
+                    if (!first)
+                    {
+                        first = values;
+                        continue;
+                    }
+                    auto const sameType = [this](ValueId lhs, ValueId rhs) {
+                        return _function.typeOf(lhs) == _function.typeOf(rhs);
+                    };
+                    if (!std::ranges::equal(*first, values, sameType))
+                        return fault(VerifierErrorCode::ReturnsDisagree, block, index);
+                }
             return {};
         }
 

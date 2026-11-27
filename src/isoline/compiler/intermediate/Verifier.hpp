@@ -26,6 +26,7 @@ enum class VerifierErrorCode : uint8_t
     NoBlocks,               ///< The function has no entry block.
     UnknownType,            ///< A value's type is no Type enumerator.
     RangeOutOfBounds,       ///< A block's or instruction's range leaves its pool.
+    UnknownHotness,         ///< A block's hotness is no Hotness enumerator.
     InstructionOutOfBounds, ///< A block lists an instruction index past the function's.
     InstructionListedTwice, ///< An instruction is listed twice, in one block or two.
     UnknownOperation,       ///< An instruction's operation is no Operations.def row.
@@ -36,12 +37,14 @@ enum class VerifierErrorCode : uint8_t
     ImmediateCount,         ///< An instruction's immediates do not fit its row's schema.
     ImmediateValue,         ///< An immediate lies outside its field's values.
     TargetOutOfBounds,      ///< A branch target is past the function's blocks.
+    TargetIsEntry,          ///< A branch targets the entry block, whose parameters are the function's.
     OperandCount,           ///< An instruction's operands do not number what its row and targets say.
     OperandType,            ///< An operand's type is not its row's.
     ResultCount,            ///< An instruction's results do not number what its row says.
     ResultType,             ///< A result's type, or the instruction's type, is not its row's.
     ArgumentCount,          ///< A target is passed more or fewer arguments than it has parameters.
     ArgumentType,           ///< An argument's type is not its parameter's.
+    ReturnsDisagree,        ///< Two returns differ in their values' count or types.
     UseNotDominated,        ///< A value is used where its definition does not dominate the use.
 };
 
@@ -63,6 +66,7 @@ inline constexpr auto VerifierErrorTable = std::to_array<VerifierErrorRow>({
     { .code = VerifierErrorCode::NoBlocks, .text = "function has no blocks" },
     { .code = VerifierErrorCode::UnknownType, .text = "value of unknown type" },
     { .code = VerifierErrorCode::RangeOutOfBounds, .text = "range out of its pool" },
+    { .code = VerifierErrorCode::UnknownHotness, .text = "block of unknown hotness" },
     { .code = VerifierErrorCode::InstructionOutOfBounds, .text = "instruction index out of bounds" },
     { .code = VerifierErrorCode::InstructionListedTwice, .text = "instruction listed twice" },
     { .code = VerifierErrorCode::UnknownOperation, .text = "unknown operation" },
@@ -73,12 +77,14 @@ inline constexpr auto VerifierErrorTable = std::to_array<VerifierErrorRow>({
     { .code = VerifierErrorCode::ImmediateCount, .text = "immediate count mismatch" },
     { .code = VerifierErrorCode::ImmediateValue, .text = "immediate out of range" },
     { .code = VerifierErrorCode::TargetOutOfBounds, .text = "branch target out of bounds" },
+    { .code = VerifierErrorCode::TargetIsEntry, .text = "branch to the entry block" },
     { .code = VerifierErrorCode::OperandCount, .text = "operand count mismatch" },
     { .code = VerifierErrorCode::OperandType, .text = "operand type mismatch" },
     { .code = VerifierErrorCode::ResultCount, .text = "result count mismatch" },
     { .code = VerifierErrorCode::ResultType, .text = "result type mismatch" },
     { .code = VerifierErrorCode::ArgumentCount, .text = "branch argument count mismatch" },
     { .code = VerifierErrorCode::ArgumentType, .text = "branch argument type mismatch" },
+    { .code = VerifierErrorCode::ReturnsDisagree, .text = "returns disagree" },
     { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
 });
 
@@ -108,12 +114,16 @@ struct VerifierError
 
 /// Whether @p function is well-formed: every range within its pool and every index within the function;
 /// each value defined once and every definition dominating its uses (a block parameter at its block's
-/// entry, a result just after its instruction); each block ending in one terminator; each instruction's
-/// operands, results and immediates as many and of the types and values its row says; each target passed
-/// as many arguments as it has parameters, of their types. Removed instructions are skipped.
+/// entry, a result just after its instruction); each block of a known hotness and ending in one
+/// terminator; each instruction's operands, results and immediates as many and of the types and values
+/// its row says, a `type` immediate within its schema's types and a `field` immediate's ContextValue
+/// typed as its row says, an access's `size` fitting its type (at most as wide, a float exactly as wide,
+/// a sign extension only when narrower); each target a block other than the entry, passed as many
+/// arguments as it has parameters, of their types; every return of the same values' types. Removed
+/// instructions are skipped.
 /// @param function The function, however it was built.
 /// @return Nothing; or the first fault: every block's structure is checked before any instruction's row,
-///         and every row before dominance.
+///         every row before the returns' agreement, and that before dominance.
 [[nodiscard]] std::expected<void, VerifierError> verify(Function const& function);
 
 } // namespace isoline::compiler::intermediate

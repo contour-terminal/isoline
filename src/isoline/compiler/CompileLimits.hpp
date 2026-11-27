@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 namespace isoline::compiler
 {
@@ -28,6 +29,10 @@ struct CompileLimits
     /// The most block parameters a function may take over all its blocks, the inner loops' merges
     /// into their parents counted, refused TooManyBlockParameters.
     uint64_t maxTotalBlockParameters = 4'000'000;
+    /// The most entries a function's IR operand pool, or its immediate pool, may hold (a call's
+    /// arguments, a branch's, a br_table's targets), refused PoolTooLarge. The default is what a 32-bit
+    /// pool index addresses (intermediate::MaxPoolEntries), and nothing larger is honoured.
+    uint64_t maxPoolEntries = std::numeric_limits<uint32_t>::max();
 
     /// The artifact's cap per byte of the module (ValidatedModule's source bytes), checked after each
     /// function, refused ArtifactTooLarge: the module's code may not exceed

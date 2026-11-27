@@ -17,13 +17,10 @@ namespace isoline::compiler::intermediate
 
 namespace
 {
-    /// An entry of a per-block or per-number array that names nothing.
-    constexpr auto Nothing = std::numeric_limits<uint32_t>::max();
-
     /// @p value as a count or index of a graph, which stays below 2^32 (Require).
     [[nodiscard]] uint32_t narrow(std::size_t value) noexcept
     {
-        Require(value < Nothing);
+        Require(value < Unnumbered);
         return static_cast<uint32_t>(value);
     }
 
@@ -97,9 +94,9 @@ ControlFlowGraph controlFlowGraphOf(Function const& function, std::pmr::memory_r
 }
 
 DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_resource& memory):
-    _immediateDominator(graph.blockCount(), Nothing, &memory),
-    _treeEntry(graph.blockCount(), Nothing, &memory),
-    _treeExit(graph.blockCount(), Nothing, &memory),
+    _immediateDominator(graph.blockCount(), Unnumbered, &memory),
+    _treeEntry(graph.blockCount(), Unnumbered, &memory),
+    _treeExit(graph.blockCount(), Unnumbered, &memory),
     _reversePostorder { &memory }
 {
     auto const blockCount = graph.blockCount();
@@ -108,13 +105,13 @@ DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_res
 
     // Depth-first numbering from the entry with an explicit stack: per block its preorder number, per
     // number its block and its parent's number; the postorder on the way out.
-    auto number = std::pmr::vector<uint32_t>(blockCount, Nothing, &memory);
+    auto number = std::pmr::vector<uint32_t>(blockCount, Unnumbered, &memory);
     auto vertex = std::pmr::vector<uint32_t> { &memory };
     auto parent = std::pmr::vector<uint32_t> { &memory };
     auto stack = std::pmr::vector<Frame> { &memory };
     number[0] = 0;
     vertex.push_back(0);
-    parent.push_back(Nothing);
+    parent.push_back(Unnumbered);
     stack.push_back(Frame { .block = 0, .next = 0 });
     while (!stack.empty())
     {
@@ -127,7 +124,7 @@ DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_res
             continue;
         }
         auto const successor = std::to_underlying(successors[top.next++]);
-        if (number[successor] != Nothing)
+        if (number[successor] != Unnumbered)
             continue;
         number[successor] = narrow(vertex.size());
         parent.push_back(number[top.block]);
@@ -141,10 +138,10 @@ DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_res
     auto const count = narrow(vertex.size());
     auto semi = std::pmr::vector<uint32_t>(count, 0, &memory);
     auto label = std::pmr::vector<uint32_t>(count, 0, &memory);
-    auto ancestor = std::pmr::vector<uint32_t>(count, Nothing, &memory);
-    auto idom = std::pmr::vector<uint32_t>(count, Nothing, &memory);
-    auto bucketHead = std::pmr::vector<uint32_t>(count, Nothing, &memory);
-    auto bucketNext = std::pmr::vector<uint32_t>(count, Nothing, &memory);
+    auto ancestor = std::pmr::vector<uint32_t>(count, Unnumbered, &memory);
+    auto idom = std::pmr::vector<uint32_t>(count, Unnumbered, &memory);
+    auto bucketHead = std::pmr::vector<uint32_t>(count, Unnumbered, &memory);
+    auto bucketNext = std::pmr::vector<uint32_t>(count, Unnumbered, &memory);
     auto path = std::pmr::vector<uint32_t> { &memory };
     for (auto const index: std::views::iota(uint32_t { 0 }, count))
     {
@@ -152,11 +149,11 @@ DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_res
         label[index] = index;
     }
     auto const evaluate = [&](uint32_t node) {
-        if (ancestor[node] == Nothing)
+        if (ancestor[node] == Unnumbered)
             return node;
         path.clear();
         auto walk = node;
-        while (ancestor[ancestor[walk]] != Nothing)
+        while (ancestor[ancestor[walk]] != Unnumbered)
         {
             path.push_back(walk);
             walk = ancestor[walk];
@@ -175,7 +172,7 @@ DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_res
         for (auto const predecessor: graph.predecessors(BlockId { vertex[node] }))
         {
             auto const from = number[std::to_underlying(predecessor)];
-            if (from == Nothing)
+            if (from == Unnumbered)
                 continue; // not reachable: no path from the entry runs through it
             auto const candidate = evaluate(from);
             semi[node] = std::min(semi[node], semi[candidate]);
@@ -185,13 +182,13 @@ DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_res
         auto const up = parent[node];
         ancestor[node] = up;
         auto member = bucketHead[up];
-        while (member != Nothing)
+        while (member != Unnumbered)
         {
             auto const candidate = evaluate(member);
             idom[member] = semi[candidate] < semi[member] ? candidate : up;
             member = bucketNext[member];
         }
-        bucketHead[up] = Nothing;
+        bucketHead[up] = Unnumbered;
     }
     for (auto const node: std::views::iota(uint32_t { 1 }, count))
         if (idom[node] != semi[node])
@@ -230,14 +227,14 @@ DominatorTree::DominatorTree(ControlFlowGraph const& graph, std::pmr::memory_res
 bool DominatorTree::isReachable(BlockId block) const noexcept
 {
     Require(std::to_underlying(block) < _treeEntry.size());
-    return _treeEntry[std::to_underlying(block)] != Nothing;
+    return _treeEntry[std::to_underlying(block)] != Unnumbered;
 }
 
 std::optional<BlockId> DominatorTree::immediateDominator(BlockId block) const noexcept
 {
     Require(std::to_underlying(block) < _immediateDominator.size());
     auto const dominator = _immediateDominator[std::to_underlying(block)];
-    if (dominator == Nothing)
+    if (dominator == Unnumbered)
         return std::nullopt;
     return BlockId { dominator };
 }
@@ -256,9 +253,9 @@ bool DominatorTree::dominates(BlockId dominator, BlockId dominated) const noexce
 LoopNesting::LoopNesting(ControlFlowGraph const& graph,
                          DominatorTree const& dominators,
                          std::pmr::memory_resource& memory):
-    _innermostLoop(graph.blockCount(), None, &memory),
-    _parentLoop(graph.blockCount(), None, &memory),
-    _loopEnd(graph.blockCount(), None, &memory)
+    _innermostLoop(graph.blockCount(), Unnumbered, &memory),
+    _parentLoop(graph.blockCount(), Unnumbered, &memory),
+    _loopEnd(graph.blockCount(), Unnumbered, &memory)
 {
     // Headers innermost first: a loop's header dominates every header nested in it, so it comes earlier
     // in reverse postorder, and walking that order backwards meets the nested ones first. Each loop's
@@ -266,7 +263,7 @@ LoopNesting::LoopNesting(ControlFlowGraph const& graph,
     // already claimed by a nested loop stands for that loop's outermost loop found so far, whose header
     // the walk continues from. That outermost loop is looked up through a union-find with path
     // compression, so that 100'000 nested loops cost no walk up 100'000 parents each.
-    auto representative = std::pmr::vector<uint32_t>(graph.blockCount(), None, &memory);
+    auto representative = std::pmr::vector<uint32_t>(graph.blockCount(), Unnumbered, &memory);
     auto path = std::pmr::vector<uint32_t> { &memory };
     auto const outermost = [&](uint32_t header) {
         auto root = header;
@@ -302,7 +299,7 @@ LoopNesting::LoopNesting(ControlFlowGraph const& graph,
             auto const member = worklist.back();
             worklist.pop_back();
             auto from = member;
-            if (_innermostLoop[member] == None)
+            if (_innermostLoop[member] == Unnumbered)
                 _innermostLoop[member] = header;
             else
             {
@@ -321,10 +318,10 @@ LoopNesting::LoopNesting(ControlFlowGraph const& graph,
 
     // Each loop's last member: its own blocks', then, innermost first, its nested loops'.
     for (auto const block: std::views::iota(uint32_t { 0 }, graph.blockCount()))
-        if (auto const loop = _innermostLoop[block]; loop != None)
-            _loopEnd[loop] = _loopEnd[loop] == None ? block : std::max(_loopEnd[loop], block);
+        if (auto const loop = _innermostLoop[block]; loop != Unnumbered)
+            _loopEnd[loop] = _loopEnd[loop] == Unnumbered ? block : std::max(_loopEnd[loop], block);
     for (auto const header: headers)
-        if (auto const parent = _parentLoop[header]; parent != None)
+        if (auto const parent = _parentLoop[header]; parent != Unnumbered)
             _loopEnd[parent] = std::max(_loopEnd[parent], _loopEnd[header]);
 }
 
@@ -338,7 +335,7 @@ std::optional<BlockId> LoopNesting::innermostLoop(BlockId block) const noexcept
 {
     Require(std::to_underlying(block) < _innermostLoop.size());
     auto const loop = _innermostLoop[std::to_underlying(block)];
-    if (loop == None)
+    if (loop == Unnumbered)
         return std::nullopt;
     return BlockId { loop };
 }
@@ -347,7 +344,7 @@ std::optional<BlockId> LoopNesting::parentLoop(BlockId header) const noexcept
 {
     Require(isHeader(header));
     auto const parent = _parentLoop[std::to_underlying(header)];
-    if (parent == None)
+    if (parent == Unnumbered)
         return std::nullopt;
     return BlockId { parent };
 }

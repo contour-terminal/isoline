@@ -66,6 +66,9 @@ namespace
         Tag, ///< A tag, defined or imported.
     };
 
+    /// The last Position enumerator, for checking PositionFeatureTable's size.
+    constexpr auto LastPosition = Position::Tag;
+
     /// A position that needs a feature: what checkPosition() refuses when that feature is deferred.
     struct PositionFeatureRow
     {
@@ -84,7 +87,7 @@ namespace
             for (auto const& row: PositionFeatureTable)
                 if (static_cast<std::size_t>(row.position) != index++)
                     return false;
-            return true;
+            return index == static_cast<std::size_t>(LastPosition) + 1;
         }(),
         "PositionFeatureTable must hold one row per Position, at the index of its enumerator");
 

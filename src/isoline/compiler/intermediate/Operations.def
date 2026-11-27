@@ -177,7 +177,7 @@ ISOLINE_OPERATION(CanonicalizeNan, "canonicalize_nan", Float, SameAsOperand0, Pu
 ISOLINE_OPERATION(CheckMemory, "check_memory", CheckMemory, Pointer, MayTrap, MemoryAccess)
 ISOLINE_OPERATION(GuardAddress, "guard_address", Pointer, Pointer, Pure, Offset)
 ISOLINE_OPERATION(Load, "load", Pointer, FromImmediate, ReadsMemory, Load)
-ISOLINE_OPERATION(Store, "store", Store, None, WritesMemory, MemoryAccess)
+ISOLINE_OPERATION(Store, "store", Store, None, WritesMemory, StoreAccess)
 ISOLINE_OPERATION(MemorySize, "memory_size", None, FromImmediate, ReadsContext, MemoryType)
 ISOLINE_OPERATION(MemoryBase, "memory_base", None, Pointer, ReadsContext, Memory)
 ISOLINE_OPERATION(MemoryBound, "memory_bound", None, I64, ReadsContext, Memory)

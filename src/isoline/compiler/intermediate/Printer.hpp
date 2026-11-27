@@ -19,7 +19,7 @@ namespace isoline::compiler::intermediate
 ///
 /// An instruction is its results, its row's text, its operands that no target takes, its targets as
 /// block(arguments) (switch's fallback first), then its other immediates as [name=value, ...], a type
-/// by its name. A removed instruction is `removed`.
+/// and a context value by their names. A removed instruction is `removed`.
 /// @param function A well-formed function (verify()).
 /// @return The text, each line ending in a newline.
 [[nodiscard]] std::string print(Function const& function);

@@ -39,6 +39,7 @@ TEST_CASE("CompileError.tableIsComplete")
         CompileErrorCode::FunctionTooLarge,       CompileErrorCode::TooManyInstructions,
         CompileErrorCode::TooManyBlockParameters, CompileErrorCode::FrameTooLarge,
         CompileErrorCode::ArtifactTooLarge,       CompileErrorCode::BranchOutOfRange,
+        CompileErrorCode::PoolTooLarge,
     };
     for (auto const& row: CompileErrorTable)
     {
@@ -76,6 +77,7 @@ TEST_CASE("CompileError.everyCodeHasItsExactText")
         { .code = CompileErrorCode::FunctionTooLarge, .text = "function too large" },
         { .code = CompileErrorCode::TooManyInstructions, .text = "too many instructions" },
         { .code = CompileErrorCode::TooManyBlockParameters, .text = "too many block parameters" },
+        { .code = CompileErrorCode::PoolTooLarge, .text = "operand pool too large" },
         { .code = CompileErrorCode::BudgetExceeded, .text = "compile memory budget exceeded" },
         { .code = CompileErrorCode::HostMemoryExhausted, .text = "host memory exhausted" },
         { .code = CompileErrorCode::FrameTooLarge, .text = "frame too large" },

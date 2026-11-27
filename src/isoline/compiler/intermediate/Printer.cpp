@@ -82,12 +82,18 @@ namespace
             if (field == ImmediateField::Target || field == ImmediateField::ArgumentCount)
                 continue;
             auto const& fieldRow = immediateFieldRow(field);
-            if (field == ImmediateField::Type)
+            if (field == ImmediateField::Type && value <= std::to_underlying(LastType))
                 std::format_to(std::back_inserter(text),
                                "{}{}={}",
                                separator,
                                fieldRow.name,
                                typeRow(static_cast<Type>(value)).name);
+            else if (field == ImmediateField::Field && value <= std::to_underlying(LastContextValue))
+                std::format_to(std::back_inserter(text),
+                               "{}{}={}",
+                               separator,
+                               fieldRow.name,
+                               contextValueRow(static_cast<ContextValue>(value)).name);
             else
                 std::format_to(std::back_inserter(text), "{}{}={}", separator, fieldRow.name, value);
             separator = ", ";

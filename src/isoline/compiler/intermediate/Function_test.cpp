@@ -21,6 +21,7 @@
 #include <isoline/compiler/intermediate/Operation.hpp>
 #include <isoline/compiler/intermediate/Printer.hpp>
 #include <isoline/compiler/intermediate/Verifier.hpp>
+#include <isoline/runtime/testing/ContractViolation.hpp>
 
 using isoline::compiler::intermediate::BlockId;
 using isoline::compiler::intermediate::Builder;
@@ -94,6 +95,25 @@ constexpr auto I32Result = std::array { Type::I32 };
 struct Arena
 {
     std::pmr::monotonic_buffer_resource memory { std::pmr::new_delete_resource() };
+};
+
+/// Makes @p resource the default resource for its lifetime, restoring the previous one however the scope
+/// is left, a failed REQUIRE included.
+class DefaultResourceScope
+{
+  public:
+    explicit DefaultResourceScope(std::pmr::memory_resource* resource):
+        _previous { std::pmr::set_default_resource(resource) }
+    {
+    }
+    DefaultResourceScope(DefaultResourceScope const&) = delete;
+    DefaultResourceScope& operator=(DefaultResourceScope const&) = delete;
+    DefaultResourceScope(DefaultResourceScope&&) = delete;
+    DefaultResourceScope& operator=(DefaultResourceScope&&) = delete;
+    ~DefaultResourceScope() { std::pmr::set_default_resource(_previous); }
+
+  private:
+    std::pmr::memory_resource* _previous;
 };
 
 } // namespace
@@ -375,7 +395,7 @@ TEST_CASE("Function.allocatesOnlyFromItsResource")
     // With the default resource refusing, building, verifying, analysing and compacting a function
     // succeed: every container takes the function's resource, not the default one.
     auto arena = Arena {};
-    auto* const previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
+    auto const refusingDefault = DefaultResourceScope { std::pmr::null_memory_resource() };
     auto function = Function { arena.memory };
     auto builder = Builder { function };
     auto const entry = builder.createBlock();
@@ -394,7 +414,72 @@ TEST_CASE("Function.allocatesOnlyFromItsResource")
     auto const dominators = isoline::compiler::intermediate::DominatorTree { graph, arena.memory };
     auto const loops = isoline::compiler::intermediate::LoopNesting { graph, dominators, arena.memory };
     function.compact();
-    std::pmr::set_default_resource(previous);
     CHECK(verified.has_value());
     CHECK(loops.isHeader(loop));
+}
+
+TEST_CASE("Function.parameterGrowthDoublesTheRoom")
+{
+    // A block's parameters take 4 slots of room first, then move to twice their room each time it fills:
+    // parameterGrowth() says how many pool entries the next addParameter() appends.
+    auto arena = Arena {};
+    auto function = Function { arena.memory };
+    auto builder = Builder { function };
+    auto const block = builder.createBlock();
+    auto growths = std::vector<uint64_t> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(0, 17))
+    {
+        auto const growth = function.parameterGrowth(block);
+        auto const before = function.operandPoolSize();
+        std::ignore = builder.addParameter(block, Type::I32);
+        CHECK(function.operandPoolSize() - before == growth);
+        growths.push_back(growth);
+    }
+    CHECK(growths == std::vector<uint64_t> { 4, 0, 0, 0, 8, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 32 });
+}
+
+TEST_CASE("Function.moveAssignmentWithinItsArena")
+{
+    auto arena = Arena {};
+    auto function = Function { arena.memory };
+    auto builder = Builder { function };
+    builder.switchTo(builder.createBlock());
+    builder.ret({});
+    auto other = Function { arena.memory };
+    other = std::move(function);
+    CHECK(other.blockCount() == 1);
+    CHECK(&other.memory() == &arena.memory);
+    CHECK(verify(other).has_value());
+}
+
+// The contract test below ends the process at a failed Require; tests/CMakeLists.txt runs it alone.
+
+TEST_CASE("Contract.Function.moveAssignmentStaysInItsArena", "[.contract]")
+{
+    // Moving a function of one arena into a function of another would copy into the second arena while
+    // memory() named the first.
+    isoline::runtime::testing::endAtContractViolation();
+    auto first = Arena {};
+    auto second = Arena {};
+    auto target = Function { first.memory };
+    target = Function { second.memory };
+    FAIL("SURVIVED: a function moved between arenas");
+}
+
+TEST_CASE("Function.schemaTypeColumnsMatchTheirFields")
+{
+    // A schema narrows the types of a `type` field only when it has one, and checks an access width only
+    // against a `size` field and the type it names: the `type` field's for OfType, none for OfValue.
+    using isoline::compiler::intermediate::AccessWidth;
+    using isoline::compiler::intermediate::AnyType;
+    for (auto const& schema: ImmediateSchemaTable)
+    {
+        INFO("schema " << static_cast<int>(schema.schema));
+        auto const hasType = std::ranges::count(schema.fixed, ImmediateField::Type) == 1;
+        auto const hasSize = std::ranges::count(schema.fixed, ImmediateField::Size) == 1;
+        CHECK((hasType || schema.types == AnyType));
+        CHECK((schema.width == AccessWidth::None || hasSize));
+        CHECK((schema.width != AccessWidth::OfType || hasType));
+        CHECK((schema.width != AccessWidth::OfValue || !hasType));
+    }
 }

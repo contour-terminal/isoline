@@ -18,9 +18,6 @@ namespace isoline::compiler::intermediate
 
 namespace
 {
-    /// A value's new ID in compact() before it is numbered: none yet.
-    constexpr auto Unnumbered = std::numeric_limits<uint32_t>::max();
-
     /// The room a block's parameters get when they first need any.
     constexpr auto InitialParameterCapacity = uint32_t { 4 };
 
@@ -51,6 +48,27 @@ Function::Function(std::pmr::memory_resource& memory):
     _immediates { &memory },
     _valueTypes { &memory }
 {
+}
+
+Function& Function::operator=(Function&& other) noexcept
+{
+    Require(_memory == other._memory);
+    _blocks = std::move(other._blocks);
+    _parameterCapacity = std::move(other._parameterCapacity);
+    _instructions = std::move(other._instructions);
+    _operands = std::move(other._operands);
+    _immediates = std::move(other._immediates);
+    _valueTypes = std::move(other._valueTypes);
+    return *this;
+}
+
+uint64_t Function::parameterGrowth(BlockId block) const noexcept
+{
+    auto const count = this->block(block).parameters.count;
+    auto const capacity = uint64_t { _parameterCapacity[std::to_underlying(block)] };
+    if (count < capacity)
+        return 0;
+    return std::max(uint64_t { InitialParameterCapacity }, capacity * 2);
 }
 
 Block const& Function::block(BlockId block) const noexcept
@@ -229,13 +247,14 @@ ValueId Builder::addParameter(BlockId block, Type type)
     auto& function = *_function;
     auto& parameters = function.block(block).parameters;
     auto& capacity = function._parameterCapacity[std::to_underlying(block)];
-    if (parameters.count == capacity)
+    if (auto const growth = function.parameterGrowth(block); growth > 0)
     {
         // Move the run to the pool's end with twice the room, so that parameters added to a block
-        // while others grow cost amortized O(1) each.
+        // while others grow cost amortized O(1) each. The room is counted in 64 bits: doubling a
+        // capacity of 2^31 must not wrap to 0.
         auto& pool = function._operands;
-        auto const newCapacity = std::max(InitialParameterCapacity, capacity * 2);
         auto const begin = poolIndex(pool.size());
+        auto const newCapacity = poolIndex(uint64_t { begin } + growth) - begin;
         pool.resize(pool.size() + newCapacity);
         std::ranges::copy(pool.begin() + parameters.begin,
                           pool.begin() + parameters.begin + parameters.count,

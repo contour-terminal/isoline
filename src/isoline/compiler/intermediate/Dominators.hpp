@@ -82,9 +82,6 @@ class DominatorTree
     [[nodiscard]] std::span<BlockId const> reversePostorder() const noexcept { return _reversePostorder; }
 
   private:
-    /// A block's number where it has none: not reachable.
-    static constexpr auto Unnumbered = UINT32_MAX;
-
     std::pmr::vector<uint32_t> _immediateDominator; ///< Per block, its idom's BlockId; Unnumbered if none.
     std::pmr::vector<uint32_t> _treeEntry; ///< Per block, its preorder number in the tree; Unnumbered.
     std::pmr::vector<uint32_t> _treeExit;  ///< Per block, the largest preorder number of its subtree.
@@ -124,12 +121,9 @@ class LoopNesting
     [[nodiscard]] BlockId loopEnd(BlockId header) const noexcept;
 
   private:
-    /// A block's entry where it has none.
-    static constexpr auto None = UINT32_MAX;
-
-    std::pmr::vector<uint32_t> _innermostLoop; ///< Per block, its innermost loop's header, or None.
-    std::pmr::vector<uint32_t> _parentLoop;    ///< Per header, its parent loop's header, or None.
-    std::pmr::vector<uint32_t> _loopEnd;       ///< Per header, its last member; None for other blocks.
+    std::pmr::vector<uint32_t> _innermostLoop; ///< Per block, its innermost loop's header, or Unnumbered.
+    std::pmr::vector<uint32_t> _parentLoop;    ///< Per header, its parent loop's header, or Unnumbered.
+    std::pmr::vector<uint32_t> _loopEnd;       ///< Per header, its last member; Unnumbered for other blocks.
 };
 
 } // namespace isoline::compiler::intermediate

@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -51,6 +52,82 @@ inline constexpr auto TypeTable = std::to_array<TypeRow>({
     { .type = Type::F64, .name = "f64", .bytes = 8 },
     { .type = Type::Ref, .name = "ref", .bytes = 8 },
     { .type = Type::Pointer, .name = "ptr", .bytes = 8 },
+});
+
+/// A set of Types: bit t is set when Type t is in it.
+using TypeMask = uint8_t;
+
+/// The set holding @p type alone.
+/// @param type A Type enumerator.
+/// @return Its bit.
+[[nodiscard]] constexpr TypeMask maskOf(Type type) noexcept
+{
+    return static_cast<TypeMask>(1U << std::to_underlying(type));
+}
+
+/// Every Type.
+inline constexpr auto AnyType = static_cast<TypeMask>((1U << TypeTable.size()) - 1);
+/// The types of an index into a 32- or 64-bit memory or table: I32 and I64.
+inline constexpr auto IndexTypes = static_cast<TypeMask>(maskOf(Type::I32) | maskOf(Type::I64));
+/// The numeric types, which guest memory holds: I32, I64, F32 and F64.
+inline constexpr auto NumberTypes = static_cast<TypeMask>(IndexTypes | maskOf(Type::F32) | maskOf(Type::F64));
+/// The types a WebAssembly value takes once compiled: the numeric types and Ref.
+inline constexpr auto WasmTypes = static_cast<TypeMask>(NumberTypes | maskOf(Type::Ref));
+
+/// Whether @p mask holds @p type.
+[[nodiscard]] constexpr bool holds(TypeMask mask, Type type) noexcept
+{
+    return (mask & maskOf(type)) != 0;
+}
+
+/// Whether @p type is a float type.
+[[nodiscard]] constexpr bool isFloat(Type type) noexcept
+{
+    return type == Type::F32 || type == Type::F64;
+}
+
+/// A value of the execution or instance context that generated code keeps as an SSA value: what the
+/// `field` immediate of loadContext and storeContext names. The rows of ContextValueTable.
+enum class ContextValue : uint8_t
+{
+    StepCountdown, ///< The steps left of the lent budget (ExecutionState::stepsLeft).
+    Memory0Base,   ///< Memory 0's base address.
+    Memory0Bound,  ///< Memory 0's size in bytes.
+};
+
+/// The last ContextValue enumerator, for checking ContextValueTable's size.
+inline constexpr auto LastContextValue = ContextValue::Memory0Bound;
+
+/// Whether generated code may write a context value back.
+enum class ContextAccess : uint8_t
+{
+    ReadOnly,  ///< Loaded only: the runtime owns it.
+    ReadWrite, ///< Loaded and stored back (storeContext).
+};
+
+/// One context value: its name in the Printer's text, its type and whether it is stored back.
+struct ContextValueRow
+{
+    ContextValue value;    ///< The value; equal to the row's index.
+    std::string_view name; ///< How the Printer names it.
+    Type type;             ///< Its type, which loadContext's `type` and storeContext's operand must be.
+    ContextAccess access;  ///< Whether storeContext may write it.
+};
+
+/// Every context value, in ContextValue order.
+inline constexpr auto ContextValueTable = std::to_array<ContextValueRow>({
+    { .value = ContextValue::StepCountdown,
+      .name = "step_countdown",
+      .type = Type::I64,
+      .access = ContextAccess::ReadWrite },
+    { .value = ContextValue::Memory0Base,
+      .name = "memory0_base",
+      .type = Type::Pointer,
+      .access = ContextAccess::ReadOnly },
+    { .value = ContextValue::Memory0Bound,
+      .name = "memory0_bound",
+      .type = Type::I64,
+      .access = ContextAccess::ReadOnly },
 });
 
 /// What an operation does besides computing its results: the column the passes and the selector read
@@ -225,7 +302,7 @@ enum class ImmediateField : uint8_t
     Site,          ///< A runtime::PollSite.
     FrameCost,     ///< A frame's stack values (validate::ValidatedModule::frameCost).
     Stub,          ///< A runtime stub (the execution layer's RuntimeStubTable row).
-    Field,         ///< A context value: what loadContext and storeContext name.
+    Field,         ///< A ContextValue: what loadContext and storeContext name.
     Target,        ///< A branch target's BlockId; an ArgumentCount always follows it.
     ArgumentCount, ///< How many arguments the target before it takes.
 };
@@ -310,7 +387,7 @@ inline constexpr auto ImmediateFieldTable = std::to_array<ImmediateFieldRow>({
     { .field = ImmediateField::Field,
       .name = "field",
       .values = ImmediateValues::UpTo,
-      .maximum = detail::IndexMaximum },
+      .maximum = std::to_underlying(LastContextValue) },
     { .field = ImmediateField::Target,
       .name = "target",
       .values = ImmediateValues::UpTo,
@@ -330,16 +407,17 @@ enum class ImmediateSchema : uint8_t
     Function,     ///< {function}: ref.func, call, call_import.
     Memory,       ///< {memory}: memoryBase, memoryBound.
     MemoryType,   ///< {memory, type}: memorySize, whose result is I32 or I64 (memory64).
-    MemoryAccess, ///< {memory, offset, size}: checkMemory, store.
-    Load,         ///< {memory, offset, size, extension, type}: load.
+    MemoryAccess, ///< {memory, offset, size}: checkMemory.
+    Load,         ///< {memory, offset, size, extension, type}: load, whose result is a numeric type.
+    StoreAccess,  ///< {memory, offset, size}: store, of its value's width or narrower.
     Offset,       ///< {offset}: guardAddress.
     TableCheck,   ///< {table, trap}: checkTable.
     Table,        ///< {table}: loadTableElement, storeTableElement.
     TableType,    ///< {table, type}: tableSize, whose result is I32 or I64 (table64).
-    GlobalType,   ///< {global, type}: loadGlobal.
+    GlobalType,   ///< {global, type}: loadGlobal, whose result is a numeric type or Ref.
     Global,       ///< {global}: storeGlobal.
-    ContextType,  ///< {field, type}: loadContext.
-    Context,      ///< {field}: storeContext.
+    ContextType,  ///< {field, type}: loadContext, whose result is its ContextValue's type.
+    Context,      ///< {field}: storeContext, of a ContextValue generated code may write.
     PollSite,     ///< {site}: poll.
     FrameCost,    ///< {frame_cost}: enterFrame, leaveFrame.
     CallIndirect, ///< {type_index, table}: callIndirect.
@@ -353,12 +431,26 @@ enum class ImmediateSchema : uint8_t
 /// The last ImmediateSchema enumerator, for checking ImmediateSchemaTable's size.
 inline constexpr auto LastImmediateSchema = ImmediateSchema::Switch;
 
-/// One immediate layout: its fixed fields, then a group of fields repeated any number of times.
+/// Which type a memory access's `size` immediate is checked against: an access is at most as wide as its
+/// type, a float access is as wide as its type, and only a narrower load extends with a sign.
+enum class AccessWidth : uint8_t
+{
+    None,    ///< The layout has no access width to check.
+    OfType,  ///< The type its `type` immediate names: a load's result.
+    OfValue, ///< Its second operand's type: a store's value.
+};
+
+/// One immediate layout: its fixed fields, then a group of fields repeated any number of times, and
+/// what its fields must agree on with the instruction's types.
 struct ImmediateSchemaRow
 {
     ImmediateSchema schema;                   ///< The layout; equal to the row's index.
     std::span<ImmediateField const> fixed;    ///< The fields every instruction of it has, in order.
     std::span<ImmediateField const> repeated; ///< The group that follows them zero or more times.
+    /// The types its `type` immediate may name; every type when it has none. A `field` immediate narrows
+    /// it further, to its ContextValue's type.
+    TypeMask types = AnyType;
+    AccessWidth width = AccessWidth::None; ///< Which type its `size` immediate must fit.
 };
 
 namespace detail
@@ -398,20 +490,33 @@ inline constexpr auto ImmediateSchemaTable = std::to_array<ImmediateSchemaRow>({
     { .schema = ImmediateSchema::Memory, .fixed = detail::MemoryFields, .repeated = detail::NoFields },
     { .schema = ImmediateSchema::MemoryType,
       .fixed = detail::MemoryTypeFields,
-      .repeated = detail::NoFields },
+      .repeated = detail::NoFields,
+      .types = IndexTypes },
     { .schema = ImmediateSchema::MemoryAccess,
       .fixed = detail::MemoryAccessFields,
       .repeated = detail::NoFields },
-    { .schema = ImmediateSchema::Load, .fixed = detail::LoadFields, .repeated = detail::NoFields },
+    { .schema = ImmediateSchema::Load,
+      .fixed = detail::LoadFields,
+      .repeated = detail::NoFields,
+      .types = NumberTypes,
+      .width = AccessWidth::OfType },
+    { .schema = ImmediateSchema::StoreAccess,
+      .fixed = detail::MemoryAccessFields,
+      .repeated = detail::NoFields,
+      .width = AccessWidth::OfValue },
     { .schema = ImmediateSchema::Offset, .fixed = detail::OffsetFields, .repeated = detail::NoFields },
     { .schema = ImmediateSchema::TableCheck,
       .fixed = detail::TableCheckFields,
       .repeated = detail::NoFields },
     { .schema = ImmediateSchema::Table, .fixed = detail::TableFields, .repeated = detail::NoFields },
-    { .schema = ImmediateSchema::TableType, .fixed = detail::TableTypeFields, .repeated = detail::NoFields },
+    { .schema = ImmediateSchema::TableType,
+      .fixed = detail::TableTypeFields,
+      .repeated = detail::NoFields,
+      .types = IndexTypes },
     { .schema = ImmediateSchema::GlobalType,
       .fixed = detail::GlobalTypeFields,
-      .repeated = detail::NoFields },
+      .repeated = detail::NoFields,
+      .types = WasmTypes },
     { .schema = ImmediateSchema::Global, .fixed = detail::GlobalFields, .repeated = detail::NoFields },
     { .schema = ImmediateSchema::ContextType,
       .fixed = detail::ContextTypeFields,
@@ -430,7 +535,8 @@ inline constexpr auto ImmediateSchemaTable = std::to_array<ImmediateSchemaRow>({
 });
 
 /// Every operation of the intermediate representation, generated from Operations.def. One byte holds
-/// today's rows; P5b's SIMD rows widen it to uint16_t.
+/// today's rows. A row past the 256th does not wrap: its enumerator lies outside uint8_t, which fails to
+/// compile, and that is when P5b's SIMD rows widen it to uint16_t.
 enum class Operation : uint8_t
 {
 #define ISOLINE_OPERATION(name, text, operands, result, effect, immediates) name,
@@ -478,6 +584,10 @@ namespace detail
 static_assert(TypeTable.size() == std::to_underlying(LastType) + 1
                   && detail::isInEnumeratorOrder(TypeTable, [](TypeRow const& row) { return row.type; }),
               "TypeTable must hold one row per Type, at the index of its enumerator");
+static_assert(ContextValueTable.size() == std::to_underlying(LastContextValue) + 1
+                  && detail::isInEnumeratorOrder(ContextValueTable,
+                                                 [](ContextValueRow const& row) { return row.value; }),
+              "ContextValueTable must hold one row per ContextValue, at the index of its enumerator");
 static_assert(OperandSignatureTable.size() == std::to_underlying(LastOperandSignature) + 1
                   && detail::isInEnumeratorOrder(OperandSignatureTable,
                                                  [](OperandSignatureRow const& row) {
@@ -535,6 +645,27 @@ static_assert(Operation {} == Operation::Removed, "a value-initialized instructi
     return effectOf(operation) == Effect::Control;
 }
 
+/// The Type a single-result rule fixes.
+/// @param rule A ResultRule.
+/// @return It, for I32, I64, F32, F64, Ref and Pointer; none for the rules that fix no type.
+[[nodiscard]] constexpr std::optional<Type> fixedTypeOf(ResultRule rule) noexcept
+{
+    switch (rule)
+    {
+        case ResultRule::I32: return Type::I32;
+        case ResultRule::I64: return Type::I64;
+        case ResultRule::F32: return Type::F32;
+        case ResultRule::F64: return Type::F64;
+        case ResultRule::Ref: return Type::Ref;
+        case ResultRule::Pointer: return Type::Pointer;
+        case ResultRule::None:
+        case ResultRule::SameAsOperand0:
+        case ResultRule::FromImmediate:
+        case ResultRule::Multiple: return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 /// The row of @p type.
 /// @param type A Type enumerator.
 /// @return Its row in TypeTable.
@@ -547,6 +678,12 @@ static_assert(Operation {} == Operation::Removed, "a value-initialized instructi
 [[nodiscard]] constexpr bool isType(Type type) noexcept
 {
     return std::to_underlying(type) <= std::to_underlying(LastType);
+}
+
+/// The row of @p value.
+[[nodiscard]] constexpr ContextValueRow const& contextValueRow(ContextValue value) noexcept
+{
+    return ContextValueTable[std::to_underlying(value)];
 }
 
 /// The row of @p signature.

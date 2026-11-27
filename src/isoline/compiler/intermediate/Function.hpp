@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory_resource>
 #include <optional>
 #include <span>
@@ -99,6 +100,14 @@ struct Block
     Hotness hotness = Hotness::Normal;       ///< Whether it is expected to run.
 };
 
+/// The entry of a per-value, per-block or per-number array that names nothing: a value not numbered yet
+/// (compact()), a block not reachable, in no loop or without a parent (Dominators). The one such value.
+inline constexpr auto Unnumbered = std::numeric_limits<uint32_t>::max();
+
+/// The most entries a Function's operand or immediate pool can hold: what a 32-bit pool index addresses.
+/// Builder Requires it; a translation of guest input refuses before it (CompileLimits::maxPoolEntries).
+inline constexpr auto MaxPoolEntries = uint64_t { std::numeric_limits<uint32_t>::max() };
+
 /// A function of the intermediate representation. Movable, not copyable: a copy would leave the arena.
 class Function
 {
@@ -110,7 +119,9 @@ class Function
     Function(Function const&) = delete;
     Function& operator=(Function const&) = delete;
     Function(Function&&) noexcept = default;
-    Function& operator=(Function&&) noexcept = default;
+    /// Takes @p other's contents. Both must allocate from the same resource (Require): between two, the
+    /// containers would copy into this one's while memory() named the other's.
+    Function& operator=(Function&& other) noexcept;
     ~Function() = default;
 
     /// The resource every container of the function allocates from.
@@ -153,6 +164,11 @@ class Function
 
     /// The size of the immediate pool, which every ImmediateRange of the function lies within.
     [[nodiscard]] std::size_t immediatePoolSize() const noexcept { return _immediates.size(); }
+
+    /// The operand pool entries the next Builder::addParameter() of @p block appends: none while its
+    /// reserved room lasts, else the twice as large room its parameters move to.
+    /// @param block A block of the function.
+    [[nodiscard]] uint64_t parameterGrowth(BlockId block) const noexcept;
 
     /// The values of @p range.
     /// @param range A run within the operand pool.

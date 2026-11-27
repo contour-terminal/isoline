@@ -392,3 +392,100 @@ TEST_CASE("Dominators.matchTheDataflowDefinition")
         checkAgainstTheDefinition(DominatorTree { graph, arena.memory }, blockCount, edges);
     }
 }
+
+namespace
+{
+
+/// The natural loops of a graph, by their definition: per header (the target of a back edge, an edge
+/// whose target dominates its source), its body as a mask: the header, and every reachable block that
+/// reaches a back edge's source without passing through the header.
+std::vector<uint32_t> naturalLoopsOf(uint32_t blockCount,
+                                     std::span<Edge const> edges,
+                                     uint32_t reachable,
+                                     std::span<uint32_t const> dominators)
+{
+    auto bodies = std::vector<uint32_t>(blockCount, 0);
+    for (auto const& backEdge: edges)
+    {
+        auto const isBackEdge =
+            (reachable >> backEdge.from & 1) != 0 && (dominators[backEdge.from] >> backEdge.to & 1) != 0;
+        if (!isBackEdge)
+            continue;
+        auto const header = uint32_t { 1 } << backEdge.to;
+        auto body = header | (reachable & uint32_t { 1 } << backEdge.from);
+        auto changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (auto const& edge: edges)
+                if ((body >> edge.to & 1) != 0 && (header >> edge.to & 1) == 0
+                    && (reachable >> edge.from & 1) != 0 && (body >> edge.from & 1) == 0)
+                {
+                    body |= uint32_t { 1 } << edge.from;
+                    changed = true;
+                }
+        }
+        bodies[backEdge.to] |= body;
+    }
+    return bodies;
+}
+
+/// The header of the smallest loop of @p bodies that holds @p block, other than the loop @p excluded
+/// heads; none when no such loop holds it. Natural loops of distinct headers nest or are disjoint, so
+/// the smallest is unique.
+std::optional<BlockId> smallestLoopHolding(uint32_t block,
+                                           std::span<uint32_t const> bodies,
+                                           std::optional<uint32_t> excluded)
+{
+    auto best = std::optional<uint32_t> {};
+    for (auto const [header, body]: core::views::enumerate(bodies))
+    {
+        if (body == 0 || (body >> block & 1) == 0 || excluded == header)
+            continue;
+        if (!best || std::popcount(body) < std::popcount(bodies[*best]))
+            best = static_cast<uint32_t>(header);
+    }
+    return best.transform([](uint32_t header) { return BlockId { header }; });
+}
+
+} // namespace
+
+TEST_CASE("Dominators.loopNestingMatchesTheNaturalLoops")
+{
+    // On random graphs of up to 24 blocks, reducible or not, with unreachable blocks and self loops,
+    // LoopNesting agrees with the natural loops computed by their definition: which blocks are headers,
+    // each block's innermost loop, each loop's parent and its last member.
+    auto arena = Arena {};
+    auto state = uint64_t { 0xD1B5'4A32'D192'ED03 };
+    auto const next = [&state](uint32_t bound) {
+        state = (state * 6'364'136'223'846'793'005) + 1'442'695'040'888'963'407;
+        return static_cast<uint32_t>((state >> 33) % bound);
+    };
+    for (auto const round: std::views::iota(0, 500))
+    {
+        auto const blockCount = 2 + next(23);
+        auto edges = std::vector<Edge> {};
+        auto const edgeCount = next(3 * blockCount);
+        for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, edgeCount))
+            edges.push_back({ next(blockCount), next(blockCount) });
+        auto const graph = graphOf(blockCount, edges, arena.memory);
+        INFO("round " << round << ", " << blockCount << " blocks, " << edges.size() << " edges");
+        auto const tree = DominatorTree { graph, arena.memory };
+        auto const loops = LoopNesting { graph, tree, arena.memory };
+        auto const reachable = reachableOf(edges);
+        auto const dominators = dominatorSetsOf(blockCount, edges, reachable);
+        auto const bodies = naturalLoopsOf(blockCount, edges, reachable, dominators);
+        for (auto const b: std::views::iota(uint32_t { 0 }, blockCount))
+        {
+            INFO("block " << b);
+            auto const isHeader = bodies[b] != 0;
+            REQUIRE(loops.isHeader(block(b)) == isHeader);
+            CHECK(loops.innermostLoop(block(b)) == smallestLoopHolding(b, bodies, std::nullopt));
+            if (!isHeader)
+                continue;
+            CHECK(loops.parentLoop(block(b)) == smallestLoopHolding(b, bodies, b));
+            auto const lastMember = static_cast<uint32_t>(std::bit_width(bodies[b]) - 1);
+            CHECK(loops.loopEnd(block(b)) == block(lastMember));
+        }
+    }
+}
