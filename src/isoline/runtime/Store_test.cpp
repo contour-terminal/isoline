@@ -59,6 +59,7 @@ using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
 using isoline::runtime::Refusal;
 using isoline::runtime::RefusalScope;
+using isoline::runtime::SharedInvocationScope;
 using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::StoreServices;
@@ -1221,7 +1222,7 @@ TEST_CASE("Store.everySiteChargesWhatItsRowSays")
     // the count is what the table says.
     auto charging = uint64_t { 0 };
     for (auto const& row: isoline::runtime::PollSiteTable)
-        charging += row.charge == isoline::runtime::StepCharge::OneStep ? 1U : 0U;
+        charging += row.charge == isoline::runtime::StepCharge::None ? 0U : 1U;
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits { .maxSteps = charging }, StoreServices { .allocator = allocator } };
     auto const invocation = InvocationScope { store };
@@ -1278,4 +1279,26 @@ TEST_CASE("Store.frameChargesCapTheirSum")
     store.releaseFrame(6);
     CHECK(store.chargedStackValues() == 0);
     CHECK(store.chargeFrame(10).has_value());
+}
+
+TEST_CASE("Store.sharedInvocationRestoresTheRecord", "[memory]")
+{
+    // A held invocation starts an empty record, and gives the one it found back when it ends; one that
+    // joins reads the record of the invocation it joined.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits { .maxMemoryBytes = 65'536 }, StoreServices { .allocator = allocator } };
+    auto const memory = store.addMemory(MemoryType { .limits = Limits { .min = 1, .max = std::nullopt } });
+    REQUIRE(memory.has_value());
+    CHECK(store.growMemory(*memory, 1) == std::unexpected { Refusal::Limit });
+    auto const before = store.growthRecord();
+    REQUIRE(before == GrowthRecord { .memory = Refusal::Limit, .table = {} });
+    {
+        auto const held = SharedInvocationScope { store };
+        CHECK(store.isInvocationHeld());
+        CHECK(held.refusedGrowth() == GrowthRecord {});
+        auto const joined = SharedInvocationScope { store };
+        CHECK(&joined.refusedGrowth() == &held.refusedGrowth());
+    }
+    CHECK_FALSE(store.isInvocationHeld());
+    CHECK(store.growthRecord() == before);
 }

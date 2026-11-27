@@ -60,21 +60,61 @@ enum class PollSite : uint8_t
     Instantiation, ///< Instantiation's entry, and before its start function.
     Unwind,        ///< Every UnwindPollItems labels and catch clauses an exception unwinds past.
     Sweep,         ///< Before every SweepPollItems items an exception sweep visits.
+    HostBulk,      ///< The embedder's poll of its own bulk work (api::Store::poll()): a component
+                   ///< call's copies and transcodes, at least every BulkPollBytes bytes.
 };
 
 /// The last PollSite enumerator, for checking PollSiteTable's size.
-inline constexpr auto LastPollSite = PollSite::Sweep;
+inline constexpr auto LastPollSite = PollSite::HostBulk;
 
 /// What a poll charges against the step budget (StoreLimits::maxSteps).
 enum class StepCharge : uint8_t
 {
-    None,    ///< Nothing: the poll only notifies the observer and checks the interrupt.
-    OneStep, ///< One step.
+    None,       ///< Nothing: the poll only notifies the observer and checks the interrupt.
+    OneStep,    ///< One step.
+    PerGranule, ///< A step per BulkPollBytes of the work done since the last poll, at least one.
 };
+
+/// The last StepCharge enumerator, for checking StepChargeTable; it must name whichever is listed last above.
+inline constexpr auto LastStepCharge = StepCharge::PerGranule;
 
 /// The bytes of a bulk memory operation between two polls: memory.fill, memory.copy, memory.init
 /// and instantiation's data segment copies poll before each granule of this many bytes.
 inline constexpr auto BulkPollBytes = uint64_t { 65'536 };
+
+/// One way a poll charges: how the documentation names it.
+struct StepChargeRow
+{
+    StepCharge charge;     ///< The charge.
+    std::string_view name; ///< How the documentation names it.
+};
+
+/// Every StepCharge, one row each, in StepCharge order.
+inline constexpr auto StepChargeTable = std::to_array<StepChargeRow>({
+    { .charge = StepCharge::None, .name = "no step" },
+    { .charge = StepCharge::OneStep, .name = "one step" },
+    { .charge = StepCharge::PerGranule, .name = "a step per 65536 bytes, at least one" },
+});
+
+static_assert(meta::firstMisplacedRow<LastStepCharge>(StepChargeTable, &StepChargeRow::charge)
+                  == meta::NoMisplacedRow,
+              "StepChargeTable must hold one row per StepCharge, at the index of its enumerator");
+
+/// The steps a poll charges: the published rule every engine, and every embedder's bulk work,
+/// reproduces.
+/// @param charge What its site charges (PollSiteRow::charge).
+/// @param bytes The bytes of work done since the last poll; only StepCharge::PerGranule reads them.
+/// @return 0, 1, or max(1, bytes / BulkPollBytes).
+[[nodiscard]] constexpr uint64_t stepsCharged(StepCharge charge, uint64_t bytes) noexcept
+{
+    switch (charge)
+    {
+        case StepCharge::None: return 0;
+        case StepCharge::OneStep: return 1;
+        case StepCharge::PerGranule: return bytes < BulkPollBytes ? 1 : bytes / BulkPollBytes;
+    }
+    return 1; // uncovered(exhaustive-switch)
+}
 
 /// The elements of a bulk table operation between two polls: table.fill, table.copy, table.init,
 /// instantiation's element segment copies and its evaluation of element segment items.
@@ -142,6 +182,13 @@ inline constexpr auto PollSiteTable = std::to_array<PollSiteRow>({
               "each payload value of each exception found reachable, once per exception; a sweep a poll "
               "ends reclaims nothing, and the allocation ends with that poll's trap",
       .charge = StepCharge::OneStep },
+    { .site = PollSite::HostBulk,
+      .name = "host bulk",
+      .rule = "where the embedder polls its own bulk work (Store::poll), at least every 65536 bytes of a "
+              "component call's copies and transcodes; it charges the step budget of the invocation in "
+              "progress, which an invocation scope (Store::openInvocation) shares between the calls made "
+              "directly in it, and a charge the budget cannot take whole is refused, charging nothing",
+      .charge = StepCharge::PerGranule },
 });
 
 static_assert(meta::firstMisplacedRow<LastPollSite>(PollSiteTable, &PollSiteRow::site)

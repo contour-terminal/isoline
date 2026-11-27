@@ -574,6 +574,20 @@ uint64_t Store::used(Limit limit) const noexcept
     return Usages[static_cast<std::size_t>(limit)].held(*this);
 }
 
+std::expected<void, Trap> Store::poll(PollSite site, uint64_t bytes) noexcept
+{
+    Require(_invocationDepth > 0 || isInvocationHeld());
+    if (_pollObserver != nullptr)
+        _pollObserver->onPoll(site);
+    if (_interrupter->state() == InterruptState::Interrupted)
+        return trap(TrapCode::Interrupted);
+    auto const steps = stepsCharged(PollSiteTable[static_cast<std::size_t>(site)].charge, bytes);
+    if (steps > _limits.maxSteps - std::min(_steps, _limits.maxSteps))
+        return trap(TrapCode::StepLimitExceeded);
+    _steps += steps;
+    return {};
+}
+
 std::expected<void, Trap> Store::checkInvocationNesting() const noexcept
 {
     if (_invocationDepth >= _limits.maxNestedInvocations)
@@ -762,8 +776,9 @@ InvocationScope::InvocationScope(Store& store) noexcept:
     _store { &store }, _floatEnvironment { *store._roundingMode }
 {
     ISOLINE_PRECONDITION(_store->checkInvocationNesting().has_value());
-    // The outermost invocation's budget is fresh; nested ones share it.
-    if (_store->_invocationDepth == 0)
+    // The outermost invocation's budget is fresh, unless a held one (SharedInvocationScope) began it;
+    // nested ones share it.
+    if (_store->_invocationDepth == 0 && !_store->isInvocationHeld())
         _store->_steps = 0;
     ++_store->_invocationDepth;
 }
@@ -771,6 +786,36 @@ InvocationScope::InvocationScope(Store& store) noexcept:
 InvocationScope::~InvocationScope()
 {
     --_store->_invocationDepth;
+}
+
+SharedInvocationScope::SharedInvocationScope(Store& store) noexcept:
+    _store { &store },
+    _role { store._invocationDepth == 0 && !store.isInvocationHeld() ? Role::Holds : Role::Joins },
+    _outer { _role == Role::Holds ? std::exchange(store._growthRecord, GrowthRecord {}) : GrowthRecord {} }
+{
+    if (_role == Role::Joins)
+        return;
+    store._steps = 0;
+    store._heldInvocation = Store::HeldInvocation::Held;
+}
+
+SharedInvocationScope::SharedInvocationScope(SharedInvocationScope&& other) noexcept:
+    _store { other._store }, _role { std::exchange(other._role, Role::Joins) }, _outer { other._outer }
+{
+}
+
+SharedInvocationScope::~SharedInvocationScope()
+{
+    if (_role == Role::Joins)
+        return;
+    Require(_store->_invocationDepth == 0);
+    _store->_growthRecord = _outer;
+    _store->_heldInvocation = Store::HeldInvocation::None;
+}
+
+GrowthRecord const& SharedInvocationScope::refusedGrowth() const noexcept
+{
+    return _store->_growthRecord;
 }
 
 HostCallScope::HostCallScope(Store& store) noexcept: _store { &store }

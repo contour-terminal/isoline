@@ -75,7 +75,8 @@ struct CallError
     Detail detail;
 
     /// This call's first refused memory.grow and table.grow, never a nested call's: why a guest that
-    /// gave up after a -1 from memory.grow gave up.
+    /// gave up after a -1 from memory.grow gave up. For a call made in an InvocationScope, and for its
+    /// Store::poll(), the invocation's: every call made directly in the scope so far.
     GrowthRecord refusedGrowth;
 
     /// Why the call failed, derived from detail: a Trap of TrapCode::Interrupted is Interrupted, every

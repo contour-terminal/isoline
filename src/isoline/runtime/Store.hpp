@@ -467,7 +467,8 @@ class Store
 
     /// Polls: what an executor calls at every PollSite. It notifies the poll observer, checks the
     /// interrupt, then charges what the site's PollSiteTable row charges against
-    /// StoreLimits::maxSteps: at one poll, Interrupted beats StepLimitExceeded.
+    /// StoreLimits::maxSteps (stepsCharged(), of no work for a StepCharge::PerGranule row): at one
+    /// poll, Interrupted beats StepLimitExceeded.
     /// @param site Where execution polls.
     /// @return Nothing to go on; Trap{Interrupted} once the store was interrupted; or
     ///         Trap{StepLimitExceeded}, no step charged, when the outermost invocation took
@@ -485,6 +486,20 @@ class Store
         ++_steps;
         return {};
     }
+
+    /// Polls at @p site after @p bytes of the host's own work: poll(), charging stepsCharged() of the
+    /// site's row for @p bytes, whole or not at all. What the embedder's bulk work polls by
+    /// (PollSite::HostBulk). Precondition (checked): an invocation is in progress or held
+    /// (InvocationScope, SharedInvocationScope), whose budget the steps are charged to.
+    /// @param site Where the host polls.
+    /// @param bytes The bytes of work done since its last poll.
+    /// @return Nothing to go on; Trap{Interrupted} once the store was interrupted; or
+    ///         Trap{StepLimitExceeded}, no step charged, when the budget cannot take the charge whole.
+    [[nodiscard]] std::expected<void, Trap> poll(PollSite site, uint64_t bytes) noexcept;
+
+    /// Whether an invocation is held open across calls (SharedInvocationScope).
+    /// @return Whether one is.
+    [[nodiscard]] bool isInvocationHeld() const noexcept { return _heldInvocation == HeldInvocation::Held; }
 
     /// How many module instances the store holds.
     /// @return Their count.
@@ -602,7 +617,15 @@ class Store
     friend class RefusalScope;
     friend class HostCallScope;
     friend class InvocationScope;
+    friend class SharedInvocationScope;
     friend class ExceptionRootsRegistration;
+
+    /// Whether an invocation is held open across calls (SharedInvocationScope).
+    enum class HeldInvocation : uint8_t
+    {
+        None, ///< None: every outermost call is an invocation of its own.
+        Held, ///< One is: the calls made with no invocation in progress share its budget and record.
+    };
 
     /// What an exception arena slot holds.
     enum class ExceptionSlot : uint8_t
@@ -635,15 +658,16 @@ class Store
     IRoundingMode* _roundingMode; ///< How the floating-point scopes switch the rounding mode; never null.
     std::shared_ptr<Interrupter> _interrupter;
     StoreLimits _limits;
-    GrowthRecord _growthRecord;       ///< The current refusal scope's first refused grow per kind.
-    uint64_t _exceptionValues = 0;    ///< The payload values of every exception held.
-    uint64_t _memoryBytes = 0;        ///< The bytes of every memory, charged against maxMemoryBytes.
-    uint64_t _tableElements = 0;      ///< The slots of every table, charged against maxTableElements.
-    uint64_t _typeUnits = 0;          ///< The type units of every interned type, charged against maxTypes.
-    uint32_t _hostCalls = 0;          ///< The host functions running, nested ones included.
-    uint32_t _invocationDepth = 0;    ///< The invocations in progress, nested ones included.
-    uint64_t _steps = 0;              ///< The steps the latest outermost invocation took.
-    uint64_t _chargedStackValues = 0; ///< The static costs of the frames in progress.
+    GrowthRecord _growthRecord;    ///< The current refusal scope's first refused grow per kind.
+    uint64_t _exceptionValues = 0; ///< The payload values of every exception held.
+    uint64_t _memoryBytes = 0;     ///< The bytes of every memory, charged against maxMemoryBytes.
+    uint64_t _tableElements = 0;   ///< The slots of every table, charged against maxTableElements.
+    uint64_t _typeUnits = 0;       ///< The type units of every interned type, charged against maxTypes.
+    uint32_t _hostCalls = 0;       ///< The host functions running, nested ones included.
+    uint32_t _invocationDepth = 0; ///< The invocations in progress, nested ones included.
+    uint64_t _steps = 0;           ///< The steps the latest outermost invocation took.
+    HeldInvocation _heldInvocation = HeldInvocation::None; ///< Whether one is held open across calls.
+    uint64_t _chargedStackValues = 0;                      ///< The static costs of the frames in progress.
     std::deque<FunctionInstance> _functions;
     std::deque<TableInstance> _tables;
     std::deque<MemoryInstance> _memories;
@@ -717,6 +741,53 @@ class InvocationScope
   private:
     Store* _store;
     FloatEnvironmentScope _floatEnvironment; ///< The IEEE defaults, for as long as the invocation runs.
+};
+
+/// Holds one outermost invocation open on a store across several calls, for as long as it lives: what
+/// the embedder opens (api::Store::openInvocation()) around the calls of one component call, its
+/// realloc, the callee and its post-return. Opened with no invocation in progress or held, it starts a
+/// fresh step budget (StoreLimits::maxSteps) and an empty GrowthRecord, as an outermost invocation does;
+/// until it ends, each call made with no invocation in progress (invokeChecked()) is that outermost
+/// invocation: it charges the shared budget and records its refused grows in the shared record, and
+/// counts one invocation while it runs, the scope none of its own (StoreLimits::maxNestedInvocations).
+/// The hops a host function makes from such a call are nested invocations, as ever. Opened while an
+/// invocation is in progress or held, it joins it: it changes and counts nothing.
+///
+/// It sets no floating-point environment: each call pins its own (InvocationScope). Move-only.
+class SharedInvocationScope
+{
+  public:
+    /// Holds an invocation open on @p store, or joins the one in progress or held.
+    /// @param store The store; must outlive the scope.
+    explicit SharedInvocationScope(Store& store) noexcept;
+
+    /// Ends the invocation it holds, restoring the record saved when it began; a joined one ends nothing.
+    /// Precondition (checked): no call made in it is still running.
+    ~SharedInvocationScope();
+
+    /// Takes over @p other's invocation; @p other is left holding none.
+    SharedInvocationScope(SharedInvocationScope&& other) noexcept;
+
+    SharedInvocationScope(SharedInvocationScope const&) = delete;
+    SharedInvocationScope& operator=(SharedInvocationScope const&) = delete;
+    SharedInvocationScope& operator=(SharedInvocationScope&&) = delete;
+
+    /// The first refused grow of each kind of the invocation, its calls' included: for a joined scope,
+    /// the record of the invocation it joined.
+    /// @return The store's current record.
+    [[nodiscard]] GrowthRecord const& refusedGrowth() const noexcept;
+
+  private:
+    /// What the scope does to its store.
+    enum class Role : uint8_t
+    {
+        Joins, ///< It joined an invocation in progress or held, or was moved from: it ends nothing.
+        Holds, ///< It holds the invocation, and ends it.
+    };
+
+    Store* _store;
+    Role _role;
+    GrowthRecord _outer; ///< The record saved when it began holding.
 };
 
 /// Counts a host function call in progress on a store (Store::hostCallsInProgress()) for as long as it

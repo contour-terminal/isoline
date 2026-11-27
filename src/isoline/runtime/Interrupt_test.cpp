@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <memory>
 #include <thread>
@@ -43,8 +44,14 @@ TEST_CASE("Interrupt.pollSitesPublishTheirRules")
     {
         CHECK_FALSE(row.name.empty());
         CHECK_FALSE(row.rule.empty());
-        // Unwinding charges no step: how many clauses an engine scans is its own business.
-        CHECK(row.charge == (row.site == PollSite::Unwind ? StepCharge::None : StepCharge::OneStep));
+        // Unwinding charges no step: how many clauses an engine scans is its own business. The host's
+        // bulk work charges by the bytes it did.
+        auto expected = StepCharge::OneStep;
+        if (row.site == PollSite::Unwind)
+            expected = StepCharge::None;
+        if (row.site == PollSite::HostBulk)
+            expected = StepCharge::PerGranule;
+        CHECK(row.charge == expected);
     }
     // The rules state the constants executors poll by.
     auto const ruleOf = [](PollSite site) {
@@ -62,6 +69,27 @@ TEST_CASE("Interrupt.pollSitesPublishTheirRules")
     STATIC_CHECK(isoline::runtime::UnwindPollItems == 4'096);
     CHECK(ruleOf(PollSite::Sweep).contains(std::format("every {} items", isoline::runtime::SweepPollItems)));
     STATIC_CHECK(isoline::runtime::SweepPollItems == 4'096);
+    CHECK(
+        ruleOf(PollSite::HostBulk).contains(std::format("every {} bytes", isoline::runtime::BulkPollBytes)));
+    CHECK(isoline::runtime::StepChargeTable[static_cast<std::size_t>(StepCharge::PerGranule)].name.contains(
+        std::format("per {} bytes", isoline::runtime::BulkPollBytes)));
+}
+
+TEST_CASE("Interrupt.stepsChargedPerGranule")
+{
+    // The published rule: a step per BulkPollBytes of host work, rounded down, at least one.
+    using isoline::runtime::stepsCharged;
+    constexpr auto Granule = isoline::runtime::BulkPollBytes;
+    STATIC_CHECK(stepsCharged(StepCharge::None, Granule) == 0);
+    STATIC_CHECK(stepsCharged(StepCharge::OneStep, 5 * Granule) == 1);
+    STATIC_CHECK(stepsCharged(StepCharge::PerGranule, 0) == 1);
+    STATIC_CHECK(stepsCharged(StepCharge::PerGranule, Granule - 1) == 1);
+    STATIC_CHECK(stepsCharged(StepCharge::PerGranule, Granule) == 1);
+    STATIC_CHECK(stepsCharged(StepCharge::PerGranule, (2 * Granule) - 1) == 1);
+    STATIC_CHECK(stepsCharged(StepCharge::PerGranule, 3 * Granule) == 3);
+    STATIC_CHECK(stepsCharged(StepCharge::PerGranule, UINT64_MAX) == UINT64_MAX / Granule);
+    for (auto const& row: isoline::runtime::StepChargeTable)
+        CHECK_FALSE(row.name.empty());
 }
 
 TEST_CASE("Store.pollNotifiesThenChecksTheInterrupt")

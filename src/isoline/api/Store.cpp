@@ -567,6 +567,18 @@ std::expected<void, CallError> Store::call(Function const& function,
     return std::unexpected { callError(invoked.outcome.error(), invoked.refusedGrowth) };
 }
 
+std::expected<void, CallError> Store::poll(BulkGranule granule) noexcept
+{
+    return _runtime.poll(PollSite::HostBulk, granule.bytes).transform_error([this](Trap const& trap) {
+        return CallError { .detail = trap, .refusedGrowth = _runtime.growthRecord() };
+    });
+}
+
+InvocationScope Store::openInvocation() noexcept
+{
+    return InvocationScope { _runtime };
+}
+
 Store const& Store::ownerOf(Extern const& value) noexcept
 {
     return std::visit([](auto const& handle) -> Store const& { return handle._link.owner(); }, value);

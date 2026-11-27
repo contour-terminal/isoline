@@ -204,6 +204,45 @@ struct StoreOptions
     IPollObserver* observer = nullptr;
 };
 
+/// Host work done since the last poll (Store::poll()): the bytes a component call's copy or transcode
+/// moved, which the embedder polls at least every BulkPollBytes of.
+struct BulkGranule
+{
+    uint64_t bytes = 0; ///< The bytes of work done since the last poll.
+};
+
+/// One invocation held open across several calls of a store (Store::openInvocation()), for as long as
+/// it lives: realloc, the callee and post-return of one component call, which share one step budget
+/// (StoreLimits::maxSteps) and one GrowthRecord, and are one outermost invocation for
+/// StoreLimits::maxNestedInvocations. Each call made directly in it counts that one invocation while it
+/// runs, the scope none of its own; each hop a host function makes back into the guest counts one more.
+/// One opened while another is open, or from a host function while a call runs, joins that invocation:
+/// it changes and counts nothing, and reports that invocation's record.
+///
+/// Move-only; closing it (its destruction) ends the invocation. Its store must outlive it, and no call
+/// made in it may still be running when it closes (checked).
+class InvocationScope
+{
+  public:
+    InvocationScope(InvocationScope&&) noexcept = default;
+    InvocationScope(InvocationScope const&) = delete;
+    InvocationScope& operator=(InvocationScope const&) = delete;
+    InvocationScope& operator=(InvocationScope&&) = delete;
+    ~InvocationScope() = default;
+
+    /// The first refused memory.grow and table.grow of the invocation, every call made directly in it
+    /// included; for a scope that joined another invocation, that invocation's.
+    /// @return The record so far.
+    [[nodiscard]] GrowthRecord const& refusedGrowth() const noexcept { return _held.refusedGrowth(); }
+
+  private:
+    friend class Store;
+
+    explicit InvocationScope(runtime::Store& store) noexcept: _held { store } {}
+
+    runtime::SharedInvocationScope _held;
+};
+
 /// A store: where instances live, with their memories, tables, globals and the host functions bound
 /// to them, under the limits of the engine it was made for, or those its StoreOptions override them
 /// with.
@@ -265,8 +304,8 @@ class Store
     /// How much of @p limit the store holds now: what an embedder reads to meter its guests or to
     /// share one budget between stores. A count or size reads what the store's entities take
     /// together; StackValues reads the frames in progress and NestedInvocations the invocations in
-    /// progress, 0 between calls; Steps reads the steps of the latest outermost call or
-    /// instantiation, the calls nested in it included, and keeps that after it ended; CallDepth reads 0,
+    /// progress, 0 between calls; Steps reads the steps of the latest outermost call, instantiation or
+    /// InvocationScope, the calls nested in it included, and keeps that after it ended; CallDepth reads 0,
     /// as the executor counts it while it runs.
     /// @param limit The limit.
     /// @return What the store holds of it, in the unit its LimitTable row names; at most its limit.
@@ -338,6 +377,25 @@ class Store
     [[nodiscard]] std::expected<void, CallError> call(Function const& function,
                                                       std::span<Value const> args,
                                                       std::span<Value> results) noexcept;
+
+    /// Polls the store after host work done on a call's behalf: a component call's copies and
+    /// transcodes poll at least every BulkPollBytes bytes. It notifies the poll observer
+    /// (PollSite::HostBulk), checks the interrupter, then charges max(1, bytes / BulkPollBytes) steps
+    /// against StoreLimits::maxSteps, whole or not at all: the rule of PollSiteTable's HostBulk row,
+    /// stepsCharged(). Precondition (checked): an invocation is in progress (a host function polls
+    /// from a call) or open (openInvocation()), whose budget it charges.
+    /// @param granule The host work done since the last poll.
+    /// @return Nothing to go on; or the CallError a call would end with: Trap{Interrupted} once the store
+    ///         was interrupted, else Trap{StepLimitExceeded}, no step charged, when the budget cannot take
+    ///         the charge; its refusedGrowth is the invocation's so far.
+    [[nodiscard]] std::expected<void, CallError> poll(BulkGranule granule) noexcept;
+
+    /// Opens one invocation: until the scope ends, every call made through this store (call(),
+    /// Instance::call()) with no other call running, such as realloc, the callee and post-return,
+    /// shares one step budget and one GrowthRecord, and is one outermost invocation for
+    /// maxNestedInvocations. Opened while a scope is open or a call runs, it joins that invocation.
+    /// @return The scope.
+    [[nodiscard]] InvocationScope openInvocation() noexcept;
 
     /// Adds a host function to the store, outside any instantiation: to define it as an import
     /// (Imports::define()), or to hand it to the guest in a table. The same implementation and type,

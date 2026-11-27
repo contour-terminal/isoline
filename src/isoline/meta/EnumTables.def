@@ -58,6 +58,7 @@ ISOLINE_LAST_ENUMERATOR(interpreter::LastSimdShape, "its table is interpreter/Si
 ISOLINE_ENUM_TABLE(runtime::LimitTable, runtime::LastLimit, runtime::LimitRow::limit)
 ISOLINE_ENUM_TABLE(runtime::LinkErrorTable, runtime::LastLinkErrorCode, runtime::LinkErrorRow::code)
 ISOLINE_ENUM_TABLE(runtime::PollSiteTable, runtime::LastPollSite, runtime::PollSiteRow::site)
+ISOLINE_ENUM_TABLE(runtime::StepChargeTable, runtime::LastStepCharge, runtime::StepChargeRow::charge)
 ISOLINE_ENUM_TABLE(runtime::RankTable, validate::LastHeapRank, runtime::RankRow::rank)
 ISOLINE_ENUM_TABLE(runtime::ReferenceTable, runtime::LastRefKind, runtime::ReferenceRow::kind)
 ISOLINE_ENUM_TABLE(runtime::RefusalTable, runtime::LastRefusal, runtime::RefusalRow::refusal)

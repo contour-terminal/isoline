@@ -243,6 +243,23 @@ stack budget (`maxStackValues`), one call depth (`maxCallDepth`: a Wasm frame a 
 `invoke()` reaches is one deeper than the frame that called the host) and one step budget (`maxSteps`,
 opened by the outermost).
 
+**One invocation across calls.** A component call is several core calls: `realloc`, the callee and
+`post-return`. `Store::openInvocation()` returns an `InvocationScope` (move-only) that holds one
+invocation open across them until it is destroyed: every call made through the store with no other
+call running shares its step budget and one `GrowthRecord` (read with `refusedGrowth()`, and reported
+as each failed call's `refusedGrowth`), and is the one outermost invocation for `maxNestedInvocations`,
+counted while it runs, the scope counting none of its own. Each hop a host function makes back into the
+guest counts one more, as ever. A scope opened while another is open, or from a host function while a
+call runs, joins that invocation and changes nothing. Destroying a scope while a call made in it still
+runs is a contract violation (checked).
+
+**Polling host work.** Host work done on a call's behalf (a component call's copies and transcodes)
+polls with `Store::poll(BulkGranule { bytes })` at least every `BulkPollBytes` (65536) bytes, from a
+host function or inside an `InvocationScope`: it notifies the observer at `PollSite::HostBulk`, checks
+the interrupter, and charges `max(1, bytes / BulkPollBytes)` steps against the invocation's budget,
+whole or not at all (`stepsCharged()`, the `host bulk` row below). It fails as a call would: with
+`Trap { Interrupted }`, else `Trap { StepLimitExceeded }`.
+
 Host functions are `IHostFunction`s, or `makeHostFunction()` of a `noexcept` callable. A host function
 reads its arguments, writes its results, or ends the call abruptly:
 
@@ -415,7 +432,7 @@ The block is generated from `runtime::LimitTable` and `StoreLimits {}`; `Publish
 fails, printing the block as it should read, when the two part. A frame costs its static size against
 `maxStackValues` (params, locals, its most operands, its deepest label nesting, and 1; a host frame its
 params, results and 1), so the call that exhausts the stack is the same in every engine. `maxSteps`
-counts one step per poll of a site that charges one (below); every outermost call and every outermost
+counts the steps each poll site charges (below); every outermost call and every outermost
 instantiation starts a fresh budget, while an instantiation a host function makes shares the budget of
 the call that reached it. The default is no limit.
 
@@ -484,6 +501,7 @@ At one poll the interrupt is checked before the step charge, so `Interrupted` be
 - **instantiation** (one step): on entry to instantiation, and before the start function when the module has one.
 - **unwind** (no step): every 4096 labels, catch clauses and frames an exception unwinds past.
 - **exception sweep** (one step): before every 4096 items an exception sweep visits, the first included, when an exception is allocated on a full arena and no host function is running; the items, in order: each value of the payload being allocated, each global, each slot of each table of exn type, each item of each element segment not dropped, each operand and each local of every active frame (every one, none pruned as dead), each slot of the exception arena (which grows to the high-water mark of slots not Free, reusing the lowest free address first), then each payload value of each exception found reachable, once per exception; a sweep a poll ends reclaims nothing, and the allocation ends with that poll's trap.
+- **host bulk** (a step per 65536 bytes, at least one): where the embedder polls its own bulk work (Store::poll), at least every 65536 bytes of a component call's copies and transcodes; it charges the step budget of the invocation in progress, which an invocation scope (Store::openInvocation) shares between the calls made directly in it, and a charge the budget cannot take whole is refused, charging nothing.
 <!-- poll-sites:end -->
 
 The block is generated from `runtime::PollSiteTable`, as the limits are. An `IPollObserver` given to the

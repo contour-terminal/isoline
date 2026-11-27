@@ -133,12 +133,16 @@ InvocationResult invokeChecked(Store& store,
         return InvocationResult { .entry = Entry::Entered,
                                   .outcome = std::unexpected { Abrupt { nesting.error() } },
                                   .refusedGrowth = {} };
+    // A call made directly in a held invocation (SharedInvocationScope) records into its record.
+    auto const isHeldDirectly = store.invocationDepth() == 0 && store.isInvocationHeld();
     auto const invocation = InvocationScope { store };
-    auto const scope = RefusalScope { store };
+    auto scope = std::optional<RefusalScope> {};
+    if (!isHeldDirectly)
+        scope.emplace(store);
     // Initializers run in order, so the record is read after the invocation, while the scope holds it.
     return InvocationResult { .entry = Entry::Entered,
                               .outcome = executor.invoke(store, function, args, results),
-                              .refusedGrowth = scope.record() };
+                              .refusedGrowth = store.growthRecord() };
 }
 
 std::expected<void, Abrupt> checkHostOutcome(Store const& store,

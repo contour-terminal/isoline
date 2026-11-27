@@ -117,11 +117,12 @@ struct StoreLimits
     /// How many tags the store may hold.
     uint32_t maxTags = 1'000'000;
 
-    /// How many steps the outermost invocation may take, the invocations nested in it included: one
-    /// step per poll whose PollSiteTable row charges one (StepCharge::OneStep). Poll sites are
+    /// How many steps the outermost invocation may take, the invocations nested in it included: what
+    /// each poll's PollSiteTable row charges (stepsCharged()). Poll sites are
     /// Wasm-level places, so the same module, inputs and limits exhaust the budget at the same point
     /// in every engine, in both execution modes. Past it, StepLimitExceeded. Every outermost
-    /// invocation, and every outermost instantiation, starts a fresh budget; an instantiation a host
+    /// invocation, and every outermost instantiation, starts a fresh budget, but for the calls made
+    /// directly in a held invocation (SharedInvocationScope), which share its budget; an instantiation a host
     /// function makes is nested in the call that reached the host, and shares its budget. The default is
     /// no limit.
     uint64_t maxSteps = std::numeric_limits<uint64_t>::max();

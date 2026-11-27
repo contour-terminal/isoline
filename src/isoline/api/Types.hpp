@@ -66,10 +66,14 @@ using runtime::IHostFunction;
 using runtime::makeHostFunction;
 
 // --- Interruption and polling ---
+using runtime::BulkPollBytes;
 using runtime::Interrupter;
 using runtime::InterruptState;
 using runtime::IPollObserver;
 using runtime::PollSite;
+using runtime::PollSiteTable;
+using runtime::StepCharge;
+using runtime::stepsCharged;
 
 // --- Memory allocation ---
 using runtime::HeapMemoryAllocator;

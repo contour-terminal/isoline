@@ -19,7 +19,7 @@
 
 using isoline::runtime::LimitTable;
 using isoline::runtime::PollSiteTable;
-using isoline::runtime::StepCharge;
+using isoline::runtime::StepChargeTable;
 using isoline::runtime::StoreLimits;
 
 namespace
@@ -85,7 +85,7 @@ std::vector<std::string> pollSiteLines()
     for (auto const& row: PollSiteTable)
         lines.push_back(std::format("- **{}** ({}): {}.",
                                     row.name,
-                                    row.charge == StepCharge::OneStep ? "one step" : "no step",
+                                    StepChargeTable[static_cast<std::size_t>(row.charge)].name,
                                     row.rule));
     return lines;
 }
