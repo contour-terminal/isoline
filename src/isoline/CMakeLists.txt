@@ -51,12 +51,14 @@ target_sources(isoline_core
         interpreter/Simd.cpp
         ${isolineFloatControl}
         runtime/ConstantExpression.cpp
+        runtime/CountingArena.cpp
         runtime/FloatEnvironment.cpp
         runtime/HostFunction.cpp
         runtime/Instantiate.cpp
         runtime/LinearMemory.cpp
         runtime/Store.cpp
         runtime/ValueCheck.cpp
+        runtime/ValueWords.cpp
         validate/Subtyping.cpp
         validate/ValidatedModule.cpp
         validate/Validator.cpp
@@ -95,6 +97,7 @@ target_sources(isoline_core
             meta/FixedText.hpp
             runtime/Abrupt.hpp
             runtime/ConstantExpression.hpp
+            runtime/CountingArena.hpp
             runtime/ExecutionMode.hpp
             runtime/FloatEnvironment.hpp
             runtime/HostFunction.hpp
@@ -110,6 +113,7 @@ target_sources(isoline_core
             runtime/Value.hpp
             runtime/ValueCheck.hpp
             runtime/ValueCheckTables.hpp
+            runtime/ValueWords.hpp
             validate/Subtyping.hpp
             validate/ValidatedModule.hpp
             validate/ValidationError.hpp

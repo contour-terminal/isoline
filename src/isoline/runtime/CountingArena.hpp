@@ -7,48 +7,50 @@
 #include <memory_resource>
 #include <optional>
 
-namespace isoline::fastinterpreter
+namespace isoline::runtime
 {
 
-/// Why a lowering arena refused an allocation.
-enum class RefusalReason : uint8_t
+/// Why a counting arena refused an allocation.
+enum class ArenaRefusalReason : uint8_t
 {
     Budget,     ///< It would have taken the arena past its budget: the module's compile budget.
     HostMemory, ///< The upstream resource could not provide it: the host is out of memory.
 };
 
-/// An allocation a lowering arena refused.
-struct Refusal
+/// An allocation a counting arena refused.
+struct ArenaRefusal
 {
-    RefusalReason reason = RefusalReason::Budget; ///< Why.
-    uint64_t requested = 0;                       ///< The bytes the allocation asked for.
+    ArenaRefusalReason reason = ArenaRefusalReason::Budget; ///< Why.
+    uint64_t requested = 0;                                 ///< The bytes the allocation asked for.
 
     /// Whether both record the same refusal.
-    [[nodiscard]] bool operator==(Refusal const&) const = default;
+    [[nodiscard]] bool operator==(ArenaRefusal const&) const = default;
 };
 
-/// What a reservation a lowering arena refused asked for, and what its budget had left.
-struct BudgetExceeded
+/// What a reservation a counting arena refused asked for, and what its budget had left.
+struct ArenaBudgetExceeded
 {
     uint64_t requested = 0; ///< The bytes the reservation asked for.
     uint64_t available = 0; ///< The bytes the budget had left beside what it had charged.
 
     /// Whether both record the same refusal.
-    [[nodiscard]] bool operator==(BudgetExceeded const&) const = default;
+    [[nodiscard]] bool operator==(ArenaBudgetExceeded const&) const = default;
 };
 
-/// The memory every container of lowered code allocates from, and the counter of the compile budget.
+/// The memory every container of a module's executable code allocates from, and the counter of the
+/// module's compile budget, shared by every engine that prepares code at load.
 ///
-/// A std::pmr::memory_resource that charges each allocation against a budget, and lets lowering
+/// A std::pmr::memory_resource that charges each allocation against a budget, and lets the engine
 /// reserve a bound before it does the work the bound covers, so a module over the budget is refused
 /// before its peak, not after it. Allocations draw on what is reserved first, then on the rest of the
 /// budget. Past the budget, allocate() throws std::bad_alloc, as the memory_resource contract has it;
-/// lower() turns that into its LoweringError at its boundary, and lastRefusal() says why.
+/// the engine turns that into its own error at its boundary (the fast interpreter's lower() into its
+/// LoweringError), and lastRefusal() says why.
 ///
-/// It is the injection seam of lowering's memory: a lowered module keeps its arena as long as its code
+/// It is the injection seam of that memory: a prepared module keeps its arena as long as its code
 /// lives. An arena is not safe to use from two threads at once; a module's arena allocates only while
-/// the module is lowered, and frees when the module is destroyed.
-class ILoweringArena: public std::pmr::memory_resource
+/// the module is prepared, and frees when the module is destroyed.
+class ICountingArena: public std::pmr::memory_resource
 {
   public:
     /// The bytes the arena may charge at once.
@@ -70,7 +72,7 @@ class ILoweringArena: public std::pmr::memory_resource
     /// Charges @p bytes against the budget ahead of the allocations that will draw on them.
     /// @param bytes The bytes to reserve.
     /// @return Nothing, or what the refused reservation asked for and what the budget had left.
-    [[nodiscard]] virtual std::expected<void, BudgetExceeded> reserve(uint64_t bytes) noexcept = 0;
+    [[nodiscard]] virtual std::expected<void, ArenaBudgetExceeded> reserve(uint64_t bytes) noexcept = 0;
 
     /// Returns @p bytes of a reservation no allocation drew on.
     ///
@@ -80,17 +82,17 @@ class ILoweringArena: public std::pmr::memory_resource
 
     /// The last allocation the arena refused.
     /// @return It, or nullopt when the arena refused none.
-    [[nodiscard]] virtual std::optional<Refusal> lastRefusal() const noexcept = 0;
+    [[nodiscard]] virtual std::optional<ArenaRefusal> lastRefusal() const noexcept = 0;
 
-    /// The host's memory the arena draws on: where what owns the arena itself, the lowered module's
+    /// The host's memory the arena draws on: where what owns the arena itself, the prepared module's
     /// own record, is allocated, uncharged, as it cannot come from the arena it keeps alive.
     /// @return The resource, which outlives the arena.
     [[nodiscard]] virtual std::pmr::memory_resource& hostResource() const noexcept = 0;
 };
 
-/// A lowering arena that counts what it charges against a fixed budget and takes its memory from an
+/// The counting arena: it counts what it charges against a fixed budget and takes its memory from an
 /// upstream resource.
-class CountingArena final: public ILoweringArena
+class CountingArena final: public ICountingArena
 {
   public:
     /// An arena of @p budget bytes over @p upstream.
@@ -103,9 +105,9 @@ class CountingArena final: public ILoweringArena
     [[nodiscard]] uint64_t charged() const noexcept override;
     [[nodiscard]] uint64_t reserved() const noexcept override;
     [[nodiscard]] uint64_t peak() const noexcept override;
-    [[nodiscard]] std::expected<void, BudgetExceeded> reserve(uint64_t bytes) noexcept override;
+    [[nodiscard]] std::expected<void, ArenaBudgetExceeded> reserve(uint64_t bytes) noexcept override;
     void release(uint64_t bytes) noexcept override;
-    [[nodiscard]] std::optional<Refusal> lastRefusal() const noexcept override;
+    [[nodiscard]] std::optional<ArenaRefusal> lastRefusal() const noexcept override;
     [[nodiscard]] std::pmr::memory_resource& hostResource() const noexcept override;
 
   private:
@@ -121,7 +123,7 @@ class CountingArena final: public ILoweringArena
     uint64_t _charged = 0;
     uint64_t _reserved = 0; ///< The part of _charged reserved and not yet drawn on.
     uint64_t _peak = 0;
-    std::optional<Refusal> _lastRefusal;
+    std::optional<ArenaRefusal> _lastRefusal;
 };
 
-} // namespace isoline::fastinterpreter
+} // namespace isoline::runtime

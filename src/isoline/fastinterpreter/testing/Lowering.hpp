@@ -22,7 +22,7 @@
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Listing.hpp>
 #include <isoline/fastinterpreter/Lowering.hpp>
-#include <isoline/fastinterpreter/LoweringArena.hpp>
+#include <isoline/runtime/CountingArena.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
 /// What the lowering tests share: modules of one function, lowered under a budget, and their listings.
@@ -69,9 +69,9 @@ inline constexpr auto DefaultBudget = uint64_t { 256 } * 1024 * 1024;
 }
 
 /// A counting arena of @p budget bytes over the global heap.
-[[nodiscard]] inline std::shared_ptr<CountingArena> arenaOf(uint64_t budget = DefaultBudget)
+[[nodiscard]] inline std::shared_ptr<runtime::CountingArena> arenaOf(uint64_t budget = DefaultBudget)
 {
-    return std::make_shared<CountingArena>(budget, *std::pmr::new_delete_resource());
+    return std::make_shared<runtime::CountingArena>(budget, *std::pmr::new_delete_resource());
 }
 
 /// @p module lowered with @p config under the default budget.
