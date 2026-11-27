@@ -3,6 +3,7 @@
 
 #include <core/Assert.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -120,6 +121,12 @@ class ScopeAssembly
     /// @return The pool index of its root here.
     uint32_t adopt(ScopeAssembly child, ScopeKind kind)
     {
+        // Only a component type declares imports (DeclarationTable): the decoder refuses one elsewhere.
+        Require(
+            kind != ScopeKind::InstanceType
+            || std::ranges::none_of(child._components.front().definitions, [](Definition const& definition) {
+                   return std::holds_alternative<ImportDefinition>(definition);
+               }));
         auto const scopeBase = static_cast<uint32_t>(_components.size());
         auto const byteBase = static_cast<uint64_t>(_bytes.size());
         child._components.front().kind = kind;
@@ -417,7 +424,8 @@ class ComponentBuilder
     /// @return Its index in the index space of its sort.
     uint32_t definition(Definition definition)
     {
-        Require(!namesPoolParts(definition));
+        // An export declaration belongs to a component or instance type, never to a component.
+        Require(!namesPoolParts(definition) && !std::holds_alternative<ExportDeclaration>(definition));
         return _scope.add(std::move(definition));
     }
 

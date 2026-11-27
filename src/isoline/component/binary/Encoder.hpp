@@ -24,7 +24,9 @@ namespace isoline::component::binary
 /// nullable reference to an abstract heap as its shorthand, a memory of 64 KiB pages without the
 /// custom-page-sizes field). Core module bytes and custom section payloads are copied verbatim.
 /// Nested components and type scopes are written from an explicit stack, never by recursion, in
-/// time and memory linear in the output.
+/// time and memory linear in the output: the output once while it is laid out and once written,
+/// plus a constant per pool entry (its layout, its piece list and one piece per nested scope: about
+/// 100 bytes per scope on libstdc++).
 ///
 /// Precondition: @p pool is well formed, as decodeComponent() and testing::ComponentBuilder make
 /// pools: entry 0 is a component; each NestedComponent, ComponentTypeDefinition and

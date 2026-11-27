@@ -59,13 +59,11 @@ namespace
         uint8_t code;          ///< Its code, an s7.
     };
 
-    /// Every abstract heap type a decoded core type may name, and those of GC.
+    /// Every abstract heap type a decoded core type may name: the core decoder's own rows, no GC heap.
     constexpr auto AbstractHeapCodes = std::to_array<AbstractHeapRow>({
         { .kind = AbstractHeapType::Func, .code = 0x70 },
         { .kind = AbstractHeapType::Extern, .code = 0x6F },
         { .kind = AbstractHeapType::Exn, .code = 0x69 },
-        { .kind = AbstractHeapType::NoFunc, .code = 0x73 },
-        { .kind = AbstractHeapType::NoExtern, .code = 0x72 },
         { .kind = AbstractHeapType::NoExn, .code = 0x74 },
     });
 
@@ -945,9 +943,10 @@ std::expected<std::vector<std::byte>, DecodeError> canonicalizeComponent(std::sp
     auto pool = decodeComponent(bytes, features, limits);
     if (!pool)
         return std::unexpected { pool.error() };
-    // The canonical modules are appended to a copy of the input, and their definitions re-pointed.
+    // The new bytes hold the canonical modules and the custom payloads, each definition re-pointed to
+    // its copy: nothing else of the input is referenced, so the input is not copied whole.
     auto const& original = *pool->bytes;
-    auto canonicalBytes = original;
+    auto canonicalBytes = std::vector<std::byte> {};
     for (auto const& position: coreModulePositions(*pool))
     {
         auto& module =
@@ -959,6 +958,18 @@ std::expected<std::vector<std::byte>, DecodeError> canonicalizeComponent(std::sp
         module.offset = canonicalBytes.size();
         module.size = canonicalModule->size();
         canonicalBytes.insert(canonicalBytes.end(), canonicalModule->begin(), canonicalModule->end());
+    }
+    for (auto& scope: pool->components)
+    {
+        for (auto& definition: scope.definitions)
+        {
+            if (auto* custom = std::get_if<CustomDefinition>(&definition))
+            {
+                auto const payload = std::span { original }.subspan(custom->offset, custom->size);
+                custom->offset = canonicalBytes.size();
+                canonicalBytes.insert(canonicalBytes.end(), payload.begin(), payload.end());
+            }
+        }
     }
     pool->bytes = std::make_shared<std::vector<std::byte> const>(std::move(canonicalBytes));
     return encodeComponent(*pool);

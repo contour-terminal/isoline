@@ -359,6 +359,31 @@ namespace
         { .id = 12, .gate = ComponentFeature::Values, .decode = &ComponentDecoder::unimplementedSection },
     });
 
+    static_assert(std::ranges::all_of(DefinitionSectionTable,
+                                      [](DefinitionSectionRow const& written) {
+                                          return written.grouping == SectionGrouping::Declaration
+                                                 || std::ranges::any_of(
+                                                     SectionTable, [&](SectionRow const& read) {
+                                                         return read.id == written.id && !read.gate
+                                                                && (read.shape == SectionShape::Scope)
+                                                                       == (written.id == ComponentSectionId);
+                                                     });
+                                      }),
+                  "every section the encoder writes is one the decoder reads, ungated and of the same shape");
+
+    static_assert(std::ranges::all_of(SectionTable,
+                                      [](SectionRow const& read) {
+                                          return read.gate.has_value()
+                                                 || std::ranges::any_of(
+                                                     DefinitionSectionTable,
+                                                     [&](DefinitionSectionRow const& written) {
+                                                         return written.id == read.id
+                                                                && written.grouping
+                                                                       != SectionGrouping::Declaration;
+                                                     });
+                                      }),
+                  "every ungated section the decoder reads is one the encoder writes");
+
     /// The sort the kind bytes @p first and @p second name in @p rows.
     /// @param second The byte after a @p first of 0x00, or nothing.
     /// @param offset Where @p first was read; @p second follows it.

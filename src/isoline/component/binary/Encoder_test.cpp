@@ -67,6 +67,7 @@ using isoline::component::binary::LabeledType;
 using isoline::component::binary::NameAttributes;
 using isoline::component::binary::NestedComponent;
 using isoline::component::binary::PrimitiveValueType;
+using isoline::component::binary::PrimitiveValueTypeTable;
 using isoline::component::binary::ScopeKind;
 using isoline::component::binary::Sort;
 using isoline::component::binary::SortIndex;
@@ -174,14 +175,28 @@ consteval std::size_t kindOf()
         return kindOf<Alternative, Index + 1>();
 }
 
+/// The options of a CanonCase.
+enum class CaseOptions : uint8_t
+{
+    None,    ///< No options.
+    Memory9, ///< `(memory 9)`.
+};
+
+/// The result list of a CanonCase.
+enum class CaseResult : uint8_t
+{
+    None, ///< No result: the empty result list.
+    U32,  ///< `u32`.
+};
+
 /// A canon definition of @p builtin's row with the given immediates, for the hand-built pools.
 struct CanonCase
 {
-    uint8_t opcode;                   ///< The row's opcode.
-    std::vector<uint8_t> bytes;       ///< Binary.md's encoding after the opcode, transcribed by hand.
-    std::vector<uint32_t> immediates; ///< What CanonDefinition::immediates stores.
-    bool withOptions = false;         ///< Whether the options are `(memory 9)`.
-    bool withResult = false;          ///< Whether the result list is `u32`.
+    uint8_t opcode;                          ///< The row's opcode.
+    std::vector<uint8_t> bytes;              ///< Binary.md's encoding after the opcode, transcribed by hand.
+    std::vector<uint32_t> immediates;        ///< What CanonDefinition::immediates stores.
+    CaseOptions options = CaseOptions::None; ///< The options it is given.
+    CaseResult result = CaseResult::None;    ///< The result list it is given.
 };
 
 } // namespace
@@ -194,6 +209,28 @@ TEST_CASE("Encoder.roundTripsEveryDecoderFixture")
         auto const pool = decoded(fixture.bytes);
         CHECK(encodeComponent(pool) == fixture.bytes);
         CHECK(canonical(fixture.bytes) == fixture.bytes);
+    }
+}
+
+TEST_CASE("Encoder.fixturesHoldEverySectionKind")
+{
+    // Every Definition alternative a component holds, so every row of the encoder's section table, is
+    // round-tripped by some decoder fixture; only the type scopes' export declaration is not one.
+    auto seen = std::vector<bool>(std::variant_size_v<Definition>);
+    for (auto const& fixture: decoderFixtures())
+    {
+        for (auto const& scope: decoded(fixture.bytes).components)
+        {
+            if (scope.kind != ScopeKind::Component)
+                continue;
+            for (auto const& definition: scope.definitions)
+                seen[definition.index()] = true;
+        }
+    }
+    for (auto const index: std::views::iota(std::size_t { 0 }, seen.size()))
+    {
+        INFO("Definition alternative " << index);
+        CHECK(seen[index] == (index != kindOf<ExportDeclaration>()));
     }
 }
 
@@ -446,6 +483,13 @@ TEST_CASE("Encoder.everyDefinedValueType")
     REQUIRE(cases.size() == DefinedValueTypeTable.size() + 1);
     for (auto const& [type, bytes]: cases)
     {
+        // A primitive's gate is its PrimitiveValueTypeTable row's, a compound's its DefinedValueTypeTable
+        // row's.
+        auto const gate =
+            type.index() == 0
+                ? PrimitiveValueTypeTable[static_cast<std::size_t>(std::get<PrimitiveValueType>(type))].gate
+                : DefinedValueTypeTable[type.index() - 1].gate;
+        auto const refused = gate && componentFeatureRow(*gate).p11 == Implementation::Refused;
         auto literal = Bytes {};
         appendBytes(literal, bytes);
         auto const expected = oneOf(7, literal);
@@ -455,8 +499,14 @@ TEST_CASE("Encoder.everyDefinedValueType")
         CHECK(built.components.front().definitions.front() == Definition { TypeDefinition { .type = type } });
         // Where P11 decodes it, the round trip holds too; 🔧 and 📝 are refused at decode.
         auto const pool = decodeComponent(expected, everyFeature(), ComponentLimits {});
-        if (pool.has_value())
-            CHECK(encodeComponent(*pool) == expected);
+        if (refused)
+        {
+            REQUIRE_FALSE(pool.has_value());
+            CHECK(pool.error().code == DecodeErrorCode::FeatureDisabled);
+            continue;
+        }
+        REQUIRE(pool.has_value());
+        CHECK(encodeComponent(*pool) == expected);
     }
 }
 
@@ -469,11 +519,11 @@ TEST_CASE("Encoder.everyCanonRow")
         { .opcode = 0x00,
           .bytes = { 0x00, 0x05, 0x01, 0x03, 0x09, 0x06 },
           .immediates = { 5, 6 },
-          .withOptions = true },
+          .options = CaseOptions::Memory9 },
         { .opcode = 0x01,
           .bytes = { 0x00, 0x05, 0x01, 0x03, 0x09 },
           .immediates = { 5 },
-          .withOptions = true },
+          .options = CaseOptions::Memory9 },
         { .opcode = 0x02, .bytes = { 0x05 }, .immediates = { 5 } },
         { .opcode = 0x03, .bytes = { 0x05 }, .immediates = { 5 } },
         { .opcode = 0x04, .bytes = { 0x05 }, .immediates = { 5 } },
@@ -482,28 +532,40 @@ TEST_CASE("Encoder.everyCanonRow")
         { .opcode = 0x09,
           .bytes = { 0x00, 0x79, 0x01, 0x03, 0x09 },
           .immediates = {},
-          .withOptions = true,
-          .withResult = true },
+          .options = CaseOptions::Memory9,
+          .result = CaseResult::U32 },
         { .opcode = 0x0A, .bytes = { 0x7E, 0x05 }, .immediates = { 1, 5 } },
         { .opcode = 0x0B, .bytes = { 0x7E, 0x05 }, .immediates = { 1, 5 } },
         { .opcode = 0x0C, .bytes = { 0x00 }, .immediates = {} },
         { .opcode = 0x0D, .bytes = {}, .immediates = {} },
         { .opcode = 0x0E, .bytes = { 0x05 }, .immediates = { 5 } },
-        { .opcode = 0x0F, .bytes = { 0x05, 0x01, 0x03, 0x09 }, .immediates = { 5 }, .withOptions = true },
-        { .opcode = 0x10, .bytes = { 0x05, 0x01, 0x03, 0x09 }, .immediates = { 5 }, .withOptions = true },
+        { .opcode = 0x0F,
+          .bytes = { 0x05, 0x01, 0x03, 0x09 },
+          .immediates = { 5 },
+          .options = CaseOptions::Memory9 },
+        { .opcode = 0x10,
+          .bytes = { 0x05, 0x01, 0x03, 0x09 },
+          .immediates = { 5 },
+          .options = CaseOptions::Memory9 },
         { .opcode = 0x11, .bytes = { 0x05, 0x01 }, .immediates = { 5, 1 } },
         { .opcode = 0x12, .bytes = { 0x05, 0x01 }, .immediates = { 5, 1 } },
         { .opcode = 0x13, .bytes = { 0x05 }, .immediates = { 5 } },
         { .opcode = 0x14, .bytes = { 0x05 }, .immediates = { 5 } },
         { .opcode = 0x15, .bytes = { 0x05 }, .immediates = { 5 } },
-        { .opcode = 0x16, .bytes = { 0x05, 0x01, 0x03, 0x09 }, .immediates = { 5 }, .withOptions = true },
-        { .opcode = 0x17, .bytes = { 0x05, 0x01, 0x03, 0x09 }, .immediates = { 5 }, .withOptions = true },
+        { .opcode = 0x16,
+          .bytes = { 0x05, 0x01, 0x03, 0x09 },
+          .immediates = { 5 },
+          .options = CaseOptions::Memory9 },
+        { .opcode = 0x17,
+          .bytes = { 0x05, 0x01, 0x03, 0x09 },
+          .immediates = { 5 },
+          .options = CaseOptions::Memory9 },
         { .opcode = 0x18, .bytes = { 0x05, 0x01 }, .immediates = { 5, 1 } },
         { .opcode = 0x19, .bytes = { 0x05, 0x01 }, .immediates = { 5, 1 } },
         { .opcode = 0x1A, .bytes = { 0x05 }, .immediates = { 5 } },
         { .opcode = 0x1B, .bytes = { 0x05 }, .immediates = { 5 } },
-        { .opcode = 0x1C, .bytes = { 0x01, 0x03, 0x09 }, .immediates = {}, .withOptions = true },
-        { .opcode = 0x1D, .bytes = { 0x01, 0x03, 0x09 }, .immediates = {}, .withOptions = true },
+        { .opcode = 0x1C, .bytes = { 0x01, 0x03, 0x09 }, .immediates = {}, .options = CaseOptions::Memory9 },
+        { .opcode = 0x1D, .bytes = { 0x01, 0x03, 0x09 }, .immediates = {}, .options = CaseOptions::Memory9 },
         { .opcode = 0x1E, .bytes = {}, .immediates = {} },
         { .opcode = 0x1F, .bytes = {}, .immediates = {} },
         { .opcode = 0x20, .bytes = { 0x00, 0x05 }, .immediates = { 5 } },
@@ -536,11 +598,11 @@ TEST_CASE("Encoder.everyCanonRow")
         auto const definition = CanonDefinition {
             .builtin = row.builtin,
             .immediates = expected.immediates,
-            .options = expected.withOptions
+            .options = expected.options == CaseOptions::Memory9
                            ? std::vector<CanonOption> { { .kind = CanonOptionKind::Memory, .index = 9 } }
                            : std::vector<CanonOption> {},
             .result =
-                expected.withResult
+                expected.result == CaseResult::U32
                     ? std::optional { isoline::component::binary::ValueTypeRef { PrimitiveValueType::U32 } }
                     : std::nullopt,
         };
