@@ -125,9 +125,28 @@ function itself: the macros never go inside one, and the C boundary's catch-all 
 never hold one. The macros never appear in a header: an inline function compiled under two semantics keeps
 whichever copy the linker picks.
 
+The AST lint `enum-tables-current` (`scripts/check-enum-tables.py`, below) enforces the try rule from the
+same dump of every source file: it refuses `ISOLINE_PRECONDITION` and `ISOLINE_INVARIANT` invoked inside a
+try block or a function-try-block, a constructor's included, and inside a handler of a try that is itself
+inside one. A lambda (or a local class's member function) is a function of its own: a macro in a
+`noexcept` lambda defined inside a try block is allowed, because the lambda's own `noexcept` boundary
+ends the process before any handler of the enclosing function is reached, and the native macro proves
+the lambda `noexcept`. A try block inside the lambda is refused like any other. The lint finds a macro
+by the name at its invocation, so a macro invoked through another macro is not seen.
+
 `scripts/check-contract-spelling.py` (tests `contract-spelling` and `contract-spelling-selftest`, label
-`lint`) refuses a raw `contract_assert` in a `.cpp` under `src/isoline`: one that bypasses the macros
-also bypasses their `noexcept` proof. Its rules are rows of `RULES`.
+`lint`) checks the spelling. Its rules are rows of `RULES`, and its fixtures are the cases of
+`scripts/testdata/contract-spelling/`:
+
+| Files | Refused | Why |
+|---|---|---|
+| `src/isoline/**/*.cpp` | a raw `contract_assert` | it bypasses the macros, and their `noexcept` proof |
+| `src/isoline/**/*.{hpp,def}`, installed or private, except the two seam headers | `ISOLINE_PRECONDITION`, `ISOLINE_INVARIANT`, `contract_assert`, and a `pre`/`post` specifier after a declarator (`) pre(`, `) const noexcept post(`; not a call such as `loop.post(`) | contracts stay out of headers until P19 Task 16 |
+| installed headers (every `FILE_SET HEADERS` of `src/isoline/**/CMakeLists.txt`) | `#include <isoline/meta/…>` other than `EnumRows.hpp` | an installed header includes only `meta/EnumRows.hpp` |
+
+Comments are never code, and literals are blanked for every pattern but an `#include`. On success the lint
+prints how many `Require()`s the installed headers keep (15): an installed declaration must parse as
+C++23, so they stay until one may carry a contract.
 
 ### The semantic is `enforce`
 

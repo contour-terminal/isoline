@@ -40,6 +40,17 @@ is cached (--cache), keyed by its compile command and the content of the file, o
 src/isoline/ and the generated headers, of the Clang binary that dumps it (as invoked, a wrapper
 included), and of this script: a time stamp alone invalidates nothing.
 
+The same dump serves one more rule, which needs the AST for the same reason: the contracts seam's macros,
+ISOLINE_PRECONDITION and ISOLINE_INVARIANT, are refused inside a try block or a function-try-block (a
+constructor's included), and inside a handler of a try that is itself inside one. A violation handler an
+embedder installs may throw, and in a noexcept function its exception ends the process where the check
+fails, unless a try block around the check catches it and the call goes on (docs/language-features.md).
+A lambda, or a local class's member function, is a function of its own: a macro in a noexcept lambda
+defined inside a try block is not refused, since the lambda's own noexcept boundary ends the process
+before any handler of the enclosing function is reached (the native macro proves the lambda noexcept); a
+try block inside the lambda is refused like any other. A macro is found by the name at the place it is
+invoked, so one invoked through another macro carries that macro's name, and is not seen.
+
 Exit status: 0 clean, 1 findings, 2 a tool error (Clang failed, a row type the lint cannot find, an
 ambiguous field type).
 
@@ -69,7 +80,14 @@ BLOCK = "source-local-tables"
 DUMP_FILTER = "isoline"
 
 # Bumped when what a cached result means changes.
-CACHE_VERSION = "3"
+CACHE_VERSION = "4"
+
+# The contracts seam's macros, refused inside a try block.
+CONTRACT_MACROS = (b"ISOLINE_PRECONDITION", b"ISOLINE_INVARIANT")
+
+# The declarations that begin a function of their own: a try block outside one does not enclose its body.
+FUNCTION_KINDS = ("FunctionDecl", "CXXMethodDecl", "CXXConstructorDecl", "CXXDestructorDecl",
+                  "CXXConversionDecl", "LambdaExpr", "CXXRecordDecl", "BlockDecl")
 
 # Files under src/isoline/ the lint skips: tests, their helpers, and the reflection checks' own sources.
 SKIPPED = (re.compile(r"_test\.cpp$"), re.compile(r"(^|/)testing/"), re.compile(r"^meta/reflection/"))
@@ -258,6 +276,7 @@ class Index:
         self.byLeaf = {}     # leaf name -> qualified names
         self.records = {}    # qualified name -> (first field's type, record scope) or (None, scope)
         self.arrays = []     # (file, name, row as written, scope, scope kinds)
+        self.inTry = set()   # (file, offset, token length): a macro invoked inside a try block
         self.currentFile = None
 
     def addType(self, scope, name, kind):
@@ -279,16 +298,34 @@ class Index:
             for item in value:
                 self.track(item)
 
+    def expansionIn(self, node):
+        """Where the macro @p node was expanded from was invoked, as (file, offset, token length), or None
+        for a node that is no macro's; the file in force is left as it was."""
+        begin = node.get("range", {}).get("begin", {})
+        expansion = begin.get("expansionLoc")
+        if expansion is None or "offset" not in expansion:
+            return None
+        before = self.currentFile
+        self.track(begin.get("spellingLoc", {}))
+        self.track(expansion)
+        file = self.currentFile
+        self.currentFile = before
+        return file, expansion["offset"], expansion.get("tokLen", 0)
+
     def walk(self, root):
         """Indexes @p root, a top-level declaration of the dump, in document order."""
-        # A stack of (node, scope, scope kinds) to visit, and markers that end nothing: the scope travels
-        # with each node, so leaving one needs no bookkeeping.
-        stack = [(root, [], [])]
+        # A stack of (node, scope, scope kinds, inside a try block) to visit, and markers that end
+        # nothing: the scope travels with each node, so leaving one needs no bookkeeping.
+        stack = [(root, [], [], False)]
         while stack:
-            node, scope, kinds = stack.pop()
+            node, scope, kinds, inTry = stack.pop()
             if not isinstance(node, dict):
                 continue
             kind = node.get("kind")
+            if inTry:
+                expansion = self.expansionIn(node)
+                if expansion is not None and expansion[0] is not None:
+                    self.inTry.add(expansion)
             self.track(node.get("loc", {}))
             file = self.currentFile
             for key, value in node.items():
@@ -312,8 +349,12 @@ class Index:
                     self.arrays.append((file, name, row, list(scope), list(kinds)))
             if kind in SHADOWS:
                 continue  # it repeats the declaration it brings in, which is indexed where it is declared
-            for child in reversed(node.get("inner", [])):
-                stack.append((child, childScope, childKinds))
+            children = node.get("inner", [])
+            childrenInTry = [inTry and kind not in FUNCTION_KINDS] * len(children)
+            if kind == "CXXTryStmt" and children:
+                childrenInTry[0] = True  # the try block; the handlers are as the try statement is
+            for child, childInTry in reversed(list(zip(children, childrenInTry))):
+                stack.append((child, childScope, childKinds, childInTry))
 
     def record(self, node, scope, kinds, name):
         """Indexes a class definition: its name and its first field. The class a definition implicitly
@@ -389,7 +430,33 @@ class Index:
             raise ToolError(f"no class definition found for the row type {row} (in {'::'.join(scope)})")
         return None
 
+    def contractsInTry(self):
+        """Every contract macro the lint is responsible for invoked inside a try block: (file, line,
+        macro), read from the file at the place of the invocation."""
+        found = set()
+        texts = {}
+        for file, offset, length in self.inTry:
+            path = (self.directory / file).resolve()
+            try:
+                relative = path.relative_to(self.sources).as_posix()
+            except ValueError:
+                continue
+            if isSkipped(relative):
+                continue
+            if path not in texts:
+                texts[path] = path.read_bytes()
+            text = texts[path]
+            macro = text[offset:offset + length]
+            if macro in CONTRACT_MACROS:
+                found.add((relative, text.count(b"\n", 0, offset) + 1, macro.decode()))
+        return [list(entry) for entry in sorted(found)]
+
     def result(self):
+        """What the lint is responsible for: every std::array variable, (file, name, whether
+        enum-first), under "tables", and every contract macro inside a try block under "contractsInTry"."""
+        return {"tables": self.tables(), "contractsInTry": self.contractsInTry()}
+
+    def tables(self):
         """Every std::array variable the lint is responsible for: (file, name, whether enum-first)."""
         tables = {}
         for file, name, row, scope, kinds in self.arrays:
@@ -497,7 +564,8 @@ def compilerIdentity(compiler, identities):
 
 
 def scan(root, compileCommands, clang, cache, jobs):
-    """Every std::array variable the lint covers, over every translation unit: (file, name, enum-first)."""
+    """Over every translation unit: every std::array variable the lint covers, {(file, name): enum-first},
+    and every contract macro inside a try block, a sorted list of (file, line, macro)."""
     sources = (root / SOURCES).resolve()
     units = unitsOf(compileCommands, sources)
     if not units:
@@ -516,7 +584,7 @@ def scan(root, compileCommands, clang, cache, jobs):
         if cached is not None and cached.is_file():
             stored = json.loads(cached.read_text(encoding="utf-8"))
             if stored.get("key") == key:
-                results[relative] = stored["tables"]
+                results[relative] = stored["result"]
                 continue
         pending[relative] = (arguments, entry["directory"], key, cached)
     with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
@@ -524,17 +592,26 @@ def scan(root, compileCommands, clang, cache, jobs):
                    for relative, (arguments, directory, _, _) in pending.items()}
         for future in concurrent.futures.as_completed(futures):
             relative = futures[future]
-            tables = future.result()
-            results[relative] = tables
+            result = future.result()
+            results[relative] = result
             _, _, key, cached = pending[relative]
             if cached is not None:
                 cached.parent.mkdir(parents=True, exist_ok=True)
-                cached.write_text(json.dumps({"key": key, "tables": tables}), encoding="utf-8")
+                cached.write_text(json.dumps({"key": key, "result": result}), encoding="utf-8")
     merged = {}
-    for tables in results.values():
-        for file, name, enumFirst in tables:
+    inTry = set()
+    for result in results.values():
+        for file, name, enumFirst in result["tables"]:
             merged[(file, name)] = merged.get((file, name), False) or enumFirst
-    return merged
+        inTry.update(tuple(entry) for entry in result["contractsInTry"])
+    return merged, sorted(inTry)
+
+
+def contractsInTryProblems(inTry):
+    """The findings of the try-block rule, one message each."""
+    return [f"src/isoline/{file}:{line}: {macro} inside a try block: a throwing violation handler's exception "
+            f"could be caught there, and the call go on past the failed check; check outside the try, or "
+            f"keep Require" for file, line, macro in inTry]
 
 
 def escapedArrays(root, compileCommands):
@@ -609,19 +686,20 @@ def main():
     parser.add_argument("--update", action="store_true", help="rewrite the document's block")
     arguments = parser.parse_args()
     try:
-        tables = scan(arguments.root.resolve(), arguments.compile_commands.resolve(), arguments.clang,
-                      arguments.cache, arguments.jobs)
+        tables, inTry = scan(arguments.root.resolve(), arguments.compile_commands.resolve(), arguments.clang,
+                             arguments.cache, arguments.jobs)
     except ToolError as error:
         print(f"check-enum-tables: {error}", file=sys.stderr)
         return 2
     problems = escapedArrays(arguments.root.resolve(), arguments.compile_commands.resolve()) \
-        + check(arguments.root, tables, arguments.update)
+        + check(arguments.root, tables, arguments.update) + contractsInTryProblems(inTry)
     for problem in problems:
         print(problem, file=sys.stderr)
     if problems:
         return 1
     count = sum(1 for enumFirst in tables.values() if enumFirst)
-    print(f"source-local enum tables: {count} found, each registered; {DOCUMENT} lists them")
+    print(f"source-local enum tables: {count} found, each registered; {DOCUMENT} lists them; "
+          f"no contract macro inside a try block")
     return 0
 
 

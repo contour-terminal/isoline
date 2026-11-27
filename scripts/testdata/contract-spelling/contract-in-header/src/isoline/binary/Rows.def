@@ -1,0 +1,2 @@
+// A table that asserts.
+ROW(contract_assert(true))

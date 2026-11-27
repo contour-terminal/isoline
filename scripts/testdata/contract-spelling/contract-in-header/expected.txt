@@ -1,0 +1,5 @@
+exit: 1
+src/isoline/binary/Rows.def:2: contract-in-header: contracts stay out of headers until P19 Task 16
+src/isoline/runtime/Private.hpp:8: contract-in-header: contracts stay out of headers until P19 Task 16
+src/isoline/runtime/Private.hpp:12: contract-in-header: contracts stay out of headers until P19 Task 16
+src/isoline/runtime/Private.hpp:17: contract-in-header: contracts stay out of headers until P19 Task 16

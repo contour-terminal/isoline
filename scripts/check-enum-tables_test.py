@@ -222,6 +222,94 @@ int const Global = isoline::lib::qualified() + [] {
 ESCAPED_LINES = {6, 10, 29, 35, 39}
 
 
+# The contracts seam's macros, spelled as the fallback spells them: what the lint reads is the macro's
+# name where it is invoked, not its expansion.
+CHECK = """\
+#pragma once
+#define Require(cond) do { if (!(cond)) { __builtin_abort(); } } while (false)
+#define ISOLINE_PRECONDITION(condition) Require(condition)
+#define ISOLINE_INVARIANT(condition) Require(condition)
+"""
+
+# The macros inside a try block or a function-try-block, a constructor's included, and in a handler of
+# a try nested in one, are flagged (by line); in a handler of an outermost try, after a try, as a plain
+# Require, and in a noexcept lambda defined inside a try block, whose own noexcept boundary ends the
+# process before any handler of the enclosing function is reached, they are not. A try block in such a
+# lambda is the lambda's own, and flagged.
+TRY_BLOCKS = """\
+#include "Check.hpp"
+namespace isoline::lib
+{
+int inTryBlock(int x) noexcept
+{
+    try
+    {
+        ISOLINE_PRECONDITION(x > 0);
+        Require(x > 1);
+    }
+    catch (...)
+    {
+        ISOLINE_INVARIANT(x > 2);
+    }
+    ISOLINE_INVARIANT(x > 3);
+    return x;
+}
+int functionTryBlock(int x) noexcept
+try
+{
+    ISOLINE_INVARIANT(x > 4);
+    return x;
+}
+catch (...)
+{
+    return 0;
+}
+int lambdaInTryBlock(int x) noexcept
+{
+    try
+    {
+        auto const check = [x]() noexcept { ISOLINE_PRECONDITION(x > 5); };
+        check();
+        auto const ownTry = [x]() noexcept {
+            try
+            {
+                ISOLINE_INVARIANT(x > 6);
+            }
+            catch (...)
+            {
+            }
+        };
+        ownTry();
+        try
+        {
+        }
+        catch (...)
+        {
+            ISOLINE_INVARIANT(x > 7);
+        }
+    }
+    catch (...)
+    {
+    }
+    return x;
+}
+struct Holder
+{
+    explicit Holder(int x) noexcept
+    try: value { x }
+    {
+        ISOLINE_INVARIANT(x > 8);
+    }
+    catch (...)
+    {
+    }
+    int value;
+};
+} // namespace isoline::lib
+"""
+TRY_LINES = {8, 21, 37, 49, 62}
+
+
 def document(lines):
     return "# Doc\n\n<!-- source-local-tables:begin -->\n" + "".join(f"{line}\n" for line in lines) \
         + "<!-- source-local-tables:end -->\n\nAfter.\n"
@@ -314,6 +402,26 @@ class CheckEnumTablesTest(unittest.TestCase):
         self.addSource("lib/Forms.cpp", FORMS)
         result = self.run_check()
         self.assertNotIn("outside namespace isoline", result.stderr)
+
+    def test_contractMacrosInsideATryBlockAreFlagged(self):
+        self.write("src/isoline/lib/Check.hpp", CHECK)
+        self.addSource("lib/Try.cpp", TRY_BLOCKS)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        prefix = "src/isoline/lib/Try.cpp:"
+        lines = {int(line[len(prefix):].split(":", 1)[0]) for line in result.stderr.splitlines()
+                 if line.startswith(prefix) and "inside a try block" in line}
+        self.assertEqual(lines, TRY_LINES, result.stderr)
+        self.assertIn("src/isoline/lib/Try.cpp:8: ISOLINE_PRECONDITION inside a try block", result.stderr)
+        self.assertIn("src/isoline/lib/Try.cpp:21: ISOLINE_INVARIANT inside a try block", result.stderr)
+
+    def test_contractMacrosOutsideTryBlocksPass(self):
+        self.write("src/isoline/lib/Check.hpp", CHECK)
+        self.addSource("lib/Checked.cpp", "#include \"Check.hpp\"\nnamespace isoline::lib\n{\n"
+                       "int checked(int x) noexcept\n{\n    ISOLINE_PRECONDITION(x > 0);\n    return x;\n}\n"
+                       "} // namespace isoline::lib\n")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_clangFailureIsAToolError(self):
         self.addSource("lib/Broken.cpp", "namespace isoline { int broken = ; }\n")

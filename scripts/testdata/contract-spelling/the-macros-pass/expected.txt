@@ -1,0 +1,2 @@
+exit: 0
+contract-spelling: every precondition is spelled as its rule says; installed headers keep 1 Require/Guarantee
