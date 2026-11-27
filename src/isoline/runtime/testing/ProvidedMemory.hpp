@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -95,10 +96,15 @@ class ProvidedMemoryAllocator final: public IMemoryAllocator
             return _allocator->_objectBytes - _size;
         }
 
-        [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
+        /// Grows within the buffer, the embedder deciding; refuses with Guard a size whose tail the buffer's
+        /// rest and the guard cannot hold together.
+        [[nodiscard]] std::expected<void, Refusal> grow(GrowRequest const& request) noexcept override
         {
+            auto const newBytes = request.newBytes;
             if (_allocator->_decide(newBytes) == GrowDecision::Refuse || newBytes > _allocator->_objectBytes)
                 return std::unexpected { Refusal::Embedder };
+            if (_allocator->_objectBytes - newBytes + _allocator->_guardBytes < request.requiredTailBytes)
+                return std::unexpected { Refusal::Guard };
             // The buffer was zeroed whole, and nothing past _size was written since.
             _size = newBytes;
             return {};
@@ -114,6 +120,78 @@ class ProvidedMemoryAllocator final: public IMemoryAllocator
     uint64_t _guardBytes;
     std::function<GrowDecision(uint64_t newBytes)> _decide;
     Provision _provision = Provision::Available; ///< Whether the one memory was handed out.
+};
+
+/// An embedder's allocator whose memories each live in a buffer of exactly their size plus a slack: the slack
+/// it is given at allocation, then a grow's own (growSlack), as an embedder that maps a memory's pages anew
+/// at every grow places them. A memory keeps its slack readable past its end, with no guard, so a grow to a
+/// size whose tail (GrowRequest::requiredTailBytes) is more than growSlack is refused with Guard, the memory
+/// unchanged.
+class ReallocatingMemoryAllocator final: public IMemoryAllocator
+{
+  public:
+    /// @param allocationSlack The bytes kept past the end of a memory as it is allocated.
+    /// @param growSlack The bytes kept past the end of a memory after each grow.
+    ReallocatingMemoryAllocator(uint64_t allocationSlack, uint64_t growSlack):
+        _allocationSlack { allocationSlack }, _growSlack { growSlack }
+    {
+    }
+
+    /// Allocates @p request's initial bytes, zeroed, and the allocation slack after them; the store decides
+    /// whether that tail is enough (MemoryRequest::requiredTailBytes).
+    /// @param request What the memory is.
+    /// @return The memory.
+    [[nodiscard]] std::expected<std::unique_ptr<ILinearMemory>, Refusal> allocate(
+        MemoryRequest const& request) noexcept override
+    {
+        return std::make_unique<ReallocatingMemory>(request.initialBytes, _allocationSlack, _growSlack);
+    }
+
+  private:
+    /// The memory handed out: its bytes, then its slack, in a buffer replaced by every grow.
+    class ReallocatingMemory final: public ILinearMemory
+    {
+      public:
+        ReallocatingMemory(uint64_t size, uint64_t slack, uint64_t growSlack):
+            _buffer(static_cast<std::size_t>(size + slack)), _size { size }, _growSlack { growSlack }
+        {
+        }
+
+        [[nodiscard]] std::span<std::byte> bytes() noexcept override
+        {
+            return std::span { _buffer }.first(static_cast<std::size_t>(_size));
+        }
+
+        [[nodiscard]] std::span<std::byte const> bytes() const noexcept override
+        {
+            return std::span { _buffer }.first(static_cast<std::size_t>(_size));
+        }
+
+        [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
+
+        [[nodiscard]] uint64_t tailBytes() const noexcept override { return _buffer.size() - _size; }
+
+        /// Moves to a buffer of the new size and the grow slack; refuses with Guard, unchanged, when that
+        /// slack is less than the tail the new size needs.
+        [[nodiscard]] std::expected<void, Refusal> grow(GrowRequest const& request) noexcept override
+        {
+            if (_growSlack < request.requiredTailBytes)
+                return std::unexpected { Refusal::Guard };
+            auto moved = std::vector<std::byte>(static_cast<std::size_t>(request.newBytes + _growSlack));
+            std::ranges::copy(bytes(), moved.begin());
+            _buffer = std::move(moved);
+            _size = request.newBytes;
+            return {};
+        }
+
+      private:
+        std::vector<std::byte> _buffer; ///< The bytes, then the slack.
+        uint64_t _size;                 ///< The accessible bytes.
+        uint64_t _growSlack;            ///< The slack a grow keeps.
+    };
+
+    uint64_t _allocationSlack;
+    uint64_t _growSlack;
 };
 
 } // namespace isoline::runtime::testing

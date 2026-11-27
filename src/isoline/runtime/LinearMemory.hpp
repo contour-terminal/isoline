@@ -34,6 +34,26 @@ namespace detail
 /// keeps the difference readable, or as a guard, after its end (requiredTailBytesOf()).
 inline constexpr auto MaxAccessWidth = detail::widestMaskedAccess();
 
+/// The tail a memory of @p size bytes must keep after its end, readable or as a guard: what an access of
+/// MaxAccessWidth bytes at its base reads past it. Whatever its page size: a memory of no pages has no bytes.
+/// @param size The memory's size in bytes.
+/// @return MaxAccessWidth less @p size, or 0 where the memory holds MaxAccessWidth bytes or more.
+[[nodiscard]] constexpr uint64_t requiredTailBytesOf(uint64_t size) noexcept
+{
+    return MaxAccessWidth - std::min(size, MaxAccessWidth);
+}
+
+/// What the store asks a memory's grow() for, as MemoryRequest asks an allocator: the new size, and the tail
+/// that size needs.
+struct GrowRequest
+{
+    uint64_t newBytes = 0; ///< The new size in bytes, at least the current one.
+    /// The bytes past the new end the memory must keep, readable (ILinearMemory::tailBytes()) or as a guard
+    /// (ILinearMemory::guardBytes()), together: requiredTailBytesOf(newBytes). A memory that cannot keep them
+    /// refuses the grow with Guard.
+    uint64_t requiredTailBytes = requiredTailBytesOf(newBytes);
+};
+
 /// A linear memory's storage: the bytes a memory instance reads and writes, wherever they live.
 ///
 /// The store allocates one per memory through the embedder's IMemoryAllocator and reaches its bytes
@@ -67,19 +87,21 @@ class ILinearMemory
     /// object's. With guardBytes() they make the tail, which must be at least
     /// requiredTailBytesOf(bytes().size()) at every size the memory has: when it is allocated, which the
     /// store checks against MemoryRequest::requiredTailBytes and refuses with Guard, and after every grow(),
-    /// which the store checks too (a contract violation). A tail that shrinks by what a grow adds, as a fixed
-    /// buffer's does, keeps the rule.
+    /// which asks for GrowRequest::requiredTailBytes and refuses with Guard what it cannot keep; a memory
+    /// that grew without it lied, which the store checks (a contract violation: the grow cannot be undone). A
+    /// tail that shrinks by what a grow adds, as a fixed buffer's does, keeps the rule.
     /// @return The readable bytes past the end; 0 when there are none.
     [[nodiscard]] virtual uint64_t tailBytes() const noexcept = 0;
 
-    /// Grows the memory to @p newBytes, the added bytes zeroed. The store calls it only within the
-    /// request's maximumBytes and the store's budget, never to shrink, and charges the budget only
-    /// when this succeeds.
-    /// @param newBytes The new size in bytes, at least the current one.
+    /// Grows the memory to @p request's newBytes, the added bytes zeroed, keeping its requiredTailBytes past
+    /// the new end, readable or guarded. The store calls it only within the allocation request's maximumBytes
+    /// and the store's budget, never to shrink, and charges the budget only when this succeeds.
+    /// @param request The new size, and the tail it needs.
     /// @return Nothing; or, the memory unchanged, why it was refused: Embedder when the embedder
-    ///         declines it, HostMemory when the host has no memory for it. Any other refusal is the
-    ///         store's alone to decide, so the store reports it as Embedder.
-    [[nodiscard]] virtual std::expected<void, Refusal> grow(uint64_t newBytes) noexcept = 0;
+    ///         declines it, HostMemory when the host has no memory for it, Guard when it cannot keep the
+    ///         request's requiredTailBytes. Any other refusal is the store's alone to decide, so the store
+    ///         reports it as Embedder.
+    [[nodiscard]] virtual std::expected<void, Refusal> grow(GrowRequest const& request) noexcept = 0;
 };
 
 /// What the store asks an IMemoryAllocator for: one memory, its size now and the most it may grow to.
@@ -100,15 +122,6 @@ struct MemoryRequest
     /// smaller is refused with Guard.
     uint64_t requiredTailBytes = 0;
 };
-
-/// The tail a memory of @p size bytes must keep after its end, readable or as a guard: what an access of
-/// MaxAccessWidth bytes at its base reads past it. Whatever its page size: a memory of no pages has no bytes.
-/// @param size The memory's size in bytes.
-/// @return MaxAccessWidth less @p size, or 0 where the memory holds MaxAccessWidth bytes or more.
-[[nodiscard]] constexpr uint64_t requiredTailBytesOf(uint64_t size) noexcept
-{
-    return MaxAccessWidth - std::min(size, MaxAccessWidth);
-}
 
 /// Whether @p memory keeps the tail its size needs (requiredTailBytesOf()), readable or guarded.
 /// @param memory The memory.

@@ -249,7 +249,7 @@ enum class Refusal : uint8_t
     TypeMaximum, ///< Past the type's maximum, or what its address type can reach.
     Limit,       ///< Past the store's limit (StoreLimits) of all memories' bytes or all tables' elements.
     HostMemory,  ///< The host ran out of memory.
-    Guard,       ///< The embedder's memory has too small a guard region.
+    Guard,       ///< The embedder's memory has too small a guard region, or too small a tail.
     Embedder,    ///< The embedder's allocator refused it.
 };
 

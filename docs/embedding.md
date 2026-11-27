@@ -139,13 +139,16 @@ embedder places guest memory in storage of its own.
   `MaxAccessWidth`. The fast interpreter's Spectre mask sends an access that fails its bounds check to the
   memory's base, and code running ahead of the check reads the access's width there, past the end of a memory
   smaller than it. The store checks `MemoryRequest::requiredTailBytes` when the memory is allocated, refusing it
-  with `Refusal::Guard`, and the rule again after every grow, where a memory that broke it is a contract
-  violation: the grow cannot be undone. A fixed buffer, whose tail shrinks by what each grow adds, keeps the rule
+  with `Refusal::Guard`. A grow asks for the new size's tail the same way: `ILinearMemory::grow()` takes a
+  `GrowRequest { newBytes, requiredTailBytes }`, and a memory that cannot keep that tail refuses with
+  `Refusal::Guard`, unchanged, so `memory.grow` returns -1 and the refusal is recorded. The store checks the rule
+  again after every grow it was granted, where a memory that grew without the tail lied: a contract violation,
+  since the grow cannot be undone. A fixed buffer, whose tail shrinks by what each grow adds, keeps the rule
   once it holds `MaxAccessWidth` bytes with its guard.
 - Growth is the embedder's decision. The store calls `ILinearMemory::grow()` only within the request's
   maximum and the store's budget, and charges the budget only when it succeeds. A memory that declines
-  returns `Refusal::Embedder` (`HostMemory` when the host has none), and `memory.grow` returns -1. Any
-  other refusal an allocator invents is reported as `Embedder`.
+  returns `Refusal::Embedder` (`HostMemory` when the host has none, `Guard` when it cannot keep the tail), and
+  `memory.grow` returns -1. Any other refusal an allocator invents is reported as `Embedder`.
 - `bytes()` may move on every grow; whoever holds a span re-fetches it after every grow and every host
   call. A view of size 0 is valid at any address, even past the end, and views nothing.
 - `HeapMemoryAllocator`, the default, keeps each memory in a `std::vector` without a guard, and
