@@ -415,12 +415,14 @@ namespace detail
         return row == CallTable.end() ? NoRow : static_cast<std::size_t>(row - CallTable.begin());
     }
 
-    /// Whether every operation of the Call form has its row of CallTable, which its body runs by.
+    /// Whether every operation of the Call form has its row of CallTable, which its body runs by. A loop, not
+    /// std::ranges::all_of: MSVC calls no immediate function (callRowOf()) from a lambda (C7595).
     [[nodiscard]] consteval bool everyCallHasARow() noexcept
     {
-        return std::ranges::all_of(OperationTable, [](OperationRow const& row) {
-            return row.form != OperationForm::Call || callRowOf(row.id) != NoRow;
-        });
+        for (auto const& row: OperationTable)
+            if (row.form == OperationForm::Call && callRowOf(row.id) == NoRow)
+                return false;
+        return true;
     }
 
     static_assert(everyCallHasARow(), "a call operation without its CallTable row has no body");
