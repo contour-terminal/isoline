@@ -127,6 +127,10 @@ Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `gcc-release`, `m
 From a Linux host, Isoline also cross-compiles for Windows (clang-cl, tests under wine) and arm64
 (clang, tests under qemu); see [docs/cross-compiling.md](docs/cross-compiling.md).
 
+Compiles go through a compiler cache when one is installed (Pace's `pace-cc`, else `ccache`). With a
+local `pace-node`, `cmake --preset clang-asan -DPACE_SCHEDULER=127.0.0.1:6674` also dispatches misses
+through its admission queue; see [docs/compile-cache.md](docs/compile-cache.md).
+
 ## Command-line tool
 
 The build makes `isoline` (`out/<preset>/src/isoline/cli/isoline`), a thin client of the library:
