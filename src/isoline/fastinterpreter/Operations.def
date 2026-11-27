@@ -48,6 +48,12 @@ ISOLINE_FAST_OPERATION(ReturnCallImport, "return_call.import", Call, 1, 1, Contr
 ISOLINE_FAST_OPERATION(ReturnCallIndirect, "return_call_indirect", Call, 2, 2, Control)
 ISOLINE_FAST_OPERATION(ReturnCallRef, "return_call_ref", Call, 2, 1, Control)
 
+// Exceptions, out of line (throwException(), throwReference()): throw's payload's first slot and the tag's
+// index in the module; throw_ref's slot of the exnref. Each is a site (LoweredFunction::sites), which unwinding
+// starts from; a try_table emits no operation, its handler and catch clauses being records.
+ISOLINE_FAST_OPERATION(Throw, "throw", Special, 1, 1, Exceptions)
+ISOLINE_FAST_OPERATION(ThrowRef, "throw_ref", Special, 1, 0, Exceptions)
+
 // Globals: a slot and the global's index in the module, whatever the global's type
 ISOLINE_FAST_OPERATION(GlobalGet, "global.get", Special, 1, 1, Variable)
 ISOLINE_FAST_OPERATION(GlobalSet, "global.set", Special, 1, 1, Variable)

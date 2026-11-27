@@ -90,9 +90,31 @@ struct LoweringError
     return (bodyUnits(function) * MaxWordsPerBodyUnit) + FunctionOverheadWords;
 }
 
+/// The most records lowering makes for one function (LoweredFunction), counted from its body before it is
+/// lowered: its exception records are linear in it.
+struct RecordBounds
+{
+    uint64_t sites = 0;    ///< Its calls (call, call_indirect, call_ref), throws and throw_refs.
+    uint64_t handlers = 0; ///< Its try_tables.
+    uint64_t catches = 0;  ///< Their catch clauses.
+    /// Its operand nodes: none without a site, else one per instruction (each pushes one entry at most, which
+    /// gets one node) and one per site (a run it found shrunk).
+    uint64_t operands = 0;
+    uint64_t constants =
+        0; ///< The constants its nodes name: none without a site, else one per constant pushed.
+
+    /// Whether both bound alike.
+    [[nodiscard]] bool operator==(RecordBounds const&) const = default;
+};
+
+/// The records lowering may make for @p function, from one pass over its instructions.
+/// @param function A decoded function.
+/// @return The bounds.
+[[nodiscard]] RecordBounds recordBounds(binary::Function const& function) noexcept;
+
 /// What lowering reserves from its arena before it lowers one of @p module's functions, and refuses the
-/// module with when the budget cannot hold it: the function's code bound and its local-initialization
-/// runs, and with the first function the records of all of them.
+/// module with when the budget cannot hold it: the function's code bound, its local-initialization runs and
+/// its exception records (recordBounds()), and with the first function the records of all of them.
 ///
 /// The temporaries of lowering (the abstract operand stack, the forwarding chains, the slots of the
 /// locals) are not reserved, but charged as they are allocated, so a refusal still comes at the first

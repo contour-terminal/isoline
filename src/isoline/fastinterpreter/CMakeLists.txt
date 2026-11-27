@@ -9,7 +9,8 @@ set(isolineFastAvailabilityHeader "${PROJECT_BINARY_DIR}/include/isoline/fastint
 # The tail-call dispatch's handler files, one per OperationFamily group (TailCallControl.cpp's FamilyFiles
 # names the same): compiled only where a probe row passes. TailCallControl.cpp is the file the probe
 # compiles. Where none passes, TailCallUnavailable.cpp stands in for their entry points.
-set(isolineTailCallFamilyFiles TailCallControl.cpp TailCallNumeric.cpp TailCallMemory.cpp TailCallSimd.cpp)
+set(isolineTailCallFamilyFiles
+    TailCallControl.cpp TailCallNumeric.cpp TailCallMemory.cpp TailCallSimd.cpp TailCallExceptions.cpp)
 set(isolineTailCallUnavailableFiles TailCallUnavailable.cpp)
 
 ## @brief Writes a DispatchAvailability.hpp from the template to @p header, for @p row, the tail-call probe

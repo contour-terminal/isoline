@@ -8,7 +8,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <format>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
@@ -65,6 +64,12 @@ namespace
         uint64_t constant = 0;               ///< Constant: its bits, an i32 or f32 zero-extended.
         ValueType const* runTypes = nullptr; ///< Run: the types of its values, which a block type names.
         uint32_t runCount = 0;               ///< Run: the number of its values.
+        /// Run: whether its values are a function type's results or params (OperandNodeKind).
+        OperandNodeKind runKind = OperandNodeKind::Results;
+        uint32_t runType = 0; ///< Run: the module's index of that function type.
+        uint32_t node =
+            NoNode; ///< Its node of the operand tree (stackNode()); NoNode until a site needs one.
+        uint32_t nodeCount = 0; ///< The values its node holds: a run's count when the node was made.
     };
 
     /// A run of a function's locals of one type: a parameter, or a declared run.
@@ -90,6 +95,7 @@ namespace
         Loop,     ///< A loop, whose label is its start.
         If,       ///< An if, before its else.
         Else,     ///< An if's else branch.
+        TryTable, ///< A try_table: a block whose catch clauses catch what its body throws.
     };
 
     /// The slots of a function type's params and results, which a block type names.
@@ -106,6 +112,8 @@ namespace
         std::span<ValueType const> results; ///< Its results.
         uint32_t paramSlots = 0;            ///< The slots of its params.
         uint32_t resultSlots = 0;           ///< The slots of its results.
+        uint32_t typeIndex =
+            0; ///< The module's index of its function type, where it has one; a run names it.
     };
 
     /// Where a branch to a label goes, and what it carries.
@@ -128,6 +136,9 @@ namespace
         uint32_t pending = NoPending;  ///< The newest branch waiting for its end, linked to the older.
         uint32_t ifTarget = NoPending; ///< If: the word of the if's target, its else or end.
         uint32_t deadEnd = 0;          ///< The body index of its end, where dead code inside it runs to.
+        /// The newest catch clause waiting for its end, linked to the older through CatchRecord::target.
+        uint32_t pendingCatches = NoPending;
+        uint32_t outerHandler = NoHandler; ///< TryTable: the try_table around it, current again at its end.
     };
 
     /// The label of @p control.
@@ -181,6 +192,16 @@ namespace
         std::span<binary::AddressType const>
             memoryAddressTypes; ///< The address type of each memory, the imported ones first.
         std::span<binary::TableType const> tables; ///< The type of each table, the imported ones first.
+        std::span<uint32_t const> importedTags;    ///< The type indices of its imported tags, in order.
+
+        /// The type index of a tag, whose params are its payload's types.
+        /// @param index The tag's index, the imported ones first.
+        [[nodiscard]] uint32_t tagType(uint32_t index) const
+        {
+            if (index < importedTags.size())
+                return importedTags[index];
+            return module.tags.at(index - importedTags.size()).typeIndex;
+        }
 
         /// The value type of a global.
         /// @param index The global's index, the imported ones first.
@@ -268,16 +289,27 @@ namespace
         return types;
     }
 
-    /// The type indices of @p module's imported functions, in order, allocated from @p resource.
-    [[nodiscard]] LoweringVector<uint32_t> importedFunctionTypes(binary::Module const& module,
-                                                                 std::pmr::memory_resource* resource)
+    /// The type indices of @p module's imports of @p kind, functions or tags, in order, allocated from
+    /// @p resource.
+    [[nodiscard]] LoweringVector<uint32_t> importedTypeIndices(binary::Module const& module,
+                                                               binary::ExternKind kind,
+                                                               std::pmr::memory_resource* resource)
     {
         auto types = LoweringVector<uint32_t>(resource);
-        types.reserve(module.importedCount(binary::ExternKind::Func));
+        types.reserve(module.importedCount(kind));
         for (auto const& import: module.imports)
-            if (import.kind == binary::ExternKind::Func)
+            if (import.kind == kind)
                 types.push_back(import.typeIndex);
         return types;
+    }
+
+    /// Whether values of @p type may be exnrefs: what lowering never forwards, so that the exception roots
+    /// read every exnref where it is.
+    [[nodiscard]] bool holdsExceptions(ValueType const& type) noexcept
+    {
+        return type.kind == binary::ValueKind::Ref
+               && (type.heap.kind == binary::AbstractHeapType::Exn
+                   || type.heap.kind == binary::AbstractHeapType::NoExn);
     }
 
     /// The lowering of one function's body: one forward pass over its instructions with an abstract
@@ -347,7 +379,8 @@ namespace
                                    .signature = { .params = {},
                                                   .results = _type.results,
                                                   .paramSlots = 0,
-                                                  .resultSlots = _function.resultSlots },
+                                                  .resultSlots = _function.resultSlots,
+                                                  .typeIndex = _source.typeIndex },
                                    .baseSlot = _function.localSlots,
                                    .deadEnd = static_cast<uint32_t>(body.size() - 1) });
             while (!_controls.empty())
@@ -364,12 +397,26 @@ namespace
             // its end is dead code) still receives them in its slots, from a host function it tail-calls or
             // as the invocation's own, from its first slot on.
             _function.frameSlots = std::max(_maxTop, _function.localSlots + _function.resultSlots);
-            // Reserved at the bound; the copy holds what the function needs, and frees the rest.
+            // Reserved at the bound; the copy holds what the function needs, and frees the rest. The records
+            // grew as lowering made them, and their copies drop the slack of the growth.
             _code = LoweringVector<Word>(_code.begin(), _code.end(), _code.get_allocator());
+            shrinkToFit(_function.operands);
+            shrinkToFit(_function.sites);
+            shrinkToFit(_function.handlers);
+            shrinkToFit(_function.catches);
+            shrinkToFit(_function.constants);
             return _work;
         }
 
       private:
+        /// Replaces @p records by a copy of exactly their size, from the same arena.
+        template <typename Record>
+        static void shrinkToFit(LoweringVector<Record>& records)
+        {
+            if (records.capacity() > records.size())
+                records = LoweringVector<Record>(records.begin(), records.end(), records.get_allocator());
+        }
+
         /// Assigns the parameters and declared locals their slots, and derives the local-initialization runs.
         /// @return The slots of the parameters and declared locals: where the operand stack begins.
         [[nodiscard]] uint32_t layOutLocals()
@@ -478,6 +525,9 @@ namespace
                 case Opcode::BrOnNonNull: lowerConditionalBranch(instruction); return;
                 case Opcode::BrTable: lowerBrTable(instruction); return;
                 case Opcode::Return: lowerReturn(); return;
+                case Opcode::TryTable: lowerTryTable(instruction); return;
+                case Opcode::Throw: lowerThrow(instruction.a); return;
+                case Opcode::ThrowRef: lowerThrowRef(); return;
                 case Opcode::Drop: std::ignore = pop(); return;
                 case Opcode::Select:
                 case Opcode::SelectTyped: lowerSelect(); return;
@@ -544,18 +594,11 @@ namespace
                 lowerWideArithmetic(*wide);
                 return;
             }
-            if (auto const operation = simdKernelOperationOf(numerics::simdShape(instruction.opcode));
-                operation != OperationId::Nop)
-            {
-                lowerSimdKernel(instruction.opcode, operation);
-                return;
-            }
-            // uncovered-begin(lowering-later-task)
-            core::todo(
-                std::format("lowering {}: exceptions are lowered by a later part of the fast interpreter",
-                            binary::opcodeInfo(instruction.opcode).text));
+            auto const operation = simdKernelOperationOf(numerics::simdShape(instruction.opcode));
+            // Every instruction of OpcodeTable is lowered by its row or by a case above.
+            Require(operation != OperationId::Nop);
+            lowerSimdKernel(instruction.opcode, operation);
         }
-        // uncovered-end(lowering-later-task)
 
         /// The home slot of the v128 @p entry, once what it holds is there: a forwarded local is moved to it,
         /// and no v128 is a constant entry (v128.const writes its slots at once). What an operation reads
@@ -943,7 +986,9 @@ namespace
         /// materialized into consecutive slots on top, where the callee's frame begins and where its results
         /// come back to. A function of the module's own code is called by code index, any other through the
         /// store. Only the arguments are materialized: the callee's frame begins above every other entry,
-        /// and no callee writes the caller's locals, so a forwarded local or a constant below stays valid.
+        /// and no callee writes the caller's locals, so a forwarded local or a constant below stays valid. A
+        /// call that keeps its frame is a site (addSite()), its operands those below its arguments: the
+        /// arguments are the callee's locals, as in the reference interpreter.
         void lowerCall(binary::Instruction const& instruction)
         {
             auto callee = CalleeKind::Table;
@@ -974,6 +1019,7 @@ namespace
             auto const& slots = _context.typeSlots[typeIndex];
             auto const argumentSlot = _top - static_cast<uint32_t>(slots.params);
             materializeValues(argumentSlot);
+            auto const offset = _code.size();
             switch (callee)
             {
                 case CalleeKind::Internal:
@@ -991,7 +1037,157 @@ namespace
             }
             truncate(_height - static_cast<uint32_t>(type.params.size()), argumentSlot);
             if (row->mode == CallMode::Call)
-                pushRun(type.results, static_cast<uint32_t>(slots.results));
+            {
+                addSite(offset);
+                pushRun(
+                    type.results, static_cast<uint32_t>(slots.results), OperandNodeKind::Results, typeIndex);
+            }
+        }
+
+        // --- Exceptions ---
+
+        /// Lowers throw of @p tag: its payload materialized into consecutive slots on top, the operation, and
+        /// a site whose operands are those below the payload, which the store holds while the exception is
+        /// allocated.
+        void lowerThrow(uint32_t tag)
+        {
+            auto const typeIndex = _context.tagType(tag);
+            auto const payloadSlot = _top - static_cast<uint32_t>(_context.typeSlots[typeIndex].params);
+            materializeValues(payloadSlot);
+            auto const offset = _code.size();
+            emit(OperationId::Throw, { payloadSlot }, { tag });
+            truncate(_height - static_cast<uint32_t>(_context.module.types.at(typeIndex).params.size()),
+                     payloadSlot);
+            addSite(offset);
+        }
+
+        /// Lowers throw_ref: the operation reads the exnref where it is, and its site's operands are those
+        /// below it.
+        void lowerThrowRef()
+        {
+            auto reference = pop();
+            auto const slot = readable(reference);
+            auto const offset = _code.size();
+            emit(OperationId::ThrowRef, { slot }, {});
+            addSite(offset);
+        }
+
+        /// Lowers try_table: a block, every entry below it materialized, whose handler record names its catch
+        /// clauses and the try_table around it. A clause's label is counted from outside the try_table: its
+        /// values go to that label's slots, and it continues at the label's loop start, at its end once that
+        /// is lowered (a chain like the branches'), or returns for the function's label.
+        void lowerTryTable(binary::Instruction const& instruction)
+        {
+            materializeAll();
+            auto const clauses = binary::catchClausesOf(_source, instruction);
+            auto const clausesBegin = static_cast<uint32_t>(_function.catches.size());
+            for (auto const& clause: clauses)
+            {
+                auto& control = controlAt(clause.label);
+                auto const label = labelOf(control);
+                auto record = CatchRecord { .kind = clause.kind,
+                                            .tag = clause.tag,
+                                            .target = 0,
+                                            .resultSlot = label.destination,
+                                            .poll = label.poll,
+                                            .continuation = CatchContinuation::Branch };
+                switch (control.kind)
+                {
+                    case ControlKind::Function: record.continuation = CatchContinuation::Return; break;
+                    case ControlKind::Loop: record.target = control.loopStart; break;
+                    default:
+                        record.target = control.pendingCatches;
+                        control.pendingCatches = static_cast<uint32_t>(_function.catches.size());
+                        break;
+                }
+                Require(_function.catches.size() < _function.catches.capacity());
+                _function.catches.push_back(record);
+            }
+            enterBlock(instruction, ControlKind::TryTable, NoPending);
+            _controls.back().outerHandler = _handler;
+            Require(_function.handlers.size() < _function.handlers.capacity());
+            _function.handlers.push_back(
+                HandlerRecord { .labelDepth = labelDepth(),
+                                .clausesBegin = clausesBegin,
+                                .clausesCount = static_cast<uint32_t>(clauses.size()),
+                                .parent = _handler });
+            _handler = static_cast<uint32_t>(_function.handlers.size() - 1);
+        }
+
+        /// The block, loop, if and try_table labels open: every control but the function's body.
+        [[nodiscard]] uint32_t labelDepth() const noexcept
+        {
+            return static_cast<uint32_t>(_controls.size() - 1);
+        }
+
+        /// Records the call or throw whose operation starts at @p codeOffset as a site: the operand stack
+        /// now, below its arguments or payload, the innermost try_table around it and the labels open.
+        void addSite(std::size_t codeOffset)
+        {
+            // Reserved at the bound (recordBounds()), as every record vector: outgrowing it breaks the bound.
+            Require(_function.sites.size() < _function.sites.capacity());
+            _function.sites.push_back(SiteRecord { .codeOffset = static_cast<uint32_t>(codeOffset),
+                                                   .operands = stackNode(),
+                                                   .innermostHandler = _handler,
+                                                   .labelDepth = labelDepth() });
+        }
+
+        /// The node of the whole operand stack (OperandNode): each entry on top without a current node, a new
+        /// one or a run shrunk since its node was made, gets one, from the lowest of them up. Entries with a
+        /// current node form a prefix of the stack, as only the top entry changes, so the walk stops at the
+        /// first, and each entry gets a node once, a run once more per site it shrank before.
+        /// @return The top entry's node; NoNode for an empty stack.
+        [[nodiscard]] uint32_t stackNode()
+        {
+            auto const current = [](Entry const& entry) {
+                return entry.node != NoNode
+                       && (entry.kind != EntryKind::Run || entry.nodeCount == entry.runCount);
+            };
+            auto first = _stack.size();
+            while (first > 0 && !current(_stack[first - 1]))
+                --first;
+            for (auto const index: std::views::iota(first, _stack.size()))
+            {
+                auto& entry = _stack[index];
+                auto const parent = index == 0 ? NoNode : _stack[index - 1].node;
+                entry.node = makeNode(entry, parent);
+                entry.nodeCount = entry.kind == EntryKind::Run ? entry.runCount : 1;
+                ++_work;
+            }
+            return _stack.empty() ? NoNode : _stack.back().node;
+        }
+
+        /// Appends the node of @p entry, over the stack node @p parent.
+        /// @return Its index.
+        [[nodiscard]] uint32_t makeNode(Entry const& entry, uint32_t parent)
+        {
+            auto node = OperandNode { .kind = OperandNodeKind::Slot,
+                                      .parent = parent,
+                                      .source = entry.slot,
+                                      .typeOrSignature = std::to_underlying(entry.type.kind),
+                                      .count = 1 };
+            switch (entry.kind)
+            {
+                case EntryKind::Slot: break;
+                case EntryKind::Local:
+                    node.kind = OperandNodeKind::Local;
+                    node.source = localSlot(entry.local);
+                    break;
+                case EntryKind::Constant:
+                    node.kind = OperandNodeKind::Constant;
+                    node.source = static_cast<uint32_t>(_function.constants.size());
+                    Require(_function.constants.size() < _function.constants.capacity());
+                    _function.constants.push_back(entry.constant);
+                    break;
+                case EntryKind::Run:
+                    node.kind = entry.runKind;
+                    node.typeOrSignature = entry.runType;
+                    node.count = entry.runCount;
+                    break;
+            }
+            Require(_function.operands.size() < _function.operands.capacity());
+            _function.operands.push_back(node);
+            return static_cast<uint32_t>(_function.operands.size() - 1);
         }
 
         // --- Control flow ---
@@ -1015,7 +1211,8 @@ namespace
             return { .params = type.params,
                      .results = type.results,
                      .paramSlots = static_cast<uint32_t>(slots.params),
-                     .resultSlots = static_cast<uint32_t>(slots.results) };
+                     .resultSlots = static_cast<uint32_t>(slots.results),
+                     .typeIndex = instruction.a };
         }
 
         /// Opens @p control: the validator's label high-water mark sized the stack, so it never reallocates.
@@ -1072,7 +1269,10 @@ namespace
             }
             resolve(control.ifTarget);
             truncate(control.baseHeight, control.baseSlot);
-            pushRun(control.signature.params, control.signature.paramSlots);
+            pushRun(control.signature.params,
+                    control.signature.paramSlots,
+                    OperandNodeKind::Params,
+                    control.signature.typeIndex);
             control.kind = ControlKind::Else;
             _reachability = Reachability::Reachable;
         }
@@ -1103,11 +1303,17 @@ namespace
             else
             {
                 truncate(control.baseHeight, control.baseSlot);
-                pushRun(control.signature.results, control.signature.resultSlots);
+                pushRun(control.signature.results,
+                        control.signature.resultSlots,
+                        OperandNodeKind::Results,
+                        control.signature.typeIndex);
             }
             if (control.kind == ControlKind::If)
                 resolve(control.ifTarget);
+            if (control.kind == ControlKind::TryTable)
+                _handler = control.outerHandler;
             resolve(control.pending);
+            resolveCatches(control.pendingCatches);
             _controls.pop_back();
             _reachability = Reachability::Reachable;
         }
@@ -1246,6 +1452,18 @@ namespace
             }
         }
 
+        /// Points every catch clause of the chain from @p head to the code's end, and empties the chain.
+        void resolveCatches(uint32_t& head)
+        {
+            auto const here = static_cast<uint32_t>(_code.size());
+            while (head != NoPending)
+            {
+                auto& record = _function.catches[head];
+                head = record.target;
+                record.target = here;
+            }
+        }
+
         // --- The abstract operand stack ---
 
         /// Pops the operand on top into @p local, after materializing every entry forwarding the local's
@@ -1273,10 +1491,19 @@ namespace
             return value;
         }
 
-        /// Pushes an entry forwarding @p local.
+        /// Pushes an entry forwarding @p local; an exnref's local is copied into its slot at once instead, so
+        /// that no operand node reads an exnref from a local that may hold another by the time a sweep reads
+        /// it (OperandNode).
         void pushLocal(uint32_t local)
         {
-            push(Entry { .kind = EntryKind::Local, .type = runOf(local).type, .local = local });
+            auto const type = runOf(local).type;
+            if (holdsExceptions(type))
+            {
+                emit(operationFor(MoveOperations, type), { _top, localSlot(local) }, {});
+                push(Entry { .type = type });
+                return;
+            }
+            push(Entry { .kind = EntryKind::Local, .type = type, .local = local });
         }
 
         /// Pushes @p entry at the top: its home slot is the top's, a forwarded local joins its chain, and
@@ -1307,7 +1534,12 @@ namespace
         /// Pushes the values of @p types, in their slots, as one entry: what a block leaves on the stack
         /// after dead code, in O(1) whatever its arity.
         /// @param slots The slots of @p types.
-        void pushRun(std::span<ValueType const> types, uint32_t slots)
+        /// @param kind Whether @p types are a function type's results or its params, as a node names them.
+        /// @param typeIndex The module's index of that function type, where @p types are more than one value.
+        void pushRun(std::span<ValueType const> types,
+                     uint32_t slots,
+                     OperandNodeKind kind,
+                     uint32_t typeIndex)
         {
             if (types.empty())
                 return;
@@ -1321,7 +1553,9 @@ namespace
                                      .slot = _top,
                                      .height = _height,
                                      .runTypes = types.data(),
-                                     .runCount = static_cast<uint32_t>(types.size()) });
+                                     .runCount = static_cast<uint32_t>(types.size()),
+                                     .runKind = kind,
+                                     .runType = typeIndex });
             _top += slots;
             _height += static_cast<uint32_t>(types.size());
             _maxTop = std::max(_maxTop, _top);
@@ -1506,6 +1740,7 @@ namespace
         LoweringVector<uint32_t>
             _chains; ///< Each local's newest forwarder, by local index; NoEntry for none.
         LoweringVector<Control> _controls; ///< The open blocks, the function's body first.
+        uint32_t _handler = NoHandler;     ///< The innermost try_table open: its HandlerRecord.
         uint32_t _top = 0;                 ///< The home slot of the next entry pushed.
         uint32_t _maxTop = 0;              ///< The highest _top reached: the frame's slots.
         uint32_t _height = 0;              ///< The values on the stack.
@@ -1577,7 +1812,8 @@ namespace
                 return std::unexpected(*refusal);
         }
         auto const importedGlobals = importedGlobalTypes(module, &arena);
-        auto const importedFunctions = importedFunctionTypes(module, &arena);
+        auto const importedFunctions = importedTypeIndices(module, binary::ExternKind::Func, &arena);
+        auto const importedTags = importedTypeIndices(module, binary::ExternKind::Tag, &arena);
         auto const typeSlots = typeSlotsOf(module, &arena);
         auto const memoryAddressTypes = memoryAddressTypesOf(module, &arena);
         auto const tables = tableTypesOf(module, &arena);
@@ -1586,7 +1822,8 @@ namespace
                                              .importedFunctions = importedFunctions,
                                              .typeSlots = typeSlots,
                                              .memoryAddressTypes = memoryAddressTypes,
-                                             .tables = tables };
+                                             .tables = tables,
+                                             .importedTags = importedTags };
         auto stats = LoweringStats {};
         for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(module.code.size())))
         {
@@ -1603,6 +1840,12 @@ namespace
             auto const& source = module.code[index];
             function.localInit.reserve(source.locals.size());
             function.code.reserve(codeBoundWords(source));
+            auto const records = recordBounds(source);
+            function.sites.reserve(records.sites);
+            function.handlers.reserve(records.handlers);
+            function.catches.reserve(records.catches);
+            function.operands.reserve(records.operands);
+            function.constants.reserve(records.constants);
             stats.bodyUnits += bodyUnits(source);
             stats.work += FunctionLowering(context, validated, index, function, &arena).run();
         }
@@ -1628,11 +1871,45 @@ namespace
     }
 } // namespace
 
+RecordBounds recordBounds(binary::Function const& function) noexcept
+{
+    auto bounds = RecordBounds { .catches = function.catchClauses.size() };
+    auto constants = uint64_t { 0 };
+    for (auto const& instruction: function.body)
+    {
+        switch (instruction.opcode)
+        {
+            case Opcode::Call:
+            case Opcode::CallIndirect:
+            case Opcode::CallRef:
+            case Opcode::Throw:
+            case Opcode::ThrowRef: ++bounds.sites; break;
+            case Opcode::TryTable: ++bounds.handlers; break;
+            case Opcode::I32Const:
+            case Opcode::I64Const:
+            case Opcode::F32Const:
+            case Opcode::F64Const: ++constants; break;
+            default: break;
+        }
+    }
+    // Nodes are made for the stacks of sites only.
+    if (bounds.sites > 0)
+    {
+        bounds.operands = function.body.size() + bounds.sites;
+        bounds.constants = constants;
+    }
+    return bounds;
+}
+
 uint64_t loweringReservation(binary::Module const& module, uint32_t codeIndex)
 {
     Require(codeIndex < module.code.size());
     auto const& function = module.code[codeIndex];
-    auto bytes = (codeBoundWords(function) * sizeof(Word)) + (function.locals.size() * sizeof(LocalInitRun));
+    auto const records = recordBounds(function);
+    auto bytes = (codeBoundWords(function) * sizeof(Word)) + (function.locals.size() * sizeof(LocalInitRun))
+                 + (records.sites * sizeof(SiteRecord)) + (records.handlers * sizeof(HandlerRecord))
+                 + (records.catches * sizeof(CatchRecord)) + (records.operands * sizeof(OperandNode))
+                 + (records.constants * sizeof(Word));
     if (codeIndex == 0)
         bytes += module.code.size() * sizeof(LoweredFunction);
     return bytes;
