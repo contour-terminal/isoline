@@ -1168,12 +1168,15 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     Require(std::ranges::find(availableDispatches(), config.dispatch) != availableDispatches().end());
     auto const chargedBefore = arena->charged();
     auto const budget = arena->budget();
-    auto functions = std::pmr::vector<LoweredFunction>(arena.get());
     auto codeIndex = NoFunction;
     auto stats = std::expected<LoweringStats, LoweringError> {};
+    // Constructed within the try: a standard library may allocate in a container's constructor (MSVC's debug
+    // containers allocate a proxy), which the arena may refuse.
+    auto functions = std::optional<std::pmr::vector<LoweredFunction>> {};
     try
     {
-        stats = lowerFunctions(module, *arena, functions, codeIndex);
+        functions.emplace(arena.get());
+        stats = lowerFunctions(module, *arena, *functions, codeIndex);
     }
     catch (std::bad_alloc const&)
     {
@@ -1190,7 +1193,7 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     }
     if (!stats)
         return std::unexpected(stats.error());
-    threadCode(functions, config.dispatch);
+    threadCode(*functions, config.dispatch);
     auto const loweredBytes = arena->charged() - chargedBefore;
     // The module's own record comes from the host's memory, not the arena: it owns the arena.
     auto const host = std::pmr::polymorphic_allocator<> { &arena->hostResource() };
@@ -1199,7 +1202,7 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     {
         return std::allocate_shared<LoweredModule const>(host,
                                                          std::move(resource),
-                                                         std::move(functions),
+                                                         std::move(*functions),
                                                          config.dispatch,
                                                          config.mode,
                                                          loweredBytes,
