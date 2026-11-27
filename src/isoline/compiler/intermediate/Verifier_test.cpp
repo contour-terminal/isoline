@@ -17,6 +17,7 @@
 #include <vector>
 
 #include <isoline/compiler/intermediate/Function.hpp>
+#include <isoline/compiler/intermediate/Guards.hpp>
 #include <isoline/compiler/intermediate/Verifier.hpp>
 
 using isoline::compiler::intermediate::BlockId;
@@ -1375,5 +1376,48 @@ TEST_CASE("Verifier.memoryGuardsTakeTheirMemorysBase")
         auto const refused = verify(fixture.function, minimums);
         REQUIRE_FALSE(refused.has_value());
         CHECK(refused.error().code == VerifierErrorCode::UnguardedAddress);
+    }
+}
+
+TEST_CASE("Verifier.everyMemoryMotionRowIsPinned")
+{
+    // MemoryMotionTable as it must read, hard-coded: every call (direct, indirect, import, stub) and every
+    // poll, frame charge and frame release may run code that grows or moves a memory; nothing else does,
+    // storeContext included. A wrong row in the shared table fails here, where the pass and the verifier,
+    // which both read it, would agree with it.
+    using isoline::compiler::intermediate::MemoryMotion;
+    using isoline::compiler::intermediate::memoryMotionOf;
+    auto const moves =
+        std::set<Operation> { Operation::Call,       Operation::CallIndirect, Operation::CallImport,
+                              Operation::CallStub,   Operation::Poll,         Operation::PollStored,
+                              Operation::EnterFrame, Operation::LeaveFrame };
+    for (auto const& row: isoline::compiler::intermediate::OperationTable)
+    {
+        INFO(isoline::compiler::intermediate::nameOf(row.operation));
+        CHECK((memoryMotionOf(row.operation) == MemoryMotion::MayMove) == moves.contains(row.operation));
+    }
+
+    // And the verifier refuses a use across each one it can be given without a dispatch row.
+    struct Between
+    {
+        Operation operation;
+        std::vector<uint64_t> immediates;
+    };
+    for (auto const& between:
+         { Between { Operation::CallImport, { 0 } },
+           Between { Operation::PollStored, { std::to_underlying(PollSite::FunctionEntry) } },
+           Between { Operation::EnterFrame, { 1 } },
+           Between { Operation::LeaveFrame, { 1 } } })
+    {
+        INFO(isoline::compiler::intermediate::nameOf(between.operation));
+        auto fixture = Fixture {};
+        auto const address = guardedAddress(fixture);
+        std::ignore = fixture.builder.emit(between.operation, {}, {}, between.immediates);
+        std::ignore = fixture.builder.emit(Operation::Load,
+                                           std::array { Type::I64 },
+                                           std::array { address },
+                                           loadOf(8, Extension::Zero, Type::I64));
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::AddressAcrossMemoryMotion);
     }
 }
