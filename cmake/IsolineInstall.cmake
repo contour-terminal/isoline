@@ -165,11 +165,7 @@ function(isoline_add_install_tests)
              COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/cmake/install-component-names.cmake")
     set_tests_properties(${ISOLINE_INSTALL_COMPONENT_NAMES_TEST} PROPERTIES LABELS install TIMEOUT 60)
     # The build's own development flags, which no installed target may carry (check-install step 4).
-    set(forbiddenOptionsFile "${PROJECT_BINARY_DIR}/install-tests/forbidden-options.txt")
-    set(forbiddenOptions ${ISOLINE_COMPILE_OPTIONS} ${ISOLINE_TEST_COMPILE_OPTIONS} ${ISOLINE_LINK_OPTIONS})
-    list(REMOVE_DUPLICATES forbiddenOptions)
-    list(JOIN forbiddenOptions "\n" forbiddenLines)
-    file(CONFIGURE OUTPUT "${forbiddenOptionsFile}" CONTENT "${forbiddenLines}\n" @ONLY)
+    set(forbiddenOptionsFile "${ISOLINE_FORBIDDEN_OPTIONS_FILE}")
     set(isExpectingImportStd OFF)
     if(ISOLINE_EXPECT_IMPORT_STD)
         set(isExpectingImportStd ON)
@@ -208,4 +204,43 @@ function(isoline_add_install_tests)
     message(STATUS "[isoline] install tests: ${testCount} registered")
 endfunction()
 
+# The build's own options, as isoline_apply_build_options() recorded them (ISOLINE_BUILD_OPTIONS): what no
+# installed target may carry, which check-install step 4 reads. Written whatever the install tests' rows say,
+# for install-forbidden-options. Included last, so every target has been given its options.
+set(ISOLINE_FORBIDDEN_OPTIONS_FILE "${PROJECT_BINARY_DIR}/install-tests/forbidden-options.txt")
+get_property(isolineBuildOptions GLOBAL PROPERTY ISOLINE_BUILD_OPTIONS)
+list(REMOVE_DUPLICATES isolineBuildOptions)
+list(JOIN isolineBuildOptions "\n" isolineForbiddenLines)
+file(CONFIGURE OUTPUT "${ISOLINE_FORBIDDEN_OPTIONS_FILE}" CONTENT "${isolineForbiddenLines}\n" @ONLY)
+
+## @brief Registers install-forbidden-options (label lint): every option an installed target (a row of
+## ISOLINE_INSTALL_LIBRARIES, and its module target) compiles or links with is in the forbidden list, so the
+## record isoline_apply_build_options() keeps covers every option of the installed targets, and a flag
+## added beside it (target_compile_options() on an installed library) fails here instead of escaping
+## check-install's leak check.
+function(isoline_add_forbidden_options_test)
+    if(NOT ISOLINE_TESTING OR NOT ISOLINE_INSTALL)
+        return()
+    endif()
+    set(content "")
+    set(rows ${ISOLINE_INSTALL_LIBRARIES})
+    while(rows)
+        list(POP_FRONT rows library exportName exportSet component isExcludedFromAll)
+        foreach(target IN ITEMS ${library} ${library}_module)
+            if(TARGET ${target})
+                string(APPEND content "${target}\t$<JOIN:$<TARGET_PROPERTY:${target},COMPILE_OPTIONS>,\t>"
+                                      "\t$<JOIN:$<TARGET_PROPERTY:${target},LINK_OPTIONS>,\t>\n")
+            endif()
+        endforeach()
+    endwhile()
+    set(appliedFile "${PROJECT_BINARY_DIR}/install-tests/installed-target-options-$<CONFIG>.txt")
+    file(GENERATE OUTPUT "${appliedFile}" CONTENT "${content}")
+    add_test(NAME install-forbidden-options
+             COMMAND "${CMAKE_COMMAND}" "-DAPPLIED_FILE=${appliedFile}"
+                     "-DFORBIDDEN_OPTIONS_FILE=${ISOLINE_FORBIDDEN_OPTIONS_FILE}"
+                     -P "${PROJECT_SOURCE_DIR}/tests/cmake/check-forbidden-options.cmake")
+    set_tests_properties(install-forbidden-options PROPERTIES LABELS lint TIMEOUT 60)
+endfunction()
+
+isoline_add_forbidden_options_test()
 isoline_add_install_tests()

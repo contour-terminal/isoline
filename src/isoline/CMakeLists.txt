@@ -107,6 +107,9 @@ target_sources(isoline_core
             Version.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
+# Header-based like every target but the module consumers: never scanned for module dependencies, whatever
+# CMP0155 says (module isoline is a target of its own, isoline_core_module).
+set_target_properties(isoline_core PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 target_link_libraries(isoline_core PUBLIC core::base)
 isoline_apply_target_policy(isoline_core)
 

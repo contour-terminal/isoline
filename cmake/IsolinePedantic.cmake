@@ -134,7 +134,28 @@ endif()
 
 message(STATUS "[isoline] compile options: ${ISOLINE_COMPILE_OPTIONS}")
 
-## @brief Applies Isoline's warning set, sanitizers, coverage and clang-tidy to @p target.
+## @brief Applies @p target's build-only options: COMPILE ones to its compiles, LINK ones to its links, each
+## wrapped in $<BUILD_INTERFACE:...>, so that none is exported with the target (CMake exports a module
+## target's own compile options for an importer's rebuild of its BMI, IMPORTED_CXX_MODULES_COMPILE_OPTIONS;
+## unwrapped, -Werror and the sanitizers would reach every consumer of the installed package, D2, D11).
+## Every option is recorded in the global property ISOLINE_BUILD_OPTIONS, the one record the install tests
+## derive their forbidden options from (check-install step 4), so an option applied here, through
+## isoline_apply_target_policy() or beside it, cannot leak into an installed target unseen.
+##
+## isoline_apply_build_options(<target> [COMPILE <option>...] [LINK <option>...])
+function(isoline_apply_build_options target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "COMPILE;LINK")
+    if(arg_COMPILE)
+        target_compile_options(${target} PRIVATE "$<BUILD_INTERFACE:${arg_COMPILE}>")
+    endif()
+    if(arg_LINK)
+        target_link_options(${target} PRIVATE "$<BUILD_INTERFACE:${arg_LINK}>")
+    endif()
+    set_property(GLOBAL APPEND PROPERTY ISOLINE_BUILD_OPTIONS ${arg_COMPILE} ${arg_LINK})
+endfunction()
+
+## @brief Applies Isoline's warning set, sanitizers, coverage and clang-tidy to @p target, its options
+## through isoline_apply_build_options().
 ##
 ## isoline_apply_target_policy(<target> [TEST])
 ## TEST marks a test binary, which additionally gets the test-only warning adjustments and, where
@@ -143,18 +164,34 @@ message(STATUS "[isoline] compile options: ${ISOLINE_COMPILE_OPTIONS}")
 ## dialog, Windows Error Reporting) that waits for a click and holds the run until its timeout.
 function(isoline_apply_target_policy target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "TEST" "" "")
-    target_compile_options(${target} PRIVATE ${ISOLINE_COMPILE_OPTIONS})
+    set(compileOptions ${ISOLINE_COMPILE_OPTIONS})
     if(arg_TEST)
-        target_compile_options(${target} PRIVATE ${ISOLINE_TEST_COMPILE_OPTIONS})
+        list(APPEND compileOptions ${ISOLINE_TEST_COMPILE_OPTIONS})
         if(TARGET core::testing_dialogs)
             target_link_libraries(${target} PRIVATE core::testing_dialogs)
         endif()
     endif()
+    set(linkOptions "")
     get_target_property(type ${target} TYPE)
     if(type STREQUAL "EXECUTABLE")
-        target_link_options(${target} PRIVATE ${ISOLINE_LINK_OPTIONS})
+        set(linkOptions ${ISOLINE_LINK_OPTIONS})
     endif()
-    if(ISOLINE_CLANG_TIDY_COMMAND)
-        set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${ISOLINE_CLANG_TIDY_COMMAND}")
+    isoline_apply_build_options(${target} COMPILE ${compileOptions} LINK ${linkOptions})
+    isoline_apply_tidy_command(${target})
+endfunction()
+
+## @brief Sets @p target's clang-tidy command, where clang-tidy runs: ISOLINE_CLANG_TIDY_COMMAND with the
+## checks of the target's ISOLINE_LIFTED_TIDY_CHECKS property lifted (E2, isoline_lift_module_tidy_checks()).
+## Both isoline_apply_target_policy() and the lift call it, so their order does not matter.
+function(isoline_apply_tidy_command target)
+    if(NOT ISOLINE_CLANG_TIDY_COMMAND)
+        return()
     endif()
+    set(command "${ISOLINE_CLANG_TIDY_COMMAND}")
+    get_property(lifted TARGET ${target} PROPERTY ISOLINE_LIFTED_TIDY_CHECKS)
+    if(lifted)
+        list(JOIN lifted "," checks)
+        list(APPEND command "--checks=${checks}")
+    endif()
+    set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${command}")
 endfunction()

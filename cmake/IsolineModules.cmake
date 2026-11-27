@@ -202,6 +202,168 @@ function(_isoline_module_json_array outVar values)
     set(${outVar} "[$<$<BOOL:${filtered}>:\"$<JOIN:${filtered},\"$<COMMA> \">\">]" PARENT_SCOPE)
 endfunction()
 
+# E2 (D13): what clang-tidy reports falsely on Isoline's module sources, as (source kind, check) rows. A
+# target of a listed kind runs clang-tidy with exactly its kind's checks lifted
+# (isoline_lift_module_tidy_checks()), and a comment beside each call names its rows: every other check
+# still runs on it. clang-tidy-module-tripwire runs the
+# build's clang-tidy on one source of each kind (ISOLINE_MODULE_TIDY_SOURCES) and fails once a listed
+# check no longer fires. Measured with clang-tidy 22.1.8 and the project's .clang-tidy (2026-11-27):
+#  - interface-unit: 93 of module isoline's 103 using-declarations get misc-unused-using-decls; an
+#    exporting using-declaration is a use, which the check does not know.
+#  - import-only: 4 readability-redundant-declaration, on the global operator new, new[], delete and
+#    delete[] of an importer that includes a standard header (<memory>) before `import isoline;`: its
+#    implicit declarations are taken for redeclarations of <new>'s, which the BMI's global module fragment
+#    holds too. A bare `import isoline;` declares neither, and reports nothing.
+set(ISOLINE_MODULE_TIDY_FALSE_POSITIVES
+    "interface-unit" "misc-unused-using-decls"
+    "import-only" "readability-redundant-declaration")
+
+# Whether E1 (D13) applies: CMake drives Clang's GNU front end, whose synthetic BMI command carries `-c`.
+set(ISOLINE_MODULE_PRECOMPILE_TAKES_C OFF)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+    set(ISOLINE_MODULE_PRECOMPILE_TAKES_C ON)
+endif()
+
+## @brief Lets clang-tidy run on @p target, a module target or an importer of one, with the checks of
+## ISOLINE_MODULE_TIDY_FALSE_POSITIVES' rows of @p kind lifted (E2, D13) and every other check kept. Call it
+## after isoline_apply_target_policy(), whose clang-tidy command it extends; without clang-tidy it does
+## nothing. A kind without a row refuses the configure.
+##
+## isoline_lift_module_tidy_checks(<target> <kind>)
+function(isoline_lift_module_tidy_checks target kind)
+    set(lifted "")
+    set(rows "${ISOLINE_MODULE_TIDY_FALSE_POSITIVES}")
+    while(rows)
+        list(POP_FRONT rows rowKind check)
+        if(rowKind STREQUAL kind)
+            list(APPEND lifted "-${check}")
+        endif()
+    endwhile()
+    if(NOT lifted)
+        message(FATAL_ERROR "isoline_lift_module_tidy_checks(${target}): ISOLINE_MODULE_TIDY_FALSE_POSITIVES has "
+                            "no row of kind ${kind}")
+    endif()
+    if(NOT ISOLINE_CLANG_TIDY_COMMAND)
+        return()
+    endif()
+    list(JOIN lifted "," checks)
+    set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${ISOLINE_CLANG_TIDY_COMMAND};--checks=${checks}")
+endfunction()
+
+## @brief Registers the tripwires of E1 and E2 (D13), as CTests of label `lint`. Called by
+## tests/modules/CMakeLists.txt once its sources are targets.
+##  - cmake-precompile-tripwire, where E1 applies and Ninja builds: it reads the build's commands.
+##  - clang-tidy-module-tripwire, where clang-tidy runs: it runs it on one source of each kind of
+##    ISOLINE_MODULE_TIDY_FALSE_POSITIVES. A kind of a row without a source refuses the configure.
+##
+## isoline_add_module_exception_tripwires(TIDY_SOURCES <kind> <source>...)
+function(isoline_add_module_exception_tripwires)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "" "TIDY_SOURCES")
+    if(ISOLINE_MODULE_PRECOMPILE_TAKES_C AND CMAKE_GENERATOR MATCHES "^Ninja")
+        add_test(NAME cmake-precompile-tripwire
+                 COMMAND "${CMAKE_COMMAND}" "-DNINJA=${CMAKE_MAKE_PROGRAM}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+                         "-DBUILD_CMAKE_VERSION=${CMAKE_VERSION}" "-DCOMPILER=${CMAKE_CXX_COMPILER}"
+                         -P "${PROJECT_SOURCE_DIR}/tests/cmake/expect-precompile-with-c.cmake")
+        set_tests_properties(cmake-precompile-tripwire PROPERTIES LABELS lint TIMEOUT 60)
+    endif()
+    if(NOT ISOLINE_CLANG_TIDY_COMMAND)
+        return()
+    endif()
+    set(kinds "")
+    set(sources "${arg_TIDY_SOURCES}")
+    while(sources)
+        list(POP_FRONT sources kind source)
+        list(APPEND kinds "${kind}")
+    endwhile()
+    set(rows "${ISOLINE_MODULE_TIDY_FALSE_POSITIVES}")
+    while(rows)
+        list(POP_FRONT rows kind check)
+        if(NOT kind IN_LIST kinds)
+            message(FATAL_ERROR "[isoline] ISOLINE_MODULE_TIDY_FALSE_POSITIVES row (${kind}, ${check}) has no "
+                                "source of kind ${kind} for clang-tidy-module-tripwire")
+        endif()
+    endwhile()
+    set(argumentsFile "${PROJECT_BINARY_DIR}/clang-tidy-module-tripwire/arguments.cmake")
+    file(CONFIGURE OUTPUT "${argumentsFile}" CONTENT "set(ROWS [==[@ISOLINE_MODULE_TIDY_FALSE_POSITIVES@]==])
+set(SOURCES [==[@arg_TIDY_SOURCES@]==])
+" @ONLY)
+    add_test(NAME clang-tidy-module-tripwire
+             COMMAND "${CMAKE_COMMAND}" "-DCLANG_TIDY=${ISOLINE_CLANG_TIDY_EXE}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+                     "-DARGUMENTS_FILE=${argumentsFile}"
+                     -P "${PROJECT_SOURCE_DIR}/tests/cmake/expect-module-tidy-false-positives.cmake")
+    # clang-tidy over the whole header set, once per kind, under a sanitizer build's load too.
+    set_tests_properties(clang-tidy-module-tripwire PROPERTIES LABELS lint TIMEOUT 600)
+endfunction()
+
+## @brief Creates the module target of a row (D2): <LIBRARY>_module, a static library that holds only the
+## interface unit, in FILE_SET CXX_MODULES, and links LIBRARY and the module targets of IMPORTS. Its alias
+## and export name are LIBRARY's without the `isoline_` prefix, plus `_module` (isoline::core_module). Sets
+## the global property ISOLINE_MODULE_<NAME>_TARGET, which isoline_add_module_consumer() reads.
+##
+## _isoline_add_module_target(NAME <module> LIBRARY <target> SOURCE <absolute interface unit>
+##                            [IMPORTS <module>...])
+function(_isoline_add_module_target)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;LIBRARY;SOURCE" "IMPORTS")
+    set(target ${arg_LIBRARY}_module)
+    string(REGEX REPLACE "^isoline_" "" exportName "${arg_LIBRARY}")
+    set(importTargets "")
+    foreach(imported IN LISTS arg_IMPORTS)
+        get_property(importTarget GLOBAL PROPERTY ISOLINE_MODULE_${imported}_TARGET)
+        if(NOT importTarget)
+            message(FATAL_ERROR "isoline_add_module(${arg_NAME}): IMPORTS ${imported} is no module row before it")
+        endif()
+        list(APPEND importTargets ${importTarget})
+    endforeach()
+
+    add_library(${target} STATIC)
+    add_library(isoline::${exportName}_module ALIAS ${target})
+    set_target_properties(${target} PROPERTIES EXPORT_NAME ${exportName}_module)
+    target_sources(${target} PUBLIC FILE_SET CXX_MODULES FILES "${arg_SOURCE}")
+    target_link_libraries(${target} PUBLIC ${arg_LIBRARY} ${importTargets})
+    target_compile_features(${target} PUBLIC cxx_std_23)
+    isoline_apply_target_policy(${target})
+    if(ISOLINE_MODULE_PRECOMPILE_TAKES_C)
+        # E1 (D13): CMake 4.3 builds an in-project importer's BMI in a synthetic target
+        # (<target>@synth_<hash>) by `clang++ ... --precompile ... -o <bmi> -c <unit>.cppm`. The `-c` is
+        # CMake's, not ours, and under -Werror Clang 22 refuses it (measured 2026-11-27):
+        #   clang++: error: argument unused during compilation: '-c' [-Werror,-Wunused-command-line-argument]
+        # Only that error is lifted, on module targets only. It cannot be narrower on CMake 4.3: the
+        # synthetic target has no property of its own and takes the module target's compile options (a
+        # source property of the .cppm reaches the same two commands), and the module target's one other
+        # command, the object compile, uses its `-c`, so the lift changes nothing there. The warning still
+        # prints, three times per synthetic target (its command, and clang-scan-deps' two scans of it), which
+        # keeps the cause in sight. cmake-precompile-tripwire goes red once CMake passes no `-c` with
+        # --precompile, or Clang no longer warns about it. Follow-up: report the redundant `-c` to CMake
+        # upstream.
+        isoline_apply_build_options(${target} COMPILE -Wno-error=unused-command-line-argument)
+    endif()
+    # E2 (D13), row interface-unit of ISOLINE_MODULE_TIDY_FALSE_POSITIVES: misc-unused-using-decls.
+    isoline_lift_module_tidy_checks(${target} interface-unit)
+    set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_TARGET ${target})
+    set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_IMPORTS "${arg_IMPORTS}")
+    set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_SOURCE "${arg_SOURCE}")
+endfunction()
+
+## @brief Makes @p target an importer of the named modules: it is scanned for module dependencies
+## (CXX_SCAN_FOR_MODULES; the project's policies leave CMP0155 OLD, so no other target is) and links each
+## module's target.
+##
+## isoline_add_module_consumer(<target> <module>...)
+function(isoline_add_module_consumer target)
+    if(NOT ARGN)
+        message(FATAL_ERROR "isoline_add_module_consumer(${target}): no module named")
+    endif()
+    set_target_properties(${target} PROPERTIES CXX_SCAN_FOR_MODULES ON)
+    foreach(module IN LISTS ARGN)
+        get_property(moduleTarget GLOBAL PROPERTY ISOLINE_MODULE_${module}_TARGET)
+        if(NOT moduleTarget)
+            message(FATAL_ERROR "isoline_add_module_consumer(${target}): ${module} is no module row "
+                                "(isoline_add_module(), with ISOLINE_MODULES ON)")
+        endif()
+        target_link_libraries(${target} PRIVATE ${moduleTarget})
+    endforeach()
+endfunction()
+
 ## @brief Declares a C++ module of a library: one row per public library target (D1, D12).
 ##
 ## isoline_add_module(NAME <module> LIBRARY <target> SOURCE <interface unit>
@@ -307,6 +469,10 @@ function(isoline_add_module)
 " TARGET ${arg_LIBRARY})
     set_property(GLOBAL APPEND PROPERTY ISOLINE_MODULE_ROWS "${arg_NAME}")
     set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_INSTALL_COMPONENT "${arg_INSTALL_COMPONENT}")
+    if(ISOLINE_MODULES)
+        _isoline_add_module_target(NAME "${arg_NAME}" LIBRARY "${arg_LIBRARY}" SOURCE "${source}"
+                                   IMPORTS ${arg_IMPORTS})
+    endif()
 
     if(NOT ISOLINE_MODULE_LINT_CLANG)
         return()

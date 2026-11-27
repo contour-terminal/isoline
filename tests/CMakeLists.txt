@@ -2,6 +2,10 @@
 
 # Suites that are not unit tests of one module.
 add_subdirectory(spec)
+# Isoline through `import isoline;` (ISOLINE_MODULES): the in-tree consumers of the module targets.
+if(ISOLINE_MODULES)
+    add_subdirectory(modules)
+endif()
 
 # The spec runner's self-test: a script with wrong assertions the runner must report and fail on.
 # Two are wrong in their values (1 + 2 is not 4, and dividing by zero is no overflow). The rest pin
