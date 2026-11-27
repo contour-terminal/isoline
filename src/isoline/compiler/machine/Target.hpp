@@ -11,8 +11,10 @@
 
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <memory_resource>
 #include <span>
+#include <vector>
 
 #include <isoline/compiler/CompileConfig.hpp>
 #include <isoline/compiler/CompileError.hpp>
@@ -112,5 +114,24 @@ class ITarget
     ITarget& operator=(ITarget const&) = default;
     ITarget& operator=(ITarget&&) = default;
 };
+
+/// The registers a call under @p convention clobbers on @p target: every allocatable register its row does
+/// not preserve, General then Float, in the target's order. What a call's, a poll's, a stub's and CallHost's
+/// physical definitions are, derived from the convention row and never listed by hand. (Registers the
+/// allocator never assigns, such as the pinned ones, are not tracked, so a clobber of one is not listed.)
+/// @param target The target.
+/// @param convention Its internal convention, or its host's (Require).
+/// @param memory What the list allocates from.
+[[nodiscard]] inline std::pmr::vector<PhysicalRegister> callerSavedRegisters(
+    ITarget const& target, Convention convention, std::pmr::memory_resource& memory)
+{
+    auto const& row = target.conventionRow(convention);
+    auto clobbered = std::pmr::vector<PhysicalRegister> { &memory };
+    for (auto const registerClass: { RegisterClass::General, RegisterClass::Float })
+        for (auto const reg: target.allocatable(registerClass))
+            if (!row.calleeSaved.contains(reg))
+                clobbered.push_back(reg);
+    return clobbered;
+}
 
 } // namespace isoline::compiler::machine

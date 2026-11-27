@@ -77,6 +77,13 @@ TEST_CASE("MachineVerifier.acceptsWellFormedFunctions")
         function.setParameters(next, std::array { parameter });
         // A physical register at a fixed position, the fixed one.
         auto const g0 = PhysicalRegister { .registerClass = RegisterClass::General, .number = 0 };
+        // The selector's copy into it, in the block that reads it.
+        std::ignore =
+            function.append(next,
+                            opcodeOf(FakeOpcode::Copy),
+                            std::to_array<MachineOperand>(
+                                { RegisterOperand { .name = RegisterName::of(g0), .role = OperandRole::Def },
+                                  use(function, parameter) }));
         std::ignore = function.append(next,
                                       opcodeOf(FakeOpcode::Return),
                                       std::to_array<MachineOperand>({ RegisterOperand {
@@ -153,5 +160,43 @@ TEST_CASE("MachineVerifier.refusesARedefinitionInAnotherBlock")
                                       opcodeOf(FakeOpcode::Constant),
                                       std::to_array<MachineOperand>({ def(function, v), Immediate { 2 } }));
         terminate(function, next, {});
+    }));
+}
+
+TEST_CASE("MachineVerifier.refusesAPhysicalRegisterAcrossBlocks")
+{
+    auto const g0 = PhysicalRegister { .registerClass = RegisterClass::General, .number = 0 };
+    auto const physical = [&](OperandRole role) {
+        return MachineOperand { RegisterOperand { .name = RegisterName::of(g0), .role = role } };
+    };
+    // g0 written in the entry block and read in the next: no layer below selection carries it across the
+    // edge.
+    CHECK(refuses([&](MachineFunction& function, auto entry) {
+        auto const v = function.createVirtualRegister(RegisterClass::General);
+        auto const next = function.createBlock(Hotness::Normal);
+        std::ignore = function.append(entry,
+                                      opcodeOf(FakeOpcode::Constant),
+                                      std::to_array<MachineOperand>({ def(function, v), Immediate { 1 } }));
+        std::ignore =
+            function.append(entry,
+                            opcodeOf(FakeOpcode::Copy),
+                            std::to_array<MachineOperand>({ physical(OperandRole::Def), use(function, v) }));
+        terminate(function, entry, std::array { EdgeTo { .target = next } });
+        std::ignore = function.append(next,
+                                      opcodeOf(FakeOpcode::Return),
+                                      std::to_array<MachineOperand>({ physical(OperandRole::Use) }));
+        function.setEdges(next, {});
+    }));
+    // So is a memory operand's physical base.
+    CHECK(refuses([&](MachineFunction& function, auto entry) {
+        auto const v = function.createVirtualRegister(RegisterClass::General);
+        auto const next = function.createBlock(Hotness::Normal);
+        terminate(function, entry, std::array { EdgeTo { .target = next } });
+        std::ignore =
+            function.append(next,
+                            opcodeOf(FakeOpcode::Load),
+                            std::to_array<MachineOperand>(
+                                { def(function, v), MemoryOperand { .base = RegisterName::of(g0) } }));
+        terminate(function, next, {}, v);
     }));
 }

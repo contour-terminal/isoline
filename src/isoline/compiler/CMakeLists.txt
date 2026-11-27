@@ -32,6 +32,7 @@ target_sources(isoline_core
         optimization/TrivialParameters.cpp
         registerallocation/LinearScan.cpp
         registerallocation/ParallelMoves.cpp
+        registerallocation/SpillSlots.cpp
         translation/LoopAssignments.cpp
         translation/MemoryTranslation.cpp
         translation/Translator.cpp
@@ -66,6 +67,7 @@ target_sources(isoline_core
             optimization/Rewrite.hpp
             registerallocation/LinearScan.hpp
             registerallocation/ParallelMoves.hpp
+            registerallocation/SpillSlots.hpp
             translation/LoopAssignments.hpp
             translation/MemoryTranslation.hpp
             translation/NumericRules.hpp

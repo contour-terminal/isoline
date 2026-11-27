@@ -273,7 +273,9 @@ struct CallSite
 /// What a function's frame came to, as the register allocator decides it and the encoder lays it out. From
 /// the bottom (the stack pointer every call leaves from) up: the outgoing area (every call's stack arguments,
 /// and the host convention's shadow space, which a callee may write), the spill slots, the callee-saved
-/// registers, and at the top what the call into the function pushed (x86-64's return address).
+/// registers, the caller's frame pointer (StackRule::framePointerBytes), and at the top what the call into
+/// the function pushed (x86-64's return address). No instruction of the body moves the stack pointer, so
+/// every call leaves from the frame's bottom, which checkFrame() relies on.
 struct FrameLayout
 {
     /// The frame's size, from the caller's stack pointer at its call down to the frame's bottom: what the

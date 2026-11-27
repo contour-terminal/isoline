@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <limits>
 
 #include <isoline/compiler/CompileError.hpp>
@@ -54,6 +55,20 @@ struct StackRule
     /// registers, not widths (ConventionRow::calleeSaved). x86-64: 8 and 16 (Microsoft x64 preserves xmm6–15
     /// whole); arm64: 8 and 8 (AAPCS64 preserves the low 64 bits of v8–v15).
     std::array<uint32_t, RegisterClassCount> savedRegisterBytes;
+    /// What the prologue saves of the caller's frame pointer, below the return address (x86-64: 8, its
+    /// `push rbp`; arm64: 0 when the frame record is among the saved registers). Counted before the frame is
+    /// aligned, so every call still leaves aligned.
+    uint32_t framePointerBytes;
+
+    /// The bytes a prologue saves for @p saved: each register at its class's width.
+    [[nodiscard]] constexpr uint64_t savedBytes(RegisterSet const& saved) const noexcept
+    {
+        auto bytes = uint64_t { 0 };
+        for (auto const registerClass: { RegisterClass::General, RegisterClass::Float })
+            bytes += uint64_t { saved.countIn(registerClass) }
+                     * savedRegisterBytes[static_cast<std::size_t>(registerClass)];
+        return bytes;
+    }
 
     /// Whether both rules are alike.
     [[nodiscard]] constexpr bool operator==(StackRule const&) const noexcept = default;
@@ -100,13 +115,15 @@ struct StackRule
     if (auto const sized = checkFrameSize(rule, frameCost, frame.totalBytes); !sized)
         return sized;
     auto const alignment = std::max(stack.alignment, host.stackAlignment);
-    auto const top =
-        frame.totalBytes >= stack.returnAddressBytes ? frame.totalBytes - stack.returnAddressBytes : 0;
+    // Above the spills: the saved registers, the caller's frame pointer and the return address.
+    auto const reserved =
+        stack.returnAddressBytes + stack.framePointerBytes + stack.savedBytes(frame.calleeSaved);
+    auto const top = frame.totalBytes >= reserved ? frame.totalBytes - reserved : 0;
     auto const aligned = alignment != 0 && frame.totalBytes % alignment == 0;
     auto const shadowed = frame.outgoingBytes >= host.shadowSpaceBytes;
     auto const spillsAbove = frame.spillOffset >= frame.outgoingBytes && frame.spillBytes <= top
                              && frame.spillOffset <= top - frame.spillBytes;
-    if (!aligned || !shadowed || !spillsAbove || frame.totalBytes < stack.returnAddressBytes)
+    if (!aligned || !shadowed || !spillsAbove || frame.totalBytes < reserved)
         return std::unexpected { CompileError { .code = CompileErrorCode::InternalVerificationFailed,
                                                 .pass = "frame" } };
     return {};

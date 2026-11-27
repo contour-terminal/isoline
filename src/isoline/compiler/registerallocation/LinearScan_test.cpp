@@ -35,6 +35,7 @@ using isoline::compiler::CompileError;
 using isoline::compiler::CompileErrorCode;
 using isoline::compiler::CompileLimits;
 using isoline::compiler::machine::BlockId;
+using isoline::compiler::machine::Convention;
 using isoline::compiler::machine::EdgeTo;
 using isoline::compiler::machine::FrameLayout;
 using isoline::compiler::machine::FrameRule;
@@ -81,13 +82,15 @@ MachineOperand physical(PhysicalRegister reg, OperandRole role)
     return RegisterOperand { .name = RegisterName::of(reg), .role = role };
 }
 
-/// The operands of FakeOpcode::Call as a clobber of every register: physical definitions of g0, g1, f0, f1.
-std::array<MachineOperand, 4> clobbers()
+/// The operands of a call under @p convention: a physical definition of every register it clobbers, derived
+/// from the convention row (callerSavedRegisters()), never listed by hand.
+std::vector<MachineOperand> clobbers(Convention convention = Convention::WasmInternal)
 {
-    return { physical({ .registerClass = RegisterClass::General, .number = 0 }, OperandRole::Def),
-             physical({ .registerClass = RegisterClass::General, .number = 1 }, OperandRole::Def),
-             physical({ .registerClass = RegisterClass::Float, .number = 0 }, OperandRole::Def),
-             physical({ .registerClass = RegisterClass::Float, .number = 1 }, OperandRole::Def) };
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    auto operands = std::vector<MachineOperand> {};
+    for (auto const reg: isoline::compiler::machine::callerSavedRegisters(FakeTarget {}, convention, memory))
+        operands.push_back(physical(reg, OperandRole::Def));
+    return operands;
 }
 
 /// A builder of FakeTarget machine functions.
@@ -108,6 +111,11 @@ class Builder
     {
         return append(
             block, FakeOpcode::Add, { def(_function, result), use(_function, left), use(_function, right) });
+    }
+
+    uint32_t constantFloat(BlockId block, VirtualRegister result, int64_t bits = 0)
+    {
+        return append(block, FakeOpcode::ConstantFloat, { def(_function, result), Immediate { bits } });
     }
 
     uint32_t copyFloat(BlockId block, VirtualRegister result, VirtualRegister source)
@@ -141,21 +149,17 @@ class Builder
     /// An indirect call through @p target, its result @p result in g0, clobbering every other register.
     uint32_t callIndirect(BlockId block, VirtualRegister target, VirtualRegister result)
     {
-        auto operands = std::array<MachineOperand, 5> {};
-        operands[0] = use(_function, target);
-        operands[1] = def(_function, result);
-        auto const clobbered = clobbers();
-        std::ranges::copy(std::span { clobbered }.subspan(1), operands.begin() + 2);
+        auto operands = clobbers();
+        operands[0] = def(_function, result);
+        operands.insert(operands.begin(), use(_function, target));
         return _function.append(block, opcodeOf(FakeOpcode::CallIndirect), operands);
     }
 
-    /// A poll, whose slow path clobbers g0.
+    /// A poll, whose slow path calls the runtime: it clobbers the host convention's caller-saved registers.
     uint32_t poll(BlockId block)
     {
-        return append(
-            block,
-            FakeOpcode::Poll,
-            { physical({ .registerClass = RegisterClass::General, .number = 0 }, OperandRole::Def) });
+        auto const operands = clobbers(Convention::SystemV);
+        return _function.append(block, opcodeOf(FakeOpcode::Poll), operands);
     }
 
     uint32_t append(BlockId block, FakeOpcode opcode, std::initializer_list<MachineOperand> operands)
@@ -170,6 +174,12 @@ class Builder
     {
         auto const edge = std::to_array<EdgeTo>(
             { EdgeTo { .target = target, .arguments = std::span { arguments.begin(), arguments.size() } } });
+        terminate(_function, block, edge);
+    }
+
+    void jumpWith(BlockId block, BlockId target, std::span<VirtualRegister const> arguments)
+    {
+        auto const edge = std::to_array<EdgeTo>({ EdgeTo { .target = target, .arguments = arguments } });
         terminate(_function, block, edge);
     }
 
@@ -333,7 +343,7 @@ TEST_CASE("LinearScan.noSpillsUnderPressure")
         },
         memory);
     CHECK(spillSlots(*allocation.frame) == 0);
-    CHECK(allocation.frame->totalBytes == 16); // the return address, aligned
+    CHECK(allocation.frame->totalBytes == 16); // the frame pointer's save and the return address
 }
 
 TEST_CASE("LinearScan.spillsBeyondPressure")
@@ -636,6 +646,23 @@ TEST_CASE("LinearScan.validatesAssignment")
         CHECK(checked.error().kind == AssignmentFaultKind::BadPlace);
     }
 
+    SECTION("an allocated operand off its row")
+    {
+        // The return's operand is fixed to g0; naming g1 there breaks the row, whatever g1 holds.
+        auto& f = allocation.after;
+        auto tampered = false;
+        for (auto const instruction: std::views::iota(uint32_t { 0 }, f.instructionCount()))
+            if (f.instruction(instruction).opcode == opcodeOf(FakeOpcode::Return))
+            {
+                std::get<RegisterOperand>(f.operands(instruction)[0]).name = generalRegister(1);
+                tampered = true;
+            }
+        REQUIRE(tampered);
+        auto const checked = check(frame);
+        REQUIRE_FALSE(checked.has_value());
+        CHECK(checked.error().kind == AssignmentFaultKind::ConstraintBroken);
+    }
+
     SECTION("an unallocated function")
     {
         auto const checked = checkAssignment(allocation.before, allocation.before, target, frame, 64, memory);
@@ -850,7 +877,7 @@ TEST_CASE("LinearScan.recordsTheCalleeSavedRegisters")
     auto const g1 = PhysicalRegister { .registerClass = RegisterClass::General, .number = 1 };
     CHECK(allocation.frame->calleeSaved.contains(g1));
     CHECK(allocation.frame->calleeSaved.countIn(RegisterClass::General) == 1);
-    CHECK(allocation.frame->totalBytes == 16); // 8 saved + 8 return address
+    CHECK(allocation.frame->totalBytes == 32); // 8 saved, 8 frame pointer, 8 return address, aligned
 }
 
 TEST_CASE("LinearScan.outgoingAreaCoversEveryCall")
@@ -1000,24 +1027,33 @@ class RandomFunction
     {
         auto& f = _b.function();
         _current = f.createBlock(Hotness::Normal);
-        auto pool = std::vector<VirtualRegister> {};
+        auto pool = Pool {};
         for ([[maybe_unused]] auto const index: std::views::iota(0, 3))
         {
-            pool.push_back(_b.general());
-            _b.constant(_current, pool.back(), 7);
+            pool.general.push_back(_b.general());
+            _b.constant(_current, pool.general.back(), 7);
+            pool.floats.push_back(_b.floating());
+            _b.constantFloat(_current, pool.floats.back());
         }
         region(pool, 3);
-        auto const picks = std::to_array({ pick(pool), pick(pool), pick(pool) });
+        auto const picks = std::to_array({ pick(pool.general), pick(pool.general), pick(pool.general) });
         _b.ret(_current, _b.sum(_current, picks));
     }
 
   private:
-    VirtualRegister pick(std::vector<VirtualRegister> const& pool)
+    /// The values in scope, by class.
+    struct Pool
     {
-        return pool[_random.below(pool.size())];
+        std::vector<VirtualRegister> general;
+        std::vector<VirtualRegister> floats;
+    };
+
+    VirtualRegister pick(std::vector<VirtualRegister> const& values)
+    {
+        return values[_random.below(values.size())];
     }
 
-    void region(std::vector<VirtualRegister>& pool, uint32_t depth)
+    void region(Pool& pool, uint32_t depth)
     {
         auto const parts = 1 + _random.below(3);
         for ([[maybe_unused]] auto const part: std::views::iota(uint64_t { 0 }, parts))
@@ -1034,35 +1070,43 @@ class RandomFunction
         }
     }
 
-    void straight(std::vector<VirtualRegister>& pool, uint32_t count)
+    void straight(Pool& pool, uint32_t count)
     {
         auto& f = _b.function();
+        auto& values = pool.general;
         for ([[maybe_unused]] auto const index: std::views::iota(0U, count))
         {
+            if (_random.below(3) == 0)
+            {
+                // A Float value: a copy of one in scope, or a constant; calls and polls clobber them too.
+                auto const result = _b.floating();
+                if (_random.below(4) == 0)
+                    _b.constantFloat(_current, result);
+                else
+                    _b.copyFloat(_current, result, pick(pool.floats));
+                pool.floats.push_back(result);
+                continue;
+            }
             auto const result = _b.general();
             switch (_random.below(12))
             {
-                case 10:
-                    // An indirect call reads its target from a register while it clobbers every one.
-                    _b.callIndirect(_current, pick(pool), result);
-                    break;
                 case 0: _b.constant(_current, result, 1); break;
-                case 1: _b.add(_current, result, pick(pool), pick(pool)); break;
+                case 1: _b.add(_current, result, pick(values), pick(values)); break;
                 case 2:
                     _b.append(_current,
                               FakeOpcode::Divide,
-                              { def(f, result), use(f, pick(pool)), use(f, pick(pool)) });
+                              { def(f, result), use(f, pick(values)), use(f, pick(values)) });
                     break;
                 case 3:
-                    _b.append(_current, FakeOpcode::Copy, { def(f, result), use(f, pick(pool)) });
-                    _b.append(_current, FakeOpcode::Shift, { useDef(f, result), use(f, pick(pool)) });
+                    _b.append(_current, FakeOpcode::Copy, { def(f, result), use(f, pick(values)) });
+                    _b.append(_current, FakeOpcode::Shift, { useDef(f, result), use(f, pick(values)) });
                     break;
                 case 4:
-                    _b.append(_current, FakeOpcode::EarlyClobber, { early(f, result), use(f, pick(pool)) });
+                    _b.append(_current, FakeOpcode::EarlyClobber, { early(f, result), use(f, pick(values)) });
                     break;
                 case 5:
-                    _b.append(_current, FakeOpcode::Copy, { def(f, result), use(f, pick(pool)) });
-                    _b.append(_current, FakeOpcode::AddTied, { useDef(f, result), use(f, pick(pool)) });
+                    _b.append(_current, FakeOpcode::Copy, { def(f, result), use(f, pick(values)) });
+                    _b.append(_current, FakeOpcode::AddTied, { useDef(f, result), use(f, pick(values)) });
                     break;
                 case 6:
                     _b.call(_current);
@@ -1070,61 +1114,84 @@ class RandomFunction
                     break;
                 case 7:
                     _b.poll(_current);
-                    _b.add(_current, result, pick(pool), pick(pool));
+                    _b.add(_current, result, pick(values), pick(values));
                     break;
                 case 8:
-                    _b.store(_current, pick(pool));
+                    _b.store(_current, pick(values));
                     _b.load(_current, result, 8);
                     break;
-                case 9: _b.add(_current, result, pick(pool), pick(pool)); break;
+                case 9:
+                    // A call's arguments in g0 and g1, either operand order.
+                    _b.append(_current,
+                              _random.below(2) == 0 ? FakeOpcode::PassArguments
+                                                    : FakeOpcode::PassArgumentsSwapped,
+                              { use(f, pick(values)), use(f, pick(values)) });
+                    _b.add(_current, result, pick(values), pick(values));
+                    break;
+                case 10:
+                    // An indirect call reads its target from a register while it clobbers every one.
+                    _b.callIndirect(_current, pick(values), result);
+                    break;
                 default: _b.constant(_current, result, 2); break;
             }
-            pool.push_back(result);
+            values.push_back(result);
         }
     }
 
-    void diamond(std::vector<VirtualRegister>& pool, uint32_t depth)
+    /// The arguments an edge passes: two General values and one Float, picked from @p pool.
+    std::array<VirtualRegister, 3> arguments(Pool const& pool)
+    {
+        return { pick(pool.general), pick(pool.general), pick(pool.floats) };
+    }
+
+    /// Gives @p block the parameters arguments() passes, and adds them to @p pool.
+    void parameters(BlockId block, Pool& pool)
+    {
+        auto const values = std::to_array({ _b.general(), _b.general(), _b.floating() });
+        _b.function().setParameters(block, values);
+        pool.general.push_back(values[0]);
+        pool.general.push_back(values[1]);
+        pool.floats.push_back(values[2]);
+    }
+
+    void diamond(Pool& pool, uint32_t depth)
     {
         auto& f = _b.function();
         auto const left = f.createBlock(Hotness::Normal);
         auto const right = f.createBlock(_random.below(2) == 0 ? Hotness::Normal : Hotness::Cold);
         auto const join = f.createBlock(Hotness::Normal);
-        _b.branch(_current, pick(pool), left, right);
-        auto const first = _b.general();
-        auto const second = _b.general();
+        _b.branch(_current, pick(pool.general), left, right);
         for (auto const arm: { left, right })
         {
             _current = arm;
             auto armPool = pool;
             region(armPool, depth);
-            _b.jump(_current, join, { pick(armPool), pick(armPool) });
+            _b.jumpWith(_current, join, arguments(armPool));
         }
-        f.setParameters(join, std::to_array({ first, second }));
+        parameters(join, pool);
         _current = join;
-        pool.push_back(first);
-        pool.push_back(second);
     }
 
-    void loop(std::vector<VirtualRegister>& pool, uint32_t depth)
+    void loop(Pool& pool, uint32_t depth)
     {
         auto& f = _b.function();
         auto const header = f.createBlock(Hotness::Normal);
         auto const body = f.createBlock(Hotness::Normal);
         auto const exit = f.createBlock(Hotness::Normal);
-        _b.jump(_current, header, { pick(pool), pick(pool) });
-        auto const counter = _b.general();
-        auto const carried = _b.general();
-        f.setParameters(header, std::to_array({ counter, carried }));
+        _b.jumpWith(_current, header, arguments(pool));
         auto inner = pool;
-        inner.push_back(counter);
-        inner.push_back(carried);
+        parameters(header, inner);
+        auto const counter = inner.general[inner.general.size() - 2];
         _b.branch(header, counter, body, exit);
         _current = body;
         region(inner, depth);
-        _b.jump(_current, header, { pick(inner), pick(inner) });
+        _b.jumpWith(_current, header, arguments(inner));
         _current = exit;
-        pool.push_back(counter);
-        pool.push_back(carried);
+        // After the loop: what was in scope before it, and the header's parameters.
+        auto const header0 = f.parameters(header);
+        pool.general.push_back(header0[0]);
+        pool.general.push_back(header0[1]);
+        pool.floats.push_back(header0[2]);
     }
 
     Builder& _b;
@@ -1165,8 +1232,8 @@ TEST_CASE("LinearScan.randomFunctionsCheck")
 namespace
 {
 
-/// FakeTarget without Float registers: a target bug the allocator refuses rather than trusts.
-class NoFloatTarget final: public isoline::compiler::machine::ITarget
+/// A target that forwards to a FakeTarget, for test targets that change one answer of it.
+class ForwardingTarget: public isoline::compiler::machine::ITarget
 {
   public:
     [[nodiscard]] isoline::compiler::machine::TargetDescription const& description() const noexcept override
@@ -1186,8 +1253,7 @@ class NoFloatTarget final: public isoline::compiler::machine::ITarget
     [[nodiscard]] std::span<PhysicalRegister const> allocatable(
         RegisterClass registerClass) const noexcept override
     {
-        return registerClass == RegisterClass::Float ? std::span<PhysicalRegister const> {}
-                                                     : _fake.allocatable(registerClass);
+        return _fake.allocatable(registerClass);
     }
     [[nodiscard]] std::span<isoline::compiler::machine::OperandConstraint const> constraints(
         uint16_t machineOpcode) const override
@@ -1219,6 +1285,44 @@ class NoFloatTarget final: public isoline::compiler::machine::ITarget
 
   private:
     FakeTarget _fake {};
+};
+
+/// FakeTarget without Float registers: a target bug the allocator refuses rather than trusts.
+class NoFloatTarget final: public ForwardingTarget
+{
+  public:
+    [[nodiscard]] std::span<PhysicalRegister const> allocatable(
+        RegisterClass registerClass) const noexcept override
+    {
+        return registerClass == RegisterClass::Float ? std::span<PhysicalRegister const> {}
+                                                     : ForwardingTarget::allocatable(registerClass);
+    }
+};
+
+/// FakeTarget that cancels @p cancellation at the scan's @p after-th placement: the scan asks for the
+/// registers of each child it places, and nothing before the scan does.
+class CancellingTarget final: public ForwardingTarget
+{
+  public:
+    CancellingTarget(CompileCancellation& cancellation, uint32_t after) noexcept:
+        _cancellation { &cancellation }, _after { after }
+    {
+    }
+
+    [[nodiscard]] std::span<PhysicalRegister const> allocatable(
+        RegisterClass registerClass) const noexcept override
+    {
+        if (++_asked == _after)
+            _cancellation->cancel();
+        return ForwardingTarget::allocatable(registerClass);
+    }
+
+    [[nodiscard]] uint32_t asked() const noexcept { return _asked; }
+
+  private:
+    CompileCancellation* _cancellation;
+    uint32_t _after;
+    mutable uint32_t _asked = 0; ///< How often the scan asked: the test's probe, not the target's state.
 };
 
 /// Allocates @p build on @p target under @p limits, without the check.
@@ -1451,4 +1555,152 @@ TEST_CASE("LinearScan.leavesUnreachableBlocksAlone")
     REQUIRE(allocation.frame.has_value());
     // linearize() leaves the block out: it is never encoded, and keeps its virtual registers.
     CHECK(nameOf(allocation.after, orphan, 0).kind == RegisterKind::Virtual);
+}
+
+TEST_CASE("LinearScan.fixedCopiesDoNotDependOnOperandOrder")
+{
+    // Two copies into fixed registers in one gap, collected in operand order: the same call, its operands the
+    // other way round, gets the same moves (std::sort leaves equal keys in an order each standard library
+    // picks differently, so the order the copies come in must not decide it).
+    auto const build = [](FakeOpcode opcode) {
+        return [opcode](Builder& b) {
+            auto& f = b.function();
+            auto const block = f.createBlock(Hotness::Normal);
+            auto const x = b.general();
+            auto const y = b.general();
+            b.constant(block, x, 1);
+            b.constant(block, y, 2);
+            // x into g0 and y into g1 either way: the swapped row lists g1 first.
+            if (opcode == FakeOpcode::PassArguments)
+                b.append(block, opcode, { use(f, x), use(f, y) });
+            else
+                b.append(block, opcode, { use(f, y), use(f, x) });
+            auto const z = b.general();
+            b.add(block, z, x, y);
+            b.ret(block, z);
+        };
+    };
+    auto first = std::pmr::monotonic_buffer_resource {};
+    auto second = std::pmr::monotonic_buffer_resource {};
+    auto const inOrder = allocateAndCheck(build(FakeOpcode::PassArguments), first);
+    auto const swapped = allocateAndCheck(build(FakeOpcode::PassArgumentsSwapped), second);
+    CHECK(*inOrder.frame == *swapped.frame);
+    REQUIRE(inOrder.after.instructionCount() == swapped.after.instructionCount());
+    auto copies = std::size_t { 0 };
+    for (auto const instruction: std::views::iota(uint32_t { 0 }, inOrder.after.instructionCount()))
+    {
+        CHECK(std::ranges::equal(inOrder.after.movesBefore(instruction),
+                                 swapped.after.movesBefore(instruction)));
+        copies += inOrder.after.movesBefore(instruction).size();
+    }
+    CHECK(copies >= 2);
+}
+
+TEST_CASE("LinearScan.keepsNothingInACallerSavedRegisterAcrossAPoll")
+{
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    // A poll clobbers what the host convention does not preserve: g0, f0 and f1 (g1 is callee-saved there).
+    // A General value lives across it in g1, untouched; a Float one has no register to live in, so its slot.
+    auto definition = uint32_t { 0 };
+    auto read = uint32_t { 0 };
+    auto const allocation = allocateAndCheck(
+        [&](Builder& b) {
+            auto& f = b.function();
+            auto const block = f.createBlock(Hotness::Normal);
+            auto const kept = b.general();
+            definition = b.constant(block, kept, 5);
+            auto const real = b.floating();
+            b.constantFloat(block, real);
+            b.poll(block);
+            auto const copied = b.floating();
+            b.copyFloat(block, copied, real);
+            auto const sum = b.general();
+            read = b.add(block, sum, kept, kept);
+            b.ret(block, sum);
+        },
+        memory);
+    CHECK(nameOf(allocation.after, definition, 0) == generalRegister(1));
+    CHECK(nameOf(allocation.after, read, 1) == generalRegister(1));
+    CHECK(spillSlots(*allocation.frame) == 1);
+    auto const host =
+        isoline::compiler::machine::callerSavedRegisters(FakeTarget {}, Convention::SystemV, memory);
+    CHECK(host.size() == 3);
+    CHECK(std::ranges::find(host, PhysicalRegister { .registerClass = RegisterClass::General, .number = 1 })
+          == host.end());
+}
+
+TEST_CASE("LinearScan.framePointerKeepsCallsAligned")
+{
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    // One spill slot, the frame pointer's save and the return address: 24 bytes, aligned to 32, so the
+    // prologue's push of the frame pointer leaves every call aligned. Without the frame pointer's row the
+    // frame would be 16, and a call after `push rbp` would leave 8 off.
+    auto const allocation = allocateAndCheck(
+        [](Builder& b) {
+            auto& f = b.function();
+            auto const block = f.createBlock(Hotness::Normal);
+            auto const x = b.general();
+            b.constant(block, x, 1);
+            b.call(block);
+            auto const y = b.general();
+            b.add(block, y, x, x);
+            b.ret(block, y);
+        },
+        memory);
+    auto const& frame = *allocation.frame;
+    auto const stack = isoline::compiler::machine::testing::FakeStackRule;
+    CHECK(spillSlots(frame) == 1);
+    CHECK(frame.totalBytes == 32);
+    CHECK(frame.totalBytes % stack.alignment == 0);
+    CHECK(frame.spillOffset + frame.spillBytes + stack.framePointerBytes + stack.returnAddressBytes
+          <= frame.totalBytes);
+}
+
+TEST_CASE("LinearScan.honoursCancellationMidScan")
+{
+    // Cancelled at the scan's tenth placement, long after liveness and the facts: the scan's next poll, at
+    // 4'096 intervals, stops it.
+    auto const run = [](uint32_t after) {
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto cancellation = CompileCancellation {};
+        auto const target = CancellingTarget { cancellation, after };
+        auto function = MachineFunction { memory };
+        auto builder = Builder { function };
+        manyLiveValues(5'000)(builder);
+        auto const result =
+            LinearScanAllocator { CompileLimits {} }.allocate(function, target, 5'000, cancellation, memory);
+        return std::pair { result.has_value() ? std::optional<CompileErrorCode> {}
+                                              : std::optional { result.error().code },
+                           target.asked() };
+    };
+    auto const [whole, placements] = run(0); // never cancelled: every placement
+    CHECK_FALSE(whole.has_value());
+    auto const [cancelled, asked] = run(10);
+    CHECK(cancelled == CompileErrorCode::Cancelled);
+    CHECK(asked > 10);
+    CHECK(asked < placements);
+}
+
+TEST_CASE("LinearScan.checkerRefusesAnUnsavedCalleeSavedRegister")
+{
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    auto const target = FakeTarget { FakeFrameRule, FakeSaves::SecondGeneral };
+    auto const build = [](Builder& b) {
+        auto& f = b.function();
+        auto const block = f.createBlock(Hotness::Normal);
+        auto const x = b.general();
+        auto const y = b.general();
+        b.constant(block, x, 1);
+        b.constant(block, y, 2);
+        auto const z = b.general();
+        b.add(block, z, x, y);
+        b.ret(block, z);
+    };
+    auto const allocation = allocateAndCheck(build, memory, target);
+    auto unsaved = *allocation.frame;
+    REQUIRE(unsaved.calleeSaved.countIn(RegisterClass::General) == 1);
+    unsaved.calleeSaved = {}; // the frame still keeps its rules: the register is what is missing
+    auto const checked = checkAssignment(allocation.before, allocation.after, target, unsaved, 64, memory);
+    REQUIRE_FALSE(checked.has_value());
+    CHECK(checked.error().kind == AssignmentFaultKind::UnsavedRegister);
 }

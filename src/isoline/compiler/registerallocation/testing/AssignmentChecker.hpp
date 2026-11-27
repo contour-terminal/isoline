@@ -22,6 +22,7 @@
 #include <expected>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory_resource>
 #include <optional>
 #include <ranges>
@@ -50,6 +51,7 @@ enum class AssignmentFaultKind : uint8_t
                       ///< (verifyMachineFunction()).
     FrameRefused,     ///< The frame breaks the target's frame or stack rule (checkFrame()).
     OutgoingTooSmall, ///< The frame's outgoing area does not cover a call site (checkOutgoingArea()).
+    UnsavedRegister,  ///< The function writes a callee-saved register its frame does not save.
 };
 
 /// A fault, and where: the instruction and operand, when it is at one.
@@ -71,6 +73,100 @@ namespace detail
     /// The places of the simulation: per class its MaximumRegistersPerClass registers, then the spill slots.
     inline constexpr auto RegisterPlaces =
         static_cast<uint32_t>(machine::RegisterClassCount) * machine::MaximumRegistersPerClass;
+
+    /// The values known to be at each place, with an index from each value to the places that may hold it
+    /// (lazily: a place it left stays listed until the value is killed), so a definition kills its value's
+    /// earlier copies in O(copies), not O(places).
+    class State
+    {
+      public:
+        State(uint32_t places, std::pmr::memory_resource& memory):
+            _memory { &memory },
+            _contents(places, std::pmr::vector<uint32_t> { &memory }, &memory),
+            _where { &memory }
+        {
+        }
+
+        [[nodiscard]] bool holds(uint32_t place, uint32_t value) const
+        {
+            return std::ranges::binary_search(_contents[place], value);
+        }
+
+        void add(uint32_t place, uint32_t value)
+        {
+            auto& values = _contents[place];
+            auto const found = std::ranges::lower_bound(values, value);
+            if (found != values.end() && *found == value)
+                return;
+            values.insert(found, value);
+            _where.try_emplace(value).first->second.push_back(place);
+        }
+
+        /// Removes @p value from every place.
+        void kill(uint32_t value)
+        {
+            auto const listed = _where.find(value);
+            if (listed == _where.end())
+                return;
+            for (auto const place: listed->second)
+                if (auto const found = std::ranges::lower_bound(_contents[place], value);
+                    found != _contents[place].end() && *found == value)
+                    _contents[place].erase(found);
+            _where.erase(listed);
+        }
+
+        /// @p to holds what @p from holds.
+        void copy(uint32_t from, uint32_t to)
+        {
+            if (from == to)
+                return;
+            _contents[to] = _contents[from];
+            for (auto const value: _contents[to])
+                _where.try_emplace(value).first->second.push_back(to);
+        }
+
+        /// @p place holds @p value alone.
+        void set(uint32_t place, uint32_t value)
+        {
+            _contents[place].assign(1, value);
+            _where.try_emplace(value).first->second.push_back(place);
+        }
+
+        /// The places that may hold @p value (Require: then checked with holds()).
+        [[nodiscard]] std::pmr::vector<uint32_t> placesOf(uint32_t value) const
+        {
+            auto places = std::pmr::vector<uint32_t> { _memory };
+            if (auto const listed = _where.find(value); listed != _where.end())
+                for (auto const place: listed->second)
+                    if (holds(place, value))
+                        places.push_back(place);
+            return places;
+        }
+
+        /// Keeps at each place only what @p other holds there too.
+        void intersect(State const& other)
+        {
+            for (auto const place: std::views::iota(std::size_t { 0 }, _contents.size()))
+            {
+                auto kept = std::pmr::vector<uint32_t> { _memory };
+                std::ranges::set_intersection(
+                    _contents[place], other._contents[place], std::back_inserter(kept));
+                _contents[place] = std::move(kept);
+            }
+        }
+
+        /// Whether both hold the same values at every place.
+        [[nodiscard]] bool operator==(State const& other) const { return _contents == other._contents; }
+
+      private:
+        std::pmr::memory_resource* _memory;
+        std::pmr::vector<std::pmr::vector<uint32_t>> _contents;     ///< Per place, its values, sorted.
+        std::pmr::map<uint32_t, std::pmr::vector<uint32_t>> _where; ///< Per value, the places it was put at.
+    };
+
+    /// A read of a physical register with no definition before it in a block other than the entry: no value,
+    /// so the read finds none (the machine verifier refuses such a function first).
+    inline constexpr auto Undefined = NoValue - 1;
 
     /// The checker's run over one allocation.
     class Checker
@@ -154,27 +250,17 @@ namespace detail
         }
 
       private:
-        /// Per place, the values known to be there, sorted.
-        using State = std::pmr::vector<std::pmr::vector<uint32_t>>;
-
         enum class Checking : uint8_t
         {
             No,
             Yes,
         };
 
-        [[nodiscard]] State emptyState() const
-        {
-            auto state = State { &_memory };
-            state.resize(RegisterPlaces + _slots, std::pmr::vector<uint32_t> { &_memory });
-            return state;
-        }
-
         [[nodiscard]] State entryState() const
         {
-            auto state = emptyState();
+            auto state = State { RegisterPlaces + _slots, _memory };
             for (auto const place: std::views::iota(uint32_t { 0 }, RegisterPlaces))
-                state[place].push_back(place);
+                state.add(place, place);
             return state;
         }
 
@@ -197,26 +283,6 @@ namespace detail
         {
             return (static_cast<uint32_t>(name.registerClass) * machine::MaximumRegistersPerClass)
                    + name.number;
-        }
-
-        static void add(std::pmr::vector<uint32_t>& values, uint32_t value)
-        {
-            auto const found = std::ranges::lower_bound(values, value);
-            if (found == values.end() || *found != value)
-                values.insert(found, value);
-        }
-
-        [[nodiscard]] static bool holds(std::pmr::vector<uint32_t> const& values, uint32_t value)
-        {
-            return std::ranges::binary_search(values, value);
-        }
-
-        static void kill(State& state, uint32_t value)
-        {
-            for (auto& values: state)
-                if (auto const found = std::ranges::lower_bound(values, value);
-                    found != values.end() && *found == value)
-                    values.erase(found);
         }
 
         /// The state on entry to @p block: the intersection of its reached predecessors' states, each renamed
@@ -242,13 +308,7 @@ namespace detail
                     if (!merged)
                         merged = std::move(renamed);
                     else
-                        for (auto const place: std::views::iota(std::size_t { 0 }, merged->size()))
-                        {
-                            auto kept = std::pmr::vector<uint32_t> { &_memory };
-                            std::ranges::set_intersection(
-                                (*merged)[place], renamed[place], std::back_inserter(kept));
-                            (*merged)[place] = std::move(kept);
-                        }
+                        merged->intersect(renamed);
                 }
             }
             return merged;
@@ -261,19 +321,16 @@ namespace detail
             auto const parameters = _before.parameters(edge.target);
             auto const base = _parameterBase[std::to_underlying(edge.target)];
             for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(parameters.size())))
-                kill(renamed, base + index);
+                renamed.kill(base + index);
             auto const arguments = _before.arguments(edge);
             for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(arguments.size())))
-            {
-                auto const value = _outValue[std::to_underlying(arguments[index])];
-                for (auto const place: std::views::iota(std::size_t { 0 }, renamed.size()))
-                    if (holds(state[place], value))
-                        add(renamed[place], base + index);
-            }
+                for (auto const place: state.placesOf(_outValue[std::to_underlying(arguments[index])]))
+                    renamed.add(place, base + index);
             return renamed;
         }
 
-        /// The value a read of @p name in @p block expects; NoValue when unchecked.
+        /// The value a read of @p name in @p block expects: NoValue for a virtual register never defined (an
+        /// entry value of the function's, unchecked), Undefined for a physical one no definition reaches.
         [[nodiscard]] uint32_t expected(machine::RegisterName const& name, uint32_t block) const noexcept
         {
             if (name.kind == machine::RegisterKind::Virtual)
@@ -285,7 +342,7 @@ namespace detail
             auto const place = placeOf(name);
             if (_physicalStamp[place] == _epoch)
                 return _physicalLocal[place];
-            return block == 0 ? place : NoValue;
+            return block == 0 ? place : Undefined;
         }
 
         [[nodiscard]] static std::unexpected<AssignmentFault> fault(AssignmentFaultKind kind,
@@ -320,7 +377,7 @@ namespace detail
                     auto const to = placeOf(move.to);
                     if (from == NoValue || to == NoValue)
                         return fault(AssignmentFaultKind::BadPlace, instruction);
-                    state[to] = state[from];
+                    state.copy(from, to);
                 }
                 if (auto stepped = step(instruction, state); !stepped)
                     return std::unexpected { stepped.error() };
@@ -342,7 +399,7 @@ namespace detail
             if (now.number >= machine::MaximumRegistersPerClass)
                 return fault(AssignmentFaultKind::BadPlace, instruction, operand);
             auto const value = expected(was, _block);
-            if (_checking == Checking::Yes && value != NoValue && !holds(state[placeOf(now)], value))
+            if (_checking == Checking::Yes && value != NoValue && !state.holds(placeOf(now), value))
                 return fault(AssignmentFaultKind::WrongValue, instruction, operand);
             return {};
         }
@@ -353,8 +410,8 @@ namespace detail
                    machine::RegisterName const& now,
                    uint32_t value)
         {
-            kill(state, value);
-            state[placeOf(now)] = std::pmr::vector<uint32_t>({ value }, &_memory);
+            state.kill(value);
+            state.set(placeOf(now), value);
             if (was.kind == machine::RegisterKind::Virtual)
             {
                 _local[was.number] = value;
@@ -485,13 +542,34 @@ namespace detail
 {
     if (before.blockCount() != after.blockCount() || before.instructionCount() != after.instructionCount())
         return std::unexpected { AssignmentFault { .kind = AssignmentFaultKind::ShapeChanged } };
-    if (!machine::verifyMachineFunction(after, target))
+    // The function as selected keeps every rule (physical registers block-local among them), the allocated
+    // one its rows.
+    if (!machine::verifyMachineFunction(before, target)
+        || !machine::verifyAllocatedMachineFunction(after, target))
         return std::unexpected { AssignmentFault { .kind = AssignmentFaultKind::ConstraintBroken } };
     auto const& host = target.conventionRow(machine::hostConvention(target.description()));
     if (!machine::checkFrame(target.frameRule(), target.stackRule(), host, frameCost, frame))
         return std::unexpected { AssignmentFault { .kind = AssignmentFaultKind::FrameRefused } };
     if (!machine::checkOutgoingArea(after, frame))
         return std::unexpected { AssignmentFault { .kind = AssignmentFaultKind::OutgoingTooSmall } };
+    // Every callee-saved register the function writes, by an operand or a move, is one its prologue saves.
+    auto const& internal = target.conventionRow(machine::Convention::WasmInternal);
+    auto const unsaved = [&](machine::PhysicalRegister reg) {
+        return internal.calleeSaved.contains(reg) && !frame.calleeSaved.contains(reg);
+    };
+    for (auto const instruction: std::views::iota(uint32_t { 0 }, after.instructionCount()))
+    {
+        for (auto const& move: after.movesBefore(instruction))
+            if (move.to.kind == machine::LocationKind::Register && unsaved(move.to.physicalRegister()))
+                return std::unexpected { AssignmentFault { .kind = AssignmentFaultKind::UnsavedRegister,
+                                                           .instruction = instruction } };
+        for (auto const& operand: after.operands(instruction))
+            if (auto const* reg = std::get_if<machine::RegisterOperand>(&operand);
+                reg != nullptr && reg->role != machine::OperandRole::Use
+                && reg->name.kind == machine::RegisterKind::Physical && unsaved(reg->name.physicalRegister()))
+                return std::unexpected { AssignmentFault { .kind = AssignmentFaultKind::UnsavedRegister,
+                                                           .instruction = instruction } };
+    }
     return detail::Checker { before, after, frame, memory }.run();
 }
 

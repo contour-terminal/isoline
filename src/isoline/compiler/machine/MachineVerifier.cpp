@@ -100,13 +100,59 @@ namespace
         }
         return isUnique;
     }
+    /// Whether every physical register read outside the entry block follows a definition of it in its own
+    /// block. Physical registers are block-local: what liveness and the allocator know of one is from its
+    /// definition (or, in the entry block, the function's entry, where the convention's arguments arrive) to
+    /// its last read within the block, so a value carried in one across an edge is nothing they protect.
+    [[nodiscard]] bool physicalRegistersAreBlockLocal(MachineFunction const& function)
+    {
+        for (auto const block:
+             std::views::iota(uint32_t { 1 }, std::max(function.blockCount(), uint32_t { 1 })))
+        {
+            auto defined = RegisterSet {};
+            auto isLocal = true;
+            auto const read = [&](RegisterName const& name) {
+                if (name.kind == RegisterKind::Physical && !defined.contains(name.physicalRegister()))
+                    isLocal = false;
+            };
+            for (auto const instruction: function.instructions(BlockId { block }))
+            {
+                auto const operands = function.operands(instruction);
+                for (auto const& operand: operands)
+                    if (auto const* reg = std::get_if<RegisterOperand>(&operand);
+                        reg != nullptr && (reg->role == OperandRole::Use || reg->role == OperandRole::UseDef))
+                        read(reg->name);
+                    else if (auto const* address = std::get_if<MemoryOperand>(&operand))
+                    {
+                        read(address->base);
+                        read(address->index);
+                    }
+                for (auto const& operand: operands)
+                    if (auto const* reg = std::get_if<RegisterOperand>(&operand);
+                        reg != nullptr && reg->role != OperandRole::Use
+                        && reg->name.kind == RegisterKind::Physical)
+                        defined = defined.with(reg->name.physicalRegister());
+            }
+            if (!isLocal)
+                return false;
+        }
+        return true;
+    }
 } // namespace
+
+std::expected<void, CompileError> verifyAllocatedMachineFunction(MachineFunction const& function,
+                                                                 ITarget const& target)
+{
+    if (!operandsKeepTheirRows(function, target) || !edgesMatchTheirTargets(function))
+        return broken();
+    return {};
+}
 
 std::expected<void, CompileError> verifyMachineFunction(MachineFunction const& function,
                                                         ITarget const& target)
 {
     if (!operandsKeepTheirRows(function, target) || !edgesMatchTheirTargets(function)
-        || !definedInOneBlock(function))
+        || !definedInOneBlock(function) || !physicalRegistersAreBlockLocal(function))
         return broken();
     return {};
 }

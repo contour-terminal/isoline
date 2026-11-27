@@ -38,17 +38,21 @@ enum class FakeOpcode : uint8_t
     Shift,        ///< UseDef <<= Use (fixed g1): x86-64's shift count in rcx.
     EarlyClobber, ///< Early Def ← Use: the result is written before the operand is read.
     Load,         ///< Def ← memory (a MemoryOperand).
-    Call,         ///< Clobbers every register: Defs fixed to g0, g1, f0, f1.
+    Call,         ///< A Wasm call: Defs fixed to every register FakeConvention does not preserve (all four).
     Jump,         ///< To a label.
     Branch,       ///< On a Use, to one of two labels.
     Return,       ///< Returns its Use (fixed g0).
     Store, ///< Stores its Use to memory (a MemoryOperand): a call's stack argument, a host call's scratch.
-    Poll,  ///< A poll: its slow path calls the runtime, which clobbers g0 (a Def fixed to it) and only g0.
-    CallIndirect, ///< Calls through its Use, clobbering every register as Call does: x86-64's call r64.
+    Poll,  ///< A poll: its slow path calls the runtime, so Defs fixed to the host convention's caller-saved
+           ///< set.
+    CallIndirect,         ///< Calls through its Use, clobbering what Call does: x86-64's call r64.
+    PassArguments,        ///< Reads two Uses fixed to g0 and g1: a call's argument registers.
+    PassArgumentsSwapped, ///< PassArguments with its operands the other way round: g1, then g0.
+    ConstantFloat,        ///< Def (Float) ← immediate.
 };
 
 /// The last FakeOpcode enumerator.
-inline constexpr auto LastFakeOpcode = FakeOpcode::CallIndirect;
+inline constexpr auto LastFakeOpcode = FakeOpcode::ConstantFloat;
 
 /// FakeTarget's General registers.
 inline constexpr auto FakeGeneralRegisters = std::to_array<PhysicalRegister>({
@@ -126,8 +130,9 @@ inline constexpr auto FakeHostConvention = ConventionRow {
 };
 
 /// FakeTarget's stack rule: x86-64's.
-inline constexpr auto FakeStackRule =
-    StackRule { .alignment = 16, .returnAddressBytes = 8, .savedRegisterBytes = { 8, 16 } };
+inline constexpr auto FakeStackRule = StackRule {
+    .alignment = 16, .returnAddressBytes = 8, .savedRegisterBytes = { 8, 16 }, .framePointerBytes = 8
+};
 
 /// FakeTarget's frame rule unless a test asks for another: x86-64's numbers.
 inline constexpr auto FakeFrameRule = FrameRule { .bytesPerStackValue = 32, .frameOverhead = 256 };
@@ -182,12 +187,37 @@ namespace fake
         OperandConstraint {
             .role = OperandRole::Use, .registerClass = RegisterClass::General, .memory = AllowsMemory::Yes },
     });
-    inline constexpr auto Call = std::to_array({
-        fixedGeneral(OperandRole::Def, 0),
-        fixedGeneral(OperandRole::Def, 1),
-        fixedFloat(OperandRole::Def, 0),
-        fixedFloat(OperandRole::Def, 1),
-    });
+    /// How many of FakeTarget's registers a call under @p row clobbers: those it does not preserve.
+    constexpr std::size_t clobberCount(ConventionRow const& row) noexcept
+    {
+        auto count = std::size_t { 0 };
+        for (auto const& files: { std::span { FakeGeneralRegisters }, std::span { FakeFloatRegisters } })
+            for (auto const reg: files)
+                if (!row.calleeSaved.contains(reg))
+                    ++count;
+        return count;
+    }
+
+    /// The rows of a call under @p row: one Def fixed to each register it clobbers, General then Float, after
+    /// @p Lead leading rows of @p lead. Derived from the convention row, never listed by hand.
+    template <std::size_t Count, std::size_t Lead = 0>
+    constexpr std::array<OperandConstraint, Count + Lead> clobberRows(
+        ConventionRow const& row, std::array<OperandConstraint, Lead> const& lead = {}) noexcept
+    {
+        auto rows = std::array<OperandConstraint, Count + Lead> {};
+        auto next = std::size_t { 0 };
+        for (auto const& constraint: lead)
+            rows[next++] = constraint;
+        for (auto const& files: { std::span { FakeGeneralRegisters }, std::span { FakeFloatRegisters } })
+            for (auto const reg: files)
+                if (!row.calleeSaved.contains(reg))
+                    rows[next++] = OperandConstraint { .role = OperandRole::Def,
+                                                       .registerClass = reg.registerClass,
+                                                       .fixed = reg.number };
+        return rows;
+    }
+
+    inline constexpr auto Call = clobberRows<clobberCount(FakeConvention)>(FakeConvention);
     inline constexpr auto Jump = std::to_array({ general(OperandRole::Use) });
     inline constexpr auto Branch = std::to_array({
         general(OperandRole::Use),
@@ -200,13 +230,16 @@ namespace fake
         OperandConstraint {
             .role = OperandRole::Use, .registerClass = RegisterClass::General, .memory = AllowsMemory::Yes },
     });
-    inline constexpr auto Poll = std::to_array({ fixedGeneral(OperandRole::Def, 0) });
-    inline constexpr auto CallIndirect = std::to_array({
+    inline constexpr auto Poll = clobberRows<clobberCount(FakeHostConvention)>(FakeHostConvention);
+    inline constexpr auto CallIndirect =
+        clobberRows<clobberCount(FakeConvention), 1>(FakeConvention, { general(OperandRole::Use) });
+    inline constexpr auto PassArguments =
+        std::to_array({ fixedGeneral(OperandRole::Use, 0), fixedGeneral(OperandRole::Use, 1) });
+    inline constexpr auto PassArgumentsSwapped =
+        std::to_array({ fixedGeneral(OperandRole::Use, 1), fixedGeneral(OperandRole::Use, 0) });
+    inline constexpr auto ConstantFloat = std::to_array({
+        OperandConstraint { .role = OperandRole::Def, .registerClass = RegisterClass::Float },
         general(OperandRole::Use),
-        fixedGeneral(OperandRole::Def, 0),
-        fixedGeneral(OperandRole::Def, 1),
-        fixedFloat(OperandRole::Def, 0),
-        fixedFloat(OperandRole::Def, 1),
     });
 } // namespace fake
 
@@ -235,6 +268,9 @@ inline constexpr auto FakeConstraintTable = std::to_array<FakeConstraintRow>({
     { .opcode = FakeOpcode::Store, .operands = fake::Store },
     { .opcode = FakeOpcode::Poll, .operands = fake::Poll },
     { .opcode = FakeOpcode::CallIndirect, .operands = fake::CallIndirect },
+    { .opcode = FakeOpcode::PassArguments, .operands = fake::PassArguments },
+    { .opcode = FakeOpcode::PassArgumentsSwapped, .operands = fake::PassArgumentsSwapped },
+    { .opcode = FakeOpcode::ConstantFloat, .operands = fake::ConstantFloat },
 });
 
 static_assert(

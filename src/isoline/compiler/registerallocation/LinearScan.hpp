@@ -8,11 +8,11 @@
 // and computes its live intervals (computeLiveIntervals()), then walks the intervals' children in order of
 // their first live position. Each register keeps the ranges it holds in an ordered map, so a child may take a
 // register through another's lifetime hole. A child takes a register free over all of it; else one free over
-// a prefix that reaches its next use, split there; else it evicts the holder whose next use is farthest, when
-// that is after its own, or waits in its stack slot up to its next use. An evicted remainder stays in its
-// slot, with a window child around each use that is never evicted itself, so no range enters a register twice
-// after an eviction; the number of children is bounded by the values and uses before the scan starts (a scan
-// past the bound is a bug, refused), and each step costs O(log n).
+// a prefix that reaches its next use, split there; else it evicts the holders of the register they all next
+// need latest, when that is after its own use, or waits in its stack slot up to its next use. An evicted
+// remainder stays in its slot, with a window child around each use that is never evicted itself, so no range
+// enters a register twice after an eviction; the number of children is bounded by the values and uses before
+// the scan starts (a scan past the bound is a bug, refused), and each step costs O(log n).
 //
 // Positions are liveness's: even for block entries and instructions, odd for the gaps between, where every
 // move goes (MachineFunction::movesBefore()). An instruction reads a use at p from the location its value has

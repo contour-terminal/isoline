@@ -195,12 +195,22 @@ TEST_CASE("MachineFunction.framesKeepTheStackAtEveryCall")
     CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, frame(32, 0, 0, 32))));
     // A frame smaller than what the call pushed.
     CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, frame(0, 0, 0, 0))));
+    // Spills that reach into the frame pointer's save, or into a saved register's, below the return address.
+    CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, frame(32, 0, 0, 24))));
+    auto saving = frame(48, 0, 0, 24);
+    saving.calleeSaved =
+        RegisterSet::of({ PhysicalRegister { .registerClass = RegisterClass::General, .number = 1 } });
+    CHECK(checkFrame(Rule, stack, systemV, 10, saving).has_value());
+    saving.spillOffset = 8;
+    CHECK(isBroken(checkFrame(Rule, stack, systemV, 10, saving)));
     // A target without an alignment rule names none.
     auto unaligned = systemV;
     unaligned.stackAlignment = 0;
     CHECK(isBroken(checkFrame(Rule,
-                              isoline::compiler::machine::StackRule {
-                                  .alignment = 0, .returnAddressBytes = 8, .savedRegisterBytes = { 8, 16 } },
+                              isoline::compiler::machine::StackRule { .alignment = 0,
+                                                                      .returnAddressBytes = 8,
+                                                                      .savedRegisterBytes = { 8, 16 },
+                                                                      .framePointerBytes = 8 },
                               unaligned,
                               10,
                               frame(32, 0, 0, 16))));

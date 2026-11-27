@@ -26,6 +26,7 @@
 #include <isoline/compiler/machine/Liveness.hpp>
 #include <isoline/compiler/machine/MachineVerifier.hpp>
 #include <isoline/compiler/registerallocation/ParallelMoves.hpp>
+#include <isoline/compiler/registerallocation/SpillSlots.hpp>
 
 namespace isoline::compiler::registerallocation
 {
@@ -433,9 +434,14 @@ namespace
                     merged.emplace_back(index, range);
             }
             _facts.fixed.build(merged, RegisterIndexCount);
-            std::ranges::sort(_facts.copiesIn, {}, &FixedCopy::gap);
-            std::ranges::sort(
-                _facts.copiesOut, {}, [](FixedCopy const& copy) { return std::pair { copy.reg, copy.gap }; });
+            // Total orders: the copies of one gap come in operand order, which must not decide the code (and
+            // std::sort orders equal keys differently in each standard library).
+            std::ranges::sort(_facts.copiesIn, {}, [](FixedCopy const& copy) {
+                return std::tuple { copy.gap, registerIndex(copy.fixed), copy.reg };
+            });
+            std::ranges::sort(_facts.copiesOut, {}, [](FixedCopy const& copy) {
+                return std::tuple { copy.reg, copy.gap, registerIndex(copy.fixed) };
+            });
         }
 
         void finishUses()
@@ -599,7 +605,7 @@ namespace
         template <typename Visit>
         void forEachRange(uint32_t child, Visit const& visit) const
         {
-            auto const& part = _children[child];
+            auto const part = _children[child]; // a copy: a visit may add children, which moves them
             auto const ranges = _facts.ranges.of(part.reg);
             auto const first =
                 std::ranges::partition_point(ranges, [&](LiveRange range) { return range.end <= part.from; });
@@ -648,27 +654,20 @@ namespace
             return found != uses.end() && found->position == position && found->kind == UseKind::Read;
         }
 
-        /// Where @p child's ranges first meet what a register holds, and the child holding it there.
-        struct Held
-        {
-            uint32_t position = None; ///< The first position they meet at; None if they never do.
-            uint32_t holder = None;   ///< The child holding the register there.
-        };
-
-        /// Where @p child's ranges first meet what @p reg holds.
-        [[nodiscard]] Held firstHeld(uint32_t child, PhysicalRegister reg) const
+        /// The first position where @p child's ranges meet what @p reg holds; None if they never do.
+        [[nodiscard]] uint32_t heldConflict(uint32_t child, PhysicalRegister reg) const
         {
             auto const& holding = _holdings[registerIndex(reg)];
-            auto held = Held {};
+            auto conflict = None;
             forEachRange(child, [&](LiveRange range) {
-                auto after = holding.upper_bound(range.start);
+                auto const after = holding.upper_bound(range.start);
                 if (after != holding.begin() && std::prev(after)->second.end > range.start)
-                    held = Held { .position = range.start, .holder = std::prev(after)->second.child };
+                    conflict = range.start;
                 else if (after != holding.end() && after->first < range.end)
-                    held = Held { .position = after->first, .holder = after->second.child };
-                return held.position == None;
+                    conflict = after->first;
+                return conflict == None;
             });
-            return held;
+            return conflict;
         }
 
         /// The first position before @p limit where @p child's ranges meet a fixed range of @p reg.
@@ -793,8 +792,7 @@ namespace
             auto whole = std::optional<PhysicalRegister> {};
             for (auto const candidate: registers)
             {
-                auto const free =
-                    std::min(firstHeld(child, candidate).position, fixedConflict(child, candidate));
+                auto const free = std::min(heldConflict(child, candidate), fixedConflict(child, candidate));
                 if (free == None && (!whole || registerIndex(candidate) == hint))
                     whole = candidate;
                 if (!best || free > bestFree || (free == bestFree && registerIndex(candidate) == hint))
@@ -841,6 +839,53 @@ namespace
             return placeBlocked(child, position, use, need);
         }
 
+        /// The child holding @p reg somewhere in [@p range.start, @p range.end), the first by position; None.
+        [[nodiscard]] uint32_t holderIn(PhysicalRegister reg, LiveRange range) const
+        {
+            auto const& holding = _holdings[registerIndex(reg)];
+            auto after = holding.upper_bound(range.start);
+            if (after != holding.begin() && std::prev(after)->second.end > range.start)
+                return std::prev(after)->second.child;
+            return after != holding.end() && after->first < range.end ? after->second.child : None;
+        }
+
+        /// Whether an eviction at @p position, for a child whose first use @p use is a definition there, may
+        /// leave @p holder its register up to its read at @p position (it leaves for its slot in the gap
+        /// before, and the instruction still reads the register).
+        [[nodiscard]] bool leavesAtTheRead(uint32_t holder, uint32_t position, uint32_t use) const noexcept
+        {
+            auto const& held = _children[holder];
+            return use == position && held.from < position
+                   && firstUse(held.reg, position, held.to) == position && leavesAtRead(held.reg, position);
+        }
+
+        /// When the holders of @p reg that @p child meets before @p reach next need it: the soonest of them,
+        /// a window's never (it is never evicted), None if no holder is met.
+        [[nodiscard]] uint32_t holdersNeed(
+            uint32_t child, PhysicalRegister reg, uint32_t position, uint32_t use, uint32_t reach) const
+        {
+            auto const& holding = _holdings[registerIndex(reg)];
+            auto soonest = None;
+            forEachRange(child, [&](LiveRange range) {
+                if (range.start >= reach)
+                    return false;
+                auto entry = holding.upper_bound(range.start);
+                if (entry != holding.begin() && std::prev(entry)->second.end > range.start)
+                    --entry;
+                while (entry != holding.end() && entry->first < std::min(range.end, reach))
+                {
+                    auto const holder = entry->second.child;
+                    ++entry;
+                    auto next = nextUseOf(holder, position);
+                    if (leavesAtTheRead(holder, position, use))
+                        next = firstUse(_children[holder].reg, position + 1, _children[holder].to);
+                    soonest = std::min(soonest, next);
+                }
+                return true;
+            });
+            return soonest;
+        }
+
         /// When @p holder next needs its register, for ranking it against an eviction: a window never.
         [[nodiscard]] uint32_t nextUseOf(uint32_t holder, uint32_t position) const noexcept
         {
@@ -878,28 +923,18 @@ namespace
             auto const reach = leavesAtRead(reg, use) ? use : need;
             auto best = std::optional<PhysicalRegister> {};
             auto bestNext = uint32_t { 0 };
-            auto bestLeavesAtTheRead = false;
             for (auto const candidate: _target.allocatable(_facts.classes[reg]))
             {
                 if (fixedConflict(child, candidate, reach) != None)
                     continue;
-                // Free up to the reach (the first conflict is a fixed range past it): nothing to evict. A
-                // window is never evicted: it ranks below every use.
-                auto const holder = firstHeld(child, candidate).holder;
-                auto const holderReg = holder == None ? None : _children[holder].reg;
-                auto next = holder == None ? None : nextUseOf(holder, position);
-                // A definition here may take the register of a value the instruction only reads, if that
-                // value leaves for its slot in the gap before, keeping the register for the read.
-                auto const holderLeaves = holder != None && use == position && next == position
-                                          && leavesAtRead(holderReg, position)
-                                          && _children[holder].from < position;
-                if (holderLeaves)
-                    next = firstUse(holderReg, position + 1, _children[holder].to);
+                // Ranked by the soonest need of every holder met up to the reach (Wimmer and Franz's next-use
+                // position); free up to it (the first conflict a fixed range past it), the register ranks
+                // above all.
+                auto const next = holdersNeed(child, candidate, position, use, reach);
                 if (!best || next > bestNext)
                 {
                     best = candidate;
                     bestNext = next;
-                    bestLeavesAtTheRead = holderLeaves;
                 }
             }
             if (!best || bestNext <= use)
@@ -922,20 +957,30 @@ namespace
                 _children[child].to = use;
             else if (fixed != None && _layout.splitBefore(fixed) < original)
                 enqueue(split(child, _layout.splitBefore(fixed)));
-            // Evict every holder the child meets; each eviction takes the holder's ranges from here on, so a
-            // holder met twice is a bug, refused rather than looped on.
+            // Evict every holder the child meets, range by range, resuming where the last eviction left off:
+            // each takes the holder's ranges from its cut on, so a holder met twice in a row is a bug,
+            // refused rather than looped on.
             auto previous = None;
-            while (true)
-            {
-                auto const holder = firstHeld(child, *best).holder;
-                if (holder == None)
-                    break;
-                if (_children[holder].kind == ChildKind::Window || holder == child || holder == previous)
-                    return refused(); // uncovered(allocator-invariant)
-                auto const atTheRead = previous == None && bestLeavesAtTheRead;
-                evict(holder, *best, atTheRead ? position : evictionCut(holder, position));
-                previous = holder;
-            }
+            auto intact = true;
+            forEachRange(child, [&](LiveRange range) {
+                while (intact)
+                {
+                    auto const holder = holderIn(*best, range);
+                    if (holder == None)
+                        break;
+                    intact =
+                        _children[holder].kind != ChildKind::Window && holder != child && holder != previous;
+                    if (intact)
+                        evict(holder,
+                              *best,
+                              leavesAtTheRead(holder, position, use) ? position
+                                                                     : evictionCut(holder, position));
+                    previous = holder;
+                }
+                return intact;
+            });
+            if (!intact)
+                return refused(); // uncovered(allocator-invariant)
             assign(child, *best);
             if (keepsToTheRead && use < original)
                 spillWithWindows(reg, use, original);
@@ -972,9 +1017,9 @@ namespace
                 keyed, {}, [](auto const& entry) { return std::pair { entry.first, entry.second.from }; });
             _children.build(keyed, registers);
 
-            // One slot per spilled register, reused once the register's lifetime is over: the slot that frees
-            // first is the heap's top (interval partitioning, optimal and O(n log n)).
-            auto lifetimes = std::pmr::vector<std::tuple<uint32_t, uint32_t, uint32_t>> { &memory };
+            // One slot per spilled register, reused once the register's lifetime is over (packSpillSlots()).
+            auto spilled = std::pmr::vector<uint32_t> { &memory };
+            auto lifetimes = std::pmr::vector<SlotLifetime> { &memory };
             for (auto const reg: std::views::iota(uint32_t { 0 }, registers))
             {
                 auto const parts = _children.of(reg);
@@ -983,25 +1028,13 @@ namespace
                         return part.placement == Placement::Slot;
                     }))
                     continue;
-                lifetimes.emplace_back(ranges.front().start, reg, ranges.back().end);
+                spilled.push_back(reg);
+                lifetimes.push_back(SlotLifetime { .start = ranges.front().start, .end = ranges.back().end });
             }
-            std::ranges::sort(lifetimes);
-            auto freeAt = std::pmr::vector<std::pair<uint32_t, uint32_t>> { &memory }; ///< (free from, slot)
-            for (auto const& [start, reg, end]: lifetimes)
-            {
-                auto slot = _slotCount;
-                if (!freeAt.empty() && freeAt.front().first <= start)
-                {
-                    std::ranges::pop_heap(freeAt, std::greater {});
-                    slot = freeAt.back().second;
-                    freeAt.pop_back();
-                }
-                else
-                    ++_slotCount;
-                _slots[reg] = slotsFrom + (slot * SlotBytes);
-                freeAt.emplace_back(end, slot);
-                std::ranges::push_heap(freeAt, std::greater {});
-            }
+            auto const packing = packSpillSlots(lifetimes, memory);
+            _slotCount = packing.slotCount;
+            for (auto const index: std::views::iota(std::size_t { 0 }, spilled.size()))
+                _slots[spilled[index]] = slotsFrom + (packing.slots[index] * SlotBytes);
         }
 
         [[nodiscard]] uint32_t slotCount() const noexcept { return _slotCount; }
@@ -1299,8 +1332,8 @@ namespace
         return result;
     }
 
-    /// The frame from its bottom: the outgoing area, the spill slots, the saved registers, the return
-    /// address.
+    /// The frame from its bottom: the outgoing area, the spill slots, the saved registers, the caller's frame
+    /// pointer, the return address.
     [[nodiscard]] FrameLayout frameOf(machine::ITarget const& target,
                                       RegisterSet written,
                                       uint64_t outgoing,
@@ -1310,20 +1343,17 @@ namespace
         auto const& internal = target.conventionRow(machine::Convention::WasmInternal);
         auto const stack = target.stackRule();
         auto saved = RegisterSet {};
-        auto savedBytes = uint64_t { 0 };
         for (auto const registerClass: { RegisterClass::General, RegisterClass::Float })
             for (auto const number: std::views::iota(uint8_t { 0 }, machine::MaximumRegistersPerClass))
-            {
-                auto const reg = PhysicalRegister { .registerClass = registerClass, .number = number };
-                if (written.contains(reg) && internal.calleeSaved.contains(reg))
-                {
+                if (auto const reg = PhysicalRegister { .registerClass = registerClass, .number = number };
+                    written.contains(reg) && internal.calleeSaved.contains(reg))
                     saved = saved.with(reg);
-                    savedBytes += stack.savedRegisterBytes[static_cast<std::size_t>(registerClass)];
-                }
-            }
+        // The frame pointer's save counts before the frame is aligned: a prologue's push of it keeps every
+        // call aligned.
+        auto const above = stack.savedBytes(saved) + stack.framePointerBytes + stack.returnAddressBytes;
         auto const alignment = std::max<uint64_t>({ stack.alignment, host.stackAlignment, 1 });
         return FrameLayout {
-            .totalBytes = alignUp(outgoing + spillBytes + savedBytes + stack.returnAddressBytes, alignment),
+            .totalBytes = alignUp(outgoing + spillBytes + above, alignment),
             .calleeSaved = saved,
             .outgoingBytes = outgoing,
             .spillOffset = outgoing,
