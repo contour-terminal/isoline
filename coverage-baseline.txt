@@ -205,12 +205,15 @@ src/isoline/binary/TypeCanon.cpp                 100.00 80.00
 src/isoline/binary/Types.hpp                     100.00 100.00
 src/isoline/c/Abi.cpp                            100.00 -
 src/isoline/c/Error.cpp                          96.82 100.00
+src/isoline/c/WasmVectors.cpp                    85.16 -
 src/isoline/c/abi.h                              100.00 -
 src/isoline/c/detail/AbiVersion.hpp              100.00 100.00
 src/isoline/c/detail/Boundary.hpp                100.00 -
 src/isoline/c/detail/Callback.hpp                100.00 100.00
 src/isoline/c/detail/Error.hpp                   100.00 -
 src/isoline/c/detail/ErrorRows.hpp               100.00 94.44
+src/isoline/c/detail/Handles.hpp                 100.00 -
+src/isoline/c/detail/Vector.hpp                  100.00 97.61
 src/isoline/cli/EntryPosix.cpp                   100.00 -
 src/isoline/cli/FileAccess.cpp                   98.85 95.94
 src/isoline/cli/FileAccess.hpp                   100.00 -

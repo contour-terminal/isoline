@@ -128,6 +128,16 @@ class CApiSymbolsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("wasm_tagtype_vec_t: defined by the header, and no ISOLINE_LAYOUT_STRUCT row", result.stderr)
 
+    def testEveryHeaderGivenIsScanned(self):
+        # A header the umbrella does not include still owes its structs' rows: the scan reads every header it
+        # is given, not only what the first one includes.
+        stray = pathlib.Path(self.directory.name) / "stray.h"
+        stray.write_text("typedef struct isoline_stray_t { int field; } isoline_stray_t;\n", encoding="utf-8")
+        result = self.run_("layout", "--compiler", COMPILER, *[f"-I{include}" for include in INCLUDES],
+                           "--layout", ROOT / "src/isoline/c/abi/layout.def", ROOT / "src/isoline/c/isoline.h", stray)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("isoline_stray_t: defined by the header, and no ISOLINE_LAYOUT_STRUCT row", result.stderr)
+
     def testElfExportsIgnoreTheVersionNode(self):
         listing = ("0000000000000000 A ISOLINE_C_0.1\n"
                    "0000000000001100 T isoline_abi_version@@ISOLINE_C_0.1\n"

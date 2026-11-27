@@ -215,7 +215,8 @@ def main(arguments):
     layout.add_argument("--compiler", required=True)
     layout.add_argument("-I", dest="includes", action="append", default=[])
     layout.add_argument("--layout", required=True)
-    layout.add_argument("header")
+    # Every C header, not only the umbrella: a header the umbrella forgets to include still owes its rows.
+    layout.add_argument("headers", nargs="+")
     exports = commands.add_parser("exports")
     exports.add_argument("--format", required=True, choices=sorted(EXPORT_FORMATS))
     exports.add_argument("--tool", required=True)
@@ -234,11 +235,12 @@ def main(arguments):
                       f"{options.library} exports exactly the {len(listed)} listed symbol(s)")
 
     if options.command == "layout":
-        defined = definedAggregates(preprocess(options.compiler, options.includes, options.header))
+        defined = sorted({name for header in options.headers
+                          for name in definedAggregates(preprocess(options.compiler, options.includes, header))})
         rows = LAYOUT_ROW.findall(pathlib.Path(options.layout).read_text(encoding="utf-8"))
         problems = layoutProblems(defined, rows)
         if not defined:
-            problems.append(f"{options.header}: defines no struct of a {' or '.join(LAYOUT_PREFIXES)} name")
+            problems.append(f"{', '.join(options.headers)}: define no struct of a {' or '.join(LAYOUT_PREFIXES)} name")
         return report(problems, f"{options.layout}: a row for each of the {len(defined)} struct(s) defined")
 
     declared = declaredNames(preprocess(options.compiler, options.includes, options.header))

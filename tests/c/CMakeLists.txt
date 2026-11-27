@@ -9,6 +9,18 @@
 # as a C program would be. They are linked by the C++ driver nonetheless: they take core::testing_dialogs
 # (the Windows dialog suppression every test binary links), and a sanitizer's C++ half (UBSan's vptr
 # check, which the library's C++ code uses) is linked only by it.
+#
+# The programs that ask the host for memory no vector or buffer can have, so that a lost bound asks for
+# exabytes, run under the build's memory cap and carry the label memory (cmake/IsolineCappedTest.cmake).
+set(isolineCappedCTestPrograms vectors)
+# The programs whose host-input bounds a hardened libc++ holds to as well (the hardened-stdlib label, which the
+# clang-libcxx-hardened preset runs): a size check that is lost reads past an array there even where it asks
+# for no memory.
+set(isolineHardenedCTestPrograms vectors)
+# Everything the hardened-stdlib label runs, built by one target the clang-libcxx-hardened preset builds, so that a
+# program given the label is built there too (isoline_c_test is src/isoline/c/'s).
+add_custom_target(isoline_hardened_stdlib_tests)
+add_dependencies(isoline_hardened_stdlib_tests isoline_c_test)
 file(GLOB isolineCTestPrograms CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.c")
 foreach(program IN LISTS isolineCTestPrograms)
     get_filename_component(name "${program}" NAME_WE)
@@ -20,8 +32,17 @@ foreach(program IN LISTS isolineCTestPrograms)
         # Beside the shared library, so that a Windows program finds the DLL in its own directory.
         RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
     isoline_apply_target_policy(c_api_${name} TEST)
-    add_test(NAME c_api.${name} COMMAND c_api_${name})
-    set_tests_properties(c_api.${name} PROPERTIES LABELS c-api TIMEOUT 120)
+    set(labels c-api)
+    if(name IN_LIST isolineHardenedCTestPrograms)
+        list(APPEND labels hardened-stdlib)
+        add_dependencies(isoline_hardened_stdlib_tests c_api_${name})
+    endif()
+    if(name IN_LIST isolineCappedCTestPrograms)
+        isoline_add_capped_test(NAME c_api.${name} TARGET c_api_${name} LABELS ${labels} TIMEOUT 120)
+    else()
+        add_test(NAME c_api.${name} COMMAND c_api_${name})
+        set_tests_properties(c_api.${name} PROPERTIES LABELS "${labels}" TIMEOUT 120)
+    endif()
 endforeach()
 
 # --- the vendored wasm.h -------------------------------------------------------
@@ -53,11 +74,13 @@ if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
                      -I "${PROJECT_SOURCE_DIR}/src" -I "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include"
                      --list "${isolineSymbolList}" --implemented "${PROJECT_SOURCE_DIR}/src/isoline/c/isoline.h")
     # Every struct the headers define, wasm.h's vectors included, has its layout rows (src/isoline/c/abi/layout.def),
-    # which the layout tests hold to the compiler.
+    # which the layout tests hold to the compiler. Every C header is scanned, not only the umbrella, so a header
+    # the umbrella does not include owes its rows all the same.
+    file(GLOB isolineLayoutHeaders CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/isoline/c/*.h")
     add_test(NAME c-api-layout-rows
              COMMAND "${Python3_EXECUTABLE}" -I "${isolineSymbolsScript}" layout --compiler "${CMAKE_C_COMPILER}"
                      -I "${PROJECT_SOURCE_DIR}/src" -I "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include"
-                     --layout "${PROJECT_SOURCE_DIR}/src/isoline/c/abi/layout.def" "${PROJECT_SOURCE_DIR}/src/isoline/c/isoline.h")
+                     --layout "${PROJECT_SOURCE_DIR}/src/isoline/c/abi/layout.def" ${isolineLayoutHeaders})
     set_tests_properties(c-api-symbols-selftest c-api-symbols-list c-api-layout-rows PROPERTIES LABELS lint)
 endif()
 
@@ -85,6 +108,20 @@ add_test(NAME c-api-error-docs
          COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-error-docs.py" check
                  --source "${PROJECT_SOURCE_DIR}")
 set_tests_properties(c-api-error-docs PROPERTIES LABELS lint)
+
+# --- the vectors ---------------------------------------------------------------
+#
+# WasmVectors.cpp is written by scripts/c-api-vectors.py from detail/VectorRows.def, five definitions per family,
+# so the boundary lint above reads every one; the checked-in file must be what the rows give, and the rows
+# exactly wasm.h's families (its selftest breaks each rule once).
+add_test(NAME c-api-vectors-selftest
+         COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-vectors_test.py")
+add_test(NAME c-api-vectors
+         COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-vectors.py" check
+                 --rows "${PROJECT_SOURCE_DIR}/src/isoline/c/detail/VectorRows.def"
+                 --output "${PROJECT_SOURCE_DIR}/src/isoline/c/WasmVectors.cpp"
+                 --header "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include/wasm.h")
+set_tests_properties(c-api-vectors-selftest c-api-vectors PROPERTIES LABELS lint)
 
 # How each object format is inspected: format|export-listing tool|name-reading tool|the file whose names
 # are read|the name it must carry. The tools are looked up by the names given, the first found wins.

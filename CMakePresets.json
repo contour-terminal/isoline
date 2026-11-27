@@ -332,7 +332,7 @@
             "name": "clang-libcxx-hardened",
             "configurePreset": "clang-libcxx-hardened",
             "description": "What the hardened-stdlib label's tests run",
-            "targets": ["isoline_c_test"]
+            "targets": ["isoline_hardened_stdlib_tests"]
         },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "configurePreset": "gcc-release" },

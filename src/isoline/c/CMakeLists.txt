@@ -37,7 +37,8 @@ endif()
 
 set(isolineCSources
     Abi.cpp
-    Error.cpp)
+    Error.cpp
+    WasmVectors.cpp)
 set(isolineCHeaders
     abi.h
     error.h
@@ -233,7 +234,8 @@ if(ISOLINE_TESTING)
     file(GLOB_RECURSE isolineCTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
     # The cases out of host memory replace the global operator new, which is the whole program's: their
     # binary is isoline_c_memory_test, below.
-    set(isolineCHostMemoryTestSources "${CMAKE_CURRENT_SOURCE_DIR}/ErrorHostMemory_test.cpp")
+    set(isolineCHostMemoryTestSources "${CMAKE_CURRENT_SOURCE_DIR}/ErrorHostMemory_test.cpp"
+                                       "${CMAKE_CURRENT_SOURCE_DIR}/VectorHostMemory_test.cpp")
     list(REMOVE_ITEM isolineCTestSources ${isolineCHostMemoryTestSources})
     # The C test support compiled as C, a callback the C++ tests call through the C API's trampoline.
     add_executable(isoline_c_test ${isolineCTestSources} "${CMAKE_CURRENT_SOURCE_DIR}/testing/CallingConventionProbe.c")
