@@ -55,6 +55,9 @@ ISOLINE_REQUIRE_CANARY_CASE(memoryAccessSizeNotAPower, "memory-access-size-not-a
 ISOLINE_REQUIRE_CANARY_CASE(memoryAccessTooWide, "memory-access-too-wide", contract, "std::has_single_bit[(]access[.]size[)] && access[.]size <= MaximumAccessBytes")
 ISOLINE_REQUIRE_CANARY_CASE(storeGrowBelowTheGuard, "store-grow-below-the-guard", require, "provides[(][*]instance[.]_memory, memoryRequirementsFor[(]_guardPageLayout, instance[.]type[)][)]")
 ISOLINE_REQUIRE_CANARY_CASE(storeOfIllFormedLayout, "store-of-ill-formed-layout", require, "!services[.]guardPageLayout[.]has_value[(][)] [|][|] isWellFormed[(][*]services[.]guardPageLayout[)]")
+// The reserved memory allocator (src/isoline/runtime/ReservedMemoryAllocator.cpp).
+ISOLINE_REQUIRE_CANARY_CASE(reservedAllocatorOfIllFormedLayout, "reserved-allocator-of-ill-formed-layout", contract, "isWellFormed[(]layout[)]")
+ISOLINE_REQUIRE_CANARY_CASE(reservedMemoryCommitNotUndone, "reserved-memory-commit-not-undone", contract, "restored[.]has_value[(][)]")
 // The positions a contract-spelled check must be evaluated in (CheckPositions.hpp), both macros.
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionFirst, "precondition-first", contract, "entryRounds == 0")
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionInBracelessIf, "precondition-in-braceless-if", contract, "ifRounds == 0")

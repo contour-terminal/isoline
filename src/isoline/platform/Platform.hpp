@@ -119,7 +119,9 @@ enum class DecommitKind : uint8_t
     MadviseDontNeed,
     /// macOS, FreeBSD: mmap(PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED) over the range, a fresh
     /// mapping in place (their MADV_DONTNEED is only a paging hint that keeps the contents), as Wasmtime
-    /// does.
+    /// does. On older Linux kernels, where only a test selects it (SystemVirtualMemory(DecommitKind)), a
+    /// refused MAP_FIXED may already have unmapped the range: it leaves a hole in the reservation, which a
+    /// later mapping could take.
     MapFixedAnonymous,
     /// Windows: VirtualFree(MEM_DECOMMIT).
     VirtualFreeDecommit,

@@ -397,7 +397,17 @@
             }
         },
         { "name": "clang-asan", "inherits": "isoline-test-common", "configurePreset": "clang-asan" },
-        { "name": "clang-tsan", "inherits": "isoline-test-common", "configurePreset": "clang-tsan" },
+        {
+            "name": "clang-tsan",
+            "inherits": "isoline-test-base",
+            "configurePreset": "clang-tsan",
+            "description": "Every test but the perf label's and the guardpages label's: sanitizer jobs do not run guard mode",
+            "filter": {
+                "exclude": {
+                    "label": "perf|guardpages"
+                }
+            }
+        },
         { "name": "clang-release", "inherits": "isoline-test-common", "configurePreset": "clang-release" },
         {
             "name": "clang-release-perf",

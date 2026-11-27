@@ -239,6 +239,19 @@ add_test(NAME platform.unknownPlatformFailsTheConfigure
          COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/platform/UnknownPlatformConfigure.cmake")
 set_tests_properties(platform.unknownPlatformFailsTheConfigure PROPERTIES LABELS lint TIMEOUT 60)
 
+# Address-space exhaustion is a refusal, never a crash (src/isoline/runtime/ReservedMemoryAllocator.hpp): a
+# process of its own under prlimit's 12 GiB address-space cap, so that no setrlimit leaks into another test.
+# Natively only: a sanitizer's shadow memory defeats an address-space cap, and a cross build's emulator would
+# be capped instead of the test.
+if(ISOLINE_PRLIMIT AND NOT CMAKE_CROSSCOMPILING AND NOT ISOLINE_SANITIZE)
+    add_executable(isoline_address_space_exhaustion platform/AddressSpaceExhaustion.cpp)
+    target_link_libraries(isoline_address_space_exhaustion PRIVATE isoline::core)
+    isoline_apply_target_policy(isoline_address_space_exhaustion TEST)
+    add_test(NAME platform.addressSpaceExhaustionIsARefusal
+             COMMAND "${ISOLINE_PRLIMIT}" --as=12884901888 -- $<TARGET_FILE:isoline_address_space_exhaustion>)
+    set_tests_properties(platform.addressSpaceExhaustionIsARefusal PROPERTIES LABELS "unit;guardpages" TIMEOUT 120)
+endif()
+
 # How check-install tells that an installed file names a path of the build (tests/cmake/check-install-paths.cmake),
 # in script mode, beside the install tests that use it and registered with or without them.
 add_test(NAME check-install-paths

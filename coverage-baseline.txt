@@ -185,6 +185,10 @@
 # preconditions' failing sides (the canary's memory-layout-*, memory-requirements-*, memory-access-*, layout-of-* and
 # store-fault-atomicity-* cases take them, each in a process of its own) and strategyRuleFor()'s fallback after
 # StrategyTable, whose last row always holds.
+#
+# src/isoline/runtime/ReservedMemoryAllocator.cpp entered at 91.66 % of branches (22 of 24, P7 Task 9): its two uncovered branches
+# are the failing sides of its constructor's precondition and of commit()'s invariant (the canary's reserved-allocator-* and
+# reserved-memory-* cases take them, each in a process of its own); its uncovered lines are the bad-alloc exclusion.
 
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
@@ -200,6 +204,7 @@ exclude src/isoline/platform/JitMemoryNone.cpp jit-memory-none-violated SystemJi
 exclude src/isoline/platform/MembarrierLinux.cpp membarrier-refused membarrier(2) refusing SYNC_CORE: the coverage run's kernel has it (Linux 4.16 and later on x86-64); how a refusal maps to InstructionCacheError is InstructionCache.membarrierRefusalIsAnError's, over a refusing IMembarrier
 exclude src/isoline/platform/VirtualMemoryPosix.cpp posix-madvise-refused madvise(MADV_DONTNEED) refusing a range mprotect has just accepted: both take the same page-aligned range of one private anonymous mapping, and MADV_DONTNEED fails only for a range that is not mapped, locked or not aligned
 exclude src/isoline/runtime/LinearMemory.cpp bad-alloc std::bad_alloc from HeapMemoryAllocator's std::vector or its make_unique: the heap allocator uses the standard allocator, which no test can make fail without exhausting the host (a size past max_size is refused before allocating, which HeapMemoryAllocator.refusesWhatNoVectorHolds covers)
+exclude src/isoline/runtime/ReservedMemoryAllocator.cpp bad-alloc std::bad_alloc from the make_unique of a reserved memory's object: it uses the standard allocator, which no test can make fail without exhausting the host (a refused reservation and a refused commit are covered by ReservedMemory.refusalsAreHostMemory)
 exclude src/isoline/runtime/Store.cpp bad-alloc std::bad_alloc from a table's std::vector<Ref>: tables use the standard allocator, which no test can make fail without exhausting the host (a size past max_size is refused before allocating, which Instantiate.tableAllocationRefused covers)
 exclude src/isoline/text/ModuleWriter.cpp non-indirect-kind innerLimitOf() of a name kind whose NameSubsections row is not Indirect: every kind has a case and the direct ones end in core::unreachable(), as namesAreInRange() asks it of the Indirect rows only
 exclude src/isoline/validate/Validator.cpp special-default a Special opcode without a case: every one has a case or a MemoryAccessTable row
@@ -294,10 +299,11 @@ src/isoline/runtime/Interrupt.hpp                 100.00 -
 src/isoline/runtime/Limits.hpp                    100.00 -
 src/isoline/runtime/LinearMemory.cpp              88.57 100.00
 src/isoline/runtime/LinearMemory.hpp              100.00 -
-src/isoline/runtime/MemoryLayout.cpp              100.00 69.09
+src/isoline/runtime/MemoryLayout.cpp              100.00 70.83
 src/isoline/runtime/MemoryLayout.hpp              100.00 100.00
+src/isoline/runtime/ReservedMemoryAllocator.cpp   96.29 91.66
 src/isoline/runtime/Segment.hpp                   100.00 100.00
-src/isoline/runtime/Store.cpp                     99.69 83.96
+src/isoline/runtime/Store.cpp                     99.70 83.96
 src/isoline/runtime/Store.hpp                     100.00 94.11
 src/isoline/runtime/Trap.hpp                      100.00 75.00
 src/isoline/runtime/Value.hpp                     100.00 94.44

@@ -42,6 +42,7 @@
 #include <isoline/platform/testing/RecordingVirtualMemory.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/MemoryLayout.hpp>
+#include <isoline/runtime/ReservedMemoryAllocator.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/testing/ProvidedMemory.hpp>
 
@@ -733,6 +734,69 @@ void storeOfIllFormedLayout()
                                                                 .guardBytes = (uint64_t { 2 } << 30) + 1 } }
     };
     memoryLayoutWentThrough("Store() under a guard above 2 GiB");
+}
+
+void reservedAllocatorOfIllFormedLayout()
+{
+    auto system = isoline::platform::SystemVirtualMemory {};
+    [[maybe_unused]] auto const allocator = isoline::runtime::ReservedMemoryAllocator {
+        system,
+        isoline::runtime::MemoryLayout { .reservationBytes = 0, .guardBytes = (uint64_t { 2 } << 30) + 1 }
+    };
+    memoryLayoutWentThrough("ReservedMemoryAllocator() under a guard above 2 GiB");
+}
+
+/// The system's address space, but every protect() refused: a commit the system refuses, and then refuses
+/// to undo.
+class RefusingProtection final: public isoline::platform::IVirtualMemory
+{
+  public:
+    [[nodiscard]] uint64_t pageSize() const noexcept override { return _system.pageSize(); }
+
+    [[nodiscard]] uint64_t allocationGranularity() const noexcept override
+    {
+        return _system.allocationGranularity();
+    }
+
+    [[nodiscard]] isoline::platform::DecommitKind decommitKind() const noexcept override
+    {
+        return _system.decommitKind();
+    }
+
+    [[nodiscard]] std::expected<isoline::platform::Region, isoline::platform::VirtualMemoryFailure> reserve(
+        uint64_t bytes) noexcept override
+    {
+        return _system.reserve(bytes);
+    }
+
+    [[nodiscard]] std::expected<void, isoline::platform::VirtualMemoryFailure> protect(
+        isoline::platform::Region /*region*/, isoline::platform::Protection /*protection*/) noexcept override
+    {
+        return std::unexpected { isoline::platform::VirtualMemoryFailure {
+            .error = isoline::platform::VirtualMemoryError::ProtectRefused, .systemCode = 12 } };
+    }
+
+    [[nodiscard]] std::expected<void, isoline::platform::VirtualMemoryFailure> release(
+        isoline::platform::Region region) noexcept override
+    {
+        return _system.release(region);
+    }
+
+  private:
+    isoline::platform::SystemVirtualMemory _system;
+};
+
+void reservedMemoryCommitNotUndone()
+{
+    auto refusing = RefusingProtection {};
+    auto allocator = isoline::runtime::ReservedMemoryAllocator {
+        refusing, isoline::runtime::MemoryLayout { .reservationBytes = uint64_t { 1 } << 20, .guardBytes = 0 }
+    };
+    [[maybe_unused]] auto const memory =
+        allocator.allocate(isoline::runtime::MemoryRequest { .type = onePageMemory32(),
+                                                             .initialBytes = uint64_t { 64 } << 10,
+                                                             .maximumBytes = uint64_t { 64 } << 10 });
+    memoryLayoutWentThrough("allocate() whose refused commit is not undone");
 }
 
 /// A case: its name on the command line, and what it calls.

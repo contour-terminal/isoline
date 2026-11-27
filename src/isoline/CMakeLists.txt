@@ -91,6 +91,7 @@ target_sources(isoline_core
         runtime/Instantiate.cpp
         runtime/LinearMemory.cpp
         runtime/MemoryLayout.cpp
+        runtime/ReservedMemoryAllocator.cpp
         runtime/Store.cpp
         runtime/ValueCheck.cpp
         validate/Subtyping.cpp
@@ -137,6 +138,7 @@ target_sources(isoline_core
             runtime/Limits.hpp
             runtime/LinearMemory.hpp
             runtime/MemoryLayout.hpp
+            runtime/ReservedMemoryAllocator.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp
@@ -221,10 +223,15 @@ if(ISOLINE_TESTING)
     isoline_apply_target_policy(isoline_test TEST)
     # The [memory] cases (growth past a store's budgets, hostile deltas) run apart, under a hard memory
     # cap, so that a broken bound fails small instead of starving a shared machine.
-    add_test(NAME isoline_test COMMAND isoline_test "~[memory]")
+    add_test(NAME isoline_test COMMAND isoline_test "~[memory]~[guardpages]")
     # A bound, so a test that would hang (an interrupt test whose poll went missing) fails instead.
     set_tests_properties(isoline_test PROPERTIES LABELS unit TIMEOUT 600)
     isoline_add_capped_test(NAME isoline_test_memory TARGET isoline_test LABELS unit ARGS "[memory]")
+    # The [guardpages] cases reserve guard-page memories (Wasmtime parity: 4 GiB + 32 MiB of address space
+    # each) and run apart, under the same cap and with the guardpages label, which a ThreadSanitizer run
+    # excludes (CMakePresets.json): sanitizer jobs do not run guard mode.
+    isoline_add_capped_test(NAME isoline_test_guardpages TARGET isoline_test LABELS unit guardpages
+                            ARGS "[guardpages]")
     # The interrupt latency the specification publishes (p99 interrupt-to-return within 10 ms) is a
     # property of optimized code: measured in release builds only, by the hidden [perf] cases, which
     # the unit run above skips. It asserts wall-clock time, so every test preset but clang-release-perf

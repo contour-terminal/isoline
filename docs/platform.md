@@ -18,6 +18,20 @@ passkey that only the code memory's seal and the test helpers can make.
 macOS x86-64 (`MapJitWithProtection`) maps `MAP_JIT` read-write and makes it read-execute with
 `mprotect`. Every other platform never maps `MAP_JIT`.
 
+## Guard-page memories
+
+`runtime::ReservedMemoryAllocator` serves the linear memories of a guard-page engine through the injected
+`IVirtualMemory`. Each memory reserves, inaccessible, the larger of the layout's reservation and the
+request's maximum in whole pages, then the layout's guard, the sum rounded up to the allocation
+granularity (64 KiB on Windows). It commits the pages its bytes span with `protect(ReadWrite)` and commits
+more in place on every grow, so its base never moves and `guardBytes()`, the reservation past the committed
+pages, is at least the layout's guard at every size up to the maximum. A maximum whose reservation is no
+u64, a refused reservation and a refused commit are each `Refusal::HostMemory`, and a refused grow leaves the
+memory as it was. Because `mprotect` may change part of a range before it fails, a refused commit is undone
+whole with `protect(None)`, which decommits by the platform row's `DecommitKind` (madvise, a `MAP_FIXED`
+remap, or `VirtualFree`): no page past the committed ones stays accessible. The process ends if that undo is
+refused too. Memory64 and custom-page memories, which rely on no guard, are reserved by the same rule.
+
 ## Instruction-cache synchronization
 
 `IInstructionCache` is the one seam through which code that was just written becomes executable by every
