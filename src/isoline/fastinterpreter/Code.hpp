@@ -368,9 +368,11 @@ struct LoweringStats
 /// LoweredModule holding the function keeps alive.
 struct LoweredFunction
 {
-    /// A function with no code yet, whose containers allocate from @p resource.
+    /// A function with no code yet, whose containers allocate from @p resource. Not noexcept: a standard
+    /// library may allocate in a container's constructor (MSVC's debug containers allocate a proxy), and the
+    /// lowering arena refuses an allocation past its budget by throwing.
     /// @param resource The lowering arena.
-    explicit LoweredFunction(std::pmr::memory_resource* resource) noexcept:
+    explicit LoweredFunction(std::pmr::memory_resource* resource):
         code(resource),
         localInit(resource),
         operands(resource),

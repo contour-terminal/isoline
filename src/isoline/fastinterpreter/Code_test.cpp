@@ -115,17 +115,23 @@ TEST_CASE("Code.loweredModuleKeepsItsArena")
 {
     // The module holds the resource its containers allocate from, so the code outlives the caller's
     // handle on it.
-    auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
-    auto functions = std::pmr::vector<LoweredFunction>(arena.get());
-    functions.push_back(functionOf(*arena, 0, 3));
-    functions.push_back(functionOf(*arena, 1, 5));
-    auto const* const resource = arena.get();
-    auto const module = LoweredModule { std::move(arena),
-                                        std::move(functions),
-                                        Dispatch::Switch,
-                                        ExecutionMode::Deterministic,
-                                        1'234,
-                                        LoweringStats { .bodyUnits = 5, .work = 7 } };
+    // The arena and the moved-from vector live in a scope that ends while the module, their last owner, is
+    // alive: MSVC's debug containers keep a proxy allocated from their allocator, the moved-from one too,
+    // which must go before the arena does.
+    auto const* resource = static_cast<std::pmr::memory_resource const*>(nullptr);
+    auto const module = [&resource] {
+        auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
+        auto functions = std::pmr::vector<LoweredFunction>(arena.get());
+        functions.push_back(functionOf(*arena, 0, 3));
+        functions.push_back(functionOf(*arena, 1, 5));
+        resource = arena.get();
+        return LoweredModule { std::move(arena),
+                               std::move(functions),
+                               Dispatch::Switch,
+                               ExecutionMode::Deterministic,
+                               1'234,
+                               LoweringStats { .bodyUnits = 5, .work = 7 } };
+    }();
 
     CHECK(module.engine() == ExecutionEngine::Fast);
     CHECK(module.dispatch() == Dispatch::Switch);
