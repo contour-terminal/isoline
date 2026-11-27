@@ -32,7 +32,10 @@ namespace isoline::fastinterpreter
 /// local runs + results) per function, and a type's slots, once per module, are not counted: local runs
 /// are body units, and the params and results are bounded by the type section's limits
 /// (binary::DecodeLimits::maxParams, maxResults). Neither are the visits of the index list and the
-/// forwarding chains, at most one per push.
+/// forwarding chains, at most one per push, each chain's head an O(1) look-up in a table indexed by local
+/// (whatever locals the body forwards: no hash a module could cluster), nor that table's initialization,
+/// O(locals) once per function, which the frame's own slots for the locals bound
+/// (binary::DecodeLimits::maxLocals).
 inline constexpr auto WorkPerBodyUnit = uint64_t { 6 };
 
 /// The most slots a frame may have: slot operands are 32 bits wide.

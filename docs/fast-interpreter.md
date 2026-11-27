@@ -41,9 +41,17 @@ accounting (`loweringReservation()`, `charged()`, `peak()`), never from `sizeof`
 
 The split relies on a container allocating its storage as its element type, which is a vector's kind.
 A node-based container (`std::unordered_map`, `std::list`) allocates its nodes and buckets under rebound
-types too, which no allocator can tell from bookkeeping. So lowering uses none. Its one map, the forwarded
-locals' chains, is an `IndexMap` (`fastinterpreter/IndexMap.hpp`): open addressing in a single
-`LoweringVector`.
+types too, which no allocator can tell from bookkeeping. So lowering uses none.
+
+Its one map, from a forwarded local to the newest operand stack entry forwarding it, is no hash map
+either. It is a `LoweringVector` indexed by local, sized to the function's locals and allocated before
+the body is lowered, where a refusal is caught. Finding a local's chain is then O(1) in the worst case,
+whatever locals a body forwards. An open-addressing table over a published hash could be clustered on
+purpose: a 1 MB body forwarding 16'383 locals hashed into one half of the table, then setting locals hashed
+into that run, took 10^9 probes. The table costs O(locals) per function, once, which the frame's own slots
+for those locals already bound (`binary::DecodeLimits::maxLocals`).
+`Lowering.forwardedLocalsCostTheSameHoweverChosen` keeps it so: the clustered shape must lower as fast as
+one whose locals are spread, within a factor of 3. The hash map took 27 times as long.
 
 *Rejected:* charging the bookkeeping too, and tolerating it in the tests. The `noexcept` refusals would
 remain. *Rejected:* building with `_ITERATOR_DEBUG_LEVEL=0`. It changes the ABI, which an embedder's debug

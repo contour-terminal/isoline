@@ -26,8 +26,8 @@ namespace isoline::fastinterpreter
 /// @tparam T The type it allocates, as the container rebinds it.
 /// @tparam Charged The container's element type, whose allocations the arena charges. Only a container that
 ///         allocates its storage as its element type may use it, a vector's kind: a node-based container's
-///         nodes are rebound types too, which no allocator tells from bookkeeping (IndexMap is lowering's
-///         map).
+///         nodes are rebound types too, which no allocator tells from bookkeeping, so lowering has
+///         none.
 template <typename T, typename Charged = T>
 class LoweringAllocator
 {

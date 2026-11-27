@@ -21,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include <isoline/fastinterpreter/IndexMap.hpp>
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
 
@@ -220,12 +219,15 @@ namespace
     ///
     /// Each entry's home slot is fixed by its height. A local.get pushes an entry that forwards the local,
     /// linked into the local's chain, which a local.set or local.tee of it materializes, and only its own.
+    /// The chains' heads are a table indexed by local, sized to the function's locals before the body is
+    /// lowered, so finding a local's chain is O(1) in the worst case, whatever locals the body forwards.
     /// Every entry that is not in its slot is in an index list too, which a block boundary or a conditional
     /// branch materializes whole and a terminator as far as its values reach: each entry is materialized at
-    /// most once, so the work is linear in the body. A branch to a block waits in a chain threaded through
-    /// the target words of the branches waiting for the same end, which resolves them when it is lowered.
-    /// Dead code after a terminator is skipped up to its block's else or end. Every container allocates from
-    /// the lowering arena; the code's capacity is the function's bound, reserved beforehand.
+    /// most once, so the work is linear in the body, beside O(locals) once per function for the chains'
+    /// table. A branch to a block waits in a chain threaded through the target words of the branches waiting
+    /// for the same end, which resolves them when it is lowered. Dead code after a terminator is skipped up
+    /// to its block's else or end. Every container allocates from the lowering arena; the code's capacity is
+    /// the function's bound, reserved beforehand.
     class FunctionLowering
     {
       public:
@@ -261,6 +263,12 @@ namespace
             _stack.reserve(shape.maxOperands);
             _unmaterialized.reserve(shape.maxOperands);
             _controls.reserve(std::size_t { shape.maxLabels } + 1);
+            // Every local's chain head, NoEntry for one nobody forwards: an O(1) look-up whatever locals the
+            // body forwards, allocated before the body is lowered, where a refusal is caught.
+            auto locals = uint64_t { _type.params.size() };
+            for (auto const& run: _source.locals)
+                locals += run.count;
+            _chains.assign(static_cast<std::size_t>(locals), NoEntry);
         }
 
         /// Lowers the body, then fits the code's capacity to its size.
@@ -825,7 +833,7 @@ namespace
             entry.olderForwarder = NoEntry;
             if (entry.kind == EntryKind::Local)
             {
-                auto& newest = _chains.findOrInsert(entry.local, NoEntry);
+                auto& newest = _chains[entry.local];
                 entry.olderForwarder = newest;
                 newest = position;
             }
@@ -898,12 +906,9 @@ namespace
         /// Unlinks @p entry, at @p position, from its local's chain, whose newest forwarder it is.
         void leaveChain(Entry const& entry, uint32_t position)
         {
-            auto* const newest = _chains.find(entry.local);
-            Require(newest != nullptr && *newest == position);
-            if (entry.olderForwarder == NoEntry)
-                _chains.erase(entry.local);
-            else
-                *newest = entry.olderForwarder;
+            auto& newest = _chains[entry.local];
+            Require(newest == position);
+            newest = entry.olderForwarder;
         }
 
         /// Cuts the stack back to @p height values, the top at @p slot: what dead code leaves of it at a
@@ -996,10 +1001,7 @@ namespace
         /// Materializes every entry forwarding @p local, which then holds its value in its own slot.
         void materializeChain(uint32_t local)
         {
-            auto const* const newest = _chains.find(local);
-            if (newest == nullptr)
-                return;
-            auto position = *newest;
+            auto position = std::exchange(_chains[local], NoEntry);
             while (position != NoEntry)
             {
                 auto& entry = _stack[position];
@@ -1008,7 +1010,6 @@ namespace
                 entry.kind = EntryKind::Slot;
                 entry.olderForwarder = NoEntry;
             }
-            _chains.erase(local);
         }
 
         /// Appends @p operation with its slot operands and immediates, as OperationTable lays it out.
@@ -1041,12 +1042,13 @@ namespace
         LoweringVector<LocalRun> _localRuns;
         LoweringVector<Entry> _stack;
         LoweringVector<uint32_t> _unmaterialized; ///< The positions of entries not in their slot, rising.
-        IndexMap _chains;                         ///< Each forwarded local's newest forwarder.
-        LoweringVector<Control> _controls;        ///< The open blocks, the function's body first.
-        uint32_t _top = 0;                        ///< The home slot of the next entry pushed.
-        uint32_t _maxTop = 0;                     ///< The highest _top reached: the frame's slots.
-        uint32_t _height = 0;                     ///< The values on the stack.
-        std::size_t _position = 0;                ///< The body index of the instruction being lowered.
+        LoweringVector<uint32_t>
+            _chains; ///< Each local's newest forwarder, by local index; NoEntry for none.
+        LoweringVector<Control> _controls; ///< The open blocks, the function's body first.
+        uint32_t _top = 0;                 ///< The home slot of the next entry pushed.
+        uint32_t _maxTop = 0;              ///< The highest _top reached: the frame's slots.
+        uint32_t _height = 0;              ///< The values on the stack.
+        std::size_t _position = 0;         ///< The body index of the instruction being lowered.
         Reachability _reachability = Reachability::Reachable;
         uint64_t _work = 0;
     };
