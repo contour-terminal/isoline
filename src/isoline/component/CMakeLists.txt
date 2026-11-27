@@ -10,6 +10,7 @@ target_sources(isoline_component
         binary/Encoder.cpp
         binary/Grammar.hpp
         types/TypeArena.cpp
+        canonical/Layout.cpp
         validate/CoreTypes.cpp
         validate/Names.cpp
         validate/Subtyping.cpp
@@ -23,6 +24,7 @@ target_sources(isoline_component
             binary/Decoder.hpp
             binary/Encoder.hpp
             types/TypeArena.hpp
+            canonical/Layout.hpp
             validate/CoreTypes.hpp
             validate/Names.hpp
             validate/Subtyping.hpp

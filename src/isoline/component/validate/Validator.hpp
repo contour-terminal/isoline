@@ -18,6 +18,7 @@
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/binary/Decoder.hpp>
+#include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/validate/ValidatedComponent.hpp>
 
 namespace isoline::component::validate
@@ -47,6 +48,7 @@ enum class ValidationErrorCode : uint8_t
     EmptyEnum,
     EmptyFixedList,
     FixedListTooLong,
+    ValueTypeTooLarge,
     EmptyLabel,
     LabelNotKebabCase,
     DuplicateLabel,
@@ -193,6 +195,10 @@ inline constexpr auto ValidationErrorMessages = std::to_array<ValidationErrorRow
     { .code = ValidationErrorCode::FixedListTooLong,
       .text = "fixed-length list element count exceeds limit of {0}",
       .detail = ValidationErrorDetail::Index },
+    // AbiInfo::new (component_types.rs:1806-1816): elem_size with 64-bit pointers stays below
+    // canonical::MaxValueByteSize.
+    { .code = ValidationErrorCode::ValueTypeTooLarge,
+      .text = canonical::layoutMessage(canonical::LayoutErrorCode::ExceedsMaximumByteSize) },
     { .code = ValidationErrorCode::EmptyLabel,
       .text = "{0} name cannot be empty",
       .detail = ValidationErrorDetail::Label },

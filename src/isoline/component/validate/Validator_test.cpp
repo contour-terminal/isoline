@@ -19,6 +19,7 @@
 #include <isoline/component/binary/Decoder.hpp>
 #include <isoline/component/binary/testing/Builder.hpp>
 #include <isoline/component/binary/testing/DecoderFixtures.hpp>
+#include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/Validator.hpp>
 #include <isoline/component/validate/testing/CoreModuleValidator.hpp>
@@ -1290,4 +1291,94 @@ TEST_CASE("Validator.coreModuleValidatorIsAnInterface")
     };
     owned.reset();
     CHECK(owned == nullptr);
+}
+
+namespace
+{
+/// Validates @p pool under @p limits.
+[[nodiscard]] Validated validatedWithin(ComponentPool pool, ComponentLimits const& limits)
+{
+    auto coreModules = CoreModuleValidator {};
+    return validateComponent(std::move(pool), ComponentFeatureSet::defaults(), limits, coreModules);
+}
+
+/// very-nested.wast's chain: a tuple of eight u32 (32 bytes), then @p doublings tuples of the previous
+/// type twice, each its own definition. @return The component and the last type's index.
+[[nodiscard]] std::pair<ComponentBuilder, uint32_t> doublingChain(uint32_t doublings)
+{
+    auto builder = ComponentBuilder {};
+    auto last = builder.type(
+        defined(TupleType { .elements = std::vector<ValueTypeRef>(8, PrimitiveValueType::U32) }));
+    for ([[maybe_unused]] auto const level: std::views::iota(uint32_t { 0 }, doublings))
+        last = builder.type(defined(TupleType { .elements = { at(last), at(last) } }));
+    return { std::move(builder), last };
+}
+} // namespace
+
+TEST_CASE("Validator.valueTypeSizeLimit")
+{
+    // Without fixed-length lists only an embedder's raised maxTypeSize reaches 2^28 bytes: 32 bytes
+    // doubled 22 times is 2^27, accepted; 23 times is 2^28, refused at that definition with
+    // wasm-tools' text (test/validation/max-value-size.wast at the pin).
+    auto limits = ComponentLimits {};
+    limits.maxTypeSize = 200'000'000;
+    auto [largest, largestIndex] = doublingChain(22);
+    auto const accepted = validatedWithin(largest.pool(), limits);
+    REQUIRE(accepted.has_value());
+    auto const& component = **accepted;
+    auto const top =
+        std::get<isoline::component::types::TypeId>(component.scopes.front().types.at(largestIndex).type);
+    CHECK(component.layouts[top].size64 == uint32_t { 1 } << 27U);
+
+    auto [tooLarge, tooLargeIndex] = doublingChain(23);
+    auto const refused = validatedWithin(tooLarge.pool(), limits);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == ValidationErrorCode::ValueTypeTooLarge);
+    CHECK(specMessage(refused.error()) == "value type's maximum in-memory size exceeds maximum byte size");
+    CHECK(refused.error().position == DefinitionPosition { .scope = 0, .definition = tooLargeIndex });
+}
+
+TEST_CASE("Validator.layoutsStoredOncePerComponent")
+{
+    auto builder = ComponentBuilder {};
+    auto const record = builder.type(defined(recordOf({ "a", "b" }, PrimitiveValueType::U8)));
+    auto const option = builder.type(defined(OptionType { .type = at(record) }));
+    std::ignore = builder.type(
+        defined(FlagsType { .labels = numbered("f", isoline::component::canonical::MaxFlagLabels) }));
+    auto const result = validated(builder.pool());
+    REQUIRE(result.has_value());
+    auto const& component = **result;
+    CHECK(component.layouts.arena() == component.types.id());
+    CHECK(component.layouts.all().size() == component.types.valueTypeCount());
+    auto const typeOf = [&](uint32_t index) {
+        return std::get<isoline::component::types::TypeId>(component.scopes.front().types.at(index).type);
+    };
+    CHECK(component.layouts[typeOf(record)].size == 2);
+    CHECK(component.layouts[typeOf(record)].fieldOffsets == std::vector<uint32_t> { 0, 1 });
+    CHECK(component.layouts[typeOf(option)].size == 3);
+    CHECK(component.layouts[typeOf(option)].flat.size() == 3);
+}
+
+TEST_CASE("Validator.layoutsLinear")
+{
+    // n options of one shared type of 2^14 leaves, each its own definition: each is laid out once from
+    // its child's layout, never by walking the leaves again, so the work is a constant per type of the
+    // arena (a walk of the leaves would be 2^14 steps per option) and doubles with n.
+    auto const layoutStepsOf = [](uint32_t options) {
+        auto [builder, shared] = doublingChain(11);
+        for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, options))
+            std::ignore = builder.type(defined(OptionType { .type = at(shared) }));
+        auto const result = validated(builder.pool());
+        REQUIRE(result.has_value());
+        auto const& component = **result;
+        INFO(std::format("{} options, {} types", options, component.types.valueTypeCount()));
+        CHECK(component.work.layoutSteps <= 32 * uint64_t { component.types.valueTypeCount() });
+        CHECK(component.work.layoutSteps == component.layouts.steps());
+        return component.work.layoutSteps;
+    };
+    auto const single = layoutStepsOf(5'000);
+    auto const twice = layoutStepsOf(10'000);
+    INFO(std::format("layout steps {} at n, {} at 2n", single, twice));
+    CHECK(single >= 5'000);
+    CHECK(twice * 10 <= single * 21);
 }

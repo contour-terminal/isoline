@@ -28,6 +28,7 @@
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/binary/Decoder.hpp>
+#include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/CoreTypes.hpp>
 #include <isoline/component/validate/Names.hpp>
@@ -54,18 +55,9 @@ namespace
     template <typename T>
     using Result = std::expected<T, ValidationError>;
 
-    /// The most labels a flags type may have (Binary.md; wasmparser's create_flags_type).
-    constexpr auto MaxFlags = std::size_t { 32 };
-
     /// The most elements a fixed-length list may have: MAX_WASM_FIXED_LENGTH_LIST_ELEMENTS, wasmparser
     /// 0.263.0 src/limits.rs:78.
     constexpr auto MaxFixedListElements = uint32_t { 1'073'741'824 };
-
-    /// The most core parameters a lowered or lifted function passes flat, and results it returns flat
-    /// (MAX_FLAT_FUNC_PARAMS and MAX_FLAT_FUNC_RESULTS, wasmparser 0.263.0
-    /// src/validator/component_types.rs:31-39; CanonicalABI.md's MAX_FLAT_PARAMS and MAX_FLAT_RESULTS).
-    constexpr auto MaxFlatParams = std::size_t { 16 };
-    constexpr auto MaxFlatResults = std::size_t { 1 };
 
     /// The type of every address of a 32-bit memory, the only one P11 admits (🐘 is refused).
     constexpr auto PointerType = isoline::binary::I32;
@@ -334,79 +326,6 @@ namespace
         return static_cast<isoline::binary::ExternKind>(sort);
     }
 
-    /// How a value type flattens into core types (CanonicalABI.md's flatten_type; wasm-tools'
-    /// push_wasm_types, component_types.rs:308-331 and 1923-2016), by ValueKind.
-    enum class FlatRule : uint8_t
-    {
-        I32,         ///< One i32.
-        I64,         ///< One i64.
-        F32,         ///< One f32.
-        F64,         ///< One f64.
-        Pointers,    ///< A pointer and a length: string, list, map.
-        Concatenate, ///< Each child's flattening in turn: record, tuple.
-        Repeat,      ///< The element's flattening, length times: a fixed-length list.
-        Variant,     ///< An i32 discriminant, then the cases' flattenings joined: variant, option, result.
-        Flags,       ///< One i32 per 32 labels.
-    };
-
-    /// Per ValueKind, in its order.
-    constexpr auto FlatRuleTable = std::to_array<FlatRule>({
-        FlatRule::I32,         // bool
-        FlatRule::I32,         // s8
-        FlatRule::I32,         // u8
-        FlatRule::I32,         // s16
-        FlatRule::I32,         // u16
-        FlatRule::I32,         // s32
-        FlatRule::I32,         // u32
-        FlatRule::I64,         // s64
-        FlatRule::I64,         // u64
-        FlatRule::F32,         // f32
-        FlatRule::F64,         // f64
-        FlatRule::I32,         // char
-        FlatRule::Pointers,    // string
-        FlatRule::I32,         // error-context
-        FlatRule::Pointers,    // list
-        FlatRule::Repeat,      // list N
-        FlatRule::Concatenate, // record
-        FlatRule::Concatenate, // tuple
-        FlatRule::Variant,     // variant
-        FlatRule::I32,         // enum
-        FlatRule::Variant,     // option
-        FlatRule::Variant,     // result
-        FlatRule::Flags,       // flags
-        FlatRule::Pointers,    // map
-        FlatRule::I32,         // own
-        FlatRule::I32,         // borrow
-        FlatRule::I32,         // stream
-        FlatRule::I32,         // future
-    });
-
-    static_assert(FlatRuleTable.size() == types::ValueKindCount, "one flattening rule per ValueKind");
-
-    /// A value type's flattening, at most MaxFlatParams core types long, and whether it holds a
-    /// pointer (wasm-tools' contains_ptr: a string, a list or a map somewhere in it).
-    struct FlatShape
-    {
-        std::vector<isoline::binary::ValueType> types {}; ///< Its flat core types, up to MaxFlatParams.
-        bool isOverflowing = false;                       ///< Whether it flattens to more than that.
-        bool holdsPointer = false;                        ///< Whether a string, list or map is in it.
-    };
-
-    /// The join of two flat types at one position of a variant (CanonicalABI.md's join).
-    [[nodiscard]] isoline::binary::ValueType joined(isoline::binary::ValueType first,
-                                                    isoline::binary::ValueType second) noexcept
-    {
-        using isoline::binary::ValueKind;
-        if (first.kind == second.kind)
-            return first;
-        auto const isWord = [](ValueKind kind) {
-            return kind == ValueKind::I32 || kind == ValueKind::F32;
-        };
-        if (isWord(first.kind) && isWord(second.kind))
-            return isoline::binary::I32;
-        return isoline::binary::I64;
-    }
-
     /// The core value type of a resource's representation.
     [[nodiscard]] constexpr isoline::binary::ValueType coreValueOf(binary::CoreValueKind kind) noexcept
     {
@@ -418,82 +337,6 @@ namespace
             case binary::CoreValueKind::F64: return isoline::binary::F64;
         }
         return isoline::binary::I32; // uncovered(exhaustive-switch)
-    }
-
-    /// The flattening of @p defined from its children's (CanonicalABI.md's flatten_type), by its
-    /// kind's FlatRuleTable row: at most MaxFlatParams types, marked overflowing past them.
-    /// @param defined A value type.
-    /// @param shapeOf The shape of each of its children, already made.
-    /// @return Its shape.
-    template <typename ShapeOf>
-    [[nodiscard]] FlatShape shapeFrom(types::DefinedType const& defined, ShapeOf const& shapeOf)
-    {
-        auto shape = FlatShape {};
-        auto const push = [&](isoline::binary::ValueType flat) {
-            if (shape.types.size() == MaxFlatParams)
-                shape.isOverflowing = true;
-            else
-                shape.types.push_back(flat);
-        };
-        auto const append = [&](FlatShape const& child) {
-            shape.holdsPointer = shape.holdsPointer || child.holdsPointer;
-            shape.isOverflowing = shape.isOverflowing || child.isOverflowing;
-            for (auto const& flat: child.types)
-                push(flat);
-        };
-        switch (FlatRuleTable[static_cast<std::size_t>(defined.kind)])
-        {
-            case FlatRule::I32: push(isoline::binary::I32); break;
-            case FlatRule::I64: push(isoline::binary::I64); break;
-            case FlatRule::F32: push(isoline::binary::F32); break;
-            case FlatRule::F64: push(isoline::binary::F64); break;
-            case FlatRule::Pointers:
-                push(PointerType);
-                push(PointerType);
-                shape.holdsPointer = true;
-                break;
-            case FlatRule::Concatenate:
-                for (auto const& child: defined.children)
-                    append(shapeOf(*child));
-                break;
-            case FlatRule::Repeat:
-                // uncovered-begin(fixed-length-lists): unreachable while 🔧 is refused.
-                for ([[maybe_unused]] auto const element: std::views::iota(uint32_t { 0 }, defined.length))
-                {
-                    append(shapeOf(*defined.children.front()));
-                    if (shape.isOverflowing)
-                        break;
-                }
-                break;
-                // uncovered-end(fixed-length-lists)
-            case FlatRule::Variant: {
-                push(isoline::binary::I32);
-                auto const start = shape.types.size();
-                for (auto const& child: defined.children)
-                {
-                    if (!child)
-                        continue;
-                    auto const& payload = shapeOf(*child);
-                    shape.holdsPointer = shape.holdsPointer || payload.holdsPointer;
-                    shape.isOverflowing = shape.isOverflowing || payload.isOverflowing;
-                    for (auto const index: std::views::iota(std::size_t { 0 }, payload.types.size()))
-                    {
-                        if (start + index < shape.types.size())
-                            shape.types[start + index] =
-                                joined(shape.types[start + index], payload.types[index]);
-                        else
-                            push(payload.types[index]);
-                    }
-                }
-                break;
-            }
-            case FlatRule::Flags:
-                for ([[maybe_unused]] auto const word:
-                     std::views::iota(std::size_t { 0 }, (defined.labels.size() + 31) / 32))
-                    push(isoline::binary::I32);
-                break;
-        }
-        return shape;
     }
 
     /// The steps of a binary search for a name of @p bytes bytes among @p entries names: at most
@@ -608,13 +451,6 @@ namespace
         Fresh,  ///< `created` is a fresh copy of `referenced`.
     };
 
-    /// Which side of the canonical ABI a lowering is for (wasm-tools' Abi).
-    enum class Abi : uint8_t
-    {
-        Lift,  ///< A core function lifted to a component function, which a caller calls into.
-        Lower, ///< A component function lowered to a core function, which core code calls.
-    };
-
     /// The walk over one pool: its frames, its arena, and what it found so far.
     class ComponentValidator
     {
@@ -628,6 +464,7 @@ namespace
             _limits { limits },
             _coreModuleValidator { coreModules },
             _arena { limits },
+            _layouts { _arena.id() },
             _relation { _arena, _arena, _noBindings, limits },
             _scopes(pool.components.size())
         {
@@ -650,7 +487,15 @@ namespace
         {
             auto counted = _work;
             counted.subtypingSteps = _relation.steps();
+            counted.layoutSteps = _layouts.steps();
             return counted;
+        }
+
+        /// The layout of every type of the arena, once run() succeeded.
+        [[nodiscard]] canonical::LayoutTable takeLayouts()
+        {
+            layOutCopies();
+            return std::move(_layouts);
         }
 
         /// Every scope's index spaces, once run() succeeded.
@@ -658,6 +503,14 @@ namespace
 
       private:
         [[nodiscard]] Frame& current() { return _frames.back(); }
+
+        /// Lays out the types interned since the last definition's: copies of admitted types, a fresh
+        /// identity's (withUnique()) or a resource substitution's, which lay out as those do.
+        void layOutCopies()
+        {
+            auto const extended = _layouts.extend(_arena);
+            Require(extended.has_value());
+        }
         [[nodiscard]] uint32_t freshNominal() { return _nextNominal++; }
 
         // The walk.
@@ -848,9 +701,8 @@ namespace
                                                        DefinitionPosition position);
         [[nodiscard]] Result<isoline::binary::FuncType> lowered(types::FunctionTypeId function,
                                                                 CanonicalOptions const& options,
-                                                                Abi abi,
+                                                                canonical::FlattenContext context,
                                                                 DefinitionPosition position);
-        [[nodiscard]] FlatShape const& flatShape(TypeId type);
         [[nodiscard]] Result<types::ResourceTypeId> resourceAt(uint32_t index, DefinitionPosition position);
         [[nodiscard]] Result<binary::CoreValueKind> localResourceAt(uint32_t index,
                                                                     DefinitionPosition position);
@@ -862,6 +714,9 @@ namespace
         ComponentLimits const& _limits;
         ICoreModuleValidator& _coreModuleValidator;
         types::TypeArena _arena;
+        /// The layout of every value type of the arena, made as each is interned (Task 8): once per
+        /// type, from its children's, so that no type is walked twice however many definitions use it.
+        canonical::LayoutTable _layouts;
         ResourceMapping _noBindings {};
         /// One relation for the whole validation: its memo and name indices serve every check.
         TypeRelation _relation;
@@ -871,9 +726,6 @@ namespace
         std::vector<CoreModuleShape> _coreModules {};
         uint32_t _nextNominal = 1;
         uint32_t _nextAlias = 1;
-        /// The flattening of each value type met by a canonical definition, by TypeId: each type is
-        /// flattened once, so no lowering walks a type more than once.
-        std::map<TypeId, FlatShape> _flatShapes {};
         /// The component and instance types found to name no resource they do not bind: a later walk
         /// skips them, so a closed type shared by many definitions is walked once.
         std::set<AnyTypeId> _closedTypes {};
@@ -1336,9 +1188,21 @@ namespace
 
     Result<TypeId> ComponentValidator::intern(types::DefinedType type, DefinitionPosition position)
     {
-        return _arena.intern(std::move(type)).transform_error([&](types::TypeLimitError const& error) {
-            return limitError(error, position); // uncovered(premeasured)
-        });                                     // uncovered(premeasured)
+        auto interned =
+            _arena.intern(std::move(type)).transform_error([&](types::TypeLimitError const& error) {
+                return limitError(error, position); // uncovered(premeasured)
+            });                                     // uncovered(premeasured)
+        if (!interned)
+            return interned; // uncovered(premeasured)
+        // Laid out at once, as wasmparser computes a defined type's AbiInfo last when it creates it
+        // (component.rs:4218, 4271, 4301): a type of MaxValueByteSize bytes or more is refused here.
+        return _layouts.extend(_arena)
+            .transform([&] { return *interned; })
+            .transform_error([&](canonical::LayoutError const& error) {
+                // A flags type's label count was refused above, with wasm-tools' text.
+                Require(error.code == canonical::LayoutErrorCode::ExceedsMaximumByteSize);
+                return plainError(ValidationErrorCode::ValueTypeTooLarge, position);
+            });
     }
 
     Result<void> ComponentValidator::typeDefinition(binary::TypeDefinition const& definition,
@@ -1424,7 +1288,7 @@ namespace
                 {
                     if (alternative.labels.empty())
                         return std::unexpected { plainError(ValidationErrorCode::EmptyFlags, position) };
-                    if (alternative.labels.size() > MaxFlags)
+                    if (alternative.labels.size() > canonical::MaxFlagLabels)
                         return std::unexpected { plainError(ValidationErrorCode::TooManyFlags, position) };
                     return labelsOnly(ValueKind::Flags, alternative.labels, nominal, position);
                 }
@@ -3446,7 +3310,7 @@ namespace
                         return std::unexpected { plainError(ValidationErrorCode::PostReturnSignature,
                                                             position) };
                 }
-                auto const expected = lowered(*function, *checked, Abi::Lift, position);
+                auto const expected = lowered(*function, *checked, canonical::FlattenContext::Lift, position);
                 if (!expected)
                     return std::unexpected { expected.error() };
                 if (expected->params != signature.params)
@@ -3475,7 +3339,7 @@ namespace
                 // check_lower (component.rs:330-353); a callback without `async` was refused above.
                 if (checked->postReturn)
                     return std::unexpected { plainError(ValidationErrorCode::PostReturnInLower, position) };
-                return lowered(*function, *checked, Abi::Lower, position)
+                return lowered(*function, *checked, canonical::FlattenContext::Lower, position)
                     .and_then([&](isoline::binary::FuncType type) {
                         return pushCoreFunction(std::move(type), position);
                     });
@@ -3624,50 +3488,14 @@ namespace
         return checked;
     }
 
-    FlatShape const& ComponentValidator::flatShape(TypeId type)
-    {
-        // Bottom-up over an explicit stack: a type's shape is made once its children's are, then kept,
-        // so that no type is flattened twice however many definitions lower it. Kept by TypeId, the
-        // arena's own ids, for the types canonical definitions reach only.
-        auto pending = std::vector<TypeId> { type };
-        while (!pending.empty())
-        {
-            auto const current = pending.back();
-            if (_flatShapes.contains(current))
-            {
-                pending.pop_back();
-                continue;
-            }
-            auto const& defined = _arena[current];
-            auto isReady = true;
-            for (auto const& child: defined.children)
-            {
-                if (child && !_flatShapes.contains(*child))
-                {
-                    pending.push_back(*child);
-                    isReady = false;
-                }
-            }
-            if (!isReady)
-                continue;
-            pending.pop_back();
-            _flatShapes.emplace(current, shapeFrom(defined, [&](TypeId child) -> FlatShape const& {
-                                    return _flatShapes.at(child);
-                                }));
-        }
-        return _flatShapes.at(type);
-    }
-
     Result<isoline::binary::FuncType> ComponentValidator::lowered(types::FunctionTypeId function,
                                                                   CanonicalOptions const& options,
-                                                                  Abi abi,
+                                                                  canonical::FlattenContext context,
                                                                   DefinitionPosition position)
     {
-        // ComponentFuncType::lower (component_types.rs:1236-1359), synchronously: the parameters flat
-        // up to MaxFlatParams, else one pointer; the result flat up to MaxFlatResults, else a pointer
-        // (a lowered import's last parameter, a lifted export's result). A pointer anywhere needs the
-        // memory; a lift's parameters and a lower's result that hold one need the realloc, as does a
-        // lift whose parameters spill.
+        // ComponentFuncType::lower (component_types.rs:1236-1359), synchronously: the signature is
+        // canonical::flattenFunction's. A pointer anywhere needs the memory; a lift's parameters and a
+        // lower's result that hold one need the realloc, as does a lift whose parameters spill.
         auto const requireMemory = [&]() -> Result<void> {
             if (!options.memory)
                 return std::unexpected { plainError(ValidationErrorCode::MemoryRequired, position) };
@@ -3680,49 +3508,40 @@ namespace
                 return {};
             });
         };
+        auto const holdsPointer = [&](TypeId type) {
+            return _layouts[type].pointers == canonical::PointerContent::Held;
+        };
+        auto const isLower = context == canonical::FlattenContext::Lower;
         auto const& signature = _arena[function];
-        auto lowered = isoline::binary::FuncType {};
-        for (auto const& [label, param]: signature.params)
+        layOutCopies();
+        auto const paramsNeedMemory =
+            canonical::flatParamsShape(_layouts, signature) == canonical::FlatShape::Overflows
+            || std::ranges::any_of(signature.params,
+                                   [&](auto const& param) { return holdsPointer(param.second); });
+        if (paramsNeedMemory)
         {
-            auto const& shape = flatShape(param);
-            if (shape.holdsPointer)
-            {
-                auto required = abi == Abi::Lower ? requireMemory() : requireRealloc();
-                if (!required)
-                    return std::unexpected { required.error() };
-            }
-            auto const fits =
-                !shape.isOverflowing && lowered.params.size() + shape.types.size() <= MaxFlatParams;
-            if (!fits)
-            {
-                lowered.params = { PointerType };
-                auto required = abi == Abi::Lower ? requireMemory() : requireRealloc();
-                if (!required)
-                    return std::unexpected { required.error() };
-                break;
-            }
-            lowered.params.insert(lowered.params.end(), shape.types.begin(), shape.types.end());
+            if (auto required = isLower ? requireMemory() : requireRealloc(); !required)
+                return std::unexpected { required.error() };
         }
         if (signature.result)
         {
-            auto const& shape = flatShape(*signature.result);
-            if (abi == Abi::Lower && shape.holdsPointer)
+            if (isLower && holdsPointer(*signature.result))
             {
                 if (auto required = requireRealloc(); !required)
                     return std::unexpected { required.error() };
             }
-            if (shape.isOverflowing || shape.types.size() > MaxFlatResults)
+            if (_layouts[*signature.result].flat.size() > canonical::MaxFlatResults)
             {
                 if (auto required = requireMemory(); !required)
                     return std::unexpected { required.error() };
-                if (abi == Abi::Lower)
-                    lowered.params.push_back(PointerType);
-                else
-                    lowered.results = { PointerType };
             }
-            else
-                lowered.results = shape.types;
         }
+        auto const flat = canonical::flattenFunction(_layouts, signature, context);
+        auto lowered = isoline::binary::FuncType {};
+        for (auto const kind: flat.params)
+            lowered.params.push_back(coreValueOf(kind));
+        for (auto const kind: flat.results)
+            lowered.results.push_back(coreValueOf(kind));
         return lowered;
     }
 } // namespace
@@ -3778,9 +3597,11 @@ std::expected<std::shared_ptr<ValidatedComponent const>, ValidationError> valida
     auto validator = ComponentValidator { pool, features, limits, coreModules };
     if (auto validated = validator.run(); !validated)
         return std::unexpected { std::move(validated.error()) };
+    auto layouts = validator.takeLayouts();
     return std::make_shared<ValidatedComponent const>(
         ValidatedComponent { .pool = std::move(pool),
                              .types = validator.takeArena(),
+                             .layouts = std::move(layouts),
                              .scopes = validator.takeScopes(),
                              .type = validator.takeRootType(),
                              .coreModules = validator.takeCoreModules(),

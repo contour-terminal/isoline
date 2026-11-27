@@ -7,6 +7,7 @@
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/component/binary/Component.hpp>
+#include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
@@ -55,6 +56,7 @@ struct ValidationWork
     uint64_t exportLookupSteps =
         0;                       ///< Export alias lookups, plus the entries their name indices were built of.
     uint64_t subtypingSteps = 0; ///< The validation's TypeRelation steps.
+    uint64_t layoutSteps = 0;    ///< The canonical::LayoutTable's steps: each type laid out once.
 };
 
 /// A component that passed validation: immutable, shared by every Component, plan and store built
@@ -63,6 +65,7 @@ struct ValidatedComponent
 {
     binary::ComponentPool pool;               ///< The component as decoded.
     types::TypeArena types;                   ///< Every type of every scope of the pool.
+    canonical::LayoutTable layouts;           ///< The layout of every value type of the arena, by TypeId.
     std::vector<ScopeInfo> scopes;            ///< Per entry of the pool, by its index: its index spaces.
     types::ComponentTypeInfo type;            ///< The root's imports and exports, typed.
     std::vector<CoreModuleShape> coreModules; ///< The embedded core modules, by ordinal (D10).
