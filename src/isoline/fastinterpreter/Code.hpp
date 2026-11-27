@@ -403,7 +403,9 @@ struct LoweredFunction
     uint64_t frameCost = 0;  ///< The stack values entering it charges (validate::ValidatedModule::frameCost).
     uint32_t paramSlots = 0; ///< The slots of its parameters, which open the frame.
     uint32_t localSlots = 0; ///< The slots of its parameters and declared locals: where operands begin.
-    uint32_t frameSlots = 0; ///< The slots of its whole frame, the highest operand stack included.
+    /// The slots of its whole frame: the highest operand stack, and at least localSlots + resultSlots, so
+    /// that the frame holds its results however its body ends.
+    uint32_t frameSlots = 0;
     uint32_t resultSlots = 0; ///< The slots of its results.
 
     LoweringVector<Word> code;              ///< Its operations.

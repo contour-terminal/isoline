@@ -134,10 +134,17 @@ held too, until the arguments are copied. So each nested invocation of one small
 (2 KiB), not a grown chunk (`Calls.nestedInvocationsHoldSmallChunks`, 100 levels).
 
 The stack budget is charged in values, the same in every engine (`StoreLimits::maxStackValues`); a value takes one
-slot as a number and two as a vector or a reference (`SlotBytesPerValue`, 16 bytes), and A is at most the active
-frames' charge in slots: at most `2 × maxStackValues`, and `maxStackValues` where every value is a number. So
-the slot chunks hold at most `4 × maxStackValues` slots, plus, per invocation in progress, `FirstChunkSlots`
-and one grown chunk's worth (`min(2 × A, MaximumGrownChunkSlots)`, A that invocation's); and `2 × maxStackValues`
-plus the same where every value is a number (`Calls.newChunkCopiesOnlyTheArguments`). The reference interpreter takes
-`interpreter::ValueBytes` (one `runtime::Value`) per value. Running out of host memory for a chunk or a block of
+slot as a number and two as a vector or a reference (`SlotBytesPerValue`, 16 bytes). A frame's slots are its
+highest operand stack, and at least its locals' and its results' slots: a frame holds its results whether or not
+its body pushes them, which a body ending in a `return_call` or in dead code does not, though a host function it
+tail-calls writes them there. The charge (`ValidatedModule::frameCost()`) counts only what the body pushes, so
+such a frame's result slots are beyond it; but every frame's results are counted in its caller's charge, where a
+call pushes them (a tail call passes the caller's own on), all but the invocation's own function's. So A is at
+most twice the active frames' charge for their operands and locals, plus twice it again for the results, plus the
+invocation's own function's result slots (at most `2 × DecodeLimits::maxResults`): `A ≤ 4 × charge + 2'000`
+slots, and `A ≤ 2 × charge + 1'000` where every value is a number. The chunks hold at most the bound above of
+that A, per invocation in progress (`Calls.newChunkCopiesOnlyTheArguments`, `Calls.framesHoldTheirResults`).
+The reference interpreter takes `interpreter::ValueBytes` (one `runtime::Value`) per value, on vectors that grow
+as needed: it writes no fixed frame, so it has no such overflow to guard against, and its own results take the
+same uncharged room. Running out of host memory for a chunk or a block of
 frame records terminates, as running out of it does anywhere in `runtime::invokeChecked()`.
