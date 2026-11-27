@@ -97,7 +97,7 @@ if(ISOLINE_FAST_DISPATCH_TAILCALL STREQUAL "AUTO")
     # An edit of the file the probe compiles, of the handler it instantiates or of the bodies and registers
     # the handler holds, probes again.
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                 TailCallControl.cpp TailCall.hpp Operations.hpp Context.hpp)
+                 TailCallControl.cpp TailCall.hpp Operations.hpp Bounds.hpp Context.hpp)
     isoline_probe_tail_call(isolineTailCallRow)
 elseif(ISOLINE_FAST_DISPATCH_TAILCALL STREQUAL "OFF")
     set(isolineTailCallRow "")
@@ -147,6 +147,7 @@ target_sources(isoline_core
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src" "${PROJECT_BINARY_DIR}/include"
         FILES
             Backends.hpp
+            Bounds.hpp
             Code.hpp
             Context.hpp
             Dispatch.hpp

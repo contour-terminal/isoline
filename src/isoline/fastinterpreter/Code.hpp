@@ -56,7 +56,8 @@ enum class OperationFamily : uint8_t
 {
     Control,    ///< Moves, constants, branches, calls and leaving the function.
     Numeric,    ///< The numeric operations and their immediate twins.
-    Variable,   ///< The instance's state reached through the store: globals.
+    Variable,   ///< The instance's state reached through the store: globals, memories other than memory 0,
+                ///< tables, segments, references to its functions and types, and the bulk operations.
     Memory,     ///< Linear memory access.
     Simd,       ///< The vector operations.
     Exceptions, ///< Throwing and catching.
@@ -246,6 +247,51 @@ struct IndexedAccess
 {
     return IndexedAccess { .memory = static_cast<uint32_t>(word),
                            .access = static_cast<OperationId>(word >> 32U) };
+}
+
+/// The immediate word of two indices a bulk operation names (Operations.def): @p low in the low 32 bits,
+/// @p high in the high ones.
+/// @param low The first index: the destination's, or the segment's.
+/// @param high The second index: the source's, or the memory's or table's a segment goes to; 0 where the
+///        operation names one index only.
+/// @return Its word.
+[[nodiscard]] constexpr Word indexPairWord(uint32_t low, uint32_t high) noexcept
+{
+    return Word { low } | (Word { high } << 32U);
+}
+
+/// The first index of an indexPairWord().
+/// @param word The word.
+/// @return Its low 32 bits.
+[[nodiscard]] constexpr uint32_t firstIndexOf(Word word) noexcept
+{
+    return static_cast<uint32_t>(word);
+}
+
+/// The second index of an indexPairWord().
+/// @param word The word.
+/// @return Its high 32 bits.
+[[nodiscard]] constexpr uint32_t secondIndexOf(Word word) noexcept
+{
+    return static_cast<uint32_t>(word >> 32U);
+}
+
+/// The immediate word of @p heap, a heap as a module names it (ref.null's): its kind in the low 32 bits, its
+/// type index in the high ones.
+/// @param heap The heap.
+/// @return Its word.
+[[nodiscard]] constexpr Word heapWord(binary::HeapType heap) noexcept
+{
+    return indexPairWord(std::to_underlying(heap.kind), heap.typeIndex);
+}
+
+/// The heap a heapWord() names.
+/// @param word The word.
+/// @return The heap.
+[[nodiscard]] constexpr binary::HeapType heapOf(Word word) noexcept
+{
+    return binary::HeapType { .kind = static_cast<binary::AbstractHeapType>(firstIndexOf(word)),
+                              .typeIndex = secondIndexOf(word) };
 }
 
 /// The header word of @p operation in code lowered for @p dispatch: its OperationId under Switch, the address

@@ -83,6 +83,7 @@ using isoline::fastinterpreter::testing::Harness;
 using isoline::fastinterpreter::testing::memoryInstruction;
 using isoline::fastinterpreter::testing::op;
 using isoline::fastinterpreter::testing::operationsOf;
+using isoline::fastinterpreter::testing::prefixed;
 using isoline::fastinterpreter::testing::Reference;
 using isoline::fastinterpreter::testing::typesOf;
 using isoline::runtime::F32;
@@ -1050,6 +1051,283 @@ void checkMemoryOperations(Agreement& agreement)
     }
 }
 
+/// The value type of an address of @p addressType.
+[[nodiscard]] ValueType addressKindOf(binary::AddressType addressType)
+{
+    return addressType == binary::AddressType::I64 ? binary::I64 : binary::I32;
+}
+
+/// A module of function 0 of @p params to @p results, its body @p body, over two memories of one page, the
+/// first of @p first addresses, the second of @p second, and two passive data segments of 8 bytes.
+[[nodiscard]] ModuleBuilder withBulkMemories(std::vector<ValueType> params,
+                                             std::vector<ValueType> results,
+                                             Bytes body,
+                                             binary::AddressType first,
+                                             binary::AddressType second)
+{
+    auto module = functionOf(std::move(params), std::move(results), {}, std::move(body));
+    module.memory(binary::Limits { .min = 1, .max = std::nullopt, .addressType = first });
+    module.memory(binary::Limits { .min = 1, .max = std::nullopt, .addressType = second });
+    module.dataCount(2);
+    module.data({ 0x01, 0x08, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17 });
+    module.data({ 0x01, 0x08, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27 });
+    return module;
+}
+
+/// Runs memory.fill, memory.copy, memory.init and data.drop on both engines, over memories of either address
+/// type and across two memories, in bounds, at the edges and past them; each function loads 8 bytes back at
+/// the destination, so that what it wrote is a result.
+void checkBulkMemoryOperations(Agreement& agreement)
+{
+    using binary::AddressType;
+    constexpr auto Page = uint64_t { 65'536 };
+    for (auto const first: { AddressType::I32, AddressType::I64 })
+    {
+        for (auto const second: { AddressType::I32, AddressType::I64 })
+        {
+            INFO("memory 0 of " << (first == AddressType::I64 ? "i64" : "i32") << ", memory 1 of "
+                                << (second == AddressType::I64 ? "i64" : "i32") << " addresses");
+            auto const a = addressKindOf(first);
+            auto const loadBack = code({ localGet(0), memoryInstruction(Opcode::I64Load, 0, 0) });
+            auto const at = [first](uint64_t value) {
+                return addressValue(first, value);
+            };
+            auto const threeOperands = code({ localGet(0), localGet(1), localGet(2) });
+            // memory.fill of memory 0.
+            agreement.check(withBulkMemories({ a, binary::I32, a },
+                                             { binary::I64 },
+                                             code({ threeOperands, prefixed(11, { 0 }), loadBack }),
+                                             first,
+                                             second),
+                            { { at(0), i32(0x15A), at(16) },
+                              { at(Page - 8), i32(7), at(8) },
+                              { at(Page - 8), i32(7), at(9) },
+                              { at(Page), i32(7), at(0) },
+                              { at(1), i32(7), at(~uint64_t { 0 }) } });
+            // memory.copy from memory 1, which an init wrote segment 1 to at both its ends, to memory 0, and
+            // within memory 0 overlapping either way: the count is of the narrower address type.
+            auto const countType = binary::copyCountType(first, second);
+            auto const count = [countType](uint64_t value) {
+                return addressValue(countType, value);
+            };
+            auto const sourceAt = [second](uint64_t value) {
+                return addressValue(second, value);
+            };
+            agreement.check(
+                withBulkMemories({ a, addressKindOf(second), addressKindOf(countType) },
+                                 { binary::I64 },
+                                 code({ second == AddressType::I64 ? i64Const(0) : i32Const(0),
+                                        i32Const(0),
+                                        i32Const(8),
+                                        prefixed(8, { 1, 1 }),
+                                        second == AddressType::I64 ? i64Const(static_cast<int64_t>(Page - 8))
+                                                                   : i32Const(static_cast<int32_t>(Page - 8)),
+                                        i32Const(0),
+                                        i32Const(8),
+                                        prefixed(8, { 1, 1 }),
+                                        threeOperands,
+                                        prefixed(10, { 0, 1 }),
+                                        loadBack }),
+                                 first,
+                                 second),
+                { { at(0), sourceAt(0), count(8) },
+                  { at(Page - 8), sourceAt(Page - 8), count(8) },
+                  { at(Page - 7), sourceAt(0), count(8) },
+                  { at(0), sourceAt(Page - 7), count(8) },
+                  { at(0), sourceAt(0), count(~uint64_t { 0 }) } });
+            if (first == second)
+            {
+                // Within one memory, after an init writes a pattern: upwards and downwards by 3.
+                auto const origin = first == AddressType::I64 ? i64Const(0) : i32Const(0);
+                auto const pattern = code({ origin, i32Const(0), i32Const(8), prefixed(8, { 0, 0 }) });
+                agreement.check(
+                    withBulkMemories({ a, a, a },
+                                     { binary::I64 },
+                                     code({ pattern, threeOperands, prefixed(10, { 0, 0 }), loadBack }),
+                                     first,
+                                     second),
+                    { { at(3), at(0), at(8) }, { at(0), at(3), at(5) }, { at(2), at(2), at(8) } });
+            }
+            // memory.init of memory 1 from segment 1; then data.drop and an init of 0 bytes, which a dropped
+            // segment still allows, and of 1, which it does not.
+            agreement.check(withBulkMemories({ addressKindOf(second), binary::I32, binary::I32 },
+                                             { binary::I64 },
+                                             code({ threeOperands,
+                                                    prefixed(8, { 1, 1 }),
+                                                    localGet(0),
+                                                    memoryInstruction(Opcode::I64Load, 0, 1) }),
+                                             first,
+                                             second),
+                            { { sourceAt(0), i32(0), i32(8) },
+                              { sourceAt(Page - 8), i32(0), i32(8) },
+                              { sourceAt(Page - 7), i32(0), i32(8) },
+                              { sourceAt(0), i32(1), i32(8) },
+                              { sourceAt(0), i32(8), i32(0) } });
+            agreement.check(
+                withBulkMemories({ a, binary::I32, binary::I32 },
+                                 { binary::I64 },
+                                 code({ prefixed(9, { 0 }), threeOperands, prefixed(8, { 0, 0 }), loadBack }),
+                                 first,
+                                 second),
+                { { at(0), i32(0), i32(0) }, { at(0), i32(0), i32(1) } });
+        }
+    }
+}
+
+/// A module of function 0 of @p params to @p results, its body @p body, over two funcref tables of 4
+/// elements, the first of @p first addresses, the second of @p second; function 0 in each table's element 1,
+/// and two passive element segments of function 0 and a null.
+[[nodiscard]] ModuleBuilder withBulkTables(std::vector<ValueType> params,
+                                           std::vector<ValueType> results,
+                                           Bytes body,
+                                           binary::AddressType first,
+                                           binary::AddressType second)
+{
+    auto module = functionOf(std::move(params), std::move(results), {}, std::move(body));
+    module.table(binary::TableType { .element = binary::FuncRef,
+                                     .limits = { .min = 4, .max = 6, .addressType = first } });
+    module.table(binary::TableType { .element = binary::FuncRef,
+                                     .limits = { .min = 4, .max = 6, .addressType = second } });
+    auto const offset = [](binary::AddressType type) {
+        return type == binary::AddressType::I64 ? i64Const(1) : i32Const(1);
+    };
+    // Active, table 0 and table 1 at 1: function 0.
+    module.element(code({ { 0x02, 0x00 }, offset(first), { 0x0B, 0x00, 0x01, 0x00 } }));
+    module.element(code({ { 0x02, 0x01 }, offset(second), { 0x0B, 0x00, 0x01, 0x00 } }));
+    // Passive, of expressions: function 0, then a null.
+    module.element({ 0x05, 0x70, 0x02, 0xD2, 0x00, 0x0B, 0xD0, 0x70, 0x0B });
+    module.element({ 0x05, 0x70, 0x02, 0xD0, 0x70, 0x0B, 0xD2, 0x00, 0x0B });
+    return module;
+}
+
+/// Runs table.get, table.set, table.size, table.grow, table.fill, table.copy, table.init and elem.drop on
+/// both engines, over tables of either address type and across two tables, in bounds, at the edges and past
+/// them; each function reads an element back with ref.is_null, so that what it wrote is a result. And
+/// ref.null, ref.func, ref.is_null and ref.as_non_null.
+void checkTableOperations(Agreement& agreement)
+{
+    using binary::AddressType;
+    for (auto const first: { AddressType::I32, AddressType::I64 })
+    {
+        for (auto const second: { AddressType::I32, AddressType::I64 })
+        {
+            INFO("table 0 of " << (first == AddressType::I64 ? "i64" : "i32") << ", table 1 of "
+                               << (second == AddressType::I64 ? "i64" : "i32") << " addresses");
+            auto const a = addressKindOf(first);
+            auto const at = [first](uint64_t value) {
+                return addressValue(first, value);
+            };
+            auto const isNullAt = code({ localGet(0), { 0x25, 0x00, 0xD1 } });
+            auto const indices =
+                std::vector<std::vector<Value>> { { at(0) }, { at(1) },           { at(3) },
+                                                  { at(4) }, { at(0xFFFF'FFFF) }, { at(~uint64_t { 0 }) } };
+            // table.get, and table.set of a null over function 0 or of function 0 over a null.
+            agreement.check(withBulkTables({ a }, { binary::I32 }, isNullAt, first, second), indices);
+            agreement.check(withBulkTables({ a },
+                                           { binary::I32 },
+                                           code({ localGet(0), { 0xD2, 0x00, 0x26, 0x00 }, isNullAt }),
+                                           first,
+                                           second),
+                            indices);
+            // table.grow by the delta, with function 0, then table.size: refused past the maximum of 6.
+            agreement.check(
+                withBulkTables(
+                    { a },
+                    { a, a },
+                    code({ { 0xD2, 0x00 }, localGet(0), prefixed(15, { 0 }), prefixed(16, { 0 }) }),
+                    first,
+                    second),
+                { { at(0) }, { at(2) }, { at(3) }, { at(~uint64_t { 0 }) } });
+            // table.fill with function 0.
+            agreement.check(
+                withBulkTables(
+                    { a, a },
+                    { binary::I32 },
+                    code({ localGet(0), { 0xD2, 0x00 }, localGet(1), prefixed(17, { 0 }), isNullAt }),
+                    first,
+                    second),
+                { { at(0), at(4) },
+                  { at(3), at(1) },
+                  { at(3), at(2) },
+                  { at(4), at(0) },
+                  { at(1), at(~uint64_t { 0 }) } });
+            // table.copy from table 1 to table 0, its count of the narrower address type.
+            auto const countType = binary::copyCountType(first, second);
+            auto const count = [countType](uint64_t value) {
+                return addressValue(countType, value);
+            };
+            auto const sourceAt = [second](uint64_t value) {
+                return addressValue(second, value);
+            };
+            agreement.check(
+                withBulkTables(
+                    { a, addressKindOf(second), addressKindOf(countType) },
+                    { binary::I32 },
+                    code({ localGet(0), localGet(1), localGet(2), prefixed(14, { 0, 1 }), isNullAt }),
+                    first,
+                    second),
+                { { at(0), sourceAt(1), count(1) },
+                  { at(0), sourceAt(0), count(4) },
+                  { at(1), sourceAt(0), count(4) },
+                  { at(0), sourceAt(1), count(4) },
+                  { at(0), sourceAt(0), count(~uint64_t { 0 }) } });
+            if (first == second)
+            {
+                // Within one table, overlapping either way.
+                agreement.check(
+                    withBulkTables(
+                        { a, a, a },
+                        { binary::I32 },
+                        code({ localGet(0), localGet(1), localGet(2), prefixed(14, { 0, 0 }), isNullAt }),
+                        first,
+                        second),
+                    { { at(0), at(1), at(3) }, { at(2), at(1), at(2) }, { at(1), at(1), at(3) } });
+            }
+            // table.init of table 1 from segment 3; then elem.drop and an init of 0 elements and of 1.
+            agreement.check(withBulkTables({ addressKindOf(second), binary::I32, binary::I32 },
+                                           { binary::I32 },
+                                           code({ localGet(0),
+                                                  localGet(1),
+                                                  localGet(2),
+                                                  prefixed(12, { 3, 1 }),
+                                                  localGet(0),
+                                                  { 0x25, 0x01, 0xD1 } }),
+                                           first,
+                                           second),
+                            { { sourceAt(0), i32(0), i32(2) },
+                              { sourceAt(2), i32(0), i32(2) },
+                              { sourceAt(3), i32(0), i32(2) },
+                              { sourceAt(0), i32(1), i32(2) },
+                              { sourceAt(0), i32(2), i32(0) } });
+            agreement.check(withBulkTables({ a, binary::I32, binary::I32 },
+                                           { binary::I32 },
+                                           code({ prefixed(13, { 2 }),
+                                                  localGet(0),
+                                                  localGet(1),
+                                                  localGet(2),
+                                                  prefixed(12, { 2, 0 }),
+                                                  isNullAt }),
+                                           first,
+                                           second),
+                            { { at(0), i32(0), i32(0) }, { at(0), i32(0), i32(1) } });
+        }
+    }
+    // ref.null of an abstract heap, ref.func, ref.is_null, and ref.as_non_null of a null and of a function.
+    auto const nullOrNot = [](Harness& harness) {
+        return std::vector<std::vector<Value>> { { nullFunc() }, { funcRefOf(harness) } };
+    };
+    agreement.check(functionOf({}, { binary::ExternRef }, {}, { 0xD0, 0x6F }), { {} });
+    {
+        auto module = functionOf({}, { binary::FuncRef }, {}, { 0xD2, 0x00 });
+        module.element({ 0x03, 0x00, 0x01, 0x00 });
+        agreement.check(module, { {} });
+    }
+    agreement.checkWith(functionOf({ binary::FuncRef }, { binary::I32 }, {}, code({ localGet(0), { 0xD1 } })),
+                        nullOrNot);
+    agreement.checkWith(
+        functionOf({ binary::FuncRef }, { binary::FuncRef }, {}, code({ localGet(0), { 0xD4 } })), nullOrNot);
+}
+
 } // namespace
 
 TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
@@ -1366,6 +1644,8 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
     }
 
     checkMemoryOperations(agreement);
+    checkBulkMemoryOperations(agreement);
+    checkTableOperations(agreement);
 
     // No lowering emits these yet: nop lowers to nothing, and v128.const is lowered with the vector
     // operations.

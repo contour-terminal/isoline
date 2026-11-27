@@ -110,6 +110,37 @@ ISOLINE_FAST_OPERATION(StoreIndexed, "store.indexed", Store, 2, 2, Variable)
 // delta's, and the memory's index; it grows through the store and refreshes the registers' memory 0.
 ISOLINE_FAST_OPERATION(MemorySize, "memory.size", Special, 1, 1, Variable)
 ISOLINE_FAST_OPERATION(MemoryGrow, "memory.grow", Special, 2, 1, Variable)
+// The bulk operations: their destination's slot, their source's or value's, and their count's, each read at
+// the width of the address type it is of (an i32 as 32 bits), then the indices they name, two to the word
+// (indexPairWord()): memory.fill the memory; memory.copy the destination memory, then the source memory;
+// memory.init the data segment, then the memory; and the table operations alike. Each checks its ranges
+// before it writes anything, and polls before every granule (runtime::fillItems(), runtime::copyItems(),
+// runtime::copySegment()). data.drop and elem.drop name their segment only.
+ISOLINE_FAST_OPERATION(MemoryFill, "memory.fill", Bulk, 3, 1, Variable)
+ISOLINE_FAST_OPERATION(MemoryCopy, "memory.copy", Bulk, 3, 1, Variable)
+ISOLINE_FAST_OPERATION(MemoryInit, "memory.init", Bulk, 3, 1, Variable)
+ISOLINE_FAST_OPERATION(DataDrop, "data.drop", Special, 0, 1, Variable)
+ISOLINE_FAST_OPERATION(TableFill, "table.fill", Bulk, 3, 1, Variable)
+ISOLINE_FAST_OPERATION(TableCopy, "table.copy", Bulk, 3, 1, Variable)
+ISOLINE_FAST_OPERATION(TableInit, "table.init", Bulk, 3, 1, Variable)
+ISOLINE_FAST_OPERATION(ElemDrop, "elem.drop", Special, 0, 1, Variable)
+// table.get: the destination slot and the index's, then the table's index. table.set: the index's slot and
+// the reference's, then the table's index. Both read the element at the index elementChecked() masks.
+// table.size: the destination slot and the table's index. table.grow: the result's slot, then the initial
+// reference's and the delta's, and the table's index. An index, a size and a delta of a table of i32
+// addresses are read and written as 32 bits.
+ISOLINE_FAST_OPERATION(TableGet, "table.get", Special, 2, 1, Variable)
+ISOLINE_FAST_OPERATION(TableSet, "table.set", Special, 2, 1, Variable)
+ISOLINE_FAST_OPERATION(TableSize, "table.size", Special, 1, 1, Variable)
+ISOLINE_FAST_OPERATION(TableGrow, "table.grow", Special, 3, 1, Variable)
+// ref.null: the destination slot and the heap as the module names it (heapWord()), which the running
+// instance maps to its store's TypeId (nullSlots()). ref.func: the destination slot and the function's index.
+ISOLINE_FAST_OPERATION(RefNull, "ref.null", Special, 1, 1, Variable)
+ISOLINE_FAST_OPERATION(RefFunc, "ref.func", Special, 1, 1, Variable)
+// ref.is_null: the destination slot and the reference's. ref.as_non_null: the destination slots and the
+// reference's, which it moves there unless it traps with NullReference.
+ISOLINE_FAST_OPERATION(RefIsNull, "ref.is_null", Unary, 2, 0, Control)
+ISOLINE_FAST_OPERATION(RefAsNonNull, "ref.as_non_null", Unary, 2, 0, Control)
 // select: the destination, the two values and the condition
 ISOLINE_FAST_OPERATION(Select64, "select64", Special, 4, 0, Control)
 ISOLINE_FAST_OPERATION(Select128, "select128", Special, 4, 0, Control)

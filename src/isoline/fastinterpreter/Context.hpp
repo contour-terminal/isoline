@@ -160,6 +160,17 @@ struct CallSite
                                        uint32_t deltaSlot,
                                        uint32_t memory) noexcept;
 
+/// Drops data segment @p segment of the current frame's instance, as data.drop does, out of line: the
+/// instance is the store's to change, which the registers reach only as const.
+/// @param context The invocation.
+/// @param segment The segment's index in the module.
+void dropDataSegment(Context& context, uint32_t segment) noexcept;
+
+/// Drops element segment @p segment of the current frame's instance, as elem.drop does, out of line.
+/// @param context The invocation.
+/// @param segment The segment's index in the module.
+void dropElementSegment(Context& context, uint32_t segment) noexcept;
+
 /// Stops execution with @p trap, out of line: commits the countdown to the store, as every way out of
 /// running code does, and records the trap.
 /// @param context The invocation.

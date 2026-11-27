@@ -49,6 +49,19 @@ inline constexpr auto DefaultBudget = uint64_t { 256 } * 1024 * 1024;
     return binary::testing::code({ { opcode }, binary::testing::encodeU32(immediate) });
 }
 
+/// An instruction of the 0xFC prefix: its sub-opcode @p code, then the u32 immediates @p immediates (the bulk
+/// memory and table instructions).
+[[nodiscard]] inline Bytes prefixed(uint32_t code, std::vector<uint32_t> const& immediates = {})
+{
+    auto bytes = binary::testing::code({ { 0xFC }, binary::testing::encodeU32(code) });
+    for (auto const immediate: immediates)
+    {
+        auto const encoded = binary::testing::encodeU32(immediate);
+        bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+    }
+    return bytes;
+}
+
 /// The bytes of a function of @p params to @p results, declaring @p locals, with body @p body.
 [[nodiscard]] inline ModuleBuilder functionOf(std::vector<binary::ValueType> params,
                                               std::vector<binary::ValueType> results,
@@ -112,10 +125,11 @@ inline constexpr auto DefaultBudget = uint64_t { 256 } * 1024 * 1024;
 }
 
 /// @p model with its first function's code written by hand: @p code, words of @p model's dispatch, over the
-/// same frame (its slots and cost), so that a test runs code no lowering emits.
+/// same frame (its slots and cost), so that a test runs code no lowering emits. Its other functions are
+/// @p model's, so that the code may call them.
 /// @param model The lowered module whose first function's frame the code runs in.
 /// @param code The code: header words (headerWord()) and their operands.
-/// @return The module of that one function.
+/// @return The module of that function and @p model's others.
 [[nodiscard]] inline std::shared_ptr<LoweredModule const> handWritten(LoweredModule const& model,
                                                                       std::initializer_list<Word> code)
 {
@@ -130,6 +144,19 @@ inline constexpr auto DefaultBudget = uint64_t { 256 } * 1024 * 1024;
     function.frameSlots = first.frameSlots;
     function.resultSlots = first.resultSlots;
     function.code = code;
+    // Every other function as lowered, so that the code may call them.
+    for (auto const& other: model.functions().subspan(1))
+    {
+        auto& copy = functions.emplace_back(arena.get());
+        copy.codeIndex = other.codeIndex;
+        copy.frameCost = other.frameCost;
+        copy.paramSlots = other.paramSlots;
+        copy.localSlots = other.localSlots;
+        copy.frameSlots = other.frameSlots;
+        copy.resultSlots = other.resultSlots;
+        copy.code.assign(other.code.begin(), other.code.end());
+        copy.localInit.assign(other.localInit.begin(), other.localInit.end());
+    }
     return std::make_shared<LoweredModule const>(
         std::move(arena), std::move(functions), model.dispatch(), model.mode(), 0, LoweringStats {});
 }
