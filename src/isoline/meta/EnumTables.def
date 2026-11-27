@@ -24,10 +24,11 @@
 // is an ENUM or KEYED row, and every KEYED row (and ENUM row keyed by its first member) is such a
 // table; every Last constant is the Last of a row. SIZED and PREFIX tables have no row struct, so
 // discovery cannot find one whose row is missing, and that a KEYED table's relation holds is a review
-// question: reflection checks only that it is registered. SOURCE_LOCAL rows are checked by
-// scripts/check-enum-tables.py (the lint test enum-tables-current), on every compiler: every enum-first
-// table in a source file is one, each names a table its file declares, and docs/language-features.md
-// lists them. Adding a table is adding its row here. The file has no include guard; each includer
+// question: reflection checks only that it is registered; a table under a testing namespace is never
+// checked, and a LAST row checks only its own enum. SOURCE_LOCAL rows are checked by
+// scripts/check-enum-tables.py (the lint test enum-tables-current, on Clang trees) from Clang's AST:
+// every enum-first std::array in a source file, or in a header's function or class, is one, each names
+// a variable its file declares, and docs/language-features.md lists them. Adding a table is adding its row here. The file has no include guard; each includer
 // defines all six macros.
 
 // isoline
@@ -103,11 +104,15 @@ ISOLINE_ENUM_TABLE(cli::VerbOptions, cli::LastVerbOption, cli::VerbOptionRow::op
 ISOLINE_ENUM_TABLE(cli::WriteRefusals, text::LastWriteError, cli::WriteRefusal::error)
 
 // Source files: tables reflection cannot reach (scripts/check-enum-tables.py checks them).
+ISOLINE_SOURCE_LOCAL_TABLE("c/detail/ErrorRows.hpp", Rows, "EnumErrorRows<Enum>'s member, one per error enumeration the C API reports; rowsAreComplete() checks each")
 ISOLINE_SOURCE_LOCAL_TABLE("c/detail/Convert.cpp", TypeRefusalRows, "indexed by TypeRefusal (c/detail/Convert.hpp); its rows hold the messages only the file's typeRefusalError() reads")
 ISOLINE_SOURCE_LOCAL_TABLE("binary/Encoder.cpp", SectionWriters, "keyed by SectionAnchor; its rows name ModuleEncoder's member functions")
 ISOLINE_SOURCE_LOCAL_TABLE("binary/NameSection.cpp", ShapeCodecs, "indexed by NameShape; its rows name the file's codec functions")
 ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Numerics.cpp", NumericTable, "keyed by Opcode, a subset; its rows name the file's evaluators")
+ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Numerics.cpp", NumericByOpcode, "NumericTable indexed by Opcode for lookup, built from it by a lambda; other opcodes' rows are empty")
+ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Numerics.cpp", table, "the lambda's working copy that becomes NumericByOpcode")
 ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Simd.cpp", SimdTable, "keyed by Opcode, a subset; its rows hold the file's evaluators")
+ISOLINE_SOURCE_LOCAL_TABLE("runtime/Store.cpp", claims, "keyed by Limit, a subset in Limit order; local to Store::checkInstanceDemand(), its rows hold the demand computed per call")
 ISOLINE_SOURCE_LOCAL_TABLE("runtime/Store.cpp", Usages, "indexed by Limit; local to Store::used(), whose accessors its rows name")
 ISOLINE_SOURCE_LOCAL_TABLE("text/Annotations.cpp", AnnotationReaders, "one reader per AnnotationKind, no row struct; it names the file's readers")
 ISOLINE_SOURCE_LOCAL_TABLE("text/Annotations.cpp", MultipleNameErrors, "one TextErrorCode per NameShape, no row struct; read by the file's name reader alone")

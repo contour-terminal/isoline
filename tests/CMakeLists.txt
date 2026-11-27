@@ -197,14 +197,24 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME fetch-tools-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/fetch-tools_test.py")
     set_tests_properties(fetch-tools-selftest PROPERTIES LABELS lint)
-    # Every enum-first table in a source file, which reflection cannot reach, is a source-local row of
-    # src/isoline/meta/EnumTables.def, and docs/language-features.md lists those rows.
-    add_test(NAME enum-tables-current
-             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-enum-tables.py")
-    set_tests_properties(enum-tables-current PROPERTIES LABELS lint)
-    add_test(NAME check-enum-tables-selftest
-             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-enum-tables_test.py")
-    set_tests_properties(check-enum-tables-selftest PROPERTIES LABELS lint)
+    # Every enum-first table reflection cannot reach (in a source file, or in a header's function or
+    # class) is a source-local row of src/isoline/meta/EnumTables.def, and docs/language-features.md
+    # lists those rows. The lint reads Clang's AST of every source file of this tree, so it runs on Clang
+    # trees with the GNU command line alone; the other compilers' sources are the same files, linted on
+    # CI's Clang lanes. Each translation unit's result is cached in the build tree.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU"
+       AND CMAKE_EXPORT_COMPILE_COMMANDS)
+        add_test(NAME enum-tables-current
+                 COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-enum-tables.py"
+                         --compile-commands "${PROJECT_BINARY_DIR}/compile_commands.json"
+                         --clang "${CMAKE_CXX_COMPILER}" --jobs 4
+                         --cache "${CMAKE_CURRENT_BINARY_DIR}/enum-tables-cache")
+        set_tests_properties(enum-tables-current PROPERTIES LABELS lint PROCESSORS 4 TIMEOUT 600)
+        add_test(NAME check-enum-tables-selftest
+                 COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-enum-tables_test.py"
+                         --clang "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(check-enum-tables-selftest PROPERTIES LABELS lint TIMEOUT 300)
+    endif()
 endif()
 
 # The language-feature decisions (cmake/IsolineLanguageFeatures.cmake), one row per case, in script

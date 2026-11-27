@@ -177,19 +177,34 @@ where the C API is built (`ISOLINE_C_API`), and are left out where it is not.
 
 ### What reflection cannot reach
 
-A table in a source file, in its anonymous namespace or a function, is out of reflection's reach. Each
-enum-first one is an `ISOLINE_SOURCE_LOCAL_TABLE("file", Table, "reason")` row, which keeps the table's
-own C++23 check and says why it stays in its file. The lint test `enum-tables-current`
-(`scripts/check-enum-tables.py`, on every compiler) scans every source file but the tests for table
-declarations (`std::to_array<Row>` and `std::array<Row, N>`), and fails on an enum-first one that has no
-row, on a row whose file declares no such table, and when this list differs from the rows:
+A table in a source file (at namespace scope, in an anonymous namespace, in a function or a class), or
+in a header's function or class, is out of reflection's reach. Each enum-first one is an
+`ISOLINE_SOURCE_LOCAL_TABLE("file", Table, "reason")` row, which keeps the table's own C++23 check and
+says why it stays where it is. The lint test `enum-tables-current` (`scripts/check-enum-tables.py`)
+reads Clang's JSON AST of every first-party source file of the build tree, from its
+`compile_commands.json`, and finds every variable whose type is `std::array<Row, N>` after sugar:
+`std::to_array` with or without its template argument, class template argument deduction, east or west
+`const`, a macro or a helper that builds it. A table is enum-first when Row's first field, read from
+the class's declaration, is a scoped enum. The lint fails on an enum-first table that has no row, on a
+row whose file declares no such variable, and when this list differs from the rows. The dump holds
+Isoline's namespaces alone, so the lint also fails on every `std::array` or `std::to_array` a source
+file spells outside `namespace isoline` (in `main()`, a global anonymous namespace or another
+namespace), read from the code with comments, literals and preprocessor directives left out. It runs on
+Clang trees (the other compilers build the same sources, linted on CI's Clang lanes), in parallel, and
+caches each translation unit's result in the build tree, keyed by the content of the file, the headers
+and the script rather than their time stamps. `check-enum-tables-selftest` lints a fixture of every
+declaration form with the tree's Clang.
 
 <!-- source-local-tables:begin -->
+- `c/detail/ErrorRows.hpp`: `Rows`, EnumErrorRows<Enum>'s member, one per error enumeration the C API reports; rowsAreComplete() checks each
 - `c/detail/Convert.cpp`: `TypeRefusalRows`, indexed by TypeRefusal (c/detail/Convert.hpp); its rows hold the messages only the file's typeRefusalError() reads
 - `binary/Encoder.cpp`: `SectionWriters`, keyed by SectionAnchor; its rows name ModuleEncoder's member functions
 - `binary/NameSection.cpp`: `ShapeCodecs`, indexed by NameShape; its rows name the file's codec functions
 - `interpreter/Numerics.cpp`: `NumericTable`, keyed by Opcode, a subset; its rows name the file's evaluators
+- `interpreter/Numerics.cpp`: `NumericByOpcode`, NumericTable indexed by Opcode for lookup, built from it by a lambda; other opcodes' rows are empty
+- `interpreter/Numerics.cpp`: `table`, the lambda's working copy that becomes NumericByOpcode
 - `interpreter/Simd.cpp`: `SimdTable`, keyed by Opcode, a subset; its rows hold the file's evaluators
+- `runtime/Store.cpp`: `claims`, keyed by Limit, a subset in Limit order; local to Store::checkInstanceDemand(), its rows hold the demand computed per call
 - `runtime/Store.cpp`: `Usages`, indexed by Limit; local to Store::used(), whose accessors its rows name
 - `text/Annotations.cpp`: `AnnotationReaders`, one reader per AnnotationKind, no row struct; it names the file's readers
 - `text/Annotations.cpp`: `MultipleNameErrors`, one TextErrorCode per NameShape, no row struct; read by the file's name reader alone
@@ -207,6 +222,12 @@ private headers `runtime/ValueCheckTables.hpp` and `cli/VerbsTables.hpp`, where 
 
 ### What stays a review question
 
+- **A library table in any `testing` namespace, or any `testing/` directory, is never checked:**
+  discovery skips them as test data, and the lint skips them as test helpers.
+- **An `ISOLINE_LAST_ENUMERATOR` row checks only its own enum:** that `Last` is that enum's final
+  enumerator. It cannot tell which table, if any, the enum indexes. An `ENUM` row's `Last` must have the
+  type of its key member, which `firstMisplacedRow()`'s signature enforces, so the two cannot name
+  different enums.
 - **`SIZED` and `PREFIX` tables have no row struct,** so discovery cannot find one: a sized table that
   is missing its row goes unnoticed. Its own C++23 size check still holds.
 - **A `KEYED` table's relation is not checked.** Reflection checks that the table is registered and that
