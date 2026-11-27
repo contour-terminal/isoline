@@ -77,6 +77,28 @@ void storeValue(runtime::Value const& value, std::span<Slot> slots) noexcept;
 /// @return The value.
 [[nodiscard]] runtime::Value loadValue(binary::ValueType const& type, std::span<Slot const> slots) noexcept;
 
+/// @p value as a value of address type @p type: an i64 whole, an i32 its low 32 bits. What an index, an
+/// address, a size or a delta of a memory or table of i32 addresses is read as from its slot, whatever the
+/// slot's high bits hold, and what a result of that type is written as (memory.grow's and table.grow's -1 is
+/// all ones of the address type).
+/// @param value A slot, or a 64-bit result.
+/// @param type The address type.
+/// @return The value, narrowed for i32.
+[[nodiscard]] constexpr uint64_t narrowToAddressType(uint64_t value, binary::AddressType type) noexcept
+{
+    return type == binary::AddressType::I64 ? value : uint64_t { static_cast<uint32_t>(value) };
+}
+
+/// The reference storeValue() stored into the two slots from @p slots.
+/// @param slots Its first slot, its tag word; its address follows.
+/// @return The reference.
+[[nodiscard]] runtime::Ref loadReference(Slot const* slots) noexcept;
+
+/// Stores @p reference into the two slots from @p slots, as storeValue() does.
+/// @param reference The reference.
+/// @param slots The first of its slots.
+void storeReference(runtime::Ref const& reference, Slot* slots) noexcept;
+
 /// The slots of the null reference of @p moduleHeap, as the module names the heap, in an instance whose
 /// type section maps to @p instanceTypes: how a reference local starts, and what ref.null makes.
 ///

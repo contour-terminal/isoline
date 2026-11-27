@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <isoline/fastinterpreter/Backends.hpp>
+#include <isoline/fastinterpreter/Bounds.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Context.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
@@ -375,11 +376,16 @@ class Invocation
         // An i32 delta is held zero-extended already; the result must be too, as an access that takes it for
         // its address relies on (accessMemory()): memory.grow's -1 is all ones of the address type.
         auto const grown = _context.store.growMemory(address, state.fp[deltaSlot]).value_or(RefusedGrowth);
-        state.fp[resultSlot] =
-            addressType == binary::AddressType::I64 ? grown : uint64_t { static_cast<uint32_t>(grown) };
+        state.fp[resultSlot] = narrowToAddressType(grown, addressType);
         // Whatever grew, memory 0 may be the memory that did, under another index too.
         refreshMemory0(state);
         return { .state = state, .flow = Flow::Continue };
+    }
+
+    /// The current frame's instance, as the store holds it: what a drop changes.
+    [[nodiscard]] ModuleInstance& currentInstance() noexcept
+    {
+        return _context.store.moduleInstance(_frames.back().instanceAddress);
     }
 
   private:
@@ -416,15 +422,15 @@ class Invocation
             case CalleeKind::Import: return calleeAt(instance.functions[site.index]);
             case CalleeKind::Table: {
                 auto const& table = _context.store.table(instance.tables[site.table]);
-                // A table of i32 addresses holds its index zero-extended in the slot.
-                auto const slot = state.fp[site.operandSlot];
-                auto const index = table.type.limits.addressType == binary::AddressType::I64
-                                       ? slot
-                                       : Slot { static_cast<uint32_t>(slot) };
-                if (index >= table.elements.size())
+                // A table of i32 addresses reads its index as 32 bits, whatever the slot's high bits hold.
+                auto const index =
+                    narrowToAddressType(state.fp[site.operandSlot], table.type.limits.addressType);
+                // Spectre: the element is read at the masked index (elementChecked()), not at the guest's.
+                auto const checked = elementChecked(index, table.elements.size());
+                if (!checked)
                     return std::unexpected { Trap { TrapCode::UndefinedElement,
                                                     std::bit_cast<int64_t>(index) } };
-                auto const& element = table.elements[index];
+                auto const& element = table.elements[*checked];
                 if (element.kind == runtime::RefKind::Null)
                     return std::unexpected { Trap { TrapCode::UninitializedElement,
                                                     std::bit_cast<int64_t>(index) } };
@@ -726,6 +732,16 @@ OutOfLineStep returnFromFunction(State state, uint32_t resultSlot) noexcept
 OutOfLineStep growMemory(State state, uint32_t resultSlot, uint32_t deltaSlot, uint32_t memory) noexcept
 {
     return state.context->invocation.grow(state, resultSlot, deltaSlot, memory);
+}
+
+void dropDataSegment(Context& context, uint32_t segment) noexcept
+{
+    context.invocation.currentInstance().data[segment].reset();
+}
+
+void dropElementSegment(Context& context, uint32_t segment) noexcept
+{
+    context.invocation.currentInstance().elements[segment].reset();
 }
 
 Flow leaveTrapped(Context& context, uint64_t stepsLeft, Trap trap) noexcept

@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <variant>
 
 #include <isoline/runtime/ValueWords.hpp>
 
@@ -30,6 +31,21 @@ runtime::Value loadValue(binary::ValueType const& type, std::span<Slot const> sl
     auto words = std::array<uint64_t, 2> {};
     std::ranges::copy(slots, words.begin());
     return runtime::decodeWords(type, words);
+}
+
+runtime::Ref loadReference(Slot const* slots) noexcept
+{
+    auto const words = std::array<uint64_t, 2> { slots[0], slots[1] };
+    return std::get<runtime::Ref>(
+        runtime::decodeWords(binary::ValueType { .kind = binary::ValueKind::Ref }, words));
+}
+
+void storeReference(runtime::Ref const& reference, Slot* slots) noexcept
+{
+    auto words = std::array<uint64_t, 2> {};
+    runtime::encodeWords(reference, words);
+    slots[0] = words[0];
+    slots[1] = words[1];
 }
 
 std::array<Slot, 2> nullSlots(binary::HeapType moduleHeap, std::span<uint32_t const> instanceTypes) noexcept

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -16,6 +17,7 @@
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/fastinterpreter/Bounds.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Context.hpp>
 #include <isoline/fastinterpreter/LittleEndian.hpp>
@@ -24,6 +26,7 @@
 #include <isoline/numerics/Float.hpp>
 #include <isoline/numerics/Integer.hpp>
 #include <isoline/runtime/Interrupt.hpp>
+#include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
@@ -565,31 +568,6 @@ using MemoryWord = std::conditional_t<
     uint8_t,
     std::conditional_t<Width == 2, uint16_t, std::conditional_t<Width == 4, uint32_t, uint64_t>>>;
 
-/// The Spectre mask of an access of @p width bytes at offset @p effective into a memory of @p size bytes:
-/// all ones where it fits, zero where it does not, computed without a branch (docs/fast-interpreter.md),
-/// so that code running ahead of a mispredicted bounds check reads memory's first bytes, not past them.
-///
-/// It is the sign of the bytes left after the access, of the offset itself, and of the memory's size less
-/// the width, any of them negative meaning the access does not fit. An offset of 2^63 or more never fits (a
-/// memory is allocated, so its size stays below 2^63), and without its own sign the bytes left would wrap to
-/// a positive count for it. A memory smaller than the access (@p size below @p width) fits nothing, and
-/// without the sign of its size less the width, which wraps, the bytes left would come out positive for
-/// offsets just below 2^63. Either would let a guest choose where a speculative read lands.
-///
-/// What remains: a masked access reads @p width bytes at the memory's base, so for a memory smaller than
-/// the access, code ahead of the check may read fewer than @p width bytes past its end; the check itself
-/// traps.
-/// @param effective The offset of the access's first byte: the address plus the static offset.
-/// @param size The memory's size in bytes.
-/// @param width The bytes accessed.
-/// @return The mask.
-[[nodiscard]] constexpr uint64_t accessMask(uint64_t effective, uint64_t size, uint64_t width) noexcept
-{
-    auto const left = static_cast<int64_t>(size - width - effective);
-    auto const room = static_cast<int64_t>(size - width);
-    return ~static_cast<uint64_t>((left | static_cast<int64_t>(effective) | room) >> 63U);
-}
-
 /// The offset into a memory of @p size bytes of an access of @p Width bytes at @p address + @p offset, or
 /// nullopt where it does not fit, as the reference interpreter decides it; never overflowing.
 ///
@@ -709,6 +687,155 @@ template <OperationId Id>
     return next<Id>(state);
 }
 
+/// A bulk operation (memory.fill, memory.copy, memory.init and the table operations alike): its ranges
+/// checked before anything is written, then its granules, each polled at runtime::PollSite::BulkGranule
+/// through the executor's gate, in the order and with the partial writes of every engine
+/// (runtime::fillItems(), runtime::copyItems(), runtime::copySegment()).
+///
+/// Spectre (docs/fast-interpreter.md): no select. The explicit checks decide before the first write, every
+/// item a granule touches is in bounds of what they checked, and no byte or reference it moves is used as an
+/// address or an index on its way, so the loop has no gadget a mispredicted check would open.
+template <OperationId Id>
+[[nodiscard]] inline Flow bulkOperation(State& state) noexcept
+{
+    auto& context = *state.context;
+    auto const& instance = *context.instance;
+    auto const* fp = state.fp;
+    auto const indices = immediateOperand<Id, 0>(state.pc);
+    auto const destination = fp[slotOperand<0>(state.pc)];
+    // table.fill reads a reference there instead, of two slots.
+    [[maybe_unused]] auto const source = fp[slotOperand<1>(state.pc)];
+    auto const count = fp[slotOperand<2>(state.pc)];
+    auto poll = [&state]() noexcept {
+        return state.context->gate.poll(runtime::PollSite::BulkGranule, state.stepsLeft);
+    };
+    auto done = std::expected<void, runtime::Trap> {};
+    if constexpr (Id == OperationId::MemoryFill)
+    {
+        auto& memory = context.store.memory(instance.memories[firstIndexOf(indices)]);
+        auto const type = memory.type.limits.addressType;
+        done = runtime::fillItems(memory.bytes(),
+                                  narrowToAddressType(destination, type),
+                                  narrowToAddressType(count, type),
+                                  static_cast<std::byte>(source),
+                                  runtime::TrapCode::OutOfBoundsMemoryAccess,
+                                  poll);
+    }
+    else if constexpr (Id == OperationId::MemoryInit)
+    {
+        auto& memory = context.store.memory(instance.memories[secondIndexOf(indices)]);
+        done =
+            runtime::copySegment(instance.data[firstIndexOf(indices)].value_or(std::span<std::byte const> {}),
+                                 static_cast<uint32_t>(source),
+                                 static_cast<uint32_t>(count),
+                                 memory.bytes(),
+                                 narrowToAddressType(destination, memory.type.limits.addressType),
+                                 runtime::TrapCode::OutOfBoundsMemoryAccess,
+                                 poll);
+    }
+    else if constexpr (Id == OperationId::MemoryCopy)
+    {
+        auto& to = context.store.memory(instance.memories[firstIndexOf(indices)]);
+        auto const& from = context.store.memory(instance.memories[secondIndexOf(indices)]);
+        auto const toType = to.type.limits.addressType;
+        auto const fromType = from.type.limits.addressType;
+        done = runtime::copyItems(from.bytes(),
+                                  narrowToAddressType(source, fromType),
+                                  to.bytes(),
+                                  narrowToAddressType(destination, toType),
+                                  narrowToAddressType(count, binary::copyCountType(toType, fromType)),
+                                  runtime::TrapCode::OutOfBoundsMemoryAccess,
+                                  poll);
+    }
+    else if constexpr (Id == OperationId::TableFill)
+    {
+        auto& table = context.store.table(instance.tables[firstIndexOf(indices)]);
+        auto const type = table.type.limits.addressType;
+        done = runtime::fillItems(std::span { table.elements },
+                                  narrowToAddressType(destination, type),
+                                  narrowToAddressType(count, type),
+                                  loadReference(fp + slotOperand<1>(state.pc)),
+                                  runtime::TrapCode::OutOfBoundsTableAccess,
+                                  poll);
+    }
+    else if constexpr (Id == OperationId::TableCopy)
+    {
+        auto& to = context.store.table(instance.tables[firstIndexOf(indices)]);
+        auto const& from = context.store.table(instance.tables[secondIndexOf(indices)]);
+        auto const toType = to.type.limits.addressType;
+        auto const fromType = from.type.limits.addressType;
+        done = runtime::copyItems(std::span<runtime::Ref const> { from.elements },
+                                  narrowToAddressType(source, fromType),
+                                  std::span { to.elements },
+                                  narrowToAddressType(destination, toType),
+                                  narrowToAddressType(count, binary::copyCountType(toType, fromType)),
+                                  runtime::TrapCode::OutOfBoundsTableAccess,
+                                  poll);
+    }
+    else
+    {
+        static_assert(Id == OperationId::TableInit, "every bulk operation has a body");
+        auto& table = context.store.table(instance.tables[secondIndexOf(indices)]);
+        auto const& segment = instance.elements[firstIndexOf(indices)];
+        done = runtime::copySegment(segment ? std::span<runtime::Ref const> { *segment }
+                                            : std::span<runtime::Ref const> {},
+                                    static_cast<uint32_t>(source),
+                                    static_cast<uint32_t>(count),
+                                    std::span { table.elements },
+                                    narrowToAddressType(destination, table.type.limits.addressType),
+                                    runtime::TrapCode::OutOfBoundsTableAccess,
+                                    poll);
+    }
+    if (!done) [[unlikely]]
+        return leaveTrapped(context, state.stepsLeft, done.error());
+    return next<Id>(state);
+}
+
+/// table.get, table.set, table.size and table.grow: an index, a size and a delta of a table of i32 addresses
+/// read and written as 32 bits (narrowToAddressType()); an element read or written at the index
+/// elementChecked() masks, or OutOfBoundsTableAccess.
+template <OperationId Id>
+[[nodiscard]] inline Flow tableOperation(State& state) noexcept
+{
+    auto& context = *state.context;
+    auto* fp = state.fp;
+    auto const* pc = state.pc;
+    auto const address = context.instance->tables[static_cast<std::size_t>(immediateOperand<Id, 0>(pc))];
+    auto& table = context.store.table(address);
+    auto const type = table.type.limits.addressType;
+    if constexpr (Id == OperationId::TableSize)
+    {
+        fp[slotOperand<0>(pc)] = narrowToAddressType(table.elements.size(), type);
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::TableGrow)
+    {
+        // The initial reference and the delta are read before the result is written over the reference.
+        // A refused grow gives -1: all ones, narrowed to the address type.
+        auto const grown = context.store
+                               .growTable(address,
+                                          narrowToAddressType(fp[slotOperand<2>(pc)], type),
+                                          loadReference(fp + slotOperand<1>(pc)))
+                               .value_or(std::numeric_limits<uint64_t>::max());
+        fp[slotOperand<0>(pc)] = narrowToAddressType(grown, type);
+        return next<Id>(state);
+    }
+    else
+    {
+        constexpr auto IndexOperand = Id == OperationId::TableGet ? 1U : 0U;
+        auto const index = elementChecked(narrowToAddressType(fp[slotOperand<IndexOperand>(pc)], type),
+                                          table.elements.size());
+        if (!index) [[unlikely]]
+            return leaveTrapped(
+                context, state.stepsLeft, runtime::Trap { runtime::TrapCode::OutOfBoundsTableAccess });
+        if constexpr (Id == OperationId::TableGet)
+            storeReference(table.elements[*index], fp + slotOperand<0>(pc));
+        else
+            table.elements[*index] = loadReference(fp + slotOperand<1>(pc));
+        return next<Id>(state);
+    }
+}
+
 /// A comparison fused with the br_if or if that consumes its result (FusionTable): br_if branches when the
 /// comparison holds, if continues at its target when it does not; to a loop label it polls first.
 template <OperationId Id>
@@ -802,8 +929,8 @@ template <OperationId Id>
 }
 
 /// The operations of a body of their own: control without operands, moves, constants, selects, globals,
-/// the accesses of memories other than memory 0, memory.size and memory.grow, unconditional branches, if,
-/// br_table and return.
+/// the accesses of memories other than memory 0, memory.size and memory.grow, the bulk operations, the table
+/// operations, the drops, the reference operations, unconditional branches, if, br_table and return.
 template <OperationId Id>
 [[nodiscard]] inline Flow specialOperation(State& state) noexcept
 {
@@ -867,6 +994,50 @@ template <OperationId Id>
     }
     else if constexpr (Id == OperationId::LoadIndexed || Id == OperationId::StoreIndexed)
         return indexedMemoryOperation<Id>(state);
+    else if constexpr (operationRow(Id).form == OperationForm::Bulk)
+        return bulkOperation<Id>(state);
+    else if constexpr (Id == OperationId::TableGet || Id == OperationId::TableSet
+                       || Id == OperationId::TableSize || Id == OperationId::TableGrow)
+        return tableOperation<Id>(state);
+    else if constexpr (Id == OperationId::DataDrop || Id == OperationId::ElemDrop)
+    {
+        auto const segment = static_cast<uint32_t>(immediateOperand<Id, 0>(pc));
+        if constexpr (Id == OperationId::DataDrop)
+            dropDataSegment(*state.context, segment);
+        else
+            dropElementSegment(*state.context, segment);
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::RefNull)
+    {
+        // A concrete heap names a type of the module, which the running instance maps to its store's TypeId.
+        auto const null = nullSlots(heapOf(immediateOperand<Id, 0>(pc)), state.context->instance->types);
+        std::ranges::copy(null, fp + slotOperand<0>(pc));
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::RefFunc)
+    {
+        auto const function =
+            state.context->instance->functions[static_cast<std::size_t>(immediateOperand<Id, 0>(pc))];
+        storeReference(runtime::Ref { .kind = runtime::RefKind::Func,
+                                      .heap = { .kind = binary::AbstractHeapType::Func },
+                                      .address = function },
+                       fp + slotOperand<0>(pc));
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::RefIsNull)
+    {
+        fp[slotOperand<0>(pc)] = isNullReference(fp[slotOperand<1>(pc)]) ? 1U : 0U;
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::RefAsNonNull)
+    {
+        if (isNullReference(fp[slotOperand<1>(pc)])) [[unlikely]]
+            return leaveTrapped(
+                *state.context, state.stepsLeft, runtime::Trap { runtime::TrapCode::NullReference });
+        moveSlots(fp, slotOperand<0>(pc), slotOperand<1>(pc), 2);
+        return next<Id>(state);
+    }
     else if constexpr (Id == OperationId::MemorySize)
     {
         auto const& memory = state.context->store.memory(

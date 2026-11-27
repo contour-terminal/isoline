@@ -177,6 +177,7 @@ namespace
         std::span<TypeSlots const> typeSlots; ///< The slots of each type's params and results.
         std::span<binary::AddressType const>
             memoryAddressTypes; ///< The address type of each memory, the imported ones first.
+        std::span<binary::TableType const> tables; ///< The type of each table, the imported ones first.
 
         /// The value type of a global.
         /// @param index The global's index, the imported ones first.
@@ -234,6 +235,21 @@ namespace
                 types.push_back(import.memory.limits.addressType);
         for (auto const& memory: module.memories)
             types.push_back(memory.limits.addressType);
+        return types;
+    }
+
+    /// The type of each of @p module's tables, the imported ones first, allocated from @p resource: what
+    /// table.get pushes, and the address type of its indices and sizes.
+    [[nodiscard]] LoweringVector<binary::TableType> tableTypesOf(binary::Module const& module,
+                                                                 std::pmr::memory_resource* resource)
+    {
+        auto types = LoweringVector<binary::TableType>(resource);
+        types.reserve(module.importedCount(binary::ExternKind::Table) + module.tables.size());
+        for (auto const& import: module.imports)
+            if (import.kind == binary::ExternKind::Table)
+                types.push_back(import.table);
+        for (auto const& table: module.tables)
+            types.push_back(table.type);
         return types;
     }
 
@@ -475,6 +491,34 @@ namespace
                 case Opcode::GlobalSet: lowerGlobalSet(instruction.a); return;
                 case Opcode::MemorySize: lowerMemorySize(instruction.a); return;
                 case Opcode::MemoryGrow: lowerMemoryGrow(instruction.a); return;
+                case Opcode::MemoryFill:
+                    lowerBulk(OperationId::MemoryFill, indexPairWord(instruction.a, 0));
+                    return;
+                case Opcode::MemoryCopy:
+                    lowerBulk(OperationId::MemoryCopy, indexPairWord(instruction.a, instruction.b));
+                    return;
+                case Opcode::MemoryInit:
+                    lowerBulk(OperationId::MemoryInit, indexPairWord(instruction.a, instruction.b));
+                    return;
+                case Opcode::DataDrop: emit(OperationId::DataDrop, {}, { instruction.a }); return;
+                case Opcode::TableFill:
+                    lowerBulk(OperationId::TableFill, indexPairWord(instruction.a, 0));
+                    return;
+                case Opcode::TableCopy:
+                    lowerBulk(OperationId::TableCopy, indexPairWord(instruction.a, instruction.b));
+                    return;
+                case Opcode::TableInit:
+                    lowerBulk(OperationId::TableInit, indexPairWord(instruction.a, instruction.b));
+                    return;
+                case Opcode::ElemDrop: emit(OperationId::ElemDrop, {}, { instruction.a }); return;
+                case Opcode::TableGet: lowerTableGet(instruction.a); return;
+                case Opcode::TableSet: lowerTableSet(instruction.a); return;
+                case Opcode::TableSize: lowerTableSize(instruction.a); return;
+                case Opcode::TableGrow: lowerTableGrow(instruction.a); return;
+                case Opcode::RefNull: lowerRefNull(instruction.type); return;
+                case Opcode::RefFunc: lowerRefFunc(instruction.a); return;
+                case Opcode::RefIsNull: lowerRefIsNull(); return;
+                case Opcode::RefAsNonNull: lowerRefAsNonNull(); return;
                 case Opcode::I32Const:
                 case Opcode::I64Const:
                 case Opcode::F32Const:
@@ -641,6 +685,96 @@ namespace
             auto const source = readable(delta);
             emit(OperationId::MemoryGrow, { delta.slot, source }, { memory });
             push(Entry { .type = addressValueType(memory) });
+        }
+
+        /// The value type of an index, a size or a delta of @p table: its address type's.
+        [[nodiscard]] ValueType tableAddressValueType(uint32_t table) const
+        {
+            return ValueType { .kind = _context.tables[table].limits.addressType == binary::AddressType::I64
+                                           ? binary::ValueKind::I64
+                                           : binary::ValueKind::I32 };
+        }
+
+        /// Lowers a bulk operation of three operands, its destination, its source or value and its count, to
+        /// @p operation over their slots, naming the indices @p indices (indexPairWord()).
+        void lowerBulk(OperationId operation, Word indices)
+        {
+            auto count = pop();
+            auto source = pop();
+            auto destination = pop();
+            emit(operation, { readable(destination), readable(source), readable(count) }, { indices });
+        }
+
+        /// Lowers table.get of @p table: the element at the index, in the index's home slot.
+        void lowerTableGet(uint32_t table)
+        {
+            auto index = pop();
+            emit(OperationId::TableGet, { index.slot, readable(index) }, { table });
+            push(Entry { .type = _context.tables[table].element });
+        }
+
+        /// Lowers table.set of @p table.
+        void lowerTableSet(uint32_t table)
+        {
+            auto value = pop();
+            auto index = pop();
+            emit(OperationId::TableSet, { readable(index), readable(value) }, { table });
+        }
+
+        /// Lowers table.size of @p table into a fresh slot.
+        void lowerTableSize(uint32_t table)
+        {
+            auto const slot = _top;
+            push(Entry { .type = tableAddressValueType(table) });
+            emit(OperationId::TableSize, { slot }, { table });
+        }
+
+        /// Lowers table.grow of @p table: the initial reference's and the delta's slots to the result, in the
+        /// reference's home slot.
+        void lowerTableGrow(uint32_t table)
+        {
+            auto delta = pop();
+            auto init = pop();
+            emit(OperationId::TableGrow, { init.slot, readable(init), readable(delta) }, { table });
+            push(Entry { .type = tableAddressValueType(table) });
+        }
+
+        /// Lowers ref.null of @p type into fresh slots: an operation that makes the null through the running
+        /// instance, never a constant, as a concrete heap names a TypeId of the instance's store
+        /// (nullSlots()).
+        void lowerRefNull(ValueType const& type)
+        {
+            auto const slot = _top;
+            push(Entry { .type = type });
+            emit(OperationId::RefNull, { slot }, { heapWord(type.heap) });
+        }
+
+        /// Lowers ref.func of @p function into fresh slots.
+        void lowerRefFunc(uint32_t function)
+        {
+            auto const slot = _top;
+            push(Entry { .type = ValueType { .kind = binary::ValueKind::Ref,
+                                             .nullable = binary::Nullable::No,
+                                             .heap = { .kind = binary::AbstractHeapType::Func } } });
+            emit(OperationId::RefFunc, { slot }, { function });
+        }
+
+        /// Lowers ref.is_null: the reference's slots to an i32 in its home slot.
+        void lowerRefIsNull()
+        {
+            auto reference = pop();
+            emit(OperationId::RefIsNull, { reference.slot, readable(reference) }, {});
+            push(Entry { .type = binary::I32 });
+        }
+
+        /// Lowers ref.as_non_null: the reference, checked, to its home slots, of its type made non-null.
+        void lowerRefAsNonNull()
+        {
+            auto reference = pop();
+            emit(OperationId::RefAsNonNull, { reference.slot, readable(reference) }, {});
+            auto type = reference.type;
+            type.nullable = binary::Nullable::No;
+            push(Entry { .type = type });
         }
 
         /// Lowers global.get of @p global into a fresh slot.
@@ -1300,11 +1434,13 @@ namespace
         auto const importedFunctions = importedFunctionTypes(module, &arena);
         auto const typeSlots = typeSlotsOf(module, &arena);
         auto const memoryAddressTypes = memoryAddressTypesOf(module, &arena);
+        auto const tables = tableTypesOf(module, &arena);
         auto const context = ModuleContext { .module = module,
                                              .importedGlobals = importedGlobals,
                                              .importedFunctions = importedFunctions,
                                              .typeSlots = typeSlots,
-                                             .memoryAddressTypes = memoryAddressTypes };
+                                             .memoryAddressTypes = memoryAddressTypes,
+                                             .tables = tables };
         auto stats = LoweringStats {};
         for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(module.code.size())))
         {

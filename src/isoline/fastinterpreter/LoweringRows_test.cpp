@@ -36,8 +36,10 @@ using isoline::binary::testing::localGet;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::fastinterpreter::FusionRow;
 using isoline::fastinterpreter::FusionTable;
+using isoline::fastinterpreter::heapWord;
 using isoline::fastinterpreter::IndexedAccess;
 using isoline::fastinterpreter::indexedAccessWord;
+using isoline::fastinterpreter::indexPairWord;
 using isoline::fastinterpreter::loweringRow;
 using isoline::fastinterpreter::LoweringRows;
 using isoline::fastinterpreter::LoweringTable;
@@ -49,6 +51,7 @@ using isoline::fastinterpreter::testing::functionOf;
 using isoline::fastinterpreter::testing::listingOf;
 using isoline::fastinterpreter::testing::memoryInstruction;
 using isoline::fastinterpreter::testing::op;
+using isoline::fastinterpreter::testing::prefixed;
 using isoline::fastinterpreter::testing::typesOf;
 
 namespace binary = isoline::binary;
@@ -193,6 +196,85 @@ struct SpecialRowCase
     add(Opcode::MemoryGrow,
         withMemory(functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), { 0x40, 0x00 } }))),
         "memory.grow s1, s0, #0\nreturn s1\n");
+    // The bulk operations over three params, their indices two to the word (indexPairWord()).
+    auto const threeI32 = std::vector { binary::I32, binary::I32, binary::I32 };
+    auto const threeOperands = code({ localGet(0), localGet(1), localGet(2) });
+    auto withSegments = [](ModuleBuilder module) {
+        module.memory(Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 });
+        module.memory(Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 });
+        module.table(
+            TableType { .element = binary::FuncRef,
+                        .limits = { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 } });
+        module.table(
+            TableType { .element = binary::FuncRef,
+                        .limits = { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 } });
+        module.dataCount(2);
+        module.data({ 0x01, 0x01, 0x2A });
+        module.data({ 0x01, 0x01, 0x2B });
+        module.element({ 0x01, 0x00, 0x01, 0x00 });
+        module.element({ 0x01, 0x00, 0x01, 0x00 });
+        // Declares function 0 for ref.func.
+        module.element({ 0x03, 0x00, 0x01, 0x00 });
+        return module;
+    };
+    add(Opcode::MemoryFill,
+        withSegments(functionOf(threeI32, {}, {}, code({ threeOperands, prefixed(11, { 1 }) }))),
+        "memory.fill s0, s1, s2, #1\nreturn s3\n");
+    add(Opcode::MemoryCopy,
+        withSegments(functionOf(threeI32, {}, {}, code({ threeOperands, prefixed(10, { 0, 1 }) }))),
+        std::format("memory.copy s0, s1, s2, #{}\nreturn s3\n", indexPairWord(0, 1)));
+    add(Opcode::MemoryInit,
+        withSegments(functionOf(threeI32, {}, {}, code({ threeOperands, prefixed(8, { 1, 0 }) }))),
+        "memory.init s0, s1, s2, #1\nreturn s3\n");
+    add(Opcode::DataDrop,
+        withSegments(functionOf({}, {}, {}, prefixed(9, { 1 }))),
+        "data.drop #1\nreturn s0\n");
+    add(Opcode::TableFill,
+        withSegments(functionOf({ binary::I32, binary::FuncRef, binary::I32 },
+                                {},
+                                {},
+                                code({ threeOperands, prefixed(17, { 1 }) }))),
+        "table.fill s0, s1, s3, #1\nreturn s4\n");
+    add(Opcode::TableCopy,
+        withSegments(functionOf(threeI32, {}, {}, code({ threeOperands, prefixed(14, { 1, 0 }) }))),
+        "table.copy s0, s1, s2, #1\nreturn s3\n");
+    add(Opcode::TableInit,
+        withSegments(functionOf(threeI32, {}, {}, code({ threeOperands, prefixed(12, { 0, 1 }) }))),
+        std::format("table.init s0, s1, s2, #{}\nreturn s3\n", indexPairWord(0, 1)));
+    add(Opcode::ElemDrop,
+        withSegments(functionOf({}, {}, {}, prefixed(13, { 1 }))),
+        "elem.drop #1\nreturn s0\n");
+    add(Opcode::TableGet,
+        withSegments(
+            functionOf({ binary::I32 }, { binary::FuncRef }, {}, code({ localGet(0), { 0x25, 0x01 } }))),
+        "table.get s1, s0, #1\nreturn s1\n");
+    add(Opcode::TableSet,
+        withSegments(functionOf(
+            { binary::I32, binary::FuncRef }, {}, {}, code({ localGet(0), localGet(1), { 0x26, 0x01 } }))),
+        "table.set s0, s1, #1\nreturn s3\n");
+    add(Opcode::TableSize,
+        withSegments(functionOf({}, { binary::I32 }, {}, prefixed(16, { 1 }))),
+        "table.size s0, #1\nreturn s0\n");
+    add(Opcode::TableGrow,
+        withSegments(functionOf({ binary::FuncRef, binary::I32 },
+                                { binary::I32 },
+                                {},
+                                code({ localGet(0), localGet(1), prefixed(15, { 1 }) }))),
+        "table.grow s3, s0, s2, #1\nreturn s3\n");
+    // ref.null names its heap as the module does (heapWord()): extern, AbstractHeapType 1.
+    add(Opcode::RefNull,
+        functionOf({}, { binary::ExternRef }, {}, { 0xD0, 0x6F }),
+        std::format("ref.null s0, #{}\nreturn s0\n",
+                    heapWord(binary::HeapType { .kind = binary::AbstractHeapType::Extern })));
+    add(Opcode::RefIsNull,
+        functionOf({ binary::FuncRef }, { binary::I32 }, {}, code({ localGet(0), { 0xD1 } })),
+        "ref.is_null s2, s0\nreturn s2\n");
+    add(Opcode::RefFunc,
+        withSegments(functionOf({}, { binary::FuncRef }, {}, { 0xD2, 0x00 })),
+        "ref.func s0, #0\nreturn s0\n");
+    add(Opcode::RefAsNonNull,
+        functionOf({ binary::FuncRef }, { binary::FuncRef }, {}, code({ localGet(0), { 0xD4 } })),
+        "ref.as_non_null s2, s0\nreturn s2\n");
     add(Opcode::I64Const, functionOf({}, { binary::I64 }, {}, { 0x42, 0x07 }), "const64 s0, #7\nreturn s0\n");
     add(Opcode::F32Const,
         functionOf({}, { binary::F32 }, {}, { 0x43, 0x00, 0x00, 0x80, 0x3F }),
@@ -353,8 +435,8 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
         }
     }
     // An opcode without a row is Special, which a later part of lowering handles.
-    CHECK(loweringRow(Opcode::MemoryFill).form == OperationForm::Special);
-    CHECK(loweringRow(Opcode::MemoryFill).operation == OperationId::Nop);
+    CHECK(loweringRow(Opcode::Throw).form == OperationForm::Special);
+    CHECK(loweringRow(Opcode::Throw).operation == OperationId::Nop);
     CHECK(OpcodeTable.size() == LoweringTable.size());
 }
 

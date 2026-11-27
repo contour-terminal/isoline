@@ -194,3 +194,52 @@ from one read the frame's memory 0 afresh, whatever the generation: the register
 (`Memory.crossInstanceCallSwitchesMemory0`). `Memory.cacheRefreshedAfterEveryGrowPath` grows memory 0 in the
 function, in a callee, in a host function and in a host function's re-entry, on the heap and on an embedder's
 memory that moves on every grow.
+
+## Tables, references and the bulk operations
+
+**One body per bulk operation, shared with the reference.** `memory.fill`, `memory.copy`, `table.fill` and
+`table.copy` run through `runtime::fillItems()` and `runtime::copyItems()`, and `memory.init` and `table.init`
+through `runtime::copySegment()` (`runtime/Segment.hpp`), the same functions the reference interpreter runs. Each
+checks its ranges before it writes anything, without overflowing (`runtime::fits()`, so a memory64 range whose end
+`destination + count` passes 2^64 is out of bounds), so a trapping operation writes nothing
+(`Bulk.boundsCheckedBeforeAnyWrite`). Then it runs in granules of 65'536 bytes or 4'096 references
+(`runtime::GranuleItems`), polling at `BulkGranule` before each, through the executor's `PollGate` and its
+countdown, never through the store directly. A copy visits its granules backwards whenever its destination is
+above its source (`runtime::copyOrder()`), within one memory or table or across two, and copies within each
+granule in the same direction, so an overlapping copy is a `memmove` and an interrupted one leaves the reference's
+partial writes. `Bulk.granulesMatchReference` checks a 64 MiB `memory.fill` and a 64 MiB overlapping
+`memory.copy` with the destination above: 1'024 granule polls on both engines, and interrupted at the first, the
+513th and the last poll, the written prefix (the fill's first granules, the copy's last) against a model of its
+own and against the reference byte for byte. `Tables.opsMatchReference` does the same for `table.init` and a
+`table.copy` one up over three granules, and `Bulk.stepLimitStopsAtTheSameGranule` for a step budget spent
+mid-fill on an unobserved store.
+
+**Spectre and the bulk loops: no select.** The explicit checks decide before the first write, and every item a
+granule then touches lies within the ranges they checked. A loop running ahead of a mispredicted check
+speculatively writes nothing that retires, and the bytes or references it moves are never used as an address or
+an index on their way, so there is no dependent access a guest could time. A masked offset would also turn a
+mispredicted copy into one of the memory's first bytes, which buys nothing.
+
+**Table indices are masked like addresses.** `table.get`, `table.set` and `call_indirect` read their element at
+the index `elementChecked()` returns: the explicit `index >= size` check, then the index anded with
+`elementMask()`, which is `accessMask()` of a one-element access, the same select derived from the same bound
+(the sign of the elements left after the element, of the index itself, and of the size less one). An index of
+2^63 or more, or any index into a table of no elements, masks to zero (`Tables.elementMaskAtTheEdges`, around
+0, size − 1, size, 2^32 − 1, 2^63 and 2^64 − 1). What remains: a masked index reads the table's first element,
+and for a table of no elements code ahead of the check may read one element at its base. Optimized for x86-64,
+the mask is `sub`, `or`, `or` and `cmovns` before the element's address is formed, in the `table.get` and
+`table.set` handlers and in `call_indirect`'s resolution. The fill, copy and init loops take no mask, as above.
+
+**i32 operands of memories and tables are read as 32 bits.** An index, address, size, count or delta of a
+memory or table of i32 addresses is read as the low 32 bits of its slot (`narrowToAddressType()`), whatever
+the high bits hold, and `table.grow`'s and `table.size`'s results, like `memory.grow`'s, are written as 32
+bits, `-1` included (`Tables.table32OperandsIgnoreTheSlotsHighBits`, `Bulk.memory32OperandsIgnoreTheSlotsHighBits`,
+which run code written by hand with high bits planted in those slots).
+
+**References keep their heap.** `ref.null` is never a constant: lowered code is shared by every instance in
+every store, while a concrete heap names a `TypeId` of the running instance's store, so the operation names the
+heap as the module does and maps it through the instance (`nullSlots()`), as a reference local's
+initialization does (`Tables.referencesKeepTheirHeap`, with a duplicate type so that the `TypeId` is not the
+type index). `ref.func` reads the instance's function address. `ref.is_null` and `ref.as_non_null` test the
+reference's tag word. `data.drop` and `elem.drop` change the instance, which only the store hands out
+mutable (`dropDataSegment()`, `dropElementSegment()`, out of line).
