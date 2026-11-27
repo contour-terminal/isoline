@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -976,4 +977,100 @@ TEST_CASE("Translator.deadPathModificationsAreUndone")
             "b1():\n  v3 = i32.const [value=5]\n  jump b3(v3)\nb2():\n  jump b3(v2)\nb3(v4:i32):\n"));
         CHECK(text.ends_with("  return v2\n"));
     }
+}
+
+TEST_CASE("Translator.branchAndMergeChargesArePinned")
+{
+    // block { local 1 = 5; br_if 0 (local 0); [local 1 = 6] }: each forward edge is charged its results
+    // (none) and the one local its path modified; the merge, when local 1 differs, one parameter per edge.
+    auto const builderOf = [](Bytes const& tail) {
+        return oneFunction(
+            FuncType { .params = { I32 }, .results = {} },
+            { I32 },
+            isoline::binary::testing::block(code({ i32Const(5), localSet(1), localGet(0), brIf(0), tail })));
+    };
+    auto const chargedUpTo = [](ModuleBuilder const& builder, uint64_t limit) {
+        auto limits = CompileLimits {};
+        limits.maxBranchArguments = limit;
+        return translateOf(builder, Options { .limits = limits });
+    };
+    SECTION("the forward edges: the br_if's and the fallthrough's, one local each")
+    {
+        auto const same = builderOf({});
+        CHECK(refusalOf(*chargedUpTo(same, 1))
+              == CompileError { .code = CompileErrorCode::TooManyBranchArguments,
+                                .function = 0,
+                                .requested = 2,
+                                .limit = 1 });
+        CHECK(chargedUpTo(same, 2)->function.has_value());
+    }
+    SECTION("the merge: one parameter for each of the two edges")
+    {
+        auto const differing = builderOf(code({ i32Const(6), localSet(1) }));
+        CHECK(refusalOf(*chargedUpTo(differing, 3))
+              == CompileError { .code = CompileErrorCode::TooManyBranchArguments,
+                                .function = 0,
+                                .requested = 4,
+                                .limit = 3 });
+        CHECK(chargedUpTo(differing, 4)->function.has_value());
+    }
+}
+
+namespace
+{
+
+/// block { if (local 0) { k × (local.get i; local.set i); br 1 } end; k × (local.get 0; br_if 0) } end:
+/// one edge passes k locals, k edges pass none, into one end.
+ModuleBuilder wideUnionOf(uint32_t locals)
+{
+    auto arm = Bytes {};
+    for (auto const local: std::views::iota(uint32_t { 1 }, locals + 1))
+        arm = code({ arm, localGet(local), localSet(local) });
+    auto body = code({ { 0x02, 0x40 }, localGet(0), { 0x04, 0x40 }, arm, br(1), { 0x0B } });
+    body.reserve(body.size() + (std::size_t { 4 } * locals) + 1);
+    for ([[maybe_unused]] auto const branch: std::views::iota(uint32_t { 0 }, locals))
+        body.insert(body.end(), { 0x20, 0x00, 0x0D, 0x00 });
+    body.push_back(0x0B);
+    return oneFunction(FuncType { .params = { I32 }, .results = {} }, std::vector(locals, I32), body);
+}
+
+/// The fastest of three translations of @p builder's function 0, in seconds.
+double translationSeconds(ModuleBuilder const& builder)
+{
+    auto loaded = ValidatedModule::load(builder.build(), FeatureSet::all(), isoline::binary::DecodeLimits {});
+    REQUIRE(loaded.has_value());
+    auto const module = std::move(*loaded);
+    auto best = std::numeric_limits<double>::max();
+    for ([[maybe_unused]] auto const run: std::views::iota(0, 3))
+    {
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto const index = ModuleIndex { module->module(), memory };
+        auto const cancellation = CompileCancellation {};
+        auto const limits = CompileLimits {};
+        auto const start = std::chrono::steady_clock::now();
+        auto const translated = translate(TranslationInput { .module = *module,
+                                                             .index = index,
+                                                             .codeIndex = 0,
+                                                             .mode = ExecutionMode::Production,
+                                                             .limits = limits,
+                                                             .cancellation = cancellation },
+                                          memory);
+        auto const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        REQUIRE(translated.has_value());
+        best = std::min(best, seconds);
+    }
+    return best;
+}
+
+} // namespace
+
+TEST_CASE("Translator.sealTimeIsLinear", "[.timing]")
+{
+    // One edge passing k locals and k edges passing none, into one end: the seal costs what the edges
+    // passed, k, not edges × union, k². Pinned: doubling k at most triples the translation time. Its own
+    // ctest row, run serially (tests/CMakeLists.txt).
+    auto const small = translationSeconds(wideUnionOf(10'000));
+    auto const large = translationSeconds(wideUnionOf(20'000));
+    INFO("translation: " << small << " s at k = 10'000, " << large << " s at k = 20'000");
+    CHECK(large / small < 3.0);
 }

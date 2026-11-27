@@ -182,6 +182,18 @@ namespace
         ValueId entry {};   ///< Its value at the construct's entry.
     };
 
+    /// A local of a sealed end's union: how its edges pass it, and what it becomes.
+    struct UnionMember
+    {
+        uint32_t local = 0; ///< The local.
+        ValueId entry {};   ///< Its value at the construct's entry: what an edge that did not pass it passes.
+        ValueId first {};   ///< The first value an edge passed.
+        uint64_t passedBy = 0;     ///< How many edges passed it.
+        Merge merge = Merge::Same; ///< Whether its values differ.
+        uint32_t slot = 0;         ///< Its index among the differing locals.
+        ValueId merged {};         ///< Its value after the end.
+    };
+
     /// The refusal @p code of @p function, with what was requested of which @p limit.
     [[nodiscard]] std::unexpected<CompileError> refusal(CompileErrorCode code,
                                                         uint32_t function,
@@ -255,7 +267,14 @@ namespace
                                           BranchKind kind,
                                           std::optional<ValueId> condition,
                                           std::optional<BlockId> continuation);
-        void edgeValues(Edge const& edge, Frame const& frame, std::pmr::vector<ValueId>& values);
+        [[nodiscard]] std::span<ValueId const> edgeArguments(Edge const& edge) const;
+        void collectUnion();
+        [[nodiscard]] ValueId endValue(Frame const& frame,
+                                       std::span<ValueId const> arguments,
+                                       std::size_t position) const;
+        [[nodiscard]] uint64_t compareEnds(Frame const& frame);
+        void addMergeParameters(Frame const& frame, BlockId label, std::span<Type const> resultTypes);
+        void settleEdges(Frame const& frame, uint64_t parameters);
         void noteModification(uint32_t local, ValueId entry);
         void dropModifications(uint32_t begin);
         [[nodiscard]] uint32_t nextStamp() noexcept;
@@ -316,12 +335,12 @@ namespace
         std::pmr::vector<Modification> _modified; ///< Every open construct's list, outermost first.
         std::pmr::vector<uint32_t> _modifiedAt;   ///< Per local, its innermost modification, or none.
         std::pmr::vector<PassedLocal> _passed;    ///< Every forward edge's locals.
-        std::pmr::vector<PassedLocal> _union;     ///< The sealed end's locals, each once.
+        std::pmr::vector<UnionMember> _union;     ///< The sealed end's locals, each once.
+        std::pmr::vector<uint32_t> _unionIndex;   ///< Per local of the union, its index in _union.
+        std::pmr::vector<uint32_t> _differing;    ///< The union's differing locals, by index in _union.
         std::pmr::vector<uint32_t> _localStamps;  ///< Per local, the stamp of the scan that last saw it.
-        std::pmr::vector<ValueId> _localValues;   ///< Per local, its value on the edge being read.
-        std::pmr::vector<ValueId> _firstValues;   ///< The sealed end's first edge's values.
-        std::pmr::vector<ValueId> _edgeScratch;   ///< Another edge's values.
-        std::pmr::vector<ValueId> _merged;        ///< The values after the end.
+        std::pmr::vector<ValueId> _edgeScratch;   ///< One edge's values of the differing locals.
+        std::pmr::vector<ValueId> _merged;        ///< The results and context values after the end.
         std::pmr::vector<Type> _resultScratch;
         std::pmr::vector<uint32_t> _edgeStamps; ///< Per depth, the br_table that last made its edge.
         std::pmr::vector<uint32_t> _edgeBlocks; ///< Per depth, that edge's block.
@@ -369,9 +388,9 @@ namespace
         _modifiedAt(&memory),
         _passed(&memory),
         _union(&memory),
+        _unionIndex(&memory),
+        _differing(&memory),
         _localStamps(&memory),
-        _localValues(&memory),
-        _firstValues(&memory),
         _edgeScratch(&memory),
         _merged(&memory),
         _resultScratch(&memory),
@@ -470,7 +489,7 @@ namespace
 
         _modifiedAt.assign(_locals.size(), Unnumbered);
         _localStamps.assign(_locals.size(), 0);
-        _localValues.assign(_locals.size(), ValueId {});
+        _unionIndex.assign(_locals.size(), 0);
         auto frame = Frame { .kind = ConstructKind::Function,
                              .bodyIndex = 0,
                              .typesBegin = 0,
@@ -809,8 +828,12 @@ namespace
                 {
                     // No else: the else arm passes the if's entry state to its end.
                     if (_reach == Reach::Reachable)
+                    {
+                        if (auto reserved = reserve(widthOf(frame, frame.resultCount), 2); !reserved)
+                            return reserved;
                         if (auto passed = forwardEdge(frame, BranchKind::Jump, {}, {}); !passed)
                             return passed;
+                    }
                     beginElse();
                 }
                 break;
@@ -819,24 +842,130 @@ namespace
         return seal();
     }
 
-    void Translation::edgeValues(Edge const& edge, Frame const& frame, std::pmr::vector<ValueId>& values)
+    std::span<ValueId const> Translation::edgeArguments(Edge const& edge) const
     {
-        // An edge's operands end with its results, the locals it passed and the context values; a local of
-        // the union it did not pass reaches the end with its value at the construct's entry.
+        // An edge's operands end with its arguments: its results, the locals it passed, the context values.
         auto const& instruction = _function.instruction(edge.instruction);
         auto const count = _function.immediates(instruction.immediates)[EdgeArgumentCount];
-        auto const arguments = _function.operands(instruction.operands).last(static_cast<std::size_t>(count));
-        auto const stamp = nextStamp();
-        for (auto const& passed: std::span { _passed }.subspan(edge.passedBegin, edge.passedCount))
+        return _function.operands(instruction.operands).last(static_cast<std::size_t>(count));
+    }
+
+    void Translation::collectUnion()
+    {
+        // Each local of the union, from the edges' own lists only, so that this costs what they passed,
+        // which forwardEdge() charged: how many edges passed it, the first value and whether every one
+        // passed that. An edge that did not pass a local passes its entry value, implicitly.
+        auto const unionStamp = nextStamp();
+        _union.clear();
+        for (auto const index: _edgeList)
+            for (auto const& passed:
+                 std::span { _passed }.subspan(_edges[index].passedBegin, _edges[index].passedCount))
+            {
+                if (_localStamps[passed.local] != unionStamp)
+                {
+                    _localStamps[passed.local] = unionStamp;
+                    _unionIndex[passed.local] = static_cast<uint32_t>(_union.size());
+                    _union.push_back(
+                        UnionMember { .local = passed.local, .entry = passed.entry, .first = passed.value });
+                }
+                auto& member = _union[_unionIndex[passed.local]];
+                ++member.passedBy;
+                if (passed.value != member.first)
+                    member.merge = Merge::Differs;
+            }
+        for (auto& member: _union)
         {
-            _localStamps[passed.local] = stamp;
-            _localValues[passed.local] = passed.value;
+            auto const isEverywhere = member.passedBy == _edgeList.size();
+            if (!isEverywhere && member.first != member.entry)
+                member.merge = Merge::Differs;
+            member.merged = isEverywhere ? member.first : member.entry;
         }
-        values.clear();
-        values.insert(values.end(), arguments.begin(), arguments.begin() + frame.resultCount);
-        for (auto const& member: _union)
-            values.push_back(_localStamps[member.local] == stamp ? _localValues[member.local] : member.entry);
-        values.insert(values.end(), arguments.end() - _contextCount, arguments.end());
+    }
+
+    ValueId Translation::endValue(Frame const& frame,
+                                  std::span<ValueId const> arguments,
+                                  std::size_t position) const
+    {
+        // A merge's ends are its results, then its context values: the first and last of an edge's arguments.
+        auto const ends = std::size_t { frame.resultCount } + _contextCount;
+        return position < frame.resultCount ? arguments[position]
+                                            : arguments[arguments.size() - ends + position];
+    }
+
+    uint64_t Translation::compareEnds(Frame const& frame)
+    {
+        // The results and context values, a constant few per edge: compared with the first edge's.
+        auto const ends = std::size_t { frame.resultCount } + _contextCount;
+        auto const first = edgeArguments(_edges[_edgeList.front()]);
+        _merges.assign(ends, Merge::Same);
+        for (auto const index: std::span { _edgeList }.subspan(1))
+        {
+            auto const arguments = edgeArguments(_edges[index]);
+            for (auto const position: std::views::iota(std::size_t { 0 }, ends))
+                if (endValue(frame, arguments, position) != endValue(frame, first, position))
+                    _merges[position] = Merge::Differs;
+        }
+        _merged.clear();
+        for (auto const position: std::views::iota(std::size_t { 0 }, ends))
+            _merged.push_back(endValue(frame, first, position));
+        auto parameters = static_cast<uint64_t>(std::ranges::count(_merges, Merge::Differs));
+        _differing.clear();
+        for (auto const [index, member]: core::views::enumerate(_union))
+            if (member.merge == Merge::Differs)
+            {
+                member.slot = static_cast<uint32_t>(_differing.size());
+                _differing.push_back(static_cast<uint32_t>(index));
+            }
+        return parameters + _differing.size();
+    }
+
+    void Translation::addMergeParameters(Frame const& frame, BlockId label, std::span<Type const> resultTypes)
+    {
+        // In merge order: the results, the union's locals, the context values.
+        auto const ends = std::size_t { frame.resultCount } + _contextCount;
+        for (auto const position: std::views::iota(std::size_t { 0 }, std::size_t { frame.resultCount }))
+            if (_merges[position] == Merge::Differs)
+                _merged[position] = _builder.addParameter(label, resultTypes[position]);
+        for (auto& member: _union)
+            if (member.merge == Merge::Differs)
+                member.merged = _builder.addParameter(label, _localTypes[member.local]);
+        for (auto const position: std::views::iota(std::size_t { frame.resultCount }, ends))
+            if (_merges[position] == Merge::Differs)
+                _merged[position] = _builder.addParameter(
+                    label, intermediate::ContextValueTable[position - frame.resultCount].type);
+    }
+
+    void Translation::settleEdges(Frame const& frame, uint64_t parameters)
+    {
+        // Each edge passes the parameters' arguments only, in a run of its own: its differing results,
+        // the entry value of each differing local unless its own list passed another, its differing
+        // context values. This costs the parameters per edge, charged by seal(), and its own list.
+        auto const ends = std::size_t { frame.resultCount } + _contextCount;
+        for (auto const index: _edgeList)
+        {
+            auto const& current = _edges[index];
+            auto const arguments = edgeArguments(current);
+            _edgeScratch.clear();
+            for (auto const member: _differing)
+                _edgeScratch.push_back(_union[member].entry);
+            for (auto const& passed: std::span { _passed }.subspan(current.passedBegin, current.passedCount))
+                if (auto const& member = _union[_unionIndex[passed.local]]; member.merge == Merge::Differs)
+                    _edgeScratch[member.slot] = passed.value;
+            auto const& terminator = _function.instruction(current.instruction);
+            _arguments.clear();
+            if (terminator.operation == Operation::Branch)
+                _arguments.push_back(_function.operands(terminator.operands)[0]);
+            for (auto const position: std::views::iota(std::size_t { 0 }, std::size_t { frame.resultCount }))
+                if (_merges[position] == Merge::Differs)
+                    _arguments.push_back(arguments[position]);
+            _arguments.insert(_arguments.end(), _edgeScratch.begin(), _edgeScratch.end());
+            for (auto const position: std::views::iota(std::size_t { frame.resultCount }, ends))
+                if (_merges[position] == Merge::Differs)
+                    _arguments.push_back(endValue(frame, arguments, position));
+            _builder.replaceOperands(current.instruction, _arguments);
+            _function.immediates(_function.instruction(current.instruction).immediates)[EdgeArgumentCount] =
+                parameters;
+        }
     }
 
     Translation::Outcome Translation::seal()
@@ -844,6 +973,8 @@ namespace
         auto fallthrough = Fallthrough::Absent;
         if (_reach == Reach::Reachable)
         {
+            if (auto reserved = reserve(widthOf(_frames.back(), _frames.back().resultCount), 2); !reserved)
+                return reserved;
             if (auto passed = forwardEdge(_frames.back(), BranchKind::Jump, {}, {}); !passed)
                 return passed;
             fallthrough = Fallthrough::Present;
@@ -864,7 +995,6 @@ namespace
             return {};
         }
 
-        // The edges, and the union of the locals they passed, each with its value at the entry.
         _edgeList.clear();
         auto edge = frame.edges;
         while (edge != Unnumbered)
@@ -872,29 +1002,8 @@ namespace
             _edgeList.push_back(edge);
             edge = _edges[edge].next;
         }
-        auto const unionStamp = nextStamp();
-        _union.clear();
-        for (auto const index: _edgeList)
-            for (auto const& passed:
-                 std::span { _passed }.subspan(_edges[index].passedBegin, _edges[index].passedCount))
-                if (_localStamps[passed.local] != unionStamp)
-                {
-                    _localStamps[passed.local] = unionStamp;
-                    _union.push_back(passed);
-                }
-
-        // Which positions differ between the edges.
-        auto const width = uint64_t { frame.resultCount } + _union.size() + _contextCount;
-        edgeValues(_edges[_edgeList.front()], frame, _firstValues);
-        _merges.assign(width, Merge::Same);
-        for (auto const index: std::span { _edgeList }.subspan(1))
-        {
-            edgeValues(_edges[index], frame, _edgeScratch);
-            for (auto const [position, value]: core::views::enumerate(_edgeScratch))
-                if (value != _firstValues[position])
-                    _merges[position] = Merge::Differs;
-        }
-        auto const parameters = static_cast<uint64_t>(std::ranges::count(_merges, Merge::Differs));
+        collectUnion();
+        auto const parameters = compareEnds(frame);
         if (auto checked = checkBlockParameters(parameters); !checked)
             return checked;
         if (auto charged = charge(parameters * _edgeList.size()); !charged)
@@ -902,62 +1011,29 @@ namespace
         if (auto reserved = reserve(((parameters + 1) * _edgeList.size()) + (2 * parameters) + 4, 2);
             !reserved)
             return reserved;
-
-        // The merged values: a parameter where they differ, the common value where they do not.
         auto const label = BlockId { frame.label };
-        auto const typeAt = [&](std::size_t position) {
-            if (position < frame.resultCount)
-                return resultTypes[position];
-            if (position < frame.resultCount + _union.size())
-                return _localTypes[_union[position - frame.resultCount].local];
-            return intermediate::ContextValueTable[position - frame.resultCount - _union.size()].type;
-        };
-        _merged.assign(_firstValues.begin(), _firstValues.end());
-        for (auto const [position, merge]: core::views::enumerate(_merges))
-            if (merge == Merge::Differs)
-                _merged[position] = _builder.addParameter(label, typeAt(position));
-
-        // Each edge passes the parameters' arguments only, in a run of its own.
-        for (auto const index: _edgeList)
-        {
-            edgeValues(_edges[index], frame, _edgeScratch);
-            auto const instruction = _edges[index].instruction;
-            auto const& terminator = _function.instruction(instruction);
-            _arguments.clear();
-            if (terminator.operation == Operation::Branch)
-                _arguments.push_back(_function.operands(terminator.operands)[0]);
-            for (auto const [position, merge]: core::views::enumerate(_merges))
-                if (merge == Merge::Differs)
-                    _arguments.push_back(_edgeScratch[position]);
-            _builder.replaceOperands(instruction, _arguments);
-            _function.immediates(_function.instruction(instruction).immediates)[EdgeArgumentCount] =
-                parameters;
-        }
+        addMergeParameters(frame, label, resultTypes);
+        settleEdges(frame, parameters);
 
         // The path after the end. A single edge that is the fallthrough leaves the path as it was: its
         // modifications become the parent's as they are. Otherwise the construct's are undone and the
         // merged locals that differ from their entry values are the parent's modifications.
         _frames.pop_back();
         switchTo(label);
-        auto position = std::size_t { 0 };
-        for ([[maybe_unused]] auto const result: std::views::iota(uint32_t { 0 }, frame.resultCount))
-            _stack.push_back(_merged[position++]);
-        if (fallthrough == Fallthrough::Present && _edgeList.size() == 1)
-            position += _union.size();
-        else
+        _stack.insert(_stack.end(), _merged.begin(), _merged.begin() + frame.resultCount);
+        if (fallthrough == Fallthrough::Absent || _edgeList.size() != 1)
         {
             dropModifications(frame.modifiedBegin);
             for (auto const& member: _union)
             {
-                auto const value = _merged[position++];
-                if (value == member.entry)
+                if (member.merged == member.entry)
                     continue;
                 noteModification(member.local, member.entry);
-                _locals[member.local] = value;
+                _locals[member.local] = member.merged;
             }
         }
         for (auto const value: std::views::iota(uint32_t { 0 }, _contextCount))
-            _context[value] = _merged[position++];
+            _context[value] = _merged[frame.resultCount + value];
         _storedCountdown.reset();
         _reach = Reach::Reachable;
         return {};

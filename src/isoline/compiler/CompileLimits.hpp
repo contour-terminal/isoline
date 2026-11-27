@@ -33,7 +33,8 @@ struct CompileLimits
     /// The most branch arguments a function may pass over all its branches, refused
     /// TooManyBranchArguments: each branch's results and locals, a loop's back edge its assigned
     /// locals, a forward edge the locals it modified, and the arguments a merge settles each edge to.
-    /// The context values a branch also passes, at most three, are not counted.
+    /// The context values a branch also passes, at most three, are not counted: every branch is an IR
+    /// instruction, so maxFunctionInstructions bounds them.
     uint64_t maxBranchArguments = 16'000'000;
     /// The most entries a function's IR operand pool, or its immediate pool, may hold (a call's
     /// arguments, a branch's, a br_table's targets), refused PoolTooLarge. The default is what a 32-bit

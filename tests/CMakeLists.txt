@@ -338,3 +338,9 @@ else()
     endif()
 endif()
 set_tests_properties(isoline_hostile PROPERTIES LABELS unit TIMEOUT 300)
+
+# The time-bound cases of the unit tests: each case tagged [.timing] in isoline_test pins a ratio of
+# times on a shape that a quadratic pass would blow up, so it runs alone, serially, with a generous
+# timeout.
+add_test(NAME isoline_timing COMMAND isoline_test "[.timing]")
+set_tests_properties(isoline_timing PROPERTIES LABELS unit TIMEOUT 900 RUN_SERIAL TRUE)
