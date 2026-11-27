@@ -214,9 +214,20 @@ endfunction()
 #    delete[] of an importer that includes a standard header (<memory>) before `import isoline;`: its
 #    implicit declarations are taken for redeclarations of <new>'s, which the BMI's global module fragment
 #    holds too. A bare `import isoline;` declares neither, and reports nothing.
+#  - include-then-import: an Isoline header and `import isoline;` in one TU (D7): 362
+#    readability-redundant-declaration and 51 performance-trivially-destructible. All but four (the global
+#    operator new and delete, as for import-only) are in src/isoline headers, on their declarations, which
+#    the BMI's global module fragment holds as well: each is taken for a redeclaration, and a class with an
+#    implicit destructor for one whose destructor is defaulted on a later declaration.
+#  - import-then-include: the other order (D7), which compiles on Clang only (module-import-then-include's
+#    probe): 129 readability-redundant-declaration, for the same reason, and no
+#    performance-trivially-destructible, so only the one check is lifted there.
 set(ISOLINE_MODULE_TIDY_FALSE_POSITIVES
     "interface-unit" "misc-unused-using-decls"
-    "import-only" "readability-redundant-declaration")
+    "import-only" "readability-redundant-declaration"
+    "include-then-import" "readability-redundant-declaration"
+    "include-then-import" "performance-trivially-destructible"
+    "import-then-include" "readability-redundant-declaration")
 
 # Whether E1 (D13) applies: CMake drives Clang's GNU front end, whose synthetic BMI command carries `-c`.
 set(ISOLINE_MODULE_PRECOMPILE_TAKES_C OFF)
@@ -264,7 +275,8 @@ function(isoline_add_module_exception_tripwires)
                  COMMAND "${CMAKE_COMMAND}" "-DNINJA=${CMAKE_MAKE_PROGRAM}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
                          "-DBUILD_CMAKE_VERSION=${CMAKE_VERSION}" "-DCOMPILER=${CMAKE_CXX_COMPILER}"
                          -P "${PROJECT_SOURCE_DIR}/tests/cmake/expect-precompile-with-c.cmake")
-        set_tests_properties(cmake-precompile-tripwire PROPERTIES LABELS lint TIMEOUT 60)
+        # It reads the build tree, which module-import-then-include builds in (RESOURCE_LOCK build-tree).
+        set_tests_properties(cmake-precompile-tripwire PROPERTIES LABELS lint TIMEOUT 60 RESOURCE_LOCK build-tree)
     endif()
     if(NOT ISOLINE_CLANG_TIDY_COMMAND)
         return()
@@ -291,8 +303,9 @@ set(SOURCES [==[@arg_TIDY_SOURCES@]==])
              COMMAND "${CMAKE_COMMAND}" "-DCLANG_TIDY=${ISOLINE_CLANG_TIDY_EXE}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
                      "-DARGUMENTS_FILE=${argumentsFile}"
                      -P "${PROJECT_SOURCE_DIR}/tests/cmake/expect-module-tidy-false-positives.cmake")
-    # clang-tidy over the whole header set, once per kind, under a sanitizer build's load too.
-    set_tests_properties(clang-tidy-module-tripwire PROPERTIES LABELS lint TIMEOUT 600)
+    # clang-tidy over the whole header set, once per kind, under a sanitizer build's load too. It reads the
+    # build tree's module maps, which module-import-then-include builds in (RESOURCE_LOCK build-tree).
+    set_tests_properties(clang-tidy-module-tripwire PROPERTIES LABELS lint TIMEOUT 600 RESOURCE_LOCK build-tree)
 endfunction()
 
 ## @brief Creates the module target of a row (D2): <LIBRARY>_module, a static library that holds only the

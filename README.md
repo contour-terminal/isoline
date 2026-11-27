@@ -140,6 +140,9 @@ target_link_libraries(app PRIVATE isoline::core)
 From a Linux host, Isoline also cross-compiles for Windows (clang-cl, tests under wine) and arm64
 (clang, tests under qemu); see [docs/cross-compiling.md](docs/cross-compiling.md).
 
+With `-DISOLINE_MODULES=ON` (CMake 4.3 or newer), the build also offers the C++ module `isoline`,
+which re-exports every public name of the headers; see [docs/modules.md](docs/modules.md).
+
 Compiles go through a compiler cache when one is installed (Pace's `pace-cc`, else `ccache`). With a
 local `pace-node`, `cmake --preset clang-asan -DPACE_SCHEDULER=127.0.0.1:6674` also dispatches misses
 through its admission queue; see [docs/compile-cache.md](docs/compile-cache.md).

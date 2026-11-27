@@ -2,7 +2,8 @@
 //
 // Isoline through `import isoline;` alone: no Isoline header. Every type a public signature names is
 // spelled here by its own name, so a type that is reachable but not nameable through the module fails to
-// compile (the plan's Review Focus 3).
+// compile (the plan's Review Focus 3). HeaderSide.cpp, linked into the same test, is the header side of
+// includeAndImportShareEntities.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -17,6 +18,35 @@
 #include "AddModule.hpp"
 
 import isoline;
+
+namespace isoline::modules_test
+{
+
+// HeaderSide.hpp's functions, declared again by the names the import provides: HeaderSide.cpp defines them
+// in a TU that includes Isoline's headers and imports nothing. That the two link, and agree on every value
+// passed between them, is D7's claim: an includer and an importer share Isoline's entities.
+//
+// These declarations are copied by hand, which is an ODR hazard: should one drift from HeaderSide.hpp's,
+// the program holds two declarations of one function that disagree. A parameter type that differs changes
+// the mangled name, so the link fails. A return type that differs does not: the Itanium ABI (Clang, GCC)
+// does not mangle a non-template function's return type, so the program links and calls through the wrong
+// type, undefined behaviour no diagnostic is required for (MSVC mangles it, and fails the link). No
+// static_assert can compare the two: this TU must not include an Isoline header (it would be an
+// include-then-import TU, MixedInclusion_test.cpp's kind), and HeaderSide.cpp must not import. Change both
+// together.
+
+/// Instantiates the add module in a store made by the caller (HeaderSide.hpp).
+/// @param store The store to instantiate in.
+/// @param module The add module.
+/// @return The instance, or the error.
+[[nodiscard]] std::expected<isoline::api::Instance, isoline::api::InstantiateError> instantiateAdd(
+    isoline::api::Store& store, isoline::api::Module const& module);
+
+/// The address of FeatureTable as the header side sees it (HeaderSide.hpp).
+/// @return Its address.
+[[nodiscard]] void const* featureTableAddressFromHeaders() noexcept;
+
+} // namespace isoline::modules_test
 
 namespace
 {
@@ -116,6 +146,29 @@ TEST_CASE("Modules.instantiatesAndCalls")
     auto const called = instance->call(*add, args, results);
     REQUIRE(called.has_value());
     CHECK(results[0] == Value { I32 { 5 } });
+}
+
+TEST_CASE("Modules.includeAndImportShareEntities")
+{
+    // Engine, Module and Store are made here, through the import; the header side instantiates.
+    auto const engine = Engine { EngineConfig {} };
+    auto const module = engine.load(isoline::consumer::AddModule);
+    REQUIRE(module.has_value());
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const instance = isoline::modules_test::instantiateAdd(store, *module);
+    REQUIRE(instance.has_value());
+    auto const add = instance->function("add");
+    REQUIRE(add.has_value());
+
+    auto const args = std::array<Value, 2> { I32 { 2 }, I32 { 3 } };
+    auto results = std::array<Value, 1> {};
+    auto const called = instance->call(*add, args, results);
+    REQUIRE(called.has_value());
+    CHECK(results[0] == Value { I32 { 5 } });
+
+    // An inline variable is one entity in the program: the header side's FeatureTable is the import's.
+    CHECK(isoline::modules_test::featureTableAddressFromHeaders() == &isoline::FeatureTable);
 }
 
 TEST_CASE("Modules.hostFunctionTemplate")
