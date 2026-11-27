@@ -124,13 +124,23 @@ ctest --preset clang-asan
 Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `gcc-release`, `macos-clang` and `msvc-debug`
 (from a Visual Studio Developer Command Prompt). Every preset builds into `out/<preset>/`.
 
-A top-level build installs as the CMake package `isoline` (`-DISOLINE_INSTALL=OFF` turns that off).
-Its one dependency, [core-cpp](https://github.com/contour-terminal/core-cpp), is not installed with
-it: install core-cpp first, from its own build, into the same prefix.
+A top-level build installs as the CMake package `isoline` (`-DISOLINE_INSTALL=OFF` turns that off), with
+the components `core` (`isoline::core`) and `text` (`isoline::text`, the text format). Its one dependency,
+[core-cpp](https://github.com/contour-terminal/core-cpp), is not installed with it: install core-cpp
+first, into the same prefix, built by the same compiler and standard library as the consumer.
 
 ```sh
+cmake -S vendor/core-cpp -B out/core-cpp -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCORE_CPP_INSTALL=ON -DCORE_CPP_TESTING=OFF -DCORE_CPP_CATCH2_MAIN=OFF \
+      -DCORE_CPP_BUILD_EXAMPLES=OFF -DCORE_CPP_FETCH_DEPS=OFF \
+      -DCORE_CPP_WITH_TUI=OFF -DCORE_CPP_WITH_TUI_OUTPUT=OFF -DCORE_CPP_WITH_TUI_CORE=OFF \
+      -DCORE_CPP_WITH_TLS=OFF -DCORE_CPP_WITH_SYSTEMD=OFF
+cmake --build out/core-cpp
+cmake --install out/core-cpp --prefix <prefix> --component core-cpp
 cmake --install out/clang-release --prefix <prefix> --component isoline
 ```
+
+A consumer configured with `-DCMAKE_PREFIX_PATH=<prefix>` then finds it:
 
 ```cmake
 find_package(isoline 0.1 REQUIRED COMPONENTS core)

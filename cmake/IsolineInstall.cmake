@@ -3,21 +3,17 @@
 # Isoline as an installed CMake package, and the tests that install it.
 #
 #   find_package(isoline 0.1 REQUIRED COMPONENTS core)
-#   target_link_libraries(app PRIVATE isoline::core)
+#   target_link_libraries(app PRIVATE isoline::core)          # or isoline::core_module, to import it
 #
 # Included last by the top-level CMakeLists.txt, once every library target exists.
 
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/isolineComponentNames.cmake")
+# The library rows (ISOLINE_INSTALL_LIBRARIES), the install directories, and the module targets' install
+# rule, which isoline_add_module() has already run in each module's own directory.
+include("${CMAKE_CURRENT_LIST_DIR}/IsolineInstallRows.cmake")
 
 # --- the package -----------------------------------------------------------------------------------
-
-# The installed libraries: (library, export name, export set, install component, EXCLUDE_FROM_ALL).
-# A library is a row. Its export name is what a consumer spells after isoline::, and its export set
-# is isoline<ExportName>Targets, the file isolineConfig.cmake finds the component `<export name>` by.
-# EXCLUDE_FROM_ALL ON installs it only by its component, never in a plain `cmake --install`.
-set(ISOLINE_INSTALL_LIBRARIES
-    "isoline_core"   "core"   "isolineCoreTargets"   "isoline"   OFF)
 
 # Every rule is in this component: `cmake --install <build> --component isoline` installs Isoline and
 # none of the rules of a dependency fetched beside it.
@@ -45,8 +41,9 @@ function(isoline_install_core_cpp_version outVar)
     set(${outVar} "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}" PARENT_SCOPE)
 endfunction()
 
-## @brief Installs one row of ISOLINE_INSTALL_LIBRARIES: the library with its HEADERS file set, and
-## its export set as isoline<ExportName>Targets.cmake.
+## @brief Installs one row of ISOLINE_INSTALL_LIBRARIES into its export set: the library with its HEADERS
+## file set. Its module target, where it has one, is already in the export set
+## (isoline_install_module_target()). The export set itself is installed once, by isoline_install().
 function(isoline_install_library library exportName exportSet component isExcludedFromAll)
     isoline_component_name_refusal("${exportName}" refusal)
     if(refusal)
@@ -62,30 +59,104 @@ function(isoline_install_library library exportName exportSet component isExclud
     if(isExcludedFromAll)
         set(exclusion EXCLUDE_FROM_ALL)
     endif()
-    set_target_properties(${library} PROPERTIES EXPORT_NAME "${exportName}")
+    set_target_properties(${library} PROPERTIES EXPORT_NAME "${exportName}"
+        MSVC_DEBUG_INFORMATION_FORMAT "${ISOLINE_INSTALL_MSVC_DEBUG_INFORMATION_FORMAT}")
     install(TARGETS ${library}
         EXPORT ${exportSet}
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT ${component} ${exclusion}
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT ${component} ${exclusion}
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT ${component} ${exclusion}
         FILE_SET HEADERS DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" COMPONENT ${component} ${exclusion})
-    install(EXPORT ${exportSet}
-        NAMESPACE isoline::
-        DESTINATION "${ISOLINE_INSTALL_PACKAGE_DIR}"
-        COMPONENT ${component}
-        ${exclusion})
 endfunction()
 
-## @brief Installs every row of ISOLINE_INSTALL_LIBRARIES and the package's config and version files.
+## @brief Sets @p outVar to the export names of the rows of ISOLINE_INSTALL_LIBRARIES, other than
+## @p library's own, whose library or module target @p library or its module target links: the components
+## isolineConfig.cmake loads before @p library's (a module row's IMPORTS are among those links).
+function(isoline_install_required_components library outVar)
+    set(required "")
+    foreach(target IN ITEMS ${library} ${library}_module)
+        if(NOT TARGET ${target})
+            continue()
+        endif()
+        get_target_property(links ${target} LINK_LIBRARIES)
+        foreach(link IN LISTS links)
+            if(NOT TARGET ${link})
+                continue()
+            endif()
+            get_target_property(aliased ${link} ALIASED_TARGET)
+            if(aliased)
+                set(link "${aliased}")
+            endif()
+            string(REGEX REPLACE "_module$" "" linkedLibrary "${link}")
+            if(linkedLibrary STREQUAL library)
+                continue()
+            endif()
+            isoline_install_library_row(${linkedLibrary} linked)
+            if(linkedFound)
+                list(APPEND required "${linkedExportName}")
+            endif()
+        endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES required)
+    set(${outVar} "${required}" PARENT_SCOPE)
+endfunction()
+
+## @brief Installs every row of ISOLINE_INSTALL_LIBRARIES, each export set once, and the package's config
+## and version files. Rows of one export set must agree on its install component and EXCLUDE_FROM_ALL.
 function(isoline_install)
+    set(exportSets "")
     set(rows ${ISOLINE_INSTALL_LIBRARIES})
+    set(generated "${PROJECT_BINARY_DIR}/isoline-package")
     while(rows)
         list(POP_FRONT rows library exportName exportSet component isExcludedFromAll)
         isoline_install_library(${library} ${exportName} ${exportSet} ${component} ${isExcludedFromAll})
+        # What the component needs loaded first, beside its targets file (isolineConfig.cmake reads it).
+        isoline_install_required_components(${library} required)
+        string(REGEX REPLACE "Targets$" "Requires" requiresStem "${exportSet}")
+        file(CONFIGURE OUTPUT "${generated}/${requiresStem}.cmake"
+             CONTENT "# The components isoline::${exportName} needs loaded before it (cmake/IsolineInstall.cmake).\nset(_isolineRequires \"@required@\")\n"
+             @ONLY)
+        set(requiresExclusion "")
+        if(isExcludedFromAll)
+            set(requiresExclusion EXCLUDE_FROM_ALL)
+        endif()
+        install(FILES "${generated}/${requiresStem}.cmake" DESTINATION "${ISOLINE_INSTALL_PACKAGE_DIR}"
+                COMPONENT ${component} ${requiresExclusion})
+        if(exportSet IN_LIST exportSets)
+            if(NOT "${component}|${isExcludedFromAll}" STREQUAL "${exportSetInstall_${exportSet}}")
+                message(FATAL_ERROR "ISOLINE_INSTALL_LIBRARIES: the rows of export set ${exportSet} disagree on "
+                                    "its component and EXCLUDE_FROM_ALL: ${exportSetInstall_${exportSet}} and "
+                                    "${component}|${isExcludedFromAll} (${library}).")
+            endif()
+        else()
+            list(APPEND exportSets ${exportSet})
+            set(exportSetInstall_${exportSet} "${component}|${isExcludedFromAll}")
+        endif()
     endwhile()
+    foreach(exportSet IN LISTS exportSets)
+        string(REPLACE "|" ";" install "${exportSetInstall_${exportSet}}")
+        list(GET install 0 component)
+        list(GET install 1 isExcludedFromAll)
+        set(exclusion "")
+        if(isExcludedFromAll)
+            set(exclusion EXCLUDE_FROM_ALL)
+        endif()
+        # The module information of an export set's module targets, relative to its destination.
+        set(modulesDirectory "")
+        get_property(hasModules GLOBAL PROPERTY ISOLINE_INSTALL_MODULES_OF_${exportSet})
+        if(hasModules)
+            file(RELATIVE_PATH modulesSubdirectory "/${ISOLINE_INSTALL_PACKAGE_DIR}" "/${ISOLINE_INSTALL_MODULE_DIR}")
+            set(modulesDirectory CXX_MODULES_DIRECTORY "${modulesSubdirectory}")
+        endif()
+        install(EXPORT ${exportSet}
+            NAMESPACE isoline::
+            DESTINATION "${ISOLINE_INSTALL_PACKAGE_DIR}"
+            ${modulesDirectory}
+            COMPONENT ${component}
+            ${exclusion})
+    endforeach()
 
     isoline_install_core_cpp_version(ISOLINE_INSTALL_CORE_CPP_VERSION)
-    set(generated "${PROJECT_BINARY_DIR}/isoline-package")
     configure_package_config_file("${PROJECT_SOURCE_DIR}/cmake/isolineConfig.cmake.in"
         "${generated}/isolineConfig.cmake"
         INSTALL_DESTINATION "${ISOLINE_INSTALL_PACKAGE_DIR}")
@@ -106,9 +177,7 @@ function(isoline_install)
 endfunction()
 
 if(ISOLINE_INSTALL)
-    include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
-    set(ISOLINE_INSTALL_PACKAGE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/isoline")
     isoline_install()
 endif()
 
@@ -125,20 +194,26 @@ set(ISOLINE_INSTALL_TEST_CONDITIONS
     "CMAKE_GENERATOR MATCHES \"^Ninja\""
                                  "they are proven with the Ninja generators only (${CMAKE_GENERATOR})")
 
-# The install tests: (name, consumer mode). A test is a row; tests/cmake/check-install.cmake knows
-# each mode.
-set(ISOLINE_INSTALL_TESTS
-    "install-include-consumer"   "include")
+# Where the install tests of a mode that imports are registered, beyond the rows above: (condition,
+# reason) rows, every one of which must hold. The reason of the first that does not is printed.
+set(ISOLINE_INSTALL_MODULE_TEST_CONDITIONS
+    "ISOLINE_MODULES"              "the module is off (ISOLINE_MODULES)"
+    "ISOLINE_MODULES_INSTALLABLE"  "the generator ${CMAKE_GENERATOR} cannot install C++ modules")
+
+# The install tests are the consumer's modes: one CTest per row of ISOLINE_CONSUMER_MODES, which
+# tests/cmake/check-install.cmake and tests/consumer read too.
+include("${PROJECT_SOURCE_DIR}/tests/consumer/ConsumerModes.cmake")
 
 # The component naming rule (cmake/isolineComponentNames.cmake), in script mode: pure, but registered
 # with the install tests it serves, so a lane has either all of them or none.
 set(ISOLINE_INSTALL_COMPONENT_NAMES_TEST install-component-names)
 
-## @brief Sets @p outVar to the reason of the first row of ISOLINE_INSTALL_TEST_CONDITIONS whose
-## condition does not hold, or to "" if every one holds.
-function(isoline_install_tests_refusal outVar)
+## @brief Sets @p outVar to the reason of the first row of the (condition, reason) table @p conditions
+## (ISOLINE_INSTALL_TEST_CONDITIONS, ISOLINE_INSTALL_MODULE_TEST_CONDITIONS) whose condition does not
+## hold, or to "" if every one holds.
+function(isoline_install_tests_refusal conditions outVar)
     set(refusal "")
-    set(rows ${ISOLINE_INSTALL_TEST_CONDITIONS})
+    set(rows ${${conditions}})
     while(rows)
         list(POP_FRONT rows condition reason)
         cmake_language(EVAL CODE "if(${condition})\nset(holds ON)\nelse()\nset(holds OFF)\nendif()")
@@ -150,10 +225,11 @@ function(isoline_install_tests_refusal outVar)
     set(${outVar} "${refusal}" PARENT_SCOPE)
 endfunction()
 
-## @brief Registers each row of ISOLINE_INSTALL_TESTS as a CTest of label `install`, or, where a row of
-## ISOLINE_INSTALL_TEST_CONDITIONS refuses, none and says why.
+## @brief Registers each row of ISOLINE_CONSUMER_MODES as a CTest of label `install` (and `modules`, for a
+## mode that imports), or, where a row of ISOLINE_INSTALL_TEST_CONDITIONS refuses, none and says why. A
+## mode that imports is registered where ISOLINE_INSTALL_MODULE_TEST_CONDITIONS hold, too.
 function(isoline_add_install_tests)
-    isoline_install_tests_refusal(refusal)
+    isoline_install_tests_refusal(ISOLINE_INSTALL_TEST_CONDITIONS refusal)
     if(refusal)
         # A parent project's configure log is the parent's: it did not ask for Isoline's tests.
         if(PROJECT_IS_TOP_LEVEL)
@@ -161,6 +237,7 @@ function(isoline_add_install_tests)
         endif()
         return()
     endif()
+    isoline_install_tests_refusal(ISOLINE_INSTALL_MODULE_TEST_CONDITIONS moduleRefusal)
     add_test(NAME ${ISOLINE_INSTALL_COMPONENT_NAMES_TEST}
              COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/cmake/install-component-names.cmake")
     set_tests_properties(${ISOLINE_INSTALL_COMPONENT_NAMES_TEST} PROPERTIES LABELS install TIMEOUT 60)
@@ -174,33 +251,61 @@ function(isoline_add_install_tests)
     if(NOT isMultiConfig)
         set(isMultiConfig OFF)
     endif()
-    set(rows ${ISOLINE_INSTALL_TESTS})
-    while(rows)
-        list(POP_FRONT rows name mode)
-        add_test(NAME ${name}
-                 COMMAND "${CMAKE_COMMAND}"
-                         "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
-                         "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+    # The toolchain goes to every project check-install configures. Of the std module's description it is
+    # the cache entry, the one a lane sets to override CMake's (CMakeCXXCompiler.cmake shadows it with a
+    # variable of CMake's own finding, which a consumer finds for itself).
+    set(toolchainArguments
+        "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+        "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}"
+        "-DSTDLIB_MODULES_JSON=$CACHE{CMAKE_CXX_STDLIB_MODULES_JSON}"
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        "-DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DGENERATOR_IS_MULTI_CONFIG=${isMultiConfig}"
+        "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+        "-DMT=${CMAKE_MT}"
+        "-DAR=${CMAKE_AR}"
+        "-DRANLIB=${CMAKE_RANLIB}"
+        "-DCONFIG=$<CONFIG>")
+    # core-cpp, built and installed once into a prefix every mode copies (check-install's CORE_CPP_ONLY):
+    # the setup fixture of every mode's test, so a lane builds it once rather than once per mode.
+    set(coreCppPrefix "${PROJECT_BINARY_DIR}/install-tests/core-cpp/prefix")
+    add_test(NAME install-core-cpp
+             COMMAND "${CMAKE_COMMAND}" ${toolchainArguments} "-DPREFIX=${coreCppPrefix}" -DCORE_CPP_ONLY=ON
+                     -P "${PROJECT_SOURCE_DIR}/tests/cmake/check-install.cmake")
+    # A cold build of core-cpp's base library on a loaded machine.
+    set_tests_properties(install-core-cpp PROPERTIES LABELS install TIMEOUT 900
+                                                     FIXTURES_SETUP isoline-install-core-cpp)
+    set(testCount 2)
+    isoline_consumer_mode("" every)
+    foreach(mode IN LISTS everyKnownModes)
+        isoline_consumer_mode("${mode}" consumer)
+        set(labels install)
+        if(consumerImportsIsoline OR consumerImportsStd)
+            if(moduleRefusal)
+                message(STATUS "[isoline] install tests: ${consumerTest} not registered: ${moduleRefusal}")
+                continue()
+            endif()
+            list(APPEND labels modules)
+        endif()
+        add_test(NAME ${consumerTest}
+                 COMMAND "${CMAKE_COMMAND}" ${toolchainArguments}
                          "-DPREFIX=${PROJECT_BINARY_DIR}/install-tests/${mode}/prefix"
+                         "-DCORE_CPP_PREFIX=${coreCppPrefix}"
                          "-DCONSUMER_SOURCE=${PROJECT_SOURCE_DIR}/tests/consumer"
                          "-DMODE=${mode}"
-                         "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
-                         "-DGENERATOR=${CMAKE_GENERATOR}"
-                         "-DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
-                         "-DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
-                         "-DGENERATOR_IS_MULTI_CONFIG=${isMultiConfig}"
-                         "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
-                         "-DMT=${CMAKE_MT}"
-                         "-DCONFIG=$<CONFIG>"
                          "-DEXPECT_IMPORT_STD=${isExpectingImportStd}"
                          "-DFORBIDDEN_OPTIONS_FILE=${forbiddenOptionsFile}"
                          -P "${PROJECT_SOURCE_DIR}/tests/cmake/check-install.cmake")
-        # It builds core-cpp and a consumer of its own: measured at 2 to 8 seconds with a warm compiler
-        # cache, so the bound leaves room for a cold one on a loaded machine.
-        set_tests_properties(${name} PROPERTIES LABELS install TIMEOUT 900)
-    endwhile()
-    list(LENGTH ISOLINE_INSTALL_TESTS cellCount)
-    math(EXPR testCount "${cellCount} / 2 + 1")
+        # It builds a consumer of its own: measured at 2 to 8 seconds with a warm compiler cache, so the
+        # bound leaves room for a cold one on a loaded machine. Exit 77 is a mode whose toolchain lacks what
+        # it needs (import std), on a lane that does not expect it.
+        set_tests_properties(${consumerTest} PROPERTIES LABELS "${labels}" TIMEOUT 900 SKIP_RETURN_CODE 77
+                                                       FIXTURES_REQUIRED isoline-install-core-cpp)
+        math(EXPR testCount "${testCount} + 1")
+    endforeach()
     message(STATUS "[isoline] install tests: ${testCount} registered")
 endfunction()
 

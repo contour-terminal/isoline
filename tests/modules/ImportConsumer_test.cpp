@@ -53,27 +53,6 @@ namespace
 
 using namespace isoline::api;
 
-/// A module that imports `env.double: (i32) -> i32` and exports that import as `double`:
-///
-///     (module
-///       (import "env" "double" (func (param i32) (result i32)))
-///       (export "double" (func 0)))
-///
-/// Its 44 bytes: the magic number and version 1; the type section (1), 6 bytes, `60 01 7F 01 7F`; the
-/// import section (2), 14 bytes, `03 'env' 06 'double'`, a function (`00`) of type 0; and the export
-/// section (7), 10 bytes, `06 'double'`, function 0.
-constexpr auto DoubleImportModule = std::to_array<std::byte>({
-    std::byte { 0x00 }, std::byte { 0x61 }, std::byte { 0x73 }, std::byte { 0x6D }, std::byte { 0x01 },
-    std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x01 }, std::byte { 0x06 },
-    std::byte { 0x01 }, std::byte { 0x60 }, std::byte { 0x01 }, std::byte { 0x7F }, std::byte { 0x01 },
-    std::byte { 0x7F }, std::byte { 0x02 }, std::byte { 0x0E }, std::byte { 0x01 }, std::byte { 0x03 },
-    std::byte { 0x65 }, std::byte { 0x6E }, std::byte { 0x76 }, std::byte { 0x06 }, std::byte { 0x64 },
-    std::byte { 0x6F }, std::byte { 0x75 }, std::byte { 0x62 }, std::byte { 0x6C }, std::byte { 0x65 },
-    std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x07 }, std::byte { 0x0A }, std::byte { 0x01 },
-    std::byte { 0x06 }, std::byte { 0x64 }, std::byte { 0x6F }, std::byte { 0x75 }, std::byte { 0x62 },
-    std::byte { 0x6C }, std::byte { 0x65 }, std::byte { 0x00 }, std::byte { 0x00 },
-});
-
 /// The value an alternative of a visited error variant reports: which alternative it was.
 enum class Alternative : std::uint8_t
 {
@@ -183,7 +162,7 @@ TEST_CASE("Modules.hostFunctionTemplate")
         });
 
     auto const engine = Engine { EngineConfig {} };
-    auto const module = engine.load(DoubleImportModule);
+    auto const module = engine.load(isoline::consumer::DoubleImportModule);
     REQUIRE(module.has_value());
     auto imports = Imports {};
     imports.define("env",

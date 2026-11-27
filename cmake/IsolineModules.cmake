@@ -14,6 +14,7 @@
 
 include_guard(GLOBAL)
 include(IsolineModuleSupport)
+include(IsolineInstallRows)
 
 # The target ABI the table's rows name (isoline_module_target_abi()).
 isoline_module_target_abi(COMPILER_ID "${CMAKE_CXX_COMPILER_ID}" SIMULATE_ID "${CMAKE_CXX_SIMULATE_ID}"
@@ -77,8 +78,18 @@ function(_isoline_module_gate)
 
     message(STATUS "[isoline] C++ modules: on (${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}, "
                    "installed modules: ${installedModules})")
+    # Whether the generator's row can install module information (ISOLINE_MODULE_GENERATORS), which
+    # cmake/IsolineInstall.cmake reads.
+    set(isInstallable OFF)
+    if(installedModules STREQUAL "yes")
+        set(isInstallable ON)
+    endif()
+    set(ISOLINE_MODULES_INSTALLABLE ${isInstallable} PARENT_SCOPE)
 endfunction()
 
+# Whether this build installs its module targets: ON where ISOLINE_MODULES is on and the generator can
+# install module information; OFF otherwise.
+set(ISOLINE_MODULES_INSTALLABLE OFF)
 if(ISOLINE_MODULES)
     _isoline_module_gate()
 endif()
@@ -311,7 +322,8 @@ endfunction()
 ## @brief Creates the module target of a row (D2): <LIBRARY>_module, a static library that holds only the
 ## interface unit, in FILE_SET CXX_MODULES, and links LIBRARY and the module targets of IMPORTS. Its alias
 ## and export name are LIBRARY's without the `isoline_` prefix, plus `_module` (isoline::core_module). Sets
-## the global property ISOLINE_MODULE_<NAME>_TARGET, which isoline_add_module_consumer() reads.
+## the global property ISOLINE_MODULE_<NAME>_TARGET, which isoline_add_module_consumer() reads, and installs
+## the target beside LIBRARY (isoline_install_module_target()).
 ##
 ## _isoline_add_module_target(NAME <module> LIBRARY <target> SOURCE <absolute interface unit>
 ##                            [IMPORTS <module>...])
@@ -355,6 +367,8 @@ function(_isoline_add_module_target)
     set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_TARGET ${target})
     set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_IMPORTS "${arg_IMPORTS}")
     set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_SOURCE "${arg_SOURCE}")
+    # Installed here, in the directory that creates it, beside LIBRARY (cmake/IsolineInstallRows.cmake).
+    isoline_install_module_target(${target} ${arg_LIBRARY})
 endfunction()
 
 ## @brief Makes @p target an importer of the named modules: it is scanned for module dependencies
