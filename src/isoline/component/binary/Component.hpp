@@ -148,6 +148,19 @@ inline constexpr auto NameAttributeTable = std::to_array<NameAttributeRow>({
 static_assert(NameAttributeTable.size() == std::variant_size_v<Attribute>,
               "NameAttributeTable holds one row per Attribute alternative");
 
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: NameAttributeTable)
+        {
+            if (row.byte != index)
+                return false;
+            ++index;
+        }
+        return true;
+    }(),
+    "NameAttributeTable lists the attributes by byte, which is the index of their Attribute alternative");
+
 /// A name with its attributes: `nameattributes` of Binary.md. The name is not checked against the
 /// `externname` grammar here; validation does that.
 struct NameAttributes

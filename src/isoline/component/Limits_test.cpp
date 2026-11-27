@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <set>
+#include <string>
 #include <string_view>
 
 #include <isoline/component/Limits.hpp>
@@ -42,13 +43,14 @@ TEST_CASE("Limits.valuesReadTheirField")
     limits.maxTypeSize = 4;
     limits.maxTypes = 5;
     limits.maxDefinitions = 6;
-    limits.maxNameBytes = 7;
-    limits.maxCoreInstances = 8;
-    limits.maxComponentInstances = 9;
-    limits.maxInstantiationSteps = 10;
-    limits.maxResourceTypes = 11;
-    limits.maxHandles = 12;
-    limits.maxLiveValueBytes = 13;
+    limits.maxDecodedItems = 7;
+    limits.maxNameBytes = 8;
+    limits.maxCoreInstances = 9;
+    limits.maxComponentInstances = 10;
+    limits.maxInstantiationSteps = 11;
+    limits.maxResourceTypes = 12;
+    limits.maxHandles = 13;
+    limits.maxLiveValueBytes = 14;
     for (auto const& row: LimitTable)
         CHECK(limitValue(limits, row.limit) == static_cast<uint64_t>(row.limit) + 1);
 
@@ -58,6 +60,20 @@ TEST_CASE("Limits.valuesReadTheirField")
 
 TEST_CASE("Limits.messages")
 {
+    // Every row's message is a format string that formats its limit's value (std::vformat throws on
+    // one that does not).
+    for (auto const& row: LimitTable)
+    {
+        INFO(row.name);
+        auto const value = limitValue(ComponentLimits {}, row.limit);
+        auto const message = limitMessage(row.limit, value);
+        CHECK_FALSE(message.empty());
+        if (row.message.contains("{}"))
+            CHECK(message.contains(std::to_string(value)));
+        else
+            CHECK(message == row.message);
+    }
+
     // wasm-tools' wording, at its own limit.
     CHECK(limitMessage(ComponentLimit::TypeSize, ComponentLimits {}.maxTypeSize)
           == "effective type size exceeds the limit of 1000000");

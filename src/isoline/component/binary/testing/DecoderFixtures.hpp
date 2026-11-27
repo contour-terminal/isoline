@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include <isoline/binary/testing/ModuleBuilder.hpp>
+
 namespace isoline::component::binary::testing
 {
 
@@ -31,29 +33,29 @@ inline void appendBytes(Bytes& out, Bytes const& bytes)
     out.insert(out.end(), bytes.begin(), bytes.end());
 }
 
-/// Appends the shortest unsigned LEB128 encoding of @p value.
+/// Appends bytes the core module builder's encoders made.
+/// @param out The bytes to extend.
+/// @param bytes The bytes to append.
+inline void appendBytes(Bytes& out, std::vector<uint8_t> const& bytes)
+{
+    for (auto const byte: bytes)
+        out.push_back(std::byte { byte });
+}
+
+/// Appends the shortest unsigned LEB128 encoding of @p value, as the core builder encodes it.
 /// @param out The bytes to extend.
 /// @param value The value to encode.
 inline void appendLeb128(Bytes& out, uint64_t value)
 {
-    do
-    {
-        auto byte = static_cast<uint8_t>(value & 0x7FU);
-        value >>= 7U;
-        if (value != 0)
-            byte |= 0x80U;
-        out.push_back(std::byte { byte });
-    } while (value != 0);
+    appendBytes(out, isoline::binary::testing::encodeU64(value));
 }
 
-/// Appends a name: its byte length, then its bytes.
+/// Appends a name, its byte length and then its bytes, as the core builder encodes it.
 /// @param out The bytes to extend.
 /// @param name The name to encode.
 inline void appendName(Bytes& out, std::string_view name)
 {
-    appendLeb128(out, name.size());
-    for (auto const character: name)
-        out.push_back(static_cast<std::byte>(character));
+    appendBytes(out, isoline::binary::testing::encodeName(name));
 }
 
 /// A plain name (`nameattributes` of form 0x00) of @p name.
@@ -119,20 +121,6 @@ inline void appendName(Bytes& out, std::string_view name)
     return bytes;
 }
 
-/// The number of bytes the shortest LEB128 encoding of @p value takes.
-/// @param value The value.
-/// @return Its encoded size.
-[[nodiscard]] inline uint64_t encodedLeb128Size(uint64_t value)
-{
-    auto size = uint64_t { 1 };
-    while (value >= 0x80U)
-    {
-        value >>= 7U;
-        ++size;
-    }
-    return size;
-}
-
 /// @p depth components, each but the innermost holding the next in its one component section.
 ///
 /// Built front to back from the sizes, computed innermost first, so the bytes are made in time and
@@ -145,7 +133,8 @@ inline void appendName(Bytes& out, std::string_view name)
     // sizes[k] is the encoded size of the component at depth k, the outermost at 0.
     auto sizes = std::vector<uint64_t>(depth, PreambleSize);
     for (auto const level: std::views::iota(uint32_t { 1 }, depth) | std::views::reverse)
-        sizes[level - 1] = PreambleSize + 1 + encodedLeb128Size(sizes[level]) + sizes[level];
+        sizes[level - 1] =
+            PreambleSize + 1 + isoline::binary::testing::encodeU64(sizes[level]).size() + sizes[level];
     auto bytes = Bytes {};
     bytes.reserve(sizes.front());
     for (auto const level: std::views::iota(uint32_t { 1 }, depth))

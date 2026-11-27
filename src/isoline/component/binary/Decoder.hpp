@@ -241,14 +241,18 @@ struct DecodeError
 /// The decoder copies @p bytes into the pool before it reads them, so the pool never aliases the
 /// caller's memory. It reads sections as wasm-tools does, each bounded by its declared size, and
 /// nested components on an explicit stack of frames, never by recursion; nesting deeper than
-/// ComponentLimits::maxNesting is refused. Vector counts never reserve memory: a vector grows as its
+/// ComponentLimits::maxNesting is refused. Every item it decodes (a definition, a nested component,
+/// an element of a vector inside a definition) is charged against ComponentLimits::maxDecodedItems
+/// before it is read, so what the pool holds beyond the names it copies is bounded by that count,
+/// whatever the input's shape. Vector counts never reserve memory: a vector grows as its
 /// elements decode, so a count larger than its bytes fails with UnexpectedEnd having allocated
 /// nothing for it. Embedded core modules are not decoded (D10): only their range and preamble are
 /// checked. Sections 3 (core types), 7 (types) and 8 (canon) are refused as UnimplementedSection
 /// until P11 Task 2; sections 9 (start) and 12 (values) as FeatureDisabled 🪙.
 /// @param bytes The component's bytes, from its preamble on.
 /// @param features The gated features whose forms are admitted (decodeAdmits()).
-/// @param limits The caps to enforce: maxComponentBytes, maxNesting, maxDefinitions, maxNameBytes.
+/// @param limits The caps to enforce: maxComponentBytes, maxNesting, maxDefinitions, maxDecodedItems
+///               and maxNameBytes.
 /// @return The pool, or the first error, at its absolute offset.
 [[nodiscard]] std::expected<ComponentPool, DecodeError> decodeComponent(std::span<std::byte const> bytes,
                                                                         ComponentFeatureSet features,

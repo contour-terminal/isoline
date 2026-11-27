@@ -266,6 +266,7 @@ namespace
         [[nodiscard]] Result<void> nextSection(std::size_t frame);
         [[nodiscard]] static Result<void> checkPreamble(Reader reader, LayerKind expected);
         [[nodiscard]] Result<void> admit(std::optional<ComponentFeature> gate, uint64_t offset) const;
+        [[nodiscard]] Result<void> chargeItem(uint64_t offset);
         [[nodiscard]] Result<void> roomForDefinition(uint32_t component, uint64_t offset) const;
         [[nodiscard]] Result<void> addDefinition(uint32_t component, uint64_t offset, Definition definition);
 
@@ -273,27 +274,29 @@ namespace
         template <typename Read>
         [[nodiscard]] Result<void> definitions(SectionContext& section, Read read);
 
-        /// Reads a vector, calling @p read once per element; nothing is reserved for the count.
+        /// Reads a vector, calling @p read once per element, each charged as a decoded item before it
+        /// is read (chargeItem()); nothing is reserved for the count.
         template <typename Read>
-        [[nodiscard]] static Result<void> forEach(Reader& reader, Read read);
+        [[nodiscard]] Result<void> forEach(Reader& reader, Read read);
 
         [[nodiscard]] static Result<uint8_t> u8(Reader& reader);
         [[nodiscard]] static Result<uint32_t> u32(Reader& reader);
         [[nodiscard]] Result<std::string> name(Reader& reader) const;
-        [[nodiscard]] Result<Sort> externalKind(Reader& reader) const;
-        [[nodiscard]] Result<SortIndex> sortIndex(Reader& reader) const;
-        [[nodiscard]] Result<ExternDesc> externDesc(Reader& reader) const;
-        [[nodiscard]] Result<NameAttributes> nameAttributes(Reader& reader) const;
-        [[nodiscard]] Result<CoreInstanceDefinition> coreInstance(Reader& reader) const;
-        [[nodiscard]] Result<InstanceDefinition> instance(Reader& reader) const;
-        [[nodiscard]] Result<AliasDefinition> alias(Reader& reader) const;
-        [[nodiscard]] Result<ImportDefinition> import(Reader& reader) const;
-        [[nodiscard]] Result<ExportDefinition> exportDefinition(Reader& reader) const;
+        [[nodiscard]] Result<Sort> externalKind(Reader& reader);
+        [[nodiscard]] Result<SortIndex> sortIndex(Reader& reader);
+        [[nodiscard]] Result<ExternDesc> externDesc(Reader& reader);
+        [[nodiscard]] Result<NameAttributes> nameAttributes(Reader& reader);
+        [[nodiscard]] Result<CoreInstanceDefinition> coreInstance(Reader& reader);
+        [[nodiscard]] Result<InstanceDefinition> instance(Reader& reader);
+        [[nodiscard]] Result<AliasDefinition> alias(Reader& reader);
+        [[nodiscard]] Result<ImportDefinition> import(Reader& reader);
+        [[nodiscard]] Result<ExportDefinition> exportDefinition(Reader& reader);
 
         ComponentFeatureSet _features;
         ComponentLimits const& _limits;
         ComponentPool _pool;
         std::vector<Frame> _frames;
+        uint64_t _decodedItems = 0; ///< The items charged so far, of the whole pool.
     };
 
     /// One section: its id, the feature that introduced it, its decoder and its shape.
@@ -323,6 +326,8 @@ namespace
         { .id = 9, .gate = ComponentFeature::Values, .decode = &ComponentDecoder::unimplementedSection },
         { .id = 10, .gate = std::nullopt, .decode = &ComponentDecoder::importSection },
         { .id = 11, .gate = std::nullopt, .decode = &ComponentDecoder::exportSection },
+        // wasm-tools has no values section and reports this one as "malformed section id: 12"; P11
+        // names the gate of the production Binary.md gives it.
         { .id = 12, .gate = ComponentFeature::Values, .decode = &ComponentDecoder::unimplementedSection },
     });
 
@@ -456,6 +461,17 @@ namespace
             DecodeErrorCode::FeatureDisabled, offset, std::nullopt, gate } };
     }
 
+    Result<void> ComponentDecoder::chargeItem(uint64_t offset)
+    {
+        if (_decodedItems >= _limits.maxDecodedItems)
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::LimitExceeded,
+                offset,
+                limitSubject(ComponentLimit::DecodedItems, _limits.maxDecodedItems) } };
+        ++_decodedItems;
+        return {};
+    }
+
     Result<void> ComponentDecoder::roomForDefinition(uint32_t component, uint64_t offset) const
     {
         if (_pool.components[component].definitions.size() < _limits.maxDefinitions)
@@ -496,8 +512,12 @@ namespace
         if (!count)
             return std::unexpected { fromCore(count.error()) };
         for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, *count))
+        {
+            if (auto charged = chargeItem(reader.offset()); !charged)
+                return charged;
             if (auto result = read(); !result)
                 return result;
+        }
         return {};
     }
 
@@ -531,7 +551,7 @@ namespace
         return std::string { *view };
     }
 
-    Result<Sort> ComponentDecoder::externalKind(Reader& reader) const
+    Result<Sort> ComponentDecoder::externalKind(Reader& reader)
     {
         auto const offset = reader.offset();
         auto const first = u8(reader);
@@ -553,7 +573,7 @@ namespace
         return row->sort;
     }
 
-    Result<SortIndex> ComponentDecoder::sortIndex(Reader& reader) const
+    Result<SortIndex> ComponentDecoder::sortIndex(Reader& reader)
     {
         auto const sort = externalKind(reader);
         if (!sort)
@@ -564,7 +584,7 @@ namespace
         return SortIndex { .sort = *sort, .index = *index };
     }
 
-    Result<ExternDesc> ComponentDecoder::externDesc(Reader& reader) const
+    Result<ExternDesc> ComponentDecoder::externDesc(Reader& reader)
     {
         auto const sort = externalKind(reader);
         if (!sort)
@@ -590,7 +610,7 @@ namespace
         return desc;
     }
 
-    Result<NameAttributes> ComponentDecoder::nameAttributes(Reader& reader) const
+    Result<NameAttributes> ComponentDecoder::nameAttributes(Reader& reader)
     {
         auto const offset = reader.offset();
         auto const formByte = u8(reader);
@@ -599,14 +619,22 @@ namespace
         auto const form = std::ranges::find(NameForms, *formByte, &NameFormRow::byte);
         if (form == NameForms.end())
             return std::unexpected { DecodeError { DecodeErrorCode::InvalidNameKind, offset, *formByte } };
-        // The attributed form is admitted when any attribute is, as wasm-tools admits it, and refused
-        // as the first attribute's gate when none is.
+        // The attributed form is admitted when any attribute is, as wasm-tools admits it. When none
+        // is, the refusal names the first gate the caller enabled, which P11 then refuses itself, or
+        // else the first attribute's gate.
         if (form->form == NameForm::Attributed
             && std::ranges::none_of(NameAttributeTable, [&](NameAttributeRow const& row) {
                    return decodeAdmits(_features, row.gate);
                }))
+        {
+            auto const enabled = std::ranges::find_if(NameAttributeTable, [&](NameAttributeRow const& row) {
+                return _features.contains(row.gate);
+            });
+            auto const gate =
+                enabled == NameAttributeTable.end() ? NameAttributeTable.front().gate : enabled->gate;
             return std::unexpected { DecodeError {
-                DecodeErrorCode::FeatureDisabled, offset, std::nullopt, NameAttributeTable.front().gate } };
+                DecodeErrorCode::FeatureDisabled, offset, std::nullopt, gate } };
+        }
 
         auto text = name(reader);
         if (!text)
@@ -643,7 +671,7 @@ namespace
         return result;
     }
 
-    Result<CoreInstanceDefinition> ComponentDecoder::coreInstance(Reader& reader) const
+    Result<CoreInstanceDefinition> ComponentDecoder::coreInstance(Reader& reader)
     {
         auto const offset = reader.offset();
         auto const kind = u8(reader);
@@ -710,7 +738,7 @@ namespace
         }
     }
 
-    Result<InstanceDefinition> ComponentDecoder::instance(Reader& reader) const
+    Result<InstanceDefinition> ComponentDecoder::instance(Reader& reader)
     {
         auto const offset = reader.offset();
         auto const kind = u8(reader);
@@ -759,7 +787,7 @@ namespace
         }
     }
 
-    Result<AliasDefinition> ComponentDecoder::alias(Reader& reader) const
+    Result<AliasDefinition> ComponentDecoder::alias(Reader& reader)
     {
         // wasm-tools reads the sort's bytes and the target before it interprets the sort, whose
         // meaning depends on the target; so do its errors.
@@ -842,7 +870,7 @@ namespace
         return definition;
     }
 
-    Result<ImportDefinition> ComponentDecoder::import(Reader& reader) const
+    Result<ImportDefinition> ComponentDecoder::import(Reader& reader)
     {
         auto importName = nameAttributes(reader);
         if (!importName)
@@ -853,7 +881,7 @@ namespace
         return ImportDefinition { .name = std::move(*importName), .type = *type };
     }
 
-    Result<ExportDefinition> ComponentDecoder::exportDefinition(Reader& reader) const
+    Result<ExportDefinition> ComponentDecoder::exportDefinition(Reader& reader)
     {
         auto exportName = nameAttributes(reader);
         if (!exportName)
@@ -886,6 +914,8 @@ namespace
     Result<void> ComponentDecoder::customSection(SectionContext& section)
     {
         auto const offset = section.reader.offset();
+        if (auto charged = chargeItem(offset); !charged)
+            return charged;
         auto sectionName = name(section.reader);
         if (!sectionName)
             return std::unexpected { sectionName.error() };
@@ -901,6 +931,8 @@ namespace
         // The module is decoded by the core decoder once the component is validated (D10); here only
         // its range and its preamble are checked.
         auto const offset = section.reader.offset();
+        if (auto charged = chargeItem(offset); !charged)
+            return charged;
         if (auto result = checkPreamble(section.reader, LayerKind::CoreModule); !result)
             return result;
         auto const size = section.reader.remaining();
@@ -924,6 +956,8 @@ namespace
                 limitSubject(ComponentLimit::Nesting, _limits.maxNesting) } };
         if (auto result = checkPreamble(section.reader, LayerKind::Component); !result)
             return result;
+        if (auto charged = chargeItem(offset); !charged)
+            return charged;
         auto const index = static_cast<uint32_t>(_pool.components.size());
         if (auto result = addDefinition(section.component, offset, NestedComponent { .index = index });
             !result)

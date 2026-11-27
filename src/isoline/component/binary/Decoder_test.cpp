@@ -356,6 +356,13 @@ TEST_CASE("Decoder.nameAttributes")
                 ComponentFeatureSet::wasi03().with(ComponentFeature::CanonicalInterfaceNames));
     CHECK(suffix.code == DecodeErrorCode::FeatureDisabled);
     CHECK(suffix.disabled == ComponentFeature::CanonicalInterfaceNames);
+    // With 🔗 the only gate enabled, the attributed form is refused naming it, not implements.
+    auto const canonOnly = errorOf(
+        fixture->bytes, ComponentFeatureSet::defaults().with(ComponentFeature::CanonicalInterfaceNames));
+    CHECK(
+        canonOnly
+        == DecodeError {
+            DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::CanonicalInterfaceNames });
 
     // Each kind at most once.
     auto twice = bytesOf({ 0x01, 0x02 });
@@ -434,6 +441,12 @@ TEST_CASE("Decoder.deepNestingIsRefused")
     auto const third = errorOf(nestedComponents(3), ComponentFeatureSet::wasi03(), limits);
     CHECK(exceededLimit(third) == ComponentLimit::Nesting);
     CHECK(third.offset == 20);
+
+    // A limit below one refuses even the outermost component.
+    limits.maxNesting = 0;
+    auto const none = errorOf(componentPreamble(), ComponentFeatureSet::wasi03(), limits);
+    CHECK(none.offset == 0);
+    CHECK(exceededLimit(none) == ComponentLimit::Nesting);
 }
 
 TEST_CASE("Decoder.lyingCounts")
@@ -516,6 +529,37 @@ TEST_CASE("Decoder.definitionsAndNameCaps")
     CHECK(exceededLimit(
               errorOf(componentOf({ section(10, longImport) }), ComponentFeatureSet::wasi03(), limits))
           == ComponentLimit::NameBytes);
+}
+
+TEST_CASE("Decoder.decodedItemsCap")
+{
+    auto custom = Bytes {};
+    appendName(custom, "");
+    auto limits = ComponentLimits {};
+    limits.maxDecodedItems = 3;
+
+    // Counted across the whole pool: a sibling costs two items, its nested component and its custom
+    // section, so two of them hold four, past three, though no component holds more than two
+    // definitions.
+    auto const sibling = section(4, componentOf({ section(0, custom) }));
+    CHECK(decode(componentOf({ sibling }), ComponentFeatureSet::wasi03(), limits).has_value());
+    auto const siblings = errorOf(componentOf({ sibling, sibling }), ComponentFeatureSet::wasi03(), limits);
+    CHECK(exceededLimit(siblings) == ComponentLimit::DecodedItems);
+    CHECK(specMessage(siblings) == "decoded items count exceeds limit of 3");
+
+    // The elements of a definition's vectors count too: one instance of three inline exports is four.
+    auto exports = Bytes {};
+    appendBytes(exports, { 0x01, 0x01, 0x03 });
+    for ([[maybe_unused]] auto const index: { 0, 1, 2 })
+    {
+        appendName(exports, "");
+        appendBytes(exports, { 0x00, 0x00 });
+    }
+    auto const inner = errorOf(componentOf({ section(2, exports) }), ComponentFeatureSet::wasi03(), limits);
+    CHECK(exceededLimit(inner) == ComponentLimit::DecodedItems);
+    CHECK(inner.offset == 19); // the third export
+    limits.maxDecodedItems = 4;
+    CHECK(decode(componentOf({ section(2, exports) }), ComponentFeatureSet::wasi03(), limits).has_value());
 }
 
 TEST_CASE("Decoder.preambles")

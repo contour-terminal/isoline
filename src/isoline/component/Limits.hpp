@@ -22,7 +22,10 @@ struct ComponentLimits
     uint32_t maxTypeDepth = 100;      ///< Value-type nesting.
     uint32_t maxTypeSize = 1'000'000; ///< Effective type size per component (wasm-tools' rule, saturating).
     uint32_t maxTypes = 1'000'000;    ///< Per component, all index spaces of sort type.
-    uint32_t maxDefinitions = 1'000'000;        ///< Per component, all sections.
+    uint32_t maxDefinitions = 1'000'000; ///< Per component, all sections.
+    /// Per decoded component, all nested components together: definitions, nested components and the
+    /// elements of every vector inside a definition. Bounds what the pool holds per input byte.
+    uint32_t maxDecodedItems = 1'000'000;
     uint32_t maxNameBytes = 100'000;            ///< Bytes of one name.
     uint32_t maxCoreInstances = 10'000;         ///< Per ComponentStore.
     uint32_t maxComponentInstances = 10'000;    ///< Per ComponentStore.
@@ -47,6 +50,7 @@ enum class ComponentLimit : uint8_t
     TypeSize,
     Types,
     Definitions,
+    DecodedItems,
     NameBytes,
     CoreInstances,
     ComponentInstances,
@@ -106,6 +110,16 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .rule = "definitions of every section, custom sections included, per component",
       .message = "definitions count exceeds limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxDefinitions; } },
+    // A per-component count leaves the pool unbounded: siblings and nested components each fill their
+    // own. This one is charged before each item is read, so a 4-byte alias, which the pool holds in
+    // a definition many times its size, can be made at most this many times in all.
+    { .limit = ComponentLimit::DecodedItems,
+      .name = "maxDecodedItems",
+      .rule = "items of one decoded component and every component nested in it: definitions, nested "
+              "components, and the elements of the vectors inside definitions (arguments, inline exports, "
+              "attributes), charged before each is read",
+      .message = "decoded items count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxDecodedItems; } },
     { .limit = ComponentLimit::NameBytes,
       .name = "maxNameBytes",
       .rule = "bytes of one name, attribute or custom section name, refused before it is copied",
