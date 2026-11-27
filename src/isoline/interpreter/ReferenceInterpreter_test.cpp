@@ -234,7 +234,7 @@ class Harness
     /// @param index The global's index in the module's global index space.
     [[nodiscard]] Value global(uint32_t index)
     {
-        return _store.global(_store.moduleInstance(_address).globals.at(index)).value;
+        return _store.global(_store.moduleInstance(_address).globals.at(index)).value();
     }
 
   private:
@@ -3392,7 +3392,7 @@ TEST_CASE("ReferenceInterpreter.hostEscapesWhatItKeeps")
                                   auto const& store = context.store();
                                   auto const global =
                                       store.moduleInstance(context.callerInstance().value()).globals.at(0);
-                                  auto const& value = store.global(global).value;
+                                  auto const value = store.global(global).value();
                                   kept = std::get<Ref>(value).address;
                                   context.markEscaped(value);
                                   return {};

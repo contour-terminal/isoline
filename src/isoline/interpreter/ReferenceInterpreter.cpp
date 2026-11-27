@@ -1109,11 +1109,11 @@ namespace
                     _locals.at(frame().localsBase + instruction.a) = _values.back();
                     return {};
                 case Opcode::GlobalGet:
-                    push(_store.global(instance().globals.at(instruction.a)).value);
+                    push(_store.global(instance().globals.at(instruction.a)).value());
                     return {};
                 case Opcode::GlobalSet: {
                     auto const value = pop();
-                    _store.global(instance().globals.at(instruction.a)).value = value;
+                    _store.global(instance().globals.at(instruction.a)).assign(value);
                     return {};
                 }
 

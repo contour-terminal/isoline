@@ -451,7 +451,7 @@ std::expected<Value, GlobalAccessError> Store::globalValue(Global const& global)
 {
     if (!global.isOf(*_id))
         return std::unexpected { GlobalAccessError::ForeignHandle };
-    auto const& value = _runtime.global(global.address()).value;
+    auto const value = _runtime.global(global.address()).value();
     // The embedder holds it now: an exnref must survive later sweeps.
     _runtime.markEscaped(value);
     return value;
@@ -466,7 +466,7 @@ std::expected<void, GlobalAccessError> Store::setGlobal(Global const& global, Va
         return std::unexpected { GlobalAccessError::Immutable };
     if (!checkValue(value, instance.type.type))
         return std::unexpected { GlobalAccessError::ValueMismatch };
-    instance.value = value;
+    instance.assign(value);
     return {};
 }
 
