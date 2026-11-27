@@ -862,6 +862,55 @@ TEST_CASE("Calls.tailChainKeepsOneChunk")
     }
 }
 
+TEST_CASE("Calls.tailCallOutOfTheFirstChunkKeepsItsResults")
+{
+    // The invocation's own f0 return_calls f1, whose frame is past the first chunk's FirstChunkSlots: f1
+    // takes that chunk's place, a new chunk, and the invocation's results go to f1's own slots, not to the
+    // freed chunk's. f1 then ends each way a frame can: a tail call of a host function, whose results are
+    // written to the invocation's results; a Wasm return; a trap.
+    struct Ending
+    {
+        std::string name;
+        Bytes tail;
+    };
+    auto const endings = std::vector<Ending> {
+        { .name = "a host tail call", .tail = code({ i32Const(1), op(0x12, 0) }) },
+        { .name = "a Wasm return", .tail = {} },
+        { .name = "a trap", .tail = { 0x00 } },
+    };
+    auto const imports = [](Store& store) {
+        auto const host = addHost(
+            store,
+            FuncType { .params = { binary::I32, binary::I32 }, .results = { binary::I32 } },
+            [](HostContext&, std::span<Value const> args, std::span<Value> results) noexcept -> Outcome {
+                results[0] = I32 { std::get<I32>(args[0]).bits + std::get<I32>(args[1]).bits };
+                return {};
+            });
+        return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+    };
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    for (auto const& ending: endings)
+    {
+        INFO(ending.name);
+        auto module = ModuleBuilder {};
+        module.type(FuncType { .params = { binary::I32, binary::I32 }, .results = { binary::I32 } });
+        module.importFunction("env", "add", 0);
+        module.function(0, {}, code({ localGet(0), localGet(1), op(0x12, 2) }));
+        module.function(0, { binary::I32 }, highFunction(FirstChunkSlots + 100, ending.tail));
+        auto memory = PeakResource {};
+        auto harness =
+            Harness { module, EngineUnderTest { .dispatch = dispatch, .slotMemory = &memory }, imports };
+        auto reference = Harness { module, Reference, imports };
+        REQUIRE(frameSlotsOf(harness, 1) > FirstChunkSlots);
+        CHECK(harness.outcome(1, { i32(3), i32(4) }) == reference.outcome(1, { i32(3), i32(4) }));
+        CHECK(harness.store().used(Limit::Steps) == reference.store().used(Limit::Steps));
+        CHECK(harness.store().chargedStackValues() == 0);
+        // The first chunk and f1's, which replaced it.
+        CHECK(memory.allocations() == 2);
+        CHECK(memory.held() == 0);
+    }
+}
+
 TEST_CASE("Calls.nestedInvocationsHoldSmallChunks")
 {
     // StoreLimits::maxNestedInvocations levels of host re-entry, one small frame each: every nested
@@ -896,6 +945,12 @@ TEST_CASE("Calls.nestingStackCostIsPublished")
         REQUIRE(guest.run(20).has_value());
         auto const measured = guest.nestingStackBytes();
         INFO("flavour " << isoline::runtime::NestedInvocationFlavour << ", measured " << measured);
+        // Printed for harvesting from CI logs: the rows are raised to the most any toolchain measures.
+        std::println("nesting stack ({}, engine {}): {} of {}",
+                     isoline::runtime::NestedInvocationFlavour,
+                     std::to_underlying(identity),
+                     measured,
+                     isoline::runtime::nestedInvocationBytes(identity));
         CHECK(measured > 0);
         CHECK(measured <= isoline::runtime::nestedInvocationBytes(identity));
         CHECK(isoline::runtime::nestedInvocationBytes(identity) * StoreLimits {}.maxNestedInvocations

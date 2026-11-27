@@ -160,7 +160,9 @@ namespace
         ModuleInstance const* instance = nullptr;  ///< Its instance.
         uint32_t instanceAddress = 0;              ///< The instance's address: the caller of a host callee.
         Slot* fp = nullptr;                        ///< Its first slot.
-        Slot* results = nullptr;        ///< Where its results go when it returns: its caller's arguments.
+        /// Where its results go when it returns: its caller's arguments, in a chunk below its own that no
+        /// tail call replaces; for the invocation's own function, its own first slot.
+        Slot* results = nullptr;
         Word const* returnPc = nullptr; ///< Where its caller goes on; null for the invocation's own function.
         std::size_t chunk = 0;          ///< The chunk its slots are in.
     };
@@ -568,8 +570,11 @@ class Invocation
         // where it is too small: a chain of ever larger tail-called frames holds one chunk, not one each.
         auto const alone = _frames.empty() || _frames.back().chunk != ending.chunk;
         auto const target = alone ? ending.chunk : ending.chunk + 1;
-        auto const entered =
-            enterFrame(callee, ending.fp, ending.chunk, target, ending.returnPc, ending.results);
+        // The invocation's own frame keeps its results in its own slots, which the replaced chunk may hold:
+        // its callee's go to the callee's own first slot (null), wherever that lands. Any other frame's go to
+        // its caller's arguments, in a chunk below, which no tail call replaces.
+        auto* const results = _frames.empty() ? nullptr : ending.results;
+        auto const entered = enterFrame(callee, ending.fp, ending.chunk, target, ending.returnPc, results);
         if (!entered)
             return stopping(state, leaveTrapped(_context, state.stepsLeft, entered.error()));
         state.pc = callee.function->code.data();

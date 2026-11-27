@@ -86,7 +86,10 @@ under Switch and TailCall):
 | thread | clang-tsan | 7'040 | 6'400, 6'320 | 10'752, 9'728 | 3 MiB |
 | coverage | clang-coverage | 4'816 | 4'624, 4'704 | 7'424, 7'168 | 2 MiB |
 
-A multi-config generator's build and MSVC's take the debug row: their frames no option bounds.
+A multi-config generator's build and MSVC's take the debug row: their frames no option bounds. The rows are this
+machine's toolchains' (Fedora's Clang 22 and GCC 16, clang-cl over the MSVC 2022 headers); before the fast
+interpreter merges, each row is raised to the most CI's GCC 14, Apple Clang and MSVC jobs measure, which
+`Calls.nestingStackCostIsPublished` prints with the published figure on every run.
 
 **Every frame enters through one routine, in the reference interpreter's order.** The call operation names
 its callee by data (`CallTable`): a function of the caller's own module by code index, with no look-up
