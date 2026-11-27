@@ -231,7 +231,7 @@ struct TableRun
     {
         auto const granule = total - 1 - done;
         auto const first = granule * BulkPollElements;
-        auto const last = std::min(count, first + BulkPollElements);
+        auto const last = std::min<uint64_t>(count, first + BulkPollElements);
         for (auto const index: std::views::iota(first, last))
             nulls[index + 1] = before[index];
     }
