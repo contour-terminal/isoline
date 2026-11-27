@@ -252,8 +252,8 @@ struct LoweringStats
 {
     uint64_t bodyUnits = 0; ///< The decoded body units of every function (bodyUnits()), summed.
     /// The abstract operand stack entries lowering touched: each push, pop and materialization one, a run
-    /// of a block's values pushed at once one too. At most WorkPerBodyUnit per body unit, so lowering's
-    /// time is linear in the module.
+    /// of a block's values pushed at once one too, and each look-up and binding of a branch's label one.
+    /// At most WorkPerBodyUnit per body unit, so lowering's time is linear in the module.
     uint64_t work = 0;
 
     /// Whether both record the same measures.

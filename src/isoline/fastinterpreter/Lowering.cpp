@@ -575,6 +575,7 @@ namespace
         [[nodiscard]] Control& controlAt(uint32_t depth)
         {
             Require(depth < _controls.size());
+            ++_work;
             return _controls[_controls.size() - 1 - depth];
         }
 
@@ -753,6 +754,7 @@ namespace
         /// branches its end resolves.
         void bindTarget(Control& control, std::size_t word)
         {
+            ++_work;
             auto& target = _code[word];
             if (control.kind == ControlKind::Loop)
             {

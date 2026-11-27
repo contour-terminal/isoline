@@ -749,6 +749,39 @@ TEST_CASE("Lowering.everyLoopTransferPolls")
     }
 }
 
+TEST_CASE("Lowering.branchTableRecordsNameEachLabelsSlots")
+{
+    // Each record names the slot its own label's values go to, not the default's: the table's one
+    // value run, here s2, moves to s2 for the inner block and to s1 for the label below it.
+    auto const table = Bytes { 0x0E, 0x01, 0x00, 0x01 }; // br_table 0 1
+    SECTION("two blocks of one result, at different heights")
+    {
+        auto const nested =
+            functionOf({ binary::I32 },
+                       {},
+                       {},
+                       code({ blockOf(0x02,
+                                      0x7F,
+                                      code({ i32Const(9),
+                                             blockOf(0x02, 0x7F, code({ i32Const(7), localGet(0), table })),
+                                             drop() })),
+                              drop() }));
+        CHECK(listingOf(nested)
+              == "const64 s1, #9\nconst64 s2, #7\nbr_table s0, s2, #1, #1 → @14 s2, @14 s1\nreturn s1\n");
+    }
+    SECTION("a record to the function's own label returns through the table")
+    {
+        auto const returning = functionOf(
+            { binary::I32 },
+            { binary::I32 },
+            {},
+            code({ i32Const(5), blockOf(0x02, 0x7F, code({ i32Const(7), localGet(0), table })), op(0x6A) }));
+        CHECK(listingOf(returning)
+              == "const64 s1, #5\nconst64 s2, #7\nbr_table s0, s2, #1, #1 → @14 s2, @17 s1\n"
+                 "i32.add s1, s1, s2\nreturn s1\n");
+    }
+}
+
 TEST_CASE("Lowering.conditionalBranchesMoveTheirValuesOnce")
 {
     // A conditional branch whose values are not in its label's slots moves them as it branches, in one
