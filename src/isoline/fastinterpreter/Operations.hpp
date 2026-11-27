@@ -569,13 +569,16 @@ using MemoryWord = std::conditional_t<
 /// all ones where it fits, zero where it does not, computed without a branch (docs/fast-interpreter.md),
 /// so that code running ahead of a mispredicted bounds check reads memory's first bytes, not past them.
 ///
-/// It is the sign of the bytes left after the access, or of the offset itself: an offset of 2^63 or more
-/// never fits (a memory is allocated, so its size stays below 2^63), and without its own sign the bytes
-/// left would wrap to a positive count for it, letting a guest choose a speculative read below the base.
+/// It is the sign of the bytes left after the access, of the offset itself, and of the memory's size less
+/// the width, any of them negative meaning the access does not fit. An offset of 2^63 or more never fits (a
+/// memory is allocated, so its size stays below 2^63), and without its own sign the bytes left would wrap to
+/// a positive count for it. A memory smaller than the access (@p size below @p width) fits nothing, and
+/// without the sign of its size less the width, which wraps, the bytes left would come out positive for
+/// offsets just below 2^63. Either would let a guest choose where a speculative read lands.
 ///
-/// One case it cannot catch: a memory smaller than the access (@p size below @p width), whose bytes left
-/// wrap for every small offset. Code ahead of the check may then read fewer than @p width bytes past such a
-/// memory's end; the check itself traps.
+/// What remains: a masked access reads @p width bytes at the memory's base, so for a memory smaller than
+/// the access, code ahead of the check may read fewer than @p width bytes past its end; the check itself
+/// traps.
 /// @param effective The offset of the access's first byte: the address plus the static offset.
 /// @param size The memory's size in bytes.
 /// @param width The bytes accessed.
@@ -583,7 +586,8 @@ using MemoryWord = std::conditional_t<
 [[nodiscard]] constexpr uint64_t accessMask(uint64_t effective, uint64_t size, uint64_t width) noexcept
 {
     auto const left = static_cast<int64_t>(size - width - effective);
-    return ~static_cast<uint64_t>((left | static_cast<int64_t>(effective)) >> 63U);
+    auto const room = static_cast<int64_t>(size - width);
+    return ~static_cast<uint64_t>((left | static_cast<int64_t>(effective) | room) >> 63U);
 }
 
 /// The offset into a memory of @p size bytes of an access of @p Width bytes at @p address + @p offset, or

@@ -171,10 +171,12 @@ bytes and nothing past them. The mask is the sign of the bytes left after the ac
 bound as the check but not from its outcome, which the compiler would know on the predicted path and fold
 away; or'ed with the sign of the offset itself, since an offset of 2^63 or more never fits (memories are
 allocated, so their sizes stay below 2^63) and its bytes left would otherwise wrap to a positive count, a
-speculative read below the base the guest chooses (`accessMask()`, `Memory.accessMaskAtTheEdges`). One case
-the mask cannot catch: a memory smaller than the access (fewer bytes than its width), whose bytes left wrap
-for every small offset, so code ahead of the check may read fewer than the access's width of bytes past that
-memory's end; the check itself still traps. An i32 address is read as 32 bits whatever its slot holds, so the
+speculative read below the base the guest chooses; and or'ed with the sign of the size less the width, since
+a memory smaller than the access fits nothing and its size less the width wraps, which would leave the bytes
+left positive for offsets just below 2^63 (`accessMask()`, `Memory.accessMaskAtTheEdges`). What remains is the
+masked access itself, which reads the access's width of bytes at the memory's base: for a memory smaller than
+the access, code ahead of the check may read fewer than that many bytes past its end; the check itself still
+traps. An i32 address is read as 32 bits whatever its slot holds, so the
 one comparison of the i32 check is exact even for a slot left with high bits set
 (`Memory.i32AddressIgnoresTheSlotsHighBits`). Task 19 checks in the optimized handlers' disassembly that the
 select survived.

@@ -864,6 +864,10 @@ TEST_CASE("Memory.accessMaskAtTheEdges")
         { .effective = All - 1, .size = Size, .width = 4, .mask = 0 },
         { .effective = All, .size = Size, .width = 1, .mask = 0 },
         { .effective = 0, .size = 0, .width = 1, .mask = 0 },
+        // A memory smaller than the access fits nothing, whatever the offset: its size less the width wraps.
+        { .effective = Half - 1, .size = 0, .width = 8, .mask = 0 },
+        { .effective = Half - 1, .size = 7, .width = 8, .mask = 0 },
+        { .effective = 0, .size = 7, .width = 8, .mask = 0 },
         { .effective = 0, .size = 8, .width = 8, .mask = All },
         { .effective = 1, .size = 8, .width = 8, .mask = 0 },
     });
