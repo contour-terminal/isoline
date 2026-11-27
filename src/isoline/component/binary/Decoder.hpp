@@ -278,8 +278,8 @@ static_assert(
 
 /// A decode failure: what went wrong, where, and what it names.
 ///
-/// A form gated by a feature the decoder does not admit (decodeAdmits()) is refused as
-/// FeatureDisabled, naming the feature in disabled.
+/// One of the few gated forms the decoder checks itself (decodeAdmits()), when not admitted, is
+/// refused as FeatureDisabled, naming the feature in disabled.
 struct DecodeError
 {
     /// Builds an error; the code and offset are required.
@@ -355,10 +355,12 @@ struct DecodeError
 /// explicit stack too and counted against maxNesting; value types nest only through type indices, so
 /// their depth and effective size are the validator's to bound (maxTypeDepth, maxTypeSize). Core types
 /// are read by the core decoder under every core feature Isoline has (FeatureSet::all()); the
-/// validator narrows them to the engine's. Sections 9 (start) and 12 (values) are refused as
-/// FeatureDisabled 🪙.
+/// validator narrows them to the engine's. Gated forms decode whatever @p features holds, as
+/// wasmparser's reader decodes them, and validation refuses them; the decoder keeps a gate only where
+/// the AST has no shape for the form (sections 9 (start) and 12 (values), a value extern type: 🪙) and
+/// on the attributed name form, which wasmparser's reader gates too.
 /// @param bytes The component's bytes, from its preamble on.
-/// @param features The gated features whose forms are admitted (decodeAdmits()).
+/// @param features The gated features, for the gates the decoder keeps (decodeAdmits()).
 /// @param limits The caps to enforce: maxComponentBytes, maxNesting, maxTypes (the types and core types
 ///               a scope defines, a lower bound of its index spaces of sort type), maxDefinitions,
 ///               maxDecodedItems and maxNameBytes.

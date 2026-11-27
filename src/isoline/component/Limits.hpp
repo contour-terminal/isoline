@@ -19,9 +19,11 @@ struct ComponentLimits
     uint64_t maxComponentBytes = uint64_t { 256 } << 20; ///< Bytes of one encoded component.
     /// Scopes open at once: components, component and instance types, nested scopes (binary and text).
     uint32_t maxNesting = 100;
-    uint32_t maxTypeDepth = 100;      ///< Value-type nesting.
-    uint32_t maxTypeSize = 1'000'000; ///< Effective type size per component (wasm-tools' rule, saturating).
-    uint32_t maxTypes = 1'000'000;    ///< Per component, all index spaces of sort type.
+    uint32_t maxTypeDepth = 100; ///< Nesting depth of one type, as wasm-tools measures it.
+    /// Effective type size of one type, and of the types aliased into one component from outside it
+    /// (wasm-tools' rules); refused when reached.
+    uint32_t maxTypeSize = 1'000'000;
+    uint32_t maxTypes = 1'000'000;       ///< Per component, all index spaces of sort type.
     uint32_t maxDefinitions = 1'000'000; ///< Per component, all sections.
     /// Per decoded component, all nested components together: definitions, nested components and the
     /// elements of every vector inside a definition. Bounds what the pool holds whatever the input's
@@ -35,7 +37,9 @@ struct ComponentLimits
     uint32_t maxCoreInstances = 10'000;         ///< Per ComponentStore.
     uint32_t maxComponentInstances = 10'000;    ///< Per ComponentStore.
     uint32_t maxInstantiationSteps = 1'000'000; ///< Plan steps executed by one instantiate().
-    uint32_t maxResourceTypes = 100'000;        ///< Runtime resource types per ComponentStore (generative).
+    /// Runtime resource types per ComponentStore (generative); also the resource types one validation
+    /// mints.
+    uint32_t maxResourceTypes = 100'000;
     /// Per ComponentStore, all handle tables together; each table also holds at most 2^28 - 1.
     uint32_t maxHandles = 1'000'000;
     /// Per ComponentStore: the host bytes of every live Values.
@@ -97,12 +101,14 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxNesting; } },
     { .limit = ComponentLimit::TypeDepth,
       .name = "maxTypeDepth",
-      .rule = "nesting of one value type",
+      .rule = "nesting depth of one value, function, component or instance type, refused where it is "
+              "defined",
       .message = "type nesting is too deep",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxTypeDepth; } },
     { .limit = ComponentLimit::TypeSize,
       .name = "maxTypeSize",
-      .rule = "effective type size per component, summed as wasm-tools sums it, saturating",
+      .rule = "effective type size of one type, and the sum of the effective sizes of the types aliased "
+              "into one component from outside it, as wasm-tools measures them; refused when reached",
       .message = "effective type size exceeds the limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxTypeSize; } },
     { .limit = ComponentLimit::Types,
@@ -151,7 +157,9 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       } },
     { .limit = ComponentLimit::ResourceTypes,
       .name = "maxResourceTypes",
-      .rule = "runtime resource types of one ComponentStore, one per resource definition executed",
+      .rule = "runtime resource types of one ComponentStore, one per resource definition executed; and the "
+              "resource types one validation mints, one per resource definition and `(sub resource)` "
+              "import or export",
       .message = "resource types count exceeds limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxResourceTypes; } },
     { .limit = ComponentLimit::Handles,

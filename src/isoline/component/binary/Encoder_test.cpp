@@ -67,7 +67,6 @@ using isoline::component::binary::LabeledType;
 using isoline::component::binary::NameAttributes;
 using isoline::component::binary::NestedComponent;
 using isoline::component::binary::PrimitiveValueType;
-using isoline::component::binary::PrimitiveValueTypeTable;
 using isoline::component::binary::ScopeKind;
 using isoline::component::binary::Sort;
 using isoline::component::binary::SortIndex;
@@ -485,11 +484,6 @@ TEST_CASE("Encoder.everyDefinedValueType")
     {
         // A primitive's gate is its PrimitiveValueTypeTable row's, a compound's its DefinedValueTypeTable
         // row's.
-        auto const gate =
-            type.index() == 0
-                ? PrimitiveValueTypeTable[static_cast<std::size_t>(std::get<PrimitiveValueType>(type))].gate
-                : DefinedValueTypeTable[type.index() - 1].gate;
-        auto const refused = gate && componentFeatureRow(*gate).p11 == Implementation::Refused;
         auto literal = Bytes {};
         appendBytes(literal, bytes);
         auto const expected = oneOf(7, literal);
@@ -497,14 +491,8 @@ TEST_CASE("Encoder.everyDefinedValueType")
         auto const built = poolOf({ TypeDefinition { .type = type } });
         CHECK(encodeComponent(built) == expected);
         CHECK(built.components.front().definitions.front() == Definition { TypeDefinition { .type = type } });
-        // Where P11 decodes it, the round trip holds too; 🔧 and 📝 are refused at decode.
-        auto const pool = decodeComponent(expected, everyFeature(), ComponentLimits {});
-        if (refused)
-        {
-            REQUIRE_FALSE(pool.has_value());
-            CHECK(pool.error().code == DecodeErrorCode::FeatureDisabled);
-            continue;
-        }
+        // The round trip holds for every one, gated or not: the gates are validation's.
+        auto const pool = decodeComponent(expected, ComponentFeatureSet::defaults(), ComponentLimits {});
         REQUIRE(pool.has_value());
         CHECK(encodeComponent(*pool) == expected);
     }

@@ -618,11 +618,11 @@ namespace
                 return std::unexpected { core.error() };
             second = *core;
         }
+        // A sort's gate is validation's, as wasmparser's reader admits every sort (Task 4's audit): only
+        // an extern type checks it here, where it decides how the bytes after the sort read.
         auto const row = kindOf(ExternalKinds, *first, second, offset, DecodeErrorCode::InvalidExternalKind);
         if (!row)
             return std::unexpected { row.error() };
-        if (auto result = admit(row->gate, offset); !result)
-            return std::unexpected { result.error() };
         return row->sort;
     }
 
@@ -639,9 +639,15 @@ namespace
 
     Result<ExternDesc> ComponentDecoder::externDesc(Reader& reader)
     {
+        auto const offset = reader.offset();
         auto const sort = externalKind(reader);
         if (!sort)
             return std::unexpected { sort.error() };
+        // A value extern type carries a value bound, which the AST has no form for while P11 refuses
+        // 🪙: the one sort gate the decoder keeps.
+        auto const row = std::ranges::find(ExternalKinds, *sort, &KindRow::sort);
+        if (auto admitted = admit(row->gate, offset); !admitted)
+            return std::unexpected { admitted.error() };
         auto desc = ExternDesc { .sort = *sort };
         if (*sort == Sort::Type)
         {
@@ -672,22 +678,15 @@ namespace
         auto const form = std::ranges::find(NameForms, *formByte, &NameFormRow::byte);
         if (form == NameForms.end())
             return std::unexpected { DecodeError { DecodeErrorCode::InvalidNameKind, offset, *formByte } };
-        // The attributed form is admitted when any attribute is, as wasm-tools admits it. When none
-        // is, the refusal names the first gate the caller enabled, which P11 then refuses itself, or
-        // else the first attribute's gate.
+        // The attributed form is admitted when the set enables any attribute's gate, as wasmparser's
+        // reader admits it under cm-implements or cm-canon-names (readers/component/imports.rs:183):
+        // the one gate of a name the decoder keeps. Each attribute's own gate is validation's.
         if (form->form == NameForm::Attributed
             && std::ranges::none_of(NameAttributeTable, [&](NameAttributeRow const& row) {
-                   return decodeAdmits(_features, row.gate);
+                   return _features.contains(row.gate);
                }))
-        {
-            auto const enabled = std::ranges::find_if(NameAttributeTable, [&](NameAttributeRow const& row) {
-                return _features.contains(row.gate);
-            });
-            auto const gate =
-                enabled == NameAttributeTable.end() ? NameAttributeTable.front().gate : enabled->gate;
             return std::unexpected { DecodeError {
-                DecodeErrorCode::FeatureDisabled, offset, std::nullopt, gate } };
-        }
+                DecodeErrorCode::FeatureDisabled, offset, std::nullopt, NameAttributeTable.front().gate } };
 
         auto text = name(reader);
         if (!text)
@@ -706,8 +705,6 @@ namespace
             if (row == NameAttributeTable.end())
                 return std::unexpected { DecodeError {
                     DecodeErrorCode::InvalidNameAttribute, attributeOffset, *kind } };
-            if (auto admitted = admit(row->gate, attributeOffset); !admitted)
-                return admitted;
             auto value = name(reader);
             if (!value)
                 return std::unexpected { value.error() };
@@ -878,8 +875,6 @@ namespace
                     kindOf(ExternalKinds, *first, second, offset, DecodeErrorCode::InvalidExternalKind);
                 if (!row)
                     return std::unexpected { row.error() };
-                if (auto admitted = admit(row->gate, offset); !admitted)
-                    return std::unexpected { admitted.error() };
                 definition.sort = row->sort;
                 break;
             }
@@ -1095,8 +1090,6 @@ namespace
             std::ranges::find(PrimitiveValueTypeTable, *byte, &PrimitiveValueTypeRow::byte);
         if (primitive != PrimitiveValueTypeTable.end())
         {
-            if (auto admitted = admit(primitive->gate, offset); !admitted)
-                return std::unexpected { admitted.error() };
             std::ignore = u8(reader);
             return ValueTypeRef { primitive->type };
         }
@@ -1367,8 +1360,6 @@ namespace
         if (auto const form = std::ranges::find(FunctionTypeForms, *byte, &FunctionTypeFormRow::byte);
             form != FunctionTypeForms.end())
         {
-            if (auto admitted = admit(form->gate, offset); !admitted)
-                return std::unexpected { admitted.error() };
             return functionType(reader, form->asyncness).transform([](FunctionTypeDefinition function) {
                 return TypeDefinition { .type = std::move(function) };
             });
@@ -1377,15 +1368,11 @@ namespace
                 std::ranges::find(PrimitiveValueTypeTable, *byte, &PrimitiveValueTypeRow::byte);
             primitive != PrimitiveValueTypeTable.end())
         {
-            if (auto admitted = admit(primitive->gate, offset); !admitted)
-                return std::unexpected { admitted.error() };
             return TypeDefinition { .type = DefinedValueType { primitive->type } };
         }
         auto const row = std::ranges::find(DefinedValueTypeTable, *byte, &DefinedValueTypeRow::byte);
         if (row == DefinedValueTypeTable.end())
             return std::unexpected { DecodeError { DecodeErrorCode::InvalidDefinedType, offset, *byte } };
-        if (auto admitted = admit(row->gate, offset); !admitted)
-            return std::unexpected { admitted.error() };
         auto const decoder =
             DefinedValueTypeDecoders[static_cast<std::size_t>(row - DefinedValueTypeTable.begin())];
         return (this->*decoder)(reader).transform(
@@ -1680,8 +1667,6 @@ namespace
                         return std::unexpected { DecodeError {
                             DecodeErrorCode::InvalidCanonOption, optionOffset, *byte } };
                     auto const& option = CanonOptionTable[*byte];
-                    if (auto admitted = admit(option.gate, optionOffset); !admitted)
-                        return admitted;
                     if (option.immediate == OptionImmediate::None)
                     {
                         definition.options.push_back({ .kind = option.kind, .index = 0 });
@@ -1701,13 +1686,11 @@ namespace
             case Immediate::Async:
                 return boolean(reader).transform(
                     [&](bool isAsync) { definition.immediates.push_back(isAsync ? 1 : 0); });
-            // `shared` is 🧵②, the gate of every built-in that reads it (static_assert above), which P11
-            // refuses before the immediates are read.
-            // uncovered-begin(shared-threading)
+            // `shared` is 🧵②, the gate of every built-in that reads it (static_assert above), which
+            // validation refuses.
             case Immediate::Shared:
                 return boolean(reader).transform(
                     [&](bool isShared) { definition.immediates.push_back(isShared ? 1 : 0); });
-            // uncovered-end(shared-threading)
             case Immediate::Reserved: break;
         }
         auto const reserved = boolean(reader);
@@ -1727,8 +1710,6 @@ namespace
         auto const row = std::ranges::lower_bound(CanonBuiltinTable, *opcode, {}, &CanonBuiltinRow::opcode);
         if (row == CanonBuiltinTable.end() || row->opcode != *opcode)
             return std::unexpected { DecodeError { DecodeErrorCode::InvalidCanonFunction, offset, *opcode } };
-        if (auto admitted = admit(row->gate, offset); !admitted)
-            return std::unexpected { admitted.error() };
         auto definition = CanonDefinition {
             .builtin = row->builtin, .immediates = {}, .options = {}, .result = std::nullopt
         };

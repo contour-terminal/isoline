@@ -40,13 +40,16 @@ inline constexpr auto LastComponentFeature = ComponentFeature::Forward;
 /// The number of ComponentFeature enumerators, as LastComponentFeature counts them.
 inline constexpr auto ComponentFeatureCount = static_cast<std::size_t>(LastComponentFeature) + 1;
 
-/// How far Isoline implements a gated feature: the decoder admits a form of a feature that is
-/// Decoded or Implemented, the validator only one that is Implemented (decodeAdmits(),
-/// validationAdmits()). The order rises with support, so the refusal is zero.
+/// How far Isoline implements a gated feature. Every gated form is refused where wasm-tools refuses
+/// it: in validation (validationAdmits()), unless it is Implemented and enabled. The decoder decodes
+/// every gated form the AST has a shape for whatever the set, as wasmparser's reader does, and keeps
+/// a gate (decodeAdmits()) only for the forms it has no shape for while their feature is Refused (the
+/// start and values sections, a value extern type) and for the attributed name form, which
+/// wasmparser's reader gates. The order rises with support, so the refusal is zero.
 enum class Implementation : uint8_t
 {
-    Refused,     ///< Neither decoded nor validated: refused wherever its forms appear.
-    Decoded,     ///< Decoded into the AST, and refused by validation.
+    Refused,     ///< Refused by validation; a form the AST has no shape for is refused at decode too.
+    Decoded,     ///< Decoded into the AST, and refused by validation (P12 implements 🔀).
     Implemented, ///< Decoded, validated and run.
 };
 
@@ -228,6 +231,7 @@ class ComponentFeatureSet
 };
 
 /// Whether the decoder admits a form gated by @p feature: the set enables it, and Isoline decodes it.
+/// Only the forms the AST has no shape for ask (see Implementation); every other gate is validation's.
 /// @param features The features the decoder was given.
 /// @param feature The form's gate.
 /// @return true when @p features contains @p feature and its row is not Implementation::Refused.

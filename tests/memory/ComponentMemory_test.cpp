@@ -5,12 +5,15 @@
 // allocated nothing beyond the decoder's copy of its input; and every item it decodes is charged
 // against maxDecodedItems before it is read, so input made of the smallest items, which the pool holds
 // at many times their size, holds a bounded number of them: definitions, the elements of their vectors,
-// type declarations and the type scopes they open alike.
+// type declarations and the type scopes they open alike. The validator's share: types nest only
+// through indices, so a hostile type graph is refused at its depth or effective size where it is
+// interned, holding no more than the types read so far.
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <initializer_list>
 #include <new>
 #include <optional>
@@ -21,22 +24,37 @@
 #include <isoline/component/Features.hpp>
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Decoder.hpp>
+#include <isoline/component/binary/testing/Builder.hpp>
 #include <isoline/component/binary/testing/DecoderFixtures.hpp>
+#include <isoline/component/validate/Validator.hpp>
+#include <isoline/component/validate/testing/CoreModuleValidator.hpp>
 
 using isoline::component::ComponentFeatureSet;
 using isoline::component::ComponentLimit;
 using isoline::component::ComponentLimits;
+using isoline::component::binary::ComponentPool;
 using isoline::component::binary::decodeComponent;
 using isoline::component::binary::DecodeError;
 using isoline::component::binary::DecodeErrorCode;
 using isoline::component::binary::exceededLimit;
+using isoline::component::binary::LabeledType;
+using isoline::component::binary::ListType;
+using isoline::component::binary::PrimitiveValueType;
+using isoline::component::binary::RecordType;
+using isoline::component::binary::TypeDefinition;
+using isoline::component::binary::TypeIndex;
 using isoline::component::binary::testing::appendBytes;
 using isoline::component::binary::testing::appendLeb128;
 using isoline::component::binary::testing::Bytes;
+using isoline::component::binary::testing::ComponentBuilder;
 using isoline::component::binary::testing::componentOf;
 using isoline::component::binary::testing::componentPreamble;
 using isoline::component::binary::testing::section;
+using isoline::component::validate::validateComponent;
+using isoline::component::validate::ValidationError;
+using isoline::component::validate::testing::CoreModuleValidator;
 using isoline::testing::AllocationLimit;
+using isoline::testing::AllocationScope;
 
 namespace
 {
@@ -222,4 +240,114 @@ TEST_CASE("ComponentMemory.smallestItemsHoldAtMostFourTimesTheirInput")
         REQUIRE(outcome.error.has_value());
         CHECK(exceededLimit(*outcome.error) == ComponentLimit::DecodedItems);
     }
+}
+
+namespace
+{
+
+/// A component of @p lists list types, each the list of the one before, over u32.
+Bytes listChain(uint32_t lists)
+{
+    auto builder = ComponentBuilder {};
+    auto previous = builder.type(TypeDefinition { .type = PrimitiveValueType::U32 });
+    for ([[maybe_unused]] auto const level: std::views::iota(uint32_t { 0 }, lists))
+        previous =
+            builder.type(TypeDefinition { .type = ListType { .element = TypeIndex { .index = previous } } });
+    return builder.build();
+}
+
+/// What validating under a budget came to.
+struct BudgetedValidation
+{
+    std::optional<ValidationError> error; ///< The validation error; empty when it validated.
+    Budget budget = Budget::Kept;         ///< Whether the budget refused an allocation.
+};
+
+/// Validates @p pool under a budget of @p budget bytes; nothing is asserted under it.
+BudgetedValidation validateUnderBudget(ComponentPool pool, std::size_t budget)
+{
+    auto outcome = BudgetedValidation {};
+    auto coreModules = CoreModuleValidator {};
+    try
+    {
+        auto const limit = AllocationLimit { budget };
+        auto result = validateComponent(
+            std::move(pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
+        if (!result)
+            outcome.error = std::move(result.error());
+    }
+    catch (std::bad_alloc const&)
+    {
+        outcome.budget = Budget::Refused;
+    }
+    return outcome;
+}
+
+} // namespace
+
+TEST_CASE("TypeArena.depthCapLinearMemory")
+{
+    // A list chain 100'000 deep, decoded and validated: refused at depth 101, and what the two hold at
+    // once grows with the input alone (peak at 2n within 2.2 x the peak at n).
+    auto const peakOf = [](Bytes const& bytes) {
+        auto coreModules = CoreModuleValidator {};
+        auto const scope = AllocationScope {};
+        auto pool = decodeComponent(bytes, ComponentFeatureSet::defaults(), ComponentLimits {});
+        REQUIRE(pool.has_value());
+        auto const validated = validateComponent(
+            std::move(*pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
+        REQUIRE_FALSE(validated.has_value());
+        CHECK(isoline::component::validate::exceededLimit(validated.error()) == ComponentLimit::TypeDepth);
+        CHECK(validated.error().position.definition == ComponentLimits {}.maxTypeDepth);
+        return scope.peakBytes();
+    };
+    auto const single = peakOf(listChain(50'000));
+    auto const twice = peakOf(listChain(100'000));
+    CHECK(twice * 10 <= single * 22);
+}
+
+TEST_CASE("TypeArena.doublingChainInBudget")
+{
+    // 1'000 levels of t_i = record { a_i: t_{i-1}, b_i: t_{i-1} }, distinct labels per level: refused
+    // at effective size, the validation holding under 4 MiB beyond the pool it is handed.
+    auto builder = ComponentBuilder {};
+    auto previous = builder.type(TypeDefinition { .type = PrimitiveValueType::U32 });
+    for (auto const level: std::views::iota(uint32_t { 1 }, uint32_t { 1'001 }))
+    {
+        auto const child = TypeIndex { .index = previous };
+        previous = builder.type(TypeDefinition {
+            .type = RecordType {
+                .fields = { LabeledType { .label = std::format("a{}", level), .type = child },
+                            LabeledType { .label = std::format("b{}", level), .type = child } } } });
+    }
+    auto const outcome = validateUnderBudget(builder.pool(), std::size_t { 4 } << 20U);
+    CHECK(outcome.budget == Budget::Kept);
+    REQUIRE(outcome.error.has_value());
+    CHECK(isoline::component::validate::exceededLimit(*outcome.error) == ComponentLimit::TypeSize);
+}
+
+TEST_CASE("Validator.acceptedComponentLinearMemory")
+{
+    // An accepted component of n shallow records, each its own type (distinct labels): what validation
+    // holds grows with n alone, the peak at 2n within 2.2 x the peak at n.
+    auto const recordsOf = [](uint32_t records) {
+        auto builder = ComponentBuilder {};
+        for (auto const index: std::views::iota(uint32_t { 0 }, records))
+            std::ignore = builder.type(TypeDefinition {
+                .type = RecordType { .fields = { LabeledType { .label = std::format("f{}", index),
+                                                               .type = PrimitiveValueType::U32 } } } });
+        return builder.pool();
+    };
+    auto const peakOf = [](ComponentPool pool) {
+        auto coreModules = CoreModuleValidator {};
+        auto const scope = AllocationScope {};
+        auto const validated = validateComponent(
+            std::move(pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
+        REQUIRE(validated.has_value());
+        return scope.peakBytes();
+    };
+    auto const single = peakOf(recordsOf(50'000));
+    auto const twice = peakOf(recordsOf(100'000));
+    INFO(std::format("{} bytes at n, {} at 2n", single, twice));
+    CHECK(twice * 10 <= single * 22);
 }

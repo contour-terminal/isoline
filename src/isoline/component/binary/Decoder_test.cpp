@@ -24,15 +24,14 @@
 #include <isoline/component/binary/testing/DecoderFixtures.hpp>
 
 using isoline::component::ComponentFeature;
-using isoline::component::componentFeatureRow;
 using isoline::component::ComponentFeatureSet;
 using isoline::component::ComponentFeatureTable;
 using isoline::component::ComponentLimit;
 using isoline::component::ComponentLimits;
-using isoline::component::Implementation;
 using isoline::component::binary::AliasDefinition;
 using isoline::component::binary::AliasTarget;
 using isoline::component::binary::Asyncness;
+using isoline::component::binary::Attribute;
 using isoline::component::binary::BorrowType;
 using isoline::component::binary::CanonBuiltin;
 using isoline::component::binary::CanonBuiltinRow;
@@ -70,6 +69,7 @@ using isoline::component::binary::ExportDeclaration;
 using isoline::component::binary::ExportDefinition;
 using isoline::component::binary::ExternalId;
 using isoline::component::binary::ExternDesc;
+using isoline::component::binary::FixedListType;
 using isoline::component::binary::FlagsType;
 using isoline::component::binary::FunctionTypeDefinition;
 using isoline::component::binary::FutureType;
@@ -97,6 +97,7 @@ using isoline::component::binary::ResourceTypeDefinition;
 using isoline::component::binary::ResultType;
 using isoline::component::binary::ScopeKind;
 using isoline::component::binary::Sort;
+using isoline::component::binary::SortIndex;
 using isoline::component::binary::specMessage;
 using isoline::component::binary::splitCoreModules;
 using isoline::component::binary::StreamType;
@@ -107,6 +108,7 @@ using isoline::component::binary::TypeIndex;
 using isoline::component::binary::ValueTypeRef;
 using isoline::component::binary::VariantCase;
 using isoline::component::binary::VariantType;
+using isoline::component::binary::VersionSuffix;
 using isoline::component::binary::testing::aliasSection;
 using isoline::component::binary::testing::appendBytes;
 using isoline::component::binary::testing::appendName;
@@ -467,35 +469,26 @@ TEST_CASE("Decoder.nameAttributes")
         == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::Implements });
     CHECK(specMessage(refused) == "the `cm-implements` feature is not active (🏷️)");
 
-    // With external-id alone, the form decodes and implements is refused at its attribute.
-    auto const implementsOff =
-        errorOf(fixture->bytes, ComponentFeatureSet::defaults().with(ComponentFeature::ExternalId));
-    CHECK(
-        implementsOff
-        == DecodeError { DecodeErrorCode::FeatureDisabled, 15, std::nullopt, ComponentFeature::Implements });
-    auto const externalIdOff =
-        errorOf(fixture->bytes, ComponentFeatureSet::defaults().with(ComponentFeature::Implements));
-    CHECK(externalIdOff.code == DecodeErrorCode::FeatureDisabled);
-    CHECK(externalIdOff.disabled == ComponentFeature::ExternalId);
+    // With any attribute's feature, the form decodes, every attribute in it: each attribute's own
+    // gate is validation's, as in wasmparser (Validator.externDeclarations).
+    for (auto const feature: { ComponentFeature::Implements,
+                               ComponentFeature::ExternalId,
+                               ComponentFeature::CanonicalInterfaceNames })
+    {
+        INFO(static_cast<int>(feature));
+        auto const decoded = definitionsOf(fixture->bytes, ComponentFeatureSet::defaults().with(feature));
+        CHECK(std::get<ImportDefinition>(decoded.front()).name.attributes.size() == 2);
+    }
 
-    // A version suffix is 🔗, which P11 refuses whatever the set.
+    // A version suffix (🔗) decodes too.
     auto suffixed = bytesOf({ 0x01, 0x02 });
     appendName(suffixed, "x");
     appendBytes(suffixed, { 0x01, 0x01 });
     appendName(suffixed, ".1");
     appendBytes(suffixed, { 0x05, 0x00 });
-    auto const suffix =
-        errorOf(componentOf({ section(10, suffixed) }),
-                ComponentFeatureSet::wasi03().with(ComponentFeature::CanonicalInterfaceNames));
-    CHECK(suffix.code == DecodeErrorCode::FeatureDisabled);
-    CHECK(suffix.disabled == ComponentFeature::CanonicalInterfaceNames);
-    // With 🔗 the only gate enabled, the attributed form is refused naming it, not implements.
-    auto const canonOnly = errorOf(
-        fixture->bytes, ComponentFeatureSet::defaults().with(ComponentFeature::CanonicalInterfaceNames));
-    CHECK(
-        canonOnly
-        == DecodeError {
-            DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::CanonicalInterfaceNames });
+    CHECK(std::get<ImportDefinition>(definitionsOf(componentOf({ section(10, suffixed) })).front())
+              .name.attributes
+          == std::vector<Attribute> { VersionSuffix { .suffix = ".1" } });
 
     // Each kind at most once.
     auto twice = bytesOf({ 0x01, 0x02 });
@@ -539,12 +532,13 @@ TEST_CASE("Decoder.startAndValuesRefused")
         CHECK(errorOf(component, ComponentFeatureSet::wasi03().with(ComponentFeature::Values)) == error);
     }
 
-    // The value sort and the value extern type are 🪙 too.
+    // An item of the value sort decodes, as wasmparser reads it, and validation refuses it; a value
+    // extern type, whose value bound the AST has no shape for, is refused here.
     auto valueExport = Bytes { std::byte { 0x01 } };
     appendBytes(valueExport, plainName("v"));
     appendBytes(valueExport, { 0x02, 0x00, 0x00 });
-    CHECK(errorOf(componentOf({ section(11, valueExport) }))
-          == DecodeError { DecodeErrorCode::FeatureDisabled, 14, std::nullopt, ComponentFeature::Values });
+    CHECK(std::get<ExportDefinition>(definitionsOf(componentOf({ section(11, valueExport) })).front()).item
+          == SortIndex { .sort = Sort::Value, .index = 0 });
     auto valueImport = Bytes { std::byte { 0x01 } };
     appendBytes(valueImport, plainName("v"));
     appendBytes(valueImport, { 0x02, 0x01, 0x79 });
@@ -950,23 +944,15 @@ TEST_CASE("Decoder.everyCanonRowDecodes")
         CHECK(storedImmediates(row) == expected.stored);
         auto element = Bytes { std::byte { row.opcode } };
         appendBytes(element, literal);
-        auto const component = oneOf(8, element);
-        auto const refused = row.gate && componentFeatureRow(*row.gate).p11 == Implementation::Refused;
-        if (refused)
+        // Every row decodes whatever the set, as wasmparser's reader reads it: its gate is
+        // validation's (Validator.deferredDefinitions).
+        for (auto const features: { ComponentFeatureSet::defaults(), everyFeature() })
         {
-            // Refused even when the set enables its gate, at the opcode.
-            CHECK(errorOf(component, everyFeature())
-                  == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, row.gate });
-            continue;
+            auto const canon = canonOf(element, features);
+            CHECK(canon.builtin == row.builtin);
+            CHECK(canon.immediates.size() == expected.stored);
+            CHECK(canon.options.empty());
         }
-        auto const canon = canonOf(element, everyFeature());
-        CHECK(canon.builtin == row.builtin);
-        CHECK(canon.immediates.size() == expected.stored);
-        CHECK(canon.options.empty());
-        // A gated row is refused without its gate.
-        if (row.gate)
-            CHECK(errorOf(component, ComponentFeatureSet::defaults())
-                  == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, row.gate });
     }
 }
 
@@ -1069,6 +1055,8 @@ TEST_CASE("Decoder.everyDefinedValueType")
                                            VariantCase { .label = "y", .type = std::nullopt } } } },
         { .bytes = bytesOf({ 0x70, 0x7B }), .type = ListType { .element = PrimitiveValueType::U16 } },
         { .bytes = bytesOf({ 0x70, 0x02 }), .type = ListType { .element = TypeIndex { .index = 2 } } },
+        { .bytes = bytesOf({ 0x67, 0x7D, 0x03 }),
+          .type = FixedListType { .element = PrimitiveValueType::U8, .length = 3 } },
         { .bytes = bytesOf({ 0x6F, 0x02, 0x7C, 0x79 }),
           .type = TupleType { .elements = { PrimitiveValueType::S16, PrimitiveValueType::U32 } } },
         { .bytes = withNames({ 0x6E, 0x02 }, { "f1", "f2" }),
@@ -1090,31 +1078,21 @@ TEST_CASE("Decoder.everyDefinedValueType")
     {
         INFO(static_cast<int>(entry.bytes.front()));
         CHECK(valueTypeOf(entry.bytes) == entry.type);
+        // Gated or not, each decodes without its feature: the gates are validation's.
+        CHECK(valueTypeOf(entry.bytes, ComponentFeatureSet::defaults()) == entry.type);
     }
-    // Every row of the table is among the cases but 🔧's, which P11 refuses.
+    // Every row of the table is among the cases.
     for (auto const& row: DefinedValueTypeTable)
     {
         INFO(row.keyword);
-        auto const covered = std::ranges::any_of(
-            cases, [&](Case const& entry) { return entry.bytes.front() == std::byte { row.byte }; });
-        CHECK(covered == (row.gate != ComponentFeature::FixedLengthLists));
+        CHECK(std::ranges::any_of(
+            cases, [&](Case const& entry) { return entry.bytes.front() == std::byte { row.byte }; }));
     }
-    CHECK(errorOf(oneOf(7, bytesOf({ 0x67, 0x7D, 0x03 })), everyFeature())
-          == DecodeError {
-              DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::FixedLengthLists });
 
-    // Every primitive, as a defvaltype and as a valtype; error-context is 📝, refused.
+    // Every primitive, as a defvaltype and as a valtype; error-context's 📝 is validation's.
     for (auto const& row: PrimitiveValueTypeTable)
     {
         INFO(row.text);
-        if (row.gate)
-        {
-            CHECK(errorOf(oneOf(7, bytesOf({ row.byte })), everyFeature())
-                  == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, row.gate });
-            CHECK(errorOf(oneOf(7, bytesOf({ 0x70, row.byte })), everyFeature())
-                  == DecodeError { DecodeErrorCode::FeatureDisabled, 12, std::nullopt, row.gate });
-            continue;
-        }
         CHECK(valueTypeOf(bytesOf({ row.byte })) == DefinedValueType { row.type });
         CHECK(valueTypeOf(bytesOf({ 0x6B, row.byte }))
               == DefinedValueType { OptionType { .type = row.type } });
@@ -1173,20 +1151,19 @@ TEST_CASE("Decoder.asyncFunctionTypeDecoded")
     auto const type = typeOf(async, ComponentFeatureSet::wasi03());
     REQUIRE(std::holds_alternative<FunctionTypeDefinition>(type.type));
     CHECK(std::get<FunctionTypeDefinition>(type.type).asyncness == Asyncness::Async);
-    CHECK(errorOf(oneOf(7, async), ComponentFeatureSet::defaults())
-          == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::Async });
+    // Without 🔀 too: the gate is validation's (Validator.asyncRefusedUntilP12).
+    CHECK(typeOf(async, ComponentFeatureSet::defaults()) == type);
 }
 
-TEST_CASE("Decoder.mapGated")
+TEST_CASE("Decoder.mapDecodesWithoutItsGate")
 {
+    // 🗺️ is a validation rule in wasmparser ("Maps require the component model map feature"), so the
+    // map decodes whatever the set (Validator.mapKeyTypes refuses it without the feature).
     auto const map = bytesOf({ 0x63, 0x73, 0x79 });
-    auto const refused = errorOf(oneOf(7, map), ComponentFeatureSet::defaults());
-    CHECK(refused
-          == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::Map });
-    CHECK(specMessage(refused) == "requires the component model map feature (🗺️)");
-    CHECK(valueTypeOf(map, ComponentFeatureSet::defaults().with(ComponentFeature::Map))
-          == DefinedValueType {
-              MapType { .key = PrimitiveValueType::String, .value = PrimitiveValueType::U32 } });
+    for (auto const features: { ComponentFeatureSet::defaults(), ComponentFeatureSet::wasi03() })
+        CHECK(valueTypeOf(map, features)
+              == DefinedValueType {
+                  MapType { .key = PrimitiveValueType::String, .value = PrimitiveValueType::U32 } });
 }
 
 TEST_CASE("Decoder.nestedInstanceTypes")
@@ -1308,8 +1285,7 @@ TEST_CASE("Decoder.optionsDecoded")
     CHECK(canonOf(asyncLift).options
           == std::vector<CanonOption> { { .kind = CanonOptionKind::Async, .index = 0 },
                                         { .kind = CanonOptionKind::Callback, .index = 1 } });
-    CHECK(errorOf(oneOf(8, asyncLift), ComponentFeatureSet::defaults())
-          == DecodeError { DecodeErrorCode::FeatureDisabled, 15, std::nullopt, ComponentFeature::Async });
+    CHECK(canonOf(asyncLift, ComponentFeatureSet::defaults()).options.size() == 2);
 }
 
 TEST_CASE("Decoder.coreTypes")
@@ -1553,14 +1529,15 @@ TEST_CASE("Decoder.coreGrammarErrors")
     appendBytes(module, { 0x09 });
     CHECK(errorOf(oneOf(3, module)).code == DecodeErrorCode::MalformedCoreType);
 
-    // An export alias of a sort no component names, and of 🪙's value sort.
+    // An export alias of a sort no component names; 🪙's value sort decodes, validation refuses it.
     auto alias = bytesOf({ 0x06, 0x00, 0x00 });
     appendName(alias, "f");
     CHECK(errorOf(oneOf(6, alias)) == DecodeError { DecodeErrorCode::InvalidExternalKind, 11, 0x06 });
     auto value = bytesOf({ 0x02, 0x00, 0x00 });
     appendName(value, "v");
-    CHECK(errorOf(oneOf(6, value), everyFeature())
-          == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::Values });
+    CHECK(std::get<AliasDefinition>(definitionsOf(oneOf(6, value), ComponentFeatureSet::defaults()).front())
+              .sort
+          == Sort::Value);
 }
 
 TEST_CASE("Decoder.truncatedForms")

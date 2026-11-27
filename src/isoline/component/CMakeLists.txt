@@ -9,6 +9,8 @@ target_sources(isoline_component
         binary/Decoder.cpp
         binary/Encoder.cpp
         binary/Grammar.hpp
+        types/TypeArena.cpp
+        validate/Validator.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES
@@ -16,7 +18,10 @@ target_sources(isoline_component
             Limits.hpp
             binary/Component.hpp
             binary/Decoder.hpp
-            binary/Encoder.hpp)
+            binary/Encoder.hpp
+            types/TypeArena.hpp
+            validate/ValidatedComponent.hpp
+            validate/Validator.hpp)
 target_compile_features(isoline_component PUBLIC cxx_std_23)
 target_link_libraries(isoline_component PUBLIC isoline::core)
 isoline_apply_target_policy(isoline_component)
