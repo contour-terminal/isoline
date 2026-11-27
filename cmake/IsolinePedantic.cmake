@@ -11,6 +11,7 @@
 # dropped at configure time (check_cxx_compiler_flag), so one list serves GCC and Clang alike.
 
 include_guard(GLOBAL)
+include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
 
 set(_isolineGnuStyleWarnings
@@ -51,12 +52,34 @@ set(_isolineMsvcWarnings
     /utf-8
     /Zc:__cplusplus)
 
-## @brief Appends to @p outVar each flag of the remaining arguments the C++ compiler accepts.
-function(_isoline_supported_flags outVar)
+# The C sources (the C API's tests) and every C header a consumer includes: the set the C API promises
+# its headers compile under (plan P17a, Global Constraints, D9), which c-headers-standalone compiles each
+# header alone with (tests/c/HeaderLint.cmake).
+set(ISOLINE_C_API_GNU_WARNINGS
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wstrict-prototypes
+    -Wmissing-prototypes
+    -Wconversion
+    -Wsign-conversion
+    -Wshadow
+    -Wcast-qual
+    -Wundef)
+set(_isolineMsvcCWarnings
+    /W4
+    /utf-8)
+
+## @brief Appends to @p outVar each flag of the remaining arguments the @p language compiler accepts.
+function(_isoline_supported_flags outVar language)
     set(accepted "")
     foreach(flag IN LISTS ARGN)
-        string(REGEX REPLACE "[^A-Za-z0-9_]" "_" probe "ISOLINE_HAS_FLAG${flag}")
-        check_cxx_compiler_flag("${flag}" ${probe})
+        string(REGEX REPLACE "[^A-Za-z0-9_]" "_" probe "ISOLINE_HAS_${language}_FLAG${flag}")
+        if(language STREQUAL "C")
+            check_c_compiler_flag("${flag}" ${probe})
+        else()
+            check_cxx_compiler_flag("${flag}" ${probe})
+        endif()
         if(${probe})
             list(APPEND accepted "${flag}")
         endif()
@@ -64,21 +87,27 @@ function(_isoline_supported_flags outVar)
     set(${outVar} ${${outVar}} ${accepted} PARENT_SCOPE)
 endfunction()
 
+# The warning sets are per language (ISOLINE_CXX_WARNINGS, ISOLINE_C_WARNINGS); ISOLINE_COMPILE_OPTIONS
+# is what both languages get: -Werror, the sanitizers and coverage.
+set(ISOLINE_CXX_WARNINGS "")
+set(ISOLINE_C_WARNINGS "")
 set(ISOLINE_COMPILE_OPTIONS "")
 set(ISOLINE_LINK_OPTIONS "")
 set(ISOLINE_TEST_COMPILE_OPTIONS "")
 
 if(MSVC)
-    _isoline_supported_flags(ISOLINE_COMPILE_OPTIONS ${_isolineMsvcWarnings})
+    _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX ${_isolineMsvcWarnings})
+    _isoline_supported_flags(ISOLINE_C_WARNINGS C ${_isolineMsvcCWarnings})
     if(ISOLINE_WERROR)
         list(APPEND ISOLINE_COMPILE_OPTIONS /WX)
     endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    _isoline_supported_flags(ISOLINE_COMPILE_OPTIONS -fdiagnostics-color=always ${_isolineGnuStyleWarnings})
+    _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX -fdiagnostics-color=always ${_isolineGnuStyleWarnings})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        _isoline_supported_flags(ISOLINE_COMPILE_OPTIONS ${_isolineGccOverrides})
+        _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX ${_isolineGccOverrides})
     endif()
-    _isoline_supported_flags(ISOLINE_TEST_COMPILE_OPTIONS ${_isolineTestWarnings})
+    _isoline_supported_flags(ISOLINE_C_WARNINGS C -fdiagnostics-color=always ${ISOLINE_C_API_GNU_WARNINGS})
+    _isoline_supported_flags(ISOLINE_TEST_COMPILE_OPTIONS CXX ${_isolineTestWarnings})
     if(ISOLINE_WERROR)
         list(APPEND ISOLINE_COMPILE_OPTIONS -Werror)
     endif()
@@ -132,57 +161,98 @@ if(ISOLINE_CLANG_TIDY)
     message(STATUS "[isoline] clang-tidy: ${ISOLINE_CLANG_TIDY_EXE}")
 endif()
 
-message(STATUS "[isoline] compile options: ${ISOLINE_COMPILE_OPTIONS}")
+message(STATUS "[isoline] compile options: ${ISOLINE_COMPILE_OPTIONS}; C++ warnings: ${ISOLINE_CXX_WARNINGS}; "
+               "C warnings: ${ISOLINE_C_WARNINGS}")
 
 ## @brief Applies @p target's build-only options: COMPILE ones to its compiles, LINK ones to its links, each
 ## wrapped in $<BUILD_INTERFACE:...>, so that none is exported with the target (CMake exports a module
 ## target's own compile options for an importer's rebuild of its BMI, IMPORTED_CXX_MODULES_COMPILE_OPTIONS;
 ## unwrapped, -Werror and the sanitizers would reach every consumer of the installed package, D2, D11).
-## Every option is recorded in the global property ISOLINE_BUILD_OPTIONS, the one record the install tests
-## derive their forbidden options from (check-install step 4), so an option applied here, through
-## isoline_apply_target_policy() or beside it, cannot leak into an installed target unseen.
+## CXX_COMPILE and C_COMPILE apply to the compiles of that language alone, for a target of both: a test
+## that compiles C beside C++ (an installed library compiles one language, and gets its warnings as
+## COMPILE, since the install tests read its options outside any compile, where $<COMPILE_LANGUAGE> has no
+## meaning). Every option is recorded in the global property ISOLINE_BUILD_OPTIONS, the one record the
+## install tests derive their forbidden options from (check-install step 4), so an option applied here,
+## through isoline_apply_target_policy() or beside it, cannot leak into an installed target unseen.
 ##
-## isoline_apply_build_options(<target> [COMPILE <option>...] [LINK <option>...])
+## isoline_apply_build_options(<target> [COMPILE <option>...] [CXX_COMPILE <option>...]
+##                             [C_COMPILE <option>...] [LINK <option>...])
 function(isoline_apply_build_options target)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "COMPILE;LINK")
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "COMPILE;CXX_COMPILE;C_COMPILE;LINK")
     if(arg_COMPILE)
         target_compile_options(${target} PRIVATE "$<BUILD_INTERFACE:${arg_COMPILE}>")
     endif()
+    foreach(language IN ITEMS CXX C)
+        if(arg_${language}_COMPILE)
+            target_compile_options(${target} PRIVATE
+                "$<BUILD_INTERFACE:$<$<COMPILE_LANGUAGE:${language}>:${arg_${language}_COMPILE}>>")
+        endif()
+    endforeach()
     if(arg_LINK)
         target_link_options(${target} PRIVATE "$<BUILD_INTERFACE:${arg_LINK}>")
     endif()
-    set_property(GLOBAL APPEND PROPERTY ISOLINE_BUILD_OPTIONS ${arg_COMPILE} ${arg_LINK})
+    set_property(GLOBAL APPEND PROPERTY ISOLINE_BUILD_OPTIONS
+                 ${arg_COMPILE} ${arg_CXX_COMPILE} ${arg_C_COMPILE} ${arg_LINK})
 endfunction()
 
-## @brief Applies Isoline's warning set, sanitizers, coverage and clang-tidy to @p target, its options
-## through isoline_apply_build_options().
+## @brief Applies Isoline's warning sets, sanitizers, coverage and clang-tidy to @p target, its options
+## through isoline_apply_build_options(). The warning set is the language's its sources are written in
+## (ISOLINE_CXX_WARNINGS, ISOLINE_C_WARNINGS), each to its own compiles where a target has both, so call
+## it once the target has its sources.
 ##
 ## isoline_apply_target_policy(<target> [TEST])
 ## TEST marks a test binary, which additionally gets the test-only warning adjustments and, where
 ## core-cpp provides it, core::testing_dialogs: on Windows a failed assertion, std::abort() or a crash
 ## then reports to stderr and ends the process, instead of opening a dialog (the Debug CRT's abort
-## dialog, Windows Error Reporting) that waits for a click and holds the run until its timeout.
+## dialog, Windows Error Reporting) that waits for a click and holds the run until its timeout. A test
+## executable is also one of the binaries the coverage report reads (cmake/IsolineCoverage.cmake).
 function(isoline_apply_target_policy target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "TEST" "" "")
-    set(compileOptions ${ISOLINE_COMPILE_OPTIONS})
+    set(cxxWarnings ${ISOLINE_CXX_WARNINGS})
     if(arg_TEST)
-        list(APPEND compileOptions ${ISOLINE_TEST_COMPILE_OPTIONS})
+        list(APPEND cxxWarnings ${ISOLINE_TEST_COMPILE_OPTIONS})
         if(TARGET core::testing_dialogs)
             target_link_libraries(${target} PRIVATE core::testing_dialogs)
         endif()
     endif()
+    # The languages its sources are written in: C for a .c source, C++ for every other.
+    get_target_property(sources ${target} SOURCES)
+    set(hasC OFF)
+    set(hasCxx OFF)
+    foreach(source IN LISTS sources)
+        if(source MATCHES "[.]c$")
+            set(hasC ON)
+        elseif(source MATCHES "[.](cpp|cxx|cc|cppm|ixx)$")
+            set(hasCxx ON)
+        endif()
+    endforeach()
+    set(compileOptions ${ISOLINE_COMPILE_OPTIONS})
+    set(languageOptions "")
+    if(hasC AND hasCxx)
+        set(languageOptions CXX_COMPILE ${cxxWarnings} C_COMPILE ${ISOLINE_C_WARNINGS})
+    elseif(hasC)
+        list(APPEND compileOptions ${ISOLINE_C_WARNINGS})
+    else()
+        list(APPEND compileOptions ${cxxWarnings})
+    endif()
     set(linkOptions "")
     get_target_property(type ${target} TYPE)
-    if(type STREQUAL "EXECUTABLE")
+    if(type STREQUAL "EXECUTABLE" OR type STREQUAL "SHARED_LIBRARY")
         set(linkOptions ${ISOLINE_LINK_OPTIONS})
     endif()
-    isoline_apply_build_options(${target} COMPILE ${compileOptions} LINK ${linkOptions})
+    if(arg_TEST AND type STREQUAL "EXECUTABLE")
+        isoline_coverage_binary(${target})
+    endif()
+    isoline_apply_build_options(${target} COMPILE ${compileOptions} ${languageOptions} LINK ${linkOptions})
     isoline_apply_tidy_command(${target})
 endfunction()
 
 ## @brief Sets @p target's clang-tidy command, where clang-tidy runs: ISOLINE_CLANG_TIDY_COMMAND with the
 ## checks of the target's ISOLINE_LIFTED_TIDY_CHECKS property lifted (E2, isoline_lift_module_tidy_checks()).
-## Both isoline_apply_target_policy() and the lift call it, so their order does not matter.
+## Both isoline_apply_target_policy() and the lift call it, so their order does not matter. C++ sources only:
+## the one .clang-tidy is C++-oriented (naming, modernize-*), and a C subset would need a second config,
+## which the one-config rule forbids; the C sources (the C API's tests) build under the strict C warning set
+## and the sanitizers instead (plan P17a, I4).
 function(isoline_apply_tidy_command target)
     if(NOT ISOLINE_CLANG_TIDY_COMMAND)
         return()

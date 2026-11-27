@@ -67,6 +67,10 @@ enum class PrepareError : uint8_t
     Unavailable, ///< What the engine needs of a thread (a signal stack, a guard) could not be set up.
 };
 
+/// The last PrepareError enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastPrepareError = PrepareError::Unavailable;
+
 /// What an engine sets up on one thread to run its code there, implemented by the engines that need
 /// any (a compiled engine's signal stack); its destructor releases it. Interpreters have none.
 class IThreadResource

@@ -57,6 +57,7 @@
                 "not-windows"
             ],
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
                 "CMAKE_CXX_COMPILER": "clang++",
                 "ISOLINE_CLANG_TIDY": "ON"
             }
@@ -104,6 +105,25 @@
             }
         },
         {
+            "name": "clang-libcxx-hardened",
+            "displayName": "Clang Debug, libc++ in its fast hardening mode",
+            "description": "libc++ checks its preconditions (a string_view's length, an index) and traps on a broken one: a host bug libstdc++ and ASan let pass, such as a view made longer than its bytes, ends the test. Catch2 is built here, since an installed one is built for libstdc++",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "debug"
+            ],
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_CXX_FLAGS": "-stdlib=libc++ -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
+                "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++",
+                "CMAKE_SHARED_LINKER_FLAGS": "-stdlib=libc++",
+                "CMAKE_DISABLE_FIND_PACKAGE_Catch2": "ON",
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
             "name": "gcc-debug",
             "displayName": "GCC Debug",
             "inherits": [
@@ -112,6 +132,7 @@
                 "debug"
             ],
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
                 "CMAKE_CXX_COMPILER": "g++"
             }
         },
@@ -140,6 +161,7 @@
                 "rhs": "Darwin"
             },
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "cc",
                 "CMAKE_CXX_COMPILER": "c++",
                 "ISOLINE_FETCH_DEPS": "ON"
             }
@@ -158,6 +180,7 @@
                 "rhs": "Windows"
             },
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl",
                 "CMAKE_CXX_COMPILER": "cl",
                 "ISOLINE_FETCH_DEPS": "ON"
             }
@@ -174,6 +197,21 @@
             "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clangcl-cross.cmake",
             "cacheVariables": {
                 "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
+            "name": "msvc-wine-debug",
+            "displayName": "Windows x64 cross (MSVC under wine) Debug",
+            "description": "Windows x64 from Linux: msvc-wine's cl.exe under wine, with the static CRT; tests run under wine",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "debug"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-msvc-wine-cross.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON",
+                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
             }
         },
         {
@@ -252,15 +290,8 @@
             "description": "Windows x64 from Linux: msvc-wine's cl.exe under wine, with the static CRT and C++ modules; tests run under wine",
             "inherits": [
                 "modules",
-                "isoline-common",
-                "linux-host",
-                "debug"
-            ],
-            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-msvc-wine-cross.cmake",
-            "cacheVariables": {
-                "ISOLINE_FETCH_DEPS": "ON",
-                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
-            }
+                "msvc-wine-debug"
+            ]
         },
         {
             "name": "aarch64-cross-common",
@@ -297,11 +328,18 @@
         { "name": "clang-tsan", "configurePreset": "clang-tsan" },
         { "name": "clang-release", "configurePreset": "clang-release" },
         { "name": "clang-coverage", "configurePreset": "clang-coverage" },
+        {
+            "name": "clang-libcxx-hardened",
+            "configurePreset": "clang-libcxx-hardened",
+            "description": "What the hardened-stdlib label's tests run",
+            "targets": ["isoline_hardened_stdlib_tests"]
+        },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "configurePreset": "gcc-release" },
         { "name": "macos-clang", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
+        { "name": "msvc-wine-debug", "configurePreset": "msvc-wine-debug" },
         { "name": "clangcl-cross-release", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "configurePreset": "clang-aarch64-cross-release" },
@@ -349,11 +387,23 @@
             }
         },
         { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
+        {
+            "name": "clang-libcxx-hardened",
+            "inherits": "isoline-test-base",
+            "configurePreset": "clang-libcxx-hardened",
+            "description": "The hardened-stdlib label alone: the tests whose host-input bounds a hardened libc++ holds to",
+            "filter": {
+                "include": {
+                    "label": "hardened-stdlib"
+                }
+            }
+        },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "inherits": "isoline-test-common", "configurePreset": "gcc-release" },
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },
+        { "name": "msvc-wine-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-wine-debug" },
         { "name": "clangcl-cross-release", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross-release" },

@@ -24,6 +24,10 @@ enum class CallFailure : uint8_t
     StoreDeleted,      ///< The instance's store is gone: nothing ran, and nothing was read.
 };
 
+/// The last CallFailure enumerator; it must name whichever enumerator is listed last above. The C API's
+/// error rows (c/detail/ErrorRows.hpp) hold one row per enumerator up to it.
+inline constexpr auto LastCallFailure = CallFailure::StoreDeleted;
+
 /// A handle of another store than the one asked (isOf() is false): its entity is not this store's, so
 /// nothing was read or changed. A handle of a store that is gone is foreign to every live store.
 struct ForeignHandle

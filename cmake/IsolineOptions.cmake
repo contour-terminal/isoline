@@ -23,6 +23,9 @@ option(ISOLINE_FETCH_DEPS
        "Fetch a dependency (Catch2) with CPM when neither the parent project nor find_package() provides it"
        OFF)
 
+option(ISOLINE_C_API "Build the C API (wasm.h + isoline.h): the isoline_c shared and static libraries"
+       ${PROJECT_IS_TOP_LEVEL})
+
 set(ISOLINE_SANITIZE "" CACHE STRING
     "Sanitizer mode for Isoline's own targets: empty, address (ASan + UBSan) or thread")
 set_property(CACHE ISOLINE_SANITIZE PROPERTY STRINGS "" address thread)

@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The vector families of wasm.h (WASM_DECLARE_VEC, directly or through WASM_DECLARE_TYPE), one row each:
+//
+//     ISOLINE_VECTOR_ROW(name, ownership)
+//
+// name       the family, as in wasm_<name>_vec_t;
+// ownership  what its elements own (detail::ElementOwnership): Plain (bytes), Value (wasm_val_t, which owns
+//            the reference of a reference kind) or Owned (an own pointer, deleted and deep-copied with the
+//            vector). wasm.h's `ptr_or_none` is `*` exactly for the Owned rows.
+//
+// scripts/c-api-vectors.py writes WasmVectors.cpp from these rows, five written-out definitions per family, and
+// the c-api-vectors lint checks that the checked-in file is what the rows give and that the rows are exactly
+// wasm.h's families. A new family is a row here, then `c-api-vectors.py --write`. The C++ tests include this
+// file too. No include guard: each includer defines ISOLINE_VECTOR_ROW.
+
+#ifndef ISOLINE_VECTOR_ROW
+    #error "define ISOLINE_VECTOR_ROW(name, ownership) before including VectorRows.def"
+#endif
+
+ISOLINE_VECTOR_ROW(byte, Plain)
+ISOLINE_VECTOR_ROW(valtype, Owned)
+ISOLINE_VECTOR_ROW(functype, Owned)
+ISOLINE_VECTOR_ROW(globaltype, Owned)
+ISOLINE_VECTOR_ROW(tabletype, Owned)
+ISOLINE_VECTOR_ROW(memorytype, Owned)
+ISOLINE_VECTOR_ROW(tagtype, Owned)
+ISOLINE_VECTOR_ROW(externtype, Owned)
+ISOLINE_VECTOR_ROW(importtype, Owned)
+ISOLINE_VECTOR_ROW(exporttype, Owned)
+ISOLINE_VECTOR_ROW(val, Value)
+ISOLINE_VECTOR_ROW(frame, Owned)
+ISOLINE_VECTOR_ROW(extern, Owned)

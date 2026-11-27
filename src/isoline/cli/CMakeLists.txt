@@ -38,6 +38,8 @@ isoline_apply_target_policy(isoline_cli)
 add_executable(isoline main.cpp ${isolineCliEntry} ${isolineCliHost})
 target_link_libraries(isoline PRIVATE isoline::cli)
 isoline_apply_target_policy(isoline)
+# The tool's own tests run it as a process, so its main() and entry points are reached through it alone.
+isoline_coverage_binary(isoline)
 
 if(ISOLINE_TESTING)
     # Every *_test.cpp in this directory is one translation unit of the tool's test binary, and on POSIX

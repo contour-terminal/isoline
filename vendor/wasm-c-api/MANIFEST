@@ -1,0 +1,7 @@
+# wasm-c-api vendored copy -- verify it with:
+#   cmake -DMODE=check -DDEST=vendor/wasm-c-api -P cmake/WasmCApiVendor.cmake
+# repository https://github.com/WebAssembly/wasm-c-api
+# commit 9d6b93764ac96cdd9db51081c363e09d2d488b4d
+# files 2
+c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08  LICENSE
+7b6414f525d503a27609f0dfc3a33fa135f5cdf22d8b03f9e20a948ee8e62301  include/wasm.h

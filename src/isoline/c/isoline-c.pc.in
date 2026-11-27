@@ -1,0 +1,12 @@
+prefix=@ISOLINE_PC_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: isoline-c
+Description: The C API of Isoline, a WebAssembly runtime: wasm.h and isoline.h
+URL: @PROJECT_HOMEPAGE_URL@
+Version: @PROJECT_VERSION@
+Cflags: -I${includedir}/isoline
+Cflags.private: -DISOLINE_C_STATIC -DLIBWASM_STATIC
+Libs: -L${libdir} -lisoline_c
+Libs.private: @ISOLINE_PC_LIBS_PRIVATE@

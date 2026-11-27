@@ -150,3 +150,15 @@ else()
 endif()
 
 add_test(NAME isoline-consumer-${ISOLINE_CONSUMER_MODE} COMMAND isoline_consumer)
+# A shared library it links (isoline::c) is found beside the executable or on PATH on Windows, which has no
+# run path: its directory, the prefix's bin/, goes first on the test's PATH. Without it the loader would
+# open a dialog about the missing DLL and hold the run until its timeout.
+if(WIN32)
+    foreach(isolineConsumerLinkTarget IN LISTS isolineConsumerLinkTargets)
+        get_target_property(isolineConsumerLinkType ${isolineConsumerLinkTarget} TYPE)
+        if(isolineConsumerLinkType STREQUAL "SHARED_LIBRARY")
+            set_property(TEST isoline-consumer-${ISOLINE_CONSUMER_MODE} APPEND PROPERTY ENVIRONMENT_MODIFICATION
+                         "PATH=path_list_prepend:$<TARGET_FILE_DIR:${isolineConsumerLinkTarget}>")
+        endif()
+    endforeach()
+endif()

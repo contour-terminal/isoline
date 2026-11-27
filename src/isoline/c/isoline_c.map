@@ -1,0 +1,1 @@
+ISOLINE_C_0.1 { global: wasm_*; isoline_*; local: *; };
