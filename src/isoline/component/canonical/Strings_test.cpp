@@ -181,8 +181,11 @@ TEST_CASE("Strings.invalidEncodingTraps")
         { StringEncoding::Utf8, bytesOf({ 'a', 0xc3 }), 2, "utf-8" },        // truncated at the end
         { StringEncoding::Utf8, bytesOf({ 0xff }), 1, "utf-8" },             // never valid
         { StringEncoding::Utf8, bytesOf({ 0xed, 0xa0, 0x80 }), 3, "utf-8" }, // an encoded surrogate
-        { StringEncoding::Utf16, bytesOf({ 0x00, 0xd8 }), 1, "utf-16" },     // a lone high surrogate
-        { StringEncoding::Utf16, bytesOf({ 0x00, 0xdc, 'a', 0 }), 2, "utf-16" }, // a lone low surrogate
+        { StringEncoding::Utf8, bytesOf({ 0xe0, 0x80, 0x80 }), 3, "utf-8" }, // an overlong 3-byte form
+        { StringEncoding::Utf8, bytesOf({ 0xf0, 0x80, 0x80, 0x80 }), 4, "utf-8" }, // an overlong 4-byte form
+        { StringEncoding::Utf8, bytesOf({ 0xf5, 0x80, 0x80, 0x80 }), 4, "utf-8" }, // past U+10FFFF
+        { StringEncoding::Utf16, bytesOf({ 0x00, 0xd8 }), 1, "utf-16" },           // a lone high surrogate
+        { StringEncoding::Utf16, bytesOf({ 0x00, 0xdc, 'a', 0 }), 2, "utf-16" },   // a lone low surrogate
         { StringEncoding::Latin1Utf16, bytesOf({ 'a', 0, 0x00, 0xd8 }), 2 | Utf16Tag, "utf-16" },
     }));
     auto side = Side {};
@@ -339,32 +342,59 @@ TEST_CASE("Strings.tooLongToStoreTraps")
 
 TEST_CASE("Strings.unvalidatedBytesTrapOnStore")
 {
-    // encodedString() leaves validation to its caller: bytes that are not text trap when stored, in
-    // every transcode that decodes them.
+    // encodedString() leaves validation to its caller: a host string that is not text traps InvalidEncoding
+    // when stored, in every row that reads it, the copies included, so no guest receives one.
     struct Case
     {
         StringEncoding from;
+        uint32_t taggedCodeUnits;
+        std::vector<std::byte> bytes;
         StringEncoding to;
         char const* name;
     };
-    auto const pair = GENERATE(values<Case>({
-        { StringEncoding::Utf8, StringEncoding::Utf16, "utf-8" },
-        { StringEncoding::Utf8, StringEncoding::Latin1Utf16, "utf-8" },
-        { StringEncoding::Utf16, StringEncoding::Utf8, "utf-16" },
+    auto const loneSurrogate = bytesOf({ 'a', 0, 0x00, 0xd8 });
+    auto const notUtf8 = bytesOf({ 0xc3, 0x28 });
+    auto const encodedSurrogate = bytesOf({ 0xed, 0xa0, 0x80 });
+    auto const invalid = GENERATE_COPY(values<Case>({
+        { StringEncoding::Utf8, 2, notUtf8, StringEncoding::Utf8, "utf-8" },          // Utf8Copy
+        { StringEncoding::Utf8, 3, encodedSurrogate, StringEncoding::Utf8, "utf-8" }, // Utf8Copy
+        { StringEncoding::Utf8, 2, notUtf8, StringEncoding::Utf16, "utf-8" },         // Utf8ToUtf16
+        { StringEncoding::Utf8, 2, notUtf8, StringEncoding::Latin1Utf16, "utf-8" },   // StringToLatin1OrUtf16
+        { StringEncoding::Utf16, 2, loneSurrogate, StringEncoding::Utf8, "utf-16" },  // Utf16ToUtf8
+        { StringEncoding::Utf16, 2, loneSurrogate, StringEncoding::Utf16, "utf-16" }, // Utf16Copy
+        { StringEncoding::Latin1Utf16,
+          2 | Utf16Tag,
+          loneSurrogate,
+          StringEncoding::Utf16,
+          "utf-16" }, // Utf16Copy
+        { StringEncoding::Latin1Utf16, 2 | Utf16Tag, loneSurrogate, StringEncoding::Latin1Utf16, "utf-16" },
     }));
-    auto side = Side {};
-    auto builder = ValueBuilder { side.arena(),
-                                  std::vector { side.primitive(ValueKind::String) },
-                                  side.budgetPointer() };
-    auto const bytes = builder.encodedString(pair.from, 2);
-    auto const invalid =
-        pair.from == StringEncoding::Utf8 ? bytesOf({ 0xc3, 0x28 }) : bytesOf({ 'a', 0, 0x00, 0xd8 });
-    std::ranges::copy(invalid, bytes.begin());
-    auto values = builder.finish();
-    REQUIRE(values.has_value());
-    auto context = side.context(pair.to);
-    CHECK(trapIn(storeString(context, values->root(0).string()))
-          == trapOf(TrapCode::InvalidEncoding, pair.name));
+    auto const store = [](Case const& string, std::vector<std::byte> const& bytes) {
+        auto side = Side {};
+        auto builder = ValueBuilder { side.arena(),
+                                      std::vector { side.primitive(ValueKind::String) },
+                                      side.budgetPointer() };
+        auto const stored = builder.encodedString(string.from, string.taggedCodeUnits);
+        REQUIRE(stored.size() == bytes.size());
+        std::ranges::copy(bytes, stored.begin());
+        auto values = builder.finish();
+        REQUIRE(values.has_value());
+        auto context = side.context(string.to);
+        return trapIn(storeString(context, values->root(0).string()));
+    };
+    CHECK(store(invalid, invalid.bytes) == trapOf(TrapCode::InvalidEncoding, invalid.name));
+
+    // The fault past a granule of valid text: the copy decodes every granule before it writes it.
+    auto const unitBytes = invalid.from == StringEncoding::Utf8 ? std::size_t { 1 } : std::size_t { 2 };
+    auto const prefix = (2 * BulkPollBytes) / unitBytes;
+    auto longer = std::vector<std::byte> {};
+    for ([[maybe_unused]] auto const unit: std::views::iota(std::size_t { 0 }, prefix))
+        longer.insert(longer.end(), { std::byte { 'a' }, std::byte {} });
+    longer.resize(prefix * unitBytes);
+    longer.insert(longer.end(), invalid.bytes.begin(), invalid.bytes.end());
+    auto longerString = invalid;
+    longerString.taggedCodeUnits += static_cast<uint32_t>(prefix);
+    CHECK(store(longerString, longer) == trapOf(TrapCode::InvalidEncoding, invalid.name));
 }
 
 TEST_CASE("Strings.validationAcrossGranules")

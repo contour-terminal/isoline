@@ -1037,9 +1037,10 @@ namespace
         {
             Require(context().memory != nullptr);
             auto const element = elementFootprint(context(), type);
-            auto const children = static_cast<uint32_t>(value.childCount());
+            // In 64-bit arithmetic: a map's 2^31 entries or more have more children than 32 bits count.
+            auto const children = uint64_t { value.childCount() };
             auto const length = type.kind == ValueKind::Map ? children / 2 : children;
-            auto const bytes = uint64_t { length } * element.size;
+            auto const bytes = length * element.size;
             // Each element is below MaxValueByteSize, but a host list may hold more than any 32-bit memory.
             if (bytes > std::numeric_limits<uint32_t>::max())
                 return std::unexpected { trapOf(
@@ -1049,9 +1050,11 @@ namespace
                 reallocate(*context().memory, 0, 0, element.alignment, static_cast<uint32_t>(bytes));
             if (!block)
                 return std::unexpected { block.error() };
-            auto const pair = PendingPair {
-                .placement = placement, .address = address, .pointer = *block, .length = length
-            };
+            // Past the guard both counts fit 32 bits: an element is a byte at least, a map entry two.
+            auto const pair = PendingPair { .placement = placement,
+                                            .address = address,
+                                            .pointer = *block,
+                                            .length = static_cast<uint32_t>(length) };
             if (auto const scalar = scalarElement(context(), type); scalar)
             {
                 if (auto written = lowerPacked(*scalar, value, *block, static_cast<uint32_t>(bytes));
@@ -1061,7 +1064,7 @@ namespace
             }
             _stack.emplace_back(Compound { .type = id,
                                            .address = *block,
-                                           .count = children,
+                                           .count = static_cast<uint32_t>(children),
                                            .placement = Placement::Memory,
                                            .stride = element.size,
                                            .valueOffset = element.valueOffset },

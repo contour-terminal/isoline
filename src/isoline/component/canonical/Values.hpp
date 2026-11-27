@@ -13,6 +13,7 @@
 #include <expected>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -109,6 +110,32 @@ class LiveBytesBudget
   private:
     uint64_t _limit;
     std::atomic<uint64_t> _live { 0 };
+};
+
+/// The allocator of ChargedVector's storage: std::allocator, except that a growth that gives no value
+/// (resize()) default-initializes, so the bytes of a trivially constructible element are left for their
+/// caller to overwrite rather than zeroed first: the resize-for-overwrite std::vector lacks.
+template <typename T>
+class OverwriteAllocator: public std::allocator<T>
+{
+  public:
+    OverwriteAllocator() noexcept = default;
+
+    /// The allocator of another element type, as std::allocator_traits rebinds it.
+    template <typename U>
+    explicit OverwriteAllocator(OverwriteAllocator<U> const& /*other*/) noexcept
+    {
+    }
+
+    /// Constructs a @p U at @p place: default-initialized without arguments, from them otherwise.
+    template <typename U, typename... Args>
+    void construct(U* place, Args&&... args)
+    {
+        if constexpr (sizeof...(Args) == 0)
+            ::new (static_cast<void*>(place)) U;
+        else
+            std::construct_at(place, std::forward<Args>(args)...);
+    }
 };
 
 /// A vector whose capacity is charged to a LiveBytesBudget before it is allocated, and released when
@@ -210,8 +237,9 @@ class ChargedVector
         _items.insert(_items.end(), items.begin(), items.end());
     }
 
-    /// Appends @p count value-initialized elements into room reserveFor() made (checked), for the
-    /// caller to fill in place.
+    /// Appends @p count default-initialized elements into room reserveFor() made (checked), for the caller
+    /// to overwrite in place: a trivially constructible element's bytes are indeterminate until it does,
+    /// and nothing spends a pass zeroing what a copy overwrites.
     /// @param count The elements.
     /// @return They, valid until the next growth.
     [[nodiscard]] std::span<T> grow(std::size_t count)
@@ -260,7 +288,7 @@ class ChargedVector
     }
 
     std::shared_ptr<LiveBytesBudget> _budget;
-    std::vector<T> _items {};
+    std::vector<T, OverwriteAllocator<T>> _items {};
     uint64_t _capacity = 0; ///< The capacity charged, which reserveFor() reserved.
 };
 
@@ -890,8 +918,8 @@ class ValueBuilder
     /// they are not text.
     /// @param encoding The string's encoding.
     /// @param taggedCodeUnits Its tagged code units, which give its byte length (stringByteLength()).
-    /// @return Its bytes, zero-filled; empty when the step is refused (error() then says why) or the
-    ///         string is empty.
+    /// @return Its bytes, indeterminate until the caller writes every one; empty when the step is refused
+    ///         (error() then says why) or the string is empty.
     /// @throws std::bad_alloc When the host cannot allocate what the budget allowed.
     [[nodiscard]] std::span<std::byte> encodedString(StringEncoding encoding, uint32_t taggedCodeUnits);
 
@@ -900,7 +928,8 @@ class ValueBuilder
     ///
     /// The caller writes each element's bits, at its width and in host byte order, a value of the element
     /// type (a bool 0 or 1, a char a Unicode scalar value), before the builder's next step.
-    /// @return The elements' bytes, zero-filled, count times the element's width (begin() charged for
+    /// @return The elements' bytes, indeterminate until the caller writes every one, count times the
+    ///         element's width (begin() charged for
     ///         them); empty when the step is refused (error() then says why: the open compound is not a
     ///         list of scalars, or has elements given) or the list is empty.
     [[nodiscard]] std::span<std::byte> packedElements();

@@ -78,6 +78,29 @@ namespace
                                   MaxStringByteLength));
     }
 
+    /// Decodes @p reader's code points as far as the first @p available of its @p total bytes hold whole
+    /// ones, all of them once every byte is there, calling @p onCodePoint with each: one validating pass
+    /// over a string that arrives a granule at a time.
+    /// @return Nothing, or InvalidEncoding at the first fault.
+    template <typename F>
+    [[nodiscard]] std::expected<void, Trap> decodeUpTo(CodePointReader& reader,
+                                                       std::size_t available,
+                                                       std::size_t total,
+                                                       SimpleEncoding encoding,
+                                                       F const& onCodePoint)
+    {
+        while (available == total || reader.position() + MaxCodePointBytes <= available)
+        {
+            auto const codePoint = reader.next();
+            if (!codePoint)
+                return std::unexpected { invalidEncoding(encoding) };
+            if (!*codePoint)
+                break;
+            onCodePoint(**codePoint);
+        }
+        return {};
+    }
+
     /// One store_string_into_range: the source's code points, the destination's memory, and the
     /// `realloc` calls between them, each written as definitions.py's function of the same name.
     class StringStore
@@ -147,7 +170,9 @@ namespace
                 return std::unexpected { std::move(block.error()) };
             auto writer = BlockWriter { *_context, *block, size };
             auto written = std::expected<void, Trap> {};
-            if (unitSize == 1 || _simple == SimpleEncoding::Utf16)
+            if (_simple != SimpleEncoding::Latin1)
+                written = copyValidated(writer, [](char32_t /*codePoint*/) {});
+            else if (unitSize == 1)
                 written = writer.put(_value.bytes);
             else
                 for (auto const byte: _value.bytes)
@@ -286,13 +311,13 @@ namespace
             if (!block)
                 return std::unexpected { std::move(block.error()) };
             auto writer = BlockWriter { *_context, *block, size };
-            if (auto copied = writer.put(_value.bytes).and_then([&] { return writer.flush(); }); !copied)
-                return std::unexpected { std::move(copied.error()) };
-            // A code unit past Latin-1 is a code point past it: surrogates are too.
-            auto const units = std::span { _value.bytes };
+            // The copy's decoding pass both validates the UTF-16 and finds whether Latin-1 holds it.
             auto latin1 = true;
-            for (auto const index: std::views::iota(std::size_t { 0 }, std::size_t { _units }))
-                latin1 = latin1 && units[(2 * index) + 1] == std::byte {};
+            auto const copied = copyValidated(
+                writer, [&latin1](char32_t codePoint) { latin1 = latin1 && codePoint < Latin1End; });
+            if (auto flushed = copied.and_then([&] { return writer.flush(); }); !flushed)
+                return std::unexpected { std::move(flushed.error()) };
+            auto const units = std::span { _value.bytes };
             if (!latin1)
                 return std::pair { *block, _units | Utf16Tag };
             writer.seek(0);
@@ -306,6 +331,28 @@ namespace
             return reallocate(memory(), *block, size, 2, _units).transform([this](uint32_t shrunk) {
                 return std::pair { shrunk, _units };
             });
+        }
+
+        /// Copies the source's bytes as they are, a granule at a time, each decoded first as far as it holds
+        /// whole code points (decodeUpTo()): a host string that is not text traps InvalidEncoding instead of
+        /// reaching a guest, which relies on the strings it is given. The writes poll.
+        template <typename F>
+        [[nodiscard]] std::expected<void, Trap> copyValidated(BlockWriter& writer, F const& onCodePoint)
+        {
+            auto source = reader();
+            auto const bytes = _value.bytes;
+            auto copied = std::size_t { 0 };
+            while (copied < bytes.size())
+            {
+                auto const count = std::min<std::size_t>(bytes.size() - copied, isoline::api::BulkPollBytes);
+                if (auto decoded = decodeUpTo(source, copied + count, bytes.size(), _simple, onCodePoint);
+                    !decoded)
+                    return decoded;
+                if (auto put = writer.put(bytes.subspan(copied, count)); !put)
+                    return put;
+                copied += count;
+            }
+            return {};
         }
 
         /// Encodes the source's code points from @p source on with @p encode, then flushes.
@@ -402,15 +449,9 @@ std::expected<void, Trap> liftString(LiftContext& context,
             !read)
             return read;
         copied += count;
-        auto const complete = copied == bytes.size();
-        while (complete || reader.position() + MaxCodePointBytes <= copied)
-        {
-            auto const codePoint = reader.next();
-            if (!codePoint)
-                return std::unexpected { invalidEncoding(simple) };
-            if (!*codePoint)
-                break;
-        }
+        if (auto decoded = decodeUpTo(reader, copied, bytes.size(), simple, [](char32_t /*codePoint*/) {});
+            !decoded)
+            return decoded;
         if (auto polled = context.polls.copied(memory, count); !polled)
             return polled;
     }
