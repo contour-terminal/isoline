@@ -259,7 +259,7 @@ A defect there is fixed in core-cpp, released, and re-vendored with `MODE=sync` 
 - Linux debug (default): `cmake --preset clang-asan && cmake --build --preset clang-asan` — Clang,
   Debug, AddressSanitizer + UndefinedBehaviorSanitizer, clang-tidy in the build.
 - Release: `clang-release`. Coverage: `clang-coverage` (`-fprofile-instr-generate -fcoverage-mapping`).
-- GCC: `gcc-debug`. macOS: `macos-clang` (Apple Clang). Windows: `msvc-debug`, from a Developer
+- GCC: `gcc-debug`, `gcc-release`. macOS: `macos-clang` (Apple Clang). Windows: `msvc-debug`, from a Developer
   Command Prompt.
 - Cross from Linux, tests under an emulator: `clangcl-cross-debug` (Windows x64, wine) and
   `clang-aarch64-cross` (arm64, qemu-user); see [docs/cross-compiling.md](docs/cross-compiling.md).

@@ -83,10 +83,11 @@ std::vector<std::string> linesOfFile(std::string const& path)
 {
     auto file = std::ifstream { path };
     REQUIRE(file.is_open());
-    auto stream = std::istringstream { std::string { std::istreambuf_iterator<char> { file }, {} } };
+    // Read line by line: slurped through an istreambuf_iterator instead, GCC 14's release build
+    // reports a potential null dereference of the stream buffer.
     auto lines = std::vector<std::string> {};
     auto line = std::string {};
-    while (std::getline(stream, line))
+    while (std::getline(file, line))
     {
         if (line.ends_with('\r'))
             line.pop_back();

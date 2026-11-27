@@ -83,7 +83,11 @@ std::vector<std::byte> tallStackBytes(uint32_t count)
 {
     auto body = std::vector<uint8_t> {};
     for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
-        body.insert(body.end(), { 0x41, 0x00 }); // i32.const 0
+    {
+        // Pushed one by one: GCC 14's release build reports inserting a list as a stringop-overflow.
+        body.push_back(0x41); // i32.const 0
+        body.push_back(0x00);
+    }
     for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
         body.push_back(0x1A); // drop
     auto builder = ModuleBuilder {};

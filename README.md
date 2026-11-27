@@ -121,7 +121,7 @@ cmake --build --preset clang-asan
 ctest --preset clang-asan
 ```
 
-Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `macos-clang` and `msvc-debug`
+Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `gcc-release`, `macos-clang` and `msvc-debug`
 (from a Visual Studio Developer Command Prompt). Every preset builds into `out/<preset>/`.
 
 From a Linux host, Isoline also cross-compiles for Windows (clang-cl, tests under wine) and arm64

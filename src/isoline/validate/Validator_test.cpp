@@ -468,7 +468,11 @@ ModuleBuilder multiValueCalls(uint32_t calls)
 {
     auto body = std::vector<uint8_t> {};
     for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, calls))
-        body.insert(body.end(), { 0x10, 0x00 });
+    {
+        // Pushed one by one: GCC 14's release build reports inserting a list as a stringop-overflow.
+        body.push_back(0x10); // call 0
+        body.push_back(0x00);
+    }
     body.push_back(0x00);
     auto builder = ModuleBuilder {};
     builder.type(FuncType { .params = {}, .results = std::vector<isoline::binary::ValueType>(1000, I32) })

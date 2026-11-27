@@ -1446,8 +1446,12 @@ namespace
         auto const byte = readByte();
         if (!byte)
             return std::unexpected { byte.error() };
+        // The error is built in place: moved in from a temporary, its disengaged optionals' unset
+        // payloads are copied, which GCC's release build reports as maybe-uninitialized.
         if (std::size_t { *byte } >= CatchKinds.size())
-            return std::unexpected { DecodeError { DecodeErrorCode::MalformedCatchClause, kindOffset } };
+            return std::expected<CatchClause, DecodeError> { std::unexpect,
+                                                             DecodeErrorCode::MalformedCatchClause,
+                                                             kindOffset };
         auto clause = CatchClause { .kind = CatchKinds[*byte], .tag = 0, .label = 0 };
         auto const tag =
             catchesByTag(clause.kind) ? readIndex(clause.tag) : std::expected<void, DecodeError> {};

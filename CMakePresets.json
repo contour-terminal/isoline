@@ -115,6 +115,18 @@
             }
         },
         {
+            "name": "gcc-release",
+            "displayName": "GCC Release",
+            "inherits": [
+                "isoline-common",
+                "not-windows",
+                "release"
+            ],
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++"
+            }
+        },
+        {
             "name": "macos-clang",
             "displayName": "Apple Clang Debug",
             "inherits": [
@@ -213,6 +225,7 @@
         { "name": "clang-release", "configurePreset": "clang-release" },
         { "name": "clang-coverage", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
+        { "name": "gcc-release", "configurePreset": "gcc-release" },
         { "name": "macos-clang", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
@@ -258,6 +271,7 @@
         },
         { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
+        { "name": "gcc-release", "inherits": "isoline-test-common", "configurePreset": "gcc-release" },
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },
