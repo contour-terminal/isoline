@@ -121,7 +121,7 @@ TEST_CASE("Code.loweredModuleKeepsItsArena")
     auto const* resource = static_cast<std::pmr::memory_resource const*>(nullptr);
     auto const module = [&resource] {
         auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
-        auto functions = std::pmr::vector<LoweredFunction>(arena.get());
+        auto functions = isoline::fastinterpreter::LoweringVector<LoweredFunction>(arena.get());
         functions.push_back(functionOf(*arena, 0, 3));
         functions.push_back(functionOf(*arena, 1, 5));
         resource = arena.get();
@@ -154,7 +154,7 @@ TEST_CASE("Contract.Code.everyContainerUsesTheArena", "[.contract]")
     isoline::runtime::testing::endAtContractViolation();
     auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
     auto other = std::pmr::monotonic_buffer_resource {};
-    auto functions = std::pmr::vector<LoweredFunction>(arena.get());
+    auto functions = isoline::fastinterpreter::LoweringVector<LoweredFunction>(arena.get());
     functions.push_back(functionOf(*arena, 0, 1));
     functions.push_back(functionOf(*arena, 1, 1));
     // One container of one function, the last the check reads, allocates from elsewhere.

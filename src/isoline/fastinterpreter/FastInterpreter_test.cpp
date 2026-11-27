@@ -627,7 +627,7 @@ TEST_CASE("FastInterpreter.runsTheOperationsNoLoweringEmitsYet")
     auto const dispatch = GENERATE(from_range(availableDispatches()));
     auto const byHand = [dispatch](LoweredModule const& lowered) {
         auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
-        auto functions = std::pmr::vector<LoweredFunction>(arena.get());
+        auto functions = isoline::fastinterpreter::LoweringVector<LoweredFunction>(arena.get());
         auto const& model = lowered.functions().front();
         auto& function = functions.emplace_back(arena.get());
         function.codeIndex = model.codeIndex;

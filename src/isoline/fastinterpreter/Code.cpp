@@ -36,7 +36,7 @@ namespace
 
     /// Whether @p functions and every container of each allocate from @p arena.
     [[nodiscard]] bool allocateFrom(std::pmr::memory_resource const* arena,
-                                    std::pmr::vector<LoweredFunction> const& functions) noexcept
+                                    LoweringVector<LoweredFunction> const& functions) noexcept
     {
         return functions.get_allocator().resource() == arena
                && std::ranges::all_of(functions, [arena](LoweredFunction const& function) {
@@ -104,7 +104,7 @@ std::size_t operationExtent(OperationId operation, std::span<Word const> code)
 }
 
 LoweredModule::LoweredModule(std::shared_ptr<std::pmr::memory_resource> arena,
-                             std::pmr::vector<LoweredFunction> functions,
+                             LoweringVector<LoweredFunction> functions,
                              Dispatch dispatch,
                              runtime::ExecutionMode mode,
                              uint64_t loweredBytes,
