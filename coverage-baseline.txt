@@ -326,8 +326,8 @@ src/isoline/component/binary/Encoder.cpp         100.00 84.87
 src/isoline/component/binary/Encoder.hpp         100.00 -
 src/isoline/component/canonical/Layout.cpp       99.57 88.69
 src/isoline/component/canonical/Layout.hpp       100.00 -
-src/isoline/component/canonical/Values.cpp       99.31 90.47
-src/isoline/component/canonical/Values.hpp       97.45 71.42
+src/isoline/component/canonical/Values.cpp       99.32 90.55
+src/isoline/component/canonical/Values.hpp       100.00 74.19
 src/isoline/component/types/TypeArena.cpp        100.00 92.11
 src/isoline/component/types/TypeArena.hpp        100.00 100.00
 src/isoline/component/validate/CoreTypes.cpp     100.00 100.00

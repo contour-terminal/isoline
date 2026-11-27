@@ -77,6 +77,15 @@ class LiveBytesBudget
     ///         refused charge changes nothing.
     [[nodiscard]] std::expected<void, BudgetExceeded> charge(uint64_t bytes) noexcept;
 
+    /// Charges as many bytes as the budget has left, up to @p most, and at least @p least: one atomic
+    /// decision, so a growth sized by it never fails on headroom another thread took meanwhile.
+    /// @param least The fewest bytes that will do; more than @p most, nothing will.
+    /// @param most The bytes wanted.
+    /// @return The bytes charged, from @p least to @p most; or the refusal when fewer than @p least are
+    ///         left, which changes nothing.
+    [[nodiscard]] std::expected<uint64_t, BudgetExceeded> chargeWithin(uint64_t least,
+                                                                       uint64_t most) noexcept;
+
     /// Releases bytes charged before.
     /// @param bytes At most what is live (checked).
     void release(uint64_t bytes) noexcept;
@@ -103,9 +112,10 @@ class LiveBytesBudget
 /// build and an unwinding exception included.
 ///
 /// It grows geometrically, so filling it costs amortized O(1) per element, but never by more than the
-/// budget has left: a growth the budget cannot afford in full is made exactly as large as needed, and
-/// refused when even that does not fit, also when another thread took the headroom in between. While it
-/// grows, the old and the new storage are both charged, as both are allocated.
+/// budget has left: a growth the budget cannot afford in full is made as large as the headroom allows,
+/// at least as large as needed, and refused when even that does not fit. One atomic charge decides it
+/// (LiveBytesBudget::chargeWithin), whatever other threads charge meanwhile. While it grows, the old and
+/// the new storage are both charged, as both are allocated.
 template <typename T>
 class ChargedVector
 {
@@ -159,17 +169,13 @@ class ChargedVector
                                                       .limit = _budget->limit() } };
         auto const needed = size + extra;
         auto const doubled = _capacity > MostElements / 2 ? MostElements : _capacity * 2;
-        auto capacity = std::max(needed, std::min(doubled, _budget->available() / Unit));
-        // The headroom read above may be stale: another thread charging the same budget since then can
-        // make the clamped growth fail where the exact one fits, so a refused growth retries as needed.
-        auto charged = _budget->charge(capacity * Unit);
-        if (!charged && capacity > needed)
-        {
-            capacity = needed;
-            charged = _budget->charge(capacity * Unit);
-        }
-        if (!charged)
-            return std::unexpected { charged.error() };
+        // One charge decides the growth against the headroom it sees: as much of the doubled capacity as
+        // the budget has left, never less than needed. Whatever another thread charges, the growth fits.
+        auto const granted = _budget->chargeWithin(needed * Unit, std::max(needed, doubled) * Unit);
+        if (!granted)
+            return std::unexpected { granted.error() };
+        auto const capacity = *granted / Unit;
+        _budget->release(*granted - (capacity * Unit)); // a partial element's bytes, if any
         auto const bytes = capacity * Unit;
         try
         {

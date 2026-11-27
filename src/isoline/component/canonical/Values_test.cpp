@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
 #include <atomic>
 #include <bit>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -1337,32 +1337,101 @@ TEST_CASE("Values.builderIsNeitherCopiedNorMoved")
     STATIC_CHECK_FALSE(std::is_move_assignable_v<ValueBuilder>);
 }
 
-TEST_CASE("ChargedVector.staleHeadroomRetriesExact", "[threading]")
+TEST_CASE("LiveBytesBudget.chargesWithinTheHeadroom", "[threading]")
 {
-    // A growth clamps to the headroom it reads, which another thread charging the same budget may take
-    // before the growth charges: the clamped growth is then refused, and the exact one, which fits,
-    // is made instead. Here 400 bytes are held and one more is needed; read while the other thread
-    // holds nothing, the headroom clamps the growth to 800, which fails beside its 1100, where the
-    // exact 401 fits. A capacity of exactly 401 is that retry, and the loop runs until it is seen;
-    // no growth may ever be refused.
-    constexpr auto Limit = uint64_t { 2000 };
+    // As much as is left, up to the most wanted, never less than the least: one decision.
+    auto budget = LiveBytesBudget { 100 };
+    auto const all = budget.chargeWithin(10, 40);
+    REQUIRE(all.has_value());
+    CHECK(*all == 40);
+    REQUIRE(budget.charge(50).has_value());
+    auto const rest = budget.chargeWithin(5, 40);
+    REQUIRE(rest.has_value());
+    CHECK(*rest == 10);
+    CHECK(budget.live() == 100);
+    budget.release(30);
+    auto const refused = budget.chargeWithin(31, 40);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().requested == 31);
+    CHECK(refused.error().live == 70);
+    CHECK(budget.live() == 70);
+    auto const exact = budget.chargeWithin(30, 30);
+    REQUIRE(exact.has_value());
+    CHECK(*exact == 30);
+    budget.release(30);
+    CHECK_FALSE(budget.chargeWithin(11, 10).has_value());
+    CHECK(budget.live() == 70);
+
+    // Four threads take what is left of a limit of 3, one or two bytes at a time: the budget never holds
+    // more than its limit, and ends empty.
+    auto shared = LiveBytesBudget { 3 };
+    auto overLimit = std::atomic<uint32_t> { 0 };
+    {
+        auto threads = std::vector<std::thread> {};
+        for ([[maybe_unused]] auto const index: std::views::iota(0, 4))
+        {
+            threads.emplace_back([&shared, &overLimit] {
+                for ([[maybe_unused]] auto const round: std::views::iota(0, 10'000))
+                {
+                    auto const granted = shared.chargeWithin(1, 2);
+                    if (!granted)
+                        continue;
+                    if (shared.live() > shared.limit())
+                        ++overLimit;
+                    shared.release(*granted);
+                }
+            });
+        }
+        for (auto& thread: threads)
+            thread.join();
+    }
+    CHECK(overLimit == 0);
+    CHECK(shared.live() == 0);
+}
+
+TEST_CASE("ChargedVector.growthTakesTheHeadroomLeft")
+{
+    // Headroom between what is needed and the doubled capacity: the growth takes all of it, in whole
+    // elements, and gives back the bytes of a partial one.
+    constexpr auto Unit = uint64_t { sizeof(uint64_t) };
+    auto const budget = budgetOf(905);
+    auto vector = ChargedVector<uint64_t> { budget };
+    REQUIRE(vector.reserveFor(40).has_value());
+    for (auto const value: std::views::iota(uint64_t { 0 }, uint64_t { 40 }))
+        vector.append(value);
+    // Needed 41, doubled 80: (905 - 320) / 8 = 73 elements, the 585th byte's partial element released.
+    REQUIRE(vector.reserveFor(1).has_value());
+    CHECK(vector.chargedBytes() == 73 * Unit);
+    CHECK(budget->live() == 73 * Unit);
+    // With the headroom another charge took, exactly what is needed still fits.
+    auto const other = budgetOf(2000);
+    auto held = ChargedVector<std::byte> { other };
+    REQUIRE(held.reserveFor(400).has_value());
+    held.append(std::vector<std::byte>(400));
+    REQUIRE(other->charge(1100).has_value());
+    REQUIRE(held.reserveFor(1).has_value());
+    CHECK(held.chargedBytes() == 500);
+    CHECK(other->live() == 1600);
+}
+
+TEST_CASE("ChargedVector.growsWhileAnotherThreadCharges", "[threading]")
+{
+    // A stress case for TSan: 400 bytes held and one more needed, while a second thread toggles a 1100-byte
+    // charge on a 2000-byte budget. The exact growth always fits, so whatever the interleaving, no growth
+    // is refused, and the budget ends empty.
     constexpr auto Held = std::size_t { 400 };
     constexpr auto Other = uint64_t { 1100 };
-    auto const budget = budgetOf(Limit);
+    auto const budget = budgetOf(2000);
     auto stop = std::atomic<bool> { false };
     auto other = std::thread { [&budget, &stop] {
         while (!stop.load(std::memory_order_relaxed))
             if (budget->charge(Other))
                 budget->release(Other);
     } };
-    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds { 60 };
     auto const held = std::vector<std::byte>(Held);
     auto refusals = uint64_t { 0 };
-    auto retries = uint64_t { 0 };
-    auto rounds = uint64_t { 0 };
-    while (retries == 0 && std::chrono::steady_clock::now() < deadline)
+    for ([[maybe_unused]] auto const round: std::views::iota(0, 2000))
     {
-        ++rounds;
         auto vector = ChargedVector<std::byte> { budget };
         if (!vector.reserveFor(Held))
         {
@@ -1372,13 +1441,64 @@ TEST_CASE("ChargedVector.staleHeadroomRetriesExact", "[threading]")
         vector.append(held);
         if (!vector.reserveFor(1))
             ++refusals;
-        else if (vector.chargedBytes() == Held + 1)
-            ++retries;
     }
     stop.store(true, std::memory_order_relaxed);
     other.join();
-    CAPTURE(rounds);
     CHECK(refusals == 0);
-    CHECK(retries > 0);
     CHECK(budget->live() == 0);
+}
+
+TEMPLATE_TEST_CASE("ChargedVector.everyPathOfEveryElementType",
+                   "",
+                   std::byte,
+                   uint32_t,
+                   isoline::component::canonical::ValueNode,
+                   isoline::component::canonical::ValueRange)
+{
+    // The element types Values hold, each through room already made, a growth, a refused growth, a
+    // count whose bytes overflow, and a growth the host cannot make.
+    constexpr auto Unit = uint64_t { sizeof(TestType) };
+    auto const budget = budgetOf(10 * Unit);
+    {
+        auto vector = ChargedVector<TestType> { budget };
+        REQUIRE(vector.reserveFor(4).has_value());
+        CHECK(vector.reserveFor(4).has_value());
+        CHECK(vector.chargedBytes() == 4 * Unit);
+        vector.append(std::vector<TestType>(4));
+        // Needed 5, doubled 8: 6 of the 10 are left beside the 4 held, so the growth takes 6.
+        REQUIRE(vector.reserveFor(1).has_value());
+        CHECK(vector.chargedBytes() == 6 * Unit);
+        CHECK_FALSE(vector.reserveFor(5).has_value());
+        CHECK_FALSE(vector.reserveFor(std::numeric_limits<std::size_t>::max()).has_value());
+        CHECK(budget->live() == 6 * Unit);
+    }
+    CHECK(budget->live() == 0);
+    {
+        // Assigned to itself, it keeps its storage and its charge.
+        auto vector = ChargedVector<TestType> { budget };
+        REQUIRE(vector.reserveFor(3).has_value());
+        auto& same = vector;
+        vector = std::move(same);
+        CHECK(vector.chargedBytes() == 3 * Unit);
+        CHECK(budget->live() == 3 * Unit);
+    }
+    CHECK(budget->live() == 0);
+    auto const unlimited = budgetOf(std::numeric_limits<uint64_t>::max());
+    auto vector = ChargedVector<TestType> { unlimited };
+    // One past max_size(): the host refuses it (libstdc++, libc++), or its bytes overflow 64 bits and
+    // the vector refuses it first (the MSVC STL, whose max_size() is SIZE_MAX / sizeof(T)).
+    auto const pastMax = std::vector<TestType> {}.max_size() + 1;
+    auto outcome = std::string_view { "accepted" };
+    try
+    {
+        if (!vector.reserveFor(pastMax))
+            outcome = "refused";
+    }
+    catch (std::length_error const&)
+    {
+        outcome = "thrown";
+    }
+    CHECK(outcome != "accepted");
+    CHECK(unlimited->live() == 0);
+    CHECK(vector.chargedBytes() == 0);
 }

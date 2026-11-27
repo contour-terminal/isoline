@@ -1738,7 +1738,7 @@ TEST_CASE("Validator.visibilityOfExportedTypes")
     CHECK(accepted(exportedType([](ComponentBuilder& builder, uint32_t resource) {
         return builder.type(defined(OwnType { .resource = resource }));
     })));
-    // A function type, and a tuple of one list twice, whose list is checked once.
+    // A function type, and a tuple of one list twice (typeNamed() meets the list twice in one query).
     CHECK(accepted(exportedType([](ComponentBuilder& builder, uint32_t) {
         auto const list = builder.type(defined(ListType { .element = PrimitiveValueType::U32 }));
         auto const pair = builder.type(
@@ -1819,7 +1819,16 @@ TEST_CASE("Validator.exportedResourcePaths")
     auto child = ComponentBuilder {};
     std::ignore = child.exportItem("r", Sort::Type, child.resource());
     std::ignore = outer.exportItem("c", Sort::Component, outer.nested(std::move(child)));
-    CHECK(accepted(outer.pool()));
+    auto const nested = validated(outer.pool());
+    REQUIRE(nested.has_value());
+    REQUIRE((**nested).type.exports.size() == 1);
+    auto const* exportedComponent =
+        std::get_if<isoline::component::types::ComponentTypeId>(&(**nested).type.exports.front().type);
+    REQUIRE(exportedComponent != nullptr);
+    auto const& childType = (**nested).types[*exportedComponent];
+    REQUIRE(childType.definedResources.size() == 1);
+    CHECK(childType.definedResources.front().path == std::vector<uint32_t> { 0 });
+    CHECK((**nested).type.definedResources.empty());
 }
 
 TEST_CASE("Validator.exportedInstanceTypesMintResources")
@@ -1839,7 +1848,20 @@ TEST_CASE("Validator.exportedInstanceTypesMintResources")
         return validated(builder.pool(), limits);
     };
     auto const minted = componentType({});
-    CHECK(minted.has_value());
+    REQUIRE(minted.has_value());
+    auto const& types = (**minted).types;
+    auto const& declared = types[isoline::component::types::ComponentTypeId { .value = 0 }];
+    REQUIRE(declared.exports.size() == 1);
+    REQUIRE(declared.definedResources.size() == 1);
+    CHECK(declared.definedResources.front().path == std::vector<uint32_t> { 0, 0 });
+    // The export is the instance type with the fresh resource in place of the declared one.
+    auto const* exported =
+        std::get_if<isoline::component::types::InstanceTypeId>(&declared.exports.front().type);
+    REQUIRE(exported != nullptr);
+    CHECK(types[*exported].definedResources.empty());
+    auto const& bound =
+        std::get<isoline::component::types::TypeExtern>(types[*exported].exports.front().type);
+    CHECK(bound.type == isoline::component::types::AnyTypeId { declared.definedResources.front().resource });
     auto limits = ComponentLimits {};
     limits.maxExports = 0;
     auto const capped = componentType(limits);
@@ -1951,10 +1973,11 @@ struct CapRow
 {
     ComponentLimit limit;
     uint32_t ComponentLimits::* field;
+    uint32_t needed = 0; ///< The least value of the cap that accepts the component.
 };
 
 /// Validates @p pool under @p row's cap at 0, 1, … until it is accepted: each value below that is
-/// refused by that cap, and some value above zero accepts.
+/// refused by that cap, and the first one accepted is the row's.
 void checkRefusedBelowNeed(ComponentPool const& pool, CapRow const& row)
 {
     INFO(std::format("limit {}", static_cast<int>(row.limit)));
@@ -1976,33 +1999,42 @@ void checkRefusedBelowNeed(ComponentPool const& pool, CapRow const& row)
         }
     }
     REQUIRE(needed.has_value());
-    CHECK(*needed > 0);
+    CHECK(*needed == row.needed);
 }
 } // namespace
 
 TEST_CASE("Validator.everyCapRefusesAtEveryCount")
 {
     // Each cap the validator enforces, at every value below what the component takes: refused, and by
-    // that cap, wherever its count falls; at what it takes, accepted.
+    // that cap, wherever its count falls; at what it takes, accepted. What it takes, by count: 2 core
+    // modules; 2 components (the nested one and its export); 6 instances (3 core, the instantiation,
+    // the inline one and its export); 8 functions (2 aliased core ones, 3 resource built-ins, the
+    // lowering, the lifting and its export); 4 exports; one core table, memory, global and tag.
     auto const pool = everyCountedDefinition();
     REQUIRE(accepted(pool));
     auto const rows = std::vector<CapRow> {
-        { .limit = ComponentLimit::TypeSize, .field = &ComponentLimits::maxTypeSize },
-        { .limit = ComponentLimit::TypeDepth, .field = &ComponentLimits::maxTypeDepth },
-        { .limit = ComponentLimit::Types, .field = &ComponentLimits::maxTypes },
-        { .limit = ComponentLimit::ResourceTypes, .field = &ComponentLimits::maxResourceTypes },
-        { .limit = ComponentLimit::SubtypingSteps, .field = &ComponentLimits::maxSubtypingSteps },
-        { .limit = ComponentLimit::SubstitutedTypes, .field = &ComponentLimits::maxSubstitutedTypes },
-        { .limit = ComponentLimit::Modules, .field = &ComponentLimits::maxModules },
-        { .limit = ComponentLimit::Components, .field = &ComponentLimits::maxComponents },
-        { .limit = ComponentLimit::Instances, .field = &ComponentLimits::maxInstances },
-        { .limit = ComponentLimit::Functions, .field = &ComponentLimits::maxFunctions },
-        { .limit = ComponentLimit::Exports, .field = &ComponentLimits::maxExports },
-        { .limit = ComponentLimit::CoreTables, .field = &ComponentLimits::maxCoreTables },
-        { .limit = ComponentLimit::CoreMemories, .field = &ComponentLimits::maxCoreMemories },
-        { .limit = ComponentLimit::CoreGlobals, .field = &ComponentLimits::maxCoreGlobals },
-        { .limit = ComponentLimit::CoreTags, .field = &ComponentLimits::maxCoreTags },
-        { .limit = ComponentLimit::CoreMatchingSteps, .field = &ComponentLimits::maxCoreMatchingSteps },
+        { .limit = ComponentLimit::TypeSize, .field = &ComponentLimits::maxTypeSize, .needed = 15 },
+        { .limit = ComponentLimit::TypeDepth, .field = &ComponentLimits::maxTypeDepth, .needed = 4 },
+        { .limit = ComponentLimit::Types, .field = &ComponentLimits::maxTypes, .needed = 7 },
+        { .limit = ComponentLimit::ResourceTypes, .field = &ComponentLimits::maxResourceTypes, .needed = 5 },
+        { .limit = ComponentLimit::SubtypingSteps,
+          .field = &ComponentLimits::maxSubtypingSteps,
+          .needed = 4 },
+        { .limit = ComponentLimit::SubstitutedTypes,
+          .field = &ComponentLimits::maxSubstitutedTypes,
+          .needed = 4 },
+        { .limit = ComponentLimit::Modules, .field = &ComponentLimits::maxModules, .needed = 2 },
+        { .limit = ComponentLimit::Components, .field = &ComponentLimits::maxComponents, .needed = 2 },
+        { .limit = ComponentLimit::Instances, .field = &ComponentLimits::maxInstances, .needed = 6 },
+        { .limit = ComponentLimit::Functions, .field = &ComponentLimits::maxFunctions, .needed = 8 },
+        { .limit = ComponentLimit::Exports, .field = &ComponentLimits::maxExports, .needed = 4 },
+        { .limit = ComponentLimit::CoreTables, .field = &ComponentLimits::maxCoreTables, .needed = 1 },
+        { .limit = ComponentLimit::CoreMemories, .field = &ComponentLimits::maxCoreMemories, .needed = 1 },
+        { .limit = ComponentLimit::CoreGlobals, .field = &ComponentLimits::maxCoreGlobals, .needed = 1 },
+        { .limit = ComponentLimit::CoreTags, .field = &ComponentLimits::maxCoreTags, .needed = 1 },
+        { .limit = ComponentLimit::CoreMatchingSteps,
+          .field = &ComponentLimits::maxCoreMatchingSteps,
+          .needed = 16 },
     };
     for (auto const& row: rows)
         checkRefusedBelowNeed(pool, row);
@@ -2025,12 +2057,28 @@ TEST_CASE("Validator.everyCapRefusesAtEveryCount")
     for (auto const index: std::views::iota(0, 20))
         items.emplace_back(std::format("f{}", index), SortIndex { .sort = Sort::Func, .index = lifted });
     std::ignore = componentInline.inlineInstance(std::move(items));
-    for (auto const* builder: { &instantiated, &coreInline, &componentInline })
+    struct InstanceRow
     {
-        auto const instancePool = builder->pool();
+        std::string_view name;
+        ComponentBuilder const* builder;
+        uint32_t typeSize;  ///< The least maxTypeSize that accepts it.
+        uint32_t typeDepth; ///< The least maxTypeDepth that accepts it.
+    };
+    for (auto const& row:
+         { InstanceRow { .name = "instantiated", .builder = &instantiated, .typeSize = 15, .typeDepth = 2 },
+           InstanceRow { .name = "core inline", .builder = &coreInline, .typeSize = 82, .typeDepth = 2 },
+           InstanceRow {
+               .name = "component inline", .builder = &componentInline, .typeSize = 62, .typeDepth = 3 } })
+    {
+        INFO(row.name);
+        auto const instancePool = row.builder->pool();
         checkRefusedBelowNeed(instancePool,
-                              { .limit = ComponentLimit::TypeSize, .field = &ComponentLimits::maxTypeSize });
-        checkRefusedBelowNeed(
-            instancePool, { .limit = ComponentLimit::TypeDepth, .field = &ComponentLimits::maxTypeDepth });
+                              { .limit = ComponentLimit::TypeSize,
+                                .field = &ComponentLimits::maxTypeSize,
+                                .needed = row.typeSize });
+        checkRefusedBelowNeed(instancePool,
+                              { .limit = ComponentLimit::TypeDepth,
+                                .field = &ComponentLimits::maxTypeDepth,
+                                .needed = row.typeDepth });
     }
 }

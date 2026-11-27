@@ -956,8 +956,10 @@ TEST_CASE("Subtyping.coreModulesAcrossArenas")
     auto const other = module(right, isoline::binary::I64);
     auto relation = TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} };
     REQUIRE(relation.isSubtype(ExternType { provided }, ExternType { required }).has_value());
+    // The steps: the module, each name compared (import, export), the joint ids of both arenas'
+    // core function types, and each core entity matched.
     auto const total = relation.steps();
-    REQUIRE(total > 2);
+    CHECK(total == 10);
     for (auto const cap: std::views::iota(std::size_t { 0 }, total))
     {
         INFO(cap);
