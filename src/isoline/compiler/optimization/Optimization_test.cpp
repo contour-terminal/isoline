@@ -1879,10 +1879,9 @@ std::vector<double> secondsOf(TimedShape const& shape, std::span<uint32_t const>
 TEST_CASE("Optimization.everyPassPollsTheCancellation")
 {
     // Each pass on its own, cancelled before it starts, on a function of more work than one interval: it
-    // stops with Cancelled, naming the function, rather than running to its end (the bounds-check pass, the
-    // identity until P5 Task 8, does no work). Besides many blocks, the work of one walk (a loop header
-    // 70'000 edges wide) and of one block (70'000 instructions), so that a poll per block alone does not
-    // suffice.
+    // stops with Cancelled, naming the function, rather than running to its end. Besides many blocks, the
+    // work of one walk (a loop header 70'000 edges wide) and of one block (70'000 instructions), so that a
+    // poll per block alone does not suffice.
     struct Shape
     {
         std::string_view name;
@@ -1913,6 +1912,129 @@ TEST_CASE("Optimization.everyPassPollsTheCancellation")
             CHECK(ran.error().code == CompileErrorCode::Cancelled);
             CHECK(ran.error().function == 7U);
         }
+}
+
+namespace
+{
+
+/// A chain of @p length blocks after the entry, each a constant and a jump to the next, the last returning:
+/// nothing forwards, and every block merges into its predecessor.
+void constantJumpChain(Fixture& fixture, uint32_t length)
+{
+    auto& builder = fixture.builder;
+    auto blocks = std::vector<BlockId> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, length))
+        blocks.push_back(builder.createBlock());
+    builder.jump(blocks.front(), {});
+    for (auto const index: std::views::iota(uint32_t { 0 }, length))
+    {
+        builder.switchTo(blocks[index]);
+        auto const value = fixture.constant(Type::I32, index);
+        if (index + 1 < length)
+            builder.jump(blocks[index + 1], {});
+        else
+            builder.ret(std::array { value });
+    }
+}
+
+/// A pass that refuses as cancelled, though the compile was not: what a pass that sees a cancellation set
+/// while it runs returns.
+PassOutcome refusingPass(Function& /*function*/, PassContext& context)
+{
+    return std::unexpected { isoline::compiler::CompileError { .code = CompileErrorCode::Cancelled,
+                                                               .function = context.codeIndex } };
+}
+
+} // namespace
+
+TEST_CASE("Optimization.everyPollSiteStopsACancelledPass")
+{
+    // The polls after a pass's first phase: sized so that the first phases do less than one interval of work
+    // and the interval completes in the phase under test. SimplifyControlFlow counts one interval across its
+    // phases (threading's block and instruction walk, its forwarding walk, its redirection, the merging);
+    // dead code its marking and its worklist.
+    struct Case
+    {
+        std::string_view phase;
+        Pass pass;
+        void (*build)(Fixture&, uint32_t);
+        uint32_t size;
+    };
+    auto const cases = std::to_array<Case>({
+        { "control flow: the forwarding walk", Pass::SimplifyControlFlow, constantJumpChain, 20'000 },
+        { "control flow: the redirection", Pass::SimplifyControlFlow, constantJumpChain, 12'000 },
+        { "control flow: the merging", Pass::SimplifyControlFlow, constantJumpChain, 8'000 },
+        { "dead code: the worklist", Pass::EliminateDeadCode, constantChain, 40'000 },
+    });
+    for (auto const& item: cases)
+    {
+        INFO(item.phase);
+        auto fixture = Fixture {};
+        item.build(fixture, item.size);
+        auto passes = Passes {};
+        passes.cancellation.cancel();
+        auto context = passes.contextFor(fixture.memory);
+        context.codeIndex = 3;
+        auto const ran = rowOf(item.pass)[0].run(fixture.function, context);
+        REQUIRE_FALSE(ran.has_value());
+        CHECK(ran.error().code == CompileErrorCode::Cancelled);
+        CHECK(ran.error().function == 3U);
+    }
+}
+
+TEST_CASE("Optimization.aPassRefusalEndsThePipeline")
+{
+    // runPasses() returns a pass's refusal as it is, and runs no later pass.
+    auto fixture = Fixture {};
+    constantChain(fixture, 4);
+    auto passes = Passes {};
+    auto context = passes.contextFor(fixture.memory);
+    context.codeIndex = 5;
+    auto const rows = std::to_array<PassRow>({
+        { .pass = Pass::FoldConstants, .name = "refuse", .run = refusingPass },
+        rowOf(Pass::FoldConstants)[0],
+    });
+    auto const ran = runPasses(fixture.function, context, rows);
+    REQUIRE_FALSE(ran.has_value());
+    CHECK(ran.error().code == CompileErrorCode::Cancelled);
+    CHECK(ran.error().function == 5U);
+    // FoldConstants never ran: the adds are still there.
+    auto adds = 0;
+    for (auto const index: fixture.function.block(fixture.entry).instructions)
+        if (fixture.function.instruction(index).operation == Operation::I32Add)
+            ++adds;
+    CHECK(adds == 4);
+}
+
+TEST_CASE("Optimization.unreachableLoopsAndRemovedInstructions")
+{
+    SECTION("a loop no edge enters keeps its parameter: it passes only itself")
+    {
+        auto fixture = Fixture {};
+        auto& builder = fixture.builder;
+        builder.ret({});
+        auto const loop = builder.createBlock();
+        auto const parameter = builder.addParameter(loop, Type::I32);
+        builder.switchTo(loop);
+        builder.jump(loop, std::array { parameter });
+        auto passes = Passes {};
+        auto context = passes.contextFor(fixture.memory);
+        REQUIRE(rowOf(Pass::RemoveTrivialParameters)[0].run(fixture.function, context).has_value());
+        CHECK(fixture.function.block(loop).parameters.count == 1);
+    }
+    SECTION("folding passes by an instruction a pass removed")
+    {
+        auto fixture = Fixture {};
+        std::ignore = fixture.constant(Type::I32, 9);
+        auto const value =
+            fixture.emit(Operation::I32Add,
+                         Type::I32,
+                         std::array { fixture.constant(Type::I32, 1), fixture.constant(Type::I32, 2) });
+        fixture.builder.ret(std::array { value });
+        fixture.function.remove(fixture.function.block(fixture.entry).instructions.front());
+        // The run verifies after the pass: the removed entry is passed by, the add folded.
+        std::ignore = Passes {}.run(fixture.function, rowOf(Pass::FoldConstants));
+    }
 }
 
 TEST_CASE("Optimization.deepNestingUsesNoRecursion")

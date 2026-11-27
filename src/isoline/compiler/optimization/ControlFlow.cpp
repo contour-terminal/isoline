@@ -71,7 +71,7 @@ namespace
     class Threading
     {
       public:
-        Threading(Function& function, PassContext& context):
+        Threading(Function& function, PassContext& context, CancellationPoll& poll):
             _function { function },
             _context { context },
             _places { parameterPlacesOf(function, context.memory) },
@@ -80,7 +80,7 @@ namespace
             _pool { &context.memory },
             _path { &context.memory },
             _scratch { &context.memory },
-            _poll { context }
+            _poll { poll }
         {
         }
 
@@ -275,13 +275,13 @@ namespace
         std::pmr::vector<ValueId> _pool;      ///< The resolved chains' arguments.
         std::pmr::vector<BlockId> _path;      ///< The chain being resolved.
         std::pmr::vector<ValueId> _scratch;   ///< The arguments of the edge being redirected.
-        CancellationPoll _poll;               ///< Polled per block and instruction.
+        CancellationPoll& _poll;              ///< The pass's poll, per block and instruction.
     };
 
     /// Merges each block that ends with a jump into a block with no other predecessor with that block, in
     /// reverse postorder, so that a chain's head takes in the whole chain and every instruction moves once.
     /// The merged block's parameters become the jump's arguments; the head keeps its own hotness.
-    [[nodiscard]] PassOutcome mergeChains(Function& function, PassContext& context)
+    [[nodiscard]] PassOutcome mergeChains(Function& function, PassContext& context, CancellationPoll& poll)
     {
         auto predecessors = std::pmr::vector<uint32_t>(function.blockCount(), 0, &context.memory);
         for (auto const blockIndex: std::views::iota(uint32_t { 0 }, function.blockCount()))
@@ -292,7 +292,6 @@ namespace
                                        });
         auto merged = std::pmr::vector<uint8_t>(function.blockCount(), 0, &context.memory);
         auto substitution = Substitution { function.valueCount(), context.memory };
-        auto poll = CancellationPoll { context };
         auto removed = std::pmr::vector<BlockId> { &context.memory };
         for (auto const head: reversePostorderOf(function, context.memory))
         {
@@ -335,13 +334,16 @@ namespace
 PassOutcome simplifyControlFlow(Function& function, PassContext& context)
 {
     std::ignore = removeUnreachableBlocks(function, context.memory);
-    auto threading = Threading { function, context };
+    // One poll for the whole pass: its work is counted across threading and merging, so that the merging's
+    // polls see what threading did rather than starting their own interval.
+    auto poll = CancellationPoll { context };
+    auto threading = Threading { function, context, poll };
     auto const redirected = threading.run();
     if (!redirected)
         return std::unexpected { redirected.error() };
     if (*redirected != 0)
         std::ignore = removeUnreachableBlocks(function, context.memory);
-    return mergeChains(function, context);
+    return mergeChains(function, context, poll);
 }
 
 } // namespace isoline::compiler::optimization

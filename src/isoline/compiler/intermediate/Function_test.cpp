@@ -611,3 +611,22 @@ TEST_CASE("Contract.Function.removeBlocksLeavesNoEdgeIntoThem", "[.contract]")
     blocks.function.removeBlocks(std::array { blocks.other });
     FAIL("SURVIVED: a removed block a kept one branches to");
 }
+
+TEST_CASE("Function.removeBlocksKeepsAnUnterminatedBlock")
+{
+    // Removing blocks retargets the kept blocks' terminators; a kept block not terminated yet has none.
+    std::pmr::monotonic_buffer_resource memory;
+    auto function = Function { memory };
+    auto builder = Builder { function };
+    auto const entry = builder.createBlock();
+    auto const dropped = builder.createBlock();
+    auto const open = builder.createBlock();
+    builder.switchTo(entry);
+    builder.ret({});
+    builder.switchTo(dropped);
+    builder.ret({});
+    function.removeBlocks(std::array { dropped });
+    CHECK(function.blockCount() == 2);
+    CHECK_FALSE(function.terminator(BlockId { 1 }).has_value());
+    CHECK(std::to_underlying(open) == 2); // its ID before the removal
+}

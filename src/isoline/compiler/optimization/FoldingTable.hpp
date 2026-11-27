@@ -68,13 +68,15 @@ struct FoldingRow
         case ResultRule::F32:
         case ResultRule::F64:
         case ResultRule::SameAsOperand0: return true;
-        case ResultRule::None:
-        case ResultRule::Ref:
-        case ResultRule::Pointer:
-        case ResultRule::FromImmediate:
-        case ResultRule::Multiple: return false;
+        // No operation of numeric operands alone has another result (the table's rows, all checked at run
+        // time by Optimization.foldingTableCoversEveryFoldableRow); the cases keep the switch exhaustive.
+        case ResultRule::None:                   // uncovered(non-numeric-result-of-numeric-operands)
+        case ResultRule::Ref:                    // uncovered(non-numeric-result-of-numeric-operands)
+        case ResultRule::Pointer:                // uncovered(non-numeric-result-of-numeric-operands)
+        case ResultRule::FromImmediate:          // uncovered(non-numeric-result-of-numeric-operands)
+        case ResultRule::Multiple: return false; // uncovered(non-numeric-result-of-numeric-operands)
     }
-    return false;
+    return false; // uncovered(non-numeric-result-of-numeric-operands)
 }
 
 namespace detail

@@ -1421,3 +1421,64 @@ TEST_CASE("Verifier.everyMemoryMotionRowIsPinned")
         CHECK(refusal(fixture.function).code == VerifierErrorCode::AddressAcrossMemoryMotion);
     }
 }
+
+TEST_CASE("Verifier.remainingCountdownAndStretchPaths")
+{
+    SECTION("a call after a poll whose countdown is not stored")
+    {
+        auto fixture = Fixture {};
+        auto const countdown = fixture.builder.addParameter(fixture.entry, Type::I64);
+        std::ignore = poll(fixture, countdown);
+        std::ignore = fixture.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::CountdownNotStored);
+    }
+    SECTION("a block no edge enters has no stretch: its loads are not held to one")
+    {
+        auto fixture = Fixture {};
+        auto const address = guardedAddress(fixture);
+        std::ignore = fixture.builder.emit(Operation::Load,
+                                           std::array { Type::I64 },
+                                           std::array { address },
+                                           loadOf(8, Extension::Zero, Type::I64));
+        fixture.builder.ret({});
+        auto const unreached = fixture.builder.createBlock();
+        fixture.builder.switchTo(unreached);
+        fixture.builder.ret({});
+        CHECK(verify(fixture.function).has_value());
+    }
+    SECTION("a use read before its guard's own row: a guard short of immediates, a guardAddress of nothing")
+    {
+        // The entry jumps to the guard's block (a later ID) through the use's block (an earlier ID), which
+        // the verifier reads first: the guard's row is read before its own check refuses it.
+        for (auto const shape: { 0, 1 })
+        {
+            INFO("shape " << shape);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const index = builder.addParameter(fixture.entry, Type::I32);
+            auto const bound = builder.addParameter(fixture.entry, Type::I64);
+            auto const base = baseOf(fixture, 0);
+            auto const use = builder.createBlock();
+            auto const guard = builder.createBlock();
+            builder.jump(guard, {});
+            builder.switchTo(guard);
+            auto const checked = shape == 0 ? builder.emit(Operation::CheckMemory,
+                                                           std::array { Type::Pointer },
+                                                           std::array { index, base, bound },
+                                                           {})[0]
+                                            : builder.emit(Operation::GuardAddress,
+                                                           std::array { Type::Pointer },
+                                                           {},
+                                                           std::array<uint64_t, 1> { 0 })[0];
+            builder.jump(use, {});
+            builder.switchTo(use);
+            std::ignore = builder.emit(Operation::Load,
+                                       std::array { Type::I64 },
+                                       std::array { checked },
+                                       loadOf(8, Extension::Zero, Type::I64));
+            builder.ret({});
+            CHECK_FALSE(verify(fixture.function).has_value());
+        }
+    }
+}

@@ -732,12 +732,15 @@ namespace
                         state.live = LiveCountdowns::only(_function.operands(instruction.results)[0]);
                         break;
                     case CountdownRule::Stores:
-                        if (!isCountdownField(instruction))
-                            break;
-                        if (!state.live.admits(_function.operands(instruction.operands)[0])
-                            && report == Report::Yes)
-                            return fault(VerifierErrorCode::CountdownNotStored, block, index);
-                        state.stored = Countdown::Stored;
+                        // Another context value's store leaves the countdown be (none is writable yet:
+                        // checkRow() refuses a store of a read-only one).
+                        if (isCountdownField(instruction))
+                        {
+                            if (!state.live.admits(_function.operands(instruction.operands)[0])
+                                && report == Report::Yes)
+                                return fault(VerifierErrorCode::CountdownNotStored, block, index);
+                            state.stored = Countdown::Stored;
+                        }
                         break;
                     case CountdownRule::Reloads:
                         if (!isCountdownField(instruction))
@@ -789,12 +792,12 @@ namespace
                 auto const block = worklist.back();
                 worklist.pop_back();
                 auto const exit = *countdownThrough(block, entries[std::to_underlying(block)], Report::No);
+                // The structure was checked first: every block ends in a terminator, and none targets the
+                // entry.
                 auto const terminator = _function.terminator(block);
-                if (!terminator)
-                    continue;
+                Require(terminator.has_value());
                 _function.forEachTarget(_function.instruction(*terminator), [&](BranchTarget const& target) {
-                    if (std::to_underlying(target.block) == 0)
-                        return;
+                    Require(std::to_underlying(target.block) != 0);
                     auto& entry = entries[std::to_underlying(target.block)];
                     auto const fallen = CountdownState {
                         .stored = exit.stored == Countdown::Unstored ? Countdown::Unstored : entry.stored,
@@ -867,8 +870,7 @@ namespace
             for (auto const block: blocksOf(_function))
             {
                 auto const terminator = _function.terminator(block);
-                if (!terminator)
-                    continue;
+                Require(terminator.has_value()); // the structure was checked first
                 _function.forEachTarget(_function.instruction(*terminator), [&](BranchTarget const& target) {
                     auto const parameters = _function.operands(_function.block(target.block).parameters);
                     auto const arguments = _function.operands(target.arguments);

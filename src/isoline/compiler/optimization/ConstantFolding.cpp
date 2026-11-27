@@ -42,11 +42,11 @@ namespace
             case Type::I64: return Operation::I64Const;
             case Type::F32: return Operation::F32Const;
             case Type::F64: return Operation::F64Const;
-            case Type::Ref:
-            case Type::Pointer: break;
+            case Type::Ref:            // uncovered(constant-of-a-non-numeric-type)
+            case Type::Pointer: break; // uncovered(constant-of-a-non-numeric-type)
         }
-        Require(false); // isFoldable() admits numeric results only
-        return Operation::Removed;
+        Require(false);            // isFoldable() admits numeric results only
+        return Operation::Removed; // uncovered(constant-of-a-non-numeric-type)
     }
 
     /// Whether a fold ended its block.

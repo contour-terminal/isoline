@@ -155,3 +155,24 @@ TEST_CASE("Contract.Rewrite.dropsNoParameterOfTheEntry", "[.contract]")
     dropParameters(diamond.function, fates);
     FAIL("SURVIVED: a parameter of the function dropped");
 }
+
+TEST_CASE("Rewrite.toleratesUnterminatedBlocksAndEmptyFunctions")
+{
+    // A block a pass is still building has no terminator: dropping parameters passes it by. A function of no
+    // blocks has no reverse postorder.
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    auto function = Function { memory };
+    auto builder = Builder { function };
+    CHECK(reversePostorderOf(function, memory).empty());
+    auto const entry = builder.createBlock();
+    auto const open = builder.createBlock();
+    auto const x = builder.addParameter(entry, Type::I32);
+    auto const p = builder.addParameter(open, Type::I32);
+    builder.switchTo(entry);
+    builder.ret(std::array { x });
+    auto fates = std::vector<ParameterFate>(function.valueCount(), ParameterFate::Kept);
+    fates[std::to_underlying(p)] = ParameterFate::Dropped;
+    dropParameters(function, fates);
+    CHECK(function.block(open).parameters.count == 0);
+    CHECK(function.block(entry).parameters.count == 1);
+}

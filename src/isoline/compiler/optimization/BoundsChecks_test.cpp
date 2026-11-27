@@ -927,6 +927,23 @@ TEST_CASE("BoundsChecks.neverAcrossSiblingsMemoriesOrIndices")
         CHECK(optimized.counted(PassStatistic::ChecksSharingDominatingAddress) == 2);
         std::ignore = differential(program);
     }
+    SECTION("a fact past the lookup's reads is not found: kept")
+    {
+        // Five memories checked at one index, then the first again: the lookup reads the newest four facts
+        // (FactsReadPerIndex), none of the first memory's, so the last check stays.
+        auto steps = std::vector<Step> {};
+        for (auto const memory: std::views::iota(uint32_t { 0 }, uint32_t { 5 }))
+            steps.push_back(loadOf(0, 8, memory));
+        steps.push_back(loadOf(0, 4, 0));
+        auto const program = Program {
+            .memories = { memoryOf(1), memoryOf(1), memoryOf(1), memoryOf(1), memoryOf(1) },
+            .steps = steps,
+        };
+        auto const optimized = optimize(program.module(), SpectreGuard::Enabled);
+        CHECK(optimized.countOf(Operation::CheckMemory) == 6);
+        CHECK(optimized.counted(PassStatistic::ChecksSharingDominatingAddress) == 0);
+        std::ignore = differential(program);
+    }
     SECTION("another SSA index")
     {
         auto second = loadOf(0, 4);
@@ -1207,6 +1224,57 @@ TEST_CASE("BoundsChecks.deepDominatorTreeUnderTheDefaultStack")
     auto const row = rowOf(Pass::EliminateBoundsChecks);
     REQUIRE(runPasses(function, context, row).has_value());
     CHECK(context.statistics.count(PassStatistic::ChecksSharingDominatingAddress) == Depth - 1);
+}
+
+TEST_CASE("BoundsChecks.pollsTheCancellation")
+{
+    // Cancelled before it starts, on more than one interval of work, the pass stops with Cancelled: in a
+    // block the dominator walk enters (blocks of checks), and in the entry (one long block of them).
+    for (auto const longEntry: { false, true })
+    {
+        INFO((longEntry ? "one long entry block" : "many blocks"));
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto function = Function { memory };
+        auto builder = Builder { function };
+        auto const entry = builder.createBlock();
+        builder.switchTo(entry);
+        auto const index = builder.addParameter(entry, Type::I32);
+        auto const condition = builder.addParameter(entry, Type::I32);
+        auto const bound = builder.addParameter(entry, Type::I64);
+        auto const base = builder.emit(
+            Operation::MemoryBase, std::array { Type::Pointer }, {}, std::array<uint64_t, 1> { 0 })[0];
+        auto const exit = builder.createBlock();
+        for ([[maybe_unused]] auto const level:
+             std::views::iota(uint32_t { 0 }, longEntry ? 70'000U : 40'000U))
+        {
+            std::ignore = builder.emit(Operation::CheckMemory,
+                                       std::array { Type::Pointer },
+                                       std::array { index, base, bound },
+                                       std::array<uint64_t, 3> { 0, 0, 4 });
+            if (longEntry)
+                continue;
+            auto const next = builder.createBlock();
+            builder.branch(condition, next, {}, exit, {});
+            builder.switchTo(next);
+        }
+        builder.jump(exit, {});
+        builder.switchTo(exit);
+        builder.ret({});
+        auto const anyModule = translateOf(Program { .memories = { memoryOf(1) }, .steps = {} }.module());
+        auto const config = CompileConfig { TargetDescription {}, ExecutionMode::Production };
+        auto cancellation = CompileCancellation {};
+        cancellation.cancel();
+        auto context = PassContext { .module = *anyModule->module,
+                                     .config = config,
+                                     .cancellation = cancellation,
+                                     .memory = memory,
+                                     .verification = Verification::AtEnd,
+                                     .codeIndex = 9 };
+        auto const ran = rowOf(Pass::EliminateBoundsChecks)[0].run(function, context);
+        REQUIRE_FALSE(ran.has_value());
+        CHECK(ran.error().code == isoline::compiler::CompileErrorCode::Cancelled);
+        CHECK(ran.error().function == 9U);
+    }
 }
 
 TEST_CASE("BoundsChecks.linearOnLongChains", "[.perf]")

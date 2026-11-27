@@ -4,9 +4,15 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <memory_resource>
 #include <optional>
+#include <tuple>
+#include <vector>
 
+#include <isoline/compiler/intermediate/Dominators.hpp>
+#include <isoline/compiler/intermediate/Function.hpp>
 #include <isoline/compiler/intermediate/Guards.hpp>
+#include <isoline/compiler/intermediate/MemoryStretches.hpp>
 #include <isoline/compiler/intermediate/Operation.hpp>
 #include <isoline/compiler/intermediate/testing/GuardEdges.hpp>
 
@@ -91,4 +97,35 @@ TEST_CASE("Guards.everyGuardHasItsRow")
     CHECK(guardRowOf(Operation::CheckDispatch)->bound == GuardBound::DispatchRows);
     CHECK_FALSE(guardRowOf(Operation::Load).has_value());
     CHECK_FALSE(guardRowOf(Operation::I32Add).has_value());
+}
+
+TEST_CASE("Guards.minimumBytesSaturates")
+{
+    // At run time, as memoryMinimumBytesOf() calls it per module: an exact product, and a saturated one for a
+    // minimum past 2^64 bytes or a page size past 2^63.
+    auto const pages = std::vector<uint64_t> { 1, uint64_t { 1 } << 48U, 3 };
+    auto const sizes = std::vector<uint8_t> { 16, 16, 64 };
+    CHECK(isoline::compiler::intermediate::minimumBytesOf(pages[0], sizes[0]) == 65'536);
+    CHECK(isoline::compiler::intermediate::minimumBytesOf(pages[1], sizes[1]) == ~uint64_t { 0 });
+    CHECK(isoline::compiler::intermediate::minimumBytesOf(pages[2], sizes[2]) == ~uint64_t { 0 });
+}
+
+TEST_CASE("Guards.stretchesOfAnEmptyFunction")
+{
+    // A function of no blocks has no stretches to number.
+    std::pmr::monotonic_buffer_resource memory;
+    auto const function = isoline::compiler::intermediate::Function { memory };
+    auto const graph = isoline::compiler::intermediate::controlFlowGraphOf(function, memory);
+    std::ignore = isoline::compiler::intermediate::MemoryStretches { function, graph, memory };
+    CHECK(graph.blockCount() == 0);
+}
+
+TEST_CASE("Guards.rootGuardOfANonGuardIsItself")
+{
+    // At run time, as the verifier asks it of every pointer's producer: a guard names its root, anything else
+    // itself.
+    using isoline::compiler::intermediate::Operation;
+    auto const operations = std::vector { Operation::I32Add, Operation::GuardAddress };
+    CHECK(isoline::compiler::intermediate::rootGuardOf(operations[0]) == Operation::I32Add);
+    CHECK(isoline::compiler::intermediate::rootGuardOf(operations[1]) != Operation::I32Add);
 }

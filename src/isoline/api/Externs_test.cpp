@@ -777,6 +777,8 @@ TEST_CASE("Externs.foreignMemoryIsAnError", "[api]")
     CHECK(errorOf(store.memoryType(memory)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(store.memoryRange(memory, 0, 1)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(store.memoryRange(memory, 0, 0)) == MemoryAccessError::ForeignHandle);
+    // The read-only view too.
+    CHECK(errorOf(std::as_const(store).memoryRange(memory, 0, 1)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(store.growMemory(memory, 1)) == MemoryGrowthError { ForeignHandle {} });
     // Nothing of store A changed.
     CHECK(valueOf(store.memorySize(own)) == MemorySize { .pages = 1, .bytes = PageBytes });

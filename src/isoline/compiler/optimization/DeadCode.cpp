@@ -126,7 +126,7 @@ namespace
             }
             auto const block = _places.block[std::to_underlying(value)];
             if (block == Unnumbered)
-                return;
+                return; // uncovered(value-neither-defined-nor-a-parameter)
             auto const position = _places.position[std::to_underlying(value)];
             for (auto const& edge: _incoming.into(BlockId { block }))
                 need(_function.operands(
