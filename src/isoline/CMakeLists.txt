@@ -101,6 +101,7 @@ target_sources(isoline_core
             runtime/Trap.hpp
             runtime/Value.hpp
             runtime/ValueCheck.hpp
+            runtime/ValueCheckTables.hpp
             validate/Subtyping.hpp
             validate/ValidatedModule.hpp
             validate/ValidationError.hpp
