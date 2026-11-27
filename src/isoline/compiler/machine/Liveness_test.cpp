@@ -645,6 +645,21 @@ TEST_CASE("Liveness.refusesIllFormedFunctions")
         CHECK(refused.error().code == CompileErrorCode::InternalVerificationFailed);
         CHECK(refused.error().pass == "liveness");
     }
+    SECTION("a layout that leaves out a block a laid-out block jumps to")
+    {
+        auto function = MachineFunction { memory };
+        auto const entry = function.createBlock(Hotness::Normal);
+        auto const next = function.createBlock(Hotness::Normal);
+        terminate(function, entry, to(next));
+        terminate(function, next, {});
+        auto const loops = LoopsOf { function, memory };
+        auto blocks = std::pmr::vector<BlockId> { { entry }, &memory };
+        auto const order = BlockOrder { std::move(blocks), 2, memory };
+        auto const refused =
+            computeLiveIntervals(function, order, loops.loops, CompileLimits {}, cancellation, memory);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == CompileErrorCode::InternalVerificationFailed);
+    }
     SECTION("a layout whose loop is not contiguous")
     {
         // 0 → 1; 1 → 2, 3; 2 → 1; 3 returns; laid out 0 1 3 2.

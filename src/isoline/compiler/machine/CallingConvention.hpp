@@ -60,8 +60,16 @@ enum class AggregateResults : uint8_t
     /// memory, through a pointer to the caller's area passed in resultAreaPointer, or as a hidden first
     /// argument when the row has none (which shifts the arguments by one), and given back in the first
     /// integer result register when pointerReturned says so. System V AMD64: 16 bytes, rax and rdx or xmm0
-    /// and xmm1, the pointer in rdi and back in rax. Microsoft x64: 8 bytes, rax or xmm0, the pointer in rcx
-    /// and back in rax. AAPCS64: 16 bytes, the pointer in x8, not given back.
+    /// and xmm1, the pointer in rdi and back in rax. Microsoft x64: 8 bytes in rax, whatever the member's
+    /// type (a struct of one double returns in rax, not xmm0; only a scalar double returns in xmm0), the
+    /// pointer in rcx and back in rax. AAPCS64: 16 bytes, the pointer in x8, not given back.
+    ///
+    /// The rule holds for what the host-call boundary uses (P5 amendment I8): non-member functions returning
+    /// a trivially copyable struct of 64-bit integer words, or one such word. It does not describe Microsoft
+    /// x64's member functions, which return any aggregate through a hidden pointer passed in rdx after
+    /// `this`, nor any non-trivially-copyable type, which every ABI returns through the hidden pointer; so no
+    /// stub is a member function or returns one. As the boundary returns integer words only, a host row's
+    /// float result registers are never used for an aggregate.
     HiddenPointerBeyond,
 };
 

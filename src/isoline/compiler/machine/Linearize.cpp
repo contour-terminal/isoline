@@ -233,7 +233,10 @@ std::expected<BlockOrder, CompileError> linearize(MachineFunction const& functio
     }
 
     auto order = BlockOrder { std::move(blocks), blockCount, memory };
-    if (auto const verified = verifyContiguousLoops(order, loops); !verified)
+    if (auto const verified = verifyContiguousLoops(order, loops).and_then([&] {
+            return verifyLayoutCoversItsSuccessors(function, order);
+        });
+        !verified)
         return std::unexpected { verified.error() }; // uncovered(linearize-breaks-a-loop)
     return order;
 }
@@ -255,6 +258,16 @@ std::expected<void, CompileError> verifyContiguousLoops(BlockOrder const& order,
         if (extent.first != *order.position(block) || extent.last - extent.first + 1 != extent.members)
             return notContiguous();
     }
+    return {};
+}
+
+std::expected<void, CompileError> verifyLayoutCoversItsSuccessors(MachineFunction const& function,
+                                                                  BlockOrder const& order)
+{
+    for (auto const block: order.blocks())
+        for (auto const& edge: function.edges(block))
+            if (!order.position(edge.target))
+                return notContiguous();
     return {};
 }
 

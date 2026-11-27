@@ -81,6 +81,14 @@ class BlockOrder
 [[nodiscard]] std::expected<void, CompileError> verifyContiguousLoops(BlockOrder const& order,
                                                                       intermediate::LoopNesting const& loops);
 
+/// Checks that @p order lays out every block a laid-out block has an edge to: with the entry first
+/// (verifyContiguousLoops()), so every block reachable from the entry. What liveness and the encoder walk.
+/// @param function The function.
+/// @param order Its layout.
+/// @return Nothing; or InternalVerificationFailed (pass "linearize").
+[[nodiscard]] std::expected<void, CompileError> verifyLayoutCoversItsSuccessors(
+    MachineFunction const& function, BlockOrder const& order);
+
 /// Per block, the layout position of the last block of the loop it heads: the largest position of the loop's
 /// members, nested loops included; intermediate::Unnumbered for a block that heads no loop or is left out.
 /// On a layout verifyContiguousLoops() accepts, the loop headed by h is the positions

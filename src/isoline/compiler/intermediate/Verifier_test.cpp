@@ -727,6 +727,9 @@ TEST_CASE("Verifier.refusesTheRemainingShapes")
             { "another memory", 1, 8, {}, 0, 4, Verdict::Refused },
             { "a move past the guard", 0, 8, { uint64_t { 1 } << 40U }, 0, 1, Verdict::Refused },
             { "a move that leaves the load no room", 0, 8, { 4 }, 0, 8, Verdict::Refused },
+            // 1 + (2^64 − 1) wraps to 0, which a sum unchecked for overflow would take for the guard's start:
+            // the overflow guard of the move's own reach refuses it.
+            { "a move whose reach wraps around 2^64", 0, 8, { 1, ~uint64_t { 0 } }, 0, 8, Verdict::Refused },
             { "moves that sum past 2^64",
               0,
               8,
@@ -1480,5 +1483,67 @@ TEST_CASE("Verifier.remainingCountdownAndStretchPaths")
             builder.ret({});
             CHECK_FALSE(verify(fixture.function).has_value());
         }
+    }
+}
+
+TEST_CASE("Verifier.remainingRowAndCountdownBranches")
+{
+    SECTION("results and immediates past their pools")
+    {
+        for (auto const field: { 0, 1 })
+        {
+            INFO((field == 0 ? "results" : "immediates"));
+            auto fixture = Fixture {};
+            auto const one = fixture.i32(1);
+            std::ignore = fixture.builder.emit(Operation::I32Add, I32Result, std::array { one, one });
+            fixture.builder.ret({});
+            if (field == 0)
+                fixture.function.instruction(1).results = { .begin = std::numeric_limits<uint32_t>::max(),
+                                                            .count = 1 };
+            else
+                fixture.function.instruction(0).immediates = { .begin = std::numeric_limits<uint32_t>::max(),
+                                                               .count = 1 };
+            CHECK(refusal(fixture.function).code == VerifierErrorCode::RangeOutOfBounds);
+        }
+    }
+    SECTION("an access size that is a power of two past its field's maximum")
+    {
+        auto fixture = Fixture {};
+        auto const address = guardedAddress(fixture);
+        std::ignore = fixture.builder.emit(Operation::Load,
+                                           std::array { Type::I64 },
+                                           std::array { address },
+                                           loadOf(16, Extension::Zero, Type::I64));
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::ImmediateValue);
+    }
+    SECTION("a loop that passes its countdown unchanged on the back edge keeps it live")
+    {
+        // entry: reload c0 -> header(c0); header(c): store c; trapIf; branch -> latch | exit; latch ->
+        // header(c): the back edge passes the header's own parameter, which is already the live countdown
+        // there.
+        auto fixture = Fixture {};
+        auto& builder = fixture.builder;
+        auto const condition = builder.addParameter(fixture.entry, Type::I32);
+        // A reload makes the live countdown known (the entry's own is unconstrained).
+        auto const countdown = reloadCountdown(fixture);
+        auto const header = builder.createBlock();
+        auto const latch = builder.createBlock();
+        auto const exit = builder.createBlock();
+        auto const carried = builder.addParameter(header, Type::I64);
+        builder.jump(header, std::array { countdown });
+        builder.switchTo(header);
+        storeCountdown(fixture, carried);
+        std::ignore = builder.emit(Operation::TrapIf,
+                                   {},
+                                   std::array { condition },
+                                   std::array { uint64_t { std::to_underlying(TrapCode::Unreachable) } });
+        builder.branch(condition, latch, {}, exit, {});
+        builder.switchTo(latch);
+        builder.jump(header, std::array { carried });
+        builder.switchTo(exit);
+        storeCountdown(fixture, carried);
+        builder.ret({});
+        CHECK(verify(fixture.function).has_value());
     }
 }

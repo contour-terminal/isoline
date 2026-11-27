@@ -499,7 +499,9 @@ std::expected<LiveIntervals, CompileError> computeLiveIntervals(MachineFunction 
                                                                 CompileCancellation const& cancellation,
                                                                 std::pmr::memory_resource& memory)
 {
-    if (!verifyContiguousLoops(order, loops))
+    // Every position this reads is of a laid-out block: the layout covers every block a laid-out one jumps
+    // to, and with it every reachable one.
+    if (!verifyContiguousLoops(order, loops) || !verifyLayoutCoversItsSuccessors(function, order))
         return illFormed();
     auto const facts = BlockFacts { function, order, memory };
     if (facts.isIllFormed())

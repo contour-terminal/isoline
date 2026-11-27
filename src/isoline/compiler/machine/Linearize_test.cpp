@@ -25,6 +25,7 @@ using isoline::compiler::machine::loopEndPositions;
 using isoline::compiler::machine::MachineFunction;
 using isoline::compiler::machine::RegisterClass;
 using isoline::compiler::machine::verifyContiguousLoops;
+using isoline::compiler::machine::verifyLayoutCoversItsSuccessors;
 using isoline::compiler::machine::testing::LoopsOf;
 using isoline::compiler::machine::testing::terminate;
 
@@ -197,4 +198,21 @@ TEST_CASE("Linearize.verifierRefusesBrokenLayouts")
     CHECK(refuses({ 1, 2, 0, 3 })); // the entry not first
     CHECK(refuses({ 0, 1, 3 }));    // a loop block left out
     CHECK(refuses({}));             // nothing laid out
+}
+
+TEST_CASE("Linearize.verifierRefusesAReachableBlockLeftOut")
+{
+    // 0 → 1; 1 returns; laid out as {0} alone. Block 1 is in no loop, so loop contiguity alone accepts it,
+    // but every block a laid-out block jumps to must be laid out too.
+    std::pmr::monotonic_buffer_resource memory;
+    auto const shape = std::vector<ShapeBlock> { { { 1 } }, { {} } };
+    auto const function = functionOf(shape, memory);
+    auto const analysis = LoopsOf { function, memory };
+    auto const order = orderOf({ 0 }, 2, memory);
+    CHECK(verifyContiguousLoops(order, analysis.loops).has_value());
+    auto const refused = verifyLayoutCoversItsSuccessors(function, order);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == CompileErrorCode::InternalVerificationFailed);
+    CHECK(refused.error().pass == "linearize");
+    CHECK(verifyLayoutCoversItsSuccessors(function, orderOf({ 0, 1 }, 2, memory)).has_value());
 }
