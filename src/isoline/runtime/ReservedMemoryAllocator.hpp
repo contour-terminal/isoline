@@ -19,10 +19,12 @@ namespace isoline::runtime
 /// maximumBytes, whichever is larger, rounded up to whole pages, and the layout's guard after it, the sum
 /// rounded up to the allocation granularity. It commits the pages its bytes span (zeroed when first
 /// committed), commits more in place on every grow, and releases the reservation when it is destroyed. Its
-/// base therefore never moves, and guardBytes() is the reservation past the committed pages: at least the
-/// layout's guard at every size up to the maximum, and bytes().size() + guardBytes() at least reservation +
-/// guard, so a memory satisfies memoryRequirementsFor() after every grow. A memory64 or custom-page request,
-/// whose requirements are {0, 0}, is served by the same rule, so one allocator serves a mixed module.
+/// base therefore never moves. For a memory of 64 KiB pages, guardBytes() is the reservation past the
+/// committed pages: at least the layout's guard at every size up to the maximum, and bytes().size() +
+/// guardBytes() at least reservation + guard, so it satisfies memoryRequirementsFor() after every grow. A
+/// memory64 or custom-page request, whose requirements are {0, 0}, is served by the same rule, so one
+/// allocator serves a mixed module; a custom-page memory whose size ends mid-page declares a guard of 0,
+/// since the committed rest of that page follows its bytes.
 ///
 /// A size whose reservation is no u64, a refused reservation and a refused commit are each HostMemory;
 /// a refused grow leaves the memory as it was.

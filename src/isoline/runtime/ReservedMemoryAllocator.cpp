@@ -116,11 +116,12 @@ namespace
             return { _reservation.base, static_cast<std::size_t>(_size) };
         }
 
-        /// The reservation past the committed pages: past bytes() exactly when its size is whole pages of the
-        /// system, as a memory of 64 KiB pages always is.
+        /// The reservation past the committed pages, when bytes() ends where they do, as a memory of 64 KiB
+        /// pages always does. Otherwise 0: the committed tail of the last page follows bytes() and is
+        /// accessible, and only a memory whose requirements are {0, 0} (custom pages) ends mid-page.
         [[nodiscard]] uint64_t guardBytes() const noexcept override
         {
-            return _reservation.bytes - _committedBytes;
+            return _size == _committedBytes ? _reservation.bytes - _committedBytes : 0;
         }
 
         /// Commits the pages @p newBytes spans past those committed. HostMemory when the system refuses, or

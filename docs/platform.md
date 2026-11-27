@@ -31,6 +31,8 @@ memory as it was. Because `mprotect` may change part of a range before it fails,
 whole with `protect(None)`, which decommits by the platform row's `DecommitKind` (madvise, a `MAP_FIXED`
 remap, or `VirtualFree`): no page past the committed ones stays accessible. The process ends if that undo is
 refused too. Memory64 and custom-page memories, which rely on no guard, are reserved by the same rule.
+So an unbounded memory64 under a raised `StoreLimits::maxMemoryBytes` reserves that much in guard mode,
+and is refused with `HostMemory` where the system cannot reserve it, though explicit mode would run it.
 
 ## Instruction-cache synchronization
 

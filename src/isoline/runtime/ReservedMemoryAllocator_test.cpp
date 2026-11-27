@@ -388,25 +388,29 @@ TEST_CASE("ReservedMemory.servesAMixedModule", "[guardpages]")
     CHECK(allZero(bytes.bytes()));
 }
 
-TEST_CASE("ReservedMemory.customPagesGuardPastTheirLastPage", "[guardpages]")
+TEST_CASE("ReservedMemory.customPagesDeclareNoGuardMidPage", "[guardpages]")
 {
-    // A memory of 1-byte pages: its size is no whole system page, so its guard starts past the system page
-    // its last byte is on, and that page's tail is committed but no part of bytes().
+    // A memory of 1-byte pages: while its size ends mid-page, the committed rest of that page follows its
+    // bytes and is accessible, so it declares no guard (its requirements are {0, 0}). At a whole system
+    // page its guard is the reservation past it.
     auto system = SystemVirtualMemory {};
     auto recording = RecordingVirtualMemory { system, std::nullopt };
     auto const layout = capped(1 * MiB, recording);
     auto allocator = ReservedMemoryAllocator { recording, layout };
-    auto const type = MemoryType { .limits = Limits { .min = 5, .max = 100, .addressType = AddressType::I32 },
-                                   .pageSizeLog2 = 0 };
-    auto const memory =
-        allocated(allocator, MemoryRequest { .type = type, .initialBytes = 5, .maximumBytes = 100 });
     auto const page = recording.pageSize();
+    auto const type =
+        MemoryType { .limits = Limits { .min = 5, .max = page, .addressType = AddressType::I32 },
+                     .pageSizeLog2 = 0 };
+    auto const memory =
+        allocated(allocator, MemoryRequest { .type = type, .initialBytes = 5, .maximumBytes = page });
     auto const reserved = reservedBytes(recording);
     CHECK(memory->bytes().size() == 5);
-    CHECK(memory->guardBytes() == reserved - page);
+    CHECK(memory->guardBytes() == 0);
     CHECK(committedBytes(recording) == page);
     REQUIRE(memory->grow(100).has_value());
+    CHECK(memory->guardBytes() == 0);
+    REQUIRE(memory->grow(page).has_value());
     CHECK(memory->guardBytes() == reserved - page);
-    CHECK(committedBytes(recording) == page);
     CHECK(memory->guardBytes() >= layout.guardBytes);
+    CHECK(committedBytes(recording) == page);
 }
