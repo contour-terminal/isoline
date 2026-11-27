@@ -334,7 +334,7 @@ namespace detail
     /// Whether a Load or Store row's operations are of its form and of the Memory family, and named
     /// after its instruction: `operation` its text, `memory64` its text and ".memory64". constexpr, not
     /// consteval: MSVC calls no immediate function from the lambda of loweringRowsFitTheirOperations()
-    /// (C7595), and it is only evaluated in that static_assert.
+    /// (C7595). That static_assert evaluates it, and LoweringRows.namingChecksDecide runs it at run time.
     [[nodiscard]] constexpr bool memoryRowFits(LoweringRow const& row) noexcept
     {
         auto const text = binary::OpcodeTable[std::to_underlying(row.opcode)].text;

@@ -169,7 +169,15 @@ memory 1, the sums that reach or pass 2^64, pages of one byte, a memory of no pa
 the access fits, zero where it does not, so code running ahead of a mispredicted check reads memory's first
 bytes and nothing past them. The mask is the sign of the bytes left after the access, derived from the same
 bound as the check but not from its outcome, which the compiler would know on the predicted path and fold
-away. Task 19 checks in the optimized handlers' disassembly that the select survived.
+away; or'ed with the sign of the offset itself, since an offset of 2^63 or more never fits (memories are
+allocated, so their sizes stay below 2^63) and its bytes left would otherwise wrap to a positive count, a
+speculative read below the base the guest chooses (`accessMask()`, `Memory.accessMaskAtTheEdges`). One case
+the mask cannot catch: a memory smaller than the access (fewer bytes than its width), whose bytes left wrap
+for every small offset, so code ahead of the check may read fewer than the access's width of bytes past that
+memory's end; the check itself still traps. An i32 address is read as 32 bits whatever its slot holds, so the
+one comparison of the i32 check is exact even for a slot left with high bits set
+(`Memory.i32AddressIgnoresTheSlotsHighBits`). Task 19 checks in the optimized handlers' disassembly that the
+select survived.
 
 **The cache is invalidated by `Store::memoryGeneration()`.** Its contract, which P5's compiled code relies on
 too: it starts at 0 and increases by one with every `Store::growMemory()` that adds at least one page, to any

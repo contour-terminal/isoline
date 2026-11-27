@@ -737,6 +737,11 @@ uint64_t Store::memoryGeneration() const noexcept
     return _memoryGeneration;
 }
 
+uint64_t const* Store::memoryGenerationAddress() const noexcept
+{
+    return &_memoryGeneration;
+}
+
 std::expected<uint64_t, Refusal> Store::growTable(TableAddr address, uint64_t delta, Ref init)
 {
     auto& instance = table(address);

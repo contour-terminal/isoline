@@ -1084,6 +1084,29 @@ TEST_CASE("Store.memoryGenerationCountsEveryGrowth")
     CHECK(store.memoryGeneration() == 2);
 }
 
+TEST_CASE("Store.memoryGenerationIgnoresDroppedMemories")
+{
+    // Dropping the memories of a failed instantiation (releaseTrailing()) changes no memory code read, so the
+    // generation stays; its address is the same throughout, and holds what memoryGeneration() returns.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const* const counter = store.memoryGenerationAddress();
+    auto const kept = store.addMemory(oneToFourPages());
+    REQUIRE(kept.has_value());
+    CHECK(store.growMemory(*kept, 1) == 1U);
+    CHECK(*counter == 1);
+    auto const firstDropped = static_cast<isoline::runtime::MemAddr>(store.memoryCount());
+    auto const dropped = store.addMemory(oneToFourPages());
+    REQUIRE(dropped.has_value());
+    CHECK(store.growMemory(*dropped, 1) == 1U);
+    CHECK(store.memoryGeneration() == 2);
+    store.releaseTrailing(static_cast<isoline::runtime::TableAddr>(store.tableCount()), firstDropped);
+    CHECK(store.memoryCount() == 1);
+    CHECK(store.memoryGeneration() == 2);
+    CHECK(store.memoryGenerationAddress() == counter);
+    CHECK(*counter == store.memoryGeneration());
+}
+
 TEST_CASE("Store.memoryGenerationIgnoresARefusingEmbedder")
 {
     // An embedder that declines the grow leaves the memory, and so the generation, as they were.

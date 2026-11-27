@@ -67,7 +67,6 @@ using isoline::binary::testing::unreachable;
 using isoline::fastinterpreter::availableDispatches;
 using isoline::fastinterpreter::describe;
 using isoline::fastinterpreter::FusionTable;
-using isoline::fastinterpreter::LoweredFunction;
 using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::LoweringRow;
 using isoline::fastinterpreter::LoweringRows;
@@ -79,6 +78,7 @@ using isoline::fastinterpreter::testing::encodingOf;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
 using isoline::fastinterpreter::testing::functionOf;
+using isoline::fastinterpreter::testing::handWritten;
 using isoline::fastinterpreter::testing::Harness;
 using isoline::fastinterpreter::testing::memoryInstruction;
 using isoline::fastinterpreter::testing::op;
@@ -637,30 +637,15 @@ TEST_CASE("FastInterpreter.runsTheOperationsNoLoweringEmitsYet")
     // them: (param v128) (result v128), its body nop, const128 s2 #lanes, return s2.
     auto const dispatch = GENERATE(from_range(availableDispatches()));
     auto const byHand = [dispatch](LoweredModule const& lowered) {
-        auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
-        auto functions = isoline::fastinterpreter::LoweringVector<LoweredFunction>(arena.get());
-        auto const& model = lowered.functions().front();
-        auto& function = functions.emplace_back(arena.get());
-        function.codeIndex = model.codeIndex;
-        function.frameCost = model.frameCost;
-        function.paramSlots = model.paramSlots;
-        function.localSlots = model.localSlots;
-        function.frameSlots = model.frameSlots;
-        function.resultSlots = model.resultSlots;
-        REQUIRE(function.frameSlots >= 4);
-        function.code = { isoline::fastinterpreter::headerWord(dispatch, OperationId::Nop),
-                          isoline::fastinterpreter::headerWord(dispatch, OperationId::Const128),
-                          2,
-                          0x1111,
-                          0x2222,
-                          isoline::fastinterpreter::headerWord(dispatch, OperationId::Return),
-                          2 };
-        return std::make_shared<LoweredModule const>(std::move(arena),
-                                                     std::move(functions),
-                                                     dispatch,
-                                                     lowered.mode(),
-                                                     0,
-                                                     isoline::fastinterpreter::LoweringStats {});
+        REQUIRE(lowered.functions().front().frameSlots >= 4);
+        return handWritten(lowered,
+                           { isoline::fastinterpreter::headerWord(dispatch, OperationId::Nop),
+                             isoline::fastinterpreter::headerWord(dispatch, OperationId::Const128),
+                             2,
+                             0x1111,
+                             0x2222,
+                             isoline::fastinterpreter::headerWord(dispatch, OperationId::Return),
+                             2 });
     };
     auto harness =
         Harness { functionOf({ binary::V128 }, { binary::V128 }, {}, localGet(0)), fast(dispatch), byHand };

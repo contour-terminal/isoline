@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <memory_resource>
 #include <ranges>
@@ -108,6 +109,29 @@ inline constexpr auto DefaultBudget = uint64_t { 256 } * 1024 * 1024;
     if (info.prefix == binary::NoPrefix)
         return { static_cast<uint8_t>(info.code) };
     return binary::testing::code({ { info.prefix }, binary::testing::encodeU32(info.code) });
+}
+
+/// @p model with its first function's code written by hand: @p code, words of @p model's dispatch, over the
+/// same frame (its slots and cost), so that a test runs code no lowering emits.
+/// @param model The lowered module whose first function's frame the code runs in.
+/// @param code The code: header words (headerWord()) and their operands.
+/// @return The module of that one function.
+[[nodiscard]] inline std::shared_ptr<LoweredModule const> handWritten(LoweredModule const& model,
+                                                                      std::initializer_list<Word> code)
+{
+    auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
+    auto functions = LoweringVector<LoweredFunction>(arena.get());
+    auto const& first = model.functions().front();
+    auto& function = functions.emplace_back(arena.get());
+    function.codeIndex = first.codeIndex;
+    function.frameCost = first.frameCost;
+    function.paramSlots = first.paramSlots;
+    function.localSlots = first.localSlots;
+    function.frameSlots = first.frameSlots;
+    function.resultSlots = first.resultSlots;
+    function.code = code;
+    return std::make_shared<LoweredModule const>(
+        std::move(arena), std::move(functions), model.dispatch(), model.mode(), 0, LoweringStats {});
 }
 
 /// A load or store of @p opcode at natural alignment, of @p offset, naming @p memory where it is not memory 0

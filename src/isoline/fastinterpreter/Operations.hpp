@@ -565,6 +565,27 @@ using MemoryWord = std::conditional_t<
     uint8_t,
     std::conditional_t<Width == 2, uint16_t, std::conditional_t<Width == 4, uint32_t, uint64_t>>>;
 
+/// The Spectre mask of an access of @p width bytes at offset @p effective into a memory of @p size bytes:
+/// all ones where it fits, zero where it does not, computed without a branch (docs/fast-interpreter.md),
+/// so that code running ahead of a mispredicted bounds check reads memory's first bytes, not past them.
+///
+/// It is the sign of the bytes left after the access, or of the offset itself: an offset of 2^63 or more
+/// never fits (a memory is allocated, so its size stays below 2^63), and without its own sign the bytes
+/// left would wrap to a positive count for it, letting a guest choose a speculative read below the base.
+///
+/// One case it cannot catch: a memory smaller than the access (@p size below @p width), whose bytes left
+/// wrap for every small offset. Code ahead of the check may then read fewer than @p width bytes past such a
+/// memory's end; the check itself traps.
+/// @param effective The offset of the access's first byte: the address plus the static offset.
+/// @param size The memory's size in bytes.
+/// @param width The bytes accessed.
+/// @return The mask.
+[[nodiscard]] constexpr uint64_t accessMask(uint64_t effective, uint64_t size, uint64_t width) noexcept
+{
+    auto const left = static_cast<int64_t>(size - width - effective);
+    return ~static_cast<uint64_t>((left | static_cast<int64_t>(effective)) >> 63U);
+}
+
 /// The offset into a memory of @p size bytes of an access of @p Width bytes at @p address + @p offset, or
 /// nullopt where it does not fit, as the reference interpreter decides it; never overflowing.
 ///
@@ -572,11 +593,9 @@ using MemoryWord = std::conditional_t<
 /// width fit 64 bits and one comparison decides. A memory of i64 addresses (memory64) adds the two with a
 /// check for the carry, and compares the width against what is left.
 ///
-/// Spectre (docs/fast-interpreter.md): the offset returned is masked by a data-dependent select, all ones
-/// where the access fits and zero where it does not, so that code running ahead of a mispredicted check
-/// reads memory's first bytes and nothing past it. The mask is the sign of the bytes left after the
-/// access, computed from the same bound as the check but not from its outcome, which the compiler knows
-/// on the path the branch takes and would fold away; a memory's size stays below 2^63 (it is allocated).
+/// Spectre (docs/fast-interpreter.md): the offset returned is masked by accessMask(), a data-dependent
+/// select computed from the same bound as the check but not from its outcome, which the compiler knows on
+/// the path the branch takes and would fold away.
 template <binary::AddressType Addressing, uint32_t Width>
 [[nodiscard]] inline std::optional<uint64_t> boundsChecked(uint64_t address,
                                                            uint64_t offset,
@@ -590,9 +609,7 @@ template <binary::AddressType Addressing, uint32_t Width>
         fits = effective >= address && size >= Width && effective <= size - Width;
     if (!fits) [[unlikely]]
         return std::nullopt;
-    auto const left = static_cast<int64_t>(size - Width - effective);
-    auto const mask = ~static_cast<uint64_t>(left >> 63U);
-    return effective & mask;
+    return effective & accessMask(effective, size, Width);
 }
 
 /// The access of memory 0 operation @p Id (a Load or Store row's) to the memory @p base of @p size bytes:
@@ -607,24 +624,29 @@ template <OperationId Id>
     constexpr auto Access = *binary::memoryAccessOf(Row.opcode);
     constexpr auto Addressing = Id == Row.memory64 ? binary::AddressType::I64 : binary::AddressType::I32;
     constexpr auto Width = uint32_t { Access.width };
-    using Bytes = MemoryWord<Width>;
+    using Moved = MemoryWord<Width>;
     auto* const fp = state.fp;
-    // An i32 address is held zero-extended in its slot (detail::encode()).
-    auto const address = fp[slotOperand<Access.access == binary::MemoryAccessKind::Load ? 1 : 0>(state.pc)];
+    // An i32 address is held zero-extended in its slot (detail::encode()), and read as 32 bits all the same:
+    // the bounds check's single comparison is exact only below 2^32, so no slot a producer left with high
+    // bits set may reach it.
+    auto const slot = fp[slotOperand<Access.access == binary::MemoryAccessKind::Load ? 1 : 0>(state.pc)];
+    auto address = slot;
+    if constexpr (Addressing == binary::AddressType::I32)
+        address = static_cast<uint32_t>(slot);
     auto const checked = boundsChecked<Addressing, Width>(address, offset, size);
     if (!checked) [[unlikely]]
         return leaveTrapped(
             *state.context, state.stepsLeft, runtime::Trap { runtime::TrapCode::OutOfBoundsMemoryAccess });
     auto* const bytes = base + *checked;
     if constexpr (Access.access == binary::MemoryAccessKind::Store)
-        storeLittleEndian<Bytes>(bytes, static_cast<Bytes>(fp[slotOperand<1>(state.pc)]));
+        storeLittleEndian<Moved>(bytes, static_cast<Moved>(fp[slotOperand<1>(state.pc)]));
     else
     {
-        auto const loaded = loadLittleEndian<Bytes>(bytes);
+        auto const loaded = loadLittleEndian<Moved>(bytes);
         auto value = uint64_t { loaded };
         if constexpr (Access.extension == binary::Extension::Sign)
             value =
-                static_cast<uint64_t>(static_cast<int64_t>(static_cast<std::make_signed_t<Bytes>>(loaded)));
+                static_cast<uint64_t>(static_cast<int64_t>(static_cast<std::make_signed_t<Moved>>(loaded)));
         // A 32-bit value is held zero-extended.
         if constexpr (Access.value == binary::ValueKind::I32 || Access.value == binary::ValueKind::F32)
             value = static_cast<uint32_t>(value);

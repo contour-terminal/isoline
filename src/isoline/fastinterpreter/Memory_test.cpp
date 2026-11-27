@@ -25,6 +25,7 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/fastinterpreter/Dispatch.hpp>
 #include <isoline/fastinterpreter/FastInterpreter.hpp>
+#include <isoline/fastinterpreter/Operations.hpp>
 #include <isoline/fastinterpreter/testing/Engines.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
@@ -699,8 +700,9 @@ TEST_CASE("Memory.boundsMatchReferenceAtTheEdges")
 
 TEST_CASE("Memory.generationSkipsUnchangedRefresh")
 {
-    // After a call or a host function returns, memory 0 is read again only when some memory grew meanwhile:
-    // a call that grows nothing refreshes nothing, and one that grows refreshes once, where it returns.
+    // Memory 0 is read again only when some memory grew since it was last read (Store::memoryGeneration()):
+    // a call that grows nothing refreshes nothing; a callee's memory.grow refreshes once, at the grow, so its
+    // return to the caller finds the generation unchanged; a host's grow refreshes once, where it returns.
     auto const engine = anyFastEngine();
     auto module = ModuleBuilder {};
     module.type(FuncType { .params = {}, .results = { binary::I32 } });
@@ -833,4 +835,104 @@ TEST_CASE("Memory.importedMemoryGrownByItsExporter")
     REQUIRE(results.has_value());
     REQUIRE(results->size() == 1);
     CHECK(std::get<I32>(results->front()).bits == 0x5566'7788U);
+}
+
+TEST_CASE("Memory.accessMaskAtTheEdges")
+{
+    // The Spectre mask: all ones exactly where the access fits, zero elsewhere, the offsets near 2^63 and
+    // 2^64 included, where the bytes left after the access would wrap to a positive count.
+    struct Row
+    {
+        uint64_t effective; ///< The access's offset.
+        uint64_t size;      ///< The memory's size.
+        uint64_t width;     ///< The access's width.
+        uint64_t mask;      ///< The mask expected.
+    };
+    constexpr auto All = std::numeric_limits<uint64_t>::max();
+    constexpr auto Half = uint64_t { 1 } << 63U;
+    constexpr auto Size = uint64_t { 2 } * PageBytes;
+    constexpr auto Rows = std::to_array<Row>({
+        { .effective = 0, .size = Size, .width = 4, .mask = All },
+        { .effective = Size - 4, .size = Size, .width = 4, .mask = All },
+        { .effective = Size - 3, .size = Size, .width = 4, .mask = 0 },
+        { .effective = Size, .size = Size, .width = 1, .mask = 0 },
+        { .effective = Half - 1, .size = Size, .width = 1, .mask = 0 },
+        { .effective = Half, .size = Size, .width = 1, .mask = 0 },
+        { .effective = Half + 1, .size = Size, .width = 8, .mask = 0 },
+        // Offsets the bytes left would wrap to a positive count for, without the offset's own sign.
+        { .effective = Half + Size, .size = Size, .width = 4, .mask = 0 },
+        { .effective = All - 1, .size = Size, .width = 4, .mask = 0 },
+        { .effective = All, .size = Size, .width = 1, .mask = 0 },
+        { .effective = 0, .size = 0, .width = 1, .mask = 0 },
+        { .effective = 0, .size = 8, .width = 8, .mask = All },
+        { .effective = 1, .size = 8, .width = 8, .mask = 0 },
+    });
+    for (auto const& row: Rows)
+    {
+        INFO("offset " << row.effective << ", size " << row.size << ", width " << row.width);
+        CHECK(isoline::fastinterpreter::accessMask(row.effective, row.size, row.width) == row.mask);
+    }
+}
+
+TEST_CASE("Memory.i32AddressIgnoresTheSlotsHighBits")
+{
+    // Code written by hand loads i32 memory 0 from a slot holding an i64, high bits set: an access of i32
+    // addresses reads its low 32 bits, so 0xFFFF'FFFF'FFFF'FFFE is the address 0xFFFF'FFFE, which traps,
+    // and 0xFFFF'FFFF'0000'0004 is 4, which reads what is there. Without the truncation the first would sum
+    // past 2^64 into the memory.
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    auto module = ModuleBuilder {};
+    module.type(FuncType { .params = { binary::I64 }, .results = { binary::I32 } });
+    module.memory(Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 });
+    module.data(dataSegment(0, AddressType::I32, 4, { 0x44, 0x33, 0x22, 0x11 }));
+    // Lowered: i32.wrap_i64 s1, s0; i32.load s1, s1, #0; return s1. By hand, the load reads s0 itself.
+    module.function(0, {}, code({ localGet(0), op(0xA7), memoryInstruction(Opcode::I32Load, 0) }));
+    auto const byHand = [dispatch](isoline::fastinterpreter::LoweredModule const& lowered) {
+        REQUIRE(lowered.functions().front().frameSlots >= 2);
+        using isoline::fastinterpreter::headerWord;
+        using isoline::fastinterpreter::OperationId;
+        return isoline::fastinterpreter::testing::handWritten(lowered,
+                                                              { headerWord(dispatch, OperationId::I32Load),
+                                                                1,
+                                                                0,
+                                                                headerWord(dispatch, OperationId::Return),
+                                                                1 });
+    };
+    auto harness = Harness { module, fast(dispatch), byHand };
+    CHECK(harness.trap(0, { I64 { 0xFFFF'FFFF'FFFF'FFFE } }) == TrapCode::OutOfBoundsMemoryAccess);
+    CHECK(harness.result(0, { I64 { 0xFFFF'FFFF'0000'0004 } }) == Value { I32 { 0x1122'3344 } });
+}
+
+TEST_CASE("Memory.growOfAnAliasRefreshesMemory0")
+{
+    // A module that imports one memory twice has it as memory 0 and memory 1: memory.grow 1 grows memory 0
+    // too, which the next access of memory 0 sees at its new size.
+    auto const engine = anyEngine();
+    auto linked = Linked { engine };
+    auto exporter = ModuleBuilder {};
+    exporter.memory(Limits { .min = 1, .max = 2, .addressType = AddressType::I32 });
+    exporter.exportEntity("memory", ExternKind::Memory, 0);
+    auto const b = linked.instantiate(exporter);
+    auto importer = ModuleBuilder {};
+    importer.type(FuncType { .params = {}, .results = { binary::I32 } });
+    auto const limits = Limits { .min = 1, .max = 2, .addressType = AddressType::I32 };
+    importer.importMemory("b", "memory", limits);
+    importer.importMemory("b", "alias", limits);
+    importer.function(0,
+                      {},
+                      code({ i32Const(1),
+                             growAndDrop(1),
+                             i32Const(static_cast<int32_t>(PageBytes)),
+                             i32Const(0x5566'7788),
+                             memoryInstruction(Opcode::I32Store, 0),
+                             i32Const(static_cast<int32_t>(PageBytes)),
+                             memoryInstruction(Opcode::I32Load, 0, 1) }));
+    auto const memory = ExternValue { .kind = ExternKind::Memory,
+                                      .address = linked.store().moduleInstance(b).memories.at(0) };
+    auto const a = linked.instantiate(importer, { memory, memory });
+    auto const results = linked.outcome(a, 0);
+    REQUIRE(results.has_value());
+    REQUIRE(results->size() == 1);
+    CHECK(std::get<I32>(results->front()).bits == 0x5566'7788U);
+    CHECK(linked.memory(b, 0).size() == 2 * PageBytes);
 }
