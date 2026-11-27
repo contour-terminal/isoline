@@ -1,7 +1,107 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-// The machine layer's target seam. For now it holds what code is generated for, TargetDescription,
-// which lives in its own data-only header so that what names a target (CompileConfig, an artifact's
-// key) needs nothing of the backend; the ITarget interface joins it with the machine layer (P5 Task 9).
+// The machine layer's target seam: what a backend provides, so that everything between the optimized
+// intermediate code and the bytes (layout, liveness, register allocation, the compile pipeline) is
+// target-independent. x86-64 implements it (P5), arm64 too (P6). A target is data first: its register
+// files (allocatable()), the operand constraints of its opcodes (constraints()), its frame rule and its
+// calling conventions (CallingConvention.hpp) are rows; selection, encoding and the entry code are the
+// code a new target brings. What code is generated for, TargetDescription, lives in its own data-only
+// header, so that what names a target (CompileConfig, an artifact's key) needs nothing of the backend.
+
+#include <cstdint>
+#include <expected>
+#include <memory_resource>
+#include <span>
+
+#include <isoline/compiler/CompileConfig.hpp>
+#include <isoline/compiler/CompileError.hpp>
+#include <isoline/compiler/machine/CodeBuffer.hpp>
+#include <isoline/compiler/machine/FrameRule.hpp>
+#include <isoline/compiler/machine/MachineFunction.hpp>
+#include <isoline/compiler/machine/Registers.hpp>
 #include <isoline/compiler/machine/TargetDescription.hpp>
+
+namespace isoline::binary
+{
+struct FuncType;
+} // namespace isoline::binary
+
+namespace isoline::validate
+{
+class ValidatedModule;
+} // namespace isoline::validate
+
+namespace isoline::compiler::machine
+{
+
+/// What instruction selection is given beside the function: the compile's configuration, the module the
+/// function belongs to and its index in the code section, the compile's cancellation, and the arena the
+/// machine function allocates from.
+struct SelectionContext
+{
+    CompileConfig const& config;             ///< The compile's configuration (target, mode, guard).
+    validate::ValidatedModule const& module; ///< The module.
+    uint32_t codeIndex;                      ///< The function's index in the code section.
+    CompileCancellation const& cancellation; ///< Polled as selection proceeds.
+    std::pmr::memory_resource& memory;       ///< What the machine function allocates from.
+};
+
+/// A code generator for one instruction set and operating-system ABI.
+///
+/// Stateless once constructed, and safe to share between compiles: every method is const. A target is
+/// constructed for one TargetDescription, through a static factory that refuses a description it cannot
+/// serve, and has no setters.
+class ITarget
+{
+  public:
+    virtual ~ITarget() = default;
+
+    /// What the target generates code for.
+    [[nodiscard]] virtual TargetDescription const& description() const noexcept = 0;
+
+    /// The target's bound on a native frame (its FrameRule row).
+    [[nodiscard]] virtual FrameRule frameRule() const noexcept = 0;
+
+    /// The registers of @p registerClass the allocator may assign, in its order of preference.
+    [[nodiscard]] virtual std::span<PhysicalRegister const> allocatable(
+        RegisterClass registerClass) const noexcept = 0;
+
+    /// What @p machineOpcode asks of each of its operands, by position: their roles, classes, fixed
+    /// registers and whether a memory operand will do. An instruction with more operands than rows (a
+    /// variadic tail) takes the last row for the rest. A row at an immediate, label, stub or constant
+    /// operand's position is not read.
+    /// @param machineOpcode An opcode of the target's (Require).
+    [[nodiscard]] virtual std::span<OperandConstraint const> constraints(uint16_t machineOpcode) const = 0;
+
+    /// Selects machine instructions for @p function: its blocks in machine terms, with critical edges
+    /// split, so that no block is added after selection.
+    /// @param function A verified, optimized function.
+    /// @param context The compile's context.
+    /// @return The machine function; or why selection refused (Cancelled, a cap).
+    [[nodiscard]] virtual std::expected<MachineFunction, CompileError> select(
+        intermediate::Function const& function, SelectionContext const& context) const = 0;
+
+    /// Encodes @p function, allocated and laid out, with its frame @p frame, into @p buffer.
+    /// @return Nothing; or why encoding refused (a branch out of range, an artifact too large).
+    [[nodiscard]] virtual std::expected<void, CompileError> encode(MachineFunction const& function,
+                                                                   FrameLayout const& frame,
+                                                                   CodeBuffer& buffer) const = 0;
+
+    /// Emits the entry adapter of functions of @p type: the host's RawValue arguments and results to and
+    /// from the internal convention.
+    virtual void emitEntryAdapter(binary::FuncType const& type, CodeBuffer& buffer) const = 0;
+
+    /// Emits the module's entry trampoline: the host's callee-saved registers saved per the host convention,
+    /// the context registers set, the entry stack pointer recorded, and the trap exit.
+    virtual void emitEntryTrampoline(CodeBuffer& buffer) const = 0;
+
+  protected:
+    ITarget() = default;
+    ITarget(ITarget const&) = default;
+    ITarget(ITarget&&) = default;
+    ITarget& operator=(ITarget const&) = default;
+    ITarget& operator=(ITarget&&) = default;
+};
+
+} // namespace isoline::compiler::machine

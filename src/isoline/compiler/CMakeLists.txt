@@ -3,7 +3,8 @@
 # isoline::compiler: the optimizing compiler from validated modules to native code, and what describes
 # it: its configuration, limits and errors, the features it compiles, the target it generates for, the
 # layout through which generated code reaches the runtime, (intermediate/) its SSA representation,
-# (translation/) the translation of WebAssembly into it and (optimization/) the passes over it.
+# (translation/) the translation of WebAssembly into it, (optimization/) the passes over it and
+# (machine/) the target seam and the target-independent machine layer: conventions, layout, liveness.
 # Its sources take the target policy's floating-point contraction row (cmake/IsolinePedantic.cmake), so
 # that constant folding is exact.
 target_sources(isoline_core
@@ -15,6 +16,11 @@ target_sources(isoline_core
         intermediate/MemoryStretches.cpp
         intermediate/Printer.cpp
         intermediate/Verifier.cpp
+        machine/CallingConvention.cpp
+        machine/CodeBuffer.cpp
+        machine/Linearize.cpp
+        machine/Liveness.cpp
+        machine/MachineFunction.cpp
         optimization/BoundsChecks.cpp
         optimization/ConstantFolding.cpp
         optimization/ControlFlow.cpp
@@ -41,11 +47,18 @@ target_sources(isoline_core
             intermediate/Operations.def
             intermediate/Printer.hpp
             intermediate/Verifier.hpp
+            machine/CallingConvention.hpp
+            machine/CodeBuffer.hpp
+            machine/FrameRule.hpp
+            machine/Linearize.hpp
+            machine/Liveness.hpp
+            machine/MachineFunction.hpp
+            machine/Registers.hpp
             machine/Target.hpp
+            machine/TargetDescription.hpp
             optimization/FoldingTable.hpp
             optimization/PassTable.hpp
             optimization/Rewrite.hpp
-            machine/TargetDescription.hpp
             translation/LoopAssignments.hpp
             translation/MemoryTranslation.hpp
             translation/NumericRules.hpp
