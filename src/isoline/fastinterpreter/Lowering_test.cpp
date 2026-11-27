@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -1085,6 +1086,86 @@ TEST_CASE("Lowering.multiValueBranchesStayLinear")
                 loweredWithinTheBounds(hostile::reenteredBlocks(1'000, count, 0x04), ControlTemporaries);
         }
     }
+}
+
+namespace
+{
+
+/// A function of @p locals i32 locals whose body forwards @p forwarded of them by local.gets, then sets each
+/// of @p absent, which nothing forwards, in turn @p sets times, then drops what it forwarded.
+[[nodiscard]] ModuleBuilder forwardingThenSetting(uint32_t locals,
+                                                  std::vector<uint32_t> const& forwarded,
+                                                  std::vector<uint32_t> const& absent,
+                                                  uint32_t sets)
+{
+    auto body = Bytes {};
+    auto const append = [&body](Bytes const& instruction) {
+        body.insert(body.end(), instruction.begin(), instruction.end());
+    };
+    for (auto const local: forwarded)
+        append(localGet(local));
+    for (auto const index: std::views::iota(uint32_t { 0 }, sets))
+    {
+        append(i32Const(0));
+        append(op(0x21, absent[index % absent.size()]));
+    }
+    body.insert(body.end(), forwarded.size(), 0x1A);
+    return functionOf({}, {}, std::vector<ValueType>(locals, binary::I32), body);
+}
+
+/// How long lowering @p builder's module takes, its validation not counted.
+[[nodiscard]] std::chrono::steady_clock::duration loweringTime(ModuleBuilder const& builder)
+{
+    auto const module = validated(builder);
+    auto const started = std::chrono::steady_clock::now();
+    auto const result = lower(*module, LoweringConfig {}, arenaOf());
+    auto const took = std::chrono::steady_clock::now() - started;
+    REQUIRE(result.has_value());
+    CHECK((*result)->stats().work
+          <= isoline::fastinterpreter::WorkPerBodyUnit * (*result)->stats().bodyUnits);
+    return took;
+}
+
+} // namespace
+
+TEST_CASE("Lowering.forwardedLocalsCostTheSameHoweverChosen")
+{
+    // 50'000 locals, the decoder's most, of which 16'383 are forwarded by local.gets, then 150'000 local.sets
+    // of locals nothing forwards: a 1 MB body. Hostile, the forwarded locals are those whose Fibonacci hash
+    // falls in the first half of a 32'768-bucket table, which an open-addressing hash map of the forwarded
+    // locals fills into one probe run, and the set locals hash into that run, so each set's look-up of its
+    // chain walked the run: 10^9 probes. Spread, the same counts are every third local. Lowering's work does
+    // not depend on which locals a body forwards, so both take about as long, measured on the same machine
+    // (0.27 s each under ASan); the clustered hash map took 27 times as long (7.8 s against 0.29 s), and more
+    // the larger the body.
+    constexpr auto Locals = uint32_t { 50'000 };
+    constexpr auto Forwarded = uint32_t { 16'383 };
+    constexpr auto Sets = uint32_t { 150'000 };
+    auto const home = [](uint32_t local) {
+        return static_cast<uint32_t>((uint64_t { local } * 0x9E37'79B9'7F4A'7C15) >> 49U);
+    };
+    auto clustered = std::vector<uint32_t> {};
+    auto clusteredAbsent = std::vector<uint32_t> {};
+    auto spread = std::vector<uint32_t> {};
+    auto spreadAbsent = std::vector<uint32_t> {};
+    for (auto const local: std::views::iota(uint32_t { 0 }, Locals))
+    {
+        if (home(local) < 16'384)
+            (clustered.size() < Forwarded ? clustered : clusteredAbsent).push_back(local);
+        if (local % 3 == 0 && spread.size() < Forwarded)
+            spread.push_back(local);
+        else if (local % 3 == 1)
+            spreadAbsent.push_back(local);
+    }
+    REQUIRE(clustered.size() == Forwarded);
+    REQUIRE(spread.size() == Forwarded);
+    REQUIRE(clusteredAbsent.size() < spreadAbsent.size());
+    spreadAbsent.resize(clusteredAbsent.size());
+    auto const hostile = loweringTime(forwardingThenSetting(Locals, clustered, clusteredAbsent, Sets));
+    auto const control = loweringTime(forwardingThenSetting(Locals, spread, spreadAbsent, Sets));
+    INFO("hostile " << std::chrono::duration<double>(hostile).count() << " s, control "
+                    << std::chrono::duration<double>(control).count() << " s");
+    CHECK(hostile < 3 * control);
 }
 
 // The contract tests below end the process at a failed Require, so they are hidden from the unit run:

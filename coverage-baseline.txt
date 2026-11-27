@@ -273,7 +273,6 @@ src/isoline/interpreter/Numerics.cpp               100.00 75.00
 src/isoline/fastinterpreter/Code.cpp               100.00 71.05
 src/isoline/fastinterpreter/Code.hpp               100.00 -
 src/isoline/fastinterpreter/Dispatch.cpp           100.00 -
-src/isoline/fastinterpreter/IndexMap.hpp 100.00 87.50
 src/isoline/fastinterpreter/LittleEndian.hpp       100.00 -
 src/isoline/fastinterpreter/SlotCodec.cpp          100.00 82.60
 src/isoline/fastinterpreter/SlotCodec.hpp          100.00 92.85

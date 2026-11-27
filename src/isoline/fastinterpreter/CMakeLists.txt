@@ -155,7 +155,6 @@ target_sources(isoline_core
             LittleEndian.hpp
             Listing.hpp
             Lowering.hpp
-            IndexMap.hpp
             LoweringAllocator.hpp
             LoweringArena.hpp
             LoweringTable.hpp
