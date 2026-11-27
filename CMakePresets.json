@@ -249,10 +249,10 @@
             "name": "isoline-test-common",
             "hidden": true,
             "inherits": "isoline-test-base",
-            "description": "Every test but the perf label's, which asserts wall-clock latency and runs on request only",
+            "description": "Every test but the perf label's, which asserts wall-clock latency and runs on request only, and the differential label's, which replays the generated corpus (ctest -L differential)",
             "filter": {
                 "exclude": {
-                    "label": "perf"
+                    "label": "perf|differential"
                 }
             }
         },

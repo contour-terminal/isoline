@@ -47,3 +47,7 @@ if(NOT ISOLINE_QEMU_AARCH64)
                         "(Fedora: dnf install qemu-user-static-aarch64; see docs/cross-compiling.md)")
 endif()
 set(CMAKE_CROSSCOMPILING_EMULATOR "${ISOLINE_QEMU_AARCH64};-L;${ISOLINE_AARCH64_SYSROOT}")
+# The environment a test needs for the programs it starts itself: the kernel's binfmt handler runs them
+# under qemu without the emulator's -L, so qemu reads the sysroot from QEMU_LD_PREFIX instead.
+set(ISOLINE_EMULATED_CHILD_ENVIRONMENT "QEMU_LD_PREFIX=${ISOLINE_AARCH64_SYSROOT}" CACHE INTERNAL
+    "The environment of a program a test starts itself under the emulator")
