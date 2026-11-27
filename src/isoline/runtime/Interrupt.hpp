@@ -167,14 +167,34 @@ static_assert(
     }(),
     "PollSiteTable must hold one row per PollSite, at the index of its enumerator");
 
+/// Whether a store's poll observer is running (Store::poll()).
+enum class PollObservation : uint8_t
+{
+    Idle,      ///< No observer is running.
+    Observing, ///< IPollObserver::onPoll() is running: the store must not change.
+};
+
 /// Observes every poll of a store: what poll-counting tests and profilers use.
+///
+/// The observer runs in the middle of an instruction, where an executor holds the store's state in its own
+/// registers: memory 0's base and bound, a table's view, the step countdown. So it must not change the store,
+/// and that is a checked contract, not advice: while onPoll() runs, every entry point that changes the store
+/// Requires that no observer is running (PollObservation::Idle), and a violation ends the process. The
+/// entry points, an exhaustive list of runtime::Store's (api::Store reaches the store only through them):
+///  - growing: growMemory(), growTable();
+///  - adding: internType(), addHostFunction(), addModuleFunction(), addTable(), addMemory(), addGlobal(),
+///    addTag(), addException(), addModuleInstance(), and with them instantiation;
+///  - dropping and sweeping: releaseTrailing(), markEscaped(), the exception sweep;
+///  - executing: poll() (re-entrant), chargeFrame(), releaseFrame(), setStepsTaken(), bindDispatch(),
+///    and every invocation (InvocationScope: invoking a function re-enters the guest, which may grow).
+/// The observer may read the store and may interrupt it (Interrupter::interrupt()).
 class IPollObserver
 {
   public:
     virtual ~IPollObserver() = default;
 
-    /// Called at every poll, before the interrupt is checked. It runs on the executing thread, in the
-    /// middle of an instruction, so it must not touch the store; it may interrupt it.
+    /// Called at every poll, before the interrupt is checked, on the executing thread. It must not change
+    /// the store (the class's contract, checked).
     /// @param site Where execution polled.
     virtual void onPoll(PollSite site) noexcept = 0;
 };

@@ -603,6 +603,7 @@ class Store
     ///         would exceed maxStackValues.
     [[nodiscard]] std::expected<void, Trap> chargeFrame(uint64_t cost) noexcept
     {
+        requireUnobserved();
         Require(_budgetState == BudgetState::Settled);
         if (cost > _limits.maxStackValues - _chargedStackValues)
             return trap(TrapCode::CallStackExhausted);
@@ -616,6 +617,7 @@ class Store
     /// @param cost The cost chargeFrame() charged for the frame.
     void releaseFrame(uint64_t cost) noexcept
     {
+        requireUnobserved();
         Require(_budgetState == BudgetState::Settled);
         Require(cost <= _chargedStackValues);
         _chargedStackValues -= cost;
@@ -680,9 +682,16 @@ class Store
     ///         maxSteps steps already.
     [[nodiscard]] std::expected<void, Trap> poll(PollSite site) noexcept
     {
+        requireUnobserved();
         Require(_budgetState == BudgetState::Settled);
         if (_pollObserver != nullptr)
+        {
+            // The observer must not change the store (IPollObserver), which every changing entry point
+            // checks while this is Observing.
+            _pollObservation = PollObservation::Observing;
             _pollObserver->onPoll(site);
+            _pollObservation = PollObservation::Idle;
+        }
         if (_interrupt->state() == InterruptState::Interrupted)
             return trap(TrapCode::Interrupted);
         if (PollSiteTable[static_cast<std::size_t>(site)].charge == StepCharge::None)
@@ -844,7 +853,15 @@ class Store
 
     /// Records the steps the outermost invocation took: what PollGate::commit() writes back.
     /// @param steps Its steps, at most StoreLimits::maxSteps.
-    void setStepsTaken(uint64_t steps) noexcept { _steps = steps; }
+    void setStepsTaken(uint64_t steps) noexcept
+    {
+        requireUnobserved();
+        _steps = steps;
+    }
+
+    /// Requires that no poll observer is running: what every entry point that changes the store checks
+    /// (IPollObserver's contract).
+    void requireUnobserved() const noexcept { Require(_pollObservation == PollObservation::Idle); }
 
     /// Adds @p function and its dispatch row, whose typeId it writes.
     /// @return Its address.
@@ -894,7 +911,9 @@ class Store
     uint64_t _steps = 0;              ///< The steps the latest outermost invocation took.
     uint64_t _chargedStackValues = 0; ///< The static costs of the frames in progress.
     BudgetState _budgetState = BudgetState::Settled; ///< Who holds the steps and stack values left.
-    DispatchRows _dispatchRows;                      ///< Whether the dispatch rows are kept.
+    /// Whether the poll observer is running, which no entry point that changes the store tolerates.
+    PollObservation _pollObservation = PollObservation::Idle;
+    DispatchRows _dispatchRows; ///< Whether the dispatch rows are kept.
     std::deque<FunctionInstance> _functions;
     /// The dispatch rows' chunks, DispatchChunkRows rows each, owned; rows never move.
     std::vector<std::unique_ptr<std::array<FunctionDispatch, DispatchChunkRows>>> _dispatchChunks;

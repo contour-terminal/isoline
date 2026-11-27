@@ -246,6 +246,7 @@ Store::Store(StoreLimits limits, StoreServices services):
 
 TypeId Store::internType(binary::FuncType type)
 {
+    requireUnobserved();
     auto const named = [this](binary::ValueType const& value) {
         return !binary::isConcreteRef(value) || value.heap.typeIndex < _types.size();
     };
@@ -289,6 +290,7 @@ binary::FuncType const& Store::type(TypeId id) const
 std::expected<FuncAddr, LimitExceeded> Store::addHostFunction(binary::FuncType type,
                                                               std::shared_ptr<IHostFunction> function)
 {
+    requireUnobserved();
     Require(function != nullptr);
     if (!findType(type) && typeUnits(type) > _limits.maxTypes - used(Limit::Types))
         return std::unexpected { LimitExceeded { .limit = Limit::Types } };
@@ -306,6 +308,7 @@ FuncAddr Store::addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32
 
 FuncAddr Store::addFunction(FunctionInstance function)
 {
+    requireUnobserved();
     if (_dispatchRows == DispatchRows::Omitted)
         return append(_functions, std::move(function));
     // The chunk comes first, so that running out of memory for it adds no function without a row.
@@ -330,6 +333,7 @@ void Store::bindDispatch(FuncAddr address,
                          void const* code,
                          void const* context) noexcept
 {
+    requireUnobserved();
     Require(_dispatchRows == DispatchRows::Kept);
     Require(address < _dispatchView.rows);
     Require(!_functions[address].isHost());
@@ -341,6 +345,7 @@ void Store::bindDispatch(FuncAddr address,
 
 std::expected<TableAddr, AllocationError> Store::addTable(binary::TableType type, Ref init)
 {
+    requireUnobserved();
     if (_tables.size() >= _limits.maxTables)
         return std::unexpected { LimitExceeded { .limit = Limit::Tables } };
     auto elements = std::vector<Ref> {};
@@ -363,6 +368,7 @@ std::expected<TableAddr, AllocationError> Store::addTable(binary::TableType type
 
 std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type)
 {
+    requireUnobserved();
     Require(type.pageSizeLog2 < binary::PageSizeLog2Limit);
     if (_memories.size() >= _limits.maxMemories)
         return std::unexpected { LimitExceeded { .limit = Limit::Memories } };
@@ -410,6 +416,7 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
 
 GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
 {
+    requireUnobserved();
     // Through assign(), whose check that the value is of the type's kind is the precondition.
     auto global = GlobalInstance { .type = type, .cell = {} };
     global.assign(value);
@@ -418,6 +425,7 @@ GlobalAddr Store::addGlobal(binary::GlobalType type, Value value)
 
 std::expected<TagAddr, LimitExceeded> Store::addTag(TypeId typeId)
 {
+    requireUnobserved();
     Require(typeId < _types.size());
     if (_tags.size() >= _limits.maxTags)
         return std::unexpected { LimitExceeded { .limit = Limit::Tags } };
@@ -426,6 +434,7 @@ std::expected<TagAddr, LimitExceeded> Store::addTag(TypeId typeId)
 
 std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value> payload)
 {
+    requireUnobserved();
     Require(tag < _tags.size());
     // A host may allocate one, so its payload is checked as host results are, references included:
     // what a handler pushes is read by the tag's params, and no forged funcref or exnref may enter.
@@ -459,6 +468,7 @@ std::expected<ExnAddr, Trap> Store::addException(TagAddr tag, std::vector<Value>
 
 void Store::markEscaped(Value const& value) noexcept
 {
+    requireUnobserved();
     if (auto const address = exceptionOf(value); address && isLiveException(*address))
         _exceptions[*address].slot = ExceptionSlot::Escaped;
 }
@@ -476,6 +486,7 @@ bool Store::exceptionFits(std::size_t payloadSize) const noexcept
 
 std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
 {
+    requireUnobserved();
     using Swept = std::expected<void, Trap>;
     auto& worklist = _exceptionWorklist;
     worklist.clear();
@@ -594,6 +605,7 @@ std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
 
 uint32_t Store::addModuleInstance(ModuleInstance instance)
 {
+    requireUnobserved();
     Require(_moduleInstances.size() < _limits.maxInstances);
     // A function's frame cost comes from its validated module's frame shapes, so only an instance of
     // no code may lack one.
@@ -723,6 +735,7 @@ std::size_t Store::tagCount() const noexcept
 
 void Store::releaseTrailing(TableAddr firstTable, MemAddr firstMemory) noexcept
 {
+    requireUnobserved();
     Require(firstTable <= _tables.size() && firstMemory <= _memories.size());
     auto const tables = std::ranges::subrange { _tables.begin() + firstTable, _tables.end() };
     for (auto const& table: tables)
@@ -807,6 +820,7 @@ ModuleInstance& Store::moduleInstance(uint32_t address)
 
 std::expected<uint64_t, Refusal> Store::growMemory(MemAddr address, uint64_t deltaPages)
 {
+    requireUnobserved();
     auto& instance = memory(address);
     auto const pageBytes = binary::pageSize(instance.type);
     auto const oldPages = uint64_t { instance.bytes().size() / pageBytes };
@@ -845,6 +859,7 @@ uint64_t const* Store::memoryGenerationAddress() const noexcept
 
 std::expected<uint64_t, Refusal> Store::growTable(TableAddr address, uint64_t delta, Ref init)
 {
+    requireUnobserved();
     auto& instance = table(address);
     auto const oldSize = uint64_t { instance.elements().size() };
     auto const grown =
@@ -880,6 +895,8 @@ GrowthRecord const& RefusalScope::record() const noexcept
 InvocationScope::InvocationScope(Store& store) noexcept:
     _store { &store }, _floatEnvironment { *store._roundingMode }
 {
+    // Invoking re-enters the guest, which may grow a memory: never from a poll observer.
+    _store->requireUnobserved();
     Require(_store->checkInvocationNesting().has_value());
     // The outermost invocation's budget is fresh; nested ones share it.
     if (_store->_invocationDepth == 0)
