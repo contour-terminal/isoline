@@ -1918,12 +1918,16 @@ uint64_t loweringReservation(binary::Module const& module, uint32_t codeIndex)
 std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     validate::ValidatedModule const& module,
     LoweringConfig const& config,
-    std::shared_ptr<runtime::ICountingArena> arena)
+    std::shared_ptr<runtime::ICountingArena> arena,
+    std::pmr::memory_resource& recordMemory)
 {
     Require(arena != nullptr);
     Require(isAvailable(config.dispatch));
-    auto const chargedBefore = arena->charged();
-    auto const budget = arena->budget();
+    // The arena's owner while lowering, named before the functions it backs: whatever leaves this function,
+    // a return or a throw, destroys the functions first, which give their memory back to a live arena.
+    auto const owner = std::move(arena);
+    auto const chargedBefore = owner->charged();
+    auto const budget = owner->budget();
     auto codeIndex = NoFunction;
     auto stats = std::expected<LoweringStats, LoweringError> {};
     // Constructed within the try: a standard library may allocate bookkeeping in a container's constructor
@@ -1931,15 +1935,15 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     auto functions = std::optional<LoweringVector<LoweredFunction>> {};
     try
     {
-        functions.emplace(arena.get());
-        stats = lowerFunctions(module, *arena, *functions, codeIndex);
+        functions.emplace(owner.get());
+        stats = lowerFunctions(module, *owner, *functions, codeIndex);
     }
     catch (std::bad_alloc const&)
     {
         // The arena refused an allocation, for its budget or for the host's memory. What was allocated
         // unwinds with the throw; what is left of the reservation is returned here.
-        arena->release(arena->reserved());
-        auto const refusal = arena->lastRefusal();
+        owner->release(owner->reserved());
+        auto const refusal = owner->lastRefusal();
         Require(refusal.has_value());
         return std::unexpected(
             LoweringError { .codeIndex = codeIndex,
@@ -1950,18 +1954,19 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     if (!stats)
         return std::unexpected(stats.error());
     threadCode(*functions, config.dispatch);
-    auto const loweredBytes = arena->charged() - chargedBefore;
-    // The module's own record, and its control block, come from the global heap: never from the arena or the
+    auto const loweredBytes = owner->charged() - chargedBefore;
+    // The module's own record, and its control block, come from @p recordMemory: never from the arena or the
     // arena's upstream, which the record keeps alive and would release before its own storage is returned.
-    // Only its contents come from the arena. The global heap refuses as it does everywhere, with
-    // std::bad_alloc, which the embedding API refuses as HostMemoryExhausted.
-    return std::make_shared<LoweredModule const>(
-        std::shared_ptr<std::pmr::memory_resource> { std::move(arena) },
-        std::move(*functions),
-        config.dispatch,
-        config.mode,
-        loweredBytes,
-        *stats);
+    // Only its contents come from the arena. A refusal there throws std::bad_alloc, which the embedding API
+    // refuses as HostMemoryExhausted; the functions, still here then, return their memory to the arena,
+    // which owner keeps alive until they have.
+    return std::allocate_shared<LoweredModule const>(std::pmr::polymorphic_allocator<> { &recordMemory },
+                                                     std::shared_ptr<std::pmr::memory_resource> { owner },
+                                                     std::move(*functions),
+                                                     config.dispatch,
+                                                     config.mode,
+                                                     loweredBytes,
+                                                     *stats);
 }
 
 } // namespace isoline::fastinterpreter
