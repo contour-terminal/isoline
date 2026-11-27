@@ -318,6 +318,9 @@ class Store
 
     /// Adds a table of type.limits.min slots, each holding @p init, and charges them against
     /// StoreLimits::maxTableElements.
+    ///
+    /// Throws std::bad_alloc only when recording the table runs out of memory, and then leaves the store
+    /// unchanged: nothing recorded, nothing charged.
     /// @param type Its type.
     /// @param init What every slot starts with.
     /// @return Its address; LimitExceeded when the store holds StoreLimits::maxTables tables already or
@@ -327,6 +330,9 @@ class Store
 
     /// Adds a zeroed memory of type.limits.min pages, allocated by the store's IMemoryAllocator, and
     /// charges its bytes against StoreLimits::maxMemoryBytes.
+    ///
+    /// Throws std::bad_alloc only when recording the memory runs out of memory, and then leaves the store
+    /// unchanged: nothing recorded, nothing charged, the memory freed.
     ///
     /// Precondition (checked): type.pageSizeLog2 is below binary::PageSizeLog2Limit, so that the page
     /// size is a u64, as the decoder guarantees for every module's memory.
@@ -338,6 +344,9 @@ class Store
     [[nodiscard]] std::expected<MemAddr, AllocationError> addMemory(binary::MemoryType type);
 
     /// Adds a global.
+    ///
+    /// Throws std::bad_alloc only when recording the global runs out of memory, and then leaves the store
+    /// unchanged.
     /// @param type Its type.
     /// @param value Its initial value, of type.type.
     /// @return Its address.
