@@ -1,0 +1,4 @@
+commands 3
+0 1 wasm table-sub.0.wasm
+1 13 wasm table-sub.1.wasm
+2 24 wasm table-sub.2.wasm

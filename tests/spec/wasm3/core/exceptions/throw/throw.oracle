@@ -1,0 +1,5 @@
+commands 13
+0 3 wasm throw.0.wasm
+10 51 wasm throw.10.wasm
+11 52 wasm throw.11.wasm
+12 54 wasm throw.12.wasm

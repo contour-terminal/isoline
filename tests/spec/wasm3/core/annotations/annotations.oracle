@@ -1,0 +1,11 @@
+commands 74
+0 1 wasm annotations.0.wasm
+10 32 wasm annotations.10.wasm
+11 33 wasm annotations.11.wasm
+14 36 wasm annotations.14.wasm
+33 55 wasm annotations.33.wasm
+69 98 wasm annotations.69.wasm
+70 129 wasm annotations.70.wasm
+71 154 wasm annotations.71.wasm
+72 206 wasm annotations.72.wasm
+73 207 wasm annotations.73.wasm

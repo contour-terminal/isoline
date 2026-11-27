@@ -21,10 +21,12 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
 #include "AllocationCounter.hpp"
+#include "AmplifyingModules.hpp"
 #include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/Extern.hpp>
@@ -35,6 +37,7 @@
 #include <isoline/api/testing/RuntimeAccess.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
+#include <isoline/binary/NameSection.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
@@ -50,14 +53,22 @@ using isoline::Feature;
 using isoline::FeatureSet;
 using isoline::binary::FuncType;
 using isoline::binary::I32;
-using isoline::binary::Nullable;
 using isoline::binary::ValueType;
-using isoline::binary::testing::encodeName;
-using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::testing::AllocationLimit;
 using isoline::testing::AllocationScope;
+using isoline::testing::compactImportGroup;
+using isoline::testing::deepTypeChain;
+using isoline::testing::lyingNameCount;
+using isoline::testing::manyCatchClauses;
+using isoline::testing::manyFunctionImports;
+using isoline::testing::manyFunctions;
+using isoline::testing::manyNames;
+using isoline::testing::manyV128Literals;
+using isoline::testing::multiValueCalls;
 using isoline::testing::RefusalException;
+using isoline::testing::sparseLongNames;
+using isoline::testing::wideTags;
 using isoline::validate::testing::brIfsToWideLabel;
 using isoline::validate::testing::wideBrTables;
 
@@ -144,110 +155,10 @@ void checkEngineLoadLinear(std::vector<std::byte> const& bytes, FeatureSet featu
     CHECK(loadBytes <= budget);
 }
 
-/// A module of @p count function imports, all of one type of @p params i32 params, each from the
-/// module "" named "": four input bytes per import.
-std::vector<std::byte> manyFunctionImports(std::size_t params, uint32_t count)
-{
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType { .params = std::vector<ValueType>(params, I32), .results = {} });
-    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
-        builder.importFunction("", "", 0);
-    return builder.build();
-}
-
 /// Appends @p bytes to @p out.
 void append(std::vector<uint8_t>& out, std::vector<uint8_t> const& bytes)
 {
     out.insert(out.end(), bytes.begin(), bytes.end());
-}
-
-/// A module whose import section is one compact group (0x7E) of @p items global imports, all from
-/// one module named by @p nameBytes bytes, each item named by the empty name: one input byte each.
-std::vector<std::byte> compactImportGroup(std::size_t nameBytes, uint32_t items)
-{
-    auto payload = encodeU32(1);
-    append(payload, encodeName(std::string(nameBytes, 'm')));
-    append(payload, encodeName(""));
-    append(payload, { 0x7E, 0x03, 0x7F, 0x00 }); // shared type: global i32 (immutable)
-    append(payload, encodeU32(items));
-    payload.resize(payload.size() + items, 0x00); // every item's name: empty
-    auto builder = ModuleBuilder {};
-    builder.rawSectionBeforeCode(2, std::move(payload));
-    return builder.build();
-}
-
-/// A module of @p tags tags, all of one type of @p params i32 params: two input bytes per tag.
-std::vector<std::byte> wideTags(std::size_t params, uint32_t tags)
-{
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType { .params = std::vector<ValueType>(params, I32), .results = {} });
-    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, tags))
-        builder.tag(0);
-    return builder.build();
-}
-
-/// A module of @p count functions of type [] -> [] with empty bodies.
-std::vector<std::byte> manyFunctions(uint32_t count)
-{
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType {});
-    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
-        builder.function(0, {}, {});
-    return builder.build();
-}
-
-/// A module of one function that pushes and drops @p count v128 constants.
-std::vector<std::byte> manyV128Literals(uint32_t count)
-{
-    auto body = std::vector<uint8_t> {};
-    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
-    {
-        append(body, { 0xFD, 0x0C }); // v128.const
-        body.resize(body.size() + 16, 0x00);
-        body.push_back(0x1A); // drop
-    }
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType {}).function(0, {}, std::move(body));
-    return builder.build();
-}
-
-/// A module of one function whose try_table has @p count catch clauses, each of tag 0 to label 0.
-std::vector<std::byte> manyCatchClauses(uint32_t count)
-{
-    auto body = std::vector<uint8_t> { 0x1F, 0x40 }; // try_table, empty block type
-    append(body, encodeU32(count));
-    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count))
-        append(body, { 0x00, 0x00, 0x00 }); // catch tag 0, label 0
-    body.push_back(0x0B);                   // end
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType {}).tag(0).function(0, {}, std::move(body));
-    return builder.build();
-}
-
-/// A module of @p depth types, each taking a nullable reference to the one before it.
-std::vector<std::byte> deepTypeChain(uint32_t depth)
-{
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType {});
-    for (auto const index: std::views::iota(uint32_t { 1 }, depth))
-        builder.type(
-            FuncType { .params = { isoline::binary::concreteRef(index - 1, Nullable::Yes) }, .results = {} });
-    return builder.build();
-}
-
-/// A module of a function $f of type [] -> [i32 x 1000], and a function [] -> [] whose body is
-/// @p calls calls of $f: two input bytes per call, each pushing a thousand operands.
-std::vector<std::byte> multiValueCalls(uint32_t calls)
-{
-    auto body = std::vector<uint8_t> {};
-    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, calls))
-        append(body, { 0x10, 0x00 }); // call $f
-    auto builder = ModuleBuilder {};
-    builder.type(FuncType { .params = {}, .results = std::vector<ValueType>(1000, I32) })
-        .type(FuncType {})
-        .function(0, {}, { 0x00 })
-        .function(1, {}, std::move(body));
-    return builder.build();
 }
 
 } // namespace
@@ -708,4 +619,97 @@ TEST_CASE("MemoryBounds.throwLoopReclaimsItsPayloads")
     CAPTURE(peak, budget);
     CHECK(peak <= budget);
     CHECK(store.liveExceptions() <= MaxExceptions);
+}
+
+namespace
+{
+
+/// The bytes decoding a name section, and writing it again, may hold per byte of its payload.
+///
+/// Measured under Clang/libstdc++ with ASan, the densest payload is manyNames: about 23 bytes per byte (a
+/// two-byte entry becomes a 40-byte NameAssoc or a 32-byte IndirectNameMap, and a vector holds up to
+/// twice what it uses). Long names cost about one byte per byte. The bound leaves room for larger
+/// standard library types, and stays below what reserving a claimed count would hold (40 bytes per
+/// byte of lyingNameCount) and far below storage addressed by index (gigabytes for sparseLongNames).
+constexpr auto BytesPerNameSectionByte = std::size_t { 64 };
+
+/// Decodes the name section of @p bytes, and writes it again, and checks that neither held more than
+/// BytesPerNameSectionByte per byte of its payload.
+/// @return The names.
+isoline::binary::NameSection checkNameCodecLinear(std::vector<std::byte> const& bytes)
+{
+    auto const module = isoline::binary::decodeModule(bytes, FeatureSet::wasm3());
+    REQUIRE(module.has_value());
+    REQUIRE(module->customs.size() == 1);
+    auto const& payload = module->customs[0].bytes;
+    auto const budget = (BytesPerNameSectionByte * payload.size()) + FixedBytes;
+
+    // The budget is enforced, not only measured: a codec that would hold more is refused the
+    // allocation that crosses it (bad_alloc, which fails the test) before the host commits it.
+    auto names = std::expected<isoline::binary::NameSection, isoline::binary::DecodeError> {};
+    auto reencoded = std::vector<std::byte> {};
+    auto codecBytes = std::size_t { 0 };
+    {
+        auto const scope = AllocationScope { budget };
+        names = isoline::binary::decodeNameSection(payload);
+        if (names)
+            reencoded = isoline::binary::encodeNameSection(*names);
+        codecBytes = scope.peakBytes();
+    }
+    CAPTURE(payload.size(), budget, codecBytes);
+    REQUIRE(names.has_value());
+    CHECK(codecBytes <= budget);
+    CHECK(reencoded == payload);
+    return std::move(*names);
+}
+
+} // namespace
+
+TEST_CASE("MemoryBounds.nameSectionIsLinear")
+{
+    // 20 000 empty function names and as many empty local maps, two to four bytes each.
+    auto const names = checkNameCodecLinear(manyNames(20'000));
+    CHECK(names.direct[static_cast<std::size_t>(isoline::binary::NameKind::Function)].size() == 20'000);
+    CHECK(names.indirect[static_cast<std::size_t>(isoline::binary::NameKind::Local)].size() == 20'000);
+}
+
+TEST_CASE("MemoryBounds.sparseNamesAreNotAddressedByIndex")
+{
+    // 2000 functions and locals named by 256-byte names at indices up to 2^32 - 1: storage addressed
+    // by index would ask for about 160 GiB at once, and a copy per name of what came before for
+    // megabytes per name; the budgeted scope refuses either at the first allocation past 64 MiB.
+    auto const names = checkNameCodecLinear(sparseLongNames(2000, 256));
+    auto const& functions = names.direct[static_cast<std::size_t>(isoline::binary::NameKind::Function)];
+    REQUIRE(functions.size() == 2000);
+    CHECK(functions.back().index > 4'290'000'000U);
+}
+
+TEST_CASE("MemoryBounds.nameCountsAreNotTrusted")
+{
+    // A count of 1 MiB entries in 1 MiB of bytes that fail at the first index: nothing is reserved for
+    // the entries the count claims.
+    auto const bytes = lyingNameCount(1024 * 1024);
+    auto const module = isoline::binary::decodeModule(bytes, FeatureSet::wasm3());
+    REQUIRE(module.has_value());
+    auto const& payload = module->customs[0].bytes;
+    auto names = std::expected<isoline::binary::NameSection, isoline::binary::DecodeError> {};
+    auto codecBytes = std::size_t { 0 };
+    {
+        auto const scope = AllocationScope { FixedBytes };
+        names = isoline::binary::decodeNameSection(payload);
+        codecBytes = scope.peakBytes();
+    }
+    REQUIRE(!names.has_value());
+    CHECK(names.error().code == isoline::binary::DecodeErrorCode::IntegerTooLarge);
+    CAPTURE(codecBytes);
+    CHECK(codecBytes <= FixedBytes);
+
+    // A count above the bytes the subsection has left is refused before anything is read.
+    // Function names: two bytes, a count of three, and one byte.
+    auto const overclaimed = std::vector<std::byte> {
+        std::byte { 0x01 }, std::byte { 0x02 }, std::byte { 0x03 }, std::byte { 0x00 }
+    };
+    auto const refused = isoline::binary::decodeNameSection(overclaimed);
+    REQUIRE(!refused.has_value());
+    CHECK(refused.error().code == isoline::binary::DecodeErrorCode::LengthOutOfBounds);
 }

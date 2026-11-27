@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// isoline_spec_runner <dir> <skips> --features <set>: runs <dir>/<name>.isotest, one imported .wast
-// file of the spec suite, against the decoder, the validator and the reference interpreter, with the
-// features of <set> on (wasm2, wasm3 or all). It fails when a command fails, and when the script
-// skips other than <skips> commands: every skip is pinned in tests/spec/files.txt, so none appears
-// unnoticed.
+// isoline_spec_runner <dir> <skips> --features <set>: runs one imported .wast file of the spec suite,
+// <dir>/<name>.wast with its oracle <dir>/<name>.oracle, against the text reader, the decoder, the validator
+// and the reference interpreter, with the features of <set> on (wasm2, wasm3 or all). It fails when a command
+// fails, when a module given as text does not encode as the oracle's binary does, and when the script skips
+// other than <skips> commands: every skip is pinned in tests/spec/files.txt, so none appears unnoticed.
+
+#include <core/Sha256.hpp>
+#include <core/Utils.hpp>
 
 #include <algorithm>
 #include <array>
@@ -32,13 +35,16 @@
 #include <variant>
 #include <vector>
 
-#include "IsotestReader.hpp"
+#include "Oracle.hpp"
+#include "Script.hpp"
 #include "SpecCheck.hpp"
 #include "SpecFeatures.hpp"
+#include "WastReader.hpp"
 #include <isoline/Features.hpp>
 #include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
+#include <isoline/binary/Encoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
@@ -50,6 +56,9 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/text/TextError.hpp>
+#include <isoline/text/TextLimits.hpp>
+#include <isoline/text/TopLevel.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
@@ -108,6 +117,53 @@ namespace
                                std::back_inserter(bytes),
                                [](char byte) { return static_cast<std::byte>(byte); });
         return bytes;
+    }
+
+    /// The stage a text error is reported at, by text::TextErrorStage: a malformed custom annotation is
+    /// what assert_malformed_custom expects, every other malformed text what assert_malformed does.
+    constexpr auto TextErrorStages = std::to_array<Stage>({
+        Stage::Decode,          // text::TextErrorStage::Syntax
+        Stage::MalformedCustom, // text::TextErrorStage::Custom
+    });
+    static_assert(TextErrorStages.size() == std::to_underlying(text::TextErrorStage::Custom) + 1U
+                      && TextErrorStages[std::to_underlying(text::TextErrorStage::Syntax)] == Stage::Decode
+                      && TextErrorStages[std::to_underlying(text::TextErrorStage::Custom)]
+                             == Stage::MalformedCustom,
+                  "TextErrorStages holds one row per TextErrorStage, at the index of its enumerator");
+
+    /// The failure of a module's text: its spec message, then where it is. A Text module's text is the
+    /// script's own, so the position is shifted to the script's; a Quote module's is that of its
+    /// concatenated strings, which have no place in the script.
+    [[nodiscard]] Failure textFailure(ModuleSource const& source, text::TextError const& error)
+    {
+        auto const stage = TextErrorStages.at(static_cast<std::size_t>(text::stageOf(error.code)));
+        auto const& at = error.position;
+        auto const where =
+            source.form == ModuleForm::Text
+                ? std::format("{}:{}",
+                              source.position.line + at.line - 1,
+                              at.line == 1 ? source.position.column + at.column - 1 : at.column)
+                : std::format("{}:{} of its quoted text", at.line, at.column);
+        return Failure { .stage = stage,
+                         .message = std::format("{} at {}", text::specMessage(error), where) };
+    }
+
+    /// The bytes of a command's module: a binary's strings, or the text compiled.
+    /// @param source The module.
+    /// @return The bytes, or the failure of malformed text.
+    [[nodiscard]] std::expected<std::vector<std::byte>, Failure> moduleBytesOf(ModuleSource const& source)
+    {
+        switch (source.form)
+        {
+            case ModuleForm::Binary: {
+                auto const bytes = std::as_bytes(std::span { source.text });
+                return std::vector<std::byte> { bytes.begin(), bytes.end() };
+            }
+            case ModuleForm::Text:
+            case ModuleForm::Quote: break;
+        }
+        return text::compileText(source.text, text::TextLimits {})
+            .transform_error([&](text::TextError const& error) { return textFailure(source, error); });
     }
 
     /// The `spectest` module every script may import from, as the spec interpreter defines it.
@@ -204,8 +260,7 @@ namespace
     class Runner
     {
       public:
-        Runner(std::filesystem::path directory, FeatureSet features):
-            _directory { std::move(directory) },
+        explicit Runner(FeatureSet features):
             _features { features },
             _store { runtime::StoreLimits {}, runtime::StoreServices { .allocator = _allocator } }
         {
@@ -250,6 +305,8 @@ namespace
                     return expectFailure(command, loadModule(command), Stage::Validate);
                 case CommandKind::AssertMalformed:
                     return expectFailure(command, loadModule(command), Stage::Decode);
+                case CommandKind::AssertMalformedCustom:
+                    return expectFailure(command, loadModule(command), Stage::MalformedCustom);
                 case CommandKind::AssertUnlinkable:
                     return expectFailure(command, instantiateCommandModule(command), Stage::Link);
                 case CommandKind::AssertException:
@@ -300,7 +357,7 @@ namespace
         /// The bytes of a command's module.
         [[nodiscard]] std::expected<std::vector<std::byte>, Failure> moduleBytes(Command const& command) const
         {
-            return readFile(_directory / command.file);
+            return moduleBytesOf(command.source);
         }
 
         /// Decodes and validates a module.
@@ -512,7 +569,6 @@ namespace
             });
         }
 
-        std::filesystem::path _directory;
         FeatureSet _features;
         runtime::HeapMemoryAllocator _allocator;
         runtime::Store _store;
@@ -523,39 +579,282 @@ namespace
         std::map<std::string, std::shared_ptr<validate::ValidatedModule const>, std::less<>> _definitions;
     };
 
-    /// Runs the script in @p directory.
+    /// The commands of a script, and the oracle its modules given as text are checked against.
+    struct Script
+    {
+        std::vector<Command> commands; ///< The commands, skips applied.
+        Oracle oracle;                 ///< The script's oracle.
+    };
+
+    /// Why a script cannot be run: it or a file it needs cannot be read (exit status 2), or the oracle
+    /// does not describe it (a Harness failure, exit status 1).
+    struct ScriptError
+    {
+        int status = 2;      ///< The exit status.
+        std::string message; ///< What is wrong.
+    };
+
+    /// Reads a text file whole.
+    [[nodiscard]] std::expected<std::string, ScriptError> readText(std::filesystem::path const& path)
+    {
+        return readFile(path)
+            .transform([](std::vector<std::byte> const& bytes) {
+                return std::string { reinterpret_cast<char const*>(bytes.data()), bytes.size() };
+            })
+            .transform_error([](Failure const& failure) {
+                return ScriptError { .status = 2, .message = failure.message };
+            });
+    }
+
+    /// The error of a script or manifest that does not parse.
+    [[nodiscard]] ScriptError parseFailure(std::filesystem::path const& path, ParseError const& error)
+    {
+        return ScriptError { .status = 2,
+                             .message = std::format("{}:{}: {}", path.string(), error.line, error.message) };
+    }
+
+    /// Reads `<name>.wast` and its oracle, which must count its commands alike and whose every entry
+    /// must fit the command it lands on (checkEntries), and marks the commands the oracle skips: they are
+    /// never compiled nor run.
+    [[nodiscard]] std::expected<Script, ScriptError> readWast(std::filesystem::path const& scriptPath)
+    {
+        auto const text = readText(scriptPath);
+        if (!text)
+            return std::unexpected { text.error() };
+        auto commands = parseWast(*text, text::TextLimits {});
+        if (!commands)
+            return std::unexpected { parseFailure(scriptPath, commands.error()) };
+        auto oraclePath = scriptPath;
+        oraclePath.replace_extension(".oracle");
+        auto const manifest = readText(oraclePath);
+        if (!manifest)
+            return std::unexpected { manifest.error() };
+        auto oracle = parseOracle(*manifest);
+        if (!oracle)
+            return std::unexpected { parseFailure(oraclePath, oracle.error()) };
+        auto const aligned = checkAlignment(*oracle, commands->size()).and_then([&] {
+            return checkEntries(*oracle, *commands);
+        });
+        if (!aligned)
+            return std::unexpected { ScriptError {
+                .status = 1,
+                .message = std::format("{}: harness failure: {}", oraclePath.string(), aligned.error()) } };
+        for (auto const& [ordinal, entry]: oracle->entries)
+        {
+            if (!entry.skip)
+                continue;
+            auto& command = commands->at(ordinal);
+            command.kind = CommandKind::Skip;
+            command.text = *entry.skip;
+        }
+        return Script { .commands = std::move(*commands), .oracle = std::move(*oracle) };
+    }
+
+    /// How a module given as text compared with the oracle's binary of it.
+    enum class ParityKind : uint8_t
+    {
+        NotCompared, ///< The command has no module given as text, or the oracle no binary of it.
+        NoEncoding,  ///< Isoline produces no encoding: the text does not compile (the command reports it).
+        Agrees,      ///< The encodings mean the same module.
+        Differs,     ///< They do not.
+    };
+
+    /// What checkParity() found.
+    struct Parity
+    {
+        ParityKind kind = ParityKind::NotCompared; ///< How the encodings compared.
+        /// Why they differ, `encoding differs from the oracle: …`; empty unless they do.
+        std::string difference {};
+        /// The first offset they differ at, as difference spells it (`0x…`); empty unless both decode.
+        std::string offset {};
+        /// `sha256:<hex>` of Isoline's encoding as compared (canonical when it decodes); empty when there
+        /// is none.
+        std::string digest {};
+    };
+
+    /// The `sha256:<hex>` digest of @p bytes, lower-case hex, as a parity divergence records it.
+    [[nodiscard]] std::string digestOf(std::span<std::byte const> bytes)
+    {
+        auto digest = std::string { "sha256:" };
+        for (auto const byte: core::Sha256::hash(bytes))
+            digest += std::format("{:02x}", static_cast<unsigned>(byte));
+        return digest;
+    }
+
+    /// Checks that a module given as text encodes as the oracle's binary does, canonically
+    /// (binary::canonicalize): encoding choices aside, the two must mean the same module. Two that do not
+    /// decode are compared byte for byte; one that decodes and one that does not differ.
+    /// @param command The command.
+    /// @param entry What the oracle says of it, if anything.
+    /// @param directory The script's directory, which holds the oracle's binaries.
+    /// @param features The features the decoder accepts.
+    /// @return How the encodings compare, or why the oracle's binary cannot be read.
+    [[nodiscard]] std::expected<Parity, std::string> checkParity(Command const& command,
+                                                                 OracleEntry const* entry,
+                                                                 std::filesystem::path const& directory,
+                                                                 FeatureSet const& features)
+    {
+        if (!entry || !entry->wasm
+            || (command.source.form != ModuleForm::Text && command.source.form != ModuleForm::Quote))
+            return Parity {};
+        auto const ours = moduleBytesOf(command.source);
+        if (!ours)
+            return Parity { .kind = ParityKind::NoEncoding };
+        auto const theirs = readFile(directory / *entry->wasm);
+        if (!theirs)
+            return std::unexpected { theirs.error().message };
+        auto const ourCanonical = binary::canonicalize(*ours, features);
+        auto const theirCanonical = binary::canonicalize(*theirs, features);
+        auto const& left = ourCanonical ? *ourCanonical : *ours;
+        auto parity = Parity { .kind = ParityKind::Differs, .digest = digestOf(left) };
+        if (ourCanonical.has_value() != theirCanonical.has_value())
+        {
+            parity.difference = std::format(
+                "encoding differs from the oracle: {} does not decode ({})",
+                ourCanonical ? "the oracle's" : "Isoline's",
+                binary::specMessage(ourCanonical ? theirCanonical.error() : ourCanonical.error()));
+            return parity;
+        }
+        auto const& right = theirCanonical ? *theirCanonical : *theirs;
+        auto const [differs, _] = std::ranges::mismatch(left, right);
+        if (differs == left.end() && left.size() == right.size())
+            return Parity { .kind = ParityKind::Agrees };
+        parity.offset = std::format("{:#x}", static_cast<std::size_t>(differs - left.begin()));
+        parity.difference = std::format("encoding differs from the oracle: {}", parity.offset);
+        return parity;
+    }
+
+    /// Holds a parity check to what the oracle records. Where it records no parity divergence, the
+    /// encodings must agree. Where it records one, `0x<offset> sha256:<hex> <reason>`, they must differ
+    /// first at exactly that offset, and Isoline's encoding must have exactly that digest: a divergence
+    /// that no longer occurs or moves fails, and so does any later change to Isoline's encoding, so the
+    /// record cannot go stale. A second difference already present behind the first when the row was
+    /// recorded is not seen here: whoever records the row checks there is none.
+    /// @param parity The parity check's result (checkParity).
+    /// @param entry What the oracle says of the command, if anything.
+    /// @return Nothing when the check agrees with the record, else why not.
+    [[nodiscard]] std::expected<void, std::string> holdToRecord(
+        std::expected<Parity, std::string> const& parity, OracleEntry const* entry)
+    {
+        if (!parity)
+            return std::unexpected { parity.error() };
+        if (!entry || !entry->parity)
+        {
+            if (parity->kind == ParityKind::Differs)
+                return std::unexpected { parity->difference };
+            return {};
+        }
+        auto const record = std::string_view { *entry->parity };
+        auto const offset = record.substr(0, record.find(' '));
+        auto const digest =
+            record.substr(offset.size() + 1, record.find(' ', offset.size() + 1) - offset.size() - 1);
+        switch (parity->kind)
+        {
+            case ParityKind::NotCompared:
+                return std::unexpected { std::format(
+                    "the recorded parity divergence at {} is not compared: the command has no module given "
+                    "as text with an oracle binary",
+                    offset) };
+            case ParityKind::NoEncoding:
+                return std::unexpected { std::format(
+                    "the recorded parity divergence at {} cannot be checked: Isoline produces no encoding",
+                    offset) };
+            case ParityKind::Agrees:
+                return std::unexpected { std::format(
+                    "the recorded parity divergence at {} does not occur: the encodings agree", offset) };
+            case ParityKind::Differs: break;
+        }
+        if (parity->offset != offset)
+            return std::unexpected { std::format(
+                "expected the recorded parity divergence at {}, got: {}", offset, parity->difference) };
+        if (parity->digest != digest)
+            return std::unexpected { std::format("the recorded parity divergence at {} is stale: Isoline's "
+                                                 "encoding is now {}, not the recorded {}",
+                                                 offset,
+                                                 parity->digest,
+                                                 digest) };
+        return {};
+    }
+
+    /// The text stage an assertion on malformed text expects: a custom annotation's for
+    /// assert_malformed_custom, any other for assert_malformed.
+    [[nodiscard]] constexpr text::TextErrorStage textStageOf(CommandKind kind) noexcept
+    {
+        return kind == CommandKind::AssertMalformedCustom ? text::TextErrorStage::Custom
+                                                          : text::TextErrorStage::Syntax;
+    }
+
+    /// Checks an expected divergence: an assert_malformed's or assert_malformed_custom's module text must
+    /// fail to compile, at the stage the assertion expects, with exactly the message the oracle records
+    /// for Isoline, its position aside. It stands in for the assertion, whose message the reference's is.
+    /// @param command The assertion, which checkEntries() found to carry a module given as text.
+    /// @param message Isoline's message, as the oracle records it.
+    /// @return Nothing, or why Isoline's error is not the one recorded.
+    [[nodiscard]] std::expected<void, std::string> checkDivergence(Command const& command,
+                                                                   std::string_view message)
+    {
+        auto const compiled = text::compileText(command.source.text, text::TextLimits {});
+        if (compiled)
+            return std::unexpected { std::format(
+                "expected the recorded divergence '{}', but the text compiles", message) };
+        auto const actual = text::specMessage(compiled.error());
+        if (text::stageOf(compiled.error().code) != textStageOf(command.kind) || actual != message)
+            return std::unexpected { std::format(
+                "expected the recorded divergence '{}' ({} stage), got '{}'",
+                message,
+                stageName(TextErrorStages.at(static_cast<std::size_t>(textStageOf(command.kind)))),
+                actual) };
+        return {};
+    }
+
+    /// Runs the script in @p directory: `<name>.wast` against `<name>.oracle`.
     /// @param directory The directory of one imported .wast file.
-    /// @param expectedSkips How many of its commands are skip lines.
+    /// @param expectedSkips How many of its commands are skipped.
     /// @param features The features the decoder and the validator accept.
-    /// @return 0 when every command passed and exactly @p expectedSkips were skipped, 1 when not,
-    ///         and 2 when the script cannot be read.
+    /// @return 0 when every command passed and exactly @p expectedSkips were skipped, 1 when not or when
+    ///         the oracle does not describe the script, and 2 when a file cannot be read.
     [[nodiscard]] int runDirectory(std::filesystem::path directory,
                                    std::size_t expectedSkips,
                                    FeatureSet features)
     {
         if (!directory.has_filename())
             directory = directory.parent_path();
-        auto const scriptPath = directory / (directory.filename().string() + ".isotest");
-        auto const bytes = readFile(scriptPath);
-        if (!bytes)
+        auto const scriptPath = directory / (directory.filename().string() + ".wast");
+        auto const script = readWast(scriptPath);
+        if (!script)
         {
-            std::cerr << bytes.error().message << '\n';
-            return 2;
-        }
-        auto const text = std::string { reinterpret_cast<char const*>(bytes->data()), bytes->size() };
-        auto const commands = parseIsotest(text);
-        if (!commands)
-        {
-            std::cerr << std::format(
-                "{}:{}: {}\n", scriptPath.string(), commands.error().line, commands.error().message);
-            return 2;
+            (script.error().status == 2 ? std::cerr : std::cout) << script.error().message << '\n';
+            return script.error().status;
         }
 
-        auto runner = Runner { directory, features };
+        auto runner = Runner { features };
         auto counts = std::array<std::size_t, 3> {};
         auto const location = scriptPath.string();
-        for (auto const& command: *commands)
-            ++counts.at(static_cast<std::size_t>(runner.run(command, location)));
+        for (auto const [ordinal, command]: core::views::enumerate(script->commands))
+        {
+            auto const entry = script->oracle.entries.find(ordinal);
+            auto const* const oracleEntry = entry == script->oracle.entries.end() ? nullptr : &entry->second;
+            auto const parity =
+                command.kind == CommandKind::Skip
+                    ? std::expected<void, std::string> {}
+                    : holdToRecord(checkParity(command, oracleEntry, directory, features), oracleEntry);
+            if (!parity)
+                std::cout << std::format("{}:{}: {}\n", location, command.line, parity.error());
+            // A command the oracle records a divergence for is checked against it instead of run.
+            auto const* const divergence =
+                oracleEntry && oracleEntry->message ? &*oracleEntry->message : nullptr;
+            auto verdict = Verdict::Skipped;
+            if (divergence)
+            {
+                auto const diverged = checkDivergence(command, *divergence);
+                if (!diverged)
+                    std::cout << std::format("{}:{}: {}\n", location, command.line, diverged.error());
+                verdict = diverged ? Verdict::Passed : Verdict::Failed;
+            }
+            else
+                verdict = runner.run(command, location);
+            ++counts.at(static_cast<std::size_t>(parity ? verdict : Verdict::Failed));
+        }
         std::cout << std::format("passed {}, failed {}, skipped {}\n",
                                  counts[static_cast<std::size_t>(Verdict::Passed)],
                                  counts[static_cast<std::size_t>(Verdict::Failed)],

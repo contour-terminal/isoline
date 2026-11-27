@@ -59,6 +59,7 @@ namespace
         auto& current = counts();
         current.liveBytes += size;
         current.peakBytes = std::max(current.peakBytes, current.liveBytes);
+        current.allocatedBytes += size;
         return block + HeaderBytes;
     }
 

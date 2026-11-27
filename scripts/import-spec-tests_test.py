@@ -1,8 +1,10 @@
 #!/usr/bin/env -S python3 -I
 # SPDX-License-Identifier: Apache-2.0
-"""Self-test of import-spec-tests.py: which commands become skip lines, and which fail the import."""
+"""Self-test of import-spec-tests.py: which commands become oracle entries, skips among them, and which fail
+the import."""
 
 import importlib.util
+import json
 import pathlib
 import sys
 import tempfile
@@ -27,25 +29,9 @@ def hexText(token):
     return bytes.fromhex(token).decode("utf-8")
 
 
-def accepted(filename):
-    """The cut of a fixture whose every module is valid: it accepts them all."""
-    return None
-
-
-def lineOf(command, source="x.wast", validate=accepted):
-    """The line of one command, translated as the first of its file."""
-    return importer.Translator(source, lambda filename: [], validate).lineOf(command)
-
-
-def skipReason(line):
-    kind, reason = line.split(" ")
-    assert kind == "skip", line
-    return hexText(reason)
-
-
-def module(line, name=None, text=False, filename=None):
-    command = {"type": "module", "line": line, "module_type": "text" if text else "binary",
-               "filename": filename or f"m.{line}.{'wat' if text else 'wasm'}"}
+def module(line, name=None, filename=None):
+    """A JSON command of a module, given as bytes or encoded by wasm-tools from text."""
+    command = {"type": "module", "line": line, "module_type": "binary", "filename": filename or f"m.{line}.wasm"}
     if name is not None:
         command["name"] = name
     return command
@@ -61,204 +47,112 @@ def invoke(line, module=None, kind="assert_return"):
     return command
 
 
-class TranslateTest(unittest.TestCase):
-    def test_moduleDefinition(self):
-        self.assertEqual(importer.translate({"type": "module_definition", "line": 3, "name": "M",
-                                             "filename": "x.0.wasm", "module_type": "binary"}),
-                         ["module_definition", "x.0.wasm", "4d"])
-        self.assertEqual(importer.translate({"type": "module_definition", "line": 3, "filename": "x.0.wasm",
-                                             "module_type": "binary"}),
-                         ["module_definition", "x.0.wasm"])
-
-    def test_moduleInstance(self):
-        self.assertEqual(importer.translate({"type": "module_instance", "line": 10, "instance": "I1", "module": "M"}),
-                         ["module_instance", "4931", "4d"])
-        self.assertEqual(importer.translate({"type": "module_instance", "line": 10, "module": "M"}),
-                         ["module_instance", "-", "4d"])
-
-    def test_assertException(self):
-        command = {"type": "assert_exception", "line": 39,
-                   "action": {"type": "invoke", "field": "throw-if", "args": [{"type": "i32", "value": "10"}]}}
-        self.assertEqual(importer.translate(command),
-                         ["assert_exception", "invoke", "7468726f772d6966", "-", "i32:a", "->"])
-
-    def test_assertInvalidCustom(self):
-        command = {"type": "assert_invalid_custom", "line": 86, "filename": "x.3.wasm", "module_type": "binary",
-                   "text": "bad"}
-        self.assertEqual(importer.translate(command), ["assert_invalid_custom", "x.3.wasm", "626164"])
-
-    def test_vectorOfIntegerLanes(self):
-        lanes = [str(index) for index in range(16)]
-        lanes[15] = "-1"  # a signed lane is its bits
-        self.assertEqual(importer.valueToken({"type": "v128", "lane_type": "i8", "value": lanes}),
-                         "v128:ff0e0d0c0b0a09080706050403020100")
-        self.assertEqual(importer.valueToken({"type": "v128", "lane_type": "i64", "value": ["1", "-2"]}),
-                         "v128:fffffffffffffffe0000000000000001")
-
-    def test_vectorOfFloatLanes(self):
-        exact = {"type": "v128", "lane_type": "f32", "value": ["1065353216", "0", "0", "2143289344"]}
-        self.assertEqual(importer.valueToken(exact), "v128:7fc0000000000000000000003f800000")
-        withNan = {"type": "v128", "lane_type": "f32", "value": ["nan:canonical", "1065353216", "nan:arithmetic", "0"]}
-        self.assertEqual(importer.valueToken(withNan), "v128:f32x4:nan:canonical,3f800000,nan:arithmetic,0")
-        wide = {"type": "v128", "lane_type": "f64", "value": ["-9223372036854775808", "nan:canonical"]}
-        self.assertEqual(importer.valueToken(wide), "v128:f64x2:8000000000000000,nan:canonical")
-
-    def test_aVectorOfTheWrongLaneCountFails(self):
-        with self.assertRaises(importer.Unsupported):
-            importer.valueToken({"type": "v128", "lane_type": "i32", "value": ["0", "0"]})
-
-    def test_either(self):
-        value = {"type": "either", "values": [{"type": "i32", "value": "1"}, {"type": "i32", "value": "2"}]}
-        self.assertEqual(importer.valueToken(value), "either(i32:1;i32:2)")
-        nested = {"type": "either", "values": [value]}
-        with self.assertRaises(importer.Unsupported):
-            importer.valueToken(nested)
-
-    def test_nullOfAnyHeap(self):
-        self.assertEqual(importer.valueToken({"type": "refnull"}), "ref.null")
-
-    def test_exceptionReferencesAreUnsupported(self):
-        # No imported file has an exnref value yet; one must fail the import, not vanish.
-        with self.assertRaises(importer.Unsupported):
-            importer.valueToken({"type": "exnref", "value": "null"})
-        with self.assertRaises(importer.Unsupported):
-            importer.valueToken({"type": "externref"})  # any externref is GC's
+def register(line, name, module=None):
+    command = {"type": "register", "line": line, "as": name}
+    if module is not None:
+        command["name"] = module
+    return command
 
 
-class LineOfTest(unittest.TestCase):
-    def test_textAssertionsBecomeSkips(self):
-        for kind in ("assert_malformed", "assert_invalid", "assert_malformed_custom"):
-            with self.subTest(kind=kind):
-                command = {"type": kind, "line": 7, "module_type": "text", "filename": "m.wat", "text": "bad"}
-                line, isSkip = lineOf(command)
-                self.assertTrue(isSkip)
-                self.assertEqual(skipReason(line), f"{kind} of a text module (wast line 7)")
+GC_MESSAGE = "rec group usage requires `gc` proposal to be enabled"
 
-    def test_binaryAssertMalformedIsKept(self):
-        command = {"type": "assert_malformed", "line": 7, "module_type": "binary", "filename": "m.wasm",
-                   "text": "magic header not detected"}
-        line, isSkip = lineOf(command, validate=lambda filename: "magic header not detected")
-        self.assertFalse(isSkip)
-        self.assertTrue(line.startswith("assert_malformed m.wasm "))
 
-    def test_otherTextAssertionsFailTheImport(self):
-        for kind in ("assert_unlinkable", "assert_uninstantiable", "assert_invalid_custom"):
-            with self.subTest(kind=kind), self.assertRaises(SystemExit) as failure:
-                lineOf({"type": kind, "line": 3, "module_type": "text", "filename": "m.wat", "text": "type mismatch"})
-            self.assertIn("x.wast:3", str(failure.exception.code))
+def skipsOf(commands, cut, imports=None):
+    """The skip reason of each of commands, None for one that is kept: imported in order as one file whose
+    modules are given as bytes, import from the names imports maps them to, and are rejected by the cut with
+    the message cut maps them to."""
+    text, _, _ = manifest(commands, ["binary"] * len(commands), cut=cut, imports=imports)
+    reasons = [None] * len(commands)
+    for line in text.splitlines()[1:]:
+        ordinal, _, kind, value = line.split(" ")
+        if kind == "skip":
+            reasons[int(ordinal)] = hexText(value)
+    return reasons
 
-    def test_binaryAssertMalformedCustomFailsTheImport(self):
-        with self.assertRaises(SystemExit):
-            lineOf({"type": "assert_malformed_custom", "line": 3, "module_type": "binary", "filename": "m.wasm",
-                    "text": "bad"})
 
-    def test_unsupportedValueFailsTheImport(self):
-        command = {"type": "assert_return", "line": 12,
-                   "action": {"type": "invoke", "field": "f", "args": []},
-                   "expected": [{"type": "exnref", "value": "null"}]}
-        with self.assertRaises(SystemExit) as failure:
-            lineOf(command, "exn.wast")
-        self.assertIn("exn.wast:12: value type exnref", str(failure.exception.code))
+def skipped(reasons):
+    return [reason is not None for reason in reasons]
 
-    def test_unknownCommandFailsTheImport(self):
-        with self.assertRaises(SystemExit):
-            lineOf({"type": "assert_suspension", "line": 1})
+
+class PoisoningTest(unittest.TestCase):
+    """A module the cut removes is skipped, and so is every command that uses it, until a module replaces it."""
+
+    CUT = {"g.wasm": GC_MESSAGE}
+
+    def skips(self, commands, imports=None):
+        return skipsOf(commands, self.CUT, imports)
+
+    def test_theCurrentModuleIsPoisonedUntilTheNextModule(self):
+        reasons = self.skips([module(1, name="M"), module(2, filename="g.wasm"), invoke(3), invoke(4, module="M"),
+                              module(5), invoke(6)])
+        self.assertEqual(skipped(reasons), [False, True, True, False, False, False])
+        self.assertEqual(reasons[2], f"gc: {GC_MESSAGE} (root wast line 2; wast line 3)")
+
+    def test_aNamedModuleStaysPoisonedByName(self):
+        reasons = self.skips([module(1, name="T", filename="g.wasm"), module(2), invoke(3, module="T"),
+                              register(4, "t", module="T"), module(5, name="T"), invoke(6, module="T")])
+        self.assertEqual(skipped(reasons), [True, False, True, True, False, False])
+
+    def test_registrationsPoisonTheirImporters(self):
+        reasons = self.skips([module(1, filename="g.wasm"), register(2, "t"), module(3, filename="a.wasm"), invoke(4),
+                              module(5, filename="b.wasm"),
+                              {"type": "assert_unlinkable", "line": 6, "module_type": "binary", "filename": "c.wasm",
+                               "text": "unknown import"}],
+                             imports={"a.wasm": ["spectest", "t"], "b.wasm": ["spectest"], "c.wasm": ["t"]})
+        self.assertEqual(skipped(reasons), [True, True, True, True, False, True])
+        self.assertEqual(reasons[3], f"gc: {GC_MESSAGE} (root wast line 1; wast line 4)")
+
+    def test_aReRegistrationClearsTheName(self):
+        reasons = self.skips([module(1, filename="g.wasm"), register(2, "t"), module(3), register(4, "t"),
+                              module(5, filename="a.wasm")],
+                             imports={"a.wasm": ["t"]})
+        self.assertEqual(skipped(reasons), [True, True, False, False, False])
+
+    def test_definitionsAndInstances(self):
+        definition = {"type": "module_definition", "line": 1, "name": "D", "module_type": "binary",
+                      "filename": "g.wasm"}
+        reasons = self.skips([module(0), definition, invoke(2),
+                              {"type": "module_instance", "line": 3, "instance": "I", "module": "D"},
+                              invoke(4), invoke(5, module="I")])
+        # A definition is no current module: the unnamed invoke after it still uses module 0.
+        self.assertEqual(skipped(reasons), [False, True, False, True, True, True])
+        self.assertEqual(reasons[1], f"gc: {GC_MESSAGE} (wast line 1)")
+
+    def test_anAssertExceptionOfAPoisonedModule(self):
+        reasons = self.skips([module(1, filename="g.wasm"), invoke(2, kind="assert_exception")])
+        self.assertEqual(reasons, [f"gc: {GC_MESSAGE} (wast line 1)",
+                                   f"gc: {GC_MESSAGE} (root wast line 1; wast line 2)"])
+
+    def test_aBinaryDefinitionImportingAPoisonedRegistration(self):
+        definition = {"type": "module_definition", "line": 3, "name": "D", "module_type": "binary",
+                      "filename": "d.wasm"}
+        reasons = self.skips([module(1, filename="g.wasm"), register(2, "t"), definition,
+                              {"type": "module_instance", "line": 4, "instance": "I", "module": "D"},
+                              invoke(5, module="I")],
+                             imports={"d.wasm": ["t"]})
+        self.assertEqual(skipped(reasons), [True, True, True, True, True])
+        self.assertEqual(reasons[4], f"gc: {GC_MESSAGE} (root wast line 1; wast line 5)")
 
     def test_anInstanceOfTheLatestDefinitionFailsTheImport(self):
-        # The format names the definition an instance instantiates; the wast may leave it implicit.
+        # Whether a definition is poisoned is known by its name; the wast may leave it implicit.
         with self.assertRaises(SystemExit) as failure:
-            lineOf({"type": "module_instance", "line": 8, "instance": "I"})
+            self.skips([{"type": "module_instance", "line": 8, "instance": "I"}])
         self.assertIn("x.wast:8: module_instance of the latest definition", str(failure.exception.code))
 
     def test_aBadImportSectionFailsTheImport(self):
         def readImports(filename):
             return importer.importModuleNames(wasmModule((2, b"\x01\x01a")))  # truncated in the field name
 
-        translator = importer.Translator("x.wast", readImports, accepted)
-        translator.lineOf(module(1, text=True))
-        translator.lineOf({"type": "register", "line": 2, "as": "t"})
+        poisoning = importer.Poisoning("x.wast", readImports, lambda filename: self.CUT.get(filename))
+        poisoning.skipOf(module(1, filename="g.wasm"))
+        poisoning.skipOf(register(2, "t"))
         with self.assertRaises(SystemExit) as failure:
-            translator.lineOf(module(3))
+            poisoning.skipOf(module(3))
         self.assertIn("x.wast:3: a truncated LEB128 number in an import section", str(failure.exception.code))
-
-
-def translateAll(commands, imports, cut):
-    """The lines of commands, translated in order as one file whose module files import from the
-    names imports maps them to, and which the cut rejects with the message cut maps them to."""
-    translator = importer.Translator("x.wast", lambda filename: imports.get(filename, []),
-                                     lambda filename: cut.get(filename))
-    return [translator.lineOf(command) for command in commands]
-
-
-class PoisoningTest(unittest.TestCase):
-    """A text module is skipped, and so is every command that uses it, until a module replaces it."""
-
-    def lines(self, commands, imports=None):
-        return translateAll(commands, imports or {}, {})
-
-    def test_aTextModuleIsSkipped(self):
-        [(line, isSkip)] = self.lines([module(1, text=True)])
-        self.assertTrue(isSkip)
-        self.assertEqual(skipReason(line), "text: module of a text module (wast line 1)")
-
-    def test_theCurrentModuleIsPoisonedUntilTheNextModule(self):
-        results = self.lines([module(1, name="M"), module(2, text=True), invoke(3), invoke(4, module="M"),
-                              module(5), invoke(6)])
-        self.assertEqual([isSkip for _, isSkip in results], [False, True, True, False, False, False])
-        self.assertEqual(skipReason(results[2][0]), "text: module of a text module (root wast line 2; wast line 3)")
-
-    def test_aNamedTextModuleStaysPoisonedByName(self):
-        results = self.lines([module(1, name="T", text=True), module(2), invoke(3, module="T"),
-                              {"type": "register", "line": 4, "as": "t", "name": "T"},
-                              module(5, name="T"), invoke(6, module="T")])
-        self.assertEqual([isSkip for _, isSkip in results], [True, False, True, True, False, False])
-
-    def test_registrationsPoisonTheirImporters(self):
-        results = self.lines([module(1, text=True), {"type": "register", "line": 2, "as": "t"},
-                              module(3, filename="a.wasm"), invoke(4), module(5, filename="b.wasm"),
-                              {"type": "assert_unlinkable", "line": 6, "module_type": "binary", "filename": "c.wasm",
-                               "text": "unknown import"}],
-                             imports={"a.wasm": ["spectest", "t"], "b.wasm": ["spectest"], "c.wasm": ["t"]})
-        self.assertEqual([isSkip for _, isSkip in results], [True, True, True, True, False, True])
-        self.assertEqual(skipReason(results[3][0]), "text: module of a text module (root wast line 1; wast line 4)")
-
-    def test_aReRegistrationClearsTheName(self):
-        results = self.lines([module(1, text=True), {"type": "register", "line": 2, "as": "t"}, module(3),
-                              {"type": "register", "line": 4, "as": "t"}, module(5, filename="a.wasm")],
-                             imports={"a.wasm": ["t"]})
-        self.assertEqual([isSkip for _, isSkip in results], [True, True, False, False, False])
-
-    def test_definitionsAndInstances(self):
-        definition = {"type": "module_definition", "line": 1, "name": "D", "module_type": "text",
-                      "filename": "d.wat"}
-        results = self.lines([module(0), definition, invoke(2),
-                              {"type": "module_instance", "line": 3, "instance": "I", "module": "D"},
-                              invoke(4), invoke(5, module="I")])
-        # A definition is no current module: the unnamed invoke after it still uses module 0.
-        self.assertEqual([isSkip for _, isSkip in results], [False, True, False, True, True, True])
-        self.assertEqual(skipReason(results[1][0]), "text: module_definition of a text module (wast line 1)")
-
-    def test_anAssertExceptionOfAPoisonedModule(self):
-        results = self.lines([module(1, text=True), invoke(2, kind="assert_exception")])
-        self.assertEqual([isSkip for _, isSkip in results], [True, True])
-        self.assertEqual(skipReason(results[1][0]), "text: module of a text module (root wast line 1; wast line 2)")
-
-    def test_aBinaryDefinitionImportingAPoisonedRegistration(self):
-        definition = {"type": "module_definition", "line": 3, "name": "D", "module_type": "binary",
-                      "filename": "d.wasm"}
-        results = self.lines([module(1, text=True), {"type": "register", "line": 2, "as": "t"}, definition,
-                              {"type": "module_instance", "line": 4, "instance": "I", "module": "D"},
-                              invoke(5, module="I")],
-                             imports={"d.wasm": ["t"]})
-        self.assertEqual([isSkip for _, isSkip in results], [True, True, True, True, True])
-        self.assertEqual(skipReason(results[4][0]), "text: module of a text module (root wast line 1; wast line 5)")
 
 
 def assertion(kind, line, filename, text="type mismatch"):
     return {"type": kind, "line": line, "module_type": "binary", "filename": filename, "text": text}
-
-
-GC_MESSAGE = "rec group usage requires `gc` proposal to be enabled"
 
 
 # What the pinned wasm-tools 1.263.0 prints for `validate --features=<cut.features>` on modules of
@@ -289,13 +183,10 @@ class RejectionMessageTest(unittest.TestCase):
     def test_gcCausesAreCutAndOthersAbort(self):
         for stderr in (ORACLE_REC, ORACLE_LOCAL_ANYREF, ORACLE_REF_I31):
             with self.subTest(stderr=stderr):
-                [(line, isSkip)] = translateAll([module(1, filename="g.wasm")], {},
-                                                {"g.wasm": importer.rejectionMessage(stderr)})
-                self.assertTrue(isSkip)
-                self.assertTrue(skipReason(line).startswith("gc: "))
+                [reason] = skipsOf([module(1, filename="g.wasm")], {"g.wasm": importer.rejectionMessage(stderr)})
+                self.assertTrue(reason.startswith("gc: "))
         with self.assertRaises(SystemExit) as failure:
-            translateAll([module(1, filename="v.wasm")], {},
-                         {"v.wasm": importer.rejectionMessage(ORACLE_TYPE_MISMATCH)})
+            skipsOf([module(1, filename="v.wasm")], {"v.wasm": importer.rejectionMessage(ORACLE_TYPE_MISMATCH)})
         self.assertIn("not for GC: type mismatch: expected i32, found i64", str(failure.exception.code))
 
 
@@ -309,9 +200,6 @@ class CutSourcesTest(unittest.TestCase):
 class CutTest(unittest.TestCase):
     """The oracle's GC rejections become skips; any other disagreement with the suite fails the import."""
 
-    def lines(self, commands, cut, imports=None):
-        return translateAll(commands, imports or {}, cut)
-
     def test_everyGcMessageIsCut(self):
         for message in ("rec group usage requires `gc` proposal to be enabled",
                         "heap types not supported without the gc feature",
@@ -319,44 +207,39 @@ class CutTest(unittest.TestCase):
                         "gc proposal must be enabled",
                         "constant expression required: global.get of locally defined global"):
             with self.subTest(message=message):
-                [(line, isSkip)] = self.lines([module(1, filename="g.wasm")], {"g.wasm": message})
-                self.assertTrue(isSkip)
-                self.assertEqual(skipReason(line), f"gc: {message} (wast line 1)")
+                self.assertEqual(skipsOf([module(1, filename="g.wasm")], {"g.wasm": message}),
+                                 [f"gc: {message} (wast line 1)"])
 
     def test_aCutModulePoisonsItsUses(self):
-        results = self.lines([module(1, name="G", filename="g.wasm"), invoke(2), invoke(3, module="G"),
-                              {"type": "register", "line": 4, "as": "g", "name": "G"},
-                              module(5, filename="a.wasm"), invoke(6), module(7), invoke(8)],
-                             {"g.wasm": GC_MESSAGE}, imports={"a.wasm": ["g"]})
-        self.assertEqual([isSkip for _, isSkip in results], [True, True, True, True, True, True, False, False])
-        self.assertEqual(skipReason(results[5][0]), f"gc: {GC_MESSAGE} (root wast line 1; wast line 6)")
+        reasons = skipsOf([module(1, name="G", filename="g.wasm"), invoke(2), invoke(3, module="G"),
+                           register(4, "g", module="G"), module(5, filename="a.wasm"), invoke(6), module(7), invoke(8)],
+                          {"g.wasm": GC_MESSAGE}, imports={"a.wasm": ["g"]})
+        self.assertEqual(skipped(reasons), [True, True, True, True, True, True, False, False])
+        self.assertEqual(reasons[5], f"gc: {GC_MESSAGE} (root wast line 1; wast line 6)")
 
     def test_aCutDefinitionPoisonsItsInstances(self):
         definition = {"type": "module_definition", "line": 1, "name": "D", "module_type": "binary",
                       "filename": "d.wasm"}
-        results = self.lines([definition, {"type": "module_instance", "line": 2, "instance": "I", "module": "D"},
-                              invoke(3, module="I")],
-                             {"d.wasm": GC_MESSAGE})
-        self.assertEqual([isSkip for _, isSkip in results], [True, True, True])
+        reasons = skipsOf([definition, {"type": "module_instance", "line": 2, "instance": "I", "module": "D"},
+                           invoke(3, module="I")],
+                          {"d.wasm": GC_MESSAGE})
+        self.assertEqual(skipped(reasons), [True, True, True])
 
     def test_assertionsOfGcModulesAreCut(self):
         for kind in ("assert_invalid", "assert_malformed", "assert_unlinkable", "assert_uninstantiable"):
             with self.subTest(kind=kind):
-                [(line, isSkip)] = self.lines([assertion(kind, 9, "g.wasm")], {"g.wasm": GC_MESSAGE})
-                self.assertTrue(isSkip)
-                self.assertEqual(skipReason(line), f"gc: {GC_MESSAGE} (wast line 9)")
+                self.assertEqual(skipsOf([assertion(kind, 9, "g.wasm")], {"g.wasm": GC_MESSAGE}),
+                                 [f"gc: {GC_MESSAGE} (wast line 9)"])
 
     def test_otherRejectionsOfInvalidModulesAreKept(self):
         for kind in ("assert_invalid", "assert_malformed"):
             with self.subTest(kind=kind):
-                [(line, isSkip)] = self.lines([assertion(kind, 9, "i.wasm")], {"i.wasm": "type mismatch: bad"})
-                self.assertFalse(isSkip)
-                self.assertTrue(line.startswith(f"{kind} i.wasm "))
+                self.assertEqual(skipsOf([assertion(kind, 9, "i.wasm")], {"i.wasm": "type mismatch: bad"}), [None])
 
     def test_anAcceptedInvalidModuleFailsTheImport(self):
         for kind in ("assert_invalid", "assert_malformed"):
             with self.subTest(kind=kind), self.assertRaises(SystemExit) as failure:
-                self.lines([assertion(kind, 9, "i.wasm")], {})
+                skipsOf([assertion(kind, 9, "i.wasm")], {})
             self.assertIn(f"x.wast:9: {kind}: the cut accepts a module", str(failure.exception.code))
 
     def test_otherRejectionsOfValidModulesFailTheImport(self):
@@ -364,21 +247,18 @@ class CutTest(unittest.TestCase):
                         assertion("assert_uninstantiable", 4, "v.wasm"),
                         {"type": "module_definition", "line": 4, "module_type": "binary", "filename": "v.wasm"}):
             with self.subTest(kind=command["type"]), self.assertRaises(SystemExit) as failure:
-                self.lines([command], {"v.wasm": "type mismatch: bad"})
+                skipsOf([command], {"v.wasm": "type mismatch: bad"})
             self.assertIn(f"x.wast:4: {command['type']}: the cut rejects", str(failure.exception.code))
 
     def test_aSourceWithoutTheCutKeepsEveryModule(self):
-        translator = importer.Translator("x.wast", lambda filename: [], None)
-        line, isSkip = translator.lineOf(assertion("assert_invalid", 9, "i.wasm"))
-        self.assertFalse(isSkip)
-        self.assertTrue(line.startswith("assert_invalid i.wasm "))
+        poisoning = importer.Poisoning("x.wast", lambda filename: [], None)
+        self.assertIsNone(poisoning.skipOf(assertion("assert_invalid", 9, "i.wasm")))
 
     def test_aPoisonedModuleIsNotValidated(self):
         # A module importing from a cut registration is skipped as its dependent, whatever the oracle says.
-        results = self.lines([module(1, filename="g.wasm"), {"type": "register", "line": 2, "as": "g"},
-                              module(3, filename="a.wasm")],
-                             {"g.wasm": GC_MESSAGE, "a.wasm": "unknown import"}, imports={"a.wasm": ["g"]})
-        self.assertEqual(skipReason(results[2][0]), f"gc: {GC_MESSAGE} (root wast line 1; wast line 3)")
+        reasons = skipsOf([module(1, filename="g.wasm"), register(2, "g"), module(3, filename="a.wasm")],
+                          {"g.wasm": GC_MESSAGE, "a.wasm": "unknown import"}, imports={"a.wasm": ["g"]})
+        self.assertEqual(reasons[2], f"gc: {GC_MESSAGE} (root wast line 1; wast line 3)")
 
 
 def wasmModule(*sections):
@@ -420,6 +300,309 @@ class ImportModuleNamesTest(unittest.TestCase):
                 importer.importModuleNames(wasmModule((2, imports)))
 
 
+SPEC = SCRIPT.parent.parent / "tests" / "spec"
+ORDINALS = SPEC / "ordinals"
+
+
+def forms(script):
+    return [(command.jsonType(), command.form, command.line) for command in importer.scanScript(script)]
+
+
+class ScanScriptTest(unittest.TestCase):
+    """What the JSON cannot say, read from the script: the form of each command's module."""
+
+    def test_theFormsOfModules(self):
+        script = ('(module (func))\n(module $m binary "\\00asm" "\\01\\00\\00\\00")\n(module quote "(func)")\n'
+                  "(module)\n(module $m)\n(module definition $d binary \"\")\n(module instance $i $d)\n"
+                  '(module $"a b" quote "")\n')
+        self.assertEqual(forms(script),
+                         [("module", "text", 1), ("module", "binary", 2), ("module", "quote", 3), ("module", "text", 4),
+                          ("module", "text", 5), ("module_definition", "binary", 6), ("module_instance", None, 7),
+                          ("module", "quote", 8)])
+
+    def test_theModulesOfAssertions(self):
+        script = ('(assert_trap (module (start 0)) "x")\n(assert_trap (invoke "f") "x")\n'
+                  '(assert_malformed\n  (module binary "")\n  "x")\n'
+                  '(assert_invalid (module quote "(module binary)") "x")\n'
+                  '(assert_return (get "g")) (register "r" $m)\n')
+        self.assertEqual(forms(script),
+                         [("assert_uninstantiable", "text", 1), ("assert_trap", None, 2),
+                          ("assert_malformed", "binary", 3), ("assert_invalid", "quote", 6),
+                          ("assert_return", None, 7), ("register", None, 7)])
+
+    def test_commentsStringsAndAnnotationsAreNoTokens(self):
+        script = (';; (module binary\n(; (module binary (; nested ;) ;)\n(module "\\")" binary)\n'
+                  '((@a (b) ")") module (@a) binary "")\n(module (; c ;) quote "")\n'
+                  '(assert_invalid ;; (module binary\n (module (func)) "x")\n')
+        self.assertEqual(forms(script),
+                         [("module", "text", 3), ("module", "binary", 4), ("module", "quote", 5),
+                          ("assert_invalid", "text", 6)])
+
+    def test_anInlineModuleIsOneTextModule(self):
+        self.assertEqual(forms("(func) (memory 0)\n(func (export \"f\"))\n"), [("module", "text", 1)])
+
+    def test_unbalancedScriptsAreUnsupported(self):
+        for script in ("(module", "(module))", 'module', '(module "x)', "(module (; x)", "((@a module)"):
+            with self.subTest(script=script), self.assertRaises(importer.Unsupported):
+                importer.scanScript(script)
+
+    def test_theOrdinalsFixture(self):
+        commands = json.loads((ORDINALS / "ordinals.json").read_text(encoding="utf-8"))["commands"]
+        script = (ORDINALS / "ordinals.wast").read_text(encoding="utf-8")
+        self.assertEqual(importer.moduleForms("ordinals.wast", importer.scanScript(script), commands),
+                         ["text", None, None, None, None, "text", None, "text", "quote", "binary", "text", "text",
+                          "binary", "quote", None, None, None, None, "text", "quote"])
+
+    def test_aScriptThatDisagreesWithTheJsonFailsTheImport(self):
+        commands = [{"type": "module", "line": 1}, {"type": "action", "line": 2}]
+        with self.assertRaises(SystemExit) as failure:
+            importer.moduleForms("x.wast", importer.scanScript("(module)"), commands)
+        self.assertIn("x.wast: the script reads as 1 commands, but wasm-tools counts 2", str(failure.exception.code))
+        with self.assertRaises(SystemExit) as failure:
+            importer.moduleForms("x.wast", importer.scanScript('(module)\n(get "g")'),
+                                 [commands[0], {"type": "assert_return", "line": 2}])
+        self.assertIn("x.wast:2: command 1 reads as action, but wasm-tools gives assert_return",
+                      str(failure.exception.code))
+
+
+class ListCommandsTest(unittest.TestCase):
+    def test_theOrdinalsFixtureIsWhatTheImporterLists(self):
+        # ordinals.json is `wasm-tools json-from-wast ordinals.wast`; ordinals.commands, which
+        # WastReader.ordinalsMatchWasmTools reads, is `--list-commands ordinals.wast`. `--ordinals`
+        # regenerates both.
+        commands = json.loads((ORDINALS / "ordinals.json").read_text(encoding="utf-8"))["commands"]
+        self.assertEqual(importer.listCommands(commands), (ORDINALS / "ordinals.commands").read_text(encoding="utf-8"))
+
+    def test_theOrdinalsModeWritesTheCommittedFixture(self):
+        # What `--ordinals` writes of the JSON wasm-tools gives, which ends without a newline.
+        rawJson = (ORDINALS / "ordinals.json").read_text(encoding="utf-8").rstrip("\n")
+        self.assertEqual(importer.ordinalsFixture(rawJson),
+                         {name: (ORDINALS / name).read_text(encoding="utf-8")
+                          for name in ("ordinals.json", "ordinals.commands")})
+        self.assertEqual(importer.ORDINALS, ORDINALS)
+
+
+def textModule(line, filename, kind="module", text=None):
+    """A JSON command of a module wasm-tools encoded from text."""
+    command = {"type": kind, "line": line, "filename": filename, "module_type": "binary"}
+    if text is not None:
+        command["text"] = text
+    return command
+
+
+def manifest(commands, moduleForms, cut=None, imports=None, divergences=()):
+    """The manifest, binaries and skip count of commands, the binaries the cut rejects as cut maps them."""
+    return importer.oracleManifest("x", "x.wast", commands, moduleForms,
+                                   lambda filename: (imports or {}).get(filename, []),
+                                   lambda filename: (cut or {}).get(filename), divergences)
+
+
+def hexOf(text):
+    return text.encode("utf-8").hex()
+
+
+class NativeManifestTest(unittest.TestCase):
+    def test_aCutModuleAndTheAssertReturnItPoisons(self):
+        commands = [textModule(3, "x.0.wasm"), invoke(7), textModule(9, "x.1.wasm"), invoke(10)]
+        text, binaries, skipped = manifest(commands, ["text", None, "text", None], cut={"x.0.wasm": GC_MESSAGE})
+        self.assertEqual(text, "commands 4\n"
+                               "0 3 wasm x.0.wasm\n"
+                               f"0 3 skip {hexOf(f'gc: {GC_MESSAGE} (wast line 3)')}\n"
+                               f"1 7 skip {hexOf(f'gc: {GC_MESSAGE} (root wast line 3; wast line 7)')}\n"
+                               "2 9 wasm x.2.wasm\n")
+        self.assertEqual(binaries, {"x.0.wasm": "x.0.wasm", "x.2.wasm": "x.1.wasm"})
+        self.assertEqual(skipped, 2)
+
+    def test_aQuoteModuleNamesItsBinaryFilename(self):
+        quote = {"type": "module", "line": 4, "filename": "x.3.wat", "module_type": "text",
+                 "binary_filename": "x.3.wasm"}
+        text, binaries, skipped = manifest([quote], ["quote"])
+        self.assertEqual((text, binaries, skipped), ("commands 1\n0 4 wasm x.0.wasm\n", {"x.0.wasm": "x.3.wasm"}, 0))
+        # The cut checks it, as any other binary.
+        text, _, skipped = manifest([quote], ["quote"], cut={"x.3.wasm": GC_MESSAGE})
+        self.assertIn(f"0 4 skip {hexOf(f'gc: {GC_MESSAGE} (wast line 4)')}", text)
+        self.assertEqual(skipped, 1)
+
+    def test_assertionsOfTextModulesNameTheirBinaries(self):
+        commands = [textModule(5, "x.0.wasm", "assert_invalid", "type mismatch"),
+                    textModule(8, "x.1.wasm", "assert_uninstantiable", "unreachable"),
+                    textModule(11, "x.2.wasm", "assert_invalid_custom", "bad"),
+                    {"type": "module_definition", "line": 12, "name": "d", "filename": "x.3.wasm",
+                     "module_type": "binary"}]
+        text, binaries, _ = manifest(commands, ["text"] * 4, cut={"x.0.wasm": "type mismatch: x"})
+        self.assertEqual(text, "commands 4\n0 5 wasm x.0.wasm\n1 8 wasm x.1.wasm\n2 11 wasm x.2.wasm\n"
+                               "3 12 wasm x.3.wasm\n")
+        self.assertEqual(len(binaries), 4)
+
+    def test_aMultiLineAssertUnlinkableIsKeyedByOrdinalWithTheJsonLine(self):
+        # (assert_unlinkable on line 20, its (module on 21: wasm-tools gives 21.
+        commands = [textModule(1, "x.0.wasm"), {"type": "register", "line": 2, "as": "m"},
+                    textModule(21, "x.1.wasm", "assert_unlinkable", "unknown import")]
+        text, _, _ = manifest(commands, ["text", None, "text"], imports={"x.1.wasm": ["m"]})
+        self.assertEqual(text, "commands 3\n0 1 wasm x.0.wasm\n2 21 wasm x.2.wasm\n")
+
+    def test_aModuleGivenAsBytesHasNoBinaryButIsCut(self):
+        binary = textModule(2, "x.0.wasm")
+        text, binaries, skipped = manifest([binary], ["binary"])
+        self.assertEqual((text, binaries, skipped), ("commands 1\n", {}, 0))
+        text, binaries, skipped = manifest([binary, invoke(3)], ["binary", None], cut={"x.0.wasm": GC_MESSAGE})
+        self.assertEqual(text, "commands 2\n"
+                               f"0 2 skip {hexOf(f'gc: {GC_MESSAGE} (wast line 2)')}\n"
+                               f"1 3 skip {hexOf(f'gc: {GC_MESSAGE} (root wast line 2; wast line 3)')}\n")
+        self.assertEqual((binaries, skipped), ({}, 2))
+
+    def test_malformedTextHasNoBinary(self):
+        malformed = {"type": "assert_malformed", "line": 6, "filename": "x.0.wat", "module_type": "text", "text": "x"}
+        self.assertEqual(manifest([malformed], ["quote"]), ("commands 1\n", {}, 0))
+
+    def test_aValidModuleWithoutABinaryFailsTheImport(self):
+        with self.assertRaises(SystemExit) as failure:
+            manifest([{"type": "module", "line": 6, "filename": "x.0.wat", "module_type": "text"}], ["quote"])
+        self.assertIn("x.wast:6: module: wasm-tools gives no binary", str(failure.exception.code))
+
+    def test_actionsHaveNoEntries(self):
+        # assert_trap of an action is no module command: the JSON gives assert_uninstantiable for one of a
+        # module.
+        commands = [textModule(1, "x.0.wasm"), invoke(2, kind="assert_trap"), invoke(3, kind="action")]
+        self.assertEqual(manifest(commands, ["text", None, None])[0], "commands 3\n0 1 wasm x.0.wasm\n")
+
+    def test_theCutStillFailsTheImportOnOtherRejections(self):
+        with self.assertRaises(SystemExit) as failure:
+            manifest([textModule(6, "x.0.wasm")], ["text"], cut={"x.0.wasm": "type mismatch: x"})
+        self.assertIn("x.wast:6: module: the cut rejects", str(failure.exception.code))
+
+
+def malformedText(line, text="unexpected token"):
+    return {"type": "assert_malformed", "line": line, "filename": "x.0.wat", "module_type": "text", "text": text}
+
+
+# A well-formed parity divergence's value: the offset, the digest of Isoline's encoding, the reason.
+DIGEST = "sha256:" + "0123456789abcdef" * 4
+PARITY = f"0x1b {DIGEST} one type, as the reference"
+
+
+class DivergenceTest(unittest.TestCase):
+    """The divergences divergences.txt records become entries, each checked against its command."""
+
+    COMMANDS = [textModule(3, "x.0.wasm"), malformedText(5), invoke(6), malformedText(7)]
+    FORMS = ["text", "quote", None, "text"]
+
+    def entries(self, *divergences, cut=None):
+        return manifest(self.COMMANDS, self.FORMS, cut=cut, divergences=divergences)[0]
+
+    def test_recordedDivergencesBecomeEntries(self):
+        text = self.entries(importer.Divergence(1, 5, "message", "unknown local $x"),
+                            importer.Divergence(0, 3, "parity", PARITY))
+        self.assertEqual(text, "commands 4\n0 3 wasm x.0.wasm\n"
+                               f"0 3 parity {hexOf(PARITY)}\n"
+                               f"1 5 message {hexOf('unknown local $x')}\n")
+
+    def test_divergencesThatDoNotFitFailTheImport(self):
+        for divergence, message in (
+                (importer.Divergence(4, 9, "message", "x"), "the script has 4 commands"),
+                (importer.Divergence(1, 4, "message", "x"), "the command is on line 5; the record is stale"),
+                (importer.Divergence(2, 6, "message", "x"), "is no assert_malformed of a module given as text"),
+                (importer.Divergence(0, 3, "message", "x"), "is no assert_malformed of a module given as text"),
+                (importer.Divergence(1, 5, "message", "unexpected token"), "expects that very message: it is the script's own"),
+                (importer.Divergence(1, 5, "parity", PARITY), "the command has no oracle binary"),
+                (importer.Divergence(2, 6, "parity", PARITY), "the command has no oracle binary")):
+            with self.subTest(divergence=divergence), self.assertRaises(SystemExit) as failure:
+                self.entries(divergence)
+            self.assertIn(message, str(failure.exception.code))
+
+    def test_aSecondDivergenceOfOneKindFailsTheImport(self):
+        with self.assertRaises(SystemExit) as failure:
+            self.entries(importer.Divergence(1, 5, "message", "a"), importer.Divergence(1, 5, "message", "b"))
+        self.assertIn("a second one for the command", str(failure.exception.code))
+
+    def test_aDivergenceOfASkippedCommandFailsTheImport(self):
+        with self.assertRaises(SystemExit) as failure:
+            self.entries(importer.Divergence(0, 3, "parity", PARITY), cut={"x.0.wasm": GC_MESSAGE})
+        self.assertIn("the command is skipped, so it is never checked", str(failure.exception.code))
+
+    def test_theOracleCarriesWhatIsRecorded(self):
+        divergences = [importer.Divergence(1, 5, "message", "unknown local $x"),
+                       importer.Divergence(0, 3, "parity", PARITY)]
+        self.assertEqual(importer.oracleDivergences(self.entries(*divergences)), divergences[::-1])
+        self.assertEqual(importer.oracleDivergences(self.entries()), [])
+
+
+class ReadDivergencesTest(unittest.TestCase):
+    def read(self, text):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "divergences.txt"
+            path.write_text(text, encoding="utf-8")
+            return importer.readDivergences(path)
+
+    def test_rows(self):
+        self.assertEqual(self.read(f"# comment\n\nwasm3 core/ref 0 3 parity 0x1b {DIGEST} one  type\n"
+                                   "wasm3 core/ref 7 9 message unknown local $x\nwasm3 core/if 2 4 message m\n"),
+                         {("wasm3", "core/ref"): [importer.Divergence(0, 3, "parity", f"0x1b {DIGEST} one  type"),
+                                                  importer.Divergence(7, 9, "message", "unknown local $x")],
+                          ("wasm3", "core/if"): [importer.Divergence(2, 4, "message", "m")]})
+
+    def test_malformedRowsFail(self):
+        for text in ("wasm3 core/ref 0 3 parity\n", "wasm3 core/ref x 3 message m\n", "wasm3 core/ref 0 x message m\n",
+                     "wasm3 core/ref 0 3 skip m\n", "wasm3 core/ref 0 3 parity 1b why\n",
+                     "wasm3 core/ref 0 3 parity 0x1B why\n", "wasm3 core/ref 0 3 parity 0x1b\n",
+                     # The offset as the runner prints it, then a SHA-256 of 64 lower-case hex digits, then why.
+                     "wasm3 core/ref 0 3 parity 0x1b why\n", f"wasm3 core/ref 0 3 parity 0x1B {DIGEST} why\n",
+                     f"wasm3 core/ref 0 3 parity 0x01b {DIGEST} why\n", f"wasm3 core/ref 0 3 parity 0x00 {DIGEST} why\n",
+                     f"wasm3 core/ref 0 3 parity 0x {DIGEST} why\n", f"wasm3 core/ref 0 3 parity 0x1b {DIGEST}\n",
+                     f"wasm3 core/ref 0 3 parity 0x1b {DIGEST[:-1]} why\n",
+                     f"wasm3 core/ref 0 3 parity 0x1b {DIGEST}0 why\n",
+                     f"wasm3 core/ref 0 3 parity 0x1b {DIGEST[:-1]}A why\n",
+                     f"wasm3 core/ref 0 3 parity 0x1b sha1:{DIGEST[7:]} why\n"):
+            with self.subTest(text=text), self.assertRaises(SystemExit):
+                self.read(text)
+
+    def test_aMissingFileRecordsNothing(self):
+        self.assertEqual(importer.readDivergences(pathlib.Path("/nonexistent/divergences.txt")), {})
+
+    def test_divergencesOfAnotherImportFail(self):
+        rows = [importer.Row("wasm3", "core/ref", skips=0),
+                importer.Row("wasm3", "core/gc/array", exclude="every module needs GC")]
+        importer.checkDivergenceRows({("wasm3", "core/ref"): []}, rows)
+        for key in (("wasm3", "core/gc/array"), ("wasm3", "core/gone")):
+            with self.subTest(key=key), self.assertRaises(SystemExit):
+                importer.checkDivergenceRows({key: []}, rows)
+
+    def test_offsetsWithoutLeadingZerosAreRead(self):
+        for offset in ("0x0", "0x10", "0xa0"):
+            with self.subTest(offset=offset):
+                self.assertEqual(self.read(f"wasm3 core/ref 0 3 parity {offset} {DIGEST} why\n"),
+                                 {("wasm3", "core/ref"): [importer.Divergence(0, 3, "parity", f"{offset} {DIGEST} why")]})
+
+    def test_oraclesThatDoNotCarryTheRecordFail(self):
+        rows = [importer.Row("wasm3", "core/ref", skips=0),
+                importer.Row("wasm3", "core/gc/array", exclude="every module needs GC")]
+        recorded = {("wasm3", "core/ref"): [importer.Divergence(0, 3, "parity", PARITY)]}
+        carrying = f"commands 1\n0 3 wasm ref.0.wasm\n0 3 parity {hexOf(PARITY)}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            spec = pathlib.Path(directory)
+            (spec / "wasm3" / "core" / "ref").mkdir(parents=True)
+            oracle = spec / "wasm3" / "core" / "ref" / "ref.oracle"
+            oracle.write_text(carrying, encoding="utf-8")
+            importer.checkOracleDivergences(spec, recorded, rows)
+            for manifest, divergences in (
+                    (carrying, {}),
+                    ("commands 1\n0 3 wasm ref.0.wasm\n", recorded),
+                    (carrying.replace(hexOf(PARITY), hexOf(PARITY.replace("0x1b", "0x1c"))), recorded),
+                    (carrying + f"0 3 message {hexOf('m')}\n", recorded)):
+                with self.subTest(manifest=manifest, divergences=divergences), self.assertRaises(SystemExit) as failure:
+                    oracle.write_text(manifest, encoding="utf-8")
+                    importer.checkOracleDivergences(spec, divergences, rows)
+                self.assertIn("re-import the file", str(failure.exception.code))
+
+    def test_theRepositoryRecordIsWellFormed(self):
+        # Every row names an import, and every import's .oracle carries exactly its rows.
+        rows = [row for row in importer.readFiles(SPEC / "files.txt") if row.exclude is None]
+        self.assertTrue((SPEC / importer.DIVERGENCES).is_file())
+        divergences = importer.readDivergences(SPEC / importer.DIVERGENCES)
+        importer.checkDivergenceRows(divergences, rows)
+        importer.checkOracleDivergences(SPEC, divergences, rows)
+
+
 class ReadFilesTest(unittest.TestCase):
     def read(self, text):
         with tempfile.TemporaryDirectory() as directory:
@@ -436,20 +619,24 @@ class ReadFilesTest(unittest.TestCase):
 
     def test_malformedRowsFail(self):
         for text in ("core/address 1\n", "wasm2 core/address\n", "wasm2 core/address x\n",
-                     "wasm2 core/address exclude\n"):
+                     "wasm2 core/address exclude\n", "wasm2 core/address 1 native\n",
+                     # The retired .isotest translation's token is no form any more.
+                     "wasm2 core/address 1 isotest\n"):
             with self.subTest(text=text), self.assertRaises(SystemExit):
                 self.read(text)
 
     def test_theRepositoryListIsWellFormed(self):
-        spec = SCRIPT.parent.parent / "tests" / "spec"
-        rows = importer.readFiles(spec / "files.txt")
+        # An imported row has its verbatim .wast and its .oracle, and no retired .isotest translation; an
+        # excluded row none of them.
+        rows = importer.readFiles(SPEC / "files.txt")
         self.assertTrue(rows)
         lock = (SCRIPT.parent / "tools.lock").read_text(encoding="utf-8")
         for row in rows:
             with self.subTest(source=row.source, path=row.path):
                 self.assertIn(f"source.{row.source}.commit", lock)
-                isotest = row.directory(spec) / f"{pathlib.PurePosixPath(row.path).name}.isotest"
-                self.assertEqual(isotest.is_file(), row.exclude is None)
+                stem = row.directory(SPEC) / pathlib.PurePosixPath(row.path).name
+                present = {suffix for suffix in (".isotest", ".wast", ".oracle") if stem.with_suffix(suffix).is_file()}
+                self.assertEqual(present, set() if row.exclude else {".wast", ".oracle"})
 
 
 if __name__ == "__main__":

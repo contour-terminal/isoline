@@ -1,0 +1,15 @@
+commands 47
+0 3 wasm return_call.0.wasm
+34 141 wasm return_call.34.wasm
+35 148 wasm return_call.35.wasm
+36 156 wasm return_call.36.wasm
+37 163 wasm return_call.37.wasm
+38 170 wasm return_call.38.wasm
+39 175 wasm return_call.39.wasm
+40 181 wasm return_call.40.wasm
+41 188 wasm return_call.41.wasm
+42 195 wasm return_call.42.wasm
+43 202 wasm return_call.43.wasm
+44 209 wasm return_call.44.wasm
+45 221 wasm return_call.45.wasm
+46 225 wasm return_call.46.wasm

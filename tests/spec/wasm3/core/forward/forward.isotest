@@ -1,5 +1,0 @@
-module forward.0.wasm
-assert_return invoke 6576656e - i32:d -> i32:0
-assert_return invoke 6576656e - i32:14 -> i32:1
-assert_return invoke 6f6464 - i32:d -> i32:1
-assert_return invoke 6f6464 - i32:14 -> i32:0

@@ -1,0 +1,3 @@
+commands 18
+0 3 wasm binary-compact-imports.0.wasm
+2 8 wasm binary-compact-imports.2.wasm

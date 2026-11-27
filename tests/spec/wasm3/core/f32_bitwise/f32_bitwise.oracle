@@ -1,0 +1,5 @@
+commands 364
+0 4 wasm f32_bitwise.0.wasm
+361 374 wasm f32_bitwise.361.wasm
+362 375 wasm f32_bitwise.362.wasm
+363 376 wasm f32_bitwise.363.wasm

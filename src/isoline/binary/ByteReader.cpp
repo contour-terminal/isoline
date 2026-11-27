@@ -58,37 +58,36 @@ namespace
     constexpr auto Utf8ContinuationFirst = uint8_t { 0x80 };
     constexpr auto Utf8ContinuationLast = uint8_t { 0xBF };
 
-    /// Whether @p bytes are well-formed UTF-8 as RFC 3629 defines it.
-    [[nodiscard]] bool isValidUtf8(std::span<std::byte const> bytes) noexcept
-    {
-        auto pendingContinuations = 0U;
-        auto nextFirst = uint8_t { 0 };
-        auto nextLast = uint8_t { 0 };
-        for (auto const byte: bytes)
-        {
-            auto const value = std::to_integer<uint8_t>(byte);
-            if (pendingContinuations == 0)
-            {
-                auto const row = std::ranges::find_if(Utf8LeadTable, [value](Utf8LeadRow const& candidate) {
-                    return candidate.leadFirst <= value && value <= candidate.leadLast;
-                });
-                if (row == Utf8LeadTable.end())
-                    return false;
-                pendingContinuations = row->length - 1;
-                nextFirst = row->secondFirst;
-                nextLast = row->secondLast;
-                continue;
-            }
-            if (value < nextFirst || nextLast < value)
-                return false;
-            nextFirst = Utf8ContinuationFirst;
-            nextLast = Utf8ContinuationLast;
-            --pendingContinuations;
-        }
-        return pendingContinuations == 0;
-    }
-
 } // namespace
+
+bool isValidUtf8(std::span<std::byte const> bytes) noexcept
+{
+    auto pendingContinuations = 0U;
+    auto nextFirst = uint8_t { 0 };
+    auto nextLast = uint8_t { 0 };
+    for (auto const byte: bytes)
+    {
+        auto const value = std::to_integer<uint8_t>(byte);
+        if (pendingContinuations == 0)
+        {
+            auto const row = std::ranges::find_if(Utf8LeadTable, [value](Utf8LeadRow const& candidate) {
+                return candidate.leadFirst <= value && value <= candidate.leadLast;
+            });
+            if (row == Utf8LeadTable.end())
+                return false;
+            pendingContinuations = row->length - 1;
+            nextFirst = row->secondFirst;
+            nextLast = row->secondLast;
+            continue;
+        }
+        if (value < nextFirst || nextLast < value)
+            return false;
+        nextFirst = Utf8ContinuationFirst;
+        nextLast = Utf8ContinuationLast;
+        --pendingContinuations;
+    }
+    return pendingContinuations == 0;
+}
 
 ByteReader::ByteReader(std::span<std::byte const> bytes, std::size_t baseOffset) noexcept:
     _bytes { bytes }, _baseOffset { baseOffset }

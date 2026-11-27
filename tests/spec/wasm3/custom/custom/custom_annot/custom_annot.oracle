@@ -1,0 +1,4 @@
+commands 17
+0 1 wasm custom_annot.0.wasm
+1 19 wasm custom_annot.1.wasm
+2 20 wasm custom_annot.2.wasm

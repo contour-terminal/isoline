@@ -1,0 +1,11 @@
+commands 36
+0 1 wasm func_ptrs.0.wasm
+5 32 wasm func_ptrs.5.wasm
+6 33 wasm func_ptrs.6.wasm
+7 36 wasm func_ptrs.7.wasm
+8 40 wasm func_ptrs.8.wasm
+9 44 wasm func_ptrs.9.wasm
+10 48 wasm func_ptrs.10.wasm
+11 49 wasm func_ptrs.11.wasm
+12 51 wasm func_ptrs.12.wasm
+33 93 wasm func_ptrs.33.wasm

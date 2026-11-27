@@ -1,0 +1,8 @@
+commands 2407
+0 4 wasm f64_cmp.0.wasm
+2401 2417 wasm f64_cmp.2401.wasm
+2402 2418 wasm f64_cmp.2402.wasm
+2403 2419 wasm f64_cmp.2403.wasm
+2404 2420 wasm f64_cmp.2404.wasm
+2405 2421 wasm f64_cmp.2405.wasm
+2406 2422 wasm f64_cmp.2406.wasm

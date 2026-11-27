@@ -1,0 +1,15 @@
+commands 14
+0 4 wasm data1.0.wasm
+1 14 wasm data1.1.wasm
+2 24 wasm data1.2.wasm
+3 33 wasm data1.3.wasm
+4 42 wasm data1.4.wasm
+5 61 wasm data1.5.wasm
+6 72 wasm data1.6.wasm
+7 81 wasm data1.7.wasm
+8 89 wasm data1.8.wasm
+9 99 wasm data1.9.wasm
+10 109 wasm data1.10.wasm
+11 118 wasm data1.11.wasm
+12 128 wasm data1.12.wasm
+13 137 wasm data1.13.wasm

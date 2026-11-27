@@ -1,0 +1,3 @@
+commands 30
+0 5 wasm float_memory0.0.wasm
+15 35 wasm float_memory0.15.wasm

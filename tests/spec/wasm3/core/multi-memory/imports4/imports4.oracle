@@ -1,0 +1,6 @@
+commands 16
+0 1 wasm imports4.0.wasm
+2 8 wasm imports4.2.wasm
+8 19 wasm imports4.8.wasm
+11 28 wasm imports4.11.wasm
+14 39 wasm imports4.14.wasm

@@ -1,0 +1,5 @@
+commands 4
+0 2 wasm table_copy_mixed.0.wasm
+1 20 wasm table_copy_mixed.1.wasm
+2 30 wasm table_copy_mixed.2.wasm
+3 40 wasm table_copy_mixed.3.wasm

@@ -209,9 +209,14 @@ the design is not data-driven enough yet.
 
 ### Testability of every code area
 **Every code area must be testable, and new code lands with tests.** Every `*_test.cpp` under
-`src/isoline/` is compiled into the Catch2 binary `isoline_test` (CTest label `unit`); the
+`src/isoline/` is compiled into the Catch2 binary `isoline_test` (CTest label `unit`), except those
+of `text/` and `cli/`, which link their own targets and build `isoline_text_test` and
+`isoline_cli_test` (label `unit` too); the
 official WebAssembly 3.0 spec suite and the suites of the proposals beyond it run beside it (label
 `spec`), every file of the pinned suite imported or excluded with a reason (`docs/conformance.md`).
+`isoline_spec_runner` reads each imported `.wast` script itself, with Isoline's text format, against
+the oracle manifest the importer writes beside it; its harness (`tests/spec/`) is tested by
+`isoline_spectest_test` and the self-test scripts under `tests/spec-*`. A new skip is a GC one or none.
 If something is hard to test, that is a design smell: inject the dependency and extract the
 decision, don't skip the test. Aim always to increase coverage.
 

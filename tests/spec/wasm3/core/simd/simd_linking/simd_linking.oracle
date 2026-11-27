@@ -1,0 +1,3 @@
+commands 3
+0 1 wasm simd_linking.0.wasm
+2 7 wasm simd_linking.2.wasm

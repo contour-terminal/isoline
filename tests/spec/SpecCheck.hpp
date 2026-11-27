@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 
-#include "IsotestReader.hpp"
+#include "Script.hpp"
 #include <isoline/runtime/Value.hpp>
 
 namespace isoline::spectest
@@ -25,6 +25,9 @@ enum class Stage : uint8_t
     Execute,     ///< An invocation trapped.
     Exception,   ///< An invocation threw an exception out of the function.
     Custom,      ///< A custom section was invalid; the module itself loaded.
+    /// A module's text held a malformed custom annotation, as `assert_malformed_custom` expects: the
+    /// reference interpreter tells these apart from every other malformed text (Decode).
+    MalformedCustom,
 };
 
 /// The name of @p stage, for failure reports.
@@ -47,8 +50,9 @@ using CheckResult = std::expected<void, std::string>;
 /// Exact compares bits, so a NaN must match its payload; a reference compares by kind and address,
 /// a null one by the heap it is the null of. CanonicalNan matches only the canonical NaN, and
 /// ArithmeticNan any NaN with the quiet bit set, each of either sign and of its width only. Lanes
-/// applies each lane's pattern to that lane of a v128, Either matches when one alternative does, and
-/// AnyNullRef matches the null reference of any heap.
+/// applies each lane's pattern to that lane of a v128, Either matches when one alternative does,
+/// AnyNullRef matches the null reference of any heap, and AnyFunctionRef, AnyExternRef and
+/// AnyExceptionRef any non-null reference of their kind.
 /// @param expected The expected value or pattern.
 /// @param actual The value produced.
 /// @return Whether they match.
@@ -71,12 +75,12 @@ using CheckResult = std::expected<void, std::string>;
                                        std::string_view expectedMessage,
                                        std::optional<Failure> const& actual);
 
-/// Spells @p value as an .isotest token does.
+/// Spells @p value as the runner's diagnostics do, as `i32:3` or `ref.null:func`.
 /// @param value The value.
 /// @return Its token.
 [[nodiscard]] std::string describe(runtime::Value const& value);
 
-/// Spells @p values as .isotest tokens, separated by spaces, or "(none)".
+/// Spells @p values as describe() does, separated by spaces, or "(none)".
 /// @param values The values.
 /// @return Their tokens.
 [[nodiscard]] std::string describeAll(std::span<runtime::Value const> values);

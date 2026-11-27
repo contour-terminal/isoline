@@ -1,0 +1,6 @@
+commands 107
+0 3 wasm simd_i32x4_trunc_sat_f64x2.0.wasm
+103 218 wasm simd_i32x4_trunc_sat_f64x2.103.wasm
+104 219 wasm simd_i32x4_trunc_sat_f64x2.104.wasm
+105 224 wasm simd_i32x4_trunc_sat_f64x2.105.wasm
+106 232 wasm simd_i32x4_trunc_sat_f64x2.106.wasm

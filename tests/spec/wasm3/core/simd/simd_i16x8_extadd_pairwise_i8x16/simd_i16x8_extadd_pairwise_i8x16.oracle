@@ -1,0 +1,6 @@
+commands 21
+0 4 wasm simd_i16x8_extadd_pairwise_i8x16.0.wasm
+17 47 wasm simd_i16x8_extadd_pairwise_i8x16.17.wasm
+18 48 wasm simd_i16x8_extadd_pairwise_i8x16.18.wasm
+19 53 wasm simd_i16x8_extadd_pairwise_i8x16.19.wasm
+20 61 wasm simd_i16x8_extadd_pairwise_i8x16.20.wasm

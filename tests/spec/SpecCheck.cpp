@@ -35,6 +35,7 @@ namespace
         "execute",
         "exception",
         "custom",
+        "malformed custom",
     });
 
     // A NaN is canonical when, apart from the sign, only the quiet bit is set, and arithmetic when
@@ -157,6 +158,8 @@ namespace
             case Pattern::CanonicalNan64: return "f64:nan:canonical";
             case Pattern::ArithmeticNan64: return "f64:nan:arithmetic";
             case Pattern::AnyFunctionRef: return "ref.func";
+            case Pattern::AnyExternRef: return "ref.extern";
+            case Pattern::AnyExceptionRef: return "ref.exn";
             case Pattern::AnyNullRef: return "ref.null";
             case Pattern::Lanes: return describeLanes(expected);
             case Pattern::Either: return describeEither(expected);
@@ -187,6 +190,8 @@ bool matches(ExpectedValue const& expected, Value const& actual)
             return bits && isNan(expected.pattern, *bits);
         }
         case Pattern::AnyFunctionRef: return actualRef && actualRef->kind == runtime::RefKind::Func;
+        case Pattern::AnyExternRef: return actualRef && actualRef->kind == runtime::RefKind::Extern;
+        case Pattern::AnyExceptionRef: return actualRef && actualRef->kind == runtime::RefKind::Exn;
         case Pattern::AnyNullRef: return actualRef && actualRef->kind == runtime::RefKind::Null;
         case Pattern::Lanes: return lanesMatch(expected, actual);
         case Pattern::Either:
@@ -262,5 +267,9 @@ std::string describeAll(std::span<ExpectedValue const> values)
 {
     return joined(values, describeExpected, " ");
 }
+
+// Script.hpp declares it out of line: inlined, its recursion through alternatives reads to GCC's optimizer
+// as a potential null dereference of an empty vector's data.
+bool ExpectedValue::operator==(ExpectedValue const& other) const = default;
 
 } // namespace isoline::spectest

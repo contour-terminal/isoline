@@ -127,12 +127,67 @@ Other presets: `clang-release`, `clang-coverage`, `gcc-debug`, `gcc-release`, `m
 From a Linux host, Isoline also cross-compiles for Windows (clang-cl, tests under wine) and arm64
 (clang, tests under qemu); see [docs/cross-compiling.md](docs/cross-compiling.md).
 
+## Command-line tool
+
+The build makes `isoline` (`out/<preset>/src/isoline/cli/isoline`), a thin client of the library:
+
+```sh
+isoline compile     app.wat  -o app.wasm   # a text module to a binary
+isoline disassemble app.wasm -o app.wat    # a binary module to text
+```
+
+`-` names standard input as the input and standard output as the output; `compile` refuses to
+write a binary to a terminal, and both verbs refuse an output that names their input. Options may
+come before or after the input. `--features wasm3` accepts WebAssembly 3.0 alone; the default,
+`--features all`, also accepts every proposal Isoline implements. `compile` decodes and validates what
+it compiles; `disassemble` writes any module that decodes, valid or not. A component, as text or as a
+binary, is refused until Isoline has the component model. Diagnostics go to standard error, one line
+each, as `app.wat:3:7: error: …` for text, `app.wasm: error at offset 0x1f: …` for a binary, and
+`app.wat: error: function 0, instruction 2: …` for a module that does not validate.
+
+An option's name is an option even without its dashes (`o`, `output`, `features`), so an input of
+that name follows `--`: `isoline compile -o out.wasm -- output`. A `--` ends the options, so nothing
+may follow the input after it. On Windows the tool takes its command line in UTF-16 and reads it as
+UTF-8, so a path of any characters can be named, whatever the ANSI code page.
+
+The inputs are bounded by the text format's published limits (`text::TextLimits`, see
+[docs/conformance.md](docs/conformance.md#text-format-limits)): `compile` reads at most 1 GiB of text,
+nested at most 10 000 lists deep, and refuses a module whose binary would pass 64 MiB; `disassemble`
+reads at most 64 MiB of binary and writes at most 1 GiB of text, so that what it writes reads back.
+Past a limit the run is refused, having held about the limit, never the whole input.
+
+The output is written atomically: to a new file beside it, which replaces it only once it is whole
+and on the disk, so a run that fails leaves an existing output as it was. The new file keeps the
+mode of the file it replaces. A device such as `/dev/null` is written in place. A symbolic link is
+replaced itself, by a file of the mode of the file it named, which is left untouched.
+
+The exit status says why a run failed:
+
+| Status | Refusal |
+| --- | --- |
+| 0 | none: the output was written |
+| 2 | the command line is wrong |
+| 2 | the output names the input |
+| 2 | a binary would be written to a terminal |
+| 2 | the input cannot be read |
+| 2 | the output cannot be written |
+| 2 | the host ran out of memory |
+| 3 | the tool failed unexpectedly |
+| 1 | the input is too large |
+| 1 | the text is malformed |
+| 1 | the binary is malformed |
+| 1 | the module is invalid |
+| 1 | the binary is a component |
+| 1 | the module's text would be too large |
+| 1 | a page size the text format cannot say |
+
 ## Conformance
 
 Isoline implements the WebAssembly 3.0 core language without garbage collection, plus the wide
 arithmetic, custom page sizes and compact import section proposals. It runs the official 3.0 spec
-suite and each proposal's suite; [docs/conformance.md](docs/conformance.md) pins every suite and lists
-each excluded file and skipped assertion with its reason.
+suite and each proposal's suite, every script read by Isoline's own text format: only the assertions
+about garbage collection are skipped. [docs/conformance.md](docs/conformance.md) pins every suite and
+lists each excluded file and skipped assertion with its reason.
 
 ## Contributing
 

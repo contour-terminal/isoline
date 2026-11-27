@@ -1,0 +1,9 @@
+commands 26
+0 1 wasm table_set.0.wasm
+19 55 wasm table_set.19.wasm
+20 64 wasm table_set.20.wasm
+21 73 wasm table_set.21.wasm
+22 82 wasm table_set.22.wasm
+23 91 wasm table_set.23.wasm
+24 101 wasm table_set.24.wasm
+25 112 wasm table_set.25.wasm

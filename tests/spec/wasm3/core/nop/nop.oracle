@@ -1,0 +1,6 @@
+commands 88
+0 3 wasm nop.0.wasm
+84 412 wasm nop.84.wasm
+85 416 wasm nop.85.wasm
+86 420 wasm nop.86.wasm
+87 424 wasm nop.87.wasm

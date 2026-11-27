@@ -1,0 +1,4 @@
+commands 6
+0 1 wasm linking0.0.wasm
+2 17 wasm linking0.2.wasm
+4 31 wasm linking0.4.wasm

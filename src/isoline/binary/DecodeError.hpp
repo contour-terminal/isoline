@@ -57,10 +57,12 @@ enum class DecodeErrorCode : uint8_t
     MalformedLimitsFlags,
     InvalidCustomPageSize,
     MalformedCatchClause,
+    NameSubsectionSizeMismatch,
+    NameIndexOutOfOrder,
 };
 
 /// The last DecodeErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::MalformedCatchClause;
+inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::NameIndexOutOfOrder;
 
 /// What a decode error's message appends to its row's text, from DecodeError::subject.
 enum class DecodeErrorDetail : uint8_t
@@ -163,6 +165,11 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::InvalidCustomPageSize, .specMessage = "invalid custom page size" },
     // Exception handling: a try_table catch clause whose kind byte is above 3.
     { .code = DecodeErrorCode::MalformedCatchClause, .specMessage = "malformed catch clause" },
+    // The name section (decodeNameSection), which module decoding keeps verbatim: a subsection whose
+    // contents do not fill its size, in the reference interpreter's words (`handler_name.ml`), and a
+    // name map whose indices do not increase strictly, in Isoline's.
+    { .code = DecodeErrorCode::NameSubsectionSizeMismatch, .specMessage = "name subsection size mismatch" },
+    { .code = DecodeErrorCode::NameIndexOutOfOrder, .specMessage = "name map indices out of order" },
 });
 
 static_assert(

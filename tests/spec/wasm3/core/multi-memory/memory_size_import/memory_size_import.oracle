@@ -1,0 +1,3 @@
+commands 7
+0 1 wasm memory_size_import.0.wasm
+2 7 wasm memory_size_import.2.wasm

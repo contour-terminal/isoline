@@ -12,6 +12,11 @@
 namespace isoline::binary
 {
 
+/// Whether @p bytes are well-formed UTF-8 as RFC 3629 defines it: what ByteReader::readName accepts.
+/// @param bytes The bytes to check.
+/// @return true when they are.
+[[nodiscard]] bool isValidUtf8(std::span<std::byte const> bytes) noexcept;
+
 /// A forward-only cursor over a byte buffer that reads the WebAssembly binary format's primitives.
 ///
 /// Every read either consumes what it returns or reports a DecodeError whose offset is

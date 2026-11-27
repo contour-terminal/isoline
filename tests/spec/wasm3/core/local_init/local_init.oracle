@@ -1,0 +1,7 @@
+commands 10
+0 3 wasm local_init.0.wasm
+4 26 wasm local_init.4.wasm
+5 30 wasm local_init.5.wasm
+6 40 wasm local_init.6.wasm
+7 53 wasm local_init.7.wasm
+8 66 wasm local_init.8.wasm

@@ -1,0 +1,8 @@
+commands 7
+0 5 wasm data0.0.wasm
+1 39 wasm data0.1.wasm
+2 43 wasm data0.2.wasm
+3 52 wasm data0.3.wasm
+4 57 wasm data0.4.wasm
+5 63 wasm data0.5.wasm
+6 68 wasm data0.6.wasm

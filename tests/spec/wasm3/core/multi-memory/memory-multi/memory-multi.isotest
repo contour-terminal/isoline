@@ -1,6 +1,0 @@
-module memory-multi.0.wasm
-assert_return invoke 696e697431 - -> i32:1
-assert_return invoke 696e697432 - -> i32:2
-module memory-multi.1.wasm
-assert_return invoke 66696c6c31 - -> i32:1010101
-assert_return invoke 66696c6c32 - -> i32:202

@@ -1,3 +1,6 @@
-# The imported spec suite: modules are binary, scripts are LF text on every platform.
-tests/spec/**/*.wasm binary
-tests/spec/**/*.isotest text eol=lf
+# Every text file is checked out as LF, on every platform: tests compare checked-in text byte for byte,
+# and the spec runner reports its diagnostics by line. A CRLF exception needs a reason, written beside it.
+* text=auto eol=lf
+
+# WebAssembly modules are binary.
+*.wasm binary
