@@ -105,14 +105,8 @@ using numerics::setLane;
                                         uint8_t lane,
                                         runtime::Value const& value);
 
-/// i8x16.shuffle: byte i of the result is byte lanes[i] of the 32 bytes of @p a, then @p b.
-/// Precondition (checked): every lane index is below 32, as validation ensures.
-/// @param a The first operand, bytes 0 to 15.
-/// @param b The second operand, bytes 16 to 31.
-/// @param lanes The 16 lane index immediates.
-/// @return The shuffled vector.
-[[nodiscard]] runtime::V128 shuffle(runtime::V128 a,
-                                    runtime::V128 b,
-                                    std::span<std::byte const, 16> lanes) noexcept;
+/// i8x16.shuffle: byte i of the result is byte lanes[i] of the 32 bytes of a, then b; numerics owns it, as
+/// every executor runs it.
+using numerics::shuffle;
 
 } // namespace isoline::interpreter

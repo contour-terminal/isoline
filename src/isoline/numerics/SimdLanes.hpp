@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <ranges>
+#include <span>
 #include <type_traits>
 
 #include <isoline/binary/MemoryAccess.hpp>
@@ -221,6 +222,28 @@ template <SimdLane Lane, auto Operation>
         first,
         second,
         third);
+}
+
+/// i8x16.shuffle: byte i of the result is byte lanes[i] of the 32 bytes of @p a, then @p b. Both executors
+/// run it: its 16 lane indices are an immediate no operator kernel takes.
+/// Precondition (checked): every lane index is below 32, as validation ensures.
+/// @param a The first operand, bytes 0 to 15.
+/// @param b The second operand, bytes 16 to 31.
+/// @param lanes The 16 lane index immediates.
+/// @return The shuffled vector.
+[[nodiscard]] constexpr runtime::V128 shuffle(runtime::V128 a,
+                                              runtime::V128 b,
+                                              std::span<std::byte const, 16> lanes) noexcept
+{
+    auto result = runtime::V128 {};
+    for (auto const index: std::views::iota(0U, LaneCount<uint8_t>))
+    {
+        auto const lane = std::to_integer<unsigned>(lanes[index]);
+        Require(lane < 2 * LaneCount<uint8_t>);
+        auto const& source = lane < LaneCount<uint8_t> ? a : b;
+        detail::putLane<uint8_t>(result, index, detail::laneAt<uint8_t>(source, lane % LaneCount<uint8_t>));
+    }
+    return result;
 }
 
 // --- Integer lane kernels -----------------------------------------------------------------

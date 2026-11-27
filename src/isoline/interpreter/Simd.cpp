@@ -178,18 +178,4 @@ V128 replaceLane(Opcode opcode, V128 vector, uint8_t lane, Value const& value)
     return laneEvaluatorOf<ReplaceFn>(opcode)(vector, lane, value);
 }
 
-V128 shuffle(V128 a, V128 b, std::span<std::byte const, 16> lanes) noexcept
-{
-    auto result = V128 {};
-    for (auto const index: std::views::iota(0U, numerics::LaneCount<uint8_t>))
-    {
-        auto const lane = std::to_integer<unsigned>(lanes[index]);
-        Require(lane < 2 * numerics::LaneCount<uint8_t>);
-        auto const& source = lane < numerics::LaneCount<uint8_t> ? a : b;
-        numerics::setLane<uint8_t>(
-            result, index, numerics::laneOf<uint8_t>(source, lane % numerics::LaneCount<uint8_t>));
-    }
-    return result;
-}
-
 } // namespace isoline::interpreter
