@@ -54,8 +54,7 @@ inline constexpr auto EngineRowTable = std::to_array<EngineRow>({
 /// @return Whether the row's engine can be constructed.
 [[nodiscard]] inline bool isAvailable(EngineRow const& row) noexcept
 {
-    return row.engine != ExecutionEngine::Fast
-           || std::ranges::find(availableDispatches(), row.dispatch) != availableDispatches().end();
+    return row.engine != ExecutionEngine::Fast || fastinterpreter::isAvailable(row.dispatch);
 }
 
 /// Every engine row this build runs (EngineRowTable, isAvailable()), as GENERATE(from_range(…)) takes it.

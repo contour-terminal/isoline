@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <memory_resource>
 #include <optional>
 
@@ -101,6 +102,12 @@ class CountingArena final: public ICountingArena
     ///                 the arena.
     CountingArena(uint64_t budget, std::pmr::memory_resource& upstream) noexcept;
 
+    /// An arena of @p budget bytes over @p upstream, which it keeps alive: every container of the code it
+    /// backs returns its memory there, whoever holds the code last.
+    /// @param budget The bytes it may charge at once: the module's compile budget.
+    /// @param upstream Where its memory comes from; the global heap when null.
+    CountingArena(uint64_t budget, std::shared_ptr<std::pmr::memory_resource> upstream) noexcept;
+
     [[nodiscard]] uint64_t budget() const noexcept override;
     [[nodiscard]] uint64_t charged() const noexcept override;
     [[nodiscard]] uint64_t reserved() const noexcept override;
@@ -119,6 +126,8 @@ class CountingArena final: public ICountingArena
     void charge(uint64_t bytes) noexcept;
 
     uint64_t _budget;
+    std::shared_ptr<std::pmr::memory_resource>
+        _ownedUpstream; ///< The upstream it keeps alive; null if borrowed.
     std::pmr::memory_resource* _upstream;
     uint64_t _charged = 0;
     uint64_t _reserved = 0; ///< The part of _charged reserved and not yet drawn on.

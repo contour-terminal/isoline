@@ -1095,7 +1095,7 @@ FastInterpreter::FastInterpreter(Dispatch dispatch):
 FastInterpreter::FastInterpreter(Dispatch dispatch, std::pmr::memory_resource& slotMemory):
     _dispatch { dispatch }, _slotMemory { &slotMemory }
 {
-    Require(std::ranges::find(availableDispatches(), dispatch) != availableDispatches().end());
+    Require(isAvailable(dispatch));
 }
 
 runtime::ExecutionEngine FastInterpreter::engine() const noexcept

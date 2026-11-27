@@ -17,6 +17,7 @@
 
 #include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
+#include <isoline/api/ExecutionEngines.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Store.hpp>
 #include <isoline/api/testing/Contract.hpp>
@@ -236,6 +237,7 @@ TEST_CASE("Engine.refusesOverTheCompileBudget")
     auto const refused = std::get<CompileLimitExceeded>(fast.error());
     CHECK(refused.codeIndex == 0);
     CHECK(refused.limit == 128);
+    CHECK(refused.kind == isoline::api::CompileLimit::Budget);
     CHECK(refused.requested > 0);
     CHECK(fast.error()
           == LoadError {
@@ -254,30 +256,85 @@ TEST_CASE("Engine.refusesOverTheCompileBudget")
     CHECK(lowered->code() != nullptr);
 }
 
-TEST_CASE("Engine.lowersIntoItsCodeMemory")
+namespace
 {
-    /// Refuses every allocation, as a host out of memory does.
-    class ExhaustedMemory final: public std::pmr::memory_resource
+
+/// Refuses every allocation, as a host out of memory does.
+class ExhaustedMemory final: public std::pmr::memory_resource
+{
+    void* do_allocate(std::size_t /*bytes*/, std::size_t /*alignment*/) override { throw std::bad_alloc {}; }
+    void do_deallocate(void* /*pointer*/, std::size_t /*bytes*/, std::size_t /*alignment*/) override {}
+    [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
     {
-        void* do_allocate(std::size_t /*bytes*/, std::size_t /*alignment*/) override
-        {
-            throw std::bad_alloc {};
-        }
-        void do_deallocate(void* /*pointer*/, std::size_t /*bytes*/, std::size_t /*alignment*/) override {}
-        [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
-        {
-            return this == &other;
-        }
-    };
-    // The fast engine lowers into the code memory it was given: one with nothing to give refuses the
+        return this == &other;
+    }
+};
+
+/// Passes every allocation on to the global heap, and counts those not yet returned.
+class LiveMemory final: public std::pmr::memory_resource
+{
+  public:
+    /// The allocations not yet returned.
+    [[nodiscard]] int64_t live() const noexcept { return _live; }
+
+  private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override
+    {
+        ++_live;
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+    void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override
+    {
+        --_live;
+        std::pmr::new_delete_resource()->deallocate(pointer, bytes, alignment);
+    }
+    [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
+    {
+        return this == &other;
+    }
+
+    int64_t _live = 0;
+};
+
+} // namespace
+
+TEST_CASE("Engine.lowersIntoItsLoweringMemory")
+{
+    // The fast engine lowers into the memory its configuration names: one with nothing to give refuses the
     // module as the host out of memory, which no limit lifts. The reference engine lowers nothing.
-    auto memory = ExhaustedMemory {};
     auto const bytes = pushAndDropBytes(1);
-    auto const fast = Engine { EngineConfig {}, memory }.load(bytes);
+    auto const exhausted = std::make_shared<ExhaustedMemory>();
+    auto const fast = Engine { EngineConfig { .loweringMemory = exhausted } }.load(bytes);
     REQUIRE_FALSE(fast.has_value());
     CHECK(fast.error() == LoadError { isoline::api::HostMemoryExhausted {} });
     CHECK_FALSE(isoline::api::isImplementationLimit(fast.error()));
-    CHECK(Engine { EngineConfig { .engine = ExecutionEngine::Reference }, memory }.load(bytes).has_value());
+    CHECK(Engine { EngineConfig { .engine = ExecutionEngine::Reference, .loweringMemory = exhausted } }
+              .load(bytes)
+              .has_value());
+}
+
+TEST_CASE("Engine.loweringMemoryLivesAsLongAsItsCode")
+{
+    // A store's instance keeps the code it runs, and the code the memory it was lowered into: the engine, the
+    // module and the caller's handle on the memory go first, and destroying the store last returns every
+    // allocation to a memory still alive (AddressSanitizer reports one that is not).
+    auto memory = std::make_shared<LiveMemory>();
+    auto const watched = std::weak_ptr<LiveMemory> { memory };
+    auto allocator = isoline::api::HeapMemoryAllocator {};
+    auto store = std::optional<isoline::api::Store> {};
+    {
+        auto const engine = Engine { EngineConfig { .loweringMemory = memory } };
+        auto const module = engine.load(pushAndDropBytes(4));
+        REQUIRE(module.has_value());
+        store.emplace(engine, allocator);
+        REQUIRE(store->instantiate(*module, isoline::api::Imports {}).has_value());
+    }
+    CHECK(memory->live() > 0);
+    memory.reset();
+    REQUIRE_FALSE(watched.expired());
+    CHECK(watched.lock()->live() > 0);
+    store.reset();
+    CHECK(watched.expired());
 }
 
 TEST_CASE("Engine.lowersOnceForManyStores")
@@ -422,6 +479,31 @@ TEST_CASE("Contract.Engine.fastDispatchMustBeAvailable", "[.contract]")
     auto const uncompiled = static_cast<Dispatch>(std::to_underlying(Dispatch::TailCall) + 1);
     std::ignore = Engine { EngineConfig { .engine = ExecutionEngine::Fast, .dispatch = uncompiled } };
     FAIL("SURVIVED: the fast engine accepted a dispatch this build did not compile");
+}
+
+TEST_CASE("Contract.Engine.knownEngine", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    // One past the last ExecutionEngine: no row names it.
+    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Fast) + 1);
+    std::ignore = Engine { EngineConfig { .engine = unknown } };
+    FAIL("SURVIVED: an engine of no ExecutionEngine enumerator");
+}
+
+TEST_CASE("Engine.rowsNameEveryEngine")
+{
+    namespace engines = isoline::api::engines;
+    // One past the last ExecutionEngine: no row names it, and no identity carries a dispatch for it.
+    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Fast) + 1);
+    for (auto const engine: { ExecutionEngine::Reference, ExecutionEngine::Fast })
+    {
+        REQUIRE(engines::rowOf(engine) != nullptr);
+        CHECK(engines::rowOf(engine)->engine == engine);
+        CHECK(engines::rowNamed(engines::rowOf(engine)->name) == engines::rowOf(engine));
+    }
+    CHECK(engines::rowOf(unknown) == nullptr);
+    CHECK(engines::rowNamed("jit") == nullptr);
+    CHECK_FALSE(EngineConfig { .engine = unknown }.identity().dispatch.has_value());
 }
 
 TEST_CASE("Engine.referenceIgnoresTheDispatch")

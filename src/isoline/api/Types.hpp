@@ -105,6 +105,7 @@ using binary::ValueType;
 using fastinterpreter::availableDispatches;
 using fastinterpreter::bestDispatch;
 using fastinterpreter::Dispatch;
+using fastinterpreter::isAvailable;
 
 // --- Loading ---
 using binary::DecodeError;

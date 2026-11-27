@@ -7,15 +7,24 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <memory_resource>
 #include <new>
 #include <optional>
+#include <utility>
 
 namespace isoline::runtime
 {
 
 CountingArena::CountingArena(uint64_t budget, std::pmr::memory_resource& upstream) noexcept:
     _budget { budget }, _upstream { &upstream }
+{
+}
+
+CountingArena::CountingArena(uint64_t budget, std::shared_ptr<std::pmr::memory_resource> upstream) noexcept:
+    _budget { budget },
+    _ownedUpstream { std::move(upstream) },
+    _upstream { _ownedUpstream ? _ownedUpstream.get() : std::pmr::new_delete_resource() }
 {
 }
 

@@ -42,8 +42,8 @@ auto const called = instance->call(*instance->function("run"), args, results);
    (`ExecutionEngine::Fast`), under the fastest dispatch the build compiled (`bestDispatch()`; a fast engine
    of a dispatch outside `availableDispatches()` is a programming error, checked);
    `ExecutionEngine::Reference` runs the reference interpreter instead. The fast engine's code is
-   allocated from the global heap, or from the `std::pmr::memory_resource` the second constructor takes,
-   which must outlive every module the engine loads.
+   allocated from `EngineConfig::loweringMemory`, a `std::shared_ptr<std::pmr::memory_resource>` (the
+   global heap when null), which the code keeps alive for as long as any module or instance holds it.
 2. **`Module`** is what `Engine::load()` makes of a module's bytes: decoded, validated, described
    (`imports()`, `exports()`) and, by the fast engine, lowered once (`code()`), never linked. Every store
    that instantiates it runs that one lowered code. A module loads whatever it imports. It carries the
@@ -293,10 +293,20 @@ builds with MSVC, and every other standard library, refuse as described; the mem
 ## Errors
 
 `Engine::load()` fails with a `LoadError`: `ModuleTooLarge` (before a byte is decoded),
-`HostMemoryExhausted`, a `DecodeError`, a `ValidationError`, or `CompileLimitExceeded` when the fast engine
-would hold more than `LoadLimits::maxCompileBytes` (256 MiB by default) at once to lower it. The refusal
-names the function it came at (its index in the code section) and what the refused reservation asked
-for. `isImplementationLimit()` tells a refusal that raised `LoadLimits` would lift. A module that uses a proposal the engine does not enable is refused
+`HostMemoryExhausted`, a `DecodeError`, a `ValidationError`, or `CompileLimitExceeded` when lowering it
+for the fast engine would exceed one of its limits (`CompileLimit`). The refusal names the limit, the
+function it came at (its index in the code section, or `ModuleLevel`), and what was asked for and allowed,
+in the limit's unit:
+
+<!-- compile-limits:begin -->
+- **compile budget** (bytes): what lowering a module holds at once, its code included; LoadLimits::maxCompileBytes, and raising it lifts the refusal.
+- **frame slots** (slots): the slots of one function's frame, at most 2^32 - 1; only decode limits raised far past their defaults admit a function past it.
+- **code words** (words): the code words of one function, which 32-bit branch targets reach; only a body limit raised past a gigabyte admits a function past it.
+<!-- compile-limits:end -->
+
+The block is generated from `api::CompileLimitTable`, which the `isoline` tool's messages read too.
+`isImplementationLimit()` tells a refusal that raised `LoadLimits` would lift; of the compile limits, only
+the budget is one. A module that uses a proposal the engine does not enable is refused
 with the error the spec suite expects of an engine without it (an unknown opcode, a malformed section
 id, a second memory), and `requiredFeature()` names the proposal; the message appends it:
 `illegal opcode 0c (simd not enabled)`. Enabling it, closed over its prerequisites, gets the module past

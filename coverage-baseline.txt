@@ -12,7 +12,7 @@
 # contract (P3 Task 11): Task 10 added them under the light gate, which runs no coverage. Their uncovered lines were covered
 # then (CallError's equality, resolve() leaving concrete types on both sides to the store, a new host type over the type
 # budget in instantiate() and define(), std::length_error during instantiation in the memory suite), the unused
-# ImportName == ImportNameView was removed, and makeExecutor()'s unreachable end is the unknown-engine exclusion.
+# ImportName == ImportNameView was removed.
 #
 # src/isoline/runtime/Instantiate.cpp's branch entry was lowered from 92.12 to 91.86 when its segment bounds checks moved into
 # runtime/Segment.hpp (100 % covered): four covered branches left the file, and its ten uncovered ones, the contract checks and Tag
@@ -262,7 +262,6 @@
 #   a generic vector operation's kernel word by its instruction; the two lines no input reaches are the unknown-kernel
 #   exclusion, and the new untaken branch is the end of its search, which only an unknown kernel reaches.
 
-exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
 exclude src/isoline/fastinterpreter/Listing.cpp unknown-kernel a generic vector operation whose kernel word is no OpcodeTable row's: lowering writes only simdKernelWordOf() of an instruction, so no code holds another
@@ -284,16 +283,17 @@ src/isoline/Contracts.cpp                        100.00 -
 src/isoline/Features.hpp                           100.00 100.00
 src/isoline/Version.hpp                            100.00 -
 src/isoline/api/CallError.hpp                      100.00 -
-src/isoline/api/Engine.cpp                         100.00 80.00
+src/isoline/api/Engine.cpp                         100.00 80.76
 src/isoline/api/Engine.hpp                         100.00 -
 src/isoline/api/EngineIdentity.hpp                 100.00 -
+src/isoline/api/ExecutionEngines.cpp               100.00 100.00
 src/isoline/api/Extern.cpp                         100.00 66.66
 src/isoline/api/Extern.hpp                         100.00 -
 src/isoline/api/Imports.cpp                        100.00 82.35
 src/isoline/api/Imports.hpp                        100.00 -
 src/isoline/api/Module.cpp                         100.00 91.42
 src/isoline/api/Module.hpp                         100.00 -
-src/isoline/api/Store.cpp                          99.50 97.02
+src/isoline/api/Store.cpp                          99.83 97.53
 src/isoline/api/Store.hpp                          100.00 -
 src/isoline/binary/BranchHints.cpp                 100.00 100.00
 src/isoline/binary/BranchHints.hpp                 100.00 -
@@ -342,7 +342,7 @@ src/isoline/fastinterpreter/Bounds.hpp             100.00 100.00
 src/isoline/fastinterpreter/Code.cpp               100.00 71.05
 src/isoline/fastinterpreter/Code.hpp               100.00 -
 src/isoline/fastinterpreter/Context.hpp            100.00 100.00
-src/isoline/fastinterpreter/Dispatch.cpp           100.00 -
+src/isoline/fastinterpreter/Dispatch.cpp           100.00 100.00
 src/isoline/fastinterpreter/FastInterpreter.cpp    100.00 91.34
 src/isoline/fastinterpreter/FastInterpreter.cpp    98.59 78.68
 src/isoline/fastinterpreter/Listing.cpp            97.14 95.12
@@ -383,7 +383,7 @@ src/isoline/numerics/SimdKernels.hpp               100.00 -
 src/isoline/numerics/SimdLanes.hpp                 100.00 86.95
 src/isoline/runtime/Abrupt.hpp                     100.00 -
 src/isoline/runtime/ConstantExpression.cpp         94.93 81.35
-src/isoline/runtime/CountingArena.cpp              100.00 85.71
+src/isoline/runtime/CountingArena.cpp              100.00 88.88
 src/isoline/runtime/CountingArena.hpp              100.00 -
 src/isoline/runtime/FloatControlX86_64.cpp         100.00 -
 src/isoline/runtime/FloatEnvironment.cpp           100.00 100.00

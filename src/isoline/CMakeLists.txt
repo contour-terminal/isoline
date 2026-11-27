@@ -81,6 +81,7 @@ target_sources(isoline_core
         Contracts.cpp
         Version.cpp
         api/Engine.cpp
+        api/ExecutionEngines.cpp
         api/Extern.cpp
         api/Imports.cpp
         api/Module.cpp
@@ -116,6 +117,7 @@ target_sources(isoline_core
             api/CallError.hpp
             api/Engine.hpp
             api/EngineIdentity.hpp
+            api/ExecutionEngines.hpp
             api/Extern.hpp
             api/Imports.hpp
             api/Module.hpp

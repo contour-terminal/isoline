@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include <isoline/api/Module.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 
@@ -90,6 +91,15 @@ std::vector<std::string> pollSiteLines()
     return lines;
 }
 
+/// The compile-limits block: one line per api::CompileLimitTable row, with its unit.
+std::vector<std::string> compileLimitLines()
+{
+    auto lines = std::vector<std::string> {};
+    for (auto const& row: isoline::api::CompileLimitTable)
+        lines.push_back(std::format("- **{}** ({}): {}.", row.name, row.unit, row.rule));
+    return lines;
+}
+
 /// The lines as one text, for a failure's message: what to paste into the guide.
 std::string joined(std::vector<std::string> const& lines)
 {
@@ -111,8 +121,9 @@ TEST_CASE("PublishedLimits.docsMatchTables")
         std::string_view name;
         std::vector<std::string> expected;
     };
-    for (auto const& [name, expected]:
-         { Block { "limits", limitLines() }, Block { "poll-sites", pollSiteLines() } })
+    for (auto const& [name, expected]: { Block { "limits", limitLines() },
+                                         Block { "poll-sites", pollSiteLines() },
+                                         Block { "compile-limits", compileLimitLines() } })
     {
         INFO("block " << name << " of " << EmbeddingGuide << " should read:\n" << joined(expected));
         auto const block = blockOf(lines, name);

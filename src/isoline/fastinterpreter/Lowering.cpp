@@ -1921,7 +1921,7 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     std::shared_ptr<runtime::ICountingArena> arena)
 {
     Require(arena != nullptr);
-    Require(std::ranges::find(availableDispatches(), config.dispatch) != availableDispatches().end());
+    Require(isAvailable(config.dispatch));
     auto const chargedBefore = arena->charged();
     auto const budget = arena->budget();
     auto codeIndex = NoFunction;

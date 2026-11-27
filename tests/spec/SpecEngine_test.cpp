@@ -8,6 +8,7 @@
 
 #include "SpecEngine.hpp"
 #include <isoline/Features.hpp>
+#include <isoline/api/ExecutionEngines.hpp>
 #include <isoline/fastinterpreter/Dispatch.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 
@@ -32,23 +33,24 @@ namespace
 
 TEST_CASE("SpecEngine.optionsNameTheEngine")
 {
+    auto const* const fastRow = isoline::api::engines::rowOf(ExecutionEngine::Fast);
     auto const reference = parsed({ "--features", "wasm3" });
     REQUIRE(reference.has_value());
     CHECK(reference->features == FeatureSet::wasm3());
-    CHECK(reference->engine == SpecEngine {});
+    CHECK(reference->engine.row->engine == ExecutionEngine::Reference);
     auto const named = parsed({ "--engine", "reference", "--features", "all" });
     REQUIRE(named.has_value());
     CHECK(named->features == FeatureSet::all());
-    CHECK(named->engine == SpecEngine {});
+    CHECK(named->engine.row->engine == ExecutionEngine::Reference);
     auto const fast = parsed({ "--features", "wasm3", "--engine", "fast" });
     REQUIRE(fast.has_value());
-    CHECK(fast->engine == SpecEngine { .engine = ExecutionEngine::Fast, .dispatch = bestDispatch() });
+    CHECK(fast->engine == SpecEngine { .row = fastRow, .dispatch = bestDispatch() });
     for (auto const dispatch: availableDispatches())
     {
-        auto const name = dispatch == Dispatch::Switch ? "switch" : "tailcall";
+        auto const* const name = dispatch == Dispatch::Switch ? "switch" : "tailcall";
         auto const chosen = parsed({ "--dispatch", name, "--engine", "fast", "--features", "wasm3" });
         REQUIRE(chosen.has_value());
-        CHECK(chosen->engine == SpecEngine { .engine = ExecutionEngine::Fast, .dispatch = dispatch });
+        CHECK(chosen->engine == SpecEngine { .row = fastRow, .dispatch = dispatch });
     }
 }
 
