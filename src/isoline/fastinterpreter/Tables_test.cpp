@@ -127,9 +127,9 @@ constexpr auto LargeElements = uint32_t { (2 * BulkPollElements) + 100 };
 }
 
 /// The elements of table 0 of @p harness.
-[[nodiscard]] std::vector<Ref>& tableOf(Harness& harness)
+[[nodiscard]] std::span<Ref> tableOf(Harness& harness)
 {
-    return harness.store().table(harness.instance().tables.at(0)).elements;
+    return harness.store().table(harness.instance().tables.at(0)).elements();
 }
 
 /// A funcref to function 0 of @p harness, null where @p present is false.
@@ -145,7 +145,7 @@ constexpr auto LargeElements = uint32_t { (2 * BulkPollElements) + 100 };
 /// Sets the elements of table 0 of @p harness to alternate: function 0 at the indices of @p parity.
 void alternate(Harness& harness, uint32_t parity)
 {
-    auto& elements = tableOf(harness);
+    auto const elements = tableOf(harness);
     for (auto const index: std::views::iota(std::size_t { 0 }, elements.size()))
         elements[index] = functionOrNull(harness, index % 2 == parity);
 }

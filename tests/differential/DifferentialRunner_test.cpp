@@ -204,9 +204,9 @@ struct PerturbationRow
                  std::span<runtime::Value> /*results*/,
                  std::expected<void, runtime::Abrupt>& /*outcome*/) {
                   auto& table = store.table(instanceOf(store, function).tables.front());
-                  table.elements.front() = runtime::Ref { .kind = runtime::RefKind::Func,
-                                                          .heap = table.elements.front().heap,
-                                                          .address = function };
+                  table.elements().front() = runtime::Ref { .kind = runtime::RefKind::Func,
+                                                            .heap = table.elements().front().heap,
+                                                            .address = function };
               } },
         { .field = "growth",
           .perturbation =

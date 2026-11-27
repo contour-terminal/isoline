@@ -470,14 +470,14 @@ std::expected<uint64_t, TableAccessError> Store::tableSize(Table const& table) c
 {
     if (!table.isOf(*_id))
         return std::unexpected { TableAccessError::ForeignHandle };
-    return uint64_t { _runtime.table(table.address()).elements.size() };
+    return uint64_t { _runtime.table(table.address()).elements().size() };
 }
 
 std::expected<Ref, TableAccessError> Store::tableGet(Table const& table, uint64_t index) noexcept
 {
     if (!table.isOf(*_id))
         return std::unexpected { TableAccessError::ForeignHandle };
-    auto const& elements = _runtime.table(table.address()).elements;
+    auto const elements = _runtime.table(table.address()).elements();
     if (index >= elements.size())
         return std::unexpected { TableAccessError::OutOfBounds };
     auto const& element = elements[static_cast<std::size_t>(index)];
@@ -491,11 +491,11 @@ std::expected<void, TableAccessError> Store::tableSet(Table const& table, uint64
     if (!table.isOf(*_id))
         return std::unexpected { TableAccessError::ForeignHandle };
     auto& instance = _runtime.table(table.address());
-    if (index >= instance.elements.size())
+    if (index >= instance.elements().size())
         return std::unexpected { TableAccessError::OutOfBounds };
     if (!checkValue(value, instance.type.element))
         return std::unexpected { TableAccessError::ValueMismatch };
-    instance.elements[static_cast<std::size_t>(index)] = value;
+    instance.elements()[static_cast<std::size_t>(index)] = value;
     return {};
 }
 
@@ -520,7 +520,7 @@ std::expected<TableType, TableAccessError> Store::tableType(Table const& table) 
         return std::unexpected { TableAccessError::ForeignHandle };
     auto const& instance = _runtime.table(table.address());
     auto type = instance.type;
-    type.limits.min = instance.elements.size();
+    type.limits.min = instance.elements().size();
     return type;
 }
 

@@ -1978,9 +1978,9 @@ TEST_CASE("Interpreter.exceptionCapTraps")
     CHECK(harness.trap(0, { i32(16) }) == TrapCode::ExceptionLimitExceeded);
     // The slots hold the 16 exceptions, all distinct.
     auto const& table = harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0));
-    CHECK(table.elements[0].kind == isoline::runtime::RefKind::Exn);
-    CHECK(table.elements[0].address != table.elements[15].address);
-    CHECK(table.elements[16].kind == isoline::runtime::RefKind::Null);
+    CHECK(table.elements()[0].kind == isoline::runtime::RefKind::Exn);
+    CHECK(table.elements()[0].address != table.elements()[15].address);
+    CHECK(table.elements()[16].kind == isoline::runtime::RefKind::Null);
 }
 
 TEST_CASE("Interpreter.exceptionCrossesHost")
@@ -2677,9 +2677,10 @@ TEST_CASE("ReferenceInterpreter.tableOperationsPollPerElementGranule")
     auto counter = PollCounter {};
     auto harness = Harness { builder, {}, StoreLimits {}, &counter };
     auto const& elements =
-        harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0)).elements;
+        harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0)).elements();
     auto const isFunction = [&](int32_t index) {
-        return elements.at(static_cast<std::size_t>(index)).kind == isoline::runtime::RefKind::Func;
+        REQUIRE(static_cast<std::size_t>(index) < elements.size());
+        return elements[static_cast<std::size_t>(index)].kind == isoline::runtime::RefKind::Func;
     };
 
     auto const beforeCopy = counter.count(PollSite::BulkGranule);
@@ -2713,7 +2714,7 @@ TEST_CASE("ReferenceInterpreter.tableCopyOntoItself")
     REQUIRE(harness.outcome(0).has_value());
     CHECK(counter.count(PollSite::BulkGranule) - before == 1);
     auto const& elements =
-        harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0)).elements;
+        harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0)).elements();
     CHECK(elements[1].kind == isoline::runtime::RefKind::Func);
     CHECK(elements[2].kind == isoline::runtime::RefKind::Null);
 }

@@ -156,7 +156,11 @@ embedder places guest memory in storage of its own.
 - Growth is the embedder's decision. The store calls `ILinearMemory::grow()` only within the request's
   maximum and the store's budget, and charges the budget only when it succeeds. A memory that declines
   returns `Refusal::Embedder` (`HostMemory` when the host has none, `Guard` when it cannot keep the tail), and
-  `memory.grow` returns -1. Any other refusal an allocator invents is reported as `Embedder`.
+  `memory.grow` returns -1. Any other refusal an allocator invents is reported as `Embedder`. A grow that
+  succeeds leaves exactly the bytes asked for, and one that is refused leaves `bytes()` where and as large as
+  they were: the store keeps a view of every memory for compiled code, which trusts it while
+  `Store::memoryGeneration()` is unchanged, so a memory that breaks either rule is a contract violation, not a
+  refusal.
 - `bytes()` may move on every grow; whoever holds a span re-fetches it after every grow and every host
   call. A view of size 0 is valid at any address, even past the end, and views nothing.
 - `HeapMemoryAllocator`, the default, keeps each memory in a `std::vector` without a guard, and

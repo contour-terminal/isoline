@@ -181,7 +181,10 @@ class PreparingExecutor final: public isoline::runtime::ICodeExecutor
         auto const& instance = store.moduleInstance(moduleInstance);
         auto tables = std::vector<std::vector<Ref>> {};
         for (auto const table: instance.tables)
-            tables.push_back(store.table(table).elements);
+        {
+            auto const elements = store.table(table).elements();
+            tables.emplace_back(elements.begin(), elements.end());
+        }
         preparations.push_back(Preparation { .moduleInstance = moduleInstance,
                                              .instances = store.moduleInstanceCount(),
                                              .functions = instance.functions,
@@ -367,10 +370,10 @@ TEST_CASE("Instantiate.preparesBeforeAnyElementIsWritten")
         // Nothing was written when it prepared; the first segment was written after.
         CHECK(prepared.tables
               == std::vector { std::vector { nullFunc, nullFunc }, std::vector { nullFunc } });
-        auto const& elements = store.table(*imported).elements;
+        auto const elements = store.table(*imported).elements();
         CHECK(elements[1]
               == Ref { .kind = RefKind::Func, .heap = FuncRef.heap, .address = instance.functions[1] });
-        CHECK(store.table(instance.tables[1]).elements[0].kind == RefKind::Func);
+        CHECK(store.table(instance.tables[1]).elements()[0].kind == RefKind::Func);
     }
 
     SECTION("before the start function")
@@ -628,7 +631,7 @@ TEST_CASE("Instantiate.tableSegmentOutOfBounds")
     auto executor = StubExecutor {};
     auto const result = instantiate(store, executor, moduleOf(builder), {});
     CHECK(errorOf(result) == InstantiationError { Trap { TrapCode::OutOfBoundsTableAccess } });
-    auto const& elements = store.table(0).elements;
+    auto const elements = store.table(0).elements();
     REQUIRE(elements.size() == 2);
     CHECK(elements[0].kind == RefKind::Null);
     CHECK(elements[1] == Ref { .kind = RefKind::Func, .heap = FuncRef.heap, .address = 0 });
@@ -663,7 +666,7 @@ TEST_CASE("Instantiate.segmentsDropped")
     REQUIRE(instance.data[1].has_value());
     CHECK(instance.data[1]->size() == 2);
     CHECK(store.memory(instance.memories[0]).bytes()[3] == std::byte { 0x11 });
-    CHECK(store.table(instance.tables[0]).elements[0].kind == RefKind::Func);
+    CHECK(store.table(instance.tables[0]).elements()[0].kind == RefKind::Func);
 }
 
 TEST_CASE("Instantiate.globalsAndStart")
@@ -796,7 +799,7 @@ TEST_CASE("Instantiate.tableGrow")
     auto const init = Ref { .kind = RefKind::Func, .heap = FuncRef.heap, .address = 7 };
     CHECK(store.growTable(*table, 3, init) == std::unexpected { Refusal::TypeMaximum });
     CHECK(store.growTable(*table, 2, init) == 1U);
-    auto const& elements = store.table(*table).elements;
+    auto const elements = store.table(*table).elements();
     REQUIRE(elements.size() == 3);
     CHECK(elements[0].kind == RefKind::Null);
     CHECK(elements[2] == init);
@@ -1174,7 +1177,7 @@ TEST_CASE("Instantiate.tableInitializer")
     auto const address = instantiate(store, interpreter, moduleOf(builder, FeatureSet::wasm3()), {});
     REQUIRE(address.has_value());
     auto const& instance = store.moduleInstance(*address);
-    auto const& elements = store.table(instance.tables.at(0)).elements;
+    auto const elements = store.table(instance.tables.at(0)).elements();
     REQUIRE(elements.size() == 3);
     for (auto const& element: elements)
     {

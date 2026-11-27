@@ -162,7 +162,10 @@ namespace
         for (auto const global: module.globals)
             observation.globals.push_back(store.global(global).value());
         for (auto const table: module.tables)
-            observation.tables.push_back(store.table(table).elements);
+        {
+            auto const elements = store.table(table).elements();
+            observation.tables.emplace_back(elements.begin(), elements.end());
+        }
         auto const stateOf = [](auto const& segment) {
             return segment.has_value() ? SegmentState::Live : SegmentState::Dropped;
         };

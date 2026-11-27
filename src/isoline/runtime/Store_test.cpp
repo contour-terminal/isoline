@@ -181,7 +181,7 @@ TEST_CASE("Store.constAccessors")
     // A const store answers through the const overloads, with the same instances.
     auto const& view = static_cast<Store const&>(store);
     CHECK(view.function(function).isHost());
-    CHECK(view.table(*table).elements.size() == 1);
+    CHECK(view.table(*table).elements().size() == 1);
     CHECK(view.memory(*memory).bytes().size() == PageSize);
     CHECK(view.global(global).value() == Value { I32 { .bits = 7 } });
     CHECK(&view.global(global) == &store.global(global));
@@ -205,7 +205,7 @@ TEST_CASE("Store.addressTypesBoundGrowth", "[memory]")
     CHECK(store.growTable(*table, ~uint64_t { 0 }, Ref {}) == std::unexpected { Refusal::TypeMaximum });
     CHECK(store.growTable(*table, uint64_t { 1 } << 62, Ref {}) == std::unexpected { Refusal::TypeMaximum });
     CHECK(store.memory(*memory).bytes().size() == PageSize);
-    CHECK(store.table(*table).elements.size() == 1);
+    CHECK(store.table(*table).elements().size() == 1);
     // What the store grants, it grows by.
     CHECK(store.growMemory(*memory, 1) == 1U);
     CHECK(store.growTable(*table, 1, Ref {}) == 1U);
@@ -661,7 +661,7 @@ TEST_CASE("Store.growPastLimitIsRefused", "[memory]")
     REQUIRE(table.has_value());
     CHECK(store.growTable(*table, 1, NullFunction) == 1U);
     CHECK(store.growTable(*table, 1, NullFunction) == std::unexpected { Refusal::Limit });
-    CHECK(store.table(*table).elements.size() == 2);
+    CHECK(store.table(*table).elements().size() == 2);
 }
 
 TEST_CASE("Store.tableLimitIsStoreWide")

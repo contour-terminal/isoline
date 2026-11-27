@@ -169,12 +169,65 @@ namespace
         instances.push_back(std::move(instance));
         return static_cast<uint32_t>(instances.size() - 1);
     }
+
+    /// @p memory's bytes as generated code reads them. Precondition (checked): @p memory is not null.
+    [[nodiscard]] MemoryView viewOf(ILinearMemory* memory) noexcept
+    {
+        Require(memory != nullptr);
+        auto const bytes = memory->bytes();
+        return MemoryView { .base = bytes.data(), .bytes = bytes.size() };
+    }
+
+    /// @p elements as generated code reads them.
+    [[nodiscard]] TableView viewOf(std::vector<Ref>& elements) noexcept
+    {
+        return TableView { .data = elements.data(), .size = elements.size() };
+    }
 } // namespace
 
 MemoryInstance::MemoryInstance(binary::MemoryType type, std::unique_ptr<ILinearMemory> memory):
-    type { type }, _memory { std::move(memory) }
+    type { type }, _memory { std::move(memory) }, _view { viewOf(_memory.get()) }
 {
-    Require(_memory != nullptr);
+}
+
+std::expected<void, Refusal> MemoryInstance::grow(uint64_t newBytes) noexcept
+{
+    auto const before = _view;
+    auto grown = _memory->grow(GrowRequest { .newBytes = newBytes });
+    _view = viewOf(_memory.get());
+    if (grown)
+    {
+        Require(_view.bytes == newBytes);
+        Require(keepsItsTail(*_memory));
+    }
+    else
+        Require(_view.base == before.base && _view.bytes == before.bytes);
+    return grown;
+}
+
+TableInstance::TableInstance(binary::TableType type, std::vector<Ref> elements) noexcept:
+    type { type }, _elements { std::move(elements) }, _view { viewOf(_elements) }
+{
+}
+
+TableInstance::TableInstance(TableInstance&& other) noexcept:
+    type { other.type }, _elements { std::move(other._elements) }, _view { viewOf(_elements) }
+{
+    other.refreshView();
+}
+
+TableInstance& TableInstance::operator=(TableInstance&& other) noexcept
+{
+    type = other.type;
+    _elements = std::move(other._elements);
+    refreshView();
+    other.refreshView();
+    return *this;
+}
+
+void TableInstance::refreshView() noexcept
+{
+    _view = viewOf(_elements);
 }
 
 Store::Store(StoreLimits limits, StoreServices services):
@@ -302,8 +355,7 @@ std::expected<TableAddr, AllocationError> Store::addTable(binary::TableType type
         .transform_error(
             [](Refusal refusal) { return allocationError(refusal, ExternKind::Table, Limit::TableElements); })
         .transform([&] {
-            auto const address =
-                append(_tables, TableInstance { .type = type, .elements = std::move(elements) });
+            auto const address = append(_tables, TableInstance { type, std::move(elements) });
             _tableElements = total;
             return address;
         });
@@ -460,10 +512,15 @@ std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
     };
     // Only exn's hierarchy holds exnrefs, and of it only exn itself anything but null: tables of other
     // types are skipped whole, however large they grew.
-    auto exnTables = _tables | std::views::filter([](TableInstance const& table) {
-                         return table.type.element.heap.kind == binary::AbstractHeapType::Exn;
-                     })
-                     | std::views::transform(&TableInstance::elements) | std::views::join;
+    auto const scanExnTables = [&]() -> Swept {
+        auto scanned = Swept {};
+        for (auto const& table: _tables)
+        {
+            if (table.type.element.heap.kind == binary::AbstractHeapType::Exn)
+                scanned = scanned.and_then([&] { return scan(table.elements(), markReference); });
+        }
+        return scanned;
+    };
     // A segment of exnrefs has items of global.get only, and is dropped once used; the passive ones a
     // module keeps are as long as its bytes, so they are scanned whatever their type. Loops, not a
     // join of joins: GCC 14's release build reads the inner join iterator's optional as maybe
@@ -508,7 +565,7 @@ std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
     auto const marked =
         scan(pending, markValue)
             .and_then([&] { return scan(_globals, markGlobal); })
-            .and_then([&] { return scan(exnTables, markReference); })
+            .and_then(scanExnTables)
             .and_then(scanKeptSegments)
             .and_then([&] { return scan(_exceptionRootRanges | std::views::join, markValue); })
             .and_then([&] { return scan(arena, markSlot); })
@@ -669,7 +726,7 @@ void Store::releaseTrailing(TableAddr firstTable, MemAddr firstMemory) noexcept
     Require(firstTable <= _tables.size() && firstMemory <= _memories.size());
     auto const tables = std::ranges::subrange { _tables.begin() + firstTable, _tables.end() };
     for (auto const& table: tables)
-        _tableElements -= table.elements.size();
+        _tableElements -= table.elements().size();
     _tables.erase(tables.begin(), tables.end());
     auto const memories = std::ranges::subrange { _memories.begin() + firstMemory, _memories.end() };
     for (auto const& memory: memories)
@@ -789,14 +846,17 @@ uint64_t const* Store::memoryGenerationAddress() const noexcept
 std::expected<uint64_t, Refusal> Store::growTable(TableAddr address, uint64_t delta, Ref init)
 {
     auto& instance = table(address);
-    auto const oldSize = uint64_t { instance.elements.size() };
+    auto const oldSize = uint64_t { instance.elements().size() };
     auto const grown =
-        growElements(instance.elements,
+        growElements(instance._elements,
                      delta,
                      slotLimit(instance.type),
                      init,
                      Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
             .transform([oldSize] { return oldSize; });
+    // A refused grow leaves the slots as they were; the view is refreshed whatever the outcome, from
+    // where they are.
+    instance.refreshView();
     if (!grown)
         recordFirst(_growthRecord.table, grown.error());
     return grown;

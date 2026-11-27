@@ -526,11 +526,11 @@ class Invocation final: public runtime::IExceptionRoots
                 auto const index =
                     narrowToAddressType(state.fp[site.operandSlot], table.type.limits.addressType);
                 // Spectre: the element is read at the masked index (elementChecked()), not at the guest's.
-                auto const checked = elementChecked(index, table.elements.size());
+                auto const checked = elementChecked(index, table.elements().size());
                 if (!checked)
                     return std::unexpected { Trap { TrapCode::UndefinedElement,
                                                     std::bit_cast<int64_t>(index) } };
-                auto const& element = table.elements[*checked];
+                auto const& element = table.elements()[*checked];
                 if (element.kind == runtime::RefKind::Null)
                     return std::unexpected { Trap { TrapCode::UninitializedElement,
                                                     std::bit_cast<int64_t>(index) } };

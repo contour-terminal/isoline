@@ -50,7 +50,10 @@ class IHostFunction; // HostFunction.hpp
 class Store;
 
 /// A memory's bytes as generated code reads them: where they start and how many there are. Laid out
-/// for generated code, which loads both fields at fixed offsets.
+/// for generated code, which loads both fields at fixed offsets. Each memory instance keeps its own at a
+/// stable address (MemoryInstance::view()), which Store::growMemory() updates in the same step that moves
+/// Store::memoryGeneration(): while the generation is unchanged, so is every view, so a reader that
+/// copied one may keep the copy until the generation moves.
 struct MemoryView
 {
     std::byte* base = nullptr; ///< The first byte.
@@ -62,7 +65,9 @@ static_assert(offsetof(MemoryView, bytes) == sizeof(std::byte*));
 static_assert(sizeof(MemoryView) == sizeof(std::byte*) + sizeof(uint64_t));
 
 /// A table's slots as generated code reads them: where they start and how many there are. Laid out
-/// for generated code, which loads both fields at fixed offsets.
+/// for generated code, which loads both fields at fixed offsets. Each table instance keeps its own at a
+/// stable address (TableInstance::view()), which Store::growTable(), the only change to either field,
+/// updates; no generation counts it, so a reader re-reads it after anything that may grow a table.
 struct TableView
 {
     Ref* data = nullptr; ///< The first slot.
@@ -206,11 +211,47 @@ struct FunctionInstance
     [[nodiscard]] bool isHost() const noexcept { return host != nullptr; }
 };
 
-/// A table instance.
-struct TableInstance
+/// A table instance: its type, and its slots.
+///
+/// The slots are private, so that only the store, which charges growth against its budget, changes how
+/// many there are; it keeps view() current with every change (Store::growTable()).
+class TableInstance
 {
-    binary::TableType type;    ///< Its type as allocated; its current size is elements.size().
-    std::vector<Ref> elements; ///< Its slots.
+  public:
+    /// @param type Its type as allocated.
+    /// @param elements Its slots.
+    TableInstance(binary::TableType type, std::vector<Ref> elements) noexcept;
+
+    /// A move keeps the slots' storage, so the view moves with them.
+    TableInstance(TableInstance&& other) noexcept;
+    /// @copydoc TableInstance(TableInstance&&)
+    TableInstance& operator=(TableInstance&& other) noexcept;
+    TableInstance(TableInstance const&) = delete;
+    TableInstance& operator=(TableInstance const&) = delete;
+    ~TableInstance() = default;
+
+    binary::TableType type; ///< Its type as allocated; its current size is elements().size().
+
+    /// Its slots, which a guest or the embedder may write but never resize.
+    /// @return The slots; valid until the next growTable() of the table.
+    [[nodiscard]] std::span<Ref> elements() noexcept { return _elements; }
+
+    /// @copydoc elements()
+    [[nodiscard]] std::span<Ref const> elements() const noexcept { return _elements; }
+
+    /// Its slots as generated code reads them, at an address stable for the table's lifetime: always
+    /// elements()'s data and size, since growTable() updates it whenever they change.
+    /// @return The view.
+    [[nodiscard]] TableView const& view() const noexcept { return _view; }
+
+  private:
+    friend class Store;
+
+    /// Makes the view what the slots are now.
+    void refreshView() noexcept;
+
+    std::vector<Ref> _elements; ///< Its slots.
+    TableView _view;            ///< The slots' data and size (view()).
 };
 
 /// A memory instance: its type, and its storage from the store's IMemoryAllocator.
@@ -240,24 +281,27 @@ class MemoryInstance
     /// @return The storage.
     [[nodiscard]] ILinearMemory const& storage() const noexcept { return *_memory; }
 
+    /// Its bytes as generated code reads them, at an address stable for the memory's lifetime: always
+    /// bytes()'s data and size, since a grow, the only change to either (ILinearMemory::grow()),
+    /// updates it. While Store::memoryGeneration() is unchanged, so is every memory's view.
+    /// @return The view.
+    [[nodiscard]] MemoryView const& view() const noexcept { return _view; }
+
   private:
     friend class Store;
 
     /// Grows the storage to @p newBytes, zeroed, asking it for the tail the new size needs
-    /// (ILinearMemory::grow(), GrowRequest): only the store, which charges the growth against its budget,
-    /// grows a memory. A storage that cannot keep that tail refuses with Guard; one that grew without it
-    /// anyway (keepsItsTail()) lied, breaking ILinearMemory's contract, which is checked: a refusal could not
-    /// undo the grow it already made.
+    /// (ILinearMemory::grow(), GrowRequest), and updates the view: only the store, which charges the growth
+    /// against its budget, grows a memory. A storage that cannot keep that tail refuses with Guard.
+    /// Preconditions (checked), the storage's contract: a grow it grants leaves exactly @p newBytes and the
+    /// tail (keepsItsTail()), one it refuses leaves the bytes where and as large as they were, so that the view
+    /// and the store's generation stay true; a refusal could not undo a grow already made.
     /// @param newBytes The new size in bytes.
     /// @return Nothing, or the storage's refusal.
-    [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept
-    {
-        return _memory->grow(GrowRequest { .newBytes = newBytes }).transform([this] {
-            Require(keepsItsTail(*_memory));
-        });
-    }
+    [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept;
 
     std::unique_ptr<ILinearMemory> _memory;
+    MemoryView _view; ///< The bytes' data and size (view()).
 };
 
 /// A global instance: its type and its raw cell, the value's two words (RawValue), which every engine

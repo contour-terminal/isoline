@@ -866,7 +866,7 @@ template <OperationId Id>
     {
         auto& table = context.store.table(instance.tables[firstIndexOf(indices)]);
         auto const type = table.type.limits.addressType;
-        done = runtime::fillItems(std::span { table.elements },
+        done = runtime::fillItems(table.elements(),
                                   narrowToAddressType(destination, type),
                                   narrowToAddressType(count, type),
                                   loadReference(referenceSlots(fp, slotOperand<1>(state.pc))),
@@ -879,9 +879,9 @@ template <OperationId Id>
         auto const& from = context.store.table(instance.tables[secondIndexOf(indices)]);
         auto const toType = to.type.limits.addressType;
         auto const fromType = from.type.limits.addressType;
-        done = runtime::copyItems(std::span<runtime::Ref const> { from.elements },
+        done = runtime::copyItems(std::span<runtime::Ref const> { from.elements() },
                                   narrowToAddressType(source, fromType),
-                                  std::span { to.elements },
+                                  to.elements(),
                                   narrowToAddressType(destination, toType),
                                   narrowToAddressType(count, binary::copyCountType(toType, fromType)),
                                   runtime::TrapCode::OutOfBoundsTableAccess,
@@ -896,7 +896,7 @@ template <OperationId Id>
                                             : std::span<runtime::Ref const> {},
                                     static_cast<uint32_t>(source),
                                     static_cast<uint32_t>(count),
-                                    std::span { table.elements },
+                                    table.elements(),
                                     narrowToAddressType(destination, table.type.limits.addressType),
                                     runtime::TrapCode::OutOfBoundsTableAccess,
                                     poll);
@@ -920,7 +920,7 @@ template <OperationId Id>
     auto const type = table.type.limits.addressType;
     if constexpr (Id == OperationId::TableSize)
     {
-        fp[slotOperand<0>(pc)] = narrowToAddressType(table.elements.size(), type);
+        fp[slotOperand<0>(pc)] = narrowToAddressType(table.elements().size(), type);
         return next<Id>(state);
     }
     else if constexpr (Id == OperationId::TableGrow)
@@ -939,14 +939,14 @@ template <OperationId Id>
     {
         constexpr auto IndexOperand = Id == OperationId::TableGet ? 1U : 0U;
         auto const index = elementChecked(narrowToAddressType(fp[slotOperand<IndexOperand>(pc)], type),
-                                          table.elements.size());
+                                          table.elements().size());
         if (!index) [[unlikely]]
             return leaveTrapped(
                 context, state.stepsLeft, runtime::Trap { runtime::TrapCode::OutOfBoundsTableAccess });
         if constexpr (Id == OperationId::TableGet)
-            storeReference(table.elements[*index], referenceSlots(fp, slotOperand<0>(pc)));
+            storeReference(table.elements()[*index], referenceSlots(fp, slotOperand<0>(pc)));
         else
-            table.elements[*index] = loadReference(referenceSlots(fp, slotOperand<1>(pc)));
+            table.elements()[*index] = loadReference(referenceSlots(fp, slotOperand<1>(pc)));
         return next<Id>(state);
     }
 }

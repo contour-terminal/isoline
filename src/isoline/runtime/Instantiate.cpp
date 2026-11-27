@@ -66,7 +66,7 @@ namespace
     [[nodiscard]] bool tableMatches(TableInstance const& table, binary::TableType const& required) noexcept
     {
         return table.type.element == required.element
-               && limitsMatch(table.elements.size(), table.type.limits, required.limits);
+               && limitsMatch(table.elements().size(), table.type.limits, required.limits);
     }
 
     /// Whether @p memory matches the memory type @p required: its page size, exactly, and its limits,
@@ -428,7 +428,7 @@ namespace
                     continue;
                 auto const value = evaluate(table.init);
                 Require(std::holds_alternative<Ref>(value));
-                auto& elements = _store.table(instance().tables.at(imported + index)).elements;
+                auto const elements = _store.table(instance().tables.at(imported + index)).elements();
                 std::ranges::fill(elements, std::get<Ref>(value));
             }
             return {};
@@ -527,7 +527,7 @@ namespace
                 {
                     auto const offset = evaluate(segment.offset);
                     auto const refs = std::span<Ref const> { *instance().elements[index] };
-                    auto& elements = _store.table(instance().tables[segment.table]).elements;
+                    auto const elements = _store.table(instance().tables[segment.table]).elements();
                     if (auto const copied = copySegment(refs,
                                                         0,
                                                         refs.size(),

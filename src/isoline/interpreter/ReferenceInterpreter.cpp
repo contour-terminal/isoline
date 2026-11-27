@@ -422,9 +422,9 @@ namespace
         {
             auto const& table = _store.table(instance().tables.at(instruction.b));
             auto const index = popAddress(table.type.limits.addressType);
-            if (index >= table.elements.size())
+            if (index >= table.elements().size())
                 return trapNaming(TrapCode::UndefinedElement, index);
-            auto const reference = table.elements[index];
+            auto const reference = table.elements()[index];
             if (reference.kind == RefKind::Null)
                 return trapNaming(TrapCode::UninitializedElement, index);
             if (_store.function(reference.address).typeId != instance().types.at(instruction.a))
@@ -798,9 +798,9 @@ namespace
         {
             auto const& target = table(instruction.a);
             auto const index = popAddress(target.type.limits.addressType);
-            if (index >= target.elements.size())
+            if (index >= target.elements().size())
                 return trap(TrapCode::OutOfBoundsTableAccess);
-            push(target.elements[index]);
+            push(target.elements()[index]);
             return {};
         }
 
@@ -809,16 +809,16 @@ namespace
             auto& target = table(instruction.a);
             auto const reference = popRef();
             auto const index = popAddress(target.type.limits.addressType);
-            if (index >= target.elements.size())
+            if (index >= target.elements().size())
                 return trap(TrapCode::OutOfBoundsTableAccess);
-            target.elements[index] = reference;
+            target.elements()[index] = reference;
             return {};
         }
 
         void tableSize(Instruction const& instruction)
         {
             auto const& target = table(instruction.a);
-            pushAddress(target.type.limits.addressType, target.elements.size());
+            pushAddress(target.type.limits.addressType, target.elements().size());
         }
 
         void tableGrow(Instruction const& instruction)
@@ -838,12 +838,8 @@ namespace
             auto const value = popRef();
             auto const destination = popAddress(type);
             auto poll = granulePoll();
-            return runtime::fillItems(std::span { target.elements },
-                                      destination,
-                                      count,
-                                      value,
-                                      TrapCode::OutOfBoundsTableAccess,
-                                      poll);
+            return runtime::fillItems(
+                target.elements(), destination, count, value, TrapCode::OutOfBoundsTableAccess, poll);
         }
 
         [[nodiscard]] Step tableCopy(Instruction const& instruction)
@@ -857,9 +853,9 @@ namespace
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
             auto poll = granulePoll();
-            return runtime::copyItems(std::span<Ref const> { sourceTable.elements },
+            return runtime::copyItems(std::span<Ref const> { sourceTable.elements() },
                                       source,
-                                      std::span { destinationTable.elements },
+                                      destinationTable.elements(),
                                       destination,
                                       count,
                                       TrapCode::OutOfBoundsTableAccess,
@@ -877,7 +873,7 @@ namespace
             return runtime::copySegment(items,
                                         source,
                                         count,
-                                        std::span { target.elements },
+                                        target.elements(),
                                         destination,
                                         TrapCode::OutOfBoundsTableAccess,
                                         granulePoll());
