@@ -105,6 +105,10 @@ if(NOT MSVC_WINE_WINE)
                         "(Fedora: dnf install wine; see docs/cross-compiling.md)")
 endif()
 set(MSVC_WINE_PREFIX "${CMAKE_BINARY_DIR}/wineprefix" CACHE PATH "The wine prefix the tests run in")
+# A try_compile project (check_cxx_compiler_flag) reads this file again in a directory of its own: it gets
+# the build's install and prefix, so a compiler that runs under wine does not boot a prefix per check.
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES MSVC_WINE_ROOT MSVC_WINE_TOOLSET_VERSION MSVC_WINE_SDK_VERSION
+            MSVC_WINE_PREFIX)
 set(_redistRoot "${MSVC_WINE_ROOT}/vc/Redist/MSVC/${MSVC_WINE_TOOLSET_VERSION}")
 file(GLOB _redist LIST_DIRECTORIES true "${_redistRoot}/x64/*.CRT" "${_redistRoot}/debug_nonredist/x64/*.DebugCRT")
 set(_winePath ${_redist} "${MSVC_WINE_ROOT}/kits/10/bin/${MSVC_WINE_SDK_VERSION}/x64/ucrt")
