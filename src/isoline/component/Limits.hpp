@@ -24,7 +24,12 @@ struct ComponentLimits
     uint32_t maxTypes = 1'000'000;    ///< Per component, all index spaces of sort type.
     uint32_t maxDefinitions = 1'000'000; ///< Per component, all sections.
     /// Per decoded component, all nested components together: definitions, nested components and the
-    /// elements of every vector inside a definition. Bounds what the pool holds per input byte.
+    /// elements of every vector inside a definition. Bounds what the pool holds whatever the input's
+    /// shape: at most about maxDecodedItems x the largest item's size x 2 (vector growth), plus the
+    /// copy of the input (at most maxComponentBytes) and the names copied out of it (at most as many
+    /// bytes again). The largest item is a nested component, a Definition and a Component pool entry:
+    /// 88 + 24 = 112 bytes with libstdc++ on x86-64, so the defaults bound the pool at about
+    /// 1'000'000 x 112 x 2 = 224 MB beyond 2 x 256 MiB. The sizes differ with libc++ and the MSVC STL.
     uint32_t maxDecodedItems = 1'000'000;
     uint32_t maxNameBytes = 100'000;            ///< Bytes of one name.
     uint32_t maxCoreInstances = 10'000;         ///< Per ComponentStore.

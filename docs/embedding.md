@@ -447,6 +447,16 @@ the reference interpreter's, which checks the default label's types first and po
 mismatch` there. Every way the operands themselves fail is one `type mismatch`, so which of them fails
 first is not observable.
 
+A component is decoded under `component::ComponentLimits`: `maxComponentBytes` (256 MiB), `maxNesting`
+(100 scopes, the outermost component counted), `maxDefinitions` (1000000 per component), `maxNameBytes`
+(100000) and `maxDecodedItems` (1000000), which counts every definition, nested component and element
+of a definition's vectors of the component and all components nested in it, each before it is read.
+The decoded pool then holds at most about `maxDecodedItems` × the largest item's size × 2 (vector
+growth), plus its copy of the input and the names copied out of it, each at most `maxComponentBytes`.
+The largest item is a nested component, its definition and its pool entry: 112 bytes with libstdc++ on
+x86-64, so the defaults bound the pool at about 1000000 × 112 × 2 = 224 MB beyond 2 × 256 MiB. The
+sizes differ with libc++ and the MSVC STL.
+
 ## Interrupts and poll sites
 
 `Store::interrupter()` returns the store's `Interrupter`, shared. `interrupt()` is one release store to
