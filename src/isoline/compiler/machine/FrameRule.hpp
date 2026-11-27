@@ -9,6 +9,7 @@
 // registers, alignment, the return address, the frame pointer and the three context values.
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <limits>
@@ -49,6 +50,10 @@ struct StackRule
     uint32_t alignment;          ///< The stack pointer's alignment at every call (x86-64 and arm64: 16).
     uint32_t returnAddressBytes; ///< What a call pushes on the stack (x86-64: 8; arm64, with its link
                                  ///< register: 0).
+    /// The bytes a prologue's save of one callee-saved register takes, per RegisterClass: a set names
+    /// registers, not widths (ConventionRow::calleeSaved). x86-64: 8 and 16 (Microsoft x64 preserves xmm6–15
+    /// whole); arm64: 8 and 8 (AAPCS64 preserves the low 64 bits of v8–v15).
+    std::array<uint32_t, RegisterClassCount> savedRegisterBytes;
 
     /// Whether both rules are alike.
     [[nodiscard]] constexpr bool operator==(StackRule const&) const noexcept = default;
@@ -104,6 +109,20 @@ struct StackRule
     if (!aligned || !shadowed || !spillsAbove || frame.totalBytes < stack.returnAddressBytes)
         return std::unexpected { CompileError { .code = CompileErrorCode::InternalVerificationFailed,
                                                 .pass = "frame" } };
+    return {};
+}
+
+/// Whether @p frame's outgoing area covers every call site of @p function: each call's stack arguments and
+/// result area, as the selector recorded them (MachineFunction::addCallSite()).
+/// @return Nothing; or InternalVerificationFailed (pass "frame") for an area too small for a call: an
+///         allocator bug refused, never run.
+[[nodiscard]] inline std::expected<void, CompileError> checkOutgoingArea(MachineFunction const& function,
+                                                                         FrameLayout const& frame) noexcept
+{
+    for (auto const& site: function.callSites())
+        if (site.outgoingBytes > frame.outgoingBytes)
+            return std::unexpected { CompileError { .code = CompileErrorCode::InternalVerificationFailed,
+                                                    .pass = "frame" } };
     return {};
 }
 

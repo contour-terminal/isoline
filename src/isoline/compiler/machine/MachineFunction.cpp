@@ -31,7 +31,10 @@ MachineFunction::MachineFunction(std::pmr::memory_resource& memory):
     _operands { &memory },
     _registers { &memory },
     _edges { &memory },
-    _constants { &memory }
+    _constants { &memory },
+    _callSites { &memory },
+    _movesBefore { &memory },
+    _moves { &memory }
 {
 }
 
@@ -172,6 +175,32 @@ ConstantOperand MachineFunction::addConstant(uint64_t bits)
     auto const slot = narrow(_constants.size());
     _constants.push_back(bits);
     return ConstantOperand { .slot = slot };
+}
+
+void MachineFunction::addCallSite(uint32_t instruction, uint32_t outgoingBytes)
+{
+    Require(instruction < _instructions.size());
+    _callSites.push_back(CallSite { .instruction = instruction, .outgoingBytes = outgoingBytes });
+}
+
+void MachineFunction::setMovesBefore(uint32_t instruction, std::span<Move const> moves)
+{
+    Require(instruction < _instructions.size());
+    if (_movesBefore.size() < _instructions.size())
+        _movesBefore.resize(_instructions.size());
+    Require(_movesBefore[instruction].count == 0);
+    auto const begin = narrow(_moves.size());
+    _moves.insert(_moves.end(), moves.begin(), moves.end());
+    _movesBefore[instruction] = PoolRange { .begin = begin, .count = narrow(moves.size()) };
+}
+
+std::span<Move const> MachineFunction::movesBefore(uint32_t instruction) const noexcept
+{
+    Require(instruction < _instructions.size());
+    if (instruction >= _movesBefore.size())
+        return {};
+    auto const range = _movesBefore[instruction];
+    return std::span { _moves }.subspan(range.begin, range.count);
 }
 
 intermediate::ControlFlowGraph controlFlowGraphOf(MachineFunction const& function,

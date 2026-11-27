@@ -4,7 +4,8 @@
 # it: its configuration, limits and errors, the features it compiles, the target it generates for, the
 # layout through which generated code reaches the runtime, (intermediate/) its SSA representation,
 # (translation/) the translation of WebAssembly into it, (optimization/) the passes over it and
-# (machine/) the target seam and the target-independent machine layer: conventions, layout, liveness.
+# (machine/) the target seam and the target-independent machine layer: conventions, layout, liveness, and
+# (registerallocation/) linear-scan register allocation.
 # Its sources take the target policy's floating-point contraction row (cmake/IsolinePedantic.cmake), so
 # that constant folding is exact.
 target_sources(isoline_core
@@ -29,6 +30,8 @@ target_sources(isoline_core
         optimization/PassTable.cpp
         optimization/Rewrite.cpp
         optimization/TrivialParameters.cpp
+        registerallocation/LinearScan.cpp
+        registerallocation/ParallelMoves.cpp
         translation/LoopAssignments.cpp
         translation/MemoryTranslation.cpp
         translation/Translator.cpp
@@ -61,6 +64,8 @@ target_sources(isoline_core
             optimization/FoldingTable.hpp
             optimization/PassTable.hpp
             optimization/Rewrite.hpp
+            registerallocation/LinearScan.hpp
+            registerallocation/ParallelMoves.hpp
             translation/LoopAssignments.hpp
             translation/MemoryTranslation.hpp
             translation/NumericRules.hpp

@@ -42,10 +42,13 @@ enum class FakeOpcode : uint8_t
     Jump,         ///< To a label.
     Branch,       ///< On a Use, to one of two labels.
     Return,       ///< Returns its Use (fixed g0).
+    Store, ///< Stores its Use to memory (a MemoryOperand): a call's stack argument, a host call's scratch.
+    Poll,  ///< A poll: its slow path calls the runtime, which clobbers g0 (a Def fixed to it) and only g0.
+    CallIndirect, ///< Calls through its Use, clobbering every register as Call does: x86-64's call r64.
 };
 
 /// The last FakeOpcode enumerator.
-inline constexpr auto LastFakeOpcode = FakeOpcode::Return;
+inline constexpr auto LastFakeOpcode = FakeOpcode::CallIndirect;
 
 /// FakeTarget's General registers.
 inline constexpr auto FakeGeneralRegisters = std::to_array<PhysicalRegister>({
@@ -78,6 +81,31 @@ inline constexpr auto FakeConvention = ConventionRow {
     .pointerReturned = PointerReturned::No,
 };
 
+/// FakeTarget's internal convention with g1 callee-saved, for the tests of a frame's saved registers.
+inline constexpr auto FakeSavingConvention = ConventionRow {
+    .convention = Convention::WasmInternal,
+    .integerArguments = FakeGeneralRegisters,
+    .floatArguments = FakeFloatRegisters,
+    .integerResults = std::span { FakeGeneralRegisters }.first(1),
+    .floatResults = std::span { FakeFloatRegisters }.first(1),
+    .calleeSaved = RegisterSet::of({ FakeGeneralRegisters[1] }),
+    .slots = ArgumentSlots::Independent,
+    .shadowSpaceBytes = 0,
+    .stackSlotBytes = 8,
+    .stackAlignment = 16,
+    .aggregateResults = AggregateResults::SplitAcrossRegisters,
+    .aggregateRegisterBytes = 0,
+    .resultAreaPointer = std::nullopt,
+    .pointerReturned = PointerReturned::No,
+};
+
+/// Which internal convention a FakeTarget has.
+enum class FakeSaves : uint8_t
+{
+    Nothing,       ///< FakeConvention: nothing callee-saved.
+    SecondGeneral, ///< FakeSavingConvention: g1 callee-saved.
+};
+
 /// FakeTarget's host convention, of System V's shape over its registers: g1 callee-saved, two words of
 /// results in registers, a larger aggregate through a hidden pointer in g0, given back in g0.
 inline constexpr auto FakeHostConvention = ConventionRow {
@@ -98,7 +126,8 @@ inline constexpr auto FakeHostConvention = ConventionRow {
 };
 
 /// FakeTarget's stack rule: x86-64's.
-inline constexpr auto FakeStackRule = StackRule { .alignment = 16, .returnAddressBytes = 8 };
+inline constexpr auto FakeStackRule =
+    StackRule { .alignment = 16, .returnAddressBytes = 8, .savedRegisterBytes = { 8, 16 } };
 
 /// FakeTarget's frame rule unless a test asks for another: x86-64's numbers.
 inline constexpr auto FakeFrameRule = FrameRule { .bytesPerStackValue = 32, .frameOverhead = 256 };
@@ -166,6 +195,19 @@ namespace fake
         general(OperandRole::Use),
     });
     inline constexpr auto Return = std::to_array({ fixedGeneral(OperandRole::Use, 0) });
+    inline constexpr auto Store = std::to_array({
+        general(OperandRole::Use),
+        OperandConstraint {
+            .role = OperandRole::Use, .registerClass = RegisterClass::General, .memory = AllowsMemory::Yes },
+    });
+    inline constexpr auto Poll = std::to_array({ fixedGeneral(OperandRole::Def, 0) });
+    inline constexpr auto CallIndirect = std::to_array({
+        general(OperandRole::Use),
+        fixedGeneral(OperandRole::Def, 0),
+        fixedGeneral(OperandRole::Def, 1),
+        fixedFloat(OperandRole::Def, 0),
+        fixedFloat(OperandRole::Def, 1),
+    });
 } // namespace fake
 
 /// One FakeOpcode's operand constraints.
@@ -190,6 +232,9 @@ inline constexpr auto FakeConstraintTable = std::to_array<FakeConstraintRow>({
     { .opcode = FakeOpcode::Jump, .operands = fake::Jump },
     { .opcode = FakeOpcode::Branch, .operands = fake::Branch },
     { .opcode = FakeOpcode::Return, .operands = fake::Return },
+    { .opcode = FakeOpcode::Store, .operands = fake::Store },
+    { .opcode = FakeOpcode::Poll, .operands = fake::Poll },
+    { .opcode = FakeOpcode::CallIndirect, .operands = fake::CallIndirect },
 });
 
 static_assert(
@@ -292,7 +337,11 @@ class FakeTarget final: public ITarget
   public:
     /// A fake target bounding frames by @p rule.
     /// @param rule Its frame rule; a test of the frame bound passes a tighter one.
-    explicit FakeTarget(FrameRule rule = FakeFrameRule) noexcept: _rule { rule } {}
+    /// @param saves Which internal convention it has.
+    explicit FakeTarget(FrameRule rule = FakeFrameRule, FakeSaves saves = FakeSaves::Nothing) noexcept:
+        _rule { rule }, _saves { saves }
+    {
+    }
 
     [[nodiscard]] TargetDescription const& description() const noexcept override { return _description; }
 
@@ -303,7 +352,9 @@ class FakeTarget final: public ITarget
     [[nodiscard]] ConventionRow const& conventionRow(Convention convention) const override
     {
         Require(convention == Convention::WasmInternal || convention == Convention::SystemV);
-        return convention == Convention::WasmInternal ? FakeConvention : FakeHostConvention;
+        if (convention != Convention::WasmInternal)
+            return FakeHostConvention;
+        return _saves == FakeSaves::Nothing ? FakeConvention : FakeSavingConvention;
     }
 
     [[nodiscard]] std::span<PhysicalRegister const> allocatable(
@@ -344,6 +395,7 @@ class FakeTarget final: public ITarget
     /// A placeholder (x86-64, System V): the fake target generates for no machine.
     TargetDescription _description {};
     FrameRule _rule;
+    FakeSaves _saves;
 };
 
 } // namespace isoline::compiler::machine::testing

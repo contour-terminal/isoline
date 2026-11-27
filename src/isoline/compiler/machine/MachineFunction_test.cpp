@@ -6,6 +6,7 @@
 #include <expected>
 #include <limits>
 #include <memory_resource>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -17,6 +18,7 @@
 #include <isoline/compiler/machine/testing/FakeTarget.hpp>
 
 using isoline::compiler::CompileErrorCode;
+using isoline::compiler::machine::CallSite;
 using isoline::compiler::machine::checkFrame;
 using isoline::compiler::machine::checkFrameSize;
 using isoline::compiler::machine::ConstantOperand;
@@ -26,10 +28,12 @@ using isoline::compiler::machine::FrameLayout;
 using isoline::compiler::machine::FrameRule;
 using isoline::compiler::machine::Hotness;
 using isoline::compiler::machine::Immediate;
+using isoline::compiler::machine::Location;
 using isoline::compiler::machine::MachineFunction;
 using isoline::compiler::machine::MachineOperand;
 using isoline::compiler::machine::maximumFrameBytes;
 using isoline::compiler::machine::MemoryOperand;
+using isoline::compiler::machine::Move;
 using isoline::compiler::machine::OperandRole;
 using isoline::compiler::machine::PhysicalRegister;
 using isoline::compiler::machine::RegisterClass;
@@ -194,12 +198,12 @@ TEST_CASE("MachineFunction.framesKeepTheStackAtEveryCall")
     // A target without an alignment rule names none.
     auto unaligned = systemV;
     unaligned.stackAlignment = 0;
-    CHECK(
-        isBroken(checkFrame(Rule,
-                            isoline::compiler::machine::StackRule { .alignment = 0, .returnAddressBytes = 8 },
-                            unaligned,
-                            10,
-                            frame(32, 0, 0, 16))));
+    CHECK(isBroken(checkFrame(Rule,
+                              isoline::compiler::machine::StackRule {
+                                  .alignment = 0, .returnAddressBytes = 8, .savedRegisterBytes = { 8, 16 } },
+                              unaligned,
+                              10,
+                              frame(32, 0, 0, 16))));
     // The size bound still comes first, as FrameTooLarge.
     auto const tooLarge = checkFrame(Rule, stack, systemV, 0, frame(272, 0, 0, 16));
     REQUIRE_FALSE(tooLarge.has_value());
@@ -238,5 +242,60 @@ TEST_CASE("MachineFunction.fakeTargetRows")
     CHECK(target.constraints(opcodeOf(FakeOpcode::Add))[2].memory
           == isoline::compiler::machine::AllowsMemory::Yes);
     CHECK(target.constraints(opcodeOf(FakeOpcode::Call)).size() == 4);
-    CHECK(FakeConstraintTable.size() == static_cast<std::size_t>(FakeOpcode::Return) + 1);
+    CHECK(FakeConstraintTable.size()
+          == static_cast<std::size_t>(isoline::compiler::machine::testing::LastFakeOpcode) + 1);
+    CHECK(target.constraints(opcodeOf(FakeOpcode::Poll))[0].fixed == 0);
+    CHECK(target.constraints(opcodeOf(FakeOpcode::CallIndirect))[0].fixed == std::nullopt);
+}
+
+TEST_CASE("MachineFunction.movesAndCallSites")
+{
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    auto function = MachineFunction { memory };
+    auto const block = function.createBlock(Hotness::Normal);
+    auto const reg = function.createVirtualRegister(RegisterClass::General);
+    auto const first =
+        function.append(block,
+                        opcodeOf(FakeOpcode::Constant),
+                        std::to_array<MachineOperand>({ def(function, reg), Immediate { 1 } }));
+    auto const second =
+        function.append(block,
+                        opcodeOf(FakeOpcode::Store),
+                        std::to_array<MachineOperand>({ use(function, reg), MemoryOperand {} }));
+    // Before allocation, no instruction has moves.
+    CHECK(function.movesBefore(first).empty());
+    CHECK(function.moveCount() == 0);
+    auto const g0 = PhysicalRegister { .registerClass = RegisterClass::General, .number = 0 };
+    auto const moves =
+        std::to_array({ Move { .from = Location::of(g0), .to = Location::slot(RegisterClass::General, 8) } });
+    function.setMovesBefore(second, moves);
+    CHECK(function.movesBefore(first).empty());
+    REQUIRE(function.movesBefore(second).size() == 1);
+    CHECK(function.movesBefore(second)[0] == moves[0]);
+    CHECK(function.moveCount() == 1);
+    function.addCallSite(second, 48);
+    REQUIRE(function.callSites().size() == 1);
+    CHECK(function.callSites()[0] == CallSite { .instruction = second, .outgoingBytes = 48 });
+    // A slot is one place whatever it holds; a register is one of its class.
+    CHECK(Location::slot(RegisterClass::Float, 8).samePlace(Location::slot(RegisterClass::General, 8)));
+    CHECK_FALSE(Location::of(g0).samePlace(
+        Location::of(PhysicalRegister { .registerClass = RegisterClass::Float, .number = 0 })));
+    CHECK(Location::of(g0).physicalRegister() == g0);
+}
+
+TEST_CASE("MachineFunction.operandsCompareByValue")
+{
+    auto const operands = std::to_array<MachineOperand>({
+        RegisterOperand { .name = RegisterName::of(PhysicalRegister {}), .role = OperandRole::Use },
+        Immediate { 5 },
+        MemoryOperand { .displacement = 8 },
+        isoline::compiler::machine::LabelOperand { .block = isoline::compiler::machine::BlockId { 1 } },
+        isoline::compiler::machine::StubOperand { .stub = 3 },
+        ConstantOperand { .slot = 2 },
+    });
+    for (auto const& operand: operands)
+    {
+        CHECK(operand == operand);
+        CHECK_FALSE(operand == MachineOperand { Immediate { 6 } });
+    }
 }

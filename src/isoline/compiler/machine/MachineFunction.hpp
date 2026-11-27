@@ -195,6 +195,81 @@ struct MachineBlock
     Hotness hotness = Hotness::Normal;       ///< Whether it is expected to run.
 };
 
+/// What kind of place a Location names.
+enum class LocationKind : uint8_t
+{
+    None,     ///< No place: a value the register allocator has not placed.
+    Register, ///< A physical register.
+    Slot,     ///< An 8-byte stack slot of the frame.
+};
+
+/// Where a value lives at a point of an allocated function: a physical register, or a stack slot named by its
+/// byte offset from the frame's bottom (the stack pointer every call leaves from, FrameLayout). A slot holds
+/// one 64-bit word whatever the class: an integer, a pointer, a Ref or a float's bits.
+struct Location
+{
+    LocationKind kind = LocationKind::None;               ///< Which kind of place.
+    RegisterClass registerClass = RegisterClass::General; ///< The class of the value it holds.
+    uint32_t index = 0; ///< The register's number in its class, or the slot's byte offset.
+
+    /// The location of @p reg.
+    [[nodiscard]] static constexpr Location of(PhysicalRegister reg) noexcept
+    {
+        return Location { .kind = LocationKind::Register,
+                          .registerClass = reg.registerClass,
+                          .index = reg.number };
+    }
+
+    /// The slot at @p offset bytes from the frame's bottom, holding a value of @p registerClass.
+    [[nodiscard]] static constexpr Location slot(RegisterClass registerClass, uint32_t offset) noexcept
+    {
+        return Location { .kind = LocationKind::Slot, .registerClass = registerClass, .index = offset };
+    }
+
+    /// The physical register it names (kind Register).
+    [[nodiscard]] constexpr PhysicalRegister physicalRegister() const noexcept
+    {
+        return PhysicalRegister { .registerClass = registerClass, .number = static_cast<uint8_t>(index) };
+    }
+
+    /// Whether both name the same place. The class is what the place holds, not where it is: a slot is one
+    /// place whatever class it holds.
+    [[nodiscard]] constexpr bool samePlace(Location const& other) const noexcept
+    {
+        if (kind != other.kind || index != other.index)
+            return false;
+        return kind == LocationKind::Slot || registerClass == other.registerClass;
+    }
+
+    /// Whether both are the same location, class included.
+    [[nodiscard]] constexpr bool operator==(Location const&) const noexcept = default;
+};
+
+/// One move the register allocator inserts: the value at @p from copied to @p to. Either may be a slot,
+/// both included: the encoder lowers a slot-to-slot move without a register of the function's (x86-64:
+/// push and pop of the memory operand).
+struct Move
+{
+    Location from {}; ///< Where the value is.
+    Location to {};   ///< Where it goes.
+
+    /// Whether both are the same move.
+    [[nodiscard]] constexpr bool operator==(Move const&) const noexcept = default;
+};
+
+/// A call site of a function, and the outgoing area it needs: its stack arguments and result area, shadow
+/// space included (machine::assignCall()'s arguments.memoryBytes plus its results.memoryBytes), as the
+/// selector records it (MachineFunction::addCallSite()). The register allocator sizes the frame's outgoing
+/// area to the largest.
+struct CallSite
+{
+    uint32_t instruction = 0;   ///< The call instruction, by index.
+    uint32_t outgoingBytes = 0; ///< The bytes of outgoing area it needs at the frame's bottom.
+
+    /// Whether both are the same call site.
+    [[nodiscard]] constexpr bool operator==(CallSite const&) const noexcept = default;
+};
+
 /// What a function's frame came to, as the register allocator decides it and the encoder lays it out. From
 /// the bottom (the stack pointer every call leaves from) up: the outgoing area (every call's stack arguments,
 /// and the host convention's shadow space, which a callee may write), the spill slots, the callee-saved
@@ -214,7 +289,8 @@ struct FrameLayout
     [[nodiscard]] bool operator==(FrameLayout const&) const noexcept = default;
 };
 
-/// A function in machine terms. Movable, not copyable: every container allocates from its memory.
+/// A function in machine terms. Move-constructible only: every container allocates from its memory, which an
+/// assignment could not keep.
 class MachineFunction
 {
   public:
@@ -223,7 +299,7 @@ class MachineFunction
 
     MachineFunction(MachineFunction&&) noexcept = default;
     MachineFunction(MachineFunction const&) = delete;
-    MachineFunction& operator=(MachineFunction&&) = default;
+    MachineFunction& operator=(MachineFunction&&) = delete; // its containers may not share an allocator
     MachineFunction& operator=(MachineFunction const&) = delete;
     ~MachineFunction() = default;
 
@@ -302,6 +378,24 @@ class MachineFunction
     /// The constant pool, by slot.
     [[nodiscard]] std::span<uint64_t const> constants() const noexcept { return _constants; }
 
+    /// Records that the instruction at @p instruction is a call needing @p outgoingBytes of outgoing area
+    /// (Require: one of the function's instructions).
+    void addCallSite(uint32_t instruction, uint32_t outgoingBytes);
+
+    /// The call sites, in the order they were recorded.
+    [[nodiscard]] std::span<CallSite const> callSites() const noexcept { return _callSites; }
+
+    /// Gives the instruction at @p instruction the moves that run before it, in order, once (Require: one of
+    /// the function's instructions, without moves yet). The register allocator's: its spills, reloads, the
+    /// copies into and out of fixed registers, and the edge moves.
+    void setMovesBefore(uint32_t instruction, std::span<Move const> moves);
+
+    /// The moves that run before the instruction at @p instruction, in order; none before allocation.
+    [[nodiscard]] std::span<Move const> movesBefore(uint32_t instruction) const noexcept;
+
+    /// How many moves the allocator inserted, before every instruction.
+    [[nodiscard]] uint32_t moveCount() const noexcept { return static_cast<uint32_t>(_moves.size()); }
+
     /// What the function allocates from.
     [[nodiscard]] std::pmr::memory_resource& memory() const noexcept { return *_memory; }
 
@@ -317,6 +411,9 @@ class MachineFunction
     std::pmr::vector<VirtualRegister> _registers; ///< Block parameters and edge arguments.
     std::pmr::vector<MachineEdge> _edges;
     std::pmr::vector<uint64_t> _constants;
+    std::pmr::vector<CallSite> _callSites;
+    std::pmr::vector<PoolRange> _movesBefore; ///< Per instruction, its moves; empty until the allocator ran.
+    std::pmr::vector<Move> _moves;
 };
 
 /// The control-flow graph of @p function: each block's successors are its edges' targets, in order.
