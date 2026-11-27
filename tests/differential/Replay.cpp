@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include "Comparison.hpp"
@@ -134,13 +135,20 @@ void printListings(std::span<std::byte const> module, Lane lane)
 
 void consultOracle(std::filesystem::path const& wasmtime, std::span<std::byte const> module, uint64_t seed)
 {
-    auto runner = ProcessRunner { std::filesystem::temp_directory_path() };
-    auto files =
-        DirectoryModuleFiles { std::filesystem::temp_directory_path() / "isoline-differential-oracle" };
-    auto const oracle = WasmtimeOracle { wasmtime, runner, files };
-    for (auto const& comparison: compareWithOracle(oracle, module, seedBytes(seed)))
-        std::println(
-            "oracle {}: {}, {}", comparison.exportName, describe(comparison.verdict), comparison.detail);
+    // A directory of this run's own, removed when it is done.
+    auto const scratch = std::filesystem::temp_directory_path()
+                         / std::format("isoline-differential-replay-{:016x}", memoryDigest(module) ^ seed);
+    std::filesystem::create_directories(scratch);
+    {
+        auto runner = ProcessRunner { scratch };
+        auto files = DirectoryModuleFiles { scratch / "modules" };
+        auto const oracle = WasmtimeOracle { wasmtime, runner, files };
+        for (auto const& comparison: compareWithOracle(oracle, module, seedBytes(seed)))
+            std::println(
+                "oracle {}: {}, {}", comparison.exportName, describe(comparison.verdict), comparison.detail);
+    }
+    auto ignored = std::error_code {};
+    std::filesystem::remove_all(scratch, ignored);
 }
 
 } // namespace
@@ -182,7 +190,7 @@ int main(int argc, char const* argv[])
     printListings(*module, options->lane);
     if (options->oracle)
         consultOracle(*options->oracle, *module, options->seed);
-    auto const outcome = runner.compare(*observations);
+    auto const outcome = runner.compare(*module, seed, *observations);
     if (outcome)
     {
         std::println("every participant agrees");

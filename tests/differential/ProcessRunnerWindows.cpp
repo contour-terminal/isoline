@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// ProcessRunner::run() on Windows: CreateProcessW, standard input from NUL, each output to a file.
+// ProcessRunner::run() on Windows: CreateProcessW, standard input from NUL, each output to a file, and a
+// deadline past which the process is terminated.
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 #include <windows.h>
 
@@ -18,6 +23,12 @@ namespace isoline::differential
 
 namespace
 {
+    /// The first NTSTATUS error status (severity "error"): a process that ends with one ended abnormally,
+    /// by an unhandled exception or a fail-fast.
+    constexpr auto ErrorStatusBase = DWORD { 0xC000'0000 };
+    /// The status the runner ends a process with at its deadline.
+    constexpr auto KilledStatus = UINT { 0xC000'013A };
+
     /// A handle, closed with its scope.
     class Handle
     {
@@ -97,22 +108,15 @@ namespace
                            FILE_ATTRIBUTE_NORMAL,
                            nullptr);
     }
-} // namespace
-
-std::expected<ProcessResult, std::string> ProcessRunner::run(std::filesystem::path const& program,
-                                                             std::span<std::string const> arguments)
-{
-    auto const stem = _scratchDirectory / std::format("process-{}-{}", GetCurrentProcessId(), _runs++);
-    auto const outputPath = std::filesystem::path { stem.wstring() + L".out" };
-    auto const errorPath = std::filesystem::path { stem.wstring() + L".err" };
-    auto result = ProcessResult {};
+    /// Starts @p program with its standard handles, and waits for it until @p timeout, terminating it then.
+    /// @return Its exit status, or why it gave no result.
+    [[nodiscard]] std::expected<DWORD, ProcessError> runToItsEnd(std::filesystem::path const& program,
+                                                                 std::span<std::string const> arguments,
+                                                                 std::chrono::milliseconds timeout,
+                                                                 Handle const& input,
+                                                                 Handle const& output,
+                                                                 Handle const& error)
     {
-        auto const input = Handle { inheritable(L"NUL", GENERIC_READ, OPEN_EXISTING) };
-        auto const output = Handle { inheritable(outputPath, GENERIC_WRITE, CREATE_ALWAYS) };
-        auto const error = Handle { inheritable(errorPath, GENERIC_WRITE, CREATE_ALWAYS) };
-        if (!input.isOpen() || !output.isOpen() || !error.isOpen())
-            return std::unexpected { std::format("cannot open the files of {}", program.string()) };
-
         auto commandLine = std::wstring {};
         appendQuoted(commandLine, program.wstring());
         for (auto const& argument: arguments)
@@ -135,27 +139,67 @@ std::expected<ProcessResult, std::string> ProcessRunner::run(std::filesystem::pa
                            &startup,
                            &process)
             == 0)
-            return std::unexpected { std::format(
-                "cannot run {}: error {}", program.string(), GetLastError()) };
+            return std::unexpected { ProcessError {
+                .kind = ProcessErrorKind::NotStarted,
+                .detail = std::format("cannot run {}: error {}", program.string(), GetLastError()) } };
         auto const processHandle = Handle { process.hProcess };
         auto const threadHandle = Handle { process.hThread };
-        WaitForSingleObject(processHandle.get(), INFINITE);
+        auto const milliseconds = static_cast<DWORD>(std::min<std::chrono::milliseconds::rep>(
+            timeout.count(), std::chrono::milliseconds::rep { INFINITE - 1 }));
+        if (WaitForSingleObject(processHandle.get(), milliseconds) == WAIT_TIMEOUT)
+        {
+            TerminateProcess(processHandle.get(), KilledStatus);
+            WaitForSingleObject(processHandle.get(), INFINITE);
+            return std::unexpected { ProcessError {
+                .kind = ProcessErrorKind::TimedOut,
+                .detail = std::format("{} ran past its deadline and was killed", program.string()) } };
+        }
         auto exitCode = DWORD { 0 };
         GetExitCodeProcess(processHandle.get(), &exitCode);
-        result.exitCode = static_cast<int>(exitCode);
+        return exitCode;
     }
-    auto standardOutput = readWholeFile(outputPath);
-    auto standardError = readWholeFile(errorPath);
-    auto ignored = std::error_code {};
-    std::filesystem::remove(outputPath, ignored);
-    std::filesystem::remove(errorPath, ignored);
-    if (!standardOutput)
-        return std::unexpected { standardOutput.error() };
-    if (!standardError)
-        return std::unexpected { standardError.error() };
-    result.standardOutput = std::move(*standardOutput);
-    result.standardError = std::move(*standardError);
-    return result;
+} // namespace
+
+std::expected<ProcessResult, ProcessError> ProcessRunner::run(std::filesystem::path const& program,
+                                                              std::span<std::string const> arguments,
+                                                              std::chrono::milliseconds timeout)
+{
+    auto const stem = _scratchDirectory / std::format("process-{}-{}", GetCurrentProcessId(), _runs++);
+    auto const outputPath = std::filesystem::path { stem.wstring() + L".out" };
+    auto const errorPath = std::filesystem::path { stem.wstring() + L".err" };
+    auto exitCode = DWORD { 0 };
+    // Set when the process gave no result; the output files are removed once their handles are closed,
+    // since Windows deletes no file that is open.
+    auto failure = std::optional<ProcessError> {};
+    {
+        auto const input = Handle { inheritable(L"NUL", GENERIC_READ, OPEN_EXISTING) };
+        auto const output = Handle { inheritable(outputPath, GENERIC_WRITE, CREATE_ALWAYS) };
+        auto const error = Handle { inheritable(errorPath, GENERIC_WRITE, CREATE_ALWAYS) };
+        if (!input.isOpen() || !output.isOpen() || !error.isOpen())
+            failure = ProcessError { .kind = ProcessErrorKind::NotStarted,
+                                     .detail = std::format("cannot open the files of {}", program.string()) };
+
+        if (!failure)
+        {
+            if (auto const ran = runToItsEnd(program, arguments, timeout, input, output, error))
+                exitCode = *ran;
+            else
+                failure = ran.error();
+        }
+    }
+    if (failure)
+    {
+        removeOutputs(outputPath, errorPath);
+        return std::unexpected { std::move(*failure) };
+    }
+    if (exitCode >= ErrorStatusBase)
+    {
+        removeOutputs(outputPath, errorPath);
+        return std::unexpected { ProcessError {
+            .kind = ProcessErrorKind::Killed,
+            .detail = std::format("{} ended with status {:#010x}", program.string(), exitCode) } };
+    }
+    return readOutputs(outputPath, errorPath, static_cast<int>(exitCode));
 }
 
 } // namespace isoline::differential

@@ -70,6 +70,16 @@ namespace isoline::differential
 /// @return The text.
 [[nodiscard]] std::string describe(std::span<std::vector<runtime::Ref> const> tables);
 
+/// The live exceptions as text: each one's address, tag and payload.
+/// @param exceptions The exceptions.
+/// @return The text.
+[[nodiscard]] std::string describe(std::span<LiveException const> exceptions);
+
+/// Segment states as text: `data [live, dropped], elements [dropped]`.
+/// @param segments The states.
+/// @return The text.
+[[nodiscard]] std::string describe(SegmentStates const& segments);
+
 /// Numbers or names as text, comma-separated in brackets.
 /// @param items The numbers.
 /// @return The text.
@@ -137,10 +147,17 @@ inline constexpr auto ObservationFields = std::to_array<ObservationField>({
       .agree = [](Observation const& expected,
                   Observation const& actual) { return expected.growth == actual.growth; },
       .show = [](Observation const& observation) { return describe(observation.growth); } },
-    { .name = "liveExceptions",
+    { .name = "exceptions",
       .agree = [](Observation const& expected,
-                  Observation const& actual) { return expected.liveExceptions == actual.liveExceptions; },
-      .show = [](Observation const& observation) { return std::to_string(observation.liveExceptions); } },
+                  Observation const& actual) { return expected.exceptions == actual.exceptions; },
+      .show =
+          [](Observation const& observation) {
+              return describe(std::span<LiveException const> { observation.exceptions });
+          } },
+    { .name = "segments",
+      .agree = [](Observation const& expected,
+                  Observation const& actual) { return expected.segments == actual.segments; },
+      .show = [](Observation const& observation) { return describe(observation.segments); } },
     { .name = "chargedStackValues",
       .agree =
           [](Observation const& expected, Observation const& actual) {
@@ -160,6 +177,7 @@ inline constexpr auto ObservationFields = std::to_array<ObservationField>({
 struct FieldDifference
 {
     std::string field;    ///< The field: a row of ObservationFields, "instantiation" or "calls".
+    std::size_t call = 0; ///< Where: 0 for the instantiation, i + 1 for the call ModuleObservation::calls[i].
     std::string expected; ///< The expected value, after the call's name.
     std::string actual;   ///< The actual value, after the call's name.
 };

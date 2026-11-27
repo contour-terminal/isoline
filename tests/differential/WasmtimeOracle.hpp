@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -77,14 +78,65 @@ using OracleResult = std::variant<std::vector<runtime::Value>, OracleTrap, Oracl
 enum class OracleErrorKind : uint8_t
 {
     Ineligible,      ///< The module imports, or the export takes or returns a vector or a reference.
-    Unrepresentable, ///< An argument is a NaN other than the canonical one, which Wasmtime's command line
-                     ///< cannot pass.
+    Unrepresentable, ///< An argument is a NaN other than the canonical one, or the export's name holds a
+                     ///< NUL: neither can Wasmtime's command line pass.
     ModuleFile,      ///< The module's file could not be written.
-    Process,         ///< Wasmtime could not be run.
+    Process,         ///< Wasmtime could not be run: it did not start, crashed, ran past its deadline, exited
+                     ///< with a shell's 127, or failed without a word.
     UnmappedTrap,    ///< Wasmtime trapped with a message no TrapMappingRows row has.
-    Unparsed,        ///< Its output is neither results, nor a trap, nor an exception.
+    Unparsed,        ///< It succeeded, but its output is not the export's results.
+    Refused,         ///< A limit of its own refused the module or the call: its error names a
+                     ///< WasmtimeLimitRows row.
+    Rejected,        ///< It failed with an error that is neither a trap nor one of its limits: an option, an
+                     ///< argument or a feature it refused, which the harness asked for.
     Exhausted,       ///< Wasmtime's own timeout ended the call: its answer would not compare.
 };
+
+/// The last OracleErrorKind, for checking OracleErrorRows' size.
+inline constexpr auto LastOracleErrorKind = OracleErrorKind::Exhausted;
+
+/// Whose fault it is that the oracle has no answer.
+enum class OracleFault : uint8_t
+{
+    Tolerated,    ///< The call's or Wasmtime's own: the call is not compared, and the replay goes on.
+    HarnessFault, ///< The harness's: the oracle cannot be trusted, and the replay fails.
+};
+
+/// One OracleErrorKind: its name, and whose fault it is.
+struct OracleErrorRow
+{
+    OracleErrorKind kind;  ///< The kind.
+    std::string_view name; ///< Its name, as a replay's tally prints it.
+    OracleFault fault;     ///< Whose fault.
+};
+
+/// Every OracleErrorKind, in order.
+inline constexpr auto OracleErrorRows = std::to_array<OracleErrorRow>({
+    { .kind = OracleErrorKind::Ineligible, .name = "ineligible", .fault = OracleFault::Tolerated },
+    { .kind = OracleErrorKind::Unrepresentable, .name = "unrepresentable", .fault = OracleFault::Tolerated },
+    { .kind = OracleErrorKind::ModuleFile, .name = "module file", .fault = OracleFault::HarnessFault },
+    { .kind = OracleErrorKind::Process, .name = "process", .fault = OracleFault::HarnessFault },
+    { .kind = OracleErrorKind::UnmappedTrap, .name = "unmapped trap", .fault = OracleFault::HarnessFault },
+    { .kind = OracleErrorKind::Unparsed, .name = "unparsed", .fault = OracleFault::HarnessFault },
+    { .kind = OracleErrorKind::Refused, .name = "refused", .fault = OracleFault::Tolerated },
+    { .kind = OracleErrorKind::Rejected, .name = "rejected", .fault = OracleFault::HarnessFault },
+    { .kind = OracleErrorKind::Exhausted, .name = "exhausted", .fault = OracleFault::Tolerated },
+});
+
+/// One of Wasmtime's own limits, as its error words it: an instance it cannot allocate, a resource it runs
+/// out of. A call it refuses for one is not compared, but counted; every other failure that is no trap is
+/// the harness's (OracleErrorKind::Rejected).
+struct WasmtimeLimitRow
+{
+    std::string_view message; ///< What its error says, anywhere in standard error.
+    std::string_view meaning; ///< Which limit that is.
+};
+
+/// Every limit of Wasmtime 50 (scripts/tools.lock) that refuses a module or a call of the oracle's.
+inline constexpr auto WasmtimeLimitRows = std::to_array<WasmtimeLimitRow>({
+    { .message = "out of memory (failed to allocate",
+      .meaning = "a memory or table larger than the host gives it: measured with a table of 10^11 elements" },
+});
 
 /// Why the oracle has no answer, and what it saw.
 struct OracleError
@@ -123,6 +175,9 @@ class WasmtimeOracle
   public:
     /// How long Wasmtime may run one call, by default.
     static constexpr auto DefaultTimeout = std::chrono::seconds { 10 };
+    /// How much longer than its own timeout the process may run before the runner kills it: start-up, and a
+    /// slow machine.
+    static constexpr auto ProcessGrace = std::chrono::seconds { 50 };
 
     /// An oracle running @p wasmtime through @p runner, on files @p files writes.
     /// @param wasmtime The pinned Wasmtime (scripts/fetch-tools.py --tool wasmtime).

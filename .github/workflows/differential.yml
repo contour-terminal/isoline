@@ -1,0 +1,70 @@
+name: Differential
+
+# The differential corpus on every engine, and Wasmtime as the oracle: called by build.yml on every pull
+# request (sample 8) and by differential-nightly.yml (sample 1). The corpus test is sharded by seed range
+# (ISOLINE_DIFFERENTIAL_SHARDS ctest entries), and ctest runs the shards side by side.
+on:
+  workflow_call:
+    inputs:
+      sample:
+        description: "Lane 2 and the oracle replay the seeds divisible by this; lane 1 replays every seed"
+        type: number
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CTEST_OUTPUT_ON_FAILURE: 1
+  LLVM_VERSION: "22"
+
+jobs:
+  replay:
+    name: Replay (sample 1/${{ inputs.sample }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get install -qy ninja-build
+      - name: Fetch the pinned wasm-tools and Wasmtime
+        # A failed fetch fails the step: the replay never runs without its oracle by accident.
+        run: |
+          set -euo pipefail
+          python3 -I scripts/fetch-tools.py --tool wasm-tools
+          wasmtime=$(python3 -I scripts/fetch-tools.py --tool wasmtime)
+          test -x "$wasmtime"
+          echo "ISOLINE_WASMTIME=$wasmtime" >> "$GITHUB_ENV"
+      # The corpus is a function of smith's pin (the wasm-tools rows), the cut's features and the generator
+      # alone, so it is cached by those and generated only when one of them changes.
+      - name: Key the differential corpus
+        id: corpus-key
+        run: |
+          set -euo pipefail
+          key=$({ grep -E '^(wasm-tools\.|cut\.features)' scripts/tools.lock; cat scripts/make-differential-corpus.py; } | sha256sum | cut -c1-32)
+          echo "key=differential-corpus-$key" >> "$GITHUB_OUTPUT"
+      - name: Restore the differential corpus
+        id: corpus
+        uses: actions/cache@v4
+        with:
+          path: out/corpus/differential
+          key: ${{ steps.corpus-key.outputs.key }}
+      - name: Generate the differential corpus
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: python3 -I scripts/make-differential-corpus.py --seeds 10000
+      - name: Configure
+        # clang-tidy runs in the ASan job already.
+        run: >
+          cmake --preset clang-release
+          -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
+          -DISOLINE_CLANG_TIDY=OFF
+          -DISOLINE_FETCH_DEPS=ON
+          -DISOLINE_DIFFERENTIAL_SAMPLE=${{ inputs.sample }}
+      - name: Build
+        run: cmake --build --preset clang-release --target isoline_differential_test isoline-differential-replay
+      - name: Replay the corpus on every engine
+        run: ctest --test-dir out/clang-release -L differential -j"$(nproc)" --output-on-failure

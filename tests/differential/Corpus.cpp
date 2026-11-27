@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -23,6 +24,7 @@
 #include "DifferentialRunner.hpp"
 #include "Observation.hpp"
 #include "ProcessRunner.hpp"
+#include "Reach.hpp"
 #include "WasmtimeOracle.hpp"
 #include <isoline/binary/Types.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
@@ -41,9 +43,6 @@ namespace isoline::differential
 
 namespace
 {
-    /// The bits of the seed's digest that choose whether a seed's run is interrupted.
-    constexpr auto InterruptedSeeds = uint64_t { 2 };
-
     /// The traps of Isoline's own limits, which Wasmtime's limits do not match: a call that ends on one
     /// is not compared with the oracle.
     constexpr auto OwnLimitTraps = std::to_array<runtime::TrapCode>({
@@ -145,9 +144,8 @@ std::array<std::byte, 8> seedBytes(uint64_t seed) noexcept
 InterruptionPlan interruptionFor(std::span<std::byte const> seed) noexcept
 {
     auto stream = ArgumentStream { seed, ~uint64_t { 0 } };
-    if (stream.next() % InterruptedSeeds == 0)
-        return {};
-    return InterruptionPlan { .interruptAtPoll = 1 + (stream.next() % MaxInterruptPoll) };
+    auto const poll = 1 + (stream.next() % MaxInterruptPoll);
+    return InterruptionPlan { .interruptAtPoll = poll, .exportPick = stream.next() };
 }
 
 std::optional<Lane> laneNamed(std::string_view name) noexcept
@@ -239,19 +237,25 @@ std::vector<OracleComparison> compareWithOracle(WasmtimeOracle const& oracle,
         auto const& type = decoded.types[decoded.functions[entry.index]];
         if (!isOracleEligible(decoded, type))
             continue;
-        auto& comparison = comparisons.emplace_back(OracleComparison {
-            .exportName = entry.name, .verdict = OracleVerdict::NotCompared, .detail = {} });
+        auto& comparison = comparisons.emplace_back(OracleComparison { .exportName = entry.name,
+                                                                       .verdict = OracleVerdict::NotCompared,
+                                                                       .detail = {},
+                                                                       .error = std::nullopt });
         auto const call = callFresh(*validated, entry.name, type, seed, ordinal++);
         if (call.instance == FreshInstance::RefusedForLimits || endsOnOwnLimit(call.outcome, call.growth))
         {
             comparison.detail = std::format("Isoline ended on its own limit: {}", describe(call.outcome));
             continue;
         }
+        comparison.isoline = std::holds_alternative<runtime::Abrupt>(call.outcome) ? CallEnding::Abruptly
+                                                                                   : CallEnding::WithResults;
         auto const answer = oracle.call(module, entry.name, call.args);
         if (!answer)
         {
-            comparison.detail = std::format(
-                "no answer ({}): {}", std::to_underlying(answer.error().kind), answer.error().detail);
+            comparison.error = answer.error().kind;
+            comparison.detail = std::format("no answer ({}): {}",
+                                            OracleErrorRows[std::to_underlying(answer.error().kind)].name,
+                                            answer.error().detail);
             continue;
         }
         comparison.verdict =
@@ -272,6 +276,150 @@ std::vector<OracleComparison> compareWithOracle(WasmtimeOracle const& oracle,
                                         oracleText);
     }
     return comparisons;
+}
+
+std::span<CorpusModule const> shardOf(std::span<CorpusModule const> modules,
+                                      std::size_t shard,
+                                      std::size_t shards) noexcept
+{
+    auto const begin = modules.size() * shard / shards;
+    auto const end = modules.size() * (shard + 1) / shards;
+    return modules.subspan(begin, end - begin);
+}
+
+uint64_t ReplayTally::harnessFaults() const noexcept
+{
+    auto faults = uint64_t { 0 };
+    for (auto const& row: OracleErrorRows)
+    {
+        if (row.fault == OracleFault::HarnessFault)
+            faults += oracleErrors[std::to_underlying(row.kind)];
+    }
+    return faults;
+}
+
+namespace
+{
+    /// Records @p divergence of @p path in @p lane, with its reproducer.
+    void recordDivergence(ReplayTally& tally,
+                          CorpusModule const& module,
+                          Lane lane,
+                          Divergence const& divergence)
+    {
+        auto const& [path, seed] = module;
+        tally.divergences.push_back(
+            std::format("{}: {} diverges in {}: expected {}, got {}\n  reproduce: "
+                        "isoline-differential-replay {} {} --lane {}",
+                        path.string(),
+                        divergence.participant,
+                        divergence.field,
+                        divergence.expected,
+                        divergence.actual,
+                        path.string(),
+                        seed,
+                        lane == Lane::Deterministic ? "deterministic" : "production"));
+    }
+
+    /// The first participant's observation in @p mode.
+    [[nodiscard]] ParticipantObservation const* firstIn(std::span<ParticipantObservation const> observations,
+                                                        ObservationMode mode) noexcept
+    {
+        auto const found = std::ranges::find(observations, mode, &ParticipantObservation::mode);
+        return found == observations.end() ? nullptr : &*found;
+    }
+} // namespace
+
+ReplayTally replayCorpus(std::span<CorpusModule const> modules,
+                         ReplayScope const& scope,
+                         WasmtimeOracle const* oracle)
+{
+    auto tally = ReplayTally {};
+    auto const participants = everyEngine();
+    for (auto const& entry: modules)
+    {
+        auto const& [path, seed] = entry;
+        auto const module = readModule(path);
+        if (!module)
+        {
+            tally.divergences.push_back(std::format("{}: {}", path.string(), module.error()));
+            continue;
+        }
+        auto const bytes = seedBytes(seed);
+        auto const plan = interruptionFor(bytes);
+        auto const first = DifferentialRunner { participants, Lane::Deterministic, FuzzLimits, plan };
+        auto const observations = first.observe(*module, bytes);
+        if (!observations)
+        {
+            ++tally.modules[std::to_underlying(observations.error())];
+            continue;
+        }
+        ++tally.modules[std::to_underlying(Applicability::Compared)];
+        if (auto const* unobserved = firstIn(*observations, ObservationMode::Unobserved);
+            unobserved != nullptr && unobserved->observation)
+            tally.calls += unobserved->observation->calls.size();
+        if (auto const* observed = firstIn(*observations, ObservationMode::Observed);
+            observed != nullptr && observed->observation)
+            tally.reach.add(*observed->observation);
+        if (auto const outcome = first.compare(*module, bytes, *observations); !outcome)
+            recordDivergence(tally, entry, Lane::Deterministic, outcome.error());
+        if (!isSampled(seed, scope))
+            continue;
+        ++tally.sampled;
+
+        // Lane 2 reuses the reference's observations: it runs the validated module itself, whatever the lane.
+        auto const reference =
+            std::vector<ParticipantObservation> { *firstIn(*observations, ObservationMode::Unobserved),
+                                                  *firstIn(*observations, ObservationMode::Observed) };
+        auto const second = DifferentialRunner { participants, Lane::Production, FuzzLimits, plan };
+        if (auto const secondObservations = second.observe(*module, bytes, reference))
+        {
+            if (auto const outcome = second.compare(*module, bytes, *secondObservations); !outcome)
+                recordDivergence(tally, entry, Lane::Production, outcome.error());
+        }
+        if (oracle == nullptr)
+            continue;
+        for (auto const& comparison: compareWithOracle(*oracle, *module, bytes))
+        {
+            ++tally.verdicts[std::to_underlying(comparison.verdict)];
+            if (comparison.error)
+                ++tally.oracleErrors[std::to_underlying(*comparison.error)];
+            if (comparison.error == OracleErrorKind::Refused && comparison.isoline == CallEnding::WithResults)
+                ++tally.refusedWhileIsolineReturned;
+            if (comparison.verdict == OracleVerdict::Disagrees
+                || (comparison.error
+                    && OracleErrorRows[std::to_underlying(*comparison.error)].fault
+                           == OracleFault::HarnessFault))
+                tally.divergences.push_back(
+                    std::format("{}: Wasmtime {} on {}: {}\n  reproduce: "
+                                "isoline-differential-replay {} {} --oracle <wasmtime>",
+                                path.string(),
+                                comparison.verdict == OracleVerdict::Disagrees ? "disagrees" : "fails",
+                                comparison.exportName,
+                                comparison.detail,
+                                path.string(),
+                                seed));
+        }
+    }
+    return tally;
+}
+
+std::string describe(ReplayTally const& tally)
+{
+    auto text = std::format("modules: compared {}, invalid {}, unsupported import {}; calls {}; sampled {}\n",
+                            tally.modules[std::to_underlying(Applicability::Compared)],
+                            tally.modules[std::to_underlying(Applicability::Invalid)],
+                            tally.modules[std::to_underlying(Applicability::UnsupportedImport)],
+                            tally.calls,
+                            tally.sampled);
+    text += std::format("oracle: agrees {}, disagrees {}, not compared {}; no answer:",
+                        tally.verdicts[std::to_underlying(OracleVerdict::Agrees)],
+                        tally.verdicts[std::to_underlying(OracleVerdict::Disagrees)],
+                        tally.verdicts[std::to_underlying(OracleVerdict::NotCompared)]);
+    for (auto const& row: OracleErrorRows)
+        text += std::format(" {} {},", row.name, tally.oracleErrors[std::to_underlying(row.kind)]);
+    text += std::format(" refused while Isoline returned results {}", tally.refusedWhileIsolineReturned);
+    text += std::format("\nreached: {}\ndivergences: {}\n", describe(tally.reach), tally.divergences.size());
+    return text;
 }
 
 } // namespace isoline::differential

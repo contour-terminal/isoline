@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace isoline::differential
@@ -15,6 +16,31 @@ namespace isoline::differential
 ProcessRunner::ProcessRunner(std::filesystem::path scratchDirectory):
     _scratchDirectory { std::move(scratchDirectory) }
 {
+}
+
+std::expected<ProcessResult, ProcessError> readOutputs(std::filesystem::path const& outputPath,
+                                                       std::filesystem::path const& errorPath,
+                                                       int exitCode)
+{
+    auto standardOutput = readWholeFile(outputPath);
+    auto standardError = readWholeFile(errorPath);
+    removeOutputs(outputPath, errorPath);
+    if (!standardOutput)
+        return std::unexpected { ProcessError { .kind = ProcessErrorKind::Output,
+                                                .detail = standardOutput.error() } };
+    if (!standardError)
+        return std::unexpected { ProcessError { .kind = ProcessErrorKind::Output,
+                                                .detail = standardError.error() } };
+    return ProcessResult { .exitCode = exitCode,
+                           .standardOutput = std::move(*standardOutput),
+                           .standardError = std::move(*standardError) };
+}
+
+void removeOutputs(std::filesystem::path const& outputPath, std::filesystem::path const& errorPath) noexcept
+{
+    auto ignored = std::error_code {};
+    std::filesystem::remove(outputPath, ignored);
+    std::filesystem::remove(errorPath, ignored);
 }
 
 std::expected<std::string, std::string> readWholeFile(std::filesystem::path const& path)
