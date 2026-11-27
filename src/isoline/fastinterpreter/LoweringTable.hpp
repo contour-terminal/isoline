@@ -643,16 +643,21 @@ namespace detail
         constexpr auto TailCalls = std::to_array<binary::Opcode>({ binary::Opcode::ReturnCall,
                                                                    binary::Opcode::ReturnCallIndirect,
                                                                    binary::Opcode::ReturnCallRef });
-        return std::ranges::all_of(CallTable, [&TailCalls](CallRow const& row) {
+        // A loop, not std::ranges::all_of: MSVC calls no immediate function (callImmediates()) from a lambda
+        // (C7595).
+        for (auto const& row: CallTable)
+        {
             auto const& info = operationRow(row.operation);
             auto const tail = std::ranges::find(TailCalls, row.opcode) != TailCalls.end();
             auto const pairs = std::ranges::count_if(CallTable, [&row](CallRow const& other) {
                 return other.opcode == row.opcode && other.callee == row.callee;
             });
-            return info.form == OperationForm::Call && info.slots == callSlots(row.callee)
-                   && info.immediates == callImmediates(row.callee) && tail == (row.mode == CallMode::Tail)
-                   && pairs == 1;
-        });
+            if (info.form != OperationForm::Call || info.slots != callSlots(row.callee)
+                || info.immediates != callImmediates(row.callee) || tail != (row.mode == CallMode::Tail)
+                || pairs != 1)
+                return false;
+        }
+        return true;
     }
 } // namespace detail
 
