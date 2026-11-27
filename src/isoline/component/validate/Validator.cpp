@@ -3748,12 +3748,18 @@ std::expected<std::shared_ptr<ValidatedComponent const>, ValidationError> valida
     if (auto validated = validator.run(); !validated)
         return std::unexpected { std::move(validated.error()) };
     auto layouts = validator.takeLayouts();
+    auto arena = validator.takeArena();
+    auto type = validator.takeRootType();
+    // The root's type as an arena entry too, past validation so that no refusal changes: a linker
+    // compares it with a component-typed import (api::Linker::defineComponent()).
+    auto const typeId = arena.add(type);
     return std::make_shared<ValidatedComponent const>(
         ValidatedComponent { .pool = std::move(pool),
-                             .types = validator.takeArena(),
+                             .types = std::move(arena),
                              .layouts = std::move(layouts),
                              .scopes = validator.takeScopes(),
-                             .type = validator.takeRootType(),
+                             .type = std::move(type),
+                             .typeId = typeId ? std::optional { *typeId } : std::nullopt,
                              .coreModules = validator.takeCoreModules(),
                              .work = validator.work() });
 }

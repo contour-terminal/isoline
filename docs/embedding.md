@@ -548,6 +548,51 @@ So 80 hops fit the 1 MiB a Windows thread reserves by default with a 2× margin 
 fit an 8 MiB Linux or macOS main thread in every build; a debug build on Windows, or an embedder that
 raises `maxNestedCalls`, runs component calls on a thread sized by the formula.
 
+**The embedding API.** `component::api` wraps the runtime for an embedder (D7). A `Linker` holds what
+components are instantiated with, each under a *path* of extern names joined by `#`: `ns:p/i@0.1.2#f` is
+the function `f` of the interface instance `ns:p/i@0.1.2`, and its leading segments make the linker's
+instances. It defines host functions (`defineFunction`, a `FunctionTypeSpec` of its own arena's types),
+host resource types (`defineResource`), an instance of a store (`defineInstance`), a core module
+(`defineModule`) and a component (`defineComponent`). Every misuse is a named `LinkerError` and leaves
+the linker as it was: a path that is not extern names (`InvalidPath`), one defined already
+(`Redefinition`: nothing is replaced), one inside or around another definition (`PathConflict`), a null
+function, a type not of the linker's arena, a parameter label that is not kebab-case or repeats, a
+resource name not in UTF-8. Once built, a linker is read by any number of stores and threads.
+
+An import matches the definition of its exact name; else, for an interface name, the highest
+semver-compatible version (from 1.0.0 the major, `0.M.x` the major and minor, `0.0.N` only itself); else,
+for an instance import that `implements` an interface, that interface. An instance of types only (every
+export an `eq`-bound type, WIT's `use types.{…}`) needs no definition. Types match by subtyping as
+wasm-tools decides it, and a mismatch names the import and says why in wasm-tools' words
+(`ImportTypeMismatch`); `Linker::resolve` reports every import's outcome without a store. Host resource
+types match by identity: copies of one `HostResourceType` are one resource type, so two imports defined
+with copies pass handles between them. `ComponentStore::instantiate` refuses a component of another
+engine, an unsatisfied or mistyped import, and an instance of another store before anything runs.
+
+`ComponentInstance::call` lends its arguments and checks them first: a function of another store
+(`ForeignFunction`), a locked-down store (`LockedDown`), and arguments not of the function's arena, count
+or types, or a handle of another resource type than its parameter's (`ArgumentMismatch`) are refused
+without entering a guest or locking the store down. Every failure is a `ComponentCallError` whose
+failure is a row of `ComponentCallFailureTable`, which names its detail and what it does to the store:
+
+| Failure            | Detail                | Store       |
+|--------------------|-----------------------|-------------|
+| `Trap`             | `canonical::Trap`     | locked down |
+| `Interrupted`      | the `Interrupted` trap | locked down |
+| `HostFailure`      | `api::HostFailure`    | locked down |
+| `LockedDown`       | none                  | unchanged   |
+| `ArgumentMismatch` | `canonical::ValueError` | unchanged |
+| `ForeignFunction`  | none                  | unchanged   |
+
+A host function (`IHostComponentFunction`) is `noexcept`: it fails by returning a `HostFailure`, which
+ends the call and locks the store down; results not of its type are `HostFailure{ResultMismatch}`. An
+own handle among its arguments is the host's (lifting removed it from the guest's table); the host
+hands it back or drops it with `ComponentStore::drop`, which runs a host type's destructor, or a guest
+type's through the canonical ABI (refused in a locked-down store), and refuses a borrow. A host type's
+destructor also runs once for each own a guest table still holds when the store is destroyed, never at
+lockdown. The store is move-only; its instances and functions stay valid across a move, and moving it
+while a call or an instantiation of it runs is a precondition violation.
+
 ## Interrupts and poll sites
 
 `Store::interrupter()` returns the store's `Interrupter`, shared. `interrupt()` is one release store to

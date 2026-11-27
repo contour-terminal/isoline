@@ -2,6 +2,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -64,11 +65,14 @@ struct ValidationWork
 /// from it. Only validateComponent() makes one.
 struct ValidatedComponent
 {
-    binary::ComponentPool pool;               ///< The component as decoded.
-    types::TypeArena types;                   ///< Every type of every scope of the pool.
-    canonical::LayoutTable layouts;           ///< The layout of every value type of the arena, by TypeId.
-    std::vector<ScopeInfo> scopes;            ///< Per entry of the pool, by its index: its index spaces.
-    types::ComponentTypeInfo type;            ///< The root's imports and exports, typed.
+    binary::ComponentPool pool;     ///< The component as decoded.
+    types::TypeArena types;         ///< Every type of every scope of the pool.
+    canonical::LayoutTable layouts; ///< The layout of every value type of the arena, by TypeId.
+    std::vector<ScopeInfo> scopes;  ///< Per entry of the pool, by its index: its index spaces.
+    types::ComponentTypeInfo type;  ///< The root's imports and exports, typed.
+    /// @ref type as an entry of the arena, which a TypeRelation compares as a component type (an import
+    /// of a component a linker supplies it for); none when the arena refused it a measure past its caps.
+    std::optional<types::ComponentTypeId> typeId {};
     std::vector<CoreModuleShape> coreModules; ///< The embedded core modules' types, by ordinal (D10).
     ValidationWork work {};                   ///< What validating it cost.
 };

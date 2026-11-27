@@ -29,6 +29,8 @@ target_sources(isoline_component
         runtime/Calls.cpp
         validate/Validator.cpp
         api/Component.cpp
+        api/ComponentStore.cpp
+        api/Linker.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES
@@ -55,7 +57,10 @@ target_sources(isoline_component
             runtime/ComponentStore.hpp
             runtime/Calls.hpp
             validate/Validator.hpp
-            api/Component.hpp)
+            api/Component.hpp
+            api/CallError.hpp
+            api/ComponentStore.hpp
+            api/Linker.hpp)
 target_compile_features(isoline_component PUBLIC cxx_std_23)
 target_link_libraries(isoline_component PUBLIC isoline::core)
 isoline_apply_target_policy(isoline_component)
