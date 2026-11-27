@@ -17,14 +17,13 @@ namespace isoline::runtime
 
 namespace detail
 {
-    /// The widest row of binary::MemoryAccessTable among the accesses an executor reads at a masked offset:
-    /// the scalar ones.
+    /// The widest row of binary::MemoryAccessTable: every access an executor reads at a masked offset, the
+    /// v128 accesses' 16 bytes among them.
     [[nodiscard]] consteval uint64_t widestMaskedAccess() noexcept
     {
         auto widest = uint64_t { 0 };
         for (auto const& access: binary::MemoryAccessTable)
-            if (access.value != binary::ValueKind::V128 && access.width > widest)
-                widest = access.width;
+            widest = std::max<uint64_t>(widest, access.width);
         return widest;
     }
 } // namespace detail

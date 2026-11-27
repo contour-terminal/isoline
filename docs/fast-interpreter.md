@@ -156,14 +156,22 @@ frame records terminates, as running out of it does anywhere in `runtime::invoke
 row of `binary::MemoryAccessTable` lowers to two operations of its own, one for a memory of i32 addresses and a
 `.memory64` twin for i64 addresses; an access to any other memory is `load.indexed` or `store.indexed`, which
 names the memory and the memory 0 operation whose body it runs over that memory's bytes, read from the store
-each time. `memory.size` and `memory.grow` go through the store too. The vector accesses are Task 12's.
+each time. `memory.size` and `memory.grow` go through the store too. The vector accesses are rows of the same
+table and lower alike: `v128.load` and its extending, splatting, zeroing and lane forms, `v128.store` and its
+lane forms, each with its `.memory64` twin, reach another memory through `load.indexed` and `store.indexed` too,
+whose word then also names the lane. A lane load replaces one lane of the vector above its address: lowering
+moves that vector to its home slots, right above the address, where the access reads it before the result
+replaces both.
 
 **Bounds checks are explicit and never overflow.** For i32 addresses the address and the offset are below
 2^32, so `address + offset + width ≤ size` is exact in 64 bits. For memory64 the sum is checked for its carry
 and the width compared against what is left. Custom page sizes need nothing of their own: the check is in
 bytes. Every access traps exactly where the reference interpreter does, with the same `Trap`
-(`Memory.boundsMatchReferenceAtTheEdges`: every scalar row at both edges of both address types in memory 0 and
-memory 1, the sums that reach or pass 2^64, pages of one byte, a memory of no pages).
+(`Memory.boundsMatchReferenceAtTheEdges`: every row, scalar and vector, at both edges of both address types in
+memory 0 and memory 1, the sums that reach or pass 2^32 and 2^64, pages of one byte, memories of no pages and of
+15, 16 and 17 bytes for the 16-byte accesses). A vector access is checked by the same `boundsChecked()` at its own
+width, 16 bytes for `v128.load` and `v128.store`, the lane's for a lane, splat or zero access, 8 for an extending
+load; no vector access has a check or a mask of its own.
 
 **Spectre.** On the checked path the effective address is masked by a data-dependent select: all ones where
 the access fits, zero where it does not, so code running ahead of a mispredicted check reads memory's first
@@ -173,7 +181,8 @@ away: the sign of the bytes left after the access, or'ed with the sign of the by
 with the sign of the offset itself. An offset of 2^63 or more never fits (memories are allocated, so their sizes
 stay below 2^63) and its bytes left would otherwise wrap to a positive count, a speculative read below the base
 the guest chooses; a memory smaller than the access leaves its bytes left after the access negative for every
-offset below 2^63 (`accessMask()`, `Memory.accessMaskAtTheEdges`). What remains is the
+offset below 2^63 (`accessMask()`, `Memory.accessMaskAtTheEdges`, whose rows include the 16-byte width at
+memories of 0, 15, 16 and 17 bytes and offsets near 2^32 and 2^64). What remains is the
 masked access itself, which reads the access's width of bytes at the memory's base: for a memory smaller than
 the access, code ahead of the check reads past its end: `runtime::MaxAccessWidth` bytes past a memory of none,
 whatever its pages. They are the memory's own: a memory of `size` bytes keeps `MaxAccessWidth − min(size,
@@ -253,3 +262,30 @@ initialization does (`Tables.referencesKeepTheirHeap`, with a duplicate type so 
 type index). `ref.func` reads the instance's function address. `ref.is_null` and `ref.as_non_null` test the
 reference's tag word. `data.drop` and `elem.drop` change the instance, which only the store hands out
 mutable (`dropDataSegment()`, `dropElementSegment()`, out of line).
+
+## Vector instructions, relaxed SIMD and wide arithmetic
+
+**One kernel per instruction, resolved once.** A v128 takes two slots, lane 0's bits first. Every vector operator
+of a kernel shape (`numerics::SimdShape`: unary, binary, ternary, test, shift) lowers to its shape's generic
+operation, `simd.unary` to `simd.shift`, whose last word is the operator's kernel as `numerics::simd*Kernel()`
+returns it: the look-up happens at lowering, and running the operation is a call through that word, of the very
+function the reference interpreter calls (`Simd.lowersEachOpcodeToItsKernelOnce`). A listing names that word by
+the first instruction whose kernel it is, never by its address. Kernel addresses are code words, so the fast
+interpreter needs 64-bit pointers, as its tail-call handlers already do. `i32x4.add` and `f32x4.mul`
+have dedicated operations that call the same kernel inline (`SimdInlineKernel`, checked equal to the table's,
+`Simd.dedicatedRowsRunTheTablesKernels`). The lane operations take or give a scalar slot, which no kernel does, so
+each has a dedicated operation over the lanes its row of `SimdLaneTable` names; `i8x16.shuffle` (the shared
+`numerics::shuffle()`) and `v128.const` carry their 16 bytes as two immediates. Wide arithmetic
+(`WideArithmeticTable`) writes its low and high halves to two consecutive slots, by the kernels of
+`numerics/Integer.hpp`. The family is out of line in the switch dispatch and has its own tail-call handler file,
+`TailCallSimd.cpp`.
+
+**Deterministic in both modes.** The kernels are numerics', so NaN canonicalization and every lane-wise float
+rule are the reference's by construction, and relaxed SIMD follows the Wasmtime-deterministic profile that
+`numerics/SimdKernels.hpp` documents, in `Production` as in `Deterministic` (Decision C2): no result depends on
+the host. `Simd.everySimdOpcodeAgreesWithReference` runs every SIMD row of the opcode table, relaxed SIMD's
+included, and every vector access over 64 fixed-seed vectors (NaNs with payloads and either sign, infinities,
+zeros, denormals, integer and saturation edges) with its operands forwarded and in their home slots, under every
+dispatch and in both modes, and compares results bit for bit, traps, steps and memory with the reference's;
+`Simd.relaxedUsesTheDeterministicProfile` pins the profile's own values (a fused, singly rounded madd, swizzle's
+zero for every index of 16 or more, bit-wise laneselect, saturating trunc, the 16-bit wrap of the i7 dot product).

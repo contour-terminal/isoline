@@ -78,4 +78,7 @@ template <OperationFamily... Families>
 /// The handlers of the variable and memory families (TailCallMemory.cpp).
 [[nodiscard]] std::array<Handler, OperationCount> const& memoryHandlers() noexcept;
 
+/// The handlers of the vector family (TailCallSimd.cpp).
+[[nodiscard]] std::array<Handler, OperationCount> const& simdHandlers() noexcept;
+
 } // namespace isoline::fastinterpreter

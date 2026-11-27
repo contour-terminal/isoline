@@ -12,6 +12,10 @@
 #include <string_view>
 #include <utility>
 
+#include <isoline/binary/Opcode.hpp>
+#include <isoline/fastinterpreter/LoweringTable.hpp>
+#include <isoline/numerics/SimdShape.hpp>
+
 namespace isoline::fastinterpreter
 {
 
@@ -32,6 +36,22 @@ namespace
             separator = ", ";
         }
     }
+
+    /// The name of the first instruction of OpcodeTable whose numerics kernel @p word is, for the generic
+    /// vector operation @p operation: what a listing shows in its place, as an address differs from run to
+    /// run. A relaxed operator the deterministic profile maps onto its plain twin shares the twin's kernel,
+    /// and so its name.
+    [[nodiscard]] std::string_view kernelNameOf(OperationId operation, Word word)
+    {
+        for (auto const& row: binary::OpcodeTable)
+            if (simdKernelOperationOf(numerics::simdShape(row.opcode)) == operation
+                && simdKernelWordOf(row.opcode) == word)
+                return row.text;
+        // Lowering writes only the kernels of OpcodeTable's rows.
+        // uncovered-begin(unknown-kernel)
+        core::unreachable();
+    }
+    // uncovered-end(unknown-kernel)
 } // namespace
 
 std::string describe(LoweredFunction const& function)
@@ -59,11 +79,17 @@ std::string describe(LoweredFunction const& function)
         auto const target = branches ? immediates.back() : Word { 0 };
         if (branches)
             immediates = immediates.first(immediates.size() - 1);
+        // A generic vector operation's last word is a kernel, named by its instruction.
+        auto const kernel = isSimdKernelOperation(operation);
+        if (kernel)
+            immediates = immediates.first(immediates.size() - 1);
         for (auto const immediate: immediates)
         {
             listing += std::format("{}#{}", separator, immediate);
             separator = ", ";
         }
+        if (kernel)
+            listing += std::format("{}{}", separator, kernelNameOf(operation, operands.back()));
         switch (row.form)
         {
             case OperationForm::Branch: listing += std::format(" → @{}", target & BranchTargetMask); break;

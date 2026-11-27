@@ -3,16 +3,20 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <ranges>
+#include <span>
 #include <string_view>
 #include <utility>
 
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
+#include <isoline/numerics/SimdKernels.hpp>
+#include <isoline/numerics/SimdShape.hpp>
 
 namespace isoline::fastinterpreter
 {
@@ -185,6 +189,49 @@ inline constexpr auto LoweringRows = std::to_array<LoweringRow>({
     detail::memoryRow(binary::Opcode::I64Store8, OperationId::I64Store8, OperationId::I64Store8Memory64),
     detail::memoryRow(binary::Opcode::I64Store16, OperationId::I64Store16, OperationId::I64Store16Memory64),
     detail::memoryRow(binary::Opcode::I64Store32, OperationId::I64Store32, OperationId::I64Store32Memory64),
+    // The vector loads and stores, alike.
+    detail::memoryRow(binary::Opcode::V128Load, OperationId::V128Load, OperationId::V128LoadMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load8x8S, OperationId::V128Load8x8S, OperationId::V128Load8x8SMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load8x8U, OperationId::V128Load8x8U, OperationId::V128Load8x8UMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load16x4S, OperationId::V128Load16x4S, OperationId::V128Load16x4SMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load16x4U, OperationId::V128Load16x4U, OperationId::V128Load16x4UMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load32x2S, OperationId::V128Load32x2S, OperationId::V128Load32x2SMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load32x2U, OperationId::V128Load32x2U, OperationId::V128Load32x2UMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load8Splat, OperationId::V128Load8Splat, OperationId::V128Load8SplatMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load16Splat, OperationId::V128Load16Splat, OperationId::V128Load16SplatMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load32Splat, OperationId::V128Load32Splat, OperationId::V128Load32SplatMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load64Splat, OperationId::V128Load64Splat, OperationId::V128Load64SplatMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load32Zero, OperationId::V128Load32Zero, OperationId::V128Load32ZeroMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load64Zero, OperationId::V128Load64Zero, OperationId::V128Load64ZeroMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load8Lane, OperationId::V128Load8Lane, OperationId::V128Load8LaneMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load16Lane, OperationId::V128Load16Lane, OperationId::V128Load16LaneMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load32Lane, OperationId::V128Load32Lane, OperationId::V128Load32LaneMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Load64Lane, OperationId::V128Load64Lane, OperationId::V128Load64LaneMemory64),
+    detail::memoryRow(binary::Opcode::V128Store, OperationId::V128Store, OperationId::V128StoreMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Store8Lane, OperationId::V128Store8Lane, OperationId::V128Store8LaneMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Store16Lane, OperationId::V128Store16Lane, OperationId::V128Store16LaneMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Store32Lane, OperationId::V128Store32Lane, OperationId::V128Store32LaneMemory64),
+    detail::memoryRow(
+        binary::Opcode::V128Store64Lane, OperationId::V128Store64Lane, OperationId::V128Store64LaneMemory64),
 
     // Lowered by the table: the numeric instructions, each to the operation of its name.
     detail::unaryRow(binary::Opcode::I32Eqz, OperationId::I32Eqz),
@@ -323,6 +370,15 @@ inline constexpr auto LoweringRows = std::to_array<LoweringRow>({
     detail::unaryRow(binary::Opcode::I64TruncSatF32U, OperationId::I64TruncSatF32U),
     detail::unaryRow(binary::Opcode::I64TruncSatF64S, OperationId::I64TruncSatF64S),
     detail::unaryRow(binary::Opcode::I64TruncSatF64U, OperationId::I64TruncSatF64U),
+
+    // The vector instructions with dedicated rows: v128.const and i8x16.shuffle, whose immediates are no
+    // operator's, and the two operators that run their numerics kernel inline. Every other operator of a
+    // kernel shape is lowered to its shape's generic operation (simdKernelOperationOf()), the lane operations
+    // by SimdLaneTable, and wide arithmetic by WideArithmeticTable.
+    detail::specialRow(binary::Opcode::V128Const, OperationId::Const128),
+    detail::specialRow(binary::Opcode::I8x16Shuffle, OperationId::I8x16Shuffle),
+    detail::binaryRow(binary::Opcode::I32x4Add, OperationId::I32x4Add),
+    detail::binaryRow(binary::Opcode::F32x4Mul, OperationId::F32x4Mul),
 });
 
 namespace detail
@@ -396,9 +452,9 @@ static_assert(detail::loweringRowsFitTheirOperations(), "a lowering row names an
 
 namespace detail
 {
-    /// Whether every scalar row of binary::MemoryAccessTable has its Load or Store row, and every Memory
-    /// operation is a twin of one: the vector accesses are the SIMD operations'.
-    [[nodiscard]] consteval bool everyScalarAccessIsLowered() noexcept
+    /// Whether every row of binary::MemoryAccessTable, scalar and vector, has its Load or Store row, and
+    /// every Memory operation is a twin of one.
+    [[nodiscard]] consteval bool everyAccessIsLowered() noexcept
     {
         auto const lowered = [](binary::MemoryAccess const& access) {
             return std::ranges::any_of(LoweringRows, [&access](LoweringRow const& row) {
@@ -412,18 +468,15 @@ namespace detail
                        && (row.operation == operation.id || row.memory64 == operation.id);
             });
         };
-        return std::ranges::all_of(binary::MemoryAccessTable,
-                                   [&lowered](binary::MemoryAccess const& access) {
-                                       return access.value == binary::ValueKind::V128 || lowered(access);
-                                   })
+        return std::ranges::all_of(binary::MemoryAccessTable, lowered)
                && std::ranges::all_of(OperationTable, [&twinned](OperationRow const& operation) {
                       return operation.family != OperationFamily::Memory || twinned(operation);
                   });
     }
 } // namespace detail
 
-static_assert(detail::everyScalarAccessIsLowered(),
-              "a scalar load or store without its LoweringRows row, or a memory operation of no row");
+static_assert(detail::everyAccessIsLowered(),
+              "a load or store without its LoweringRows row, or a memory operation of no row");
 
 /// How lowering translates each instruction, indexed by binary::Opcode.
 inline constexpr auto LoweringTable = detail::spreadLoweringRows();
@@ -435,6 +488,217 @@ inline constexpr auto LoweringTable = detail::spreadLoweringRows();
 {
     return LoweringTable[std::to_underlying(opcode)];
 }
+
+/// The generic operation of a vector operator of @p shape, whose last word is the operator's numerics kernel.
+/// @param shape A kernel shape: Unary, Binary, Ternary, Test or Shift.
+/// @return Its operation; Nop for any other shape.
+[[nodiscard]] constexpr OperationId simdKernelOperationOf(numerics::SimdShape shape) noexcept
+{
+    switch (shape)
+    {
+        case numerics::SimdShape::Unary: return OperationId::SimdUnary;
+        case numerics::SimdShape::Binary: return OperationId::SimdBinary;
+        case numerics::SimdShape::Ternary: return OperationId::SimdTernary;
+        case numerics::SimdShape::Test: return OperationId::SimdTest;
+        case numerics::SimdShape::Shift: return OperationId::SimdShift;
+        default: return OperationId::Nop;
+    }
+}
+
+/// Whether @p id is a generic vector operation, whose last word is a kernel (simdKernelOperationOf()).
+/// @param id Any operation.
+/// @return Whether it is simd.unary, simd.binary, simd.ternary, simd.test or simd.shift.
+[[nodiscard]] constexpr bool isSimdKernelOperation(OperationId id) noexcept
+{
+    for (auto const shape: { numerics::SimdShape::Unary,
+                             numerics::SimdShape::Binary,
+                             numerics::SimdShape::Ternary,
+                             numerics::SimdShape::Test,
+                             numerics::SimdShape::Shift })
+        if (simdKernelOperationOf(shape) == id)
+            return true;
+    return false;
+}
+
+// A kernel's address is a code word, as a tail-call handler's is: the fast interpreter runs on 64-bit hosts
+// only.
+static_assert(sizeof(numerics::SimdUnaryKernel) == sizeof(Word)
+                  && sizeof(numerics::SimdBinaryKernel) == sizeof(Word)
+                  && sizeof(numerics::SimdTernaryKernel) == sizeof(Word)
+                  && sizeof(numerics::SimdTestKernel) == sizeof(Word)
+                  && sizeof(numerics::SimdShiftKernel) == sizeof(Word),
+              "a vector kernel's address is a code word: the fast interpreter needs 64-bit pointers");
+
+/// The code word of @p opcode's numerics kernel: its address, which the generic operation of its shape
+/// (simdKernelOperationOf()) holds as its last word and calls.
+/// @param opcode Any instruction.
+/// @return The word, or 0 for an instruction of no kernel shape.
+[[nodiscard]] inline Word simdKernelWordOf(binary::Opcode opcode) noexcept
+{
+    switch (numerics::simdShape(opcode))
+    {
+        case numerics::SimdShape::Unary: return std::bit_cast<Word>(numerics::simdUnaryKernel(opcode));
+        case numerics::SimdShape::Binary: return std::bit_cast<Word>(numerics::simdBinaryKernel(opcode));
+        case numerics::SimdShape::Ternary: return std::bit_cast<Word>(numerics::simdTernaryKernel(opcode));
+        case numerics::SimdShape::Test: return std::bit_cast<Word>(numerics::simdTestKernel(opcode));
+        case numerics::SimdShape::Shift: return std::bit_cast<Word>(numerics::simdShiftKernel(opcode));
+        default: return 0;
+    }
+}
+
+/// One lane operation: a splat, an extract_lane or a replace_lane, and its lanes.
+///
+/// The fast interpreter runs each by a dedicated operation over the lanes the row names, so that a scalar
+/// slot, not a boxed runtime::Value, comes in or goes out (numerics::SimdShape names these shapes but no
+/// kernel).
+struct SimdLaneRow
+{
+    binary::Opcode opcode;     ///< The instruction.
+    OperationId operation;     ///< Its operation, named after it.
+    numerics::SimdShape shape; ///< Splat, ExtractLane or ReplaceLane.
+    uint8_t laneBytes;         ///< The width of the vector's lanes: 1, 2, 4 or 8.
+    binary::Extension
+        extension; ///< How an extracted lane narrower than 32 bits widens to the i32; Zero for any other.
+};
+
+namespace detail
+{
+    /// The row of a lane operation whose lanes are of @p laneBytes bytes.
+    [[nodiscard]] consteval SimdLaneRow laneRow(binary::Opcode opcode,
+                                                OperationId operation,
+                                                numerics::SimdShape shape,
+                                                uint8_t laneBytes) noexcept
+    {
+        return { .opcode = opcode,
+                 .operation = operation,
+                 .shape = shape,
+                 .laneBytes = laneBytes,
+                 .extension = binary::Extension::Zero };
+    }
+
+    /// The row of an extract_lane that sign-extends its lane of @p laneBytes bytes.
+    [[nodiscard]] consteval SimdLaneRow signedLaneRow(binary::Opcode opcode,
+                                                      OperationId operation,
+                                                      numerics::SimdShape shape,
+                                                      uint8_t laneBytes) noexcept
+    {
+        return { .opcode = opcode,
+                 .operation = operation,
+                 .shape = shape,
+                 .laneBytes = laneBytes,
+                 .extension = binary::Extension::Sign };
+    }
+} // namespace detail
+
+/// Every lane operation, one row each.
+inline constexpr auto SimdLaneTable = std::to_array<SimdLaneRow>({
+    detail::laneRow(binary::Opcode::I8x16Splat, OperationId::I8x16Splat, numerics::SimdShape::Splat, 1),
+    detail::laneRow(binary::Opcode::I16x8Splat, OperationId::I16x8Splat, numerics::SimdShape::Splat, 2),
+    detail::laneRow(binary::Opcode::I32x4Splat, OperationId::I32x4Splat, numerics::SimdShape::Splat, 4),
+    detail::laneRow(binary::Opcode::I64x2Splat, OperationId::I64x2Splat, numerics::SimdShape::Splat, 8),
+    detail::laneRow(binary::Opcode::F32x4Splat, OperationId::F32x4Splat, numerics::SimdShape::Splat, 4),
+    detail::laneRow(binary::Opcode::F64x2Splat, OperationId::F64x2Splat, numerics::SimdShape::Splat, 8),
+    detail::signedLaneRow(binary::Opcode::I8x16ExtractLaneS,
+                          OperationId::I8x16ExtractLaneS,
+                          numerics::SimdShape::ExtractLane,
+                          1),
+    detail::laneRow(binary::Opcode::I8x16ExtractLaneU,
+                    OperationId::I8x16ExtractLaneU,
+                    numerics::SimdShape::ExtractLane,
+                    1),
+    detail::signedLaneRow(binary::Opcode::I16x8ExtractLaneS,
+                          OperationId::I16x8ExtractLaneS,
+                          numerics::SimdShape::ExtractLane,
+                          2),
+    detail::laneRow(binary::Opcode::I16x8ExtractLaneU,
+                    OperationId::I16x8ExtractLaneU,
+                    numerics::SimdShape::ExtractLane,
+                    2),
+    detail::laneRow(
+        binary::Opcode::I32x4ExtractLane, OperationId::I32x4ExtractLane, numerics::SimdShape::ExtractLane, 4),
+    detail::laneRow(
+        binary::Opcode::I64x2ExtractLane, OperationId::I64x2ExtractLane, numerics::SimdShape::ExtractLane, 8),
+    detail::laneRow(
+        binary::Opcode::F32x4ExtractLane, OperationId::F32x4ExtractLane, numerics::SimdShape::ExtractLane, 4),
+    detail::laneRow(
+        binary::Opcode::F64x2ExtractLane, OperationId::F64x2ExtractLane, numerics::SimdShape::ExtractLane, 8),
+    detail::laneRow(
+        binary::Opcode::I8x16ReplaceLane, OperationId::I8x16ReplaceLane, numerics::SimdShape::ReplaceLane, 1),
+    detail::laneRow(
+        binary::Opcode::I16x8ReplaceLane, OperationId::I16x8ReplaceLane, numerics::SimdShape::ReplaceLane, 2),
+    detail::laneRow(
+        binary::Opcode::I32x4ReplaceLane, OperationId::I32x4ReplaceLane, numerics::SimdShape::ReplaceLane, 4),
+    detail::laneRow(
+        binary::Opcode::I64x2ReplaceLane, OperationId::I64x2ReplaceLane, numerics::SimdShape::ReplaceLane, 8),
+    detail::laneRow(
+        binary::Opcode::F32x4ReplaceLane, OperationId::F32x4ReplaceLane, numerics::SimdShape::ReplaceLane, 4),
+    detail::laneRow(
+        binary::Opcode::F64x2ReplaceLane, OperationId::F64x2ReplaceLane, numerics::SimdShape::ReplaceLane, 8),
+});
+
+/// The SimdLaneTable row of @p opcode.
+/// @param opcode Any instruction.
+/// @return Its row, or null for an instruction that is no lane operation.
+[[nodiscard]] constexpr SimdLaneRow const* simdLaneRowOf(binary::Opcode opcode) noexcept
+{
+    auto const row = std::ranges::find(SimdLaneTable, opcode, &SimdLaneRow::opcode);
+    return row == SimdLaneTable.end() ? nullptr : &*row;
+}
+
+/// One wide-arithmetic instruction and its operation, named after it (Operations.def).
+struct WideArithmeticRow
+{
+    binary::Opcode opcode; ///< The instruction.
+    OperationId operation; ///< Its operation.
+};
+
+/// Every wide-arithmetic instruction, one row each.
+inline constexpr auto WideArithmeticTable = std::to_array<WideArithmeticRow>({
+    { .opcode = binary::Opcode::I64Add128, .operation = OperationId::I64Add128 },
+    { .opcode = binary::Opcode::I64Sub128, .operation = OperationId::I64Sub128 },
+    { .opcode = binary::Opcode::I64MulWideS, .operation = OperationId::I64MulWideS },
+    { .opcode = binary::Opcode::I64MulWideU, .operation = OperationId::I64MulWideU },
+});
+
+/// The WideArithmeticTable row of @p opcode.
+/// @param opcode Any instruction.
+/// @return Its row, or null for an instruction that is no wide arithmetic.
+[[nodiscard]] constexpr WideArithmeticRow const* wideArithmeticRowOf(binary::Opcode opcode) noexcept
+{
+    auto const row = std::ranges::find(WideArithmeticTable, opcode, &WideArithmeticRow::opcode);
+    return row == WideArithmeticTable.end() ? nullptr : &*row;
+}
+
+namespace detail
+{
+    /// Whether every row of @p lanes and @p wide names the operation of its instruction's name, of the Simd
+    /// or Numeric family, with as many slots as its signature has operands, the destination's beside them,
+    /// for an instruction no LoweringRows row lowers. constexpr, not consteval, and a loop: MSVC calls no
+    /// immediate function from a lambda (C7595). The static_assert below evaluates it over the tables, and
+    /// Simd.vectorRowChecksDecide runs it at run time.
+    [[nodiscard]] constexpr bool vectorRowsNameTheirOperations(
+        std::span<SimdLaneRow const> lanes, std::span<WideArithmeticRow const> wide) noexcept
+    {
+        auto const fits = [](binary::Opcode opcode, OperationId id, OperationFamily family) {
+            auto const& info = binary::OpcodeTable[std::to_underlying(opcode)];
+            auto const& operation = operationRow(id);
+            return operation.text == info.text && operation.family == family
+                   && operation.slots == binary::signatureInfo(info.signature).paramCount + 1U
+                   && loweringRow(opcode).form == OperationForm::Special
+                   && loweringRow(opcode).operation == OperationId::Nop;
+        };
+        for (auto const& row: lanes)
+            if (!fits(row.opcode, row.operation, OperationFamily::Simd))
+                return false;
+        for (auto const& row: wide)
+            if (!fits(row.opcode, row.operation, OperationFamily::Numeric))
+                return false;
+        return true;
+    }
+} // namespace detail
+
+static_assert(detail::vectorRowsNameTheirOperations(SimdLaneTable, WideArithmeticTable),
+              "a lane or wide-arithmetic row names an operation of another instruction or shape");
 
 /// A comparison fused with the br_if or if that consumes its result: one operation for both.
 ///

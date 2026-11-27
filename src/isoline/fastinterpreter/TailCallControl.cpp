@@ -27,6 +27,7 @@ namespace
         &controlHandlers,
         &numericHandlers,
         &memoryHandlers,
+        &simdHandlers,
     });
 } // namespace
 

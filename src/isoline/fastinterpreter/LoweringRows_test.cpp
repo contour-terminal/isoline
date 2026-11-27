@@ -282,7 +282,29 @@ struct SpecialRowCase
     add(Opcode::F64Const,
         functionOf({}, { binary::F64 }, {}, { 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F }),
         "const64 s0, #4607182418800017408\nreturn s0\n");
+    // v128.const's 16 bytes, two words of lanes; i8x16.shuffle's lane indices alike, its first operand moved
+    // to the slots its result replaces.
+    auto sixteen = Bytes {};
+    for (auto const byte: std::views::iota(uint8_t { 0 }, uint8_t { 16 }))
+        sixteen.push_back(byte);
+    constexpr auto Low = uint64_t { 0x0706'0504'0302'0100 };
+    constexpr auto High = uint64_t { 0x0F0E'0D0C'0B0A'0908 };
+    add(Opcode::V128Const,
+        functionOf({}, { binary::V128 }, {}, code({ encodingOf(Opcode::V128Const), sixteen })),
+        std::format("const128 s0, #{}, #{}\nreturn s0\n", Low, High));
+    add(Opcode::I8x16Shuffle,
+        functionOf({ binary::V128, binary::V128 },
+                   { binary::V128 },
+                   {},
+                   code({ localGet(0), localGet(1), encodingOf(Opcode::I8x16Shuffle), sixteen })),
+        std::format("move128 s4, s0\ni8x16.shuffle s4, s2, #{}, #{}\nreturn s4\n", Low, High));
     return cases;
+}
+
+/// The slots a value of @p type takes: two for a v128 or a reference, one for any other.
+[[nodiscard]] uint32_t slotsOf(ValueType const& type)
+{
+    return type.kind == ValueKind::V128 || type.kind == ValueKind::Ref ? 2U : 1U;
 }
 
 /// i32.const 5 or i64.const 5, by @p kind.
@@ -312,9 +334,14 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
             auto const unary = row.form == OperationForm::Unary;
             auto const body = unary ? code({ localGet(0), encodingOf(row.opcode) })
                                     : code({ localGet(0), localGet(1), encodingOf(row.opcode) });
+            // A v128 operand takes two slots, a scalar one.
+            auto const first = slotsOf(params[0]);
+            auto const top = unary ? first : first + slotsOf(params[1]);
             auto const expected =
-                unary ? std::format("{} s1, s0\nreturn s1\n", operationRow(row.operation).text)
-                      : std::format("{} s2, s0, s1\nreturn s2\n", operationRow(row.operation).text);
+                unary
+                    ? std::format("{} s{}, s0\nreturn s{}\n", operationRow(row.operation).text, top, top)
+                    : std::format(
+                          "{} s{}, s0, s{}\nreturn s{}\n", operationRow(row.operation).text, top, first, top);
             CHECK(listingOf(functionOf(params, results, {}, body)) == expected);
             CHECK(loweringRow(row.opcode) == row);
             if (row.form != OperationForm::BinaryImmediate)
@@ -361,19 +388,25 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
             auto const* access = binary::memoryAccessOf(row.opcode);
             REQUIRE(access != nullptr);
             auto const load = row.form == OperationForm::Load;
+            // A lane access, at lane 1, takes the vector it changes or stores, which a lane load moves to the
+            // slots above its address first.
+            auto const lane = access->shape == binary::VectorShape::Lane;
             for (auto const addressType: { AddressType::I32, AddressType::I64 })
             {
                 for (auto const memory: { 0U, 1U })
                 {
                     auto const addressKind = addressType == AddressType::I64 ? binary::I64 : binary::I32;
                     auto params = std::vector { addressKind };
-                    if (!load)
+                    if (!load || lane)
                         params.push_back(binary::ValueType { .kind = access->value });
                     auto const results = load ? std::vector { binary::ValueType { .kind = access->value } }
                                               : std::vector<ValueType> {};
-                    auto const operands = load ? localGet(0) : code({ localGet(0), localGet(1) });
-                    auto module = functionOf(
-                        params, results, {}, code({ operands, memoryInstruction(row.opcode, 8, memory) }));
+                    auto const operands =
+                        params.size() == 1 ? localGet(0) : code({ localGet(0), localGet(1) });
+                    auto instruction = memoryInstruction(row.opcode, 8, memory);
+                    if (lane)
+                        instruction.push_back(1);
+                    auto module = functionOf(params, results, {}, code({ operands, instruction }));
                     if (memory != 0)
                         module.memory(
                             Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I32 });
@@ -381,16 +414,31 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
                     auto const twin = addressType == AddressType::I64 ? row.memory64 : row.operation;
                     auto const indexed = load ? OperationId::LoadIndexed : OperationId::StoreIndexed;
                     auto const operation = memory == 0 ? twin : indexed;
-                    auto const immediates =
-                        memory == 0 ? std::string { "#8" }
-                                    : std::format("#8, #{}",
-                                                  indexedAccessWord(
-                                                      IndexedAccess { .memory = memory, .access = twin }));
-                    auto const expected =
-                        load ? std::format(
-                                   "{} s1, s0, {}\nreturn s1\n", operationRow(operation).text, immediates)
-                             : std::format(
-                                   "{} s0, s1, {}\nreturn s2\n", operationRow(operation).text, immediates);
+                    auto immediates = std::string { "#8" };
+                    if (memory != 0)
+                        immediates = std::format(
+                            "#8, #{}",
+                            indexedAccessWord(IndexedAccess { .memory = memory,
+                                                              .access = twin,
+                                                              .lane = static_cast<uint8_t>(lane ? 1 : 0) }));
+                    else if (lane)
+                        immediates = "#8, #1";
+                    // The locals' slots: the address's, and a vector's two.
+                    auto const locals = params.size() == 1 ? 1U : 1U + slotsOf(params[1]);
+                    auto expected = std::string {};
+                    if (load && lane)
+                        expected = std::format("move128 s{}, s1\n{} s{}, s0, {}\nreturn s{}\n",
+                                               locals + 1,
+                                               operationRow(operation).text,
+                                               locals,
+                                               immediates,
+                                               locals);
+                    else if (load)
+                        expected = std::format(
+                            "{} s1, s0, {}\nreturn s1\n", operationRow(operation).text, immediates);
+                    else
+                        expected = std::format(
+                            "{} s0, s1, {}\nreturn s{}\n", operationRow(operation).text, immediates, locals);
                     CHECK(listingOf(module) == expected);
                 }
             }
