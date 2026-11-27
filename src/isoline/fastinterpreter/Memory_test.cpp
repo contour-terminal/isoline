@@ -36,6 +36,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/MovingMemory.hpp>
 #include <isoline/runtime/testing/ProvidedMemory.hpp>
 
 using isoline::binary::AddressType;
@@ -76,17 +77,15 @@ using isoline::runtime::HeapMemoryAllocator;
 using isoline::runtime::HostContext;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
-using isoline::runtime::ILinearMemory;
 using isoline::runtime::IMemoryAllocator;
 using isoline::runtime::makeHostFunction;
-using isoline::runtime::MemoryRequest;
-using isoline::runtime::Refusal;
 using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::StoreServices;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
 using isoline::runtime::Value;
+using isoline::runtime::testing::MovingMemoryAllocator;
 
 namespace binary = isoline::binary;
 
@@ -145,72 +144,6 @@ constexpr auto PageBytes = uint64_t { 65'536 };
     return code(
         { prefix, addressOf(type, offset), { 0x0B }, encodeU32(static_cast<uint32_t>(bytes.size())), bytes });
 }
-
-/// A memory's storage that moves on every grow: the bytes are copied into a new buffer, and the old one is
-/// kept, filled with RetiredByte, so that code still reading it reads that, and ASan sees no use after free.
-class MovingMemory final: public ILinearMemory
-{
-  public:
-    /// What a retired buffer holds.
-    static constexpr auto RetiredByte = std::byte { 0xA5 };
-
-    explicit MovingMemory(uint64_t size): _buffers(1, std::vector<std::byte>(static_cast<std::size_t>(size)))
-    {
-    }
-
-    [[nodiscard]] std::span<std::byte> bytes() noexcept override { return _buffers.back(); }
-
-    [[nodiscard]] std::span<std::byte const> bytes() const noexcept override { return _buffers.back(); }
-
-    [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
-
-    [[nodiscard]] uint64_t tailBytes() const noexcept override { return 0; }
-
-    /// Moves to a buffer of exactly the new size; it keeps no tail, so it refuses, with Guard, a size that
-    /// needs one.
-    [[nodiscard]] std::expected<void, Refusal> grow(
-        isoline::runtime::GrowRequest const& request) noexcept override
-    {
-        if (request.requiredTailBytes > 0)
-            return std::unexpected { Refusal::Guard };
-        auto moved = std::vector<std::byte>(static_cast<std::size_t>(request.newBytes));
-        std::ranges::copy(_buffers.back(), moved.begin());
-        std::ranges::fill(_buffers.back(), RetiredByte);
-        _buffers.push_back(std::move(moved));
-        return {};
-    }
-
-    /// How many times it moved.
-    [[nodiscard]] std::size_t moves() const noexcept { return _buffers.size() - 1; }
-
-  private:
-    std::vector<std::vector<std::byte>> _buffers; ///< Every buffer it had; the last is the current one.
-};
-
-/// Hands out MovingMemory: an embedder whose memories move whenever they grow.
-class MovingMemoryAllocator final: public IMemoryAllocator
-{
-  public:
-    [[nodiscard]] std::expected<std::unique_ptr<ILinearMemory>, Refusal> allocate(
-        MemoryRequest const& request) noexcept override
-    {
-        auto memory = std::make_unique<MovingMemory>(request.initialBytes);
-        _memories.push_back(memory.get());
-        return memory;
-    }
-
-    /// The moves of every memory it handed out.
-    [[nodiscard]] std::size_t moves() const noexcept
-    {
-        auto total = std::size_t { 0 };
-        for (auto const* memory: _memories)
-            total += memory->moves();
-        return total;
-    }
-
-  private:
-    std::vector<MovingMemory const*> _memories;
-};
 
 /// Where memory 0 grows while the guest's function runs.
 enum class GrowPath : uint8_t
