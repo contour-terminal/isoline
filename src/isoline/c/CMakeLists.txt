@@ -43,8 +43,9 @@ set(isolineCHeaders
     isoline.h)
 set(isolineWasmHeader "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include/wasm.h")
 
-## @brief Creates the C API library @p target of @p type (SHARED or STATIC) from the C API's sources.
-function(_isoline_c_library target type)
+## @brief Creates the C API library @p target of @p type (SHARED or STATIC) from the C API's sources, over
+## the C++ API library @p core.
+function(_isoline_c_library target type core)
     add_library(${target} ${type} ${isolineCSources})
     target_sources(${target}
         PUBLIC FILE_SET HEADERS
@@ -54,12 +55,35 @@ function(_isoline_c_library target type)
     # The headers are C11 (_Static_assert in abi.h): a consumer's C compiles as C11 at least, which MSVC's C
     # compiler, defaulting to an older mode, does not without being told.
     target_compile_features(${target} INTERFACE c_std_11)
-    target_link_libraries(${target} PRIVATE isoline::core)
+    target_link_libraries(${target} PRIVATE ${core})
     isoline_apply_target_policy(${target})
 endfunction()
 
+## @brief Appends to @p outVar @p target and the static libraries it links, transitively, in link order.
+function(_isoline_c_static_closure target outVar)
+    set(closure ${${outVar}})
+    get_target_property(aliased ${target} ALIASED_TARGET)
+    if(aliased)
+        set(target ${aliased})
+    endif()
+    get_target_property(type ${target} TYPE)
+    if(NOT type STREQUAL "STATIC_LIBRARY" OR target IN_LIST closure)
+        set(${outVar} ${closure} PARENT_SCOPE)
+        return()
+    endif()
+    list(APPEND closure ${target})
+    get_target_property(linked ${target} INTERFACE_LINK_LIBRARIES)
+    foreach(library IN LISTS linked)
+        string(REGEX REPLACE "^[$]<LINK_ONLY:(.+)>$" "\\1" library "${library}")
+        if(TARGET ${library})
+            _isoline_c_static_closure(${library} closure)
+        endif()
+    endforeach()
+    set(${outVar} ${closure} PARENT_SCOPE)
+endfunction()
+
 # --- isoline_c_static ----------------------------------------------------------
-_isoline_c_library(isoline_c_static STATIC)
+_isoline_c_library(isoline_c_static STATIC isoline::core)
 add_library(isoline::c_static ALIAS isoline_c_static)
 target_compile_definitions(isoline_c_static PUBLIC ISOLINE_C_STATIC INTERFACE LIBWASM_STATIC)
 # On Windows the shared library's import library is isoline_c.lib, so the static one is named apart.
@@ -71,25 +95,41 @@ endif()
 
 # --- isoline_c_shared ----------------------------------------------------------
 #
-# The static libraries linked into it, isoline_core and core-cpp (a parent project's core-cpp is in
-# CORE_CPP_TARGETS too), are compiled position independent. That changes their code for every program
-# that links them, the CLI, the tests and a C++ embedder included, not only for the shared library: a
-# static library is compiled once. What PIC costs on x86-64 and arm64 is the GOT indirection of
-# preemptible symbols. GCC treats every global as interposable in PIC code (no inlining, no direct calls
-# across functions); -fno-semantic-interposition gives that up, which is sound here because the shared
-# library exports the C API alone, so nothing of isoline_core can be interposed. Clang already compiles
-# PIC that way, and the flag measured no different there. Measured against PIE on x86-64 release builds
-# (P17a Unit B Task 5): GCC shows no cost beyond noise; Clang's call round trip (Latency.callRoundTrip)
-# costs about 2 ns of 70 (2-3%) more, while the interpreter's hot loop and the interrupt latency show none.
-get_property(isolineCoreCppTargets GLOBAL PROPERTY CORE_CPP_TARGETS)
-set_target_properties(isoline_core ${isolineCoreCppTargets} PROPERTIES POSITION_INDEPENDENT_CODE ON)
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    foreach(pic IN ITEMS isoline_core ${isolineCoreCppTargets})
-        isoline_apply_build_options(${pic} COMPILE -fno-semantic-interposition)
+# The shared library is built over position-independent twins of isoline_core and of the core-cpp
+# libraries it links (cmake/IsolinePicTwins.cmake), so that the executables and a static consumer keep
+# the position-dependent code they are compiled to without it: PIC costs Clang's call round trip about
+# 2 ns of 70 (P17a Unit B Task 5), and Isoline's bar is performance at or above Wasmtime's. A static
+# consumer that wants PIC configures with CMAKE_POSITION_INDEPENDENT_CODE, which compiles everything so
+# and makes no twin.
+#
+# GCC treats every global as interposable in PIC code (no inlining, no direct calls across functions);
+# -fno-semantic-interposition gives that up, which is sound here because the shared library exports the C
+# API alone, so nothing of isoline_core can be interposed. Clang already compiles PIC that way.
+include(IsolinePicTwins)
+set(isolineCoreClosure "")
+_isoline_c_static_closure(isoline_core isolineCoreClosure)
+isoline_pic_twins_wanted(isolinePicTwinsWanted)
+# The twins, as original=twin pairs, for the check that holds them to their originals (tests/c).
+set(isolinePicTwinPairs "")
+set(isolinePicTwinOptions "")
+if(isolinePicTwinsWanted)
+    # core-cpp's libraries link Threads::Threads, an imported target of the directory that found it.
+    find_package(Threads REQUIRED)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(isolinePicTwinOptions -fno-semantic-interposition)
+    endif()
+    isoline_pic_twins(${isolineCoreClosure} EXTRA_OPTIONS ${isolinePicTwinOptions})
+    set(isolineSharedCore isoline_core_pic)
+    foreach(original IN LISTS isolineCoreClosure)
+        list(APPEND isolinePicTwinPairs "${original}=${original}_pic")
     endforeach()
+else()
+    set(isolineSharedCore isoline::core)
 endif()
+set_property(GLOBAL PROPERTY ISOLINE_PIC_TWIN_PAIRS "${isolinePicTwinPairs}")
+set_property(GLOBAL PROPERTY ISOLINE_PIC_TWIN_OPTIONS "${isolinePicTwinOptions}")
 
-_isoline_c_library(isoline_c_shared SHARED)
+_isoline_c_library(isoline_c_shared SHARED ${isolineSharedCore})
 add_library(isoline::c ALIAS isoline_c_shared)
 set_target_properties(isoline_c_shared PROPERTIES
     VERSION "${isolineAbiMAJOR}.${isolineAbiMINOR}.${PROJECT_VERSION_PATCH}"
@@ -118,30 +158,6 @@ isoline_c_export_rules(isoline_c_shared MAP "${CMAKE_CURRENT_SOURCE_DIR}/isoline
 # definitions that select the static library's declarations.
 include(GNUInstallDirs)
 
-## @brief Appends to @p outVar @p target and the static libraries it links, transitively, in link order.
-function(_isoline_c_static_closure target outVar)
-    set(closure ${${outVar}})
-    get_target_property(aliased ${target} ALIASED_TARGET)
-    if(aliased)
-        set(target ${aliased})
-    endif()
-    get_target_property(type ${target} TYPE)
-    if(NOT type STREQUAL "STATIC_LIBRARY" OR target IN_LIST closure)
-        set(${outVar} ${closure} PARENT_SCOPE)
-        return()
-    endif()
-    list(APPEND closure ${target})
-    get_target_property(linked ${target} INTERFACE_LINK_LIBRARIES)
-    foreach(library IN LISTS linked)
-        string(REGEX REPLACE "^[$]<LINK_ONLY:(.+)>$" "\\1" library "${library}")
-        if(TARGET ${library})
-            _isoline_c_static_closure(${library} closure)
-        endif()
-    endforeach()
-    set(${outVar} ${closure} PARENT_SCOPE)
-endfunction()
-set(isolinePcLibraries "")
-_isoline_c_static_closure(isoline_core isolinePcLibraries)
 
 # The C++ runtime a static link needs, by the standard library the build links: runtime|library. GCC
 # links libstdc++, MSVC its own runtime implicitly; Clang links libc++ where it is the platform's library
@@ -172,7 +188,7 @@ set(ISOLINE_PC_PREFIX "\${pcfiledir}/${isolinePcToPrefix}")
 # The static closure's own directory beneath the library directory (see install, below).
 set(isolineCStaticLibdir "${CMAKE_INSTALL_LIBDIR}/isoline")
 set(ISOLINE_PC_LIBS_PRIVATE "-L\${libdir}/isoline ")
-foreach(library IN LISTS isolinePcLibraries)
+foreach(library IN LISTS isolineCoreClosure)
     string(APPEND ISOLINE_PC_LIBS_PRIVATE "-l$<TARGET_LINKER_FILE_BASE_NAME:${library}> ")
 endforeach()
 string(APPEND ISOLINE_PC_LIBS_PRIVATE "${isolineCxxRuntime}")
@@ -197,7 +213,7 @@ file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/isoline-c.pc"
 # libraries it links) never stand in for the package's or a system's; Libs.private gives its -L.
 set_target_properties(isoline_c_shared PROPERTIES ISOLINE_INSTALL_HEADER_SUBDIRECTORY isoline)
 if(ISOLINE_INSTALL)
-    install(TARGETS isoline_c_static ${isolinePcLibraries}
+    install(TARGETS isoline_c_static ${isolineCoreClosure}
             ARCHIVE DESTINATION "${isolineCStaticLibdir}" COMPONENT isoline-c)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/isoline-c.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
             COMPONENT isoline-c)

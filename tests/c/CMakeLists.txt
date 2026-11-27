@@ -118,6 +118,34 @@ add_test(NAME c-library-names
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckLibraryName.cmake")
 set_tests_properties(c-library-names PROPERTIES LABELS lint)
 
+# --- position-independent code -------------------------------------------------
+#
+# Only the shared library pays for PIC: isoline_core and the core-cpp libraries are compiled as the
+# executables need them, and the shared library links their PIC twins, which compile the same sources
+# with the same command plus the PIC flags (cmake/IsolinePicTwins.cmake); and no link but the shared
+# library's links a twin. Read from Ninja's own commands, so a build with twins needs the Ninja generator,
+# which every preset uses: another is a configure error, since a check that quietly goes unregistered
+# checks nothing. A build without twins has nothing to check: its code is position independent everywhere
+# (CMAKE_POSITION_INDEPENDENT_CODE, Mach-O) or PIC is no compiler mode at all (PE).
+get_property(isolinePicTwinPairs GLOBAL PROPERTY ISOLINE_PIC_TWIN_PAIRS)
+if(isolinePicTwinPairs AND NOT CMAKE_GENERATOR MATCHES "Ninja")
+    message(FATAL_ERROR "[isoline] c-pic-twins reads Ninja's commands, and this build's generator is ${CMAKE_GENERATOR}: "
+                        "configure with -G Ninja, or with CMAKE_POSITION_INDEPENDENT_CODE=ON, which makes no twins")
+elseif(isolinePicTwinPairs)
+    get_property(isolinePicTwinOptions GLOBAL PROPERTY ISOLINE_PIC_TWIN_OPTIONS)
+    add_test(NAME c-pic-twins
+             COMMAND "${CMAKE_COMMAND}" "-DNINJA=${CMAKE_MAKE_PROGRAM}" "-DBUILD=${PROJECT_BINARY_DIR}"
+                     "-DPAIRS=${isolinePicTwinPairs}" -DSHARED=isoline_c_shared "-DCOMPILER=${CMAKE_CXX_COMPILER}"
+                     "-DPIC_FLAG=${CMAKE_CXX_COMPILE_OPTIONS_PIC}" "-DTWIN_FLAGS=${isolinePicTwinOptions}"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckPicTwins.cmake")
+    set_tests_properties(c-pic-twins PROPERTIES LABELS lint)
+endif()
+# How the check reads a command, on fixtures (CheckPicTwins.cmake, SELFTEST): wherever the check can run.
+if(isolinePicTwinPairs)
+    add_test(NAME c-pic-twins-selftest COMMAND "${CMAKE_COMMAND}" -DSELFTEST=ON -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckPicTwins.cmake")
+    set_tests_properties(c-pic-twins-selftest PROPERTIES LABELS lint)
+endif()
+
 # --- clang-tidy over the C headers ---------------------------------------------
 #
 # The C headers are C, not C++ in the house style, so the one .clang-tidy keeps them out of its header
