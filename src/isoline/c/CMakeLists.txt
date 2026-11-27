@@ -201,6 +201,17 @@ set(ISOLINE_PC_LIBS_PRIVATE "-L\${libdir}/isoline ")
 foreach(library IN LISTS isolineCoreClosure)
     string(APPEND ISOLINE_PC_LIBS_PRIVATE "-l$<TARGET_LINKER_FILE_BASE_NAME:${library}> ")
 endforeach()
+# The libraries a native language feature links its libraries with (cmake/IsolineLanguageFeatures.cmake): on a
+# native-contracts build, stdc++exp, which holds the contract violation handler the closure's objects call.
+# They are PRIVATE links of isoline_core, so the closure above does not name them.
+foreach(feature IN LISTS ISOLINE_TARGET_LANGUAGE_FEATURES)
+    string(TOUPPER "${feature}" feature)
+    if(ISOLINE_${feature}_PATH STREQUAL "native")
+        foreach(library IN LISTS ISOLINE_${feature}_LINK_LIBRARIES)
+            string(APPEND ISOLINE_PC_LIBS_PRIVATE "-l${library} ")
+        endforeach()
+    endif()
+endforeach()
 string(APPEND ISOLINE_PC_LIBS_PRIVATE "${isolineCxxRuntime}")
 string(STRIP "${ISOLINE_PC_LIBS_PRIVATE}" ISOLINE_PC_LIBS_PRIVATE)
 configure_file(isoline-c.pc.in "${CMAKE_CURRENT_BINARY_DIR}/isoline-c.pc.configured" @ONLY)

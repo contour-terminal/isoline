@@ -326,7 +326,12 @@ reports through one of two channels:
   instead (GCC's default prints the condition to standard error), then terminate. An embedder's fail
   handler does not see them.
 
-A program may install its own `handle_contract_violation`. A handler that throws is unsupported: every
+A program linking the C++ API (`isoline::core`) may install its own `handle_contract_violation`. Through the
+C API's shared library it cannot: `libisoline_c.so` exports `wasm_*` and `isoline_*` alone (`isoline_c.map`,
+`local: *`), so it binds its contract checks to the copy of GCC's default handler it links from
+`libstdc++exp`, and a handler the program defines is never called there (measured on GCC 16.2.1: a check
+failing in such a library prints GCC's report and terminates, the program's handler unseen). A static link of
+the C API (`pkg-config --static isoline-c`) is the C++ API's case. A handler that throws is unsupported: every
 contract Isoline compiles sits in a `noexcept` function, so the exception terminates the process where
 the check failed, and never reaches the embedder. Isoline compiles its contracts under the `enforce`
 semantic only, and refuses at configure time a build that would check them under another.

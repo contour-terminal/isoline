@@ -6,6 +6,7 @@
 #         -DLIBDIR=<the install's library directory, CMAKE_INSTALL_LIBDIR>
 #         -DCXX_COMPILER=<c++> "-DCXX_FLAGS=<flags>" -DCXX_FRONTEND=<GNU|MSVC>
 #         [-DC_COMPILER=<cc> -DPKG_CONFIG=<pkg-config> "-DC_FLAGS=<flags>" "-DLINK_FLAGS=<flag>;..."]
+#         [-DNM=<nm> -DCONTRACTS_PATH=<native|fallback>]
 #         -P CheckInstall.cmake
 #
 # - Every C header of src/isoline/c/ and wasm.h are installed beneath include/isoline/, and nothing is
@@ -23,7 +24,9 @@
 #   with the shared library removed from the prefix, from what `pkg-config --static --cflags --libs
 #   isoline-c` says, and runs with no shared library of Isoline anywhere on its search path. The program
 #   makes and deletes a wasm_valtype_t, so the static link needs the C++ libraries behind it, which only
-#   Libs.private names: an empty Libs.private fails the static link. LINK_FLAGS
+#   Libs.private names: an empty Libs.private fails the static link. Where contracts are native, the static
+#   link also pulls in an object that calls the contract violation handler, so a Libs.private without
+#   stdc++exp fails it too (NM finds the object). LINK_FLAGS
 #   are what this build's instrumentation (sanitizers, coverage) needs on any link of its code; an
 #   uninstrumented build passes none.
 
@@ -149,6 +152,31 @@ if(PKG_CONFIG)
     else()
         set(loaderVariable LD_LIBRARY_PATH)
     endif()
+    # The static link pulls in an object of the closure that calls the contract violation handler, whatever the
+    # program uses: on a native-contracts build that is every object with a contracted function (Engine.cpp.o
+    # among them), which leaves handle_contract_violation undefined for stdc++exp, so a Libs.private without
+    # -lstdc++exp fails the link. The object is pulled by one symbol it defines (-u); where contracts are
+    # native, a closure with no such object is itself a failure, so the proof cannot vanish.
+    set(contractObjectLinks "")
+    if(NM)
+        file(GLOB coreArchives "${PREFIX}/${LIBDIR}/isoline/*isoline_core*")
+        foreach(archive IN LISTS coreArchives)
+            execute_process(COMMAND "${NM}" -A "${archive}" OUTPUT_VARIABLE symbols ERROR_QUIET)
+            string(REGEX MATCH "([^\n:]+[.]o[bj]*):[ ]+U [^\n]*handle_contract_violation" contractUse "${symbols}")
+            if(contractUse)
+                set(member "${CMAKE_MATCH_1}")
+                string(REGEX MATCH ":${member}:[0-9a-f ]+ T ([^\n]+)" defined "${symbols}")
+                if(defined)
+                    set(contractObjectLinks "-Wl,-u,${CMAKE_MATCH_1}")
+                    message(STATUS "CheckInstall: the static consumer pulls in ${member}, which calls the contract "
+                                   "violation handler")
+                endif()
+            endif()
+        endforeach()
+    endif()
+    if(CONTRACTS_PATH STREQUAL "native" AND NOT contractObjectLinks)
+        string(APPEND missing "\n  an object of the static closure that calls handle_contract_violation (nm: '${NM}')")
+    endif()
     foreach(variant IN ITEMS shared static)
         set(pcArguments --cflags --libs isoline-c)
         set(runEnvironment "${loaderVariable}=${libraryDirectory}")
@@ -167,7 +195,12 @@ if(PKG_CONFIG)
         endif()
         separate_arguments(pcFlags UNIX_COMMAND "${pcFlags}")
         set(program "${consumer}/consumer-${variant}")
-        set(compile "${C_COMPILER}" ${cFlags} "${consumer}/consumer.c" ${pcFlags} ${LINK_FLAGS} -o "${program}")
+        set(forcedObjects "")
+        if(variant STREQUAL "static")
+            set(forcedObjects ${contractObjectLinks})
+        endif()
+        set(compile "${C_COMPILER}" ${cFlags} "${consumer}/consumer.c" ${forcedObjects} ${pcFlags} ${LINK_FLAGS}
+                    -o "${program}")
         execute_process(COMMAND ${compile} RESULT_VARIABLE status OUTPUT_VARIABLE errors ERROR_VARIABLE errors)
         list(JOIN compile " " compileLine)
         if(NOT status EQUAL 0)

@@ -265,7 +265,8 @@ if(ISOLINE_INSTALL)
             find_program(ISOLINE_PKG_CONFIG NAMES pkg-config pkgconf REQUIRED)
             list(APPEND isolineConsumerArguments "-DC_COMPILER=${CMAKE_C_COMPILER}"
                         "-DPKG_CONFIG=${ISOLINE_PKG_CONFIG}" "-DC_FLAGS=${CMAKE_C_FLAGS}"
-                        "-DLINK_FLAGS=${ISOLINE_LINK_OPTIONS}")
+                        "-DLINK_FLAGS=${ISOLINE_LINK_OPTIONS}" "-DNM=${CMAKE_NM}"
+                        "-DCONTRACTS_PATH=${ISOLINE_CONTRACTS_PATH}")
         endif()
     endif()
     add_test(NAME c-install-layout
