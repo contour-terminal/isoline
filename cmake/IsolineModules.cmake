@@ -240,9 +240,15 @@ set(ISOLINE_MODULE_TIDY_FALSE_POSITIVES
     "include-then-import" "performance-trivially-destructible"
     "import-then-include" "readability-redundant-declaration")
 
-# Whether E1 (D13) applies: CMake drives Clang's GNU front end, whose synthetic BMI command carries `-c`.
+# Whether E1 (D13) applies: CMake drives Clang's GNU front end, whose synthetic BMI command carries `-c`,
+# and the Clang is of a version that warns about it. The lowest version measured to warn is the row:
+# Clang 22.1.8 does, Clang 19.1.0 (the floor row) accepts the `-c` silently, and the versions between are
+# unmeasured. Below the row there is no E1 and no tripwire, so a Clang there that warns fails its -Werror
+# build, which is the measurement that lowers the row.
+set(ISOLINE_MODULE_PRECOMPILE_C_WARNS_FROM_CLANG "22")
 set(ISOLINE_MODULE_PRECOMPILE_TAKES_C OFF)
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU"
+   AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL ISOLINE_MODULE_PRECOMPILE_C_WARNS_FROM_CLANG)
     set(ISOLINE_MODULE_PRECOMPILE_TAKES_C ON)
 endif()
 
@@ -276,11 +282,12 @@ endfunction()
 ## tests/modules/CMakeLists.txt once its sources are targets.
 ##  - cmake-precompile-tripwire, where E1 applies and Ninja builds: it reads the build's commands.
 ##  - clang-tidy-module-tripwire, where clang-tidy runs: it runs it on one source of each kind of
-##    ISOLINE_MODULE_TIDY_FALSE_POSITIVES. A kind of a row without a source refuses the configure.
+##    ISOLINE_MODULE_TIDY_FALSE_POSITIVES. A kind of a row without a source refuses the configure. The
+##    BUILD_TARGETS, targets out of `all` that compile some of those sources, it builds first.
 ##
-## isoline_add_module_exception_tripwires(TIDY_SOURCES <kind> <source>...)
+## isoline_add_module_exception_tripwires(TIDY_SOURCES <kind> <source>... [BUILD_TARGETS <target>...])
 function(isoline_add_module_exception_tripwires)
-    cmake_parse_arguments(PARSE_ARGV 0 arg "" "" "TIDY_SOURCES")
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "" "TIDY_SOURCES;BUILD_TARGETS")
     if(ISOLINE_MODULE_PRECOMPILE_TAKES_C AND CMAKE_GENERATOR MATCHES "^Ninja")
         add_test(NAME cmake-precompile-tripwire
                  COMMAND "${CMAKE_COMMAND}" "-DNINJA=${CMAKE_MAKE_PROGRAM}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
@@ -309,10 +316,11 @@ function(isoline_add_module_exception_tripwires)
     set(argumentsFile "${PROJECT_BINARY_DIR}/clang-tidy-module-tripwire/arguments.cmake")
     file(CONFIGURE OUTPUT "${argumentsFile}" CONTENT "set(ROWS [==[@ISOLINE_MODULE_TIDY_FALSE_POSITIVES@]==])
 set(SOURCES [==[@arg_TIDY_SOURCES@]==])
+set(BUILD_TARGETS [==[@arg_BUILD_TARGETS@]==])
 " @ONLY)
     add_test(NAME clang-tidy-module-tripwire
              COMMAND "${CMAKE_COMMAND}" "-DCLANG_TIDY=${ISOLINE_CLANG_TIDY_EXE}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
-                     "-DARGUMENTS_FILE=${argumentsFile}"
+                     "-DARGUMENTS_FILE=${argumentsFile}" "-DCONFIG=$<CONFIG>"
                      -P "${PROJECT_SOURCE_DIR}/tests/cmake/expect-module-tidy-false-positives.cmake")
     # clang-tidy over the whole header set, once per kind, under a sanitizer build's load too. It reads the
     # build tree's module maps, which module-import-then-include builds in (RESOURCE_LOCK build-tree).

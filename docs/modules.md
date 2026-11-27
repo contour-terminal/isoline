@@ -45,6 +45,52 @@ links the same code as one that includes the headers. `CXX_SCAN_FOR_MODULES` is 
 project whose policies are those of CMake 3.28 or newer (CMP0155); Isoline's own policies leave it off,
 so that only its module consumers are scanned.
 
+## Toolchains
+
+The floors are the lowest versions a CI lane builds and tests, not the lowest that CMake documents
+(`cmake/IsolineModuleSupport.cmake` holds them as rows, and refuses what is below):
+
+| Tool | Floor | Notes |
+|---|---|---|
+| CMake | 4.3 | |
+| Ninja | 1.11.1 | Ubuntu 24.04's; the other lanes run 1.13.2 |
+| Clang (GNU front end and ABI) | 19.1.0 | see below |
+| GCC | 15.2 | |
+| MSVC | 19.44 (Visual Studio 17.14) | |
+
+Apple Clang, clang-cl and Clang targeting the MSVC ABI are refused, each with its reason: CMake 4.3 has
+no module dependency scanning for the first two, and the third is untested.
+
+The generators are Ninja, Ninja Multi-Config and Visual Studio (in-tree only, see below). Of Ninja
+Multi-Config the header package's install is measured, but no lane consumes its installed modules: that
+row is supported as CMake documents it, and unmeasured.
+
+CMake documents Clang 18.1.2 for `import std;`, but no Clang 18 builds Isoline's installed package:
+core-cpp, which a packager installs first, deduces the template arguments of an alias template, which
+Clang implements from 19. With libstdc++ (13 or 14, as on Ubuntu 24.04) Clang 18 has no `std::expected`
+either: libstdc++'s `<expected>` requires `__cpp_concepts` 202002, which Clang defines from 19. The
+floor is therefore Clang 19.1.0, LLVM's release archive, measured with Ubuntu 24.04's libstdc++ 14.
+
+The module lanes of `.github/workflows/build.yml`, one matrix row per toolchain:
+
+| Lane | Row | Compiler | Standard library | Build | Tests | `import std;` |
+|---|---|---|---|---|---|---|
+| `linux-clang-modules` | `clang-22-asan` | Clang 22 | libstdc++ 14 | Debug, ASan, clang-tidy | modules, lint, install | not expected |
+| `linux-clang-modules` | `clang-22-libc++-install` | Clang 22 | libc++ 22 | Release | all | expected |
+| `linux-clang-modules` | `clang-floor` | Clang 19.1.0, Ninja 1.11.1 | libstdc++ 14 | Release | all | not expected |
+| `linux-gcc-modules` | `gcc-modules` | GCC 15.2 | libstdc++ 15 | Debug | all | expected |
+| `windows-msvc-modules` | `msvc-modules` | MSVC 19.44 | MSVC STL | Debug, Ninja and Visual Studio 2026 | modules, lint, install | expected (Ninja) |
+
+Two rows run only the tests modules add (the labels `modules`, `lint` and `install`): the rest of the
+suite runs on the same compiler in the ASan job and the Windows MSVC job.
+
+Every Release and Debug row without a sanitizer runs the install tests (`ctest -L install`), which build
+and install core-cpp once (`install-core-cpp`, their shared setup fixture) and then one consumer each. The
+Windows lane also consumes the installed package under a real Visual Studio generator: a consumer that
+includes the headers builds and runs, and the config refuses the module to one that imports it. The
+`macos-clang` lane, which builds the headers with Apple Clang, runs `module-scanning-tripwire`, which
+passes while CMake refuses to scan modules for Apple Clang.
+
 ## Consuming the installed module
 
 With `ISOLINE_MODULES` on, `cmake --install` installs the module beside the library, in the same
@@ -150,7 +196,10 @@ It needs a toolchain that ships a std module, which `CMAKE_CXX_COMPILER_IMPORT_S
 (`23` for C++23): GCC 15 and newer with its libstdc++, Clang with a libstdc++ or libc++ that ships one
 (not the libstdc++ 13 or 14 of Ubuntu 24.04), and MSVC with a Ninja generator. The installed-consumer
 test `install-import-std-consumer` skips, naming the reason, where the toolchain lacks one, and fails
-instead where the lane says it has one (`ISOLINE_EXPECT_IMPORT_STD`).
+instead where the lane says it has one (`ISOLINE_EXPECT_IMPORT_STD`). CMake 4.3 lists `23` for a Clang
+whose libstdc++ has no std module all the same (it takes the bare name Clang's `-print-file-name` prints
+for a missing `libstdc++.modules.json` as the file), and then fails to generate; the consumer treats a
+`CMAKE_CXX_STDLIB_MODULES_JSON` that is no file as no std module.
 
 Setting the gate makes CMake print a `CMake Warning (dev)` that the feature is experimental. The test
 tolerates that one warning, and only in that mode (E3 below).
@@ -200,6 +249,7 @@ Both orders conform to the standard, but the other one is measured rather than p
 
 | Compiler | include, then import | import, then include |
 |---|---|---|
+| Clang 19.1.0 | works | fails: type alias template redefinition with different types |
 | Clang 22 | works | works |
 | GCC 15.2 | works | fails: redefinition of `std::__byte_operand<bool>` |
 | GCC 16 | works | fails: redefinition of `std::__is_constant_evaluated` |
@@ -210,8 +260,9 @@ Each failure is the header redefining what the module's global module fragment a
 entity a compiler names differs between versions.
 
 The test `module-import-then-include` (label `modules`) builds an import-then-include TU and holds the
-outcome to its compiler's row of `ISOLINE_MODULE_IMPORT_THEN_INCLUDE` (`tests/modules/CMakeLists.txt`):
-a row expects success, or a failure whose English diagnostics match the row's regular expression. GCC's
+outcome to its compiler's row of `ISOLINE_MODULE_IMPORT_THEN_INCLUDE` (`tests/modules/CMakeLists.txt`),
+the row of its compiler with the highest lowest version not above its own: a row expects success, or a
+failure whose English diagnostics match the row's regular expression. GCC's
 row matches `error: redefinition of '`, whatever entity follows; MSVC's matches
 `(error|warning) C(2011|4348):`, the two codes its versions report. A compiler that starts accepting the
 order turns it red, which is the reminder to update this table.
@@ -222,11 +273,13 @@ Isoline builds warning-free under `-Werror` and `/W4 /WX`, its module targets an
 consumer included. Four exceptions are declared where they apply, each with its measured reason, and
 each has a tripwire test that fails once its cause is gone:
 
-- **E1 (Clang):** `-Wno-error=unused-command-line-argument` on the module targets, as a
+- **E1 (Clang 22 and newer):** `-Wno-error=unused-command-line-argument` on the module targets, as a
   `$<BUILD_INTERFACE:...>` option that is never exported. CMake 4.3 builds an importer's BMI with
   `clang++ --precompile ... -c`, and Clang reports the `-c` as unused. The warning still prints, so
   the cause stays visible; the installed-consumer tests of a mode that imports tolerate exactly that
-  diagnostic, by its text, however often it appears. Tripwire: `cmake-precompile-tripwire`.
+  diagnostic, by its text, however often it appears. Tripwire: `cmake-precompile-tripwire`. Clang 19.1.0
+  accepts the `-c` silently, so E1 starts at the lowest version measured to warn, 22; the versions between
+  are unmeasured, and one that warns fails its own `-Werror` build.
 - **E2:** clang-tidy's checks that misfire on module sources are lifted on exactly the targets of their
   kind (`ISOLINE_MODULE_TIDY_FALSE_POSITIVES` in `cmake/IsolineModules.cmake`), and every other check
   still runs there. Tripwire: `clang-tidy-module-tripwire`.

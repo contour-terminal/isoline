@@ -33,12 +33,16 @@ add_test(NAME isoline_module_test COMMAND isoline_module_test)
 set_tests_properties(isoline_module_test PROPERTIES LABELS "unit;modules" TIMEOUT 300)
 
 # D7, import then include in one TU, as measured (2026-11-27), one row per compiler id the support table
-# accepts: (compiler id, works|fails, a regular expression that a failing build's output matches).
-# module-import-then-include builds ImportThenInclude.cpp and holds the outcome to its compiler's row, so a
-# compiler that starts (or stops) accepting the order turns it red; docs/modules.md shows the same table.
-# Every failure measured is the header redefining what the module's global module fragment already holds,
-# and the first error names a different entity per version, so a row matches what those errors share:
-#  - Clang 22.1.8: accepted.
+# accepts and per version from which its outcome holds: (compiler id, lowest version, works|fails, a
+# regular expression that a failing build's output matches). A compiler takes the row of its id with the
+# highest lowest version not above its own. module-import-then-include builds ImportThenInclude.cpp and
+# holds the outcome to that row, so a compiler that starts (or stops) accepting the order turns it red;
+# docs/modules.md shows the same table. Every failure measured is the header redefining what the module's
+# global module fragment already holds, and the first error names a different entity per version, so a
+# row matches what those errors share:
+#  - Clang 19.1.0 (the floor row): "error: type alias template redefinition with different types". Clang
+#    22.1.8: accepted. Between them, unmeasured: the 19.1.0 row holds them, and one that accepts the order
+#    turns the test red, naming the version to add a row for.
 #  - GCC: "error: redefinition of '...'", the entity varying by version: GCC 16.2.1 names
 #    'constexpr bool std::__is_constant_evaluated()', GCC 15.2.0 (the gcc-modules lane)
 #    'struct std::__byte_operand<bool>'.
@@ -48,9 +52,10 @@ set_tests_properties(isoline_module_test PROPERTIES LABELS "unit;modules" TIMEOU
 # The test runs the build with English diagnostics (LC_ALL=C for GCC, VSLANG=1033 for MSVC), which these
 # patterns assume.
 set(ISOLINE_MODULE_IMPORT_THEN_INCLUDE
-    "Clang" "works" "-"
-    "GNU" "fails" "error: redefinition of '"
-    "MSVC" "fails" "(error|warning) C(2011|4348):")
+    "Clang" "19.1.0" "fails" "error: [a-z ]*redefinition"
+    "Clang" "22" "works" "-"
+    "GNU" "15.2" "fails" "error: redefinition of '"
+    "MSVC" "19.44" "fails" "(error|warning) C(2011|4348):")
 
 # Its probe: out of `all`, since on a `fails` row it does not build; the CTest builds it by target.
 add_library(isoline_module_import_then_include OBJECT EXCLUDE_FROM_ALL ImportThenInclude.cpp)
@@ -63,16 +68,19 @@ target_compile_options(isoline_module_import_then_include PRIVATE "$<$<CXX_COMPI
 isoline_lift_module_tidy_checks(isoline_module_import_then_include import-then-include)
 
 set(importThenIncludeRow "")
+set(importThenIncludeRowVersion "")
 set(rows "${ISOLINE_MODULE_IMPORT_THEN_INCLUDE}")
 while(rows)
-    list(POP_FRONT rows compilerId expected diagnostic)
-    if(compilerId STREQUAL CMAKE_CXX_COMPILER_ID)
+    list(POP_FRONT rows compilerId lowestVersion expected diagnostic)
+    if(compilerId STREQUAL CMAKE_CXX_COMPILER_ID AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL lowestVersion
+       AND (importThenIncludeRowVersion STREQUAL "" OR lowestVersion VERSION_GREATER importThenIncludeRowVersion))
         set(importThenIncludeRow "${expected};${diagnostic}")
+        set(importThenIncludeRowVersion "${lowestVersion}")
     endif()
 endwhile()
 if(NOT importThenIncludeRow)
-    message(FATAL_ERROR "[isoline] ISOLINE_MODULE_IMPORT_THEN_INCLUDE has no row for ${CMAKE_CXX_COMPILER_ID}: "
-                        "measure tests/modules/ImportThenInclude.cpp on it and add one")
+    message(FATAL_ERROR "[isoline] ISOLINE_MODULE_IMPORT_THEN_INCLUDE has no row for ${CMAKE_CXX_COMPILER_ID} "
+                        "${CMAKE_CXX_COMPILER_VERSION}: measure tests/modules/ImportThenInclude.cpp on it and add one")
 endif()
 list(GET importThenIncludeRow 0 importThenIncludeExpected)
 list(GET importThenIncludeRow 1 importThenIncludeDiagnostic)
@@ -103,11 +111,15 @@ isoline_apply_target_policy(isoline_module_tidy_tripwire_include_then_import)
 # performance-trivially-destructible.
 isoline_lift_module_tidy_checks(isoline_module_tidy_tripwire_include_then_import include-then-import)
 
-# The import-then-include source, built only where its compiler's row says the order works: elsewhere the
-# TU does not compile, so clang-tidy, which runs on Clang only (the same LLVM build, D13), never sees it.
+# The import-then-include source, a target only where clang-tidy runs (the tripwire is its one user) and its
+# compiler's row says the order works: elsewhere the TU does not compile, and clang-tidy, which runs on Clang
+# only (the same LLVM build, D13), never sees it. It is out of `all` even so: an order that stops working
+# turns module-import-then-include red, and breaks no build. clang-tidy-module-tripwire builds it.
 set(importThenIncludeTidySource "")
-if(importThenIncludeExpected STREQUAL "works")
-    add_library(isoline_module_tidy_tripwire_import_then_include OBJECT tidy-tripwire/ImportThenInclude.cpp)
+set(importThenIncludeTidyTarget "")
+if(ISOLINE_CLANG_TIDY_COMMAND AND importThenIncludeExpected STREQUAL "works")
+    add_library(isoline_module_tidy_tripwire_import_then_include OBJECT EXCLUDE_FROM_ALL
+                tidy-tripwire/ImportThenInclude.cpp)
     target_link_libraries(isoline_module_tidy_tripwire_import_then_include PRIVATE isoline_core)
     isoline_add_module_consumer(isoline_module_tidy_tripwire_import_then_include isoline)
     isoline_apply_target_policy(isoline_module_tidy_tripwire_import_then_include)
@@ -115,6 +127,7 @@ if(importThenIncludeExpected STREQUAL "works")
     isoline_lift_module_tidy_checks(isoline_module_tidy_tripwire_import_then_include import-then-include)
     set(importThenIncludeTidySource
         "import-then-include" "${CMAKE_CURRENT_SOURCE_DIR}/tidy-tripwire/ImportThenInclude.cpp")
+    set(importThenIncludeTidyTarget isoline_module_tidy_tripwire_import_then_include)
 endif()
 
 # The tripwires of E1 and E2: one source of each kind ISOLINE_MODULE_TIDY_FALSE_POSITIVES names.
@@ -124,4 +137,5 @@ isoline_add_module_exception_tripwires(
         "interface-unit" "${isolineInterfaceUnit}"
         "import-only" "${CMAKE_CURRENT_SOURCE_DIR}/tidy-tripwire/ImportOnly.cpp"
         "include-then-import" "${CMAKE_CURRENT_SOURCE_DIR}/tidy-tripwire/IncludeThenImport.cpp"
-        ${importThenIncludeTidySource})
+        ${importThenIncludeTidySource}
+    BUILD_TARGETS ${importThenIncludeTidyTarget})

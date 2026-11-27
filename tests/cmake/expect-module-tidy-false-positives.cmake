@@ -5,12 +5,13 @@
 # compile_commands.json, and passes while every listed check still fires there. One that no longer does
 # fails it, named, so that E2's list, and the checks lifted for its kind, shrink with it.
 #
-#   cmake -DCLANG_TIDY=<clang-tidy> -DBUILD_DIR=<build tree> -DARGUMENTS_FILE=<file>
+#   cmake -DCLANG_TIDY=<clang-tidy> -DBUILD_DIR=<build tree> -DARGUMENTS_FILE=<file> [-DCONFIG=<configuration>]
 #         -P tests/cmake/expect-module-tidy-false-positives.cmake
 #
-# ARGUMENTS_FILE sets ROWS, the (kind, check) rows, and SOURCES, (kind, source) rows: lists, which a
-# command line would split. A row of a kind with no source fails it: every row must have a tripwire. The
-# sources compile in the build, so their module maps exist: run it after the build.
+# ARGUMENTS_FILE sets ROWS, the (kind, check) rows, SOURCES, (kind, source) rows, and BUILD_TARGETS: lists,
+# which a command line would split. A row of a kind with no source fails it: every row must have a
+# tripwire. The sources compile in the build, so their module maps exist: run it after the build. Those of
+# the BUILD_TARGETS, which are out of `all`, it builds first.
 
 cmake_minimum_required(VERSION 3.25)
 
@@ -39,6 +40,19 @@ while(rows)
         list(APPEND failures "${check} on ${rowKind}: no source of kind ${rowKind} to run clang-tidy on")
     endif()
 endwhile()
+
+set(configArguments "")
+if(CONFIG)
+    set(configArguments --config "${CONFIG}")
+endif()
+foreach(target IN LISTS BUILD_TARGETS)
+    execute_process(COMMAND "${CMAKE_COMMAND}" --build "${BUILD_DIR}" --target "${target}" ${configArguments}
+                    OUTPUT_VARIABLE output ERROR_VARIABLE output RESULT_VARIABLE result)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "expect-module-tidy-false-positives: ${target}, whose source it lints, does not build "
+                            "(module-import-then-include judges the order):\n${output}")
+    endif()
+endforeach()
 
 set(sources "${SOURCES}")
 while(sources)

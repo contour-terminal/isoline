@@ -25,13 +25,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
-        run: |
-          wget -q https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh "$LLVM_VERSION"
-          sudo apt-get install -qy "clang-tidy-$LLVM_VERSION" ninja-build
+        uses: ./.github/actions/install-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-tidy-${{ env.LLVM_VERSION }} ninja-build
       - name: Configure
         run: >
           cmake --preset clang-asan
@@ -48,13 +47,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
-        run: |
-          wget -q https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh "$LLVM_VERSION"
-          sudo apt-get install -qy ninja-build
+        uses: ./.github/actions/install-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: ninja-build
       - name: Configure
         # clang-tidy runs in the ASan job already.
         run: >
@@ -80,7 +78,7 @@ jobs:
         # Release too: its optimizer raises warnings, -Wmaybe-uninitialized among them, Debug does not.
         preset: [gcc-debug, gcc-release]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install GCC ${{ env.GCC_VERSION }} and Ninja
         run: |
           sudo apt-get update -q
@@ -99,13 +97,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
-        run: |
-          wget -q https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh "$LLVM_VERSION"
-          sudo apt-get install -qy "clang-tidy-$LLVM_VERSION" ninja-build
+        uses: ./.github/actions/install-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-tidy-${{ env.LLVM_VERSION }} ninja-build
       - name: Configure
         run: >
           cmake --preset clang-coverage
@@ -144,7 +141,7 @@ jobs:
         run: python3 -I scripts/coverage-check.py out/clang-coverage/coverage.json coverage-baseline.txt
       - name: Upload coverage report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: |
@@ -157,7 +154,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Ninja
         run: brew install ninja
       - name: Configure
@@ -172,9 +169,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Enter the MSVC developer environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
       - name: Configure
@@ -184,18 +181,339 @@ jobs:
       - name: Test
         run: ctest --preset msvc-debug --output-on-failure
 
+  # The C++ module lanes (ISOLINE_MODULES, docs/modules.md). Each lane is a matrix of rows, so a
+  # toolchain is a row: `preset` to configure, build and test; `compiler`; `cmake` and `ninja`, where
+  # `pinned` installs the release scripts/tools.lock pins (CMake 4.3 is the modules floor, and no
+  # runner image ships it) and `apt` the runner's package, of the version `ninjaVersion` names;
+  # and `expectImportStd`, whether the toolchain must provide `import std;`. "Show the tools" holds every
+  # tool to its row's version (scripts/fetch-tools.py --check-version), so a runner whose PATH holds
+  # another one fails the row instead of building with it, and Ninja is the build's by its path
+  # (CMAKE_MAKE_PROGRAM): the runner's /usr/local/bin/ninja (1.13.2) would shadow apt's.
+  linux-clang-modules:
+    name: Linux Clang (C++ modules, ${{ matrix.row }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # Beyond the columns above, a Clang row names its LLVM: `llvm`, apt.llvm.org's major release or
+        # `archive` for the llvm row of scripts/tools.lock, and `llvmPackages`, the further apt packages;
+        # `compiler`, `scanDeps` and `tidy`, the executables of its bin directory the build runs (`tidy`
+        # empty: no clang-tidy); and `stdlib`, the standard library, libstdc++ or libc++ (-stdlib=libc++).
+        # With apt.llvm.org's libc++, the std module description is the one in its LLVM's lib directory:
+        # the copy in /usr/lib/x86_64-linux-gnu, which Clang finds first, keeps its source paths relative
+        # to /usr/lib/llvm-<llvm>/lib, so from the copy they lead nowhere.
+        # `importStdSkip`, where `import std;` is not expected, is the reason install-import-std-consumer
+        # must give for its skip, so that the branch taken is checked, not assumed.
+        include:
+          # The sanitizer build of the whole suite, which also lints (clang-tidy of the same LLVM, D13).
+          - row: clang-22-asan
+            preset: clang-modules
+            llvm: "22"
+            llvmPackages: clang-tidy-22
+            compiler: clang++
+            scanDeps: clang-scan-deps
+            tidy: clang-tidy
+            stdlib: libstdc++
+            cmake: pinned
+            ninja: pinned
+            ninjaVersion: ""
+            expectImportStd: "OFF"
+            importStdSkip: ""
+            # The rest of the suite runs in the ASan job, on the same compiler and sanitizer.
+            testLabels: "modules|lint|install"
+          # The install tests, which a sanitizer build registers none of, with libc++, whose std module
+          # Ubuntu's libstdc++ (13, 14) lacks: E1, `import std;` with Clang, and E4's libc++ row.
+          - row: clang-22-libc++-install
+            preset: clang-modules-release
+            llvm: "22"
+            llvmPackages: libc++-22-dev libc++abi-22-dev
+            compiler: clang++
+            scanDeps: clang-scan-deps
+            tidy: ""
+            stdlib: libc++
+            cmake: pinned
+            ninja: pinned
+            ninjaVersion: ""
+            expectImportStd: "ON"
+            importStdSkip: ""
+          # The Clang modules floor, 19.1.0 (LLVM's release archive), and the Ninja floor, 1.11.1 (Ubuntu
+          # 24.04's), with the runner's libstdc++, which has no std module: CMake 4.3 claims one all the
+          # same, and the consumer's guard of that defect (tests/consumer/CMakeLists.txt) is the skip.
+          - row: clang-floor
+            preset: clang-modules-release
+            llvm: archive
+            llvmPackages: ""
+            compiler: clang++
+            scanDeps: clang-scan-deps
+            tidy: ""
+            stdlib: libstdc++
+            cmake: pinned
+            ninja: apt
+            ninjaVersion: "1.11.1"
+            expectImportStd: "OFF"
+            importStdSkip: "names the std module's description 'libstdc\\+\\+\\.modules\\.json', which is no file"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install LLVM ${{ matrix.llvm }} with clang-scan-deps
+        if: ${{ matrix.llvm != 'archive' }}
+        uses: ./.github/actions/install-llvm
+        with:
+          version: ${{ matrix.llvm }}
+          packages: clang-tools-${{ matrix.llvm }} ${{ matrix.llvmPackages }}
+      - name: Name LLVM ${{ matrix.llvm }}'s bin directory
+        if: ${{ matrix.llvm != 'archive' }}
+        run: echo "LLVM_BIN=/usr/lib/llvm-${{ matrix.llvm }}/bin" >> "$GITHUB_ENV"
+      - name: Install the pinned LLVM
+        if: ${{ matrix.llvm == 'archive' }}
+        run: |
+          compiler="$(python3 -I scripts/fetch-tools.py --tool llvm --cache "$RUNNER_TEMP/isoline-tools")"
+          echo "LLVM_BIN=$(dirname "$compiler")" >> "$GITHUB_ENV"
+      - name: Install the pinned CMake and Ninja
+        env:
+          PINNED: ${{ matrix.cmake == 'pinned' && 'cmake' || '' }} ${{ matrix.ninja == 'pinned' && 'ninja' || '' }}
+        run: |
+          for tool in $PINNED; do
+            executable="$(python3 -I scripts/fetch-tools.py --tool "$tool" --cache "$RUNNER_TEMP/isoline-tools")"
+            dirname "$executable" >> "$GITHUB_PATH"
+            if [ "$tool" = ninja ]; then echo "NINJA_EXECUTABLE=$executable" >> "$GITHUB_ENV"; fi
+          done
+      - name: Install the runner's Ninja
+        if: ${{ matrix.ninja == 'apt' }}
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy ninja-build
+          echo "NINJA_EXECUTABLE=/usr/bin/ninja" >> "$GITHUB_ENV"
+      - name: Show the tools, each of its row's version
+        env:
+          NINJA_VERSION: ${{ matrix.ninjaVersion }}
+          LLVM: ${{ matrix.llvm }}
+        run: |
+          check() { python3 -I scripts/fetch-tools.py --check-version "$@"; }
+          check "$(command -v cmake)" --tool cmake
+          check "$NINJA_EXECUTABLE" --tool ninja ${NINJA_VERSION:+--expected "$NINJA_VERSION"}
+          if [ "$LLVM" = archive ]; then
+            check "$LLVM_BIN/${{ matrix.compiler }}" --tool llvm
+          else
+            check "$LLVM_BIN/${{ matrix.compiler }}" --tool llvm --expected "$LLVM"
+          fi
+      - name: Configure
+        env:
+          TIDY: ${{ matrix.tidy }}
+          STDLIB: ${{ matrix.stdlib }}
+          LLVM: ${{ matrix.llvm }}
+        run: |
+          tidyArguments=(-DISOLINE_CLANG_TIDY=OFF)
+          if [ -n "$TIDY" ]; then tidyArguments=("-DISOLINE_CLANG_TIDY_EXE=$LLVM_BIN/$TIDY"); fi
+          stdlibArguments=()
+          if [ "$STDLIB" = libc++ ]; then
+            stdlibArguments=(-DCMAKE_CXX_FLAGS=-stdlib=libc++)
+            if [ "$LLVM" != archive ]; then
+              stdlibArguments+=("-DCMAKE_CXX_STDLIB_MODULES_JSON=/usr/lib/llvm-$LLVM/lib/libc++.modules.json")
+            fi
+          fi
+          cmake --preset "${{ matrix.preset }}" \
+            -DCMAKE_MAKE_PROGRAM="$NINJA_EXECUTABLE" \
+            -DCMAKE_CXX_COMPILER="$LLVM_BIN/${{ matrix.compiler }}" \
+            -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS="$LLVM_BIN/${{ matrix.scanDeps }}" \
+            "${tidyArguments[@]}" "${stdlibArguments[@]}" \
+            -DISOLINE_EXPECT_IMPORT_STD="${{ matrix.expectImportStd }}" \
+            -DISOLINE_FETCH_DEPS=ON
+      - name: Build
+        run: cmake --build --preset "${{ matrix.preset }}"
+      - name: Test
+        env:
+          TEST_LABELS: ${{ matrix.testLabels }}
+        run: ctest --preset "${{ matrix.preset }}" --output-on-failure ${TEST_LABELS:+--label-regex "$TEST_LABELS"}
+      - name: Check why import std was skipped
+        if: ${{ matrix.importStdSkip != '' }}
+        env:
+          REASON: ${{ matrix.importStdSkip }}
+        run: |
+          log="out/${{ matrix.preset }}/Testing/Temporary/LastTest.log"
+          if ! grep -Eq "skipped \(mode import-std\): import std unavailable: .*$REASON" "$log"; then
+            echo "::error::install-import-std-consumer did not skip for: $REASON"
+            grep -E "import std unavailable" "$log" || true
+            exit 1
+          fi
+          grep -E "skipped \(mode import-std\)" "$log"
+
+  linux-gcc-modules:
+    name: Linux GCC (C++ modules, ${{ matrix.preset }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    # The GCC modules floor, 15.2, which no ubuntu-24.04 package provides. Pinned by the digest of the
+    # tag's multi-arch index; its Python is externally managed, so the tools come as release archives.
+    container: gcc:15.2.0@sha256:3ae15afe768b06d0c0fe088d822ba5f8045c26630bdacc8d8e7713cf5d8e7289
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: gcc-modules
+            compiler: g++
+            compilerVersion: "15.2.0"
+            cmake: pinned
+            ninja: pinned
+            expectImportStd: "ON"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install the pinned CMake and Ninja
+        env:
+          PINNED: ${{ matrix.cmake == 'pinned' && 'cmake' || '' }} ${{ matrix.ninja == 'pinned' && 'ninja' || '' }}
+        run: |
+          for tool in $PINNED; do
+            executable="$(python3 -I scripts/fetch-tools.py --tool "$tool" --cache "$RUNNER_TEMP/isoline-tools")"
+            dirname "$executable" >> "$GITHUB_PATH"
+            if [ "$tool" = ninja ]; then echo "NINJA_EXECUTABLE=$executable" >> "$GITHUB_ENV"; fi
+          done
+      - name: Show the tools, each of its row's version
+        run: |
+          check() { python3 -I scripts/fetch-tools.py --check-version "$@"; }
+          check "$(command -v cmake)" --tool cmake
+          check "$NINJA_EXECUTABLE" --tool ninja
+          check "$(command -v "${{ matrix.compiler }}")" --tool gcc --expected "${{ matrix.compilerVersion }}"
+      - name: Configure
+        run: >
+          cmake --preset "${{ matrix.preset }}"
+          -DCMAKE_MAKE_PROGRAM="$NINJA_EXECUTABLE"
+          -DCMAKE_CXX_COMPILER="${{ matrix.compiler }}"
+          -DISOLINE_EXPECT_IMPORT_STD="${{ matrix.expectImportStd }}"
+          -DISOLINE_FETCH_DEPS=ON
+      - name: Build
+        run: cmake --build --preset "${{ matrix.preset }}"
+      - name: Test
+        run: ctest --preset "${{ matrix.preset }}" --output-on-failure
+
+  windows-msvc-modules:
+    name: Windows MSVC (C++ modules, ${{ matrix.preset }})
+    # Visual Studio 2026, which also carries the v143 toolset of the MSVC modules floor (19.44, VS 17.14).
+    # The Visual Studio generator is a column, so a runner image that moves on is a row change.
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Ninja build runs the whole suite; the Visual Studio generator's in-tree build runs the
+          # module consumer only (an installed module cannot be consumed by it, docs/modules.md). That
+          # build takes the generator of the runner's Visual Studio, and the floor's toolset, v143.
+          - preset: msvc-modules
+            visualStudioPreset: msvc-modules-visual-studio
+            visualStudioGenerator: Visual Studio 18 2026
+            visualStudioToolset: v143
+            compiler: cl
+            # The toolset 14.44 the developer environment enters.
+            compilerVersion: "19.44"
+            cmake: pinned
+            ninja: pinned
+            expectImportStd: "ON"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Enter the MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+          # The MSVC modules floor, 19.44 (VS 17.14).
+          toolset: "14.44"
+      # After the developer environment, which puts Visual Studio's own CMake and Ninja on PATH: these
+      # entries go in front of it.
+      - name: Install the pinned CMake and Ninja
+        shell: pwsh
+        env:
+          PINNED: ${{ matrix.cmake == 'pinned' && 'cmake' || '' }} ${{ matrix.ninja == 'pinned' && 'ninja' || '' }}
+        run: |
+          foreach ($tool in -split $env:PINNED) {
+            $executable = python -I scripts/fetch-tools.py --tool $tool --cache "$env:RUNNER_TEMP/isoline-tools"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Split-Path -Parent $executable | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            if ($tool -eq 'ninja') {
+              "NINJA_EXECUTABLE=$executable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+      - name: Show the tools, each of its row's version
+        shell: pwsh
+        run: |
+          $checks = @(
+            @((Get-Command cmake).Source, '--tool', 'cmake'),
+            @($env:NINJA_EXECUTABLE, '--tool', 'ninja'),
+            # cl prints its version when run without arguments.
+            @((Get-Command "${{ matrix.compiler }}").Source, '--tool', 'msvc', '--expected', '${{ matrix.compilerVersion }}',
+              '--version-argument='))
+          foreach ($check in $checks) {
+            python -I scripts/fetch-tools.py --check-version @check
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Configure
+        run: >
+          cmake --preset "${{ matrix.preset }}"
+          -DCMAKE_MAKE_PROGRAM="${{ env.NINJA_EXECUTABLE }}"
+          -DCMAKE_CXX_COMPILER="${{ matrix.compiler }}"
+          -DISOLINE_EXPECT_IMPORT_STD="${{ matrix.expectImportStd }}"
+      - name: Build
+        run: cmake --build --preset "${{ matrix.preset }}"
+      - name: Test
+        # The whole suite runs in the Windows MSVC job, on the same compiler: this lane tests what modules add.
+        run: ctest --preset "${{ matrix.preset }}" --output-on-failure --label-regex "modules|lint|install"
+      # The installed package under a real Visual Studio generator (D11), where check-install's package
+      # probe only names one to the config. The prefixes are those the install tests above left, each
+      # check-install's moved prefix of a mode (<build>/install-tests/<mode>/moved-prefix): the consumer
+      # that includes the headers configures, builds and runs, and the config refuses the module to the
+      # one that imports it, naming the Ninja generator it needs.
+      - name: Consume the installed package (Visual Studio generator)
+        shell: pwsh
+        env:
+          GENERATOR: ${{ matrix.visualStudioGenerator }}
+          TOOLSET: ${{ matrix.visualStudioToolset }}
+          INSTALL_TESTS: ${{ github.workspace }}/out/${{ matrix.preset }}/install-tests
+        run: |
+          # The consumer finds the package in the prefix alone, as check-install's consumer does.
+          $isolation = @('-DCMAKE_FIND_USE_PACKAGE_ROOT_PATH=OFF', '-DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF',
+                         '-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF', '-DCMAKE_FIND_USE_CMAKE_SYSTEM_PATH=OFF',
+                         '-DCMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH=OFF', '-DCMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH=OFF')
+          $consumer = "$env:RUNNER_TEMP/visual-studio-consumer"
+          cmake -S tests/consumer -B "$consumer/include" -G $env:GENERATOR -T $env:TOOLSET @isolation `
+            "-DCMAKE_PREFIX_PATH=$env:INSTALL_TESTS/include/moved-prefix" -DISOLINE_CONSUMER_MODE=include
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build "$consumer/include" --config Debug
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir "$consumer/include" --build-config Debug --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # This configure must fail: its exit status is judged below, not by the runner's pwsh, which would
+          # stop the step at it.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Continue'
+          $output = cmake -S tests/consumer -B "$consumer/import" -G $env:GENERATOR -T $env:TOOLSET @isolation `
+            "-DCMAKE_PREFIX_PATH=$env:INSTALL_TESTS/import/moved-prefix" -DISOLINE_CONSUMER_MODE=import 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Output $output
+          $refusal = 'installed C\+\+ modules need a Ninja generator'
+          if ($status -eq 0 -or ($output -replace '\s+', ' ') -notmatch $refusal) {
+            Write-Output "::error::the config should refuse the module to a Visual Studio consumer (exit $status)"
+            exit 1
+          }
+          # The runner ends the step with $LASTEXITCODE, which is that refused configure's.
+          exit 0
+      - name: Configure (Visual Studio generator)
+        run: >
+          cmake --preset "${{ matrix.visualStudioPreset }}"
+          -G "${{ matrix.visualStudioGenerator }}"
+          -T "${{ matrix.visualStudioToolset }}"
+      - name: Build the module consumer (Visual Studio generator)
+        run: cmake --build --preset "${{ matrix.visualStudioPreset }}" --target isoline_module_test
+      - name: Test the module consumer (Visual Studio generator)
+        run: ctest --preset "${{ matrix.visualStudioPreset }}" --tests-regex "^isoline_module_test$" --output-on-failure
+
   clang-format:
     name: clang-format
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install clang-format ${{ env.LLVM_VERSION }}
-        run: |
-          wget -q https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh "$LLVM_VERSION"
-          sudo apt-get install -qy "clang-format-$LLVM_VERSION"
+        uses: ./.github/actions/install-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+          packages: clang-format-${{ env.LLVM_VERSION }}
       - name: Check formatting
         run: |
           dirs=()
@@ -210,6 +528,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check vendor/core-cpp
         run: cmake -DMODE=check -DDEST=vendor/core-cpp -P vendor/core-cpp/cmake/CoreCppVendor.cmake

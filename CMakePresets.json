@@ -234,9 +234,9 @@
         {
             "name": "msvc-modules-visual-studio",
             "displayName": "MSVC Debug, C++ modules, Visual Studio generator",
-            "description": "MSVC (64-bit) with C++ modules, built in-tree by the Visual Studio 2022 generator, which picks the compiler and the configuration itself",
+            "description": "MSVC (64-bit) with C++ modules, built in-tree by the Visual Studio 2026 generator, which picks the compiler and the configuration itself",
             "inherits": "msvc-modules",
-            "generator": "Visual Studio 17 2022",
+            "generator": "Visual Studio 18 2026",
             "architecture": {
                 "value": "x64",
                 "strategy": "set"

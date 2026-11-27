@@ -4,8 +4,9 @@
 #
 #   cmake -DBUILD_DIR=<isoline build> -DSOURCE_DIR=<isoline> -DPREFIX=<empty prefix>
 #         -DCONSUMER_SOURCE=<tests/consumer> -DMODE=<mode> -DFORBIDDEN_OPTIONS_FILE=<list file>
-#         [-DCXX_COMPILER=<c>] [-DGENERATOR=<g>] [-DGENERATOR_PLATFORM=<p>] [-DGENERATOR_TOOLSET=<t>]
-#         [-DGENERATOR_IS_MULTI_CONFIG=ON|OFF] [-DMAKE_PROGRAM=<p>] [-DMT=<mt>] [-DAR=<ar>]
+#         [-DCXX_COMPILER=<c>] [-DCXX_FLAGS=<flags>] [-DSTDLIB_MODULES_JSON=<json>]
+#         [-DGENERATOR=<g>] [-DGENERATOR_PLATFORM=<p>]
+#         [-DGENERATOR_TOOLSET=<t>] [-DGENERATOR_IS_MULTI_CONFIG=ON|OFF] [-DMAKE_PROGRAM=<p>] [-DMT=<mt>] [-DAR=<ar>]
 #         [-DRANLIB=<ranlib>] [-DCONFIG=<config>]
 #         [-DEXPECT_IMPORT_STD=ON|OFF] [-DCORE_CPP_PREFIX=<prefix>] -P tests/cmake/check-install.cmake
 #   cmake -DCORE_CPP_ONLY=ON -DBUILD_DIR=... -DSOURCE_DIR=... -DPREFIX=<shared prefix> [toolchain as above]
@@ -88,7 +89,9 @@ set(movedPrefix "${workDir}/moved-prefix")
 file(REMOVE_RECURSE "${PREFIX}" "${movedPrefix}" "${consumerBuild}" "${probeBuild}" "${probePrefix}")
 file(MAKE_DIRECTORY "${PREFIX}")
 set(coreCppBuildKey
-    "${GENERATOR}|${GENERATOR_PLATFORM}|${GENERATOR_TOOLSET}|${MAKE_PROGRAM}|${CXX_COMPILER}|${MT}|${AR}|${RANLIB}|${CONFIG}")
+    "${GENERATOR}|${GENERATOR_PLATFORM}|${GENERATOR_TOOLSET}|${MAKE_PROGRAM}|${CXX_COMPILER}|${CXX_FLAGS}|${STDLIB_MODULES_JSON}"
+    "|${MT}|${AR}"
+    "|${RANLIB}|${CONFIG}")
 set(coreCppBuildKeyFile "${coreCppBuild}/check-install-key.txt")
 if(EXISTS "${coreCppBuildKeyFile}")
     file(READ "${coreCppBuildKeyFile}" keptKey)
@@ -111,16 +114,23 @@ function(check_install_step what outputVar)
 endfunction()
 
 # The build's toolchain, for every project configured here: (argument, value) rows, each passed only
-# when the build has a value for it. The manifest tool and the archiver are among them because the
-# isolation below turns the PATH search off, and with it the one that finds MSVC's mt.exe (without it,
-# no program links) and an `ar` that is not beside the compiler (the gcc image's g++ is in /usr/local/bin,
-# its ar in /usr/bin): without that, no static library links, such as the std module import std builds.
+# when the build has a value for it. Its CXX flags are among them, since they may choose the standard
+# library (-stdlib=libc++), which every project linked together must share, and the description of that
+# library's std module, which a lane may name where its package puts one CMake cannot use (apt.llvm.org's
+# libc++ 22 copies it to the multiarch directory, where its relative source paths lead nowhere). The
+# manifest tool and the
+# archiver are among them because the isolation below turns the PATH search off, and with it the one
+# that finds MSVC's mt.exe (without it, no program links) and an `ar` that is not beside the compiler
+# (the gcc image's g++ is in /usr/local/bin, its ar in /usr/bin): without that, no static library
+# links, such as the std module import std builds.
 set(toolchainRows
     -G                       "${GENERATOR}"
     -A                       "${GENERATOR_PLATFORM}"
     -T                       "${GENERATOR_TOOLSET}"
     -DCMAKE_MAKE_PROGRAM=    "${MAKE_PROGRAM}"
     -DCMAKE_CXX_COMPILER=    "${CXX_COMPILER}"
+    -DCMAKE_CXX_FLAGS=       "${CXX_FLAGS}"
+    -DCMAKE_CXX_STDLIB_MODULES_JSON= "${STDLIB_MODULES_JSON}"
     -DCMAKE_MT=              "${MT}"
     -DCMAKE_AR=              "${AR}"
     -DCMAKE_RANLIB=          "${RANLIB}")
