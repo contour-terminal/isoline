@@ -89,7 +89,11 @@ struct ExpectedValue
     LaneShape laneShape = LaneShape::F32x4;     ///< Lanes: how the v128 is split.
     std::vector<ExpectedValue> alternatives {}; ///< Either: the values any one of which matches.
 
-    bool operator==(ExpectedValue const&) const = default;
+    /// Member-wise equality. Defaulted out of line: inlined, its recursion through alternatives
+    /// reads to GCC's optimizer as a potential null dereference of an empty vector's data.
+    /// @param other The value to compare with.
+    /// @return Whether every member is equal.
+    [[nodiscard]] bool operator==(ExpectedValue const& other) const;
 };
 
 /// The facts of one LaneShape: how its lane pattern token is spelled and what its lanes are.

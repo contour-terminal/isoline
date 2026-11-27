@@ -534,6 +534,8 @@ namespace
     }
 } // namespace
 
+bool ExpectedValue::operator==(ExpectedValue const& other) const = default;
+
 std::expected<std::vector<Command>, ParseError> parseIsotest(std::string_view script)
 {
     auto commands = std::vector<Command> {};

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <vector>
 
 #include <isoline/binary/testing/ModuleBuilder.hpp>
@@ -18,9 +20,10 @@ using Bytes = std::vector<uint8_t>;
 /// @return Their bytes, one after another.
 [[nodiscard]] inline Bytes code(std::initializer_list<Bytes> pieces)
 {
+    // Copied, not inserted: GCC 14's release build reports inserting a piece as a null dereference.
     auto out = Bytes {};
     for (auto const& piece: pieces)
-        out.insert(out.end(), piece.begin(), piece.end());
+        std::ranges::copy(piece, std::back_inserter(out));
     return out;
 }
 

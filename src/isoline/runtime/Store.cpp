@@ -424,11 +424,21 @@ std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
                      })
                      | std::views::transform(&TableInstance::elements) | std::views::join;
     // A segment of exnrefs has items of global.get only, and is dropped once used; the passive ones a
-    // module keeps are as long as its bytes, so they are scanned whatever their type.
-    auto keptSegments = _moduleInstances | std::views::transform(&ModuleInstance::elements) | std::views::join
-                        | std::views::filter([](auto const& kept) { return kept.has_value(); })
-                        | std::views::transform([](auto const& kept) -> auto const& { return *kept; })
-                        | std::views::join;
+    // module keeps are as long as its bytes, so they are scanned whatever their type. Loops, not a
+    // join of joins: GCC 14's release build reads the inner join iterator's optional as maybe
+    // uninitialized. Past a failed scan, and_then scans nothing more.
+    auto const scanKeptSegments = [&]() -> Swept {
+        auto scanned = Swept {};
+        for (auto const& module: _moduleInstances)
+        {
+            for (auto const& kept: module.elements)
+            {
+                if (kept)
+                    scanned = scanned.and_then([&] { return scan(*kept, markReference); });
+            }
+        }
+        return scanned;
+    };
     _exceptionRootRanges.clear();
     auto const* registration = _exceptionRoots;
     while (registration != nullptr)
@@ -458,7 +468,7 @@ std::expected<void, Trap> Store::sweepExceptions(std::span<Value const> pending)
         scan(pending, markValue)
             .and_then([&] { return scan(_globals, markGlobal); })
             .and_then([&] { return scan(exnTables, markReference); })
-            .and_then([&] { return scan(keptSegments, markReference); })
+            .and_then(scanKeptSegments)
             .and_then([&] { return scan(_exceptionRootRanges | std::views::join, markValue); })
             .and_then([&] { return scan(arena, markSlot); })
             .and_then(trace);

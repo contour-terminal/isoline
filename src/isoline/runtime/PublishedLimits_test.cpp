@@ -6,10 +6,10 @@
 #include <format>
 #include <fstream>
 #include <initializer_list>
+#include <istream>
 #include <iterator>
 #include <limits>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,12 +28,12 @@ namespace
 /// The embedding guide, whose generated blocks the tables must match.
 constexpr auto EmbeddingGuide = std::string_view { ISOLINE_SOURCE_DIR "/docs/embedding.md" };
 
-/// The lines of @p text.
+/// The lines of @p stream, read line by line: slurped through an istreambuf_iterator instead, GCC 14's
+/// release build reports a potential null dereference of the stream buffer.
 /// @return Each line, without its line feed, or its carriage return where a checkout gave it one.
-std::vector<std::string> linesOf(std::string const& text)
+std::vector<std::string> linesOf(std::istream& stream)
 {
     auto lines = std::vector<std::string> {};
-    auto stream = std::istringstream { text };
     auto line = std::string {};
     while (std::getline(stream, line))
     {
@@ -105,7 +105,7 @@ TEST_CASE("PublishedLimits.docsMatchTables")
 {
     auto file = std::ifstream { std::string { EmbeddingGuide } };
     REQUIRE(file.is_open());
-    auto const lines = linesOf(std::string { std::istreambuf_iterator<char> { file }, {} });
+    auto const lines = linesOf(file);
     struct Block
     {
         std::string_view name;

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <ranges>
@@ -1921,7 +1922,9 @@ void checkEveryTruncationFails(std::span<std::byte const> module)
                 module.begin(), module.begin() + static_cast<std::ptrdiff_t>(sectionStart));
             truncated.push_back(std::byte { id });
             truncated.push_back(std::byte { kept });
-            truncated.insert(truncated.end(), contents.begin(), contents.begin() + kept);
+            // Copied, not inserted: GCC 14's release build reports the insert of an empty range as an
+            // overlapping memcpy.
+            std::ranges::copy(contents.first(kept), std::back_inserter(truncated));
             CAPTURE(kept);
             auto const result = decodeModule(truncated, FeatureSet::wasm2());
             REQUIRE_FALSE(result.has_value());
