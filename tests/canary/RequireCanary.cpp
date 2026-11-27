@@ -172,6 +172,53 @@ void importsFunctionAfterDelete()
     wentThrough("Imports::define(function)", 0);
 }
 
+/// The handles a store made without an instance (Store::defineMemory(), defineTable(), defineGlobal()),
+/// of a store that is gone.
+struct DeletedHostHandles
+{
+    Memory memory; ///< A memory of one page.
+    Table table;   ///< A funcref table of one element.
+    Global global; ///< A mutable i32 global.
+};
+
+/// One host-made handle of every kind defineMemory(), defineTable() and defineGlobal() make, of a store
+/// destroyed before this returns.
+/// @return The handles.
+[[nodiscard]] DeletedHostHandles deletedHostHandles()
+{
+    auto const engine = Engine { configOf(ContractLimits {}, engineRows().front()) };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = std::make_unique<Store>(engine, allocator);
+    auto const unbounded =
+        Limits { .min = 1, .max = std::nullopt, .addressType = isoline::binary::AddressType::I32 };
+    auto const memory = store->defineMemory(MemoryType { .limits = unbounded });
+    auto const table =
+        store->defineTable(TableType { .element = isoline::binary::FuncRef, .limits = unbounded },
+                           Ref { .kind = RefKind::Null, .heap = {}, .address = 0 });
+    auto const global = store->defineGlobal(
+        GlobalType { .type = isoline::binary::I32, .mutability = isoline::binary::Mutability::Var },
+        I32 { 1 });
+    setUp(memory && table && global, "the store defines one entity of each kind");
+    auto handles = DeletedHostHandles { .memory = *memory, .table = *table, .global = *global };
+    store.reset();
+    return handles;
+}
+
+void hostMemoryStoreAfterDelete()
+{
+    wentThrough("a defined Memory::store()", deletedHostHandles().memory.store().serial());
+}
+
+void hostTableStoreAfterDelete()
+{
+    wentThrough("a defined Table::store()", deletedHostHandles().table.store().serial());
+}
+
+void hostGlobalStoreAfterDelete()
+{
+    wentThrough("a defined Global::store()", deletedHostHandles().global.store().serial());
+}
+
 /// A case: its name on the command line, and what it calls.
 struct CanaryCase
 {

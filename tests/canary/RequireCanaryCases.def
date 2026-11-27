@@ -15,3 +15,6 @@ ISOLINE_REQUIRE_CANARY_CASE(tagStoreAfterDelete, "tag-store-after-delete", "isAl
 ISOLINE_REQUIRE_CANARY_CASE(tagTypeAfterDelete, "tag-type-after-delete", "_link[.]isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(importsInstanceAfterDelete, "imports-instance-after-delete", "instance[.]isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(importsFunctionAfterDelete, "imports-function-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(hostMemoryStoreAfterDelete, "host-memory-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(hostTableStoreAfterDelete, "host-table-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(hostGlobalStoreAfterDelete, "host-global-store-after-delete", "isAlive[(][)]")

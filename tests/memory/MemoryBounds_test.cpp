@@ -490,6 +490,127 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing", "[host-memo
     CHECK(runtime.typeCount() == typesBefore + TypeCount);
 }
 
+namespace
+{
+
+/// The bytes of one page of the default page size.
+constexpr auto PageBytes = uint64_t { 65'536 };
+
+/// An allocator that hands out memories of one page made beforehand, so that handing one out allocates
+/// nothing: what a store does after it is the only allocation a define is left to refuse.
+class PremadeMemoryAllocator final: public isoline::runtime::IMemoryAllocator
+{
+  public:
+    /// Makes @p count memories of one page.
+    explicit PremadeMemoryAllocator(std::size_t count)
+    {
+        auto heap = isoline::runtime::HeapMemoryAllocator {};
+        auto const request = isoline::runtime::MemoryRequest {
+            .type = {}, .initialBytes = PageBytes, .maximumBytes = PageBytes, .requiredGuardBytes = 0
+        };
+        for ([[maybe_unused]] auto const index: std::views::iota(std::size_t { 0 }, count))
+        {
+            auto memory = heap.allocate(request);
+            REQUIRE(memory.has_value());
+            _memories.push_back(std::move(*memory));
+        }
+    }
+
+    /// The next memory made beforehand; Embedder once none is left, or for a size other than one page.
+    [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, isoline::runtime::Refusal>
+    allocate(isoline::runtime::MemoryRequest const& request) noexcept override
+    {
+        if (_memories.empty() || request.initialBytes != PageBytes)
+            return std::unexpected { isoline::runtime::Refusal::Embedder };
+        auto memory = std::move(_memories.back());
+        _memories.pop_back();
+        return memory;
+    }
+
+  private:
+    std::vector<std::unique_ptr<isoline::runtime::ILinearMemory>> _memories; ///< What is left to hand out.
+};
+
+/// The most defines a host-memory case tries: more than a store's container records per allocation, on
+/// every standard library, so that one of them must allocate.
+constexpr auto DefineAttempts = std::size_t { 256 };
+
+/// Defines entities with @p define under an allocation budget of @p budget bytes each, until one is
+/// refused, which must be as HostMemoryExhausted.
+/// @return How many were defined before the refusal.
+template <typename Define>
+std::size_t defineUntilRefused(Define const& define, std::size_t budget, RefusalException refusal)
+{
+    for (auto const attempt: std::views::iota(std::size_t { 0 }, DefineAttempts))
+    {
+        auto const defined = [&] {
+            auto const limit = AllocationLimit { budget, refusal };
+            return define();
+        }();
+        if (!defined)
+        {
+            CHECK(defined.error() == isoline::api::DefineError { isoline::api::HostMemoryExhausted {} });
+            return attempt;
+        }
+    }
+    FAIL("no define was refused");
+    return DefineAttempts;
+}
+
+} // namespace
+
+TEST_CASE("MemoryBounds.defineRefusesHostMemoryLeavingTheStoreUnchanged", "[host-memory]")
+{
+    // The host runs out of memory where a define records its entity in the store, after the entity's own
+    // storage is made: each define is refused as HostMemoryExhausted, and the store is as it was, nothing
+    // recorded and nothing charged, so the next define takes the address the refused one would have.
+    using isoline::api::MemoryType;
+    for (auto const refusal: { RefusalException::BadAlloc, RefusalException::LengthError })
+    {
+        CAPTURE(refusal);
+        auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+        auto allocator = PremadeMemoryAllocator { DefineAttempts + 1 };
+        auto store = isoline::api::Store { engine, allocator };
+        auto& runtime = isoline::api::testing::runtimeOf(store);
+        auto const onePage = isoline::binary::Limits { .min = 1, .max = std::nullopt, .addressType = {} };
+
+        auto const defineMemory = [&] {
+            return store.defineMemory(MemoryType { .limits = onePage });
+        };
+        auto const memories = defineUntilRefused(defineMemory, 0, refusal);
+        CHECK(runtime.memoryCount() == memories);
+        CHECK(store.used(isoline::api::Limit::MemoryBytes) == memories * PageBytes);
+        auto const memory = defineMemory();
+        REQUIRE(memory.has_value());
+        CHECK(memory->address() == memories);
+
+        // A table of one element: its elements are allocated within the budget, its record past it.
+        auto const funcRef = isoline::binary::FuncRef;
+        auto const null =
+            isoline::runtime::Ref { .kind = isoline::runtime::RefKind::Null, .heap = {}, .address = 0 };
+        auto const defineTable = [&] {
+            return store.defineTable(isoline::binary::TableType { .element = funcRef, .limits = onePage },
+                                     null);
+        };
+        auto const tables = defineUntilRefused(defineTable, sizeof(isoline::runtime::Ref), refusal);
+        CHECK(runtime.tableCount() == tables);
+        CHECK(store.used(isoline::api::Limit::TableElements) == tables);
+        auto const table = defineTable();
+        REQUIRE(table.has_value());
+        CHECK(table->address() == tables);
+
+        auto const defineGlobal = [&] {
+            return store.defineGlobal(
+                isoline::binary::GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const },
+                isoline::runtime::I32 { 1 });
+        };
+        auto const globals = defineUntilRefused(defineGlobal, 0, refusal);
+        auto const global = defineGlobal();
+        REQUIRE(global.has_value());
+        CHECK(global->address() == globals);
+    }
+}
+
 TEST_CASE("MemoryBounds.throwLoopReclaimsItsPayloads")
 {
     // 10'000 rounds of throwing a payload of 1000 i32s, caught as an exnref and dropped, in a store of

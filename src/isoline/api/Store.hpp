@@ -31,7 +31,7 @@ namespace testing
     struct RuntimeAccess;
 } // namespace testing
 
-/// The current size of a linear memory (Instance::memorySize()).
+/// The current size of a linear memory (Store::memorySize(), Instance::memorySize()).
 struct MemorySize
 {
     uint64_t pages = 0; ///< In pages of the memory's own page size.
@@ -71,15 +71,39 @@ using InstantiateError = std::variant<EngineMismatch,
                                       HostMemoryExhausted,
                                       CallError>;
 
-/// Why Store::define() could not add a host function: its type is new and over the store's type
-/// budget, or the host ran out of memory before anything was added to the store.
-using DefineError = std::variant<LimitExceeded, HostMemoryExhausted>;
+/// What is wrong with a type the host gave the store to define an entity of (InvalidType).
+enum class InvalidTypeReason : uint8_t
+{
+    ConcreteTypeIndex, ///< It names a concrete type index, which only a module's own types may name.
+    PageSize,          ///< A memory's page size is not one custom-page-sizes admits (1 byte, 64 KiB).
+    BottomHeap,        ///< It names the bot heap: the validator's own type, which no module may declare.
+};
 
-/// Why Instance::memoryRange() or Instance::memorySize() could not reach a memory.
+/// A type no entity the host defines may have (Store::define(), defineMemory(), defineTable(),
+/// defineGlobal()): nothing was added to the store.
+struct InvalidType
+{
+    InvalidTypeReason reason; ///< What is wrong with it.
+
+    /// Equal when both name the same reason.
+    bool operator==(InvalidType const&) const = default;
+};
+
+/// Why the store could not add an entity outside any instantiation (Store::define(), defineMemory(),
+/// defineTable(), defineGlobal()): it would exceed one of the store's limits; the host ran out of memory
+/// before anything was added to the store; a memory or table could not be allocated (its size past its
+/// type's reach, or the allocator's refusal); its initial value is not of its type; or its type is one
+/// the host may not define.
+using DefineError =
+    std::variant<LimitExceeded, HostMemoryExhausted, AllocationFailure, ValueMismatch, InvalidType>;
+
+/// Why a memory could not be reached (Store::memoryRange(), Store::memorySize(),
+/// Instance::memoryRange(), Instance::memorySize()).
 enum class MemoryAccessError : uint8_t
 {
-    OutOfBounds,  ///< A byte of the range lies outside the memory.
-    StoreDeleted, ///< The instance's store is gone.
+    ForeignHandle, ///< The memory is another store's (or a store's that is gone): Store's accessors.
+    OutOfBounds,   ///< A byte of the range lies outside the memory.
+    StoreDeleted,  ///< The instance's store is gone: Instance's accessors.
 };
 
 /// Why the store could not read or write a global (Store::globalValue(), Store::setGlobal()).
@@ -120,9 +144,11 @@ enum class ExportAccessError : uint8_t
 /// stores on several threads) is called on each of their threads at once, so it must be thread-safe.
 ///
 /// Nothing but the constructor throws. Where the host runs out of memory before anything is added to the
-/// store, the call is refused (HostMemoryExhausted). Once the store is being changed (an instance allocated,
-/// a host function added, a call running) running out of memory terminates the process, as it does in
-/// runtime::invokeChecked(): the store is not exception-safe midway through a change.
+/// store, the call is refused (HostMemoryExhausted): instantiate() while it prepares, define() while it
+/// reserves, and defineMemory(), defineTable() and defineGlobal() wholly, as each adds its entity in one
+/// step that leaves the store unchanged when it fails. Once the store is being changed (an instance
+/// allocated, a host function added, a call running) running out of memory terminates the process, as
+/// it does in runtime::invokeChecked(): the store is not exception-safe midway through a change.
 ///
 /// A store is neither copied nor moved: its instances point at it.
 class Store
@@ -190,12 +216,79 @@ class Store
     /// Adds a host function to the store, outside any instantiation: to define it as an import
     /// (Imports::define()), or to hand it to the guest in a table. The same implementation and type,
     /// defined again or bound by an instantiation, is the same function.
-    /// @param type Its type. It names no concrete type index (checked), as an Imports host definition's.
+    /// @param type Its type.
     /// @param function Its implementation (checked: not null).
-    /// @return The function; LimitExceeded of Types when its type is new and over the store's budget;
-    ///         HostMemoryExhausted when the host ran out of memory before it was added.
+    /// @return The function; InvalidType (ConcreteTypeIndex, BottomHeap) when a param or result names a
+    ///         concrete type index or the bot heap; LimitExceeded of Types when its type is new and over the
+    ///         store's budget; HostMemoryExhausted when the host ran out of memory before it was added.
     [[nodiscard]] std::expected<Function, DefineError> define(
         FuncType const& type, std::shared_ptr<IHostFunction> const& function) noexcept;
+
+    /// Adds a zeroed memory of type.limits.min pages to the store, outside any instantiation: to bind it
+    /// to an import, or to share it between instances. It is charged and refused as a module's own
+    /// memory is: against StoreLimits::maxMemories and maxMemoryBytes, allocated by the store's
+    /// IMemoryAllocator, every size checked before a byte is allocated.
+    /// @param type Its type.
+    /// @return The memory; InvalidType (PageSize) for a page size custom-page-sizes does not admit;
+    ///         LimitExceeded of Memories or MemoryBytes; AllocationFailure of Memory with TypeMaximum for a
+    ///         minimum above its maximum or past its type's reach, or with the allocator's refusal
+    ///         (Embedder, HostMemory, Guard); HostMemoryExhausted when the host ran out of memory
+    ///         recording it, the store unchanged.
+    [[nodiscard]] std::expected<Memory, DefineError> defineMemory(MemoryType const& type) noexcept;
+
+    /// Adds a table of type.limits.min elements, each holding @p init, to the store, outside any
+    /// instantiation. It is charged and refused as a module's own table is: against
+    /// StoreLimits::maxTables and maxTableElements, every size checked before an element is allocated.
+    /// @param type Its type, in store form.
+    /// @param init What every element starts with, of the element type.
+    /// @return The table; InvalidType (ConcreteTypeIndex, BottomHeap) when its element type names a
+    ///         concrete type index or the bot heap; ValueMismatch for an @p init not of the element type (a
+    ///         reference of another heap, or naming what the store does not hold, included), before anything
+    ///         is charged; LimitExceeded of Tables or TableElements; AllocationFailure of Table with
+    ///         TypeMaximum for a minimum above its maximum or past its type's reach, or HostMemory for its
+    ///         elements; HostMemoryExhausted when the host ran out of memory recording it, the store
+    ///         unchanged.
+    [[nodiscard]] std::expected<Table, DefineError> defineTable(TableType const& type, Ref init) noexcept;
+
+    /// Adds a global of @p value to the store, outside any instantiation. A global charges no store
+    /// limit, as a module's own does not: module globals are bounded by the decoder's limits only, and an
+    /// embedder bounds the globals it defines itself.
+    /// @param type Its type, in store form.
+    /// @param value Its initial value, of type.type.
+    /// @return The global; InvalidType (ConcreteTypeIndex, BottomHeap) when its type names a concrete type
+    ///         index or the bot heap; ValueMismatch for a @p value not of its type (a reference of another
+    ///         heap, or naming what the store does not hold, included); HostMemoryExhausted when the host ran
+    ///         out of memory recording it, the store unchanged.
+    [[nodiscard]] std::expected<Global, DefineError> defineGlobal(GlobalType const& type,
+                                                                  Value value) noexcept;
+
+    /// The current size of @p memory, which a call into the store may grow.
+    /// @param memory A memory of this store: an instance's, or one defineMemory() added.
+    /// @return Its size in pages and in bytes; ForeignHandle for a memory of another store.
+    [[nodiscard]] std::expected<MemorySize, MemoryAccessError> memorySize(
+        Memory const& memory) const noexcept;
+
+    /// A view of @p length bytes of @p memory from @p offset, valid until the next call into the store or
+    /// grow of the memory, either of which may move it.
+    /// @param memory A memory of this store: an instance's, or one defineMemory() added.
+    /// @param offset The first byte's offset.
+    /// @param length The number of bytes; 0 views nothing, at any offset.
+    /// @return The view; ForeignHandle for a memory of another store, OutOfBounds when a byte of it lies
+    ///         outside the memory.
+    [[nodiscard]] std::expected<std::span<std::byte>, MemoryAccessError> memoryRange(
+        Memory const& memory, uint64_t offset, uint64_t length) noexcept;
+
+    /// Grows @p memory by @p deltaPages zeroed pages, as memory.grow does: through the guest's own path,
+    /// charged against StoreLimits::maxMemoryBytes alike, so that its limits and refusals are the guest's.
+    /// @param memory A memory of this store: an instance's, or one defineMemory() added.
+    /// @param deltaPages The number of pages to add.
+    /// @return The old size in pages; or, the memory unchanged: ForeignHandle for a memory of another
+    ///         store, or the Refusal memory.grow would have met (TypeMaximum, Limit, Embedder,
+    ///         HostMemory), every size checked before a byte is allocated. A refusal while a call into the
+    ///         store runs (from a host function) is that call's: it is recorded in the call's
+    ///         refusedGrowth.memory, as a refused memory.grow of the guest's is.
+    [[nodiscard]] std::expected<uint64_t, MemoryGrowthError> growMemory(Memory const& memory,
+                                                                        uint64_t deltaPages) noexcept;
 
     /// The current value of @p global, which any instance of the store may have changed.
     ///
@@ -391,9 +484,10 @@ class Instance
                                                       std::span<Value const> args,
                                                       std::span<Value> results) const noexcept;
 
-    /// A view of @p size bytes of @p memory from @p address, valid until the next call into the store,
-    /// which may grow (and so move) the memory.
-    /// @param memory A memory of this instance's store (checked).
+    /// A view of @p size bytes of @p memory from @p address, valid until the memory grows or the next call
+    /// into the store, either of which may move it.
+    /// @param memory A memory of this instance's store (checked); Store::memoryRange() reaches one
+    ///               without an instance.
     /// @param address The first byte's address.
     /// @param size The number of bytes; 0 views nothing, at any address.
     /// @return The view; OutOfBounds when a byte of it lies outside the memory, StoreDeleted when the
@@ -402,7 +496,8 @@ class Instance
         Memory const& memory, uint64_t address, uint64_t size) const noexcept;
 
     /// The current size of @p memory, which a call into the store may grow.
-    /// @param memory A memory of this instance's store (checked).
+    /// @param memory A memory of this instance's store (checked); Store::memorySize() reaches one without
+    ///               an instance.
     /// @return Its size in pages and in bytes; StoreDeleted when the instance's store is gone.
     [[nodiscard]] std::expected<MemorySize, MemoryAccessError> memorySize(
         Memory const& memory) const noexcept;

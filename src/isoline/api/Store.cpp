@@ -16,6 +16,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -47,11 +48,41 @@ namespace
         core::unreachable(); // uncovered(unknown-engine)
     } // uncovered(unknown-engine)
 
-    /// Whether @p type names a concrete type index, among its params or results.
-    [[nodiscard]] bool namesConcreteType(FuncType const& type) noexcept
+    /// Why the host may not define an entity of a value of @p type, if it may not: a concrete heap names
+    /// a type index only a module's own types may name, and bot is the validator's own, no module's.
+    /// @return The reason, or nothing when @p type is definable.
+    [[nodiscard]] std::optional<InvalidTypeReason> invalidReasonOf(ValueType const& type) noexcept
     {
-        return std::ranges::any_of(type.params, binary::isConcreteRef)
-               || std::ranges::any_of(type.results, binary::isConcreteRef);
+        if (type.kind != ValueKind::Ref)
+            return std::nullopt;
+        if (type.heap.kind == binary::AbstractHeapType::Concrete)
+            return InvalidTypeReason::ConcreteTypeIndex;
+        if (type.heap.kind == binary::AbstractHeapType::Bot)
+            return InvalidTypeReason::BottomHeap;
+        return std::nullopt;
+    }
+
+    /// Whether the host may define an entity of values of @p types: the one check every define makes of
+    /// the value types it is given.
+    /// @return Nothing, or InvalidType of the first type it may not define.
+    [[nodiscard]] std::expected<void, DefineError> checkDefinable(std::span<ValueType const> types) noexcept
+    {
+        for (auto const& type: types)
+            if (auto const reason = invalidReasonOf(type))
+                return std::unexpected { DefineError { InvalidType { .reason = *reason } } };
+        return {};
+    }
+
+    /// @copydoc checkDefinable(std::span<ValueType const>)
+    [[nodiscard]] std::expected<void, DefineError> checkDefinable(FuncType const& type) noexcept
+    {
+        return checkDefinable(type.params).and_then([&] { return checkDefinable(type.results); });
+    }
+
+    /// @copydoc checkDefinable(std::span<ValueType const>)
+    [[nodiscard]] std::expected<void, DefineError> checkDefinable(ValueType const& type) noexcept
+    {
+        return checkDefinable(std::span { &type, 1 });
     }
 } // namespace
 
@@ -220,7 +251,8 @@ std::expected<Function, DefineError> Store::define(FuncType const& type,
                                                    std::shared_ptr<IHostFunction> const& function) noexcept
 {
     Require(function != nullptr);
-    Require(!namesConcreteType(type));
+    if (auto const definable = checkDefinable(type); !definable)
+        return std::unexpected { definable.error() };
     auto pending = std::optional<PendingHost> {};
     try
     {
@@ -243,6 +275,117 @@ std::expected<Function, DefineError> Store::define(FuncType const& type,
         return std::unexpected { DefineError { address.error() } };
     }
     return Function { handleLink(), *address, _runtime.functionType(*address) };
+}
+
+namespace
+{
+    /// Why the runtime store did not add a memory or table, as define's caller is told.
+    [[nodiscard]] DefineError defineErrorOf(runtime::AllocationError const& error) noexcept
+    {
+        return std::visit([](auto const& alternative) { return DefineError { alternative }; }, error);
+    }
+
+    /// Calls @p add, which adds one entity to the store in a step that leaves it unchanged when the host
+    /// runs out of memory, and reports running out as HostMemoryExhausted.
+    /// @param add Adds the entity; may throw std::bad_alloc or std::length_error, and nothing else.
+    /// @return What @p add returned, or HostMemoryExhausted.
+    template <typename Add>
+    [[nodiscard]] std::invoke_result_t<Add&> refusingHostMemory(Add& add) noexcept
+    {
+        try
+        {
+            return add();
+        }
+        catch (std::bad_alloc const&)
+        {
+            return std::unexpected { DefineError { HostMemoryExhausted {} } };
+        }
+        catch (std::length_error const&)
+        {
+            return std::unexpected { DefineError { HostMemoryExhausted {} } };
+        }
+    }
+
+    /// Whether @p type is one custom-page-sizes admits for a memory, as the validator checks a module's.
+    [[nodiscard]] bool hasValidPageSize(MemoryType const& type) noexcept
+    {
+        return std::ranges::find(binary::ValidPageSizesLog2, type.pageSizeLog2)
+               != binary::ValidPageSizesLog2.end();
+    }
+} // namespace
+
+std::expected<Memory, DefineError> Store::defineMemory(MemoryType const& type) noexcept
+{
+    if (!hasValidPageSize(type))
+        return std::unexpected { DefineError { InvalidType { .reason = InvalidTypeReason::PageSize } } };
+    // A module's own memory's path: the same charges and refusals, each before anything is allocated.
+    auto add = [&] {
+        return _runtime.addMemory(type)
+            .transform([this](MemAddr address) { return Memory { handleLink(), address }; })
+            .transform_error(defineErrorOf);
+    };
+    return refusingHostMemory(add);
+}
+
+std::expected<Table, DefineError> Store::defineTable(TableType const& type, Ref init) noexcept
+{
+    if (auto const definable = checkDefinable(type.element); !definable)
+        return std::unexpected { definable.error() };
+    if (auto const checked = checkValue(init, type.element); !checked)
+        return std::unexpected { DefineError { checked.error() } };
+    // A module's own table's path: the same charges and refusals, each before anything is allocated.
+    auto add = [&] {
+        return _runtime.addTable(type, init)
+            .transform([this](TableAddr address) { return Table { handleLink(), address }; })
+            .transform_error(defineErrorOf);
+    };
+    return refusingHostMemory(add);
+}
+
+std::expected<Global, DefineError> Store::defineGlobal(GlobalType const& type, Value value) noexcept
+{
+    if (auto const definable = checkDefinable(type.type); !definable)
+        return std::unexpected { definable.error() };
+    if (auto const checked = checkValue(value, type.type); !checked)
+        return std::unexpected { DefineError { checked.error() } };
+    auto add = [&] -> std::expected<Global, DefineError> {
+        return Global { handleLink(), _runtime.addGlobal(type, value) };
+    };
+    return refusingHostMemory(add);
+}
+
+std::expected<MemorySize, MemoryAccessError> Store::memorySize(Memory const& memory) const noexcept
+{
+    if (!memory.isOf(*_id))
+        return std::unexpected { MemoryAccessError::ForeignHandle };
+    auto const& instance = _runtime.memory(memory.address());
+    auto const bytes = static_cast<uint64_t>(instance.bytes().size());
+    return MemorySize { .pages = bytes / binary::pageSize(instance.type), .bytes = bytes };
+}
+
+std::expected<std::span<std::byte>, MemoryAccessError> Store::memoryRange(Memory const& memory,
+                                                                          uint64_t offset,
+                                                                          uint64_t length) noexcept
+{
+    if (!memory.isOf(*_id))
+        return std::unexpected { MemoryAccessError::ForeignHandle };
+    auto const bytes = _runtime.memory(memory.address()).bytes();
+    if (length == 0)
+        return std::span<std::byte> {};
+    if (offset > bytes.size() || length > bytes.size() - offset)
+        return std::unexpected { MemoryAccessError::OutOfBounds };
+    return bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(length));
+}
+
+std::expected<uint64_t, MemoryGrowthError> Store::growMemory(Memory const& memory,
+                                                             uint64_t deltaPages) noexcept
+{
+    if (!memory.isOf(*_id))
+        return std::unexpected { MemoryGrowthError { ForeignHandle {} } };
+    // The guest's own path: charged against the store's limits, refused and recorded as memory.grow is.
+    return _runtime.growMemory(memory.address(), deltaPages).transform_error([](Refusal refusal) {
+        return MemoryGrowthError { refusal };
+    });
 }
 
 std::expected<Value, GlobalAccessError> Store::globalValue(Global const& global) noexcept
@@ -491,12 +634,7 @@ std::expected<std::span<std::byte>, MemoryAccessError> Instance::memoryRange(Mem
     if (!isAlive())
         return std::unexpected { MemoryAccessError::StoreDeleted };
     Require(memory.isOf(*_store->_id));
-    auto const bytes = _store->_runtime.memory(memory.address()).bytes();
-    if (size == 0)
-        return std::span<std::byte> {};
-    if (address > bytes.size() || size > bytes.size() - address)
-        return std::unexpected { MemoryAccessError::OutOfBounds };
-    return bytes.subspan(static_cast<std::size_t>(address), static_cast<std::size_t>(size));
+    return _store->memoryRange(memory, address, size);
 }
 
 std::expected<MemorySize, MemoryAccessError> Instance::memorySize(Memory const& memory) const noexcept
@@ -504,9 +642,7 @@ std::expected<MemorySize, MemoryAccessError> Instance::memorySize(Memory const& 
     if (!isAlive())
         return std::unexpected { MemoryAccessError::StoreDeleted };
     Require(memory.isOf(*_store->_id));
-    auto const& instance = _store->_runtime.memory(memory.address());
-    auto const bytes = static_cast<uint64_t>(instance.bytes().size());
-    return MemorySize { .pages = bytes / binary::pageSize(instance.type), .bytes = bytes };
+    return _store->memorySize(memory);
 }
 
 } // namespace isoline::api

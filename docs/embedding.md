@@ -97,10 +97,11 @@ each import of a module has a definition of its name, kind and type.
     the same way. `address()` and `isOf()` read nothing of the store and answer at any time.
   - A handle is never taken for one of a later store: every `StoreId` has a serial number unique within
     the process, which handles copy and `isOf()` compares. The `Store` accessors (`globalValue()`,
-    `tableGet()`, …) refuse a handle of another store, a deleted one included, with `ForeignHandle`;
+    `tableGet()`, `memoryRange()`, `growMemory()`, …) refuse a handle of another store, a deleted one
+    included, with `ForeignHandle`;
     passing another store's `Function` or `Memory` to an `Instance` is a checked precondition violation.
-- A memory view (`Instance::memoryRange()`) is valid until the next call into the store, which may grow,
-  and so move, the memory.
+- A memory view (`Store::memoryRange()`, `Instance::memoryRange()`) is valid until the next call into the
+  store or grow of the memory, either of which may move it.
 
 ## Memory provision
 
@@ -127,13 +128,14 @@ embedder places guest memory in storage of its own.
   `AllocationFailure { Memory, Embedder }`. Such an embedder gives each store its own allocator, or one
   that can provide several memories.
 
-## Globals, tables and exports
+## Globals, tables, memories and exports
 
 An instance's exports are reached by name, of one kind (`Instance::function()`, `memory()`, `global()`,
 `table()`, `tag()`), or by index, of any kind: `Instance::exportAt(index)` returns the export at
 `index` in the module's export order (`Module::exports()`) as an `Extern`, or `OutOfRange`.
 
-The store reads and writes a global or table of any of its instances, without one:
+The store reads and writes a global, table or memory of any of its instances, or one it defined itself,
+without an instance:
 
 | Call | Returns | Refusals |
 |---|---|---|
@@ -145,6 +147,9 @@ The store reads and writes a global or table of any of its instances, without on
 | `tableSet(table, index, ref)` | nothing | `ForeignHandle`, `OutOfBounds`, `ValueMismatch` |
 | `growTable(table, delta, init)` | the old size | `TableGrowthError`: `ForeignHandle`, `InitValueMismatch`, or a `Refusal` |
 | `tableType(table)` | its `TableType`, its minimum the current size | `ForeignHandle` |
+| `memorySize(memory)` | its `MemorySize`, in pages and bytes | `ForeignHandle` |
+| `memoryRange(memory, offset, length)` | a view of its bytes | `ForeignHandle`, `OutOfBounds` |
+| `growMemory(memory, deltaPages)` | the old size in pages | `MemoryGrowthError`: `ForeignHandle`, or a `Refusal` |
 
 A refused call changes nothing. A value is checked as a call's arguments are: of the global's type, or
 of the table's element type, a reference of another heap or one naming what the store does not hold
@@ -155,6 +160,39 @@ growing a table) belongs to that call: it is recorded in the call's `refusedGrow
 `table.grow` of the guest's is, and a `CallError` the call ends with reports it. Types are in their
 store's form, as `Function::type()` is: a concrete heap names a type of the store. An `exnref` that
 `globalValue()` or `tableGet()` returns is escaped (see *Exceptions*).
+
+`growMemory()` is `memory.grow`'s path, as `growTable()` is `table.grow`'s: charged against
+`maxMemoryBytes`, refused alike (`TypeMaximum` past the memory's maximum or its address type's reach,
+`Limit`, or the memory's own `Embedder` or `HostMemory`), and a refusal during a call is recorded in its
+`refusedGrowth.memory`. Each growth error is a variant of what its call can produce, so a `Refusal`
+alternative always means the guest's own refusal: `MemoryGrowthError` is `ForeignHandle` or a `Refusal`,
+`TableGrowthError` adds `InitValueMismatch`. A view of a memory (`memoryRange()`, or
+`Instance::memoryRange()`) is valid until the next call into the store or grow of that memory; a view
+of length 0 is valid at any offset.
+
+The store also defines entities without an instance, to bind to an import or share between instances:
+
+| Call | Returns | Refusals (`DefineError`) |
+|---|---|---|
+| `define(type, function)` | a `Function` | `InvalidType`, `LimitExceeded` (`Types`), `HostMemoryExhausted` |
+| `defineMemory(type)` | a `Memory` of `type.limits.min` zeroed pages | `InvalidType`, `LimitExceeded` (`Memories`, `MemoryBytes`), `AllocationFailure`, `HostMemoryExhausted` |
+| `defineTable(type, init)` | a `Table` of `type.limits.min` elements, each `init` | `InvalidType`, `ValueMismatch`, `LimitExceeded` (`Tables`, `TableElements`), `AllocationFailure`, `HostMemoryExhausted` |
+| `defineGlobal(type, value)` | a `Global` of `value` | `InvalidType`, `ValueMismatch`, `HostMemoryExhausted` |
+
+A defined memory or table takes a module's own path: the same charges against the store's limits and
+the same refusals, every size checked before a byte or element is allocated. A minimum above its
+maximum, or past what its type reaches, is `AllocationFailure { …, TypeMaximum }`; a maximum
+past that reach is clamped to it, and to the store's limit, not allocated. An initial value is checked
+as `setGlobal()`'s and `tableSet()`'s are, before anything is charged. A global charges no limit, as a
+module's does not: its globals are bounded only by the decoder's limits, so an embedder that defines
+globals on a guest's behalf bounds them itself. Types are in store form. A type the host may not
+define is refused, with nothing added, as `InvalidType`: `ConcreteTypeIndex` when it names a concrete
+type index (only a module's own types may), `BottomHeap` when it names the bot heap (the validator's
+own type, which no module may declare), `PageSize` for a memory whose page size custom-page-sizes
+does not admit (1 byte and 64 KiB are the two it does). Each define adds its entity in one step that
+leaves the store unchanged when the host runs out of memory, which is then `HostMemoryExhausted`; a
+memory's bytes and a table's elements are allocated before that step, and their exhaustion is
+`AllocationFailure { …, HostMemory }`.
 
 ## Calls and re-entrancy
 
@@ -189,8 +227,9 @@ read-only (`store()`); a host writes only through its checked members: `invoke()
 `callerMemory()` (valid until the next grow or invoke) and `markEscaped()`.
 
 **Out of memory.** Where the host runs out of memory before anything is added to the store
-(`Engine::load()`, `Store::instantiate()` while it prepares, `Store::define()` while it reserves), the
-call is refused with `HostMemoryExhausted`. Once the store is being changed (an instantiation
+(`Engine::load()`, `Store::instantiate()` while it prepares, `Store::define()` while it reserves, and
+`defineMemory()`, `defineTable()` and `defineGlobal()` wholly, as each adds its entity in one step that
+leaves the store unchanged when it fails), the call is refused with `HostMemoryExhausted`. Once the store is being changed (an instantiation
 committing, a host function being added, a call running) the calls are `noexcept`, and running out of
 memory terminates the process: the store is not exception-safe midway through a change.
 

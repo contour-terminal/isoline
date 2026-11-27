@@ -266,12 +266,10 @@ namespace
                            static_cast<uint32_t>(table.limits.addressType));
     }
 
-    /// The page sizes custom-page-sizes admits, as base-2 logarithms: 1 byte and 64 KiB.
-    constexpr auto ValidPageSizesLog2 = std::to_array<uint8_t>({ 0, binary::DefaultPageSizeLog2 });
-
     [[nodiscard]] Check checkMemory(MemoryType const& memory)
     {
-        if (std::ranges::find(ValidPageSizesLog2, memory.pageSizeLog2) == ValidPageSizesLog2.end())
+        if (std::ranges::find(binary::ValidPageSizesLog2, memory.pageSizeLog2)
+            == binary::ValidPageSizesLog2.end())
             return fail(ValidationErrorCode::InvalidCustomPageSize);
         return checkLimits(memory.limits,
                            binary::maxPages(memory),
