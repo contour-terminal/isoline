@@ -149,6 +149,7 @@ target_sources(isoline_core
             api/Module.hpp
             api/Store.hpp
             api/Types.hpp
+            binary/BodyUnits.hpp
             binary/BranchHints.hpp
             binary/ByteReader.hpp
             binary/DecodeError.hpp

@@ -40,6 +40,7 @@
 #include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::FeatureSet;
+using isoline::binary::bodyUnits;
 using isoline::binary::DecodeLimits;
 using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
@@ -57,7 +58,6 @@ using isoline::binary::testing::localGet;
 using isoline::binary::testing::localSet;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::binary::testing::unreachable;
-using isoline::fastinterpreter::bodyUnits;
 using isoline::fastinterpreter::Continuation;
 using isoline::fastinterpreter::continuationAfter;
 using isoline::fastinterpreter::describe;

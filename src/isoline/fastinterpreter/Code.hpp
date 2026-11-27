@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/binary/BodyUnits.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/fastinterpreter/Dispatch.hpp>
@@ -464,19 +465,6 @@ struct LoweringStats
     /// Whether both record the same measures.
     [[nodiscard]] bool operator==(LoweringStats const&) const = default;
 };
-
-/// The decoded body units of @p function: its instructions, br_table labels, catch clauses, typed
-/// select types and local runs, what the bound on lowered code is counted in.
-///
-/// The decoder keeps no body length, but each unit took at least one byte of the body, so a bound per
-/// unit is at most the same bound per body byte.
-/// @param function A decoded function.
-/// @return The number of its units.
-[[nodiscard]] constexpr uint64_t bodyUnits(binary::Function const& function) noexcept
-{
-    return uint64_t { function.body.size() } + function.brTableLabels.size() + function.catchClauses.size()
-           + function.selectTypes.size() + function.locals.size();
-}
 
 /// One function's lowered code and the records its execution needs.
 ///
