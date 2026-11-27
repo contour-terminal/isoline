@@ -1,0 +1,25 @@
+;; Imports of every kind, bound by the recording host: host functions called in a loop (one in 64 fails),
+;; an imported memory, a mutable global, a table grown, and a tag thrown.
+(module
+  (import "env" "mix" (func $mix (param i32 i64) (result i32)))
+  (import "env" "split" (func $split (param f64) (result f64 f32)))
+  (import "env" "memory" (memory 1))
+  (import "env" "counter" (global $counter (mut i64)))
+  (import "env" "table" (table 4 funcref))
+  (import "env" "tag" (tag $tag (param i32)))
+  (func (export "callHost") (param i32) (result i32) (local i32)
+    (loop $again
+      (local.set 1 (call $mix (local.get 1) (i64.extend_i32_u (local.get 0))))
+      (local.set 0 (i32.sub (local.get 0) (i32.const 1)))
+      (br_if $again (i32.gt_s (local.get 0) (i32.const 0))))
+    (local.get 1))
+  (func (export "floats") (param f64) (result f64 f32) (call $split (local.get 0)))
+  (func (export "store") (param i32) (result i32)
+    (i32.store (local.get 0) (local.get 0))
+    (i32.load (i32.const 0)))
+  (func (export "count") (param i64) (result i64)
+    (global.set $counter (i64.add (global.get $counter) (local.get 0)))
+    (global.get $counter))
+  (func (export "grow") (param i32) (result i32) (table.grow 0 (ref.null func) (local.get 0)))
+  (func (export "throwTag") (param i32) (throw $tag (local.get 0)))
+)

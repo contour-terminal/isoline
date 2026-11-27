@@ -10,6 +10,8 @@ endif()
 if(ISOLINE_C_API)
     add_subdirectory(c)
 endif()
+# The differential harness: every engine on the same modules, and Wasmtime as the oracle.
+add_subdirectory(differential)
 
 # The spec runner's self-test: a script with wrong assertions the runner must report and fail on.
 # Two are wrong in their values (1 + 2 is not 4, and dividing by zero is no overflow). The rest pin
@@ -567,6 +569,10 @@ if(NOT CMAKE_CROSSCOMPILING AND ISOLINE_CONTRACTS_PATH STREQUAL "native")
                      "-DREFUSED_FLAGS=${PROJECT_BINARY_DIR}/isoline-contract-refused-flags.txt"
                      -P "${PROJECT_SOURCE_DIR}/cmake/IsolineContractFlags.cmake")
     set_tests_properties(contract-flags-current PROPERTIES LABELS lint FAIL_REGULAR_EXPRESSION "CMake Error")
+    # The differential corpus generator's entropy, smith flags and validation, with a stand-in wasm-tools.
+    add_test(NAME make-differential-corpus-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/make-differential-corpus_test.py")
+    set_tests_properties(make-differential-corpus-selftest PROPERTIES LABELS lint)
 endif()
 
 # How long the text memory suite may run before its timeout stops it: five minutes natively. Under ASan

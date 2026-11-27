@@ -251,6 +251,46 @@ jobs:
       - name: Test
         run: ctest --preset clang-libcxx-hardened --output-on-failure --no-tests=error
 
+  linux-clang-differential:
+    name: Linux Clang (differential corpus, Wasmtime oracle)
+    runs-on: ubuntu-24.04
+    # The replay took 30 minutes locally (clang-release, a loaded machine); the oracle adds a process per call.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get install -qy ninja-build
+      - name: Fetch the pinned wasm-tools and Wasmtime
+        run: |
+          python3 -I scripts/fetch-tools.py --tool wasm-tools
+          echo "ISOLINE_WASMTIME=$(python3 -I scripts/fetch-tools.py --tool wasmtime)" >> "$GITHUB_ENV"
+      # The corpus is a function of the pinned wasm-tools and the generator alone, so it is cached by
+      # their hashes and generated only when either changes.
+      - name: Restore the differential corpus
+        id: corpus
+        uses: actions/cache@v4
+        with:
+          path: out/corpus/differential
+          key: differential-corpus-${{ hashFiles('scripts/tools.lock', 'scripts/make-differential-corpus.py') }}
+      - name: Generate the differential corpus
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: python3 -I scripts/make-differential-corpus.py --seeds 10000
+      - name: Configure
+        # clang-tidy runs in the ASan job already.
+        run: >
+          cmake --preset clang-release
+          -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
+          -DISOLINE_CLANG_TIDY=OFF
+          -DISOLINE_FETCH_DEPS=ON
+      - name: Build
+        run: cmake --build --preset clang-release --target isoline_differential_test isoline-differential-replay
+      - name: Replay the corpus on every engine
+        run: ctest --test-dir out/clang-release -L differential --output-on-failure
+
   macos-clang:
     name: macOS Apple Clang
     runs-on: macos-15
