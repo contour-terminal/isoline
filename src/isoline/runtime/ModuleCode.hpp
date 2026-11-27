@@ -18,6 +18,8 @@ enum class ExecutionEngine : uint8_t
     Reference,
     /// The fast interpreter, which runs code lowered from the validated module once, at load.
     Fast,
+    /// The compiler, which runs native code compiled from the validated module once, at load.
+    Compiled,
 };
 
 /// The code an engine made of a validated module, for its executor (runtime::ICodeExecutor) to run.

@@ -486,7 +486,7 @@ TEST_CASE("Contract.Engine.knownEngine", "[.contract]")
 {
     isoline::runtime::testing::endAtContractViolation();
     // One past the last ExecutionEngine: no row names it.
-    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Fast) + 1);
+    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Compiled) + 1);
     std::ignore = Engine { EngineConfig { .engine = unknown } };
     FAIL("SURVIVED: an engine of no ExecutionEngine enumerator");
 }
@@ -495,7 +495,7 @@ TEST_CASE("Engine.rowsNameEveryEngine")
 {
     namespace engines = isoline::api::engines;
     // One past the last ExecutionEngine: no row names it, and no identity carries a dispatch for it.
-    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Fast) + 1);
+    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Compiled) + 1);
     for (auto const engine: { ExecutionEngine::Reference, ExecutionEngine::Fast })
     {
         REQUIRE(engines::rowOf(engine) != nullptr);
@@ -515,4 +515,13 @@ TEST_CASE("Engine.referenceIgnoresTheDispatch")
         Engine { EngineConfig { .engine = ExecutionEngine::Reference, .dispatch = uncompiled } };
     CHECK_FALSE(engine.config().identity().dispatch.has_value());
     CHECK(engine.load(emptyModuleBytes()).has_value());
+}
+
+TEST_CASE("Contract.Engine.refusesTheCompiledEngine", "[.contract]")
+{
+    // The compiled engine has no row of api/ExecutionEngines.cpp yet, so the engine refuses it (P5 Task 16
+    // gives it its row and removes this case).
+    isoline::runtime::testing::endAtContractViolation();
+    std::ignore = Engine { EngineConfig { .engine = ExecutionEngine::Compiled } };
+    FAIL("SURVIVED: the engine accepted the compiled engine");
 }
