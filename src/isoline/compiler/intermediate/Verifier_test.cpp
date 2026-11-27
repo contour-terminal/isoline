@@ -964,3 +964,212 @@ TEST_CASE("Verifier.countdownIsStoredAtEveryTrapSite")
         CHECK(verify(fixture.function).has_value());
     }
 }
+
+TEST_CASE("Verifier.staleCountdownAcrossBlocks")
+{
+    // The live countdown is followed across blocks, through block parameters: a store in a successor of the
+    // countdown a call or a poll in its predecessor superseded is refused, as it is within one block.
+    auto const callThenJump = [](Fixture& fixture, ValueId polled) {
+        storeCountdown(fixture, polled);
+        std::ignore = fixture.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+        auto const next = fixture.builder.createBlock();
+        fixture.builder.jump(next, {});
+        fixture.builder.switchTo(next);
+    };
+    SECTION("a call in block A, the pre-call countdown stored in block B: refused; a reload stored: accepted")
+    {
+        for (auto const storeStale: { false, true })
+        {
+            INFO("store the stale countdown " << storeStale);
+            auto fixture = Fixture {};
+            auto const countdown = fixture.builder.addParameter(fixture.entry, Type::I64);
+            auto const polled = poll(fixture, countdown);
+            callThenJump(fixture, polled);
+            storeCountdown(fixture, storeStale ? polled : reloadCountdown(fixture));
+            fixture.builder.trap(TrapCode::Unreachable);
+            if (storeStale)
+                CHECK(refusal(fixture.function)
+                      == VerifierError { .code = VerifierErrorCode::CountdownNotStored,
+                                         .block = BlockId { 1 },
+                                         .instruction = fixture.last() - 1 });
+            else
+                CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("a call in block A, the countdown A started with stored in block B: refused")
+    {
+        // Nothing in A polled or reloaded: the entry's countdown is as stale after the call as a polled one.
+        auto fixture = Fixture {};
+        auto const countdown = fixture.builder.addParameter(fixture.entry, Type::I64);
+        std::ignore = fixture.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+        auto const next = fixture.builder.createBlock();
+        fixture.builder.jump(next, {});
+        fixture.builder.switchTo(next);
+        storeCountdown(fixture, countdown);
+        fixture.builder.trap(TrapCode::Unreachable);
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::CountdownNotStored);
+    }
+    SECTION("a poll in block A, the countdown it replaced stored in block B: refused")
+    {
+        for (auto const storeStale: { false, true })
+        {
+            INFO("store the stale countdown " << storeStale);
+            auto fixture = Fixture {};
+            auto const countdown = fixture.builder.addParameter(fixture.entry, Type::I64);
+            auto const polled = poll(fixture, countdown);
+            auto const next = fixture.builder.createBlock();
+            fixture.builder.jump(next, {});
+            fixture.builder.switchTo(next);
+            storeCountdown(fixture, storeStale ? countdown : polled);
+            fixture.builder.trap(TrapCode::Unreachable);
+            if (storeStale)
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::CountdownNotStored);
+            else
+                CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("a loop: its header parameter is the live countdown, the one the loop was entered with is stale")
+    {
+        // entry -> header(c); header: store ?; trapIf; branch -> latch | exit; latch: poll -> header(next).
+        for (auto const storeEntered: { false, true })
+        {
+            INFO("store the countdown the loop was entered with " << storeEntered);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const countdown = builder.addParameter(fixture.entry, Type::I64);
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const header = builder.createBlock();
+            auto const latch = builder.createBlock();
+            auto const exit = builder.createBlock();
+            auto const carried = builder.addParameter(header, Type::I64);
+            builder.jump(header, std::array { countdown });
+            builder.switchTo(header);
+            storeCountdown(fixture, storeEntered ? countdown : carried);
+            std::ignore = builder.emit(Operation::TrapIf,
+                                       {},
+                                       std::array { condition },
+                                       std::array { uint64_t { std::to_underlying(TrapCode::Unreachable) } });
+            builder.branch(condition, latch, {}, exit, {});
+            builder.switchTo(latch);
+            builder.jump(header, std::array { poll(fixture, carried) });
+            builder.switchTo(exit);
+            builder.ret({});
+            if (storeEntered)
+            {
+                auto const refused = refusal(fixture.function);
+                INFO(describe(refused));
+                CHECK(refused.code == VerifierErrorCode::CountdownNotStored);
+                CHECK(refused.block == header);
+            }
+            else
+                CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("a merge: the parameter both edges pass their live countdown to is live, neither edge's value is")
+    {
+        // entry: poll; branch -> left | right; left: poll -> merge(a); right: poll -> merge(b); merge(m):
+        // store.
+        for (auto const stored: { 0, 1, 2 })
+        {
+            INFO("store " << stored);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const countdown = builder.addParameter(fixture.entry, Type::I64);
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const left = builder.createBlock();
+            auto const right = builder.createBlock();
+            auto const merge = builder.createBlock();
+            auto const merged = builder.addParameter(merge, Type::I64);
+            auto const entryPolled = poll(fixture, countdown);
+            storeCountdown(fixture, entryPolled);
+            builder.branch(condition, left, {}, right, {});
+            builder.switchTo(left);
+            auto const leftPolled = poll(fixture, entryPolled);
+            storeCountdown(fixture, leftPolled);
+            builder.jump(merge, std::array { leftPolled });
+            builder.switchTo(right);
+            auto const rightPolled = poll(fixture, entryPolled);
+            storeCountdown(fixture, rightPolled);
+            builder.jump(merge, std::array { rightPolled });
+            builder.switchTo(merge);
+            auto const candidates = std::array { merged, countdown, entryPolled };
+            storeCountdown(fixture, candidates[static_cast<std::size_t>(stored)]);
+            builder.trap(TrapCode::Unreachable);
+            if (stored == 0)
+                CHECK(verify(fixture.function).has_value());
+            else
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::CountdownNotStored);
+        }
+    }
+    SECTION("a merge of an edge that polled and one that did not: the value the second passes is stale")
+    {
+        // entry: poll p; branch -> left | right; left: poll -> merge(a); right: -> merge(p); merge(m): store.
+        for (auto const storeParameter: { false, true })
+        {
+            INFO("store the parameter " << storeParameter);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const countdown = builder.addParameter(fixture.entry, Type::I64);
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const left = builder.createBlock();
+            auto const right = builder.createBlock();
+            auto const merge = builder.createBlock();
+            auto const merged = builder.addParameter(merge, Type::I64);
+            auto const polled = poll(fixture, countdown);
+            storeCountdown(fixture, polled);
+            builder.branch(condition, left, {}, right, {});
+            builder.switchTo(left);
+            auto const leftPolled = poll(fixture, polled);
+            storeCountdown(fixture, leftPolled);
+            builder.jump(merge, std::array { leftPolled });
+            builder.switchTo(right);
+            builder.jump(merge, std::array { polled });
+            builder.switchTo(merge);
+            storeCountdown(fixture, storeParameter ? merged : polled);
+            builder.trap(TrapCode::Unreachable);
+            if (storeParameter)
+                CHECK(verify(fixture.function).has_value());
+            else
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::CountdownNotStored);
+        }
+    }
+    SECTION("a countdown passed to more parameters than are followed leaves its target unconstrained")
+    {
+        // entry: poll p; jump -> next(p, p, p, p, p); next: store its last parameter. Following four values,
+        // the verifier gives up on the fifth rather than refuse a store of it.
+        auto fixture = Fixture {};
+        auto& builder = fixture.builder;
+        auto const countdown = builder.addParameter(fixture.entry, Type::I64);
+        auto const next = builder.createBlock();
+        auto parameters = std::vector<ValueId> {};
+        for ([[maybe_unused]] auto const position: std::views::iota(0, 5))
+            parameters.push_back(builder.addParameter(next, Type::I64));
+        auto const polled = poll(fixture, countdown);
+        storeCountdown(fixture, polled);
+        builder.jump(next, std::vector<ValueId>(parameters.size(), polled));
+        builder.switchTo(next);
+        storeCountdown(fixture, parameters.back());
+        builder.trap(TrapCode::Unreachable);
+        CHECK(verify(fixture.function).has_value());
+    }
+    SECTION("edges that agree: their value and the parameter it is passed to are both live")
+    {
+        // entry: poll; branch -> merge(p) | merge(p); merge(m): store p or m, both accepted.
+        for (auto const storeParameter: { false, true })
+        {
+            INFO("store the parameter " << storeParameter);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const countdown = builder.addParameter(fixture.entry, Type::I64);
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const merge = builder.createBlock();
+            auto const merged = builder.addParameter(merge, Type::I64);
+            auto const polled = poll(fixture, countdown);
+            builder.branch(condition, merge, std::array { polled }, merge, std::array { polled });
+            builder.switchTo(merge);
+            storeCountdown(fixture, storeParameter ? merged : polled);
+            builder.trap(TrapCode::Unreachable);
+            CHECK(verify(fixture.function).has_value());
+        }
+    }
+}

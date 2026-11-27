@@ -605,21 +605,85 @@ namespace
             Unstored, ///< A poll changed it since it was stored.
         };
 
-        /// The countdown's state after @p block entered as @p entry, and, when @p fail is Yes, the first trap
-        /// site of it that finds the countdown unstored, or a store of a countdown the block superseded.
+        /// Whether a LiveCountdowns names the values the live countdown is.
+        enum class LiveExtent : uint8_t
+        {
+            Unconstrained, ///< Not known: any value may be stored (the entry, before a poll, reload or call).
+            Known,         ///< Exactly its values are: a store of any other is of a superseded countdown.
+        };
+
+        /// The most values a Known LiveCountdowns holds: the one a poll or reload defined, and the block
+        /// parameters it was passed to. An edge that would pass more leaves its target Unconstrained.
+        static constexpr auto MaxLiveCountdowns = std::size_t { 4 };
+
+        /// The SSA values that are the live countdown at a point, on every path to it: a must-set that only
+        /// ever shrinks as the analysis learns of more paths, from Unconstrained (every value) down to none
+        /// (after a call, before a reload: only the execution state holds it).
+        struct LiveCountdowns
+        {
+            LiveExtent extent = LiveExtent::Unconstrained;    ///< Whether values names them.
+            std::array<ValueId, MaxLiveCountdowns> values {}; ///< Them, the first count, when Known.
+            uint8_t count = 0;                                ///< How many of values are them.
+
+            /// The live countdown is @p value, and only it.
+            [[nodiscard]] static LiveCountdowns only(ValueId value) noexcept
+            {
+                return { .extent = LiveExtent::Known, .values = { value }, .count = 1 };
+            }
+
+            /// Whether @p value is the live countdown, as far as is known.
+            [[nodiscard]] bool admits(ValueId value) const noexcept
+            {
+                auto const known = std::span { values }.first(count);
+                return extent == LiveExtent::Unconstrained || std::ranges::find(known, value) != known.end();
+            }
+
+            /// The values both hold: what is the live countdown on the paths of either.
+            [[nodiscard]] LiveCountdowns intersect(LiveCountdowns const& other) const noexcept
+            {
+                if (extent == LiveExtent::Unconstrained)
+                    return other;
+                auto result = LiveCountdowns { .extent = LiveExtent::Known };
+                for (auto const value: std::span { values }.first(count))
+                    if (other.admits(value))
+                        result.values[result.count++] = value;
+                return result;
+            }
+
+            /// Whether both say the same of the same values, in the same order.
+            [[nodiscard]] bool operator==(LiveCountdowns const& other) const noexcept
+            {
+                return extent == other.extent
+                       && std::ranges::equal(std::span { values }.first(count),
+                                             std::span { other.values }.first(other.count));
+            }
+        };
+
+        /// What a block's entry or exit knows of the countdown.
+        struct CountdownState
+        {
+            Countdown stored = Countdown::Stored; ///< Whether the state holds the live countdown.
+            LiveCountdowns live {};               ///< Which values the live countdown is.
+
+            /// Whether both say the same.
+            [[nodiscard]] bool operator==(CountdownState const&) const = default;
+        };
+
+        /// Whether countdownThrough() reports the faults it meets.
         enum class Report : uint8_t
         {
             No,  ///< Only the state at the end.
             Yes, ///< Faults too.
         };
 
-        [[nodiscard]] std::expected<Countdown, VerifierError> countdownThrough(BlockId block,
-                                                                               Countdown entry,
-                                                                               Report report) const
+        /// The countdown's state after @p block entered as @p entry, and, when @p report is Yes, the first
+        /// trap site of it that finds the countdown unstored, or a store of a countdown that is not the live
+        /// one: one a poll or reload since superseded, or any from before a call not followed by a reload.
+        [[nodiscard]] std::expected<CountdownState, VerifierError> countdownThrough(BlockId block,
+                                                                                    CountdownState entry,
+                                                                                    Report report) const
         {
             auto state = entry;
-            auto live = std::optional<ValueId> {};  // the countdown the block last polled or reloaded
-            auto stale = std::optional<ValueId> {}; // the one that was live before the block's last call
             auto const isCountdownField = [this](Instruction const& instruction) {
                 return _function.immediates(instruction.immediates)[0]
                        == std::to_underlying(ContextValue::StepCountdown);
@@ -633,66 +697,92 @@ namespace
                 {
                     case CountdownRule::Neutral: break;
                     case CountdownRule::TrapSite:
-                        if (state == Countdown::Unstored && report == Report::Yes)
+                        if (state.stored == Countdown::Unstored && report == Report::Yes)
                             return fault(VerifierErrorCode::CountdownNotStored, block, index);
                         break;
                     case CountdownRule::Call:
-                        if (state == Countdown::Unstored && report == Report::Yes)
+                        if (state.stored == Countdown::Unstored && report == Report::Yes)
                             return fault(VerifierErrorCode::CountdownNotStored, block, index);
-                        stale = live;
-                        live.reset();
+                        state.live = LiveCountdowns { .extent = LiveExtent::Known };
                         break;
                     case CountdownRule::Changes:
-                        state = Countdown::Unstored;
-                        live = _function.operands(instruction.results)[0];
+                        state.stored = Countdown::Unstored;
+                        state.live = LiveCountdowns::only(_function.operands(instruction.results)[0]);
                         break;
                     case CountdownRule::Stores:
                         if (!isCountdownField(instruction))
                             break;
-                        if (auto const stored = _function.operands(instruction.operands)[0];
-                            ((live && stored != *live) || (stale && stored == *stale))
+                        if (!state.live.admits(_function.operands(instruction.operands)[0])
                             && report == Report::Yes)
                             return fault(VerifierErrorCode::CountdownNotStored, block, index);
-                        state = Countdown::Stored;
+                        state.stored = Countdown::Stored;
                         break;
                     case CountdownRule::Reloads:
                         if (!isCountdownField(instruction))
                             break;
-                        state = Countdown::Stored;
-                        live = _function.operands(instruction.results)[0];
+                        state.stored = Countdown::Stored;
+                        state.live = LiveCountdowns::only(_function.operands(instruction.results)[0]);
                         break;
                 }
             }
             return state;
         }
 
-        /// Whether every trap site finds the live countdown stored, on every path: a forward must-analysis
-        /// over one bit per block entry, which only ever falls from Stored to Unstored and is pushed to the
-        /// successors when it does, so each block is walked at most twice, and each edge followed at most
-        /// once, before the final walk that reports.
+        /// What @p exit knows of the live countdown on the edge to @p target: its values, and each of the
+        /// target's parameters that the edge passes one of them to.
+        [[nodiscard]] LiveCountdowns liveAlong(LiveCountdowns const& exit, BranchTarget const& target) const
+        {
+            if (exit.extent == LiveExtent::Unconstrained)
+                return exit;
+            auto result = exit;
+            auto const parameters = _function.operands(_function.block(target.block).parameters);
+            auto const arguments = _function.operands(target.arguments);
+            for (auto const position: std::views::iota(std::size_t { 0 }, parameters.size()))
+            {
+                auto const parameter = parameters[position];
+                if (!exit.admits(arguments[position]) || result.admits(parameter))
+                    continue;
+                if (result.count == MaxLiveCountdowns)
+                    return LiveCountdowns {};
+                result.values[result.count++] = parameter;
+            }
+            return result;
+        }
+
+        /// Whether every trap site finds the live countdown stored, and every store of it stores the live
+        /// one, on every path: a forward must-analysis per block entry of the stored bit and of the values
+        /// the live countdown is, followed through block parameters. Both only ever fall (Stored to
+        /// Unstored; the set of values shrinks), and a block is walked again only when its entry fell, so
+        /// each block is walked at most MaxLiveCountdowns + 3 times before the final walk that reports.
         [[nodiscard]] std::expected<void, VerifierError> checkCountdown() const
         {
             auto& memory = _function.memory();
-            auto const graph = controlFlowGraphOf(_function, memory);
-            auto entries = std::pmr::vector<Countdown>(_function.blockCount(), Countdown::Stored, &memory);
+            auto entries =
+                std::pmr::vector<CountdownState>(_function.blockCount(), CountdownState {}, &memory);
             auto worklist = std::pmr::vector<BlockId> { &memory };
-            for (auto const block: blocksOf(_function))
+            for (auto const block: blocksOf(_function) | std::views::reverse)
                 worklist.push_back(block);
             while (!worklist.empty())
             {
                 auto const block = worklist.back();
                 worklist.pop_back();
-                if (*countdownThrough(block, entries[std::to_underlying(block)], Report::No)
-                    == Countdown::Stored)
+                auto const exit = *countdownThrough(block, entries[std::to_underlying(block)], Report::No);
+                auto const terminator = _function.terminator(block);
+                if (!terminator)
                     continue;
-                for (auto const successor: graph.successors(block))
-                {
-                    auto& entry = entries[std::to_underlying(successor)];
-                    if (entry == Countdown::Unstored || std::to_underlying(successor) == 0)
-                        continue;
-                    entry = Countdown::Unstored;
-                    worklist.push_back(successor);
-                }
+                _function.forEachTarget(_function.instruction(*terminator), [&](BranchTarget const& target) {
+                    if (std::to_underlying(target.block) == 0)
+                        return;
+                    auto& entry = entries[std::to_underlying(target.block)];
+                    auto const fallen = CountdownState {
+                        .stored = exit.stored == Countdown::Unstored ? Countdown::Unstored : entry.stored,
+                        .live = entry.live.intersect(liveAlong(exit.live, target)),
+                    };
+                    if (fallen == entry)
+                        return;
+                    entry = fallen;
+                    worklist.push_back(target.block);
+                });
             }
             for (auto const block: blocksOf(_function))
                 if (auto walked = countdownThrough(block, entries[std::to_underlying(block)], Report::Yes);

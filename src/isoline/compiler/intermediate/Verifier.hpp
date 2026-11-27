@@ -172,8 +172,10 @@ struct VerifierError
 /// arguments as it has parameters, of their types; every return of the same values' types; and every trap
 /// site (CountdownRule) reached on every path with the live step countdown stored: no poll since the last
 /// store or reload of it (a call leaves the callee's stored), where a block's entry is stored only when every
-/// edge into it leaves it stored (the entry's always is); a store of the countdown stores the one the block
-/// last polled or reloaded, when it did, and never one a call since made stale. Removed instructions are
+/// edge into it leaves it stored (the entry's always is); and every store of the countdown stores the live
+/// one on every path: the result of the last poll or reload, or a block parameter every edge passed the live
+/// one to, followed across blocks; never one a poll or reload since superseded, and after a call nothing
+/// until a reload (the entry's countdown, before any of these, is not checked). Removed instructions are
 /// skipped.
 /// @param function The function, however it was built.
 /// @return Nothing; or the first fault: every block's structure is checked before any instruction's row,
