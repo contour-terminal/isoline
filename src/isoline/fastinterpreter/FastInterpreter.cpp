@@ -99,10 +99,10 @@ namespace
     }
 
     /// Appends the values of @p types from consecutive slots from @p slots to @p values.
+    /// @param values A vector of Value, of any allocator.
     /// @return The slot after the last value's.
-    Slot const* appendValues(std::span<binary::ValueType const> types,
-                             Slot const* slots,
-                             std::vector<Value>& values)
+    template <typename Values>
+    Slot const* appendValues(std::span<binary::ValueType const> types, Slot const* slots, Values& values)
     {
         for (auto const& type: types)
         {
@@ -350,8 +350,8 @@ class Invocation final: public runtime::IExceptionRoots
     /// invocation allocates its exception (Store::addException(), the only place a sweep runs while guest
     /// code does): every local of every frame, and every operand its site's operand tree names (OperandNode),
     /// the throwing frame's below the payload, every other frame's below its call's arguments. They are
-    /// decoded into a scratch buffer, reserved to their exact number: never more values than the frames'
-    /// stack charge.
+    /// decoded into a scratch buffer of the slot memory, reserved to their exact number: never more values
+    /// than the frames' stack charge.
     /// @param ranges Receives the one range of them.
     void appendExceptionRoots(std::vector<std::span<Value const>>& ranges) const override
     {
@@ -363,13 +363,15 @@ class Invocation final: public runtime::IExceptionRoots
         forEachFrameSite([&](Frame const& frame, SiteRecord const& site) {
             count += localCountOf(frame) + operandCountOf(*frame.function, site);
         });
-        _rootValues.clear();
-        _rootValues.reserve(count);
+        if (!_rootValues)
+            _rootValues.emplace(_slotMemory);
+        _rootValues->clear();
+        _rootValues->reserve(count);
         forEachFrameSite([&](Frame const& frame, SiteRecord const& site) {
             appendLocals(frame);
             appendOperands(frame, site);
         });
-        ranges.emplace_back(_rootValues);
+        ranges.emplace_back(*_rootValues);
     }
 
     /// Runs throw from the current frame (throwException()).
@@ -949,13 +951,13 @@ class Invocation final: public runtime::IExceptionRoots
     {
         auto const& source = sourceOf(frame);
         auto const* slots =
-            appendValues(frame.instance->module->types[source.typeIndex].params, frame.fp, _rootValues);
+            appendValues(frame.instance->module->types[source.typeIndex].params, frame.fp, *_rootValues);
         for (auto const& run: source.locals)
         {
             auto const width = slotWidth(slotClassOf(run.type));
             for ([[maybe_unused]] auto const local: std::views::iota(uint32_t { 0 }, run.count))
             {
-                _rootValues.push_back(loadValue(run.type, std::span { slots, width }));
+                _rootValues->push_back(loadValue(run.type, std::span { slots, width }));
                 slots += width;
             }
         }
@@ -976,21 +978,22 @@ class Invocation final: public runtime::IExceptionRoots
             {
                 case OperandNodeKind::Slot:
                 case OperandNodeKind::Local:
-                    _rootValues.push_back(
+                    _rootValues->push_back(
                         loadValue(type, std::span { frame.fp + node.source, slotWidth(slotClassOf(type)) }));
                     break;
                 case OperandNodeKind::Constant:
-                    _rootValues.push_back(loadValue(type, std::span { &function.constants[node.source], 1 }));
+                    _rootValues->push_back(
+                        loadValue(type, std::span { &function.constants[node.source], 1 }));
                     break;
                 case OperandNodeKind::Results:
                     appendValues(std::span { types[node.typeOrSignature].results }.first(node.count),
                                  frame.fp + node.source,
-                                 _rootValues);
+                                 *_rootValues);
                     break;
                 case OperandNodeKind::Params:
                     appendValues(std::span { types[node.typeOrSignature].params }.first(node.count),
                                  frame.fp + node.source,
-                                 _rootValues);
+                                 *_rootValues);
                     break;
             }
         }
@@ -1022,8 +1025,11 @@ class Invocation final: public runtime::IExceptionRoots
     std::vector<Value> _hostResults;   ///< A host call's results, reused by every host call.
     /// While a throw allocates its exception: the code offset of the throw, the newest frame's site.
     std::optional<std::size_t> _throwOffset;
-    /// The values a sweep reads (appendExceptionRoots()), decoded afresh by each sweep into the same buffer.
-    mutable std::vector<Value> _rootValues;
+    /// The values a sweep reads (appendExceptionRoots()), decoded afresh by each sweep into the same buffer,
+    /// which comes from the slot memory, as the frames' slots it decodes do. Made at the first sweep: an
+    /// allocator-aware container of MSVC's debug library allocates a proxy from its allocator when it is
+    /// made, which an invocation that never sweeps must not take from the slot memory.
+    mutable std::optional<std::pmr::vector<Value>> _rootValues;
     runtime::ExceptionRootsRegistration _rootsRegistration; ///< Last, so that it ends first.
 };
 

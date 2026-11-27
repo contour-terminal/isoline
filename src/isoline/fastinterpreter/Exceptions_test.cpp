@@ -57,6 +57,7 @@ using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::OperationFamily;
 using isoline::fastinterpreter::OperationTable;
 using isoline::fastinterpreter::recordBounds;
+using isoline::fastinterpreter::testing::CountingResource;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::Harness;
@@ -719,6 +720,26 @@ TEST_CASE("Exceptions.unwoundFramesHoldNoRoots")
                               { { .function = 2, .args = {} }, { .function = 2, .args = {} } },
                               { .maxExceptions = 4 });
     CHECK(pollsAt(reference, PollSite::Sweep) > 0);
+}
+
+TEST_CASE("Exceptions.rootsScratchComesFromTheSlotMemory")
+{
+    // One frame throws and catches 40 times in a store of 16 exceptions: the slot memory gives the frame its
+    // one chunk, and its sweeps the roots' scratch buffer. With room for every exception, nothing sweeps, and
+    // the chunk is all it gives.
+    auto const engine = fastEngineOfEachDispatch();
+    auto module = withTypesAndTags();
+    module.function(Nullary, { binary::I32 }, throwAndCatchRounds(40));
+    auto const allocationsWith = [&](StoreLimits limits) {
+        auto memory = CountingResource {};
+        auto under = engine;
+        under.slotMemory = &memory;
+        auto harness = Harness { module, under, limits };
+        CHECK(harness.outcome(0) == Outcome { std::vector<Value> {} });
+        return memory.allocations();
+    };
+    CHECK(allocationsWith(StoreLimits {}) == 1);
+    CHECK(allocationsWith(StoreLimits { .maxExceptions = 16 }) > 1);
 }
 
 TEST_CASE("Exceptions.uncaughtReachesTheEmbedder")
