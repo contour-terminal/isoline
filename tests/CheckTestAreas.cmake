@@ -7,6 +7,10 @@
 #        -DAREAS=<area,area,...> -P CheckTestAreas.cmake
 # TEST_EMULATOR is a cross build's emulator (qemu, wine), its items separated by |; empty for a native build.
 
+# A -P script sets no policies of its own: without this, CMake 3 runs it with the old ones, under which
+# if(IN_LIST) does not exist (CMP0057). The project's own minimum.
+cmake_minimum_required(VERSION 3.25)
+
 string(REPLACE "|" ";" emulator "${TEST_EMULATOR}")
 execute_process(COMMAND ${emulator} "${TEST_BINARY}" "${SELECTION}" --list-tests --verbosity quiet
                 OUTPUT_VARIABLE listing
