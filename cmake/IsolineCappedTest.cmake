@@ -14,7 +14,7 @@ set(ISOLINE_MEMORY_CAP_ROWS
     "cross|none||a cross build runs its tests under an emulator (wine, qemu) or on another machine: a host prlimit would cap the emulator, not the test, and the build has no sanitizer"
     "address|environment|ASAN_OPTIONS=hard_rss_limit_mb=4096:allocator_may_return_null=1|AddressSanitizer's RSS cap, refused allocations returning null"
     "thread|environment|TSAN_OPTIONS=hard_rss_limit_mb=4096:allocator_may_return_null=1|ThreadSanitizer's RSS cap, refused allocations returning null"
-    "native|prlimit|--as=6442450944|a 6 GiB address-space limit"
+    "native|prlimit|--as=12884901888|a 12 GiB address-space limit: room for two Wasmtime-parity reservations (4 GiB + 32 MiB each) beside the process"
     "uncapped|none||the host has no prlimit (Windows, macOS): the test runs without a cap")
 
 find_program(ISOLINE_PRLIMIT prlimit)

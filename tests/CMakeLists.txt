@@ -233,6 +233,12 @@ add_test(NAME module-support
          COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/cmake/module-support_test.cmake")
 set_tests_properties(module-support PROPERTIES LABELS lint TIMEOUT 60)
 
+# The platform row's selection (cmake/IsolinePlatform.cmake), in script mode: an operating system without a
+# row fails the configure with a message naming the pair, and an unknown architecture maps to Other.
+add_test(NAME platform.unknownPlatformFailsTheConfigure
+         COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/platform/UnknownPlatformConfigure.cmake")
+set_tests_properties(platform.unknownPlatformFailsTheConfigure PROPERTIES LABELS lint TIMEOUT 60)
+
 # How check-install tells that an installed file names a path of the build (tests/cmake/check-install-paths.cmake),
 # in script mode, beside the install tests that use it and registered with or without them.
 add_test(NAME check-install-paths

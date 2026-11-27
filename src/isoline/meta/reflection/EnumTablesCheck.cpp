@@ -36,6 +36,7 @@ namespace
         ^^isoline::cli,
         ^^isoline::config,
         ^^isoline::interpreter,
+        ^^isoline::platform,
         ^^isoline::runtime,
         ^^isoline::text,
         ^^isoline::validate,

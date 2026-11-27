@@ -29,6 +29,11 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
+#include <isoline/platform/Platform.hpp>
+#include <isoline/platform/PlatformTable.hpp>
+#include <isoline/platform/ThisPlatform.hpp>
+#include <isoline/platform/VirtualMemory.hpp>
+#include <isoline/platform/testing/RecordingVirtualMemory.hpp>
 
 namespace
 {
@@ -45,6 +50,16 @@ using namespace isoline::api;
 using isoline::api::testing::engineRows;
 using isoline::api::testing::contract::configOf;
 using isoline::api::testing::contract::ContractLimits;
+using isoline::platform::DecommitKind;
+using isoline::platform::IVirtualMemory;
+using isoline::platform::OperatingSystem;
+using isoline::platform::Protection;
+using isoline::platform::SystemVirtualMemory;
+using isoline::platform::ThisPlatform;
+using isoline::platform::VirtualMemoryError;
+using isoline::platform::VirtualMemoryFailure;
+using isoline::platform::testing::CallRefusal;
+using isoline::platform::testing::RecordingVirtualMemory;
 
 /// Relaxed SIMD without SIMD: a feature set not closed over its prerequisites, which Engine's
 /// constructor refuses (Engine.cpp).
@@ -344,6 +359,132 @@ void positionInvariantInNoexceptLambdaInTry()
 {
     isoline::canary::invariantInNoexceptLambdaInTry(1);
     wentThrough("ISOLINE_INVARIANT in a noexcept lambda inside a try block", 0);
+}
+
+/// How a virtual-memory call a precondition should have stopped ended.
+enum class CallResult : uint8_t
+{
+    Failed,    ///< It returned a failure.
+    Succeeded, ///< It returned success.
+};
+
+/// The result of @p outcome, as the canary reports it.
+/// @param outcome Whether the call returned a value.
+/// @return Its CallResult.
+template <typename Expected>
+[[nodiscard]] CallResult resultOf(Expected const& outcome)
+{
+    return outcome.has_value() ? CallResult::Succeeded : CallResult::Failed;
+}
+
+/// Reports a virtual-memory call a precondition should have stopped.
+/// @param what The call.
+/// @param result How it ended.
+void virtualMemoryWentThrough(std::string_view what, CallResult result)
+{
+    std::println("{} returned ({})", what, result == CallResult::Succeeded ? "success" : "a failure");
+}
+
+/// One allocation granule of @p memory, reserved: the set-up of the protect() and release() cases.
+/// @param memory The memory.
+/// @return The reservation.
+[[nodiscard]] isoline::platform::Region reservedGranule(SystemVirtualMemory& memory)
+{
+    auto const region = memory.reserve(memory.allocationGranularity());
+    setUp(region.has_value(), "reserve one allocation granule");
+    return *region;
+}
+
+void virtualMemoryReserveNothing()
+{
+    auto memory = SystemVirtualMemory {};
+    virtualMemoryWentThrough("reserve(0)", resultOf(memory.reserve(0)));
+}
+
+void virtualMemoryReservePartGranule()
+{
+    auto memory = SystemVirtualMemory {};
+    virtualMemoryWentThrough("reserve(granularity + 1)",
+                             resultOf(memory.reserve(memory.allocationGranularity() + 1)));
+}
+
+void virtualMemoryProtectNothing()
+{
+    auto memory = SystemVirtualMemory {};
+    auto const empty = isoline::platform::Region { .base = reservedGranule(memory).base, .bytes = 0 };
+    virtualMemoryWentThrough("protect() of no bytes", resultOf(memory.protect(empty, Protection::ReadWrite)));
+}
+
+void virtualMemoryProtectPartPage()
+{
+    auto memory = SystemVirtualMemory {};
+    auto const part =
+        isoline::platform::Region { .base = reservedGranule(memory).base, .bytes = memory.pageSize() / 2 };
+    virtualMemoryWentThrough("protect() of half a page",
+                             resultOf(memory.protect(part, Protection::ReadWrite)));
+}
+
+void virtualMemoryReleaseUnaligned()
+{
+    auto memory = SystemVirtualMemory {};
+    auto const shifted =
+        isoline::platform::Region { .base = reservedGranule(memory).base + 1, .bytes = memory.pageSize() };
+    virtualMemoryWentThrough("release() of an unaligned region", resultOf(memory.release(shifted)));
+}
+
+void virtualMemoryReleasePart()
+{
+    // The system checks a whole reservation where it can tell (Windows); the recording double does on
+    // every platform, so the case runs through whichever checks it here.
+    auto system = SystemVirtualMemory {};
+    auto recording = RecordingVirtualMemory { system, std::nullopt };
+    auto& memory = ThisPlatform.system == OperatingSystem::Windows ? static_cast<IVirtualMemory&>(system)
+                                                                   : static_cast<IVirtualMemory&>(recording);
+    auto const reservation = memory.reserve(memory.allocationGranularity() * 2);
+    setUp(reservation.has_value(), "reserve two allocation granules");
+    auto const half =
+        isoline::platform::Region { .base = reservation->base, .bytes = memory.allocationGranularity() };
+    virtualMemoryWentThrough("release() of half a reservation", resultOf(memory.release(half)));
+}
+
+void virtualMemoryRefusedProtectNothing()
+{
+    // A refused call still checks its preconditions: a test double never accepts what the system would not.
+    auto system = SystemVirtualMemory {};
+    auto const refusal = VirtualMemoryFailure { .error = VirtualMemoryError::ProtectRefused };
+    auto memory = RecordingVirtualMemory { system, CallRefusal { .call = 1, .failure = refusal } };
+    auto const empty = isoline::platform::Region { .base = reservedGranule(system).base, .bytes = 0 };
+    virtualMemoryWentThrough("a refused protect() of no bytes",
+                             resultOf(memory.protect(empty, Protection::ReadWrite)));
+}
+
+void virtualMemoryForeignDecommit()
+{
+    // A decommit mechanism of another system's rows.
+    // Windows' on POSIX, a POSIX one on Windows: never one that decommits here.
+    auto const foreign = ThisPlatform.system == OperatingSystem::Windows ? DecommitKind::MapFixedAnonymous
+                                                                         : DecommitKind::VirtualFreeDecommit;
+    auto memory = SystemVirtualMemory { foreign };
+    virtualMemoryWentThrough("a memory of a foreign decommit row",
+                             resultOf(memory.reserve(memory.allocationGranularity())));
+}
+
+void protectionRowOutOfRange()
+{
+    auto const& row = isoline::platform::protectionRow(static_cast<Protection>(200));
+    virtualMemoryWentThrough("protectionRow(200)",
+                             row.read == isoline::platform::PageAccess::Allowed ? CallResult::Succeeded
+                                                                                : CallResult::Failed);
+}
+
+void platformRowOutOfRange()
+{
+    auto const& row = isoline::platform::platformRow(OperatingSystem::Linux,
+                                                     static_cast<isoline::platform::Architecture>(200));
+    virtualMemoryWentThrough("platformRow(Linux, 200)",
+                             row.codeMemory == isoline::platform::CodeMemoryKind::Unavailable
+                                 ? CallResult::Failed
+                                 : CallResult::Succeeded);
 }
 
 /// A case: its name on the command line, and what it calls.

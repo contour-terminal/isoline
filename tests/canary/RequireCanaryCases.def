@@ -24,6 +24,17 @@ ISOLINE_REQUIRE_CANARY_CASE(hostGlobalStoreAfterDelete, "host-global-store-after
 ISOLINE_REQUIRE_CANARY_CASE(normalizeAnchorOutOfRange, "normalize-anchor-out-of-range", contract, "anchor <= LastSectionAnchor")
 ISOLINE_REQUIRE_CANARY_CASE(storeDefineNullFunction, "store-define-null-function", contract, "function != nullptr")
 ISOLINE_REQUIRE_CANARY_CASE(threadPreparationOfNothing, "thread-preparation-of-nothing", contract, "_resource != nullptr")
+// The platform layer: virtual memory and the platform rows (src/isoline/platform/).
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryReserveNothing, "virtual-memory-reserve-nothing", contract, "bytes > 0")
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryReservePartGranule, "virtual-memory-reserve-part-granule", contract, "bytes % granularity == 0")
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryProtectNothing, "virtual-memory-protect-nothing", contract, "region[.]bytes > 0")
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryProtectPartPage, "virtual-memory-protect-part-page", contract, "region[.]bytes % pageSize == 0")
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryReleaseUnaligned, "virtual-memory-release-unaligned", contract, "reinterpret_cast<uintptr_t>[(]region[.]base[)] % pageSize == 0")
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryReleasePart, "virtual-memory-release-part", contract, "region == reservation")
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryRefusedProtectNothing, "virtual-memory-refused-protect-nothing", contract, "region[.]bytes > 0")
+ISOLINE_REQUIRE_CANARY_CASE(virtualMemoryForeignDecommit, "virtual-memory-foreign-decommit", contract, "decommitsOnThisSystem[(]decommit[)]")
+ISOLINE_REQUIRE_CANARY_CASE(protectionRowOutOfRange, "protection-row-out-of-range", require, "std::to_underlying[(]protection[)] < ProtectionTable[.]size[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(platformRowOutOfRange, "platform-row-out-of-range", require, "std::to_underlying[(]architecture[)] <= std::to_underlying[(]LastArchitecture[)]")
 // The positions a contract-spelled check must be evaluated in (CheckPositions.hpp), both macros.
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionFirst, "precondition-first", contract, "entryRounds == 0")
 ISOLINE_REQUIRE_CANARY_CASE(positionPreconditionInBracelessIf, "precondition-in-braceless-if", contract, "ifRounds == 0")

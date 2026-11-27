@@ -54,6 +54,25 @@ ISOLINE_LAST_ENUMERATOR(binary::LastNameShape, "its tables are source-local: Sha
 // isoline::interpreter
 ISOLINE_LAST_ENUMERATOR(interpreter::LastSimdShape, "its table is interpreter/Simd.cpp's Evaluator variant")
 
+// isoline::platform
+ISOLINE_ENUM_TABLE(platform::ProtectionTable, platform::LastProtection, platform::ProtectionRow::protection)
+ISOLINE_ENUM_TABLE(platform::BranchTargetProtectionFlags,
+                   platform::LastBranchTargetProtectionKind,
+                   platform::BranchTargetProtectionFlagRow::kind)
+ISOLINE_KEYED_TABLE(platform::PlatformTable, "one row per (operating system, architecture) pair, at platformIndex()")
+ISOLINE_LAST_ENUMERATOR(platform::LastOperatingSystem, "with LastArchitecture, sizes PlatformTable's (system, architecture) pairs")
+ISOLINE_LAST_ENUMERATOR(platform::LastArchitecture, "with LastOperatingSystem, sizes PlatformTable's (system, architecture) pairs")
+ISOLINE_LAST_ENUMERATOR(platform::LastCodeMemoryKind, "a column of PlatformTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastFaultMechanism, "a column of PlatformTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastInstructionCacheKind, "a column of PlatformTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastControlFlowGuardKind, "a column of PlatformTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastUnwindRegistrationKind, "a column of PlatformTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastDecommitKind, "a column of PlatformTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastPageAccess, "a column of ProtectionTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastBranchTargetEnforcement, "a column of ProtectionTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastCommitment, "a column of ProtectionTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(platform::LastVirtualMemoryError, "no table is indexed by it: each enumerator is a refusal VirtualMemoryFailure reports")
+
 // isoline::runtime
 ISOLINE_ENUM_TABLE(runtime::LimitTable, runtime::LastLimit, runtime::LimitRow::limit)
 ISOLINE_ENUM_TABLE(runtime::LinkErrorTable, runtime::LastLinkErrorCode, runtime::LinkErrorRow::code)

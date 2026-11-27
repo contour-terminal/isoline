@@ -151,7 +151,7 @@ by the name at its invocation, so a macro invoked through another macro is not s
 | `src/isoline/**/*.cpp`, tests and `testing/` directories left out | a `Require(` or `Guarantee(` beyond the file's throwing-site rows, fewer than they count, or a row whose file is gone or no longer defines its function (the name before a parameter list a definition's tail follows, not a call) | use `ISOLINE_PRECONDITION`/`ISOLINE_INVARIANT` in a `noexcept` function, or add a row |
 
 Comments are never code, and literals are blanked for every pattern but an `#include`. On success the lint
-prints how many `Require()`s the installed headers keep (15): an installed declaration must parse as
+prints how many `Require()`s the installed headers keep (18): an installed declaration must parse as
 C++23, so they stay until one may carry a contract.
 
 ### Which checks are contracts
@@ -165,14 +165,16 @@ throwing interface (not declared `noexcept`, a lambda or a virtual override amon
 calls may not throw). The rows were made by spelling every check as a contract and building the native
 lane, whose `static_assert` names each site in a function that may throw.
 
-Fourteen checks, in thirteen functions, are contracts. The entry checks: `Engine::Engine` and `ThreadPreparation`'s constructor
+Twenty-two checks, in eighteen functions, are contracts. The entry checks: `Engine::Engine` and `ThreadPreparation`'s constructor
 (`api/Engine.cpp`), `StoreLink::owner()`, `Function::type()` and `Tag::type()` (`api/Extern.cpp`),
 `Store::define()` (`api/Store.cpp`), `sectionWriterOf()`'s two, that its anchor is neither
 `BeforeFirst` nor past `LastSectionAnchor` (`binary/Encoder.cpp`),
 `Store::releaseTrailing()` and `InvocationScope`'s constructor (`runtime/Store.cpp`), and
-`Natural::bitWidth()` (`text/FloatLiteral.cpp`). The others: `Store::call()`'s refusal naming a mismatch
+`Natural::bitWidth()` (`text/FloatLiteral.cpp`), `requireReservationSize()`'s two, `requirePageRange()`'s three and
+`requireWholeReservation()` (`platform/VirtualMemory.cpp`), and `SystemVirtualMemory`'s constructor of a decommit row
+(`platform/VirtualMemoryPosix.cpp`, `platform/VirtualMemoryWindows.cpp`, one per build). The others: `Store::call()`'s refusal naming a mismatch
 (`api/Store.cpp`), `shuffle()`'s lane (`interpreter/Simd.cpp`) and `addressOf()`'s value
-(`runtime/Instantiate.cpp`). 84 checks in 68 functions keep `Require()`, as do the 15 of the installed
+(`runtime/Instantiate.cpp`). 84 checks in 68 functions keep `Require()`, as do the 18 of the installed
 headers. The first to become `pre` when installed declarations may carry one (P19 Task 16) are the
 `noexcept` accessors behind installed declarations: `Engine::Engine`, `StoreLink::owner()`,
 `Function::type()` and `Tag::type()`.

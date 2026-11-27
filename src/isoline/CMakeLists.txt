@@ -5,29 +5,66 @@ configure_file(VersionConfig.hpp.in "${PROJECT_BINARY_DIR}/include/isoline/Versi
 
 add_library(isoline_core STATIC)
 
-# The floating-point control register's row of the target (runtime/FloatEnvironment.hpp): exactly one
-# per build, chosen here from the compiler's target architecture (its predefined macros, so cross and
-# Visual Studio -A builds choose right), so that no source selects it with #ifdef. MSVC has no inline
-# assembly for arm64's FPCR and defines no __aarch64__, so it takes the portable row there; so does a
-# build for several architectures at once, where one object serves them all.
+# The target this build's code runs on, chosen here from the compiler's target (its predefined macros, so
+# cross and Visual Studio -A builds choose right), so that no source selects with #ifdef: the
+# floating-point control register's row (runtime/FloatEnvironment.hpp), exactly one per build, and the
+# platform row (platform/PlatformTable.hpp, cmake/IsolinePlatform.cmake), which names the implementation of
+# every platform seam. MSVC has no inline assembly for arm64's FPCR and defines no __aarch64__, so it takes
+# the portable float row there; so does a build for several architectures at once, where one object serves
+# them all and no one architecture is the host's (platform row Other). ARM64EC runs x86-64 code under an
+# arm64 ABI no row describes (Other too).
 include(CheckCXXSymbolExists)
+include(IsolinePlatform)
 list(LENGTH CMAKE_OSX_ARCHITECTURES isolineOsxArchitectureCount)
+set(isolineTargetArchitecture "")
 if(isolineOsxArchitectureCount GREATER 1)
     message(STATUS "[isoline] several target architectures (${CMAKE_OSX_ARCHITECTURES}): portable float control row")
     set(isolineFloatControl runtime/FloatControlPortable.cpp)
+    set(isolineTargetArchitecture Other)
 else()
     check_cxx_symbol_exists(__x86_64__ "" ISOLINE_TARGET_X86_64_GNU)
     check_cxx_symbol_exists(_M_X64 "" ISOLINE_TARGET_X86_64_MSVC)
     check_cxx_symbol_exists(_M_ARM64EC "" ISOLINE_TARGET_ARM64EC)
     check_cxx_symbol_exists(__aarch64__ "" ISOLINE_TARGET_ARM64_GNU)
+    check_cxx_symbol_exists(_M_ARM64 "" ISOLINE_TARGET_ARM64_MSVC)
     if((ISOLINE_TARGET_X86_64_GNU OR ISOLINE_TARGET_X86_64_MSVC) AND NOT ISOLINE_TARGET_ARM64EC)
         set(isolineFloatControl runtime/FloatControlX86_64.cpp)
+        set(isolineTargetArchitecture X64)
     elseif(ISOLINE_TARGET_ARM64_GNU)
         set(isolineFloatControl runtime/FloatControlArm64.cpp)
+        set(isolineTargetArchitecture Arm64)
+    elseif(ISOLINE_TARGET_ARM64_MSVC AND NOT ISOLINE_TARGET_ARM64EC)
+        set(isolineFloatControl runtime/FloatControlPortable.cpp)
+        set(isolineTargetArchitecture Arm64)
     else()
         set(isolineFloatControl runtime/FloatControlPortable.cpp)
+        set(isolineTargetArchitecture Other)
     endif()
 endif()
+# __APPLE__ before __linux__/__FreeBSD__, none of which an Apple target defines. A system none of the macros
+# names selects with a name no row has, and fails the configure: no row falls back silently. CMake's name
+# for the system only goes into the message, never into the selection.
+check_cxx_symbol_exists(_WIN32 "" ISOLINE_TARGET_WINDOWS)
+check_cxx_symbol_exists(__APPLE__ "" ISOLINE_TARGET_APPLE)
+check_cxx_symbol_exists(__linux__ "" ISOLINE_TARGET_LINUX)
+check_cxx_symbol_exists(__FreeBSD__ "" ISOLINE_TARGET_FREEBSD)
+if(ISOLINE_TARGET_WINDOWS)
+    set(isolineTargetSystem Windows)
+elseif(ISOLINE_TARGET_APPLE)
+    set(isolineTargetSystem MacOS)
+elseif(ISOLINE_TARGET_LINUX)
+    set(isolineTargetSystem Linux)
+elseif(ISOLINE_TARGET_FREEBSD)
+    set(isolineTargetSystem FreeBSD)
+else()
+    set(isolineTargetSystem "<unrecognized>")
+endif()
+isoline_platform_row("${isolineTargetSystem}" "${isolineTargetArchitecture}"
+                     ISOLINE_PLATFORM_SYSTEM ISOLINE_PLATFORM_ARCHITECTURE isolinePlatformError)
+if(isolinePlatformError)
+    message(FATAL_ERROR "${isolinePlatformError} (CMake names the target system '${CMAKE_SYSTEM_NAME}')")
+endif()
+message(STATUS "[isoline] platform row: ${ISOLINE_PLATFORM_SYSTEM}, ${ISOLINE_PLATFORM_ARCHITECTURE}")
 message(STATUS "[isoline] float control row: ${isolineFloatControl}")
 add_library(isoline::core ALIAS isoline_core)
 target_sources(isoline_core
@@ -110,6 +147,8 @@ target_sources(isoline_core
             validate/Validator.hpp
             Version.hpp
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
+# The platform layer (isoline::platform): its sources and headers, the row's implementation files among them.
+add_subdirectory(platform)
 target_compile_features(isoline_core PUBLIC cxx_std_23)
 # Header-based like every target but the module consumers: never scanned for module dependencies, whatever
 # CMP0155 says (module isoline is a target of its own, isoline_core_module).
@@ -129,7 +168,7 @@ isoline_add_module(
     LIBRARY isoline_core
     SOURCE isoline.cppm
     NAMESPACES isoline isoline::api isoline::config
-    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta)
+    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta isoline::platform)
 
 # The C API, a library of its own over isoline_core, with its own C++ tests (src/isoline/c/).
 if(ISOLINE_C_API)
@@ -159,11 +198,24 @@ if(ISOLINE_TESTING)
     foreach(directory IN LISTS isolineSeparateTestDirectories)
         list(FILTER isolineTestSources EXCLUDE REGEX "/${directory}/posix/[^/]*_test\\.cpp$")
     endforeach()
+    # The platform row's test helpers (platform/testing/), one file per seam (cmake/IsolinePlatform.cmake).
+    isoline_platform_sources(test "${ISOLINE_PLATFORM_SYSTEM}" "${ISOLINE_PLATFORM_ARCHITECTURE}"
+                             isolinePlatformTestSources)
+    list(TRANSFORM isolinePlatformTestSources PREPEND platform/)
+    list(APPEND isolineTestSources ${isolinePlatformTestSources})
     add_executable(isoline_test ${isolineTestSources})
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
     # The source tree, from which tests derive the paths of their data: tests/spec, and docs/embedding.md,
     # whose generated blocks PublishedLimits_test checks against the tables.
-    target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    # Whether this is a build for several architectures at once, whose platform row is Other although
+    # each architecture's compile names its own: what PlatformTable_test expects of ThisPlatform then.
+    if(isolineOsxArchitectureCount GREATER 1)
+        set(isolineTestSeveralArchitectures 1)
+    else()
+        set(isolineTestSeveralArchitectures 0)
+    endif()
+    target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+                                                   ISOLINE_TEST_SEVERAL_ARCHITECTURES=${isolineTestSeveralArchitectures})
     isoline_apply_target_policy(isoline_test TEST)
     # The [memory] cases (growth past a store's budgets, hostile deltas) run apart, under a hard memory
     # cap, so that a broken bound fails small instead of starving a shared machine.
