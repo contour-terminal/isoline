@@ -209,8 +209,10 @@ the design is not data-driven enough yet.
 
 ### Testability of every code area
 **Every code area must be testable, and new code lands with tests.** Every `*_test.cpp` under
-`src/isoline/` is compiled into the Catch2 binary `isoline_test` (CTest label `unit`), except those
-of `text/` and `cli/`, which link their own targets and build `isoline_text_test` and
+`src/isoline/` is compiled into the Catch2 binary `isoline_test` (CTest label `unit`, one test per
+test area, the part of a case's name before its first dot: a new area is a row of
+`isolineTestAreas` in `src/isoline/CMakeLists.txt`, which `isoline_test.areas` holds every case to),
+except those of `text/` and `cli/`, which link their own targets and build `isoline_text_test` and
 `isoline_cli_test` (label `unit` too); the
 official WebAssembly 3.0 spec suite and the suites of the proposals beyond it run beside it (label
 `spec`), every file of the pinned suite imported or excluded with a reason (`docs/conformance.md`).

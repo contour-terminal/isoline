@@ -57,3 +57,17 @@ set_property(CACHE ISOLINE_FAST_DISPATCH_TAILCALL PROPERTY STRINGS AUTO OFF)
 # own spelling, though GCC 15 and later accept Clang's too.
 set(ISOLINE_TAILCALL_PROBE_ROWS "gnu::musttail" "clang::musttail")
 set(ISOLINE_TAILCALL_PROBE_FAMILIES "GNU" "Clang AppleClang")
+
+# How many times longer than its own TIMEOUT a unit-test area (src/isoline/CMakeLists.txt) may run: 1 where the
+# tests run natively, 4 where CMAKE_CROSSCOMPILING_EMULATOR runs them (qemu, wine), whose slowest area runs about
+# 8 times slower than natively and still ends well within it.
+if(CMAKE_CROSSCOMPILING_EMULATOR)
+    set(isolineDefaultTimeoutFactor 4)
+else()
+    set(isolineDefaultTimeoutFactor 1)
+endif()
+set(ISOLINE_TEST_TIMEOUT_FACTOR ${isolineDefaultTimeoutFactor} CACHE STRING
+    "The whole number every unit-test area's TIMEOUT is multiplied by: 4 under an emulator, else 1")
+if(NOT ISOLINE_TEST_TIMEOUT_FACTOR MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "ISOLINE_TEST_TIMEOUT_FACTOR must be a positive whole number, not '${ISOLINE_TEST_TIMEOUT_FACTOR}'.")
+endif()

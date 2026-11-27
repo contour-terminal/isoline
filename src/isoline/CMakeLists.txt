@@ -249,11 +249,105 @@ if(ISOLINE_TESTING)
     # whose generated blocks PublishedLimits_test checks against the tables.
     target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     isoline_apply_target_policy(isoline_test TEST)
-    # The [memory] cases (growth past a store's budgets, hostile deltas) run apart, under a hard memory
-    # cap, so that a broken bound fails small instead of starving a shared machine.
-    add_test(NAME isoline_test COMMAND isoline_test "~[memory]")
-    # A bound, so a test that would hang (an interrupt test whose poll went missing) fails instead.
-    set_tests_properties(isoline_test PROPERTIES LABELS unit TIMEOUT 600)
+    # The unit run, one test per area: an area is the part of a case's name before its first dot, and
+    # isoline_test.<area> runs every case of it ("<area>.*"), so that the areas run in parallel and each has a
+    # bound of its own. A row is the area, then its TIMEOUT in seconds when it is not the default, a bound
+    # that turns a hang (an interrupt test whose poll went missing) into a failure; ISOLINE_TEST_TIMEOUT_FACTOR
+    # multiplies each under an emulator. isoline_test.areas checks that every case belongs to a row's area.
+    # The hidden cases run apart: the [.contract] ones in tests/CMakeLists.txt, the [perf] ones below. So do
+    # the [memory] cases (growth past a store's budgets, hostile deltas), under a hard memory cap, so that a
+    # broken bound fails small instead of starving a shared machine.
+    set(isolineTestDefaultTimeout 120)
+    set(isolineTestAreas
+        "BranchHints"
+        "Bulk"
+        "ByteReader"
+        "Calls|300"
+        "Code"
+        "ConstantExpression"
+        "Contract"
+        "CountingArena"
+        "DecodeError"
+        "Decoder"
+        "Dispatch"
+        "Encoder|300"
+        "Engine"
+        "Exceptions"
+        "Externs"
+        "FastInterpreter"
+        "Features"
+        "FloatEnvironment"
+        "HeapMemoryAllocator"
+        "HostCall"
+        "HostFunction"
+        "Imports"
+        "Instantiate"
+        "Interpreter|300"
+        "Interrupt"
+        "Interrupter"
+        "Limits"
+        "LinearMemory"
+        "LittleEndian"
+        "Lowering|600"
+        "LoweringRows"
+        "Memory"
+        "MemoryAccess"
+        "Module"
+        "ModuleEquality"
+        "NameSection"
+        "Numerics"
+        "Opcode"
+        "OperationTable"
+        "PollGate"
+        "ProvidedMemoryAllocator"
+        "PublishedLimits"
+        "RawValue"
+        "Readme"
+        "ReallocatingMemoryAllocator"
+        "ReferenceInterpreter|300"
+        "Relaxed"
+        "Segment"
+        "Simd|300"
+        "SimdKernels"
+        "SlotCodec"
+        "Store"
+        "Subtyping"
+        "Tables"
+        "Threads"
+        "Trap"
+        "TypeCanon"
+        "Types"
+        "ValidatedModule"
+        "Validator"
+        "Value"
+        "ValueCheck"
+        "Version")
+    set(isolineTestAreaNames)
+    foreach(row IN LISTS isolineTestAreas)
+        if(row MATCHES "^([A-Za-z]+)(\\|([0-9]+))?$")
+            set(area "${CMAKE_MATCH_1}")
+            set(timeout "${CMAKE_MATCH_3}")
+        else()
+            message(FATAL_ERROR "isolineTestAreas: expected '<area>' or '<area>|<seconds>', got '${row}'")
+        endif()
+        if(NOT timeout)
+            set(timeout ${isolineTestDefaultTimeout})
+        endif()
+        math(EXPR timeout "${timeout} * ${ISOLINE_TEST_TIMEOUT_FACTOR}")
+        list(APPEND isolineTestAreaNames "${area}")
+        # The tags first: Catch2 reads a name pattern to the end of the argument. A name pattern selects
+        # hidden cases too, which ~[.] leaves to their own tests.
+        add_test(NAME isoline_test.${area} COMMAND isoline_test "~[.] ~[memory] ${area}.*")
+        set_tests_properties(isoline_test.${area} PROPERTIES LABELS unit TIMEOUT ${timeout})
+    endforeach()
+    # A cross build's emulator runs the binary there too; a list, passed with | between its items.
+    string(REPLACE ";" "|" isolineAreaEmulator "${CMAKE_CROSSCOMPILING_EMULATOR}")
+    string(REPLACE ";" "," isolineTestAreaList "${isolineTestAreaNames}")
+    add_test(NAME isoline_test.areas
+             COMMAND ${CMAKE_COMMAND} -DTEST_BINARY=$<TARGET_FILE:isoline_test>
+                     "-DTEST_EMULATOR=${isolineAreaEmulator}" "-DSELECTION=~[memory]"
+                     "-DAREAS=${isolineTestAreaList}" -P "${PROJECT_SOURCE_DIR}/tests/CheckTestAreas.cmake")
+    set_tests_properties(isoline_test.areas PROPERTIES LABELS unit)
     isoline_add_capped_test(NAME isoline_test_memory TARGET isoline_test LABELS unit ARGS "[memory]")
     # The interrupt latency the specification publishes (p99 interrupt-to-return within 10 ms) is a
     # property of optimized code: measured in release builds only, by the hidden [perf] cases, which
