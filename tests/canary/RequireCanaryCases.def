@@ -32,3 +32,4 @@ ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInForBody, "invariant-in-for-body",
 ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInWhileBody, "invariant-in-while-body", contract, "whileRounds == 0")
 ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInDoBody, "invariant-in-do-body", contract, "doRounds == 0")
 ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInRangeForBody, "invariant-in-range-for-body", contract, "rangeRounds == 0")
+ISOLINE_REQUIRE_CANARY_CASE(positionInvariantInNoexceptLambdaInTry, "invariant-in-noexcept-lambda-in-try", contract, "lambdaRounds == 0")

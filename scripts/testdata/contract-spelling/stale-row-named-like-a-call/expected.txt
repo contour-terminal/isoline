@@ -1,0 +1,2 @@
+exit: 1
+scripts/contract-spelling-rows.txt:3: stale row: src/isoline/api/Engine.cpp has no function at

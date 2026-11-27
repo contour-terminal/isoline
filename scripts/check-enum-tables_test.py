@@ -310,6 +310,78 @@ struct Holder
 TRY_LINES = {8, 21, 37, 49, 62}
 
 
+# Conditions of the contract macros that write, each flagged by its line, and those that only read, which
+# pass: a const member call (through a reference, a pointer, or on a const object), a free function
+# taking a const reference or a value, comparisons, and a plain Require that writes (Require is no
+# contract, so its condition is not this rule's).
+SIDE_EFFECTS = """\
+#include "Check.hpp"
+namespace isoline::lib
+{
+struct Store
+{
+    int intern() noexcept;
+    bool alive() const noexcept;
+    Store& operator++() noexcept;
+    bool operator==(Store const&) const noexcept = default;
+    static bool valid(int value) noexcept;
+};
+bool touch(int& value) noexcept;
+bool point(int* value) noexcept;
+bool look(int const& value) noexcept;
+bool byValue(int value) noexcept;
+struct Holder
+{
+    Store& store;
+    Store* pointer;
+    int count;
+    void writes() noexcept
+    {
+        ISOLINE_PRECONDITION(++count > 0);
+        ISOLINE_INVARIANT(count-- > 0);
+        ISOLINE_INVARIANT(store.intern() > 0);
+        ISOLINE_INVARIANT(pointer->intern() > 0);
+        ISOLINE_INVARIANT((count = 3) > 0);
+        ISOLINE_INVARIANT((count += 3) > 0);
+        ISOLINE_INVARIANT(touch(count));
+        ISOLINE_INVARIANT(point(&count));
+        ISOLINE_INVARIANT((++store).alive());
+    }
+    void reads() const noexcept
+    {
+        ISOLINE_PRECONDITION(store.alive());
+        ISOLINE_INVARIANT(pointer->alive());
+        ISOLINE_INVARIANT(look(count) && byValue(count));
+        ISOLINE_INVARIANT(count > 0 && store == *pointer && Store::valid(count));
+        Require(store.intern() > 0);
+    }
+    void readsInAWritingFunction() noexcept
+    {
+        ISOLINE_INVARIANT(store.alive() && pointer->alive() && look(count));
+    }
+};
+} // namespace isoline::lib
+"""
+SIDE_EFFECT_LINES = set(range(23, 32))
+
+# A known gap of the side-effect rule: a lambda defined before the check whose operator() is const (the
+# default) but writes through a by-reference capture. The call in the condition is a const member call, so
+# nothing in the expansion writes, and the lint passes it. It stays a review question (see the script's
+# docstring and docs/language-features.md); this fixture pins the gap, so closing it shows here.
+NAMED_LAMBDA = """\
+#include "Check.hpp"
+namespace isoline::lib
+{
+int counted(int count) noexcept
+{
+    auto const bump = [&count]() noexcept { return ++count > 0; };
+    ISOLINE_INVARIANT(bump());
+    return count;
+}
+} // namespace isoline::lib
+"""
+
+
 def document(lines):
     return "# Doc\n\n<!-- source-local-tables:begin -->\n" + "".join(f"{line}\n" for line in lines) \
         + "<!-- source-local-tables:end -->\n\nAfter.\n"
@@ -422,6 +494,27 @@ class CheckEnumTablesTest(unittest.TestCase):
                        "} // namespace isoline::lib\n")
         result = self.run_check()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_contractConditionsThatWriteAreFlagged(self):
+        self.write("src/isoline/lib/Check.hpp", CHECK)
+        self.addSource("lib/Effects.cpp", SIDE_EFFECTS)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        prefix = "src/isoline/lib/Effects.cpp:"
+        lines = {int(line[len(prefix):].split(":", 1)[0]) for line in result.stderr.splitlines()
+                 if line.startswith(prefix) and "a check only reads" in line}
+        self.assertEqual(lines, SIDE_EFFECT_LINES, result.stderr)
+        self.assertIn("src/isoline/lib/Effects.cpp:25: ISOLINE_INVARIANT condition calls the non-const member "
+                      "intern()", result.stderr)
+        self.assertIn("src/isoline/lib/Effects.cpp:29: ISOLINE_INVARIANT condition calls touch(), which takes "
+                      "int &", result.stderr)
+
+    def test_namedLambdaWritingThroughACaptureIsAKnownGap(self):
+        self.write("src/isoline/lib/Check.hpp", CHECK)
+        self.addSource("lib/Lambda.cpp", NAMED_LAMBDA)
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("a check only reads", result.stderr)
 
     def test_clangFailureIsAToolError(self):
         self.addSource("lib/Broken.cpp", "namespace isoline { int broken = ; }\n")

@@ -37,4 +37,9 @@ void invariantInDoBody(unsigned doRounds) noexcept;
 /// @param rangeRounds Positive: the check fails.
 void invariantInRangeForBody(unsigned rangeRounds) noexcept;
 
+/// ISOLINE_INVARIANT in a noexcept lambda defined inside a try block of a noexcept function: the
+/// lambda's own noexcept boundary ends the process, so the enclosing try never catches the check.
+/// @param lambdaRounds Positive: the check fails.
+void invariantInNoexceptLambdaInTry(unsigned lambdaRounds) noexcept;
+
 } // namespace isoline::canary

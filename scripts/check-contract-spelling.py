@@ -12,9 +12,10 @@ Two kinds of rule, each a table:
   `Require(`/`Guarantee(` of a source file (src/isoline/**/*.cpp, tests and `testing/` directories left
   out) is a row's: a file whose sites outnumber its rows' counts fails, naming its rows, and so does one
   whose rows count more than it has. A row whose file is gone, or whose function the file no longer
-  spells, is stale. A function is spelled where its last name stands before a `(` (template arguments
-  between allowed) and every class it is qualified by is named in the file; a lambda's site is its
-  enclosing function's.
+  defines, is stale. A function is defined where its last name, a whole identifier not reached through
+  `.` or `->`, stands before a parameter list (template arguments between allowed) followed by what
+  only a definition has there (a qualifier, a trailing return type, member initializers or the body),
+  and every class it is qualified by is named in the file; a lambda's site is its enclosing function's.
 
 Comments are never code, and string and character literals are blanked for every pattern but an
 `#include`. Any finding, or a row that is no row, fails the check (exit status 1); a missing rows file is
@@ -75,15 +76,17 @@ RULES = (
          forbidden=re.compile(r"\bcontract_assert\b"),
          message="a contract_assert outside the seam: spell it ISOLINE_PRECONDITION or ISOLINE_INVARIANT "
                  "(<isoline/meta/Check.hpp>), whose native expansion proves the function noexcept"),
-    # A contract specifier after a declarator (`) pre(`, `) const noexcept post(`), not a call such as
-    # `loop.post(`.
+    # A contract specifier after a declarator: after its `)`, any run of cv-, ref- and noexcept
+    # qualifiers, `override`, `final` and a trailing return type (`) pre(`, `) const & post(`,
+    # `) -> T pre(`, `) override pre(`); not a call such as `loop.post(`.
     Rule(name="contract-in-header",
          globs=("src/isoline/**/*.hpp", "src/isoline/**/*.def"),
          exempt=SEAM_HEADERS,
          scope=Scope.EVERY_FILE,
          text=Text.CODE,
          forbidden=re.compile(r"\bISOLINE_PRECONDITION\b|\bISOLINE_INVARIANT\b|\bcontract_assert\b"
-                              r"|\)\s*(?:const\s*)?(?:noexcept\s*)?(?:pre|post)\s*\("),
+                              r"|\)(?:\s*(?:\b(?:const|volatile|noexcept|override|final)\b|&&?"
+                              r"|->\s*[\w:<>*&, ]*?[\w>*&]))*\s*\b(?:pre|post)\s*\("),
          message="contracts stay out of headers until P19 Task 16"),
     Rule(name="meta-include-in-installed-header",
          globs=("src/isoline/**/*.hpp", "src/isoline/**/*.def"),
@@ -209,12 +212,43 @@ def readRows(root):
     return rows, problems
 
 
+# What follows a function's parameter list where it is defined, and never where it is called: a
+# qualifier (a ref-qualifier only before the body or another qualifier), a trailing return type, or the
+# body; a constructor's member initializers too, for a constructor alone, as a `:` follows a call in a
+# conditional expression.
+DEFINITION_TAIL = re.compile(r"\s*(?:const\b|volatile\b|noexcept\b|override\b|final\b|requires\b|->|\{|try\b"
+                             r"|&&?\s*(?:\{|noexcept\b|override\b|final\b|requires\b|->))")
+CONSTRUCTOR_TAIL = re.compile(r"\s*:(?!:)")
+
+
+def closingParenthesis(code, opening):
+    """The index of the `)` that closes the `(` at @p opening of @p code, or -1."""
+    depth = 0
+    for index in range(opening, len(code)):
+        if code[index] == "(":
+            depth += 1
+        elif code[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
 def spells(code, function):
-    """Whether @p code, comments and literals blanked, spells @p function (see the module's comment)."""
+    """Whether @p code, comments and literals blanked, defines @p function: its last name, as a whole
+    identifier not reached through `.` or `->`, before a parameter list (template arguments between
+    allowed) that a definition's tail follows, and every class it is qualified by named in the file."""
     *classes, name = function.split("::")
-    if not re.search(rf"(?<![\w.]){re.escape(name)}\s*(?:<[^;{{}}()]*>\s*)?\(", code):
+    if not all(re.search(rf"\b{re.escape(owner)}\b", code) for owner in classes):
         return False
-    return all(re.search(rf"\b{re.escape(owner)}\b", code) for owner in classes)
+    for match in re.finditer(rf"(?<![\w.>]){re.escape(name)}\s*(?:<[^;{{}}()]*>\s*)?\(", code):
+        closing = closingParenthesis(code, match.end() - 1)
+        if closing == -1:
+            continue
+        if DEFINITION_TAIL.match(code, closing + 1) or (classes and classes[-1] == name
+                                                         and CONSTRUCTOR_TAIL.match(code, closing + 1)):
+            return True
+    return False
 
 
 def rowFindings(root, rows):

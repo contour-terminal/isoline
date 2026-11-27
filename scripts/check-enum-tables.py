@@ -51,6 +51,18 @@ before any handler of the enclosing function is reached (the native macro proves
 try block inside the lambda is refused like any other. A macro is found by the name at the place it is
 invoked, so one invoked through another macro carries that macro's name, and is not seen.
 
+A third rule reads the same macros' expansions: a check only reads, so their condition may not write.
+Inside the expansion it refuses `++`/`--`, an assignment or compound assignment, a call of a non-const
+member function (one whose object the AST does not convert to const, through `.` or `->`, an operator
+included), and a call of a free function with a parameter that is a reference or pointer to non-const,
+read from the callee's type. The compiler sees only part of this: a contract's predicate gets `*this`
+and the locals as const, but a member reached through a pointer or a reference member is not, so
+`contract_assert(_store->intern())` compiles (GCC 16.2.1, measured). Two writes are not seen: a callee
+taking a non-const view by value (a span), and a lambda defined before the check whose operator() is const
+(the default) but writes through a by-reference capture, as `auto const bump = [&count] { return ++count
+> 0; };` then `ISOLINE_INVARIANT(bump())`: the call is a const member call, and the write sits outside the
+expansion (GCC 16.2.1 compiles the same in a contract_assert, measured).
+
 Exit status: 0 clean, 1 findings, 2 a tool error (Clang failed, a row type the lint cannot find, an
 ambiguous field type).
 
@@ -80,7 +92,7 @@ BLOCK = "source-local-tables"
 DUMP_FILTER = "isoline"
 
 # Bumped when what a cached result means changes.
-CACHE_VERSION = "4"
+CACHE_VERSION = "5"
 
 # The contracts seam's macros, refused inside a try block.
 CONTRACT_MACROS = (b"ISOLINE_PRECONDITION", b"ISOLINE_INVARIANT")
@@ -88,6 +100,98 @@ CONTRACT_MACROS = (b"ISOLINE_PRECONDITION", b"ISOLINE_INVARIANT")
 # The declarations that begin a function of their own: a try block outside one does not enclose its body.
 FUNCTION_KINDS = ("FunctionDecl", "CXXMethodDecl", "CXXConstructorDecl", "CXXDestructorDecl",
                   "CXXConversionDecl", "LambdaExpr", "CXXRecordDecl", "BlockDecl")
+
+# The expressions that may write, as the side-effect rule reads them (writeOf()).
+WRITING_KINDS = ("UnaryOperator", "BinaryOperator", "CompoundAssignOperator", "CXXMemberCallExpr", "CallExpr",
+                 "CXXOperatorCallExpr")
+CONST = re.compile(r"const\b")
+
+
+def typeOf(node):
+    """The type Clang spells for @p node."""
+    return node.get("type", {}).get("qualType", "")
+
+
+def calleeDecl(node):
+    """The declaration a call's callee names (through implicit casts and parentheses), or None."""
+    callee = (node.get("inner") or [None])[0]
+    while isinstance(callee, dict) and callee.get("kind") in ("ImplicitCastExpr", "ParenExpr"):
+        callee = (callee.get("inner") or [None])[0]
+    if isinstance(callee, dict) and callee.get("kind") == "DeclRefExpr":
+        return callee.get("referencedDecl")
+    return None
+
+
+def parametersOf(functionType):
+    """The parameter types of @p functionType, spelled as Clang spells a function: `R (P1, P2) qualifiers`."""
+    depth = 0
+    parameters = None
+    current = ""
+    for character in functionType:
+        if parameters is None:
+            depth += character in "<[" or -(character in ">]")
+            if character == "(" and depth == 0:
+                parameters = []
+            continue
+        if character in "<[(":
+            depth += 1
+        elif character in ">])":
+            if character == ")" and depth == 0:
+                parameters.append(current)
+                break
+            depth -= 1
+        elif character == "," and depth == 0:
+            parameters.append(current)
+            current = ""
+            continue
+        current += character
+    return [parameter.strip() for parameter in parameters or [] if parameter.strip() not in ("", "void", "...")]
+
+
+def writesThrough(parameter):
+    """Whether a parameter of type @p parameter is a reference or pointer to non-const."""
+    depth = 0
+    for character in parameter:
+        if character in "<(":
+            depth += 1
+        elif character in ">)":
+            depth -= 1
+        elif character in "&*" and depth == 0:
+            return CONST.match(parameter) is None
+    return False
+
+
+def writeOf(node):
+    """What @p node, an expression, writes, in words, or None when it only reads."""
+    kind = node.get("kind")
+    if kind == "UnaryOperator" and node.get("opcode") in ("++", "--"):
+        return f"applies {node['opcode']}"
+    if kind == "BinaryOperator" and node.get("opcode") == "=":
+        return "assigns"
+    if kind == "CompoundAssignOperator":
+        return f"assigns with {node.get('opcode')}"
+    if kind == "CXXMemberCallExpr":
+        member = (node.get("inner") or [{}])[0]
+        if member.get("kind") != "MemberExpr":
+            return None
+        objectType = typeOf((member.get("inner") or [{}])[0])
+        constObject = re.match(r"const\b[^*]*\*", objectType) if member.get("isArrow") else CONST.match(objectType)
+        return None if constObject else f"calls the non-const member {member.get('name')}()"
+    if kind in ("CallExpr", "CXXOperatorCallExpr"):
+        declaration = calleeDecl(node)
+        if declaration is None:
+            return None
+        name = declaration.get("name", "?")
+        functionType = typeOf(declaration)
+        # A non-static member is called as a CXXMemberCallExpr, or here as an operator; a static one
+        # through a plain call reads its parameters as a free function does.
+        if kind == "CXXOperatorCallExpr" and declaration.get("kind") == "CXXMethodDecl":
+            qualifiers = functionType[functionType.rfind(")") + 1:]
+            return None if re.search(r"\bconst\b", qualifiers) else f"calls the non-const member {name}()"
+        for parameter in parametersOf(functionType):
+            if writesThrough(parameter):
+                return f"calls {name}(), which takes {parameter}"
+    return None
 
 # Files under src/isoline/ the lint skips: tests, their helpers, and the reflection checks' own sources.
 SKIPPED = (re.compile(r"_test\.cpp$"), re.compile(r"(^|/)testing/"), re.compile(r"^meta/reflection/"))
@@ -277,6 +381,8 @@ class Index:
         self.records = {}    # qualified name -> (first field's type, record scope) or (None, scope)
         self.arrays = []     # (file, name, row as written, scope, scope kinds)
         self.inTry = set()   # (file, offset, token length): a macro invoked inside a try block
+        self.writes = set()  # (file, offset, token length, what): a macro whose condition writes
+        self.texts = {}      # path -> bytes: the files macro names are read from
         self.currentFile = None
 
     def addType(self, scope, name, kind):
@@ -322,10 +428,15 @@ class Index:
             if not isinstance(node, dict):
                 continue
             kind = node.get("kind")
-            if inTry:
+            if inTry or kind in WRITING_KINDS:
                 expansion = self.expansionIn(node)
                 if expansion is not None and expansion[0] is not None:
-                    self.inTry.add(expansion)
+                    if inTry:
+                        self.inTry.add(expansion)
+                    if kind in WRITING_KINDS and self.macroAt(*expansion) is not None:
+                        what = writeOf(node)
+                        if what is not None:
+                            self.writes.add((*expansion, what))
             self.track(node.get("loc", {}))
             file = self.currentFile
             for key, value in node.items():
@@ -430,6 +541,38 @@ class Index:
             raise ToolError(f"no class definition found for the row type {row} (in {'::'.join(scope)})")
         return None
 
+    def sourcePath(self, file):
+        """The path of @p file under src/isoline/, relative to it, or None for one the lint skips."""
+        path = (self.directory / file).resolve()
+        try:
+            relative = path.relative_to(self.sources).as_posix()
+        except ValueError:
+            return None
+        return None if isSkipped(relative) else relative
+
+    def textOf(self, file):
+        """The bytes of @p file, read once."""
+        path = (self.directory / file).resolve()
+        if path not in self.texts:
+            self.texts[path] = path.read_bytes()
+        return self.texts[path]
+
+    def macroAt(self, file, offset, length):
+        """The contract macro invoked at @p offset of @p file, a source file the lint covers, or None."""
+        if self.sourcePath(file) is None:
+            return None
+        macro = self.textOf(file)[offset:offset + length]
+        return macro.decode() if macro in CONTRACT_MACROS else None
+
+    def contractWrites(self):
+        """Every contract macro the lint is responsible for whose condition writes: (file, line, macro,
+        what it does)."""
+        found = set()
+        for file, offset, length, what in self.writes:
+            macro = self.macroAt(file, offset, length)
+            found.add((self.sourcePath(file), self.textOf(file).count(b"\n", 0, offset) + 1, macro, what))
+        return [list(entry) for entry in sorted(found)]
+
     def contractsInTry(self):
         """Every contract macro the lint is responsible for invoked inside a try block: (file, line,
         macro), read from the file at the place of the invocation."""
@@ -454,7 +597,8 @@ class Index:
     def result(self):
         """What the lint is responsible for: every std::array variable, (file, name, whether
         enum-first), under "tables", and every contract macro inside a try block under "contractsInTry"."""
-        return {"tables": self.tables(), "contractsInTry": self.contractsInTry()}
+        return {"tables": self.tables(), "contractsInTry": self.contractsInTry(),
+                "contractWrites": self.contractWrites()}
 
     def tables(self):
         """Every std::array variable the lint is responsible for: (file, name, whether enum-first)."""
@@ -600,11 +744,19 @@ def scan(root, compileCommands, clang, cache, jobs):
                 cached.write_text(json.dumps({"key": key, "result": result}), encoding="utf-8")
     merged = {}
     inTry = set()
+    writes = set()
     for result in results.values():
         for file, name, enumFirst in result["tables"]:
             merged[(file, name)] = merged.get((file, name), False) or enumFirst
         inTry.update(tuple(entry) for entry in result["contractsInTry"])
-    return merged, sorted(inTry)
+        writes.update(tuple(entry) for entry in result["contractWrites"])
+    return merged, sorted(inTry), sorted(writes)
+
+
+def contractWritesProblems(writes):
+    """The findings of the side-effect rule, one message each."""
+    return [f"src/isoline/{file}:{line}: {macro} condition {what}: a check only reads; hoist the write into "
+            f"a local before the check" for file, line, macro, what in writes]
 
 
 def contractsInTryProblems(inTry):
@@ -686,20 +838,21 @@ def main():
     parser.add_argument("--update", action="store_true", help="rewrite the document's block")
     arguments = parser.parse_args()
     try:
-        tables, inTry = scan(arguments.root.resolve(), arguments.compile_commands.resolve(), arguments.clang,
+        tables, inTry, writes = scan(arguments.root.resolve(), arguments.compile_commands.resolve(), arguments.clang,
                              arguments.cache, arguments.jobs)
     except ToolError as error:
         print(f"check-enum-tables: {error}", file=sys.stderr)
         return 2
     problems = escapedArrays(arguments.root.resolve(), arguments.compile_commands.resolve()) \
-        + check(arguments.root, tables, arguments.update) + contractsInTryProblems(inTry)
+        + check(arguments.root, tables, arguments.update) + contractsInTryProblems(inTry) \
+        + contractWritesProblems(writes)
     for problem in problems:
         print(problem, file=sys.stderr)
     if problems:
         return 1
     count = sum(1 for enumFirst in tables.values() if enumFirst)
     print(f"source-local enum tables: {count} found, each registered; {DOCUMENT} lists them; "
-          f"no contract macro inside a try block")
+          f"no contract macro inside a try block, nor one whose condition writes")
     return 0
 
 

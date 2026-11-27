@@ -340,6 +340,12 @@ void positionInvariantInRangeForBody()
     wentThrough("ISOLINE_INVARIANT first in a range-based for body", 0);
 }
 
+void positionInvariantInNoexceptLambdaInTry()
+{
+    isoline::canary::invariantInNoexceptLambdaInTry(1);
+    wentThrough("ISOLINE_INVARIANT in a noexcept lambda inside a try block", 0);
+}
+
 /// A case: its name on the command line, and what it calls.
 struct CanaryCase
 {

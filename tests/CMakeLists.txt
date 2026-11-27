@@ -145,6 +145,18 @@ if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
                           PRIVATE isoline_canary_throwing_handler isoline_canary_check_positions isoline::core
                                   Catch2::Catch2)
     isoline_apply_target_policy(isoline_require_canary_throwing_handler TEST)
+    # The other half of the lambda rule: a macro in a lambda that is not noexcept, inside a noexcept
+    # function's try block, does not compile (canary/LambdaMayThrow.cpp). The target is built by its test
+    # alone, which passes on the macro's static_assert.
+    add_library(isoline_canary_lambda_may_throw OBJECT EXCLUDE_FROM_ALL canary/LambdaMayThrow.cpp)
+    target_link_libraries(isoline_canary_lambda_may_throw PRIVATE isoline::core)
+    isoline_apply_target_policy(isoline_canary_lambda_may_throw)
+    _isoline_compile_with_language_features(isoline_canary_lambda_may_throw)
+    set_target_properties(isoline_canary_lambda_may_throw PROPERTIES CXX_CLANG_TIDY "")
+    add_test(NAME contract-lambda-may-throw-refused
+             COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}" --target isoline_canary_lambda_may_throw)
+    set_tests_properties(contract-lambda-may-throw-refused PROPERTIES LABELS unit TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "ISOLINE_PRECONDITION/ISOLINE_INVARIANT need a noexcept function")
 endif()
 # The cases, read from the table the canary itself includes, one ISOLINE_REQUIRE_CANARY_CASE line each.
 set(isolineRequireCanaryTable "${CMAKE_CURRENT_SOURCE_DIR}/canary/RequireCanaryCases.def")

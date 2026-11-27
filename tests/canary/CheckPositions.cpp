@@ -68,4 +68,19 @@ void invariantInRangeForBody(unsigned rangeRounds) noexcept
     }
 }
 
+void invariantInNoexceptLambdaInTry(unsigned lambdaRounds) noexcept
+{
+    try
+    {
+        auto const check = [lambdaRounds]() noexcept {
+            ISOLINE_INVARIANT(lambdaRounds == 0);
+        };
+        check();
+    }
+    catch (...)
+    {
+        std::puts("check-positions: the enclosing try caught the check");
+    }
+}
+
 } // namespace isoline::canary

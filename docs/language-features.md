@@ -132,7 +132,11 @@ try block or a function-try-block, a constructor's included, and inside a handle
 inside one. A lambda (or a local class's member function) is a function of its own: a macro in a
 `noexcept` lambda defined inside a try block is allowed, because the lambda's own `noexcept` boundary
 ends the process before any handler of the enclosing function is reached, and the native macro proves
-the lambda `noexcept`. A try block inside the lambda is refused like any other. The lint finds a macro
+the lambda `noexcept`. Two native canaries pin both halves: the case `invariant-in-noexcept-lambda-in-try`
+fails its check inside such a lambda and must end the process, its throwing-handler twin included, and
+the test `contract-lambda-may-throw-refused` builds `tests/canary/LambdaMayThrow.cpp`, the same lambda
+without `noexcept`, and passes only on the macro's `static_assert`. A try block inside the lambda is
+refused like any other. The lint finds a macro
 by the name at its invocation, so a macro invoked through another macro is not seen.
 
 `scripts/check-contract-spelling.py` (tests `contract-spelling` and `contract-spelling-selftest`, label
@@ -142,9 +146,9 @@ by the name at its invocation, so a macro invoked through another macro is not s
 | Files | Refused | Why |
 |---|---|---|
 | `src/isoline/**/*.cpp` | a raw `contract_assert` | it bypasses the macros, and their `noexcept` proof |
-| `src/isoline/**/*.{hpp,def}`, installed or private, except the two seam headers | `ISOLINE_PRECONDITION`, `ISOLINE_INVARIANT`, `contract_assert`, and a `pre`/`post` specifier after a declarator (`) pre(`, `) const noexcept post(`; not a call such as `loop.post(`) | contracts stay out of headers until P19 Task 16 |
+| `src/isoline/**/*.{hpp,def}`, installed or private, except the two seam headers | `ISOLINE_PRECONDITION`, `ISOLINE_INVARIANT`, `contract_assert`, and a `pre`/`post` specifier after a declarator and any qualifiers, ref-qualifiers, `override`, `final` or trailing return type (`) pre(`, `) const & post(`, `) -> T pre(`, `) override pre(`; not a call such as `loop.post(`) | contracts stay out of headers until P19 Task 16 |
 | installed headers (every `FILE_SET HEADERS` of `src/isoline/**/CMakeLists.txt`) | `#include <isoline/meta/…>` other than `EnumRows.hpp` | an installed header includes only `meta/EnumRows.hpp` |
-| `src/isoline/**/*.cpp`, tests and `testing/` directories left out | a `Require(` or `Guarantee(` beyond the file's throwing-site rows, fewer than they count, or a row whose file or function is gone | use `ISOLINE_PRECONDITION`/`ISOLINE_INVARIANT` in a `noexcept` function, or add a row |
+| `src/isoline/**/*.cpp`, tests and `testing/` directories left out | a `Require(` or `Guarantee(` beyond the file's throwing-site rows, fewer than they count, or a row whose file is gone or no longer defines its function (the name before a parameter list a definition's tail follows, not a call) | use `ISOLINE_PRECONDITION`/`ISOLINE_INVARIANT` in a `noexcept` function, or add a row |
 
 Comments are never code, and literals are blanked for every pattern but an `#include`. On success the lint
 prints how many `Require()`s the installed headers keep (15): an installed declaration must parse as
@@ -174,10 +178,23 @@ headers. The first to become `pre` when installed declarations may carry one (P1
 `Function::type()` and `Tag::type()`.
 
 A condition only reads: no check interns, allocates or advances anything, so that evaluating it once,
-again, or not at all changes nothing but whether the program ends. The compiler holds half of it, since
-a contract's predicate sees `*this` and the locals as `const`; the rest is a review question, asked of
-every check of the sweep (P19 Task 6). The one condition that interned a type now interns it into a
-local first (`Instantiation::internTypes()`).
+again, or not at all changes nothing but whether the program ends. The compiler does not hold this. A
+contract's predicate sees `*this` and the locals as `const`, but not what a pointer or a reference member
+reaches: `contract_assert(_store->internType(type))` compiles on GCC 16.2.1 (measured), and so does a call
+of any free function given such a member. The AST lint `enum-tables-current` holds it instead: inside
+the expansion of `ISOLINE_PRECONDITION` or `ISOLINE_INVARIANT` it refuses `++` and `--`, an assignment or
+compound assignment, a call of a non-const member function (through `.` or `->`, operators included),
+and a call of a function with a reference or pointer parameter to non-const. Two writes are not seen,
+and stay review questions, asked of every check of the sweep (P19 Task 6):
+
+- a callee that writes through a view it takes by value (a `std::span<T>`);
+- a lambda defined before the check whose `operator()` is `const` (the default) but writes through a
+  by-reference capture: `auto const bump = [&count] { return ++count > 0; };` and then
+  `ISOLINE_INVARIANT(bump())`. The condition calls a `const` member, and the write sits in the lambda's
+  body, outside the macro's expansion. GCC 16.2.1 compiles the same in a `contract_assert` (measured).
+  The lint's self-test pins this gap (`test_namedLambdaWritingThroughACaptureIsAKnownGap`).
+
+The one condition that interned a type now interns it into a local first (`Instantiation::internTypes()`).
 
 ### The semantic is `enforce`
 
