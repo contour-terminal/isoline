@@ -339,6 +339,8 @@ VERSION_LINES = [
     # cl.exe, run without arguments: "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35217 for x64".
     ("msvc", re.compile(rf"\bCompiler Version {VERSION}(?:\s|$)"), None),
     ("wasm-tools", re.compile(rf"^wasm-tools {VERSION}"), None),
+    # "wasmtime 50.0.3 (9bbe3e2f8 2026-11-19)".
+    ("wasmtime", re.compile(rf"^wasmtime {VERSION}"), None),
     # CPython ("Python 3.14.0"), the selftest's executable of a known version.
     ("python", re.compile(rf"^Python {VERSION}$"), None),
 ]
