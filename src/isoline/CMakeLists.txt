@@ -53,6 +53,7 @@ target_sources(isoline_core
         runtime/ConstantExpression.cpp
         runtime/CountingArena.cpp
         runtime/FloatEnvironment.cpp
+        runtime/HostCall.cpp
         runtime/HostFunction.cpp
         runtime/Instantiate.cpp
         runtime/LinearMemory.cpp
@@ -100,6 +101,7 @@ target_sources(isoline_core
             runtime/CountingArena.hpp
             runtime/ExecutionMode.hpp
             runtime/FloatEnvironment.hpp
+            runtime/HostCall.hpp
             runtime/HostFunction.hpp
             runtime/Instantiate.hpp
             runtime/Interrupt.hpp
