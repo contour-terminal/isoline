@@ -22,7 +22,7 @@ namespace isoline::component::canonical
 
 /// The handle operations lifting and lowering an `own` or a `borrow` takes (definitions.py's
 /// lift_own, lift_borrow, lower_own and lower_borrow), on the handle table of the instance whose side
-/// of the call is lifted or lowered. Task 13's ResourceOperations implements them; tests use a fake.
+/// of the call is lifted or lowered. runtime::ResourceOperations implements them; tests use a fake.
 ///
 /// @p type is always a resource of the LiftContext's arena, the side's own view of it: the
 /// implementation maps it to the runtime ResourceTypeIndex that instance bound it to.
@@ -34,15 +34,16 @@ class HandleOps
     /// lift_own: removes the own handle at @p index.
     /// @param type The resource type the value's type names.
     /// @param index The handle index the guest passed.
-    /// @return The resource it held; or UnknownHandle, WrongHandleType, LendOutstanding, or a borrow
-    ///         where an own is expected.
+    /// @return The resource it held; or UnknownHandle, WrongHandleType, LendOutstanding, or
+    ///         OwnExpected for a borrow handle.
     [[nodiscard]] virtual std::expected<ResourceValue, Trap> liftOwn(types::ResourceTypeId type,
                                                                      uint32_t index) = 0;
 
     /// lift_borrow: the handle at @p index, lent to the current call.
     /// @param type The resource type the value's type names.
     /// @param index The handle index the guest passed.
-    /// @return The resource it names, as a borrow; or UnknownHandle or WrongHandleType.
+    /// @return The resource it names, as a borrow; or UnknownHandle or WrongHandleType, or Handles when
+    ///         the store's handles cannot take the lend.
     [[nodiscard]] virtual std::expected<ResourceValue, Trap> liftBorrow(types::ResourceTypeId type,
                                                                         uint32_t index) = 0;
 

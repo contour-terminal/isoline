@@ -21,6 +21,9 @@ target_sources(isoline_component
         validate/CoreTypes.cpp
         validate/Names.cpp
         validate/Subtyping.cpp
+        runtime/Builtins.cpp
+        runtime/HandleTable.cpp
+        runtime/Resources.cpp
         validate/Validator.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
@@ -41,6 +44,9 @@ target_sources(isoline_component
             validate/Names.hpp
             validate/Subtyping.hpp
             validate/ValidatedComponent.hpp
+            runtime/Builtins.hpp
+            runtime/HandleTable.hpp
+            runtime/Resources.hpp
             validate/Validator.hpp)
 target_compile_features(isoline_component PUBLIC cxx_std_23)
 target_link_libraries(isoline_component PUBLIC isoline::core)

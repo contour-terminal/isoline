@@ -40,6 +40,8 @@ enum class TrapCode : uint8_t
     WrongHandleType,     ///< A handle of another resource type than the one expected.
     BorrowOutstanding,   ///< A call returned while a handle it borrowed is still held.
     LendOutstanding,     ///< An own handle removed while it is lent.
+    OwnExpected,         ///< A borrow handle lifted where an own is expected.
+    WrongResource,       ///< A resource lowered as another resource type than its own.
     Core,                ///< A core trap (Trap::core), its message the core's.
 };
 
@@ -83,6 +85,8 @@ inline constexpr auto TrapCodeTable = std::to_array<TrapCodeRow>({
       .format = "handle index {} used with the wrong type, expected {} but found {}" },
     { .code = TrapCode::BorrowOutstanding, .format = "borrowed handles remain at the end of the call" },
     { .code = TrapCode::LendOutstanding, .format = "cannot remove owned resource while borrowed" },
+    { .code = TrapCode::OwnExpected, .format = "handle index {} is a borrow where an own is expected" },
+    { .code = TrapCode::WrongResource, .format = "resource {} lowered as another resource type" },
     { .code = TrapCode::Core, .format = "{}" },
 });
 

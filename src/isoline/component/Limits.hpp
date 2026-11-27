@@ -40,7 +40,9 @@ struct ComponentLimits
     /// Runtime resource types per ComponentStore (generative); also the resource types one validation
     /// mints.
     uint32_t maxResourceTypes = 100'000;
-    /// Per ComponentStore, all handle tables together; each table also holds at most 2^28 - 1.
+    /// Per ComponentStore: the slots of all handle tables together (a freed slot stays its table's, for
+    /// reuse), plus the handles lent to calls in progress; each table also hands out indices up to
+    /// 2^28 - 1.
     uint32_t maxHandles = 1'000'000;
     /// Per ComponentStore: the host bytes of every live Values.
     uint64_t maxLiveValueBytes = uint64_t { 256 } << 20;
@@ -208,8 +210,9 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxResourceTypes; } },
     { .limit = ComponentLimit::Handles,
       .name = "maxHandles",
-      .rule = "handles of every handle table of one ComponentStore together; one table holds at most "
-              "2^28 - 1",
+      .rule = "handle slots of every handle table of one ComponentStore together, each kept by its table "
+              "for reuse once freed, plus the handles lent to calls in progress; one table hands out "
+              "indices up to 2^28 - 1",
       .message = "handles count exceeds limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxHandles; } },
     { .limit = ComponentLimit::LiveValueBytes,

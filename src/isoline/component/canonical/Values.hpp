@@ -29,7 +29,7 @@ namespace isoline::component::canonical
 {
 
 /// A resource type at run time: one per execution of a resource definition (D5), so two instances of
-/// one component have two. Task 13's ResourceTypeTable mints them; a value only carries one.
+/// one component have two. runtime::ResourceTypeTable mints them; a value only carries one.
 struct ResourceTypeIndex
 {
     uint32_t value = 0; ///< The index in the store's resource type table.
