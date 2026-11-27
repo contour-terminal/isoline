@@ -53,12 +53,12 @@ namespace
     }
 
     /// The labels "0", "1", … of a tuple of @p count elements, as its despecialized record names them.
-    [[nodiscard]] std::vector<std::string> positionalLabels(std::size_t count)
+    [[nodiscard]] std::vector<SharedName> positionalLabels(std::size_t count)
     {
-        auto labels = std::vector<std::string> {};
+        auto labels = std::vector<SharedName> {};
         labels.reserve(count);
         for (auto const index: std::views::iota(std::size_t { 0 }, count))
-            labels.push_back(std::to_string(index));
+            labels.emplace_back(std::to_string(index));
         return labels;
     }
 } // namespace
@@ -489,15 +489,8 @@ std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const
             entry.type = imageExtern(entry.type);
         return list;
     };
-    auto const charge = [&]() -> std::expected<void, TypeLimitError> {
-        if (_substitutedTypes >= _maxSubstitutedTypes)
-            return std::unexpected { TypeLimitError { .limit = ComponentLimit::SubstitutedTypes,
-                                                      .value = _maxSubstitutedTypes } };
-        ++_substitutedTypes;
-        return {};
-    };
-    auto const rebuild = [&](AnyTypeId id) -> std::expected<AnyTypeId, TypeLimitError> {
-        if (auto charged = charge(); !charged)
+    auto const rebuild = [&](AnyTypeId id, std::size_t children) -> std::expected<AnyTypeId, TypeLimitError> {
+        if (auto charged = chargeSubstitution(1 + children); !charged)
             return std::unexpected { charged.error() };
         return std::visit(
             [&](auto const typed) -> std::expected<AnyTypeId, TypeLimitError> {
@@ -588,13 +581,38 @@ std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const
             continue;
         }
         auto const current = top.type;
+        auto const children = top.children.size();
         stack.pop_back();
-        auto const image = rebuild(current);
+        auto const image = rebuild(current, children);
         if (!image)
             return std::unexpected { image.error() };
         images.emplace(current, *image);
     }
     return imageExtern(type);
+}
+
+std::expected<void, TypeLimitError> TypeArena::chargeSubstitution(std::size_t units)
+{
+    if (units > _maxSubstitutedTypes - std::min<std::size_t>(_substitutedTypes, _maxSubstitutedTypes))
+        return std::unexpected { TypeLimitError { .limit = ComponentLimit::SubstitutedTypes,
+                                                  .value = _maxSubstitutedTypes } };
+    _substitutedTypes += units;
+    return {};
+}
+
+std::expected<InstanceTypeId, TypeLimitError> TypeArena::substitutedInstance(
+    std::vector<NamedExtern> exports, ResourceSubstitution const& substitution)
+{
+    if (auto charged = chargeSubstitution(1 + exports.size()); !charged)
+        return std::unexpected { charged.error() };
+    for (auto& entry: exports)
+    {
+        auto substituted = substitute(entry.type, substitution);
+        if (!substituted)
+            return std::unexpected { substituted.error() };
+        entry.type = *substituted;
+    }
+    return add(InstanceTypeInfo { .exports = std::move(exports) });
 }
 
 } // namespace isoline::component::types

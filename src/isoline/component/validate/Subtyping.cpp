@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -34,49 +35,95 @@ namespace
     using types::TypeId;
     using types::ValueKind;
 
-    /// How wasm-tools names a value kind in a mismatch: as the type expected (ComponentDefinedType::desc,
-    /// component_types.rs:2020-2038; "primitive" for every primitive), and as the type found (the
-    /// component_defined_type arms, component_types.rs:4233-4418; a primitive by its own name).
-    struct ValueKindWords
+    /// What a value kind's children are named by in the context of a mismatch inside one.
+    enum class ContextArgument : uint8_t
+    {
+        None,     ///< The kind adds no context.
+        Label,    ///< Its context names the child's label.
+        Position, ///< Its context names the child's position.
+        Offset,   ///< Each child has a context of its own: the row's, plus its position.
+    };
+
+    /// How wasm-tools names a value kind in a mismatch, and the context a mismatch inside it adds:
+    /// expected is ComponentDefinedType::desc (component_types.rs:2020-2038; "primitive" for every
+    /// primitive), found the word of the component_defined_type arms (component_types.rs:4233-4418; a
+    /// primitive by its own name), and the context that of its with_context.
+    struct ValueKindRules
     {
         std::string_view expected;
         std::string_view found;
+        std::optional<RelationContext> context = std::nullopt;
+        ContextArgument argument = ContextArgument::None;
     };
 
     /// Per ValueKind, in enumerator order.
-    constexpr auto ValueKindWordTable = std::to_array<ValueKindWords>({
-        { .expected = "primitive", .found = "bool" },   { .expected = "primitive", .found = "s8" },
-        { .expected = "primitive", .found = "u8" },     { .expected = "primitive", .found = "s16" },
-        { .expected = "primitive", .found = "u16" },    { .expected = "primitive", .found = "s32" },
-        { .expected = "primitive", .found = "u32" },    { .expected = "primitive", .found = "s64" },
-        { .expected = "primitive", .found = "u64" },    { .expected = "primitive", .found = "f32" },
-        { .expected = "primitive", .found = "f64" },    { .expected = "primitive", .found = "char" },
-        { .expected = "primitive", .found = "string" }, { .expected = "primitive", .found = "error-context" },
-        { .expected = "list", .found = "list" },        { .expected = "fixed-length list", .found = "list" },
-        { .expected = "record", .found = "record" },    { .expected = "tuple", .found = "tuple" },
-        { .expected = "variant", .found = "variant" },  { .expected = "enum", .found = "enum" },
-        { .expected = "option", .found = "option" },    { .expected = "result", .found = "result" },
-        { .expected = "flags", .found = "flags" },      { .expected = "map", .found = "map" },
-        { .expected = "own", .found = "own" },          { .expected = "borrow", .found = "borrow" },
-        { .expected = "stream", .found = "stream" },    { .expected = "future", .found = "future" },
+    constexpr auto ValueKindRuleTable = std::to_array<ValueKindRules>({
+        { .expected = "primitive", .found = "bool" },
+        { .expected = "primitive", .found = "s8" },
+        { .expected = "primitive", .found = "u8" },
+        { .expected = "primitive", .found = "s16" },
+        { .expected = "primitive", .found = "u16" },
+        { .expected = "primitive", .found = "s32" },
+        { .expected = "primitive", .found = "u32" },
+        { .expected = "primitive", .found = "s64" },
+        { .expected = "primitive", .found = "u64" },
+        { .expected = "primitive", .found = "f32" },
+        { .expected = "primitive", .found = "f64" },
+        { .expected = "primitive", .found = "char" },
+        { .expected = "primitive", .found = "string" },
+        { .expected = "primitive", .found = "error-context" },
+        { .expected = "list", .found = "list" },
+        { .expected = "fixed-length list", .found = "list" },
+        { .expected = "record",
+          .found = "record",
+          .context = RelationContext::RecordField,
+          .argument = ContextArgument::Label },
+        { .expected = "tuple",
+          .found = "tuple",
+          .context = RelationContext::TupleField,
+          .argument = ContextArgument::Position },
+        { .expected = "variant",
+          .found = "variant",
+          .context = RelationContext::VariantCase,
+          .argument = ContextArgument::Label },
+        { .expected = "enum", .found = "enum" },
+        { .expected = "option", .found = "option" },
+        { .expected = "result",
+          .found = "result",
+          .context = RelationContext::OkVariant,
+          .argument = ContextArgument::Offset },
+        { .expected = "flags", .found = "flags" },
+        { .expected = "map",
+          .found = "map",
+          .context = RelationContext::MapKey,
+          .argument = ContextArgument::Offset },
+        { .expected = "own", .found = "own" },
+        { .expected = "borrow", .found = "borrow" },
+        { .expected = "stream", .found = "stream", .context = RelationContext::StreamElement },
+        { .expected = "future", .found = "future", .context = RelationContext::FutureElement },
     });
 
-    static_assert(ValueKindWordTable.size() == types::ValueKindCount, "one row of words per ValueKind");
+    static_assert(ValueKindRuleTable.size() == types::ValueKindCount, "one row of rules per ValueKind");
     static_assert(
         [] {
             for (auto const& row: types::ValueKindTable)
             {
-                auto const& words = ValueKindWordTable[static_cast<std::size_t>(row.kind)];
-                if (types::isPrimitive(row.kind) && words.found != row.text)
+                auto const& rules = ValueKindRuleTable[static_cast<std::size_t>(row.kind)];
+                if (types::isPrimitive(row.kind) && rules.found != row.text)
                     return false;
             }
             return true;
         }(),
         "a primitive is found by its own name");
+    static_assert(static_cast<int>(RelationContext::ErrVariant)
+                          == static_cast<int>(RelationContext::OkVariant) + 1
+                      && static_cast<int>(RelationContext::MapValue)
+                             == static_cast<int>(RelationContext::MapKey) + 1,
+                  "an Offset context's second child has the next context");
 
-    [[nodiscard]] constexpr ValueKindWords const& wordsOf(ValueKind kind) noexcept
+    [[nodiscard]] constexpr ValueKindRules const& rulesOf(ValueKind kind) noexcept
     {
-        return ValueKindWordTable[static_cast<std::size_t>(kind)];
+        return ValueKindRuleTable[static_cast<std::size_t>(kind)];
     }
 
     /// How an extern type is named in a mismatch (ComponentEntityType::desc, component_types.rs:974).
@@ -120,15 +167,37 @@ namespace
     static_assert(std::is_same_v<std::variant_alternative_t<4, AnyTypeId>, types::ResourceTypeId>,
                   "AnyWordTable follows AnyTypeId's alternatives");
 
-    [[nodiscard]] std::string_view kindWord(ExternKind kind) noexcept
+    /// A row's text formatted with up to two strings.
+    [[nodiscard]] std::string formatted(std::string_view text,
+                                        std::string_view first,
+                                        std::string_view second)
     {
-        return externKindWord(kind);
+        return std::vformat(text, std::make_format_args(first, second));
     }
 
-    template <typename Id>
-    [[nodiscard]] AnyTypeId anyOf(Id id)
+    /// The text of a relation error.
+    [[nodiscard]] RelationError relationError(RelationErrorCode code,
+                                              std::string_view first = {},
+                                              std::string_view second = {})
     {
-        return AnyTypeId { id };
+        return RelationError {
+            .code = code,
+            .message = formatted(RelationErrorMessages[static_cast<std::size_t>(code)].text, first, second)
+        };
+    }
+
+    /// The text of a context line.
+    [[nodiscard]] std::string contextLine(RelationContext context,
+                                          std::string_view first = {},
+                                          std::string_view second = {})
+    {
+        return formatted(RelationContextMessages[static_cast<std::size_t>(context)].text, first, second);
+    }
+
+    /// The comparisons a binary search of @p count names makes, or a sort makes of each: ⌈log2⌉ + 1.
+    [[nodiscard]] std::size_t levels(std::size_t count) noexcept
+    {
+        return static_cast<std::size_t>(std::bit_width(count)) + 1;
     }
 } // namespace
 
@@ -136,10 +205,11 @@ TypeRelation::TypeRelation(types::TypeArena const& sub,
                            types::TypeArena const& super,
                            ResourceMapping const& resources,
                            ComponentLimits const& limits):
-    _sub { sub }, _super { super }, _sameArena { &sub == &super }, _maxSteps { limits.maxSubtypingSteps }
+    _sub { sub }, _super { super }, _isSameArena { &sub == &super }, _maxSteps { limits.maxSubtypingSteps }
 {
     for (auto const& [from, to]: resources.images())
-        _bindings[static_cast<std::size_t>(Side::Super)].insert_or_assign(from.value, to.value);
+        _bindings[static_cast<std::size_t>(Side::Super)].insert_or_assign(
+            from.value, ResourceIdentity { .side = Side::Sub, .resource = to.value });
 }
 
 types::TypeArena const& TypeRelation::arena(Side side) const noexcept
@@ -153,24 +223,36 @@ TypeRelation::Outcome<void> TypeRelation::step(std::size_t count)
     {
         _steps = _maxSteps;
         return std::unexpected { Failure {
-            .error = RelationError { .failure = RelationFailure::StepLimit,
-                                     .message = limitMessage(ComponentLimit::SubtypingSteps, _maxSteps) } } };
+            .error = relationError(RelationErrorCode::StepLimit,
+                                   limitMessage(ComponentLimit::SubtypingSteps, _maxSteps)) } };
     }
     _steps += count;
     return {};
 }
 
-std::pair<TypeRelation::Side, uint32_t> TypeRelation::identity(Side side,
-                                                               types::ResourceTypeId resource) const
+TypeRelation::Outcome<void> TypeRelation::compareNames(std::size_t comparisons, std::size_t bytes)
 {
-    // A bound resource is what it is bound to; within one arena an unbound one is itself, whichever
-    // side names it.
+    return step(comparisons + (bytes / SubtypingBytesPerStep));
+}
+
+uint32_t TypeRelation::memoEpoch(Side actualSide, types::AnyTypeId actual, types::AnyTypeId expected) const
+{
+    // A pair naming no resource is related or not under any bindings.
+    if (arena(actualSide).namesResource(actual) || arena(opposite(actualSide)).namesResource(expected))
+        return _epoch;
+    return 0;
+}
+
+TypeRelation::ResourceIdentity TypeRelation::identity(Side side, types::ResourceTypeId resource) const
+{
+    // A bound resource is what it was bound to; an unbound one is itself. Within one arena a resource
+    // is the same whichever side names it.
     auto const& bindings = _bindings[static_cast<std::size_t>(side)];
-    auto result = std::pair { side, resource.value };
+    auto result = ResourceIdentity { .side = side, .resource = resource.value };
     if (auto const bound = bindings.find(resource.value); bound != bindings.end())
-        result = std::pair { opposite(side), bound->second };
-    if (_sameArena)
-        result.first = Side::Sub;
+        result = bound->second;
+    if (_isSameArena)
+        result.side = Side::Sub;
     return result;
 }
 
@@ -181,10 +263,10 @@ bool TypeRelation::sameResource(Side actualSide,
     return identity(actualSide, actual) == identity(opposite(actualSide), expected);
 }
 
-void TypeRelation::bind(Side side, uint32_t resource, uint32_t image)
+void TypeRelation::bind(Side side, uint32_t resource, ResourceIdentity image)
 {
     auto& bindings = _bindings[static_cast<std::size_t>(side)];
-    auto previous = std::optional<uint32_t> {};
+    auto previous = std::optional<ResourceIdentity> {};
     if (auto const bound = bindings.find(resource); bound != bindings.end())
         previous = bound->second;
     _undo.push_back(Undo { .side = side, .resource = resource, .previous = previous });
@@ -232,11 +314,13 @@ std::expected<types::ResourceSubstitution, RelationError> TypeRelation::satisfyI
     auto bound = types::ResourceSubstitution {};
     if (outcome)
     {
-        auto const& bindings = _bindings[static_cast<std::size_t>(Side::Super)];
+        // Each imported resource stands for a resource of the sub arena, the arguments' (or of the
+        // super arena, through the initial mapping, which within one arena is the same).
         for (auto const& imported: _super[component].importedResources)
         {
-            if (auto const image = bindings.find(imported.resource.value); image != bindings.end())
-                bound.bind(imported.resource, types::ResourceTypeId { .value = image->second });
+            auto const image = identity(Side::Super, imported.resource);
+            if (image.side == Side::Sub && image.resource != imported.resource.value)
+                bound.bind(imported.resource, types::ResourceTypeId { .value = image.resource });
         }
     }
     restore(mark, epoch);
@@ -251,7 +335,7 @@ TypeRelation::Outcome<void> TypeRelation::run(Outcome<Progress> started)
     // first, as wasm-tools' with_context does on its way out; the bindings are the caller's to restore.
     auto const unwind = [&](Failure failure) -> Outcome<void> {
         auto contexts = std::vector<std::string> {};
-        if (failure.error.failure == RelationFailure::Mismatch)
+        if (failure.error.code != RelationErrorCode::StepLimit)
         {
             auto const depth = _frames.size();
             for (auto const index: std::views::iota(std::size_t { 0 }, depth))
@@ -274,10 +358,10 @@ TypeRelation::Outcome<void> TypeRelation::run(Outcome<Progress> started)
         return unwind(std::move(started.error()));
     while (!_frames.empty())
     {
-        auto advanced = advance(_frames.back());
+        auto const advanced = advance(_frames.back());
         if (!advanced)
-            return unwind(std::move(advanced.error()));
-        if (!*advanced)
+            return unwind(advanced.error());
+        if (*advanced == Progress::Pushed)
             continue;
         auto const finished = std::move(_frames.back());
         _frames.pop_back();
@@ -298,11 +382,17 @@ void TypeRelation::finish(Frame const& frame)
                                .epoch = frame.memoEpoch });
 }
 
-TypeRelation::Outcome<bool> TypeRelation::advance(Frame& frame)
+TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::advance(Frame& frame)
 {
-    auto const childFailed = [](Failure failure) {
-        failure.site = FailureSite::Child;
-        return std::unexpected { std::move(failure) };
+    // A child's failure is the frame's to give a context. Starting a child may push a frame, so no
+    // branch uses `frame` after it starts one.
+    auto const inChild = [](Outcome<Progress> started) -> Outcome<Progress> {
+        if (!started)
+        {
+            started.error().site = FailureSite::Child;
+            return started;
+        }
+        return Progress::Pushed;
     };
     switch (frame.kind)
     {
@@ -313,13 +403,10 @@ TypeRelation::Outcome<bool> TypeRelation::advance(Frame& frame)
             auto const& expected =
                 arena(opposite(frame.actualSide))[types::InstanceTypeId { .value = frame.expected }];
             if (frame.next == expected.exports.size())
-                return true;
+                return Progress::Done;
             auto const index = frame.next++;
-            auto const started = startEntity(
-                frame.actualSide, actual.exports[frame.matched[index]].type, expected.exports[index].type);
-            if (!started)
-                return childFailed(started.error());
-            return false;
+            return inChild(startEntity(
+                frame.actualSide, actual.exports[frame.matched[index]].type, expected.exports[index].type));
         }
         case FrameKind::Component: {
             // component_type (component_types.rs:3588-3674): the expected component's imports must
@@ -328,140 +415,132 @@ TypeRelation::Outcome<bool> TypeRelation::advance(Frame& frame)
             auto const actual = types::ComponentTypeId { .value = frame.actual };
             auto const expected = types::ComponentTypeId { .value = frame.expected };
             auto const actualSide = frame.actualSide;
-            auto const phase = frame.phase++;
-            auto started = Outcome<Progress> { Progress::Done };
-            if (phase == 0)
-                started = startOpen(opposite(actualSide),
-                                    arena(opposite(actualSide))[expected].imports,
-                                    actual,
-                                    ExternKind::Import);
-            else if (phase == 1)
-                started =
-                    startOpen(actualSide, arena(actualSide)[actual].exports, expected, ExternKind::Export);
-            else
-                return true;
-            // startOpen may have pushed a frame: `frame` is not to be used past here.
-            if (!started)
-                return childFailed(started.error());
-            return false;
+            switch (frame.phase)
+            {
+                case ComponentPhase::Imports:
+                    frame.phase = ComponentPhase::Exports;
+                    return inChild(startOpen(opposite(actualSide),
+                                             arena(opposite(actualSide))[expected].imports,
+                                             actual,
+                                             ExternKind::Import));
+                case ComponentPhase::Exports:
+                    frame.phase = ComponentPhase::Finished;
+                    return inChild(startOpen(
+                        actualSide, arena(actualSide)[actual].exports, expected, ExternKind::Export));
+                case ComponentPhase::Finished: return Progress::Done;
+            }
+            break;
         }
         case FrameKind::Open: {
-            auto const expectedSide = opposite(frame.actualSide);
-            auto const& component = arena(expectedSide)[types::ComponentTypeId { .value = frame.expected }];
+            auto const& component =
+                arena(opposite(frame.actualSide))[types::ComponentTypeId { .value = frame.expected }];
             auto const& entities =
                 frame.externKind == ExternKind::Import ? component.imports : component.exports;
             if (frame.next == entities.size())
-                return true;
+                return Progress::Done;
             auto const index = frame.next++;
-            auto const started = startEntity(
-                frame.actualSide, frame.arguments[frame.matched[index]].type, entities[index].type);
-            if (!started)
-                return childFailed(started.error());
-            return false;
+            return inChild(startEntity(
+                frame.actualSide, frame.arguments[frame.matched[index]].type, entities[index].type));
         }
     }
     Require(false);
-    return true;
+    return Progress::Done;
 }
 
-TypeRelation::Outcome<bool> TypeRelation::advanceValue(Frame& frame)
+TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::advanceValue(Frame& frame)
 {
     // component_defined_type (component_types.rs:4233-4418), one child per call: the checks wasm-tools
     // makes of a child before comparing it, then the child.
     auto const actualSide = frame.actualSide;
     auto const& actual = arena(actualSide)[TypeId { .value = frame.actual }];
     auto const& expected = arena(opposite(actualSide))[TypeId { .value = frame.expected }];
-    auto const mismatch = [](std::string message) {
-        return std::unexpected { Failure { .error = RelationError { .message = std::move(message) } } };
+    auto const mismatch = [](RelationErrorCode code, std::string_view first, std::string_view second = {}) {
+        return std::unexpected { Failure { .error = relationError(code, first, second) } };
     };
     while (frame.next < actual.children.size())
     {
         auto const index = frame.next++;
         auto const& actualChild = actual.children[index];
         auto const& expectedChild = expected.children[index];
-        switch (actual.kind)
+        if (actual.kind == ValueKind::Record || actual.kind == ValueKind::Variant)
         {
-            case ValueKind::Record:
-                if (actual.labels[index] != expected.labels[index])
-                    return mismatch(std::format("expected field name `{}`, found `{}`",
-                                                expected.labels[index],
-                                                actual.labels[index]));
-                break;
-            case ValueKind::Variant:
-                if (actual.labels[index] != expected.labels[index])
-                    return mismatch(std::format("expected case named `{}`, found `{}`",
-                                                expected.labels[index],
-                                                actual.labels[index]));
-                if (!actualChild && expectedChild)
-                    return mismatch(
-                        std::format("expected case `{}` to have a type, found none", actual.labels[index]));
-                if (actualChild && !expectedChild)
-                    return mismatch(std::format("expected case `{}` to have no type", actual.labels[index]));
-                break;
-            case ValueKind::Result: {
-                auto const part = index == 0 ? std::string_view { "ok" } : std::string_view { "err" };
-                if (!actualChild && expectedChild)
-                    return mismatch(std::format("expected {} type, but found none", part));
-                if (actualChild && !expectedChild)
-                    return mismatch(std::format("expected {} type to not be present", part));
-                break;
-            }
-            default: break;
+            auto const& actualLabel = actual.labels[index].str();
+            auto const& expectedLabel = expected.labels[index].str();
+            if (auto compared = compareNames(1, std::min(actualLabel.size(), expectedLabel.size()));
+                !compared)
+                return std::unexpected { compared.error() };
+            if (actualLabel != expectedLabel)
+                return mismatch(actual.kind == ValueKind::Record ? RelationErrorCode::FieldName
+                                                                 : RelationErrorCode::CaseName,
+                                expectedLabel,
+                                actualLabel);
+            if (!actualChild && expectedChild)
+                return mismatch(RelationErrorCode::CaseTypeMissing, actualLabel);
+            if (actualChild && !expectedChild)
+                return mismatch(RelationErrorCode::CaseTypePresent, actualLabel);
+        }
+        if (actual.kind == ValueKind::Result)
+        {
+            auto const part = index == 0 ? std::string_view { "ok" } : std::string_view { "err" };
+            if (!actualChild && expectedChild)
+                return mismatch(RelationErrorCode::PayloadMissing, part);
+            if (actualChild && !expectedChild)
+                return mismatch(RelationErrorCode::PayloadPresent, part);
         }
         if (!actualChild)
             continue;
         auto started = startValue(actualSide, *actualChild, *expectedChild, PrimitiveSpelling::Inline);
-        // startValue may have pushed a frame: `frame` is not to be used past here.
         if (!started)
         {
             started.error().site = FailureSite::Child;
             return std::unexpected { std::move(started.error()) };
         }
-        return false;
+        return Progress::Pushed;
     }
-    return true;
+    return Progress::Done;
 }
 
-TypeRelation::Outcome<bool> TypeRelation::advanceFunction(Frame& frame)
+TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::advanceFunction(Frame& frame)
 {
     // component_func_type (component_types.rs:3717-3792): each parameter's name, then its type; then
     // the result.
     auto const actualSide = frame.actualSide;
     auto const& actual = arena(actualSide)[types::FunctionTypeId { .value = frame.actual }];
     auto const& expected = arena(opposite(actualSide))[types::FunctionTypeId { .value = frame.expected }];
-    auto const mismatch = [](std::string message) {
-        return std::unexpected { Failure { .error = RelationError { .message = std::move(message) } } };
-    };
     auto const index = frame.next++;
     auto started = Outcome<Progress> { Progress::Done };
     if (index < actual.params.size())
     {
-        auto const& [actualName, actualType] = actual.params[index];
-        auto const& [expectedName, expectedType] = expected.params[index];
+        auto const& actualName = actual.params[index].first.str();
+        auto const& expectedName = expected.params[index].first.str();
+        if (auto compared = compareNames(1, std::min(actualName.size(), expectedName.size())); !compared)
+            return std::unexpected { compared.error() };
         if (actualName != expectedName)
-            return mismatch(
-                std::format("expected parameter named `{}`, found `{}`", expectedName, actualName));
-        started = startValue(actualSide, actualType, expectedType, PrimitiveSpelling::Inline);
+            return std::unexpected { Failure {
+                .error = relationError(RelationErrorCode::ParameterName, expectedName, actualName) } };
+        started = startValue(actualSide,
+                             actual.params[index].second,
+                             expected.params[index].second,
+                             PrimitiveSpelling::Inline);
     }
     else if (index == actual.params.size())
     {
         if (actual.result && !expected.result)
-            return mismatch("expected a result, found none");
+            return std::unexpected { Failure { .error = relationError(RelationErrorCode::ResultMissing) } };
         if (!actual.result && expected.result)
-            return mismatch("expected no result, found one");
+            return std::unexpected { Failure { .error = relationError(RelationErrorCode::ResultPresent) } };
         if (!actual.result)
-            return true;
+            return Progress::Done;
         started = startValue(actualSide, *actual.result, *expected.result, PrimitiveSpelling::Inline);
     }
     else
-        return true;
-    // startValue may have pushed a frame: `frame` is not to be used past here.
+        return Progress::Done;
     if (!started)
     {
         started.error().site = FailureSite::Child;
         return std::unexpected { std::move(started.error()) };
     }
-    return false;
+    return Progress::Pushed;
 }
 
 std::optional<std::string> TypeRelation::context(Frame const& frame) const
@@ -474,32 +553,30 @@ std::optional<std::string> TypeRelation::context(Frame const& frame) const
     {
         case FrameKind::Value: {
             auto const& actual = arena(actualSide)[TypeId { .value = frame.actual }];
-            switch (actual.kind)
+            auto const& rules = rulesOf(actual.kind);
+            if (!rules.context)
+                return std::nullopt;
+            switch (rules.argument)
             {
-                case ValueKind::Record:
-                    return std::format("type mismatch in record field `{}`", actual.labels[index]);
-                case ValueKind::Variant:
-                    return std::format("type mismatch in variant case `{}`", actual.labels[index]);
-                case ValueKind::Tuple: return std::format("type mismatch in tuple field {}", index);
-                case ValueKind::Map:
-                    return index == 0 ? "type mismatch in map key" : "type mismatch in map value";
-                case ValueKind::Result:
-                    return index == 0 ? "type mismatch in ok variant" : "type mismatch in err variant";
-                case ValueKind::Future: return "type mismatch in future";
-                case ValueKind::Stream: return "type mismatch in stream";
-                default: return std::nullopt;
+                case ContextArgument::None: return contextLine(*rules.context);
+                case ContextArgument::Label: return contextLine(*rules.context, actual.labels[index].str());
+                case ContextArgument::Position: return contextLine(*rules.context, std::to_string(index));
+                case ContextArgument::Offset:
+                    return contextLine(
+                        static_cast<RelationContext>(static_cast<std::size_t>(*rules.context) + index));
             }
+            return std::nullopt;
         }
         case FrameKind::Function: {
             auto const& actual = arena(actualSide)[types::FunctionTypeId { .value = frame.actual }];
             if (index < actual.params.size())
-                return std::format("type mismatch in function parameter `{}`", actual.params[index].first);
-            return "type mismatch with result type";
+                return contextLine(RelationContext::FunctionParameter, actual.params[index].first.str());
+            return contextLine(RelationContext::FunctionResult);
         }
         case FrameKind::Instance: {
             auto const& expected =
                 arena(opposite(actualSide))[types::InstanceTypeId { .value = frame.expected }];
-            return std::format("type mismatch in instance export `{}`", expected.exports[index].name);
+            return contextLine(RelationContext::InstanceExport, expected.exports[index].name.str());
         }
         case FrameKind::Component: return std::nullopt;
         case FrameKind::Open: {
@@ -507,7 +584,8 @@ std::optional<std::string> TypeRelation::context(Frame const& frame) const
                 arena(opposite(actualSide))[types::ComponentTypeId { .value = frame.expected }];
             auto const& entities =
                 frame.externKind == ExternKind::Import ? component.imports : component.exports;
-            return std::format("type mismatch for {} `{}`", kindWord(frame.externKind), entities[index].name);
+            return contextLine(
+                RelationContext::Extern, externKindWord(frame.externKind), entities[index].name.str());
         }
     }
     return std::nullopt;
@@ -521,8 +599,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startEntity(Side act
     if (actual.index() != expected.index())
         return std::unexpected { Failure {
             .error =
-                RelationError { .message = std::format(
-                                    "expected {}, found {}", entityWord(expected), entityWord(actual)) } } };
+                relationError(RelationErrorCode::KindMismatch, entityWord(expected), entityWord(actual)) } };
     return std::visit(
         [&](auto const& provided) -> Outcome<Progress> {
             using Alternative = std::remove_cvref_t<decltype(provided)>;
@@ -547,10 +624,9 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startAny(Side actual
 {
     // component_any_type_id (component_types.rs:3836-3886).
     if (actual.index() != expected.index())
-        return std::unexpected { Failure {
-            .error = RelationError { .message = std::format("expected {}, found {}",
-                                                            AnyWordTable[expected.index()].expected,
-                                                            AnyWordTable[actual.index()].found) } } };
+        return std::unexpected { Failure { .error = relationError(RelationErrorCode::KindMismatch,
+                                                                  AnyWordTable[expected.index()].expected,
+                                                                  AnyWordTable[actual.index()].found) } };
     return std::visit(
         [&](auto const provided) -> Outcome<Progress> {
             using Id = std::remove_cvref_t<decltype(provided)>;
@@ -561,8 +637,8 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startAny(Side actual
                     return std::unexpected { stepped.error() };
                 if (sameResource(actualSide, provided, required))
                     return Progress::Done;
-                return std::unexpected { Failure {
-                    .error = RelationError { .message = "resource types are not the same" } } };
+                return std::unexpected { Failure { .error =
+                                                       relationError(RelationErrorCode::ResourceMismatch) } };
             }
             else if constexpr (std::is_same_v<Id, TypeId>)
                 return startValue(actualSide, provided, required, PrimitiveSpelling::Defined);
@@ -585,77 +661,87 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startValue(Side actu
         return std::unexpected { stepped.error() };
     auto const& actual = arena(actualSide)[actualId];
     auto const& expected = arena(opposite(actualSide))[expectedId];
-    auto const resourceFree =
-        actual.handles == types::HandleContent::None && expected.handles == types::HandleContent::None;
-    // Within one arena interning makes equal types one id; one that holds no handle is equal to itself
-    // under any bindings.
-    if (_sameArena && actualId == expectedId && resourceFree)
+    auto const epoch = memoEpoch(actualSide, actualId, expectedId);
+    // Within one arena interning makes equal types one id; one that names no resource is equal to
+    // itself under any bindings.
+    if (_isSameArena && actualId == expectedId && epoch == 0)
         return Progress::Done;
     auto const key = MemoKey { .kind = FrameKind::Value,
                                .actualSide = actualSide,
                                .actual = actualId.value,
                                .expected = expectedId.value,
-                               .epoch = resourceFree ? 0 : _epoch };
+                               .epoch = epoch };
     if (memoised(key))
         return Progress::Done;
-    auto const mismatch = [](std::string message) -> Outcome<Progress> {
-        return std::unexpected { Failure { .error = RelationError { .message = std::move(message) } } };
+    auto const mismatch = [](RelationErrorCode code,
+                             std::string_view first = {},
+                             std::string_view second = {}) -> Outcome<Progress> {
+        return std::unexpected { Failure { .error = relationError(code, first, second) } };
+    };
+    auto const count = [](std::size_t value) {
+        return std::to_string(value);
     };
 
     // component_val_type and component_defined_type's arms (component_types.rs:4208-4440).
     if (actual.kind != expected.kind)
     {
         if (types::isPrimitive(actual.kind) && types::isPrimitive(expected.kind))
-            return mismatch(std::format("expected primitive `{}` found primitive `{}`",
-                                        wordsOf(expected.kind).found,
-                                        wordsOf(actual.kind).found));
+            return mismatch(RelationErrorCode::PrimitiveMismatch,
+                            rulesOf(expected.kind).found,
+                            rulesOf(actual.kind).found);
         if (types::isPrimitive(expected.kind) && spelling == PrimitiveSpelling::Inline)
-            return mismatch(std::format(
-                "expected {}, found {}", wordsOf(expected.kind).found, wordsOf(actual.kind).expected));
-        return mismatch(std::format(
-            "expected {}, found {}", wordsOf(expected.kind).expected, wordsOf(actual.kind).found));
+            return mismatch(
+                RelationErrorCode::KindMismatch, rulesOf(expected.kind).found, rulesOf(actual.kind).expected);
+        return mismatch(
+            RelationErrorCode::KindMismatch, rulesOf(expected.kind).expected, rulesOf(actual.kind).found);
     }
     switch (actual.kind)
     {
         case ValueKind::Flags:
-        case ValueKind::Enum:
+        case ValueKind::Enum: {
+            auto bytes = std::size_t { 0 };
+            for (auto const& label: actual.labels)
+                bytes += label.str().size();
+            if (auto compared = compareNames(actual.labels.size(), bytes); !compared)
+                return std::unexpected { compared.error() };
             if (actual.labels != expected.labels)
-                return mismatch(std::format("mismatch in {} elements", wordsOf(actual.kind).found));
+                return mismatch(RelationErrorCode::ElementsMismatch, rulesOf(actual.kind).found);
             return Progress::Done;
+        }
         case ValueKind::Own:
         case ValueKind::Borrow:
             if (!sameResource(actualSide, *actual.resource, *expected.resource))
-                return mismatch("resource types are not the same");
+                return mismatch(RelationErrorCode::ResourceMismatch);
             return Progress::Done;
         case ValueKind::Record:
             if (actual.children.size() != expected.children.size())
-                return mismatch(std::format(
-                    "expected {} fields, found {}", expected.children.size(), actual.children.size()));
+                return mismatch(RelationErrorCode::FieldCount,
+                                count(expected.children.size()),
+                                count(actual.children.size()));
             break;
         case ValueKind::Variant:
             if (actual.children.size() != expected.children.size())
-                return mismatch(std::format(
-                    "expected {} cases, found {}", expected.children.size(), actual.children.size()));
+                return mismatch(RelationErrorCode::CaseCount,
+                                count(expected.children.size()),
+                                count(actual.children.size()));
             break;
         case ValueKind::Tuple:
             if (actual.children.size() != expected.children.size())
-                return mismatch(std::format(
-                    "expected {} types, found {}", expected.children.size(), actual.children.size()));
+                return mismatch(RelationErrorCode::TypeCount,
+                                count(expected.children.size()),
+                                count(actual.children.size()));
             break;
         case ValueKind::FixedList:
             if (actual.length != expected.length)
                 return mismatch(
-                    std::format("expected fixed-length {}, found size {}", expected.length, actual.length));
+                    RelationErrorCode::FixedListLength, count(expected.length), count(actual.length));
             break;
         case ValueKind::Stream:
         case ValueKind::Future:
             if (actual.children.size() != expected.children.size())
-            {
-                auto const word = wordsOf(actual.kind).found;
-                if (actual.children.empty())
-                    return mismatch(std::format("expected {} type, but found none", word));
-                return mismatch(std::format("expected {} type to not be present", word));
-            }
+                return mismatch(actual.children.empty() ? RelationErrorCode::PayloadMissing
+                                                        : RelationErrorCode::PayloadPresent,
+                                rulesOf(actual.kind).found);
             break;
         default:
             if (actual.children.empty())
@@ -666,7 +752,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startValue(Side actu
                               .actualSide = actualSide,
                               .actual = actualId.value,
                               .expected = expectedId.value,
-                              .memoEpoch = key.epoch });
+                              .memoEpoch = epoch });
     return Progress::Pushed;
 }
 
@@ -678,31 +764,28 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startFunction(Side a
         return std::unexpected { stepped.error() };
     auto const& actual = arena(actualSide)[actualId];
     auto const& expected = arena(opposite(actualSide))[expectedId];
-    auto const resourceFree =
-        actual.handles == types::HandleContent::None && expected.handles == types::HandleContent::None;
     auto const key = MemoKey { .kind = FrameKind::Function,
                                .actualSide = actualSide,
                                .actual = actualId.value,
                                .expected = expectedId.value,
-                               .epoch = resourceFree ? 0 : _epoch };
+                               .epoch = memoEpoch(actualSide, actualId, expectedId) };
     if (memoised(key))
         return Progress::Done;
     if (actual.asyncness != expected.asyncness)
     {
         // wasm-tools names the provided function's asyncness first (component_types.rs:3726-3734).
         auto const word = [](binary::Asyncness asyncness) {
-            return asyncness == binary::Asyncness::Async ? "async" : "sync";
+            return asyncness == binary::Asyncness::Async ? std::string_view { "async" }
+                                                         : std::string_view { "sync" };
         };
-        return std::unexpected { Failure {
-            .error = RelationError { .message = std::format("expected {} function, found {} function",
-                                                            word(actual.asyncness),
-                                                            word(expected.asyncness)) } } };
+        return std::unexpected { Failure { .error = relationError(RelationErrorCode::Asyncness,
+                                                                  word(actual.asyncness),
+                                                                  word(expected.asyncness)) } };
     }
     if (actual.params.size() != expected.params.size())
-        return std::unexpected { Failure {
-            .error = RelationError { .message = std::format("expected {} parameters, found {}",
-                                                            expected.params.size(),
-                                                            actual.params.size()) } } };
+        return std::unexpected { Failure { .error = relationError(RelationErrorCode::ParameterCount,
+                                                                  std::to_string(expected.params.size()),
+                                                                  std::to_string(actual.params.size())) } };
     _frames.push_back(Frame { .kind = FrameKind::Function,
                               .actualSide = actualSide,
                               .actual = actualId.value,
@@ -711,31 +794,37 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startFunction(Side a
     return Progress::Pushed;
 }
 
-TypeRelation::Outcome<std::optional<uint32_t>> TypeRelation::lookup(
-    std::span<types::NamedExtern const> externs, std::string const& name)
+TypeRelation::Outcome<std::optional<uint32_t>> TypeRelation::scan(std::span<types::NamedExtern const> externs,
+                                                                  std::string const& name)
 {
-    // A scan, every extern looked at a step: the relation's cap bounds it, whatever the widths.
-    auto const found = std::ranges::find(externs, name, &NamedExtern::name);
-    auto const scanned = static_cast<std::size_t>(found - externs.begin()) + 1;
-    if (auto stepped = step(std::min(scanned, externs.size() + 1)); !stepped)
-        return std::unexpected { stepped.error() };
-    if (found == externs.end())
-        return std::nullopt;
-    return static_cast<uint32_t>(found - externs.begin());
+    // A linear scan, for a path step into an instance's exports: every name compared is charged.
+    for (auto const position: std::views::iota(std::size_t { 0 }, externs.size()))
+    {
+        auto const& candidate = externs[position].name.str();
+        if (auto compared = compareNames(1, std::min(candidate.size(), name.size())); !compared)
+            return std::unexpected { compared.error() };
+        if (candidate == name)
+            return static_cast<uint32_t>(position);
+    }
+    return std::nullopt;
 }
 
 TypeRelation::Outcome<std::vector<uint32_t>> TypeRelation::nameIndex(
     std::span<types::NamedExtern const> externs)
 {
-    // The externs' positions ordered by name, for lookups in O(log n): an extern a step.
-    if (auto stepped = step(externs.size()); !stepped)
-        return std::unexpected { stepped.error() };
+    // The externs' positions ordered by name, for lookups in O(log n): a step per name, plus its bytes
+    // for each of the about log2(n) + 1 times a merge sort compares it, charged up front.
+    auto bytes = std::size_t { 0 };
+    for (auto const& entry: externs)
+        bytes += entry.name.str().size();
+    if (auto compared = compareNames(externs.size(), bytes * levels(externs.size())); !compared)
+        return std::unexpected { compared.error() };
     auto index = std::vector<uint32_t> {};
     index.reserve(externs.size());
     for (auto const position: std::views::iota(std::size_t { 0 }, externs.size()))
         index.push_back(static_cast<uint32_t>(position));
     std::ranges::stable_sort(index, std::less<> {}, [&](uint32_t position) -> std::string const& {
-        return externs[position].name;
+        return externs[position].name.str();
     });
     return index;
 }
@@ -743,13 +832,14 @@ TypeRelation::Outcome<std::vector<uint32_t>> TypeRelation::nameIndex(
 TypeRelation::Outcome<std::optional<uint32_t>> TypeRelation::lookup(
     std::span<types::NamedExtern const> externs, std::vector<uint32_t> const& index, std::string const& name)
 {
-    if (auto stepped = step(); !stepped)
-        return std::unexpected { stepped.error() };
+    // A binary search: a step, plus the name's bytes for each of its about log2(n) + 1 comparisons.
+    if (auto compared = compareNames(1, name.size() * levels(index.size())); !compared)
+        return std::unexpected { compared.error() };
     auto const found =
         std::ranges::lower_bound(index, name, std::less<> {}, [&](uint32_t position) -> std::string const& {
-            return externs[position].name;
+            return externs[position].name.str();
         });
-    if (found == index.end() || externs[*found].name != name)
+    if (found == index.end() || externs[*found].name.str() != name)
         return std::nullopt;
     return *found;
 }
@@ -766,7 +856,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startInstance(Side a
                                .actualSide = actualSide,
                                .actual = actualId.value,
                                .expected = expectedId.value,
-                               .epoch = _epoch };
+                               .epoch = memoEpoch(actualSide, actualId, expectedId) };
     if (memoised(key))
         return Progress::Done;
     auto const& actual = arena(actualSide)[actualId];
@@ -776,19 +866,18 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startInstance(Side a
                          .actual = actualId.value,
                          .expected = expectedId.value,
                          .memoEpoch = key.epoch };
-    auto const index = nameIndex(actual.exports);
-    if (!index)
-        return std::unexpected { index.error() };
+    auto const names = nameIndex(actual.exports);
+    if (!names)
+        return std::unexpected { names.error() };
     frame.matched.reserve(expected.exports.size());
     for (auto const& required: expected.exports)
     {
-        auto const found = lookup(actual.exports, *index, required.name);
+        auto const found = lookup(actual.exports, *names, required.name.str());
         if (!found)
             return std::unexpected { found.error() };
         if (!*found)
             return std::unexpected { Failure {
-                .error = RelationError { .message =
-                                             std::format("missing expected export `{}`", required.name) } } };
+                .error = relationError(RelationErrorCode::MissingExport, required.name.str()) } };
         frame.matched.push_back(**found);
     }
     _frames.push_back(std::move(frame));
@@ -805,7 +894,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startComponent(Side 
                                .actualSide = actualSide,
                                .actual = actualId.value,
                                .expected = expectedId.value,
-                               .epoch = _epoch };
+                               .epoch = memoEpoch(actualSide, actualId, expectedId) };
     if (memoised(key))
         return Progress::Done;
     _frames.push_back(Frame { .kind = FrameKind::Component,
@@ -825,30 +914,31 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startOpen(
     ExternKind kind)
 {
     // open_instance_type (component_types.rs:3911-4033): bind each resource the component quantifies
-    // over on this side to the resource its argument supplies, following its path by index in the
-    // component and by name in the arguments (an argument of the wrong shape binds nothing: the type
-    // check below reports it); then every extern must be supplied, by name; then each is compared.
+    // over on this side to what the resource its argument supplies stands for, following its path by
+    // index in the component and by name in the arguments (an argument of the wrong shape binds
+    // nothing: the type check below reports it); then every extern must be supplied, by name; then
+    // each is compared.
     auto const expectedSide = opposite(actualSide);
     auto const& component = arena(expectedSide)[expectedId];
     auto const& entities = kind == ExternKind::Import ? component.imports : component.exports;
     auto const& resources =
         kind == ExternKind::Import ? component.importedResources : component.definedResources;
-    auto const index = nameIndex(arguments);
-    if (!index)
-        return std::unexpected { index.error() };
+    auto const names = nameIndex(arguments);
+    if (!names)
+        return std::unexpected { names.error() };
     for (auto const& [resource, path]: resources)
     {
         Require(!path.empty() && path.front() < entities.size());
         auto const* entity = &entities[path.front()];
-        auto found = lookup(arguments, *index, entity->name);
+        auto found = lookup(arguments, *names, entity->name.str());
         if (!found)
             return std::unexpected { found.error() };
         auto const* argument = *found ? &arguments[**found] : nullptr;
-        for (auto const index: path | std::views::drop(1))
+        for (auto const position: path | std::views::drop(1))
         {
             auto const* nested = std::get_if<types::InstanceTypeId>(&entity->type);
             Require(nested != nullptr);
-            entity = &arena(expectedSide)[*nested].exports[index];
+            entity = &arena(expectedSide)[*nested].exports[position];
             auto const* provided = argument ? std::get_if<types::InstanceTypeId>(&argument->type) : nullptr;
             if (!provided)
             {
@@ -856,7 +946,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startOpen(
                 break;
             }
             auto const& exports = arena(actualSide)[*provided].exports;
-            auto inner = lookup(exports, entity->name);
+            auto inner = scan(exports, entity->name.str());
             if (!inner)
                 return std::unexpected { inner.error() };
             argument = *inner ? &exports[**inner] : nullptr;
@@ -866,7 +956,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startOpen(
         auto const* bound = std::get_if<types::TypeExtern>(&argument->type);
         auto const* supplied = bound ? std::get_if<types::ResourceTypeId>(&bound->type) : nullptr;
         if (supplied)
-            bind(expectedSide, resource.value, supplied->value);
+            bind(expectedSide, resource.value, identity(actualSide, *supplied));
     }
 
     auto frame = Frame { .kind = FrameKind::Open,
@@ -877,13 +967,13 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startOpen(
     frame.matched.reserve(entities.size());
     for (auto const& entity: entities)
     {
-        auto const found = lookup(arguments, *index, entity.name);
+        auto const found = lookup(arguments, *names, entity.name.str());
         if (!found)
             return std::unexpected { found.error() };
         if (!*found)
-            return std::unexpected { Failure {
-                .error = RelationError {
-                    .message = std::format("missing {} named `{}`", kindWord(kind), entity.name) } } };
+            return std::unexpected { Failure { .error = relationError(RelationErrorCode::MissingExtern,
+                                                                      externKindWord(kind),
+                                                                      entity.name.str()) } };
         frame.matched.push_back(**found);
     }
     _frames.push_back(std::move(frame));
@@ -910,15 +1000,7 @@ std::expected<types::InstanceTypeId, types::TypeLimitError> instantiatedExports(
     types::ComponentTypeId component,
     types::ResourceSubstitution const& substitution)
 {
-    auto exports = arena[component].exports;
-    for (auto& entry: exports)
-    {
-        auto substituted = arena.substitute(entry.type, substitution);
-        if (!substituted)
-            return std::unexpected { substituted.error() };
-        entry.type = *substituted;
-    }
-    return arena.add(types::InstanceTypeInfo { .exports = std::move(exports) });
+    return arena.substitutedInstance(arena[component].exports, substitution);
 }
 
 } // namespace isoline::component::validate

@@ -11,6 +11,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <isoline/component/Limits.hpp>
@@ -25,19 +26,149 @@ namespace isoline::component::validate
 /// resource left unmapped stands for itself; across arenas it stands for none.
 using ResourceMapping = types::ResourceSubstitution;
 
-/// Why two types are not related.
-enum class RelationFailure : uint8_t
+/// The bytes of names compared that cost a TypeRelation one step beyond the comparison's own.
+inline constexpr auto SubtypingBytesPerStep = std::size_t { 64 };
+
+/// Why two types are not related: the mismatch wasm-tools reports last, or the step cap.
+///
+/// The enumerators are the rows of RelationErrorMessages, in the same order.
+enum class RelationErrorCode : uint8_t
 {
-    Mismatch,  ///< They are not: the message says where, as wasm-tools does.
-    StepLimit, ///< Deciding it took more than ComponentLimits::maxSubtypingSteps steps.
+    KindMismatch,
+    PrimitiveMismatch,
+    ResourceMismatch,
+    ElementsMismatch,
+    FieldCount,
+    CaseCount,
+    TypeCount,
+    FixedListLength,
+    PayloadMissing,
+    PayloadPresent,
+    FieldName,
+    CaseName,
+    CaseTypeMissing,
+    CaseTypePresent,
+    Asyncness,
+    ParameterCount,
+    ParameterName,
+    ResultMissing,
+    ResultPresent,
+    MissingExport,
+    MissingExtern,
+    StepLimit,
 };
+
+/// One row of RelationErrorMessages: a code and its text, a std::format string of up to two strings.
+struct RelationErrorRow
+{
+    RelationErrorCode code; ///< The code; equal to the row's index.
+    std::string_view text;  ///< Its text.
+};
+
+/// Every relation error, in RelationErrorCode's order: wasm-tools 1.263.0's texts (wasmparser 0.263.0
+/// src/validator/component_types.rs:3554-4440). StepLimit is Isoline's own, the limit's message.
+inline constexpr auto RelationErrorMessages = std::to_array<RelationErrorRow>({
+    { .code = RelationErrorCode::KindMismatch, .text = "expected {0}, found {1}" },
+    { .code = RelationErrorCode::PrimitiveMismatch,
+      .text = "expected primitive `{0}` found primitive `{1}`" },
+    { .code = RelationErrorCode::ResourceMismatch, .text = "resource types are not the same" },
+    { .code = RelationErrorCode::ElementsMismatch, .text = "mismatch in {0} elements" },
+    { .code = RelationErrorCode::FieldCount, .text = "expected {0} fields, found {1}" },
+    { .code = RelationErrorCode::CaseCount, .text = "expected {0} cases, found {1}" },
+    { .code = RelationErrorCode::TypeCount, .text = "expected {0} types, found {1}" },
+    { .code = RelationErrorCode::FixedListLength, .text = "expected fixed-length {0}, found size {1}" },
+    { .code = RelationErrorCode::PayloadMissing, .text = "expected {0} type, but found none" },
+    { .code = RelationErrorCode::PayloadPresent, .text = "expected {0} type to not be present" },
+    { .code = RelationErrorCode::FieldName, .text = "expected field name `{0}`, found `{1}`" },
+    { .code = RelationErrorCode::CaseName, .text = "expected case named `{0}`, found `{1}`" },
+    { .code = RelationErrorCode::CaseTypeMissing, .text = "expected case `{0}` to have a type, found none" },
+    { .code = RelationErrorCode::CaseTypePresent, .text = "expected case `{0}` to have no type" },
+    { .code = RelationErrorCode::Asyncness, .text = "expected {0} function, found {1} function" },
+    { .code = RelationErrorCode::ParameterCount, .text = "expected {0} parameters, found {1}" },
+    { .code = RelationErrorCode::ParameterName, .text = "expected parameter named `{0}`, found `{1}`" },
+    { .code = RelationErrorCode::ResultMissing, .text = "expected a result, found none" },
+    { .code = RelationErrorCode::ResultPresent, .text = "expected no result, found one" },
+    { .code = RelationErrorCode::MissingExport, .text = "missing expected export `{0}`" },
+    { .code = RelationErrorCode::MissingExtern, .text = "missing {0} named `{1}`" },
+    { .code = RelationErrorCode::StepLimit, .text = "{0}" },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: RelationErrorMessages)
+        {
+            if (static_cast<std::size_t>(row.code) != index)
+                return false;
+            ++index;
+        }
+        return index == static_cast<std::size_t>(RelationErrorCode::StepLimit) + 1;
+    }(),
+    "RelationErrorMessages must hold one row per RelationErrorCode, at the index of its enumerator");
+
+/// Where a mismatch was found, as the line wasm-tools adds on its way out (with_context).
+///
+/// The enumerators are the rows of RelationContextMessages, in the same order.
+enum class RelationContext : uint8_t
+{
+    RecordField,
+    VariantCase,
+    TupleField,
+    MapKey,
+    MapValue,
+    OkVariant,
+    ErrVariant,
+    FutureElement,
+    StreamElement,
+    FunctionParameter,
+    FunctionResult,
+    InstanceExport,
+    Extern,
+};
+
+/// One row of RelationContextMessages: a context and its text, a std::format string as above.
+struct RelationContextRow
+{
+    RelationContext context; ///< The context; equal to the row's index.
+    std::string_view text;   ///< Its text.
+};
+
+/// Every context line, in RelationContext's order: wasm-tools 1.263.0's texts (same source).
+inline constexpr auto RelationContextMessages = std::to_array<RelationContextRow>({
+    { .context = RelationContext::RecordField, .text = "type mismatch in record field `{0}`" },
+    { .context = RelationContext::VariantCase, .text = "type mismatch in variant case `{0}`" },
+    { .context = RelationContext::TupleField, .text = "type mismatch in tuple field {0}" },
+    { .context = RelationContext::MapKey, .text = "type mismatch in map key" },
+    { .context = RelationContext::MapValue, .text = "type mismatch in map value" },
+    { .context = RelationContext::OkVariant, .text = "type mismatch in ok variant" },
+    { .context = RelationContext::ErrVariant, .text = "type mismatch in err variant" },
+    { .context = RelationContext::FutureElement, .text = "type mismatch in future" },
+    { .context = RelationContext::StreamElement, .text = "type mismatch in stream" },
+    { .context = RelationContext::FunctionParameter, .text = "type mismatch in function parameter `{0}`" },
+    { .context = RelationContext::FunctionResult, .text = "type mismatch with result type" },
+    { .context = RelationContext::InstanceExport, .text = "type mismatch in instance export `{0}`" },
+    { .context = RelationContext::Extern, .text = "type mismatch for {0} `{1}`" },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: RelationContextMessages)
+        {
+            if (static_cast<std::size_t>(row.context) != index)
+                return false;
+            ++index;
+        }
+        return index == static_cast<std::size_t>(RelationContext::Extern) + 1;
+    }(),
+    "RelationContextMessages must hold one row per RelationContext, at the index of its enumerator");
 
 /// Two types that are not related: why, and wasm-tools' message.
 struct RelationError
 {
-    RelationFailure failure = RelationFailure::Mismatch; ///< Why.
-    /// wasm-tools 1.263.0's message (wasmparser 0.263.0 src/validator/component_types.rs:3554-4440):
-    /// its contexts, outermost first, then the mismatch, one per line; or the limit's message.
+    RelationErrorCode code = RelationErrorCode::KindMismatch; ///< The mismatch found, or StepLimit.
+    /// wasm-tools' message: its contexts, outermost first, then the mismatch, one per line; or the
+    /// limit's message.
     std::string message = {};
 };
 
@@ -47,14 +178,17 @@ struct RelationError
 /// specification's subtyping, which this follows); an instance type with more exports is a subtype of
 /// one with fewer; component types are contravariant in their imports and covariant in their exports,
 /// their resources bound through them as wasm-tools' open_instance_type binds them; resource types are
-/// equal only to themselves, or to what a binding maps them to.
+/// equal only to themselves, or to what a binding maps them to. A binding records what the supplied
+/// resource stands for under the bindings already in force, as wasm-tools remaps the supplied types
+/// before it binds (component_types.rs:3655-3664).
 ///
 /// One relation serves one validation (or one linker's resolve): it memoises every pair it found
-/// related, under the resource bindings in force when it did, so a pair is decided once however often
-/// a graph shares it, and deciding over two DAGs takes O(pairs visited), never exponential time. Every
-/// pair started and every name looked up is a step, charged against ComponentLimits::maxSubtypingSteps,
-/// which therefore bounds the memo's size too. The walk is an explicit stack of frames, never
-/// recursion.
+/// related, under the resource bindings in force when it did (or under any, for a pair naming no
+/// resource), so a pair is decided once however often a graph shares it, and deciding over two DAGs
+/// takes O(pairs visited), never exponential time. Every pair started and every name looked up or
+/// compared is a step, plus one per SubtypingBytesPerStep bytes of names compared, charged against
+/// ComponentLimits::maxSubtypingSteps. The memo holds at most one entry per step, so its ceiling is
+/// maxSubtypingSteps entries per relation. The walk is an explicit stack of frames, never recursion.
 ///
 /// The relation reads both arenas, which must outlive it and not change while it is used.
 class TypeRelation
@@ -119,6 +253,14 @@ class TypeRelation
         Open,
     };
 
+    /// How far a Component frame is: its imports are opened first, then its exports.
+    enum class ComponentPhase : uint8_t
+    {
+        Imports,
+        Exports,
+        Finished,
+    };
+
     /// How a primitive is named when it is the type expected: wasm-tools words a mismatch against a
     /// primitive written inline ("expected u32") apart from one defined as a type ("expected
     /// primitive"). The arena does not keep the two apart, so the outermost value type of a type
@@ -137,7 +279,7 @@ class TypeRelation
         uint32_t actual = 0;                              ///< The provided type, by its index.
         uint32_t expected = 0;                            ///< The required type, by its index.
         std::size_t next = 0;                             ///< The next child to compare.
-        uint32_t phase = 0;                               ///< A component's phase.
+        ComponentPhase phase = ComponentPhase::Imports;   ///< A Component frame's phase.
         std::span<types::NamedExtern const> arguments {}; ///< An Open frame's provided externs.
         ExternKind externKind = ExternKind::Import;       ///< An Open frame's side of the component.
         std::vector<uint32_t> matched {};                 ///< Per expected extern, its provider.
@@ -146,11 +288,11 @@ class TypeRelation
         uint32_t memoEpoch = 0;                           ///< The epoch its result is memoised in.
     };
 
-    /// What starting a pair did.
+    /// What starting a pair, or advancing a frame, did.
     enum class Progress : uint8_t
     {
-        Done,   ///< Decided at once: related.
-        Pushed, ///< A frame was pushed to decide it.
+        Done,   ///< Decided: related (a frame advanced: it is finished).
+        Pushed, ///< A frame was pushed to decide it (a frame advanced: it has more to do).
     };
 
     /// Where a failure was found: by the frame on top itself, or by a child it started, for which it
@@ -183,12 +325,21 @@ class TypeRelation
         auto operator<=>(MemoKey const&) const = default;
     };
 
+    /// What a resource stands for: a resource of one side's arena.
+    struct ResourceIdentity
+    {
+        Side side = Side::Sub;
+        uint32_t resource = 0;
+
+        bool operator==(ResourceIdentity const&) const = default;
+    };
+
     /// One binding made, to be undone.
     struct Undo
     {
         Side side = Side::Sub;
         uint32_t resource = 0;
-        std::optional<uint32_t> previous {};
+        std::optional<ResourceIdentity> previous {};
     };
 
     [[nodiscard]] static constexpr Side opposite(Side side) noexcept
@@ -198,18 +349,19 @@ class TypeRelation
 
     [[nodiscard]] types::TypeArena const& arena(Side side) const noexcept;
     [[nodiscard]] Outcome<void> step(std::size_t count = 1);
+    [[nodiscard]] Outcome<void> compareNames(std::size_t comparisons, std::size_t bytes);
     [[nodiscard]] bool memoised(MemoKey const& key) const { return _memo.contains(key); }
-    [[nodiscard]] std::pair<Side, uint32_t> identity(Side side, types::ResourceTypeId resource) const;
+    [[nodiscard]] ResourceIdentity identity(Side side, types::ResourceTypeId resource) const;
     [[nodiscard]] bool sameResource(Side actualSide,
                                     types::ResourceTypeId actual,
                                     types::ResourceTypeId expected) const;
-    void bind(Side side, uint32_t resource, uint32_t image);
+    void bind(Side side, uint32_t resource, ResourceIdentity image);
     void restore(std::size_t mark, uint32_t epoch);
 
     [[nodiscard]] Outcome<void> run(Outcome<Progress> started);
-    [[nodiscard]] Outcome<bool> advance(Frame& frame);
-    [[nodiscard]] Outcome<bool> advanceValue(Frame& frame);
-    [[nodiscard]] Outcome<bool> advanceFunction(Frame& frame);
+    [[nodiscard]] Outcome<Progress> advance(Frame& frame);
+    [[nodiscard]] Outcome<Progress> advanceValue(Frame& frame);
+    [[nodiscard]] Outcome<Progress> advanceFunction(Frame& frame);
     [[nodiscard]] std::optional<std::string> context(Frame const& frame) const;
     void finish(Frame const& frame);
 
@@ -236,19 +388,23 @@ class TypeRelation
                                               std::span<types::NamedExtern const> arguments,
                                               types::ComponentTypeId expected,
                                               ExternKind kind);
-    [[nodiscard]] Outcome<std::optional<uint32_t>> lookup(std::span<types::NamedExtern const> externs,
-                                                          std::string const& name);
+    [[nodiscard]] Outcome<std::optional<uint32_t>> scan(std::span<types::NamedExtern const> externs,
+                                                        std::string const& name);
     [[nodiscard]] Outcome<std::vector<uint32_t>> nameIndex(std::span<types::NamedExtern const> externs);
     [[nodiscard]] Outcome<std::optional<uint32_t>> lookup(std::span<types::NamedExtern const> externs,
                                                           std::vector<uint32_t> const& index,
                                                           std::string const& name);
+    [[nodiscard]] uint32_t memoEpoch(Side actualSide,
+                                     types::AnyTypeId actual,
+                                     types::AnyTypeId expected) const;
 
     types::TypeArena const& _sub;
     types::TypeArena const& _super;
-    bool _sameArena;
+    bool _isSameArena;
     std::size_t _maxSteps;
     std::size_t _steps = 0;
-    std::array<std::map<uint32_t, uint32_t>, 2> _bindings {}; ///< Per side: its resource → the other's.
+    /// Per side: its bound resources, each to what it stands for.
+    std::array<std::map<uint32_t, ResourceIdentity>, 2> _bindings {};
     std::vector<Undo> _undo {};
     uint32_t _epoch = 1;
     uint32_t _nextEpoch = 2;

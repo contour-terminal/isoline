@@ -47,7 +47,7 @@ using isoline::component::types::ValueKind;
 using isoline::component::validate::freshResourcesFor;
 using isoline::component::validate::instantiatedExports;
 using isoline::component::validate::RelationError;
-using isoline::component::validate::RelationFailure;
+using isoline::component::validate::RelationErrorCode;
 using isoline::component::validate::ResourceMapping;
 using isoline::component::validate::TypeRelation;
 
@@ -65,12 +65,12 @@ template <typename T>
     return arena.primitive(kind);
 }
 
-[[nodiscard]] TypeId record(TypeArena& arena, std::vector<std::pair<std::string, TypeId>> fields)
+[[nodiscard]] TypeId record(TypeArena& arena, std::vector<std::pair<std::string, TypeId>> const& fields)
 {
     auto type = DefinedType { .kind = ValueKind::Record };
-    for (auto& [label, field]: fields)
+    for (auto const& [label, field]: fields)
     {
-        type.labels.push_back(std::move(label));
+        type.labels.emplace_back(label);
         type.children.emplace_back(field);
     }
     return held(arena.intern(std::move(type)));
@@ -89,9 +89,10 @@ template <typename T>
     return held(arena.intern(DefinedType { .kind = ValueKind::Own, .resource = resource }));
 }
 
-[[nodiscard]] FunctionTypeId function(TypeArena& arena,
-                                      std::vector<std::pair<std::string, TypeId>> params,
-                                      std::optional<TypeId> result = std::nullopt)
+[[nodiscard]] FunctionTypeId function(
+    TypeArena& arena,
+    std::vector<std::pair<isoline::component::types::SharedName, TypeId>> params,
+    std::optional<TypeId> result = std::nullopt)
 {
     return held(arena.add(FunctionTypeInfo { .params = std::move(params), .result = result }));
 }
@@ -113,7 +114,7 @@ template <typename T>
 {
     auto relation = TypeRelation { arena, arena, ResourceMapping {}, ComponentLimits {} };
     auto const error = mismatch(relation.isSubtype(sub, super));
-    CHECK(error.failure == RelationFailure::Mismatch);
+    CHECK(error.code != RelationErrorCode::StepLimit);
     return error.message;
 }
 
@@ -224,7 +225,7 @@ TEST_CASE("Subtyping.wasmToolsTexts")
                        TypeExtern { .type = tuple(arena, { u32 }) },
                        TypeExtern { .type = tuple(arena, { u32, u32 }) })
           == "expected 2 types, found 1");
-    auto const flags = [&](std::vector<std::string> labels) {
+    auto const flags = [&](std::vector<isoline::component::types::SharedName> labels) {
         return held(arena.intern(DefinedType { .kind = ValueKind::Flags, .labels = std::move(labels) }));
     };
     CHECK(mismatchText(arena, TypeExtern { .type = flags({ "a" }) }, TypeExtern { .type = flags({ "b" }) })
@@ -320,23 +321,35 @@ TEST_CASE("Subtyping.stepsCapped")
     auto const copy = instance(arena, std::move(exports));
     auto relation = TypeRelation { arena, arena, ResourceMapping {}, ComponentLimits {} };
     CHECK(relation.isSubtype(wide, copy).has_value());
-    CHECK(relation.steps() < (3 * 20'000) + 10);
+    CHECK(relation.steps() < std::size_t { 6 } * 20'000);
 
     auto limits = ComponentLimits {};
     limits.maxSubtypingSteps = 1'000;
     auto capped = TypeRelation { arena, arena, ResourceMapping {}, limits };
     auto const refused = mismatch(capped.isSubtype(wide, copy));
-    CHECK(refused.failure == RelationFailure::StepLimit);
+    CHECK(refused.code == RelationErrorCode::StepLimit);
     CHECK(refused.message == "subtyping steps exceed the limit of 1000");
     CHECK(capped.steps() == 1'000);
 
-    // Refused at the step that reaches the cap, not only for a batch past it: the index and half the
-    // lookups fit under 30'000.
-    limits.maxSubtypingSteps = 30'000;
+    // Refused at the step that reaches the cap, not only for a batch past it: the index fits under
+    // 50'000, the lookups after it do not.
+    limits.maxSubtypingSteps = 50'000;
     auto later = TypeRelation { arena, arena, ResourceMapping {}, limits };
     auto const refusedLater = mismatch(later.isSubtype(wide, copy));
-    CHECK(refusedLater.failure == RelationFailure::StepLimit);
-    CHECK(later.steps() == 30'000);
+    CHECK(refusedLater.code == RelationErrorCode::StepLimit);
+    CHECK(later.steps() == 50'000);
+
+    // Names compared cost their bytes: ten 64 KB names take a few dozen steps by count, and are
+    // refused at a cap of 1'000 by their bytes.
+    auto longExports = std::vector<NamedExtern> {};
+    for (auto const index: std::views::iota(0, 10))
+        longExports.push_back(
+            NamedExtern { .name = std::format("{}-{}", std::string(65'536, 'a'), index), .type = empty });
+    auto const longNamed = instance(arena, longExports);
+    auto const longCopy = instance(arena, std::move(longExports));
+    limits.maxSubtypingSteps = 1'000;
+    auto bytesCharged = TypeRelation { arena, arena, ResourceMapping {}, limits };
+    CHECK(mismatch(bytesCharged.isSubtype(longNamed, longCopy)).code == RelationErrorCode::StepLimit);
 }
 
 TEST_CASE("Subtyping.componentTypes")
@@ -375,6 +388,88 @@ TEST_CASE("Subtyping.componentTypes")
     CHECK(mismatchText(same, none, exporting) == "missing export named `f`");
     CHECK(related(same, none, importing));
     CHECK(mismatchText(same, importing, none) == "missing import named `g`");
+}
+
+TEST_CASE("Subtyping.bindingsResolveThroughBindings")
+{
+    // A component re-exporting its imported resource satisfies a type that exports a fresh one: the
+    // export binding records what the supplied resource stands for under the import binding already in
+    // force, as wasm-tools remaps A's exports before opening B's (component_types.rs:3655-3664).
+    // (component (import "a" (component $A (import "r" (type $r (sub resource))) (export "s" (type (eq
+    // $r))))) (component $consumer (import "b" (component (import "r" (type (sub resource))) (export "s"
+    // (type (sub resource)))))) (instance (instantiate $consumer (with "b" (component $A))))), which
+    // wasm-tools 1.263.0 accepts.
+    auto const reexporting = [](TypeArena& arena) {
+        auto const imported = held(arena.newResource(ResourceTypeInfo {}));
+        return held(arena.add(ComponentTypeInfo {
+            .imports = { { "r", TypeExtern { .type = imported } } },
+            .exports = { { "s", TypeExtern { .type = imported } } },
+            .importedResources = { ResourcePath { .resource = imported, .path = { 0 } } } }));
+    };
+    auto const freshExporting = [](TypeArena& arena) {
+        auto const imported = held(arena.newResource(ResourceTypeInfo {}));
+        auto const defined = held(arena.newResource(ResourceTypeInfo {}));
+        return held(arena.add(ComponentTypeInfo {
+            .imports = { { "r", TypeExtern { .type = imported } } },
+            .exports = { { "s", TypeExtern { .type = defined } } },
+            .importedResources = { ResourcePath { .resource = imported, .path = { 0 } } },
+            .definedResources = { ResourcePath { .resource = defined, .path = { 0 } } } }));
+    };
+    auto same = TypeArena { ComponentLimits {} };
+    CHECK(related(same, reexporting(same), freshExporting(same)));
+    auto left = TypeArena { ComponentLimits {} };
+    auto right = TypeArena { ComponentLimits {} };
+    auto across = TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} };
+    auto const acrossOutcome = across.isSubtype(reexporting(left), freshExporting(right));
+    if (!acrossOutcome)
+        UNSCOPED_INFO(acrossOutcome.error().message);
+    CHECK(acrossOutcome.has_value());
+
+    // Nested: the export binding of an inner component type resolves through the outer import binding.
+    // (type $X (component (import "r" (type $r (sub resource))) (export "c" (component (alias outer 1 0
+    // (type $o)) (export "s" (type (eq $o))))))) against (component (import "r" (type (sub resource)))
+    // (export "c" (component (export "s" (type (sub resource)))))), which wasm-tools accepts.
+    auto const outerReexporting = [](TypeArena& arena) {
+        auto const imported = held(arena.newResource(ResourceTypeInfo {}));
+        auto const inner =
+            held(arena.add(ComponentTypeInfo { .exports = { { "s", TypeExtern { .type = imported } } } }));
+        return held(arena.add(ComponentTypeInfo {
+            .imports = { { "r", TypeExtern { .type = imported } } },
+            .exports = { { "c", inner } },
+            .importedResources = { ResourcePath { .resource = imported, .path = { 0 } } } }));
+    };
+    auto const outerFresh = [](TypeArena& arena) {
+        auto const imported = held(arena.newResource(ResourceTypeInfo {}));
+        auto const defined = held(arena.newResource(ResourceTypeInfo {}));
+        auto const inner = held(arena.add(ComponentTypeInfo {
+            .exports = { { "s", TypeExtern { .type = defined } } },
+            .definedResources = { ResourcePath { .resource = defined, .path = { 0 } } } }));
+        return held(arena.add(ComponentTypeInfo {
+            .imports = { { "r", TypeExtern { .type = imported } } },
+            .exports = { { "c", inner } },
+            .importedResources = { ResourcePath { .resource = imported, .path = { 0 } } } }));
+    };
+    CHECK(related(same, outerReexporting(same), outerFresh(same)));
+    auto nestedAcross = TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} };
+    auto const nestedOutcome = nestedAcross.isSubtype(outerReexporting(left), outerFresh(right));
+    if (!nestedOutcome)
+        UNSCOPED_INFO(nestedOutcome.error().message);
+    CHECK(nestedOutcome.has_value());
+}
+
+TEST_CASE("Subtyping.errorsCarryTheirCode")
+{
+    // Every mismatch names its row, so a validator maps it without reading the text.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto relation = TypeRelation { arena, arena, ResourceMapping {}, ComponentLimits {} };
+    auto const u32 = primitive(arena, ValueKind::U32);
+    auto const takes = function(arena, { { "x", u32 } });
+    auto const refused =
+        mismatch(relation.isSubtype(takes, function(arena, { { "x", primitive(arena, ValueKind::U64) } })));
+    CHECK(refused.code == RelationErrorCode::PrimitiveMismatch);
+    CHECK(mismatch(relation.isSubtype(takes, function(arena, {}))).code == RelationErrorCode::ParameterCount);
+    CHECK(mismatch(relation.isSubtype(instance(arena, {}), instance(arena, { { "a", takes } }))).code
+          == RelationErrorCode::MissingExport);
 }
 
 TEST_CASE("Resources.generativePerInstantiation")
@@ -454,10 +549,10 @@ TEST_CASE("Resources.importedResourceIsSubstituted")
 
 TEST_CASE("Resources.substitutionCapped")
 {
-    // Each substitution creates the types naming a replaced resource, a shared one once, charged to the
-    // arena's maxSubstitutedTypes.
+    // Each substitution creates the types naming a replaced resource, a shared one once, each charged to
+    // the arena's maxSubstitutedTypes one unit plus one per type it names.
     auto limits = ComponentLimits {};
-    limits.maxSubstitutedTypes = 5;
+    limits.maxSubstitutedTypes = 13;
     auto arena = TypeArena { limits };
     auto const resource = held(arena.newResource(ResourceTypeInfo {}));
     auto const image = held(arena.newResource(ResourceTypeInfo {}));
@@ -467,7 +562,7 @@ TEST_CASE("Resources.substitutionCapped")
     substitution.bind(resource, image);
     auto const rewritten = arena.substitute(ValueExtern { .type = shared }, substitution);
     REQUIRE(rewritten.has_value());
-    CHECK(arena.substitutedTypes() == 2);
+    CHECK(arena.substitutedTypes() == 5);
     auto const& elements = arena[std::get<ValueExtern>(*rewritten).type].children;
     REQUIRE(elements.size() == 3);
     CHECK(arena[*elements[0]].resource == image);
@@ -475,12 +570,12 @@ TEST_CASE("Resources.substitutionCapped")
     auto const plain = tuple(arena, { primitive(arena, ValueKind::U32) });
     CHECK(arena.substitute(ValueExtern { .type = plain }, substitution)
           == ExternType { ValueExtern { .type = plain } });
-    CHECK(arena.substitutedTypes() == 2);
+    CHECK(arena.substitutedTypes() == 5);
 
     auto const wider = function(arena, { { "a", shared }, { "b", handle } });
     // Nothing to replace: kept as it is, at no cost.
     CHECK(arena.substitute(wider, ResourceSubstitution {}) == ExternType { wider });
-    CHECK(arena.substitutedTypes() == 2);
+    CHECK(arena.substitutedTypes() == 5);
     auto other = ResourceSubstitution {};
     other.bind(resource, held(arena.newResource(ResourceTypeInfo {})));
     auto const first = arena.substitute(wider, other);

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -268,6 +269,40 @@ static_assert(
     return static_cast<ValueKind>(primitive);
 }
 
+/// A name or label a type holds: immutable and shared, so copying a type, as a resource substitution
+/// does, copies a pointer, never the name's bytes (a name may be ComponentLimits::maxNameBytes long).
+class SharedName
+{
+  public:
+    /// The empty name.
+    SharedName(): SharedName(std::string {}) {}
+
+    /// A name of @p text, taking it over.
+    /// @param text The name. Implicit, so a type is built from names as from strings.
+    /// @throws std::bad_alloc When the name cannot be stored.
+    SharedName(std::string text): _text { std::make_shared<std::string const>(std::move(text)) } {}
+
+    /// A name of @p text, copied.
+    /// @param text The name. Implicit, as above.
+    SharedName(char const* text): SharedName(std::string { text }) {}
+
+    /// The name's text.
+    /// @return It, valid while any copy of the name lives.
+    [[nodiscard]] std::string const& str() const noexcept { return *_text; }
+
+    /// Names compare by their text.
+    [[nodiscard]] bool operator==(SharedName const& other) const noexcept { return str() == other.str(); }
+
+    /// Names order by their text.
+    [[nodiscard]] std::strong_ordering operator<=>(SharedName const& other) const noexcept
+    {
+        return str() <=> other.str();
+    }
+
+  private:
+    std::shared_ptr<std::string const> _text;
+};
+
 /// The handles a value type holds somewhere inside it: a bitmask of the two handle kinds, since a
 /// type may hold both.
 enum class HandleContent : uint8_t
@@ -319,7 +354,7 @@ struct DefinedType
 {
     ValueKind kind = ValueKind::Bool;               ///< What the type is.
     std::vector<std::optional<TypeId>> children {}; ///< Its inner types, in order (see above).
-    std::vector<std::string> labels {};             ///< Its labels, in order (see above).
+    std::vector<SharedName> labels {};              ///< Its labels, in order (see above).
     std::optional<ResourceTypeId> resource {};      ///< For Own and Borrow: the resource type.
     uint32_t length = 0;                            ///< For FixedList: the number of elements.
     uint32_t depth = 1;                             ///< Its nesting depth (TypeMeasure::depth).
@@ -359,8 +394,8 @@ using ExternType = std::variant<FunctionTypeId, ValueExtern, TypeExtern, Compone
 /// A named import or export of a component or instance type.
 struct NamedExtern
 {
-    std::string name; ///< The extern name, as encoded.
-    ExternType type;  ///< What it is.
+    SharedName name; ///< The extern name, as encoded.
+    ExternType type; ///< What it is.
 
     /// Two externs are equal when their names and types are.
     bool operator==(NamedExtern const&) const = default;
@@ -370,7 +405,7 @@ struct NamedExtern
 struct FunctionTypeInfo
 {
     binary::Asyncness asyncness = binary::Asyncness::Sync; ///< Whether it is `async`.
-    std::vector<std::pair<std::string, TypeId>> params {}; ///< The parameters, labelled, in order.
+    std::vector<std::pair<SharedName, TypeId>> params {};  ///< The parameters, labelled, in order.
     std::optional<TypeId> result {};                       ///< The result's type, if any.
     TypeMeasure measure {};                                ///< Computed by TypeArena::add().
     /// The handles its parameters and result hold; computed by TypeArena::add().
@@ -578,10 +613,21 @@ class TypeArena
     /// rewritten once however often it is shared; it walks an explicit stack, never recursing.
     /// @param type An extern type whose types the arena holds.
     /// @param substitution The resources to replace.
-    /// @return The rewritten type, or SubstitutedTypes once maxSubstitutedTypes types were created by
-    ///         the arena's substitutions in all, or the cap a rewritten type exceeds.
+    /// @return The rewritten type, or SubstitutedTypes once the arena's substitutions in all would
+    ///         exceed maxSubstitutedTypes units (a rewritten type costs one, plus one per type it
+    ///         names), or the cap a rewritten type exceeds. Names are shared with the originals.
     [[nodiscard]] std::expected<ExternType, TypeLimitError> substitute(
         ExternType const& type, ResourceSubstitution const& substitution);
+
+    /// An instance type of @p exports with @p substitution applied, defining no resources: the type an
+    /// import or export of an instance type that defines resources gets once they are minted afresh,
+    /// and the type of an instantiation. Its names are shared with @p exports, never copied.
+    /// @param exports The exports, whose types the arena holds.
+    /// @param substitution The resources to replace.
+    /// @return The instance type, or the cap it exceeds; it and its exports are charged to
+    ///         maxSubstitutedTypes like the types substitute() creates.
+    [[nodiscard]] std::expected<InstanceTypeId, TypeLimitError> substitutedInstance(
+        std::vector<NamedExtern> exports, ResourceSubstitution const& substitution);
 
     /// Mints a fresh resource type, distinct from every other.
     /// @param definition Its representation and destructor.
@@ -632,11 +678,13 @@ class TypeArena
     /// @return true for a resource, and for a type that holds a handle or names a resource.
     [[nodiscard]] bool namesResource(AnyTypeId type) const;
 
-    /// The types the arena's resource substitutions have created so far.
+    /// The units the arena's resource substitutions have charged so far: each type they created, plus
+    /// the types it names.
     /// @return The count, at most maxSubstitutedTypes.
     [[nodiscard]] std::size_t substitutedTypes() const noexcept { return _substitutedTypes; }
 
   private:
+    [[nodiscard]] std::expected<void, TypeLimitError> chargeSubstitution(std::size_t units);
     [[nodiscard]] std::expected<TypeMeasure, TypeLimitError> measureChildren(
         std::vector<std::optional<TypeId>> const& children) const;
 

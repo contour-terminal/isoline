@@ -38,7 +38,7 @@ namespace
 /// A value type of @p kind over @p children and @p labels.
 [[nodiscard]] DefinedType typeOf(ValueKind kind,
                                  std::vector<std::optional<TypeId>> children,
-                                 std::vector<std::string> labels = {})
+                                 std::vector<isoline::component::types::SharedName> labels = {})
 {
     return DefinedType { .kind = kind, .children = std::move(children), .labels = std::move(labels) };
 }

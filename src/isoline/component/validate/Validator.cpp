@@ -650,7 +650,7 @@ namespace
                 return std::unexpected { measured.error() };
             measure = *measured;
             defined.children.emplace_back(*child);
-            defined.labels.push_back(field.label);
+            defined.labels.emplace_back(field.label);
         }
         return intern(std::move(defined), position);
     }
@@ -688,7 +688,7 @@ namespace
                 measure = *measured;
             }
             defined.children.push_back(payload);
-            defined.labels.push_back(entry.label);
+            defined.labels.emplace_back(entry.label);
         }
         return intern(std::move(defined), position);
     }
@@ -752,7 +752,8 @@ namespace
             if (auto checked = unique(seen, labelKind, text, position); !checked)
                 return std::unexpected { checked.error() };
         }
-        return intern(types::DefinedType { .kind = kind, .labels = labels }, position);
+        return intern(types::DefinedType { .kind = kind, .labels = { labels.begin(), labels.end() } },
+                      position);
     }
 
     Result<TypeId> ComponentValidator::map(binary::MapType const& type, DefinitionPosition position)
@@ -992,15 +993,7 @@ namespace
             prefixed.path.insert(prefixed.path.end(), path.begin(), path.end());
             resources.push_back(std::move(prefixed));
         }
-        auto exports = _arena[instance].exports;
-        for (auto& entry: exports)
-        {
-            auto substituted = _arena.substitute(entry.type, fresh);
-            if (!substituted)
-                return std::unexpected { limitError(substituted.error(), position) };
-            entry.type = *substituted;
-        }
-        auto const added = _arena.add(types::InstanceTypeInfo { .exports = std::move(exports) });
+        auto const added = _arena.substitutedInstance(_arena[instance].exports, fresh);
         if (!added)
             return std::unexpected { limitError(added.error(), position) };
         return types::ExternType { *added };

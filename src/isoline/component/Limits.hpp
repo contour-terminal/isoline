@@ -44,11 +44,13 @@ struct ComponentLimits
     uint32_t maxHandles = 1'000'000;
     /// Per ComponentStore: the host bytes of every live Values.
     uint64_t maxLiveValueBytes = uint64_t { 256 } << 20;
-    /// Steps of one validate::TypeRelation: each pair of types it compares, and each import or export
-    /// it looks up by name; its memo holds at most one entry per step.
+    /// Steps of one validate::TypeRelation: one per pair of types it compares and per name it looks
+    /// up or compares, plus one per validate::SubtypingBytesPerStep bytes of the names compared. Its memo
+    /// holds at most one entry per step, so this also bounds the memo: at most maxSubtypingSteps entries.
     uint32_t maxSubtypingSteps = 1'000'000;
-    /// Per TypeArena: the types its resource substitutions create (each instantiation, and each import
-    /// or export of an instance type that defines resources, rewrites the types that name them).
+    /// Per TypeArena: the units its resource substitutions charge, one per type they create plus one per
+    /// type it names (each instantiation, and each import or export of an instance type that defines
+    /// resources, rewrites the types that name them; names are shared, never copied).
     uint32_t maxSubstitutedTypes = 1'000'000;
 
     /// Two sets of limits are equal when every limit is.
@@ -184,14 +186,16 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
     // Isoline's own: wasm-tools bounds neither, and walks its types recursively.
     { .limit = ComponentLimit::SubtypingSteps,
       .name = "maxSubtypingSteps",
-      .rule = "steps of one type relation (validation's subtype checks, a linker's resolve): each pair of "
-              "types it compares and each import or export it looks up by name",
+      .rule = "steps of one type relation (validation's subtype checks, a linker's resolve): one per pair of "
+              "types compared and per name looked up or compared, plus one per 64 bytes of the names "
+              "compared; it bounds the relation's memo at as many entries",
       .message = "subtyping steps exceed the limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxSubtypingSteps; } },
     { .limit = ComponentLimit::SubstitutedTypes,
       .name = "maxSubstitutedTypes",
-      .rule = "types the resource substitutions of one type arena create: each instantiation, and each "
-              "import or export of an instance type that defines resources, rewrites the types naming them",
+      .rule = "units the resource substitutions of one type arena charge, one per type created plus one per "
+              "type it names: each instantiation, and each import or export of an instance type that defines "
+              "resources, rewrites the types naming them, sharing their names",
       .message = "substituted types exceed the limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t {
           return limits.maxSubstitutedTypes;

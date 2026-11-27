@@ -1015,6 +1015,26 @@ TEST_CASE("Validator.attributeGateOrder")
         .item = SortIndex { .sort = Sort::Instance, .index = exportedInstance },
         .type = std::nullopt });
     CHECK(refusal(exporting.pool()).disabled == ComponentFeature::CanonicalInterfaceNames);
+
+    // A name with an external id alone, decoded from bytes: the decoder admits the attributed form under
+    // implements, and validation refuses the external id under its own gate (Isoline keeps 🏷️'s two
+    // productions apart, which wasm-tools gates as one).
+    auto import = Bytes { std::byte { 0x01 }, std::byte { 0x02 } };
+    appendName(import, "a");
+    appendBytes(import, { 0x01, 0x02 });
+    appendName(import, "x");
+    appendBytes(import, { 0x05, 0x00 });
+    auto const bytes = componentOf(
+        { section(7, { std::byte { 0x01 }, std::byte { 0x42 }, std::byte { 0x00 } }), section(10, import) });
+    auto const implementing = ComponentFeatureSet::defaults().with(ComponentFeature::Implements);
+    auto pool = decodeComponent(bytes, implementing, ComponentLimits {});
+    REQUIRE(pool.has_value());
+    auto const identified = refusal(std::move(*pool), implementing);
+    CHECK(identified.disabled == ComponentFeature::ExternalId);
+    CHECK(specMessage(identified) == "the `cm-implements` feature is not active");
+    auto admitted = decodeComponent(bytes, implementing, ComponentLimits {});
+    REQUIRE(admitted.has_value());
+    CHECK(accepted(std::move(*admitted), implementing.with(ComponentFeature::ExternalId)));
 }
 
 TEST_CASE("Validator.outerAliasesIntoComponentsDeferred")

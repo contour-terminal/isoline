@@ -18,6 +18,8 @@
 #include <new>
 #include <optional>
 #include <ranges>
+#include <string>
+#include <tuple>
 #include <vector>
 
 #include "AllocationCounter.hpp"
@@ -37,10 +39,15 @@ using isoline::component::binary::decodeComponent;
 using isoline::component::binary::DecodeError;
 using isoline::component::binary::DecodeErrorCode;
 using isoline::component::binary::exceededLimit;
+using isoline::component::binary::ExternDesc;
+using isoline::component::binary::FunctionTypeDefinition;
 using isoline::component::binary::LabeledType;
 using isoline::component::binary::ListType;
+using isoline::component::binary::OwnType;
 using isoline::component::binary::PrimitiveValueType;
 using isoline::component::binary::RecordType;
+using isoline::component::binary::Sort;
+using isoline::component::binary::TypeBound;
 using isoline::component::binary::TypeDefinition;
 using isoline::component::binary::TypeIndex;
 using isoline::component::binary::testing::appendBytes;
@@ -50,6 +57,7 @@ using isoline::component::binary::testing::ComponentBuilder;
 using isoline::component::binary::testing::componentOf;
 using isoline::component::binary::testing::componentPreamble;
 using isoline::component::binary::testing::section;
+using isoline::component::binary::testing::TypeScopeBuilder;
 using isoline::component::validate::validateComponent;
 using isoline::component::validate::ValidationError;
 using isoline::component::validate::testing::CoreModuleValidator;
@@ -350,4 +358,29 @@ TEST_CASE("Validator.acceptedComponentLinearMemory")
     auto const twice = peakOf(recordsOf(100'000));
     INFO(std::format("{} bytes at n, {} at 2n", single, twice));
     CHECK(twice * 10 <= single * 22);
+}
+
+TEST_CASE("Validator.freshInstancesShareTheirNames")
+{
+    // An instance type of 100 exports with 10 KB names, each a function returning an own of the
+    // resource it defines, imported 1'000 times: each import mints the resource afresh and rewrites the
+    // types naming it, but shares the names. Copying them would take 1'000 x 100 x 10 KB = 1 GB from
+    // 1 MB of input; the validation holds under 32 MiB beyond the pool it is handed.
+    auto declarations = TypeScopeBuilder {};
+    auto const resource = declarations.exportItem(
+        "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto const own = declarations.type(TypeDefinition { .type = OwnType { .resource = resource } });
+    auto const make = declarations.type(TypeDefinition {
+        .type = FunctionTypeDefinition { .params = {}, .result = TypeIndex { .index = own } } });
+    for (auto const index: std::views::iota(0, 100))
+        std::ignore = declarations.exportItem(std::format("{}-{}", std::string(10'000, 'a'), index),
+                                              ExternDesc { .sort = Sort::Func, .index = make });
+    auto builder = ComponentBuilder {};
+    auto const instance = builder.instanceType(std::move(declarations));
+    for (auto const index: std::views::iota(0, 1'000))
+        std::ignore = builder.import(std::format("i{}", index),
+                                     ExternDesc { .sort = Sort::Instance, .index = instance });
+    auto const outcome = validateUnderBudget(builder.pool(), std::size_t { 32 } << 20U);
+    CHECK(outcome.budget == Budget::Kept);
+    CHECK_FALSE(outcome.error.has_value());
 }
