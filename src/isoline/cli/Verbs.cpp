@@ -127,13 +127,20 @@ Failure loadFailure(api::LoadError const& error, std::string_view input)
             [input](api::CompileLimitExceeded const& tooLarge) {
                 // The verbs load with the reference engine, which lowers nothing: only an embedder's
                 // fast engine refuses this way.
+                auto const& limit = api::compileLimitRow(tooLarge.kind);
+                auto const where = tooLarge.codeIndex == api::ModuleLevel
+                                       ? std::string { "the module-level records" }
+                                       : std::format("function {}", tooLarge.codeIndex);
                 return Failure { .refusal = Refusal::InputTooLarge,
-                                 .message = std::format("{}: error: lowering function {} needs {}, past the "
-                                                        "limit of {}",
-                                                        input,
-                                                        tooLarge.codeIndex,
-                                                        tooLarge.requested,
-                                                        tooLarge.limit) };
+                                 .message =
+                                     std::format("{}: error: lowering {} needs {} {}, past the {} of {} {}",
+                                                 input,
+                                                 where,
+                                                 tooLarge.requested,
+                                                 limit.unit,
+                                                 limit.name,
+                                                 tooLarge.limit,
+                                                 limit.unit) };
             },
             [input](binary::DecodeError const& decode) {
                 return Failure { .refusal = Refusal::ModuleMalformed,

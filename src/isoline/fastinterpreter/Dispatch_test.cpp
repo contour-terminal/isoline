@@ -43,6 +43,7 @@ using isoline::fastinterpreter::describe;
 using isoline::fastinterpreter::Dispatch;
 using isoline::fastinterpreter::familyRow;
 using isoline::fastinterpreter::headerWord;
+using isoline::fastinterpreter::isAvailable;
 using isoline::fastinterpreter::LoweringConfig;
 using isoline::fastinterpreter::OperationCount;
 using isoline::fastinterpreter::OperationFamilyTable;
@@ -74,12 +75,6 @@ namespace configured = isoline::fastinterpreter::configured;
 namespace
 {
 
-/// Whether this build compiled @p dispatch.
-[[nodiscard]] bool isAvailable(Dispatch dispatch)
-{
-    return std::ranges::find(availableDispatches(), dispatch) != availableDispatches().end();
-}
-
 /// The compiler families a probe row is that of, as the generated header lists them.
 [[nodiscard]] std::set<std::string_view> familiesOf(std::string_view families)
 {
@@ -98,6 +93,18 @@ TEST_CASE("Dispatch.bestIsAvailable")
     CHECK(std::ranges::find(available, bestDispatch()) != available.end());
     CHECK(available.front() == Dispatch::Switch);
     CHECK((bestDispatch() == Dispatch::TailCall) == isAvailable(Dispatch::TailCall));
+}
+
+TEST_CASE("Dispatch.namesSpellEveryDispatch")
+{
+    // Every name spells its dispatch, compiled or not; no other name spells one.
+    CHECK(isoline::fastinterpreter::dispatchNamed("switch") == Dispatch::Switch);
+    CHECK(isoline::fastinterpreter::dispatchNamed("tailcall") == Dispatch::TailCall);
+    CHECK_FALSE(isoline::fastinterpreter::dispatchNamed("Switch").has_value());
+    CHECK_FALSE(isoline::fastinterpreter::dispatchNamed("").has_value());
+    // One past the last Dispatch: no build compiles it.
+    CHECK_FALSE(isAvailable(static_cast<Dispatch>(std::to_underlying(Dispatch::TailCall) + 1)));
+    CHECK(isAvailable(Dispatch::Switch));
 }
 
 TEST_CASE("Dispatch.probeRowsAreExercised")

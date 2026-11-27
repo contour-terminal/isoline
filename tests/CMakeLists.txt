@@ -265,10 +265,11 @@ set(isolineContractRows
     "Contract.RawValue.globalAssignsItsOwnKind|kindOf\\(value\\) == type\\.type\\.kind"
     "Contract.Store.addGlobalOfItsOwnKind|kindOf\\(value\\) == type\\.type\\.kind"
     "Contract.Store.grownMemoryKeepsItsTail|keepsItsTail\\(\\*_memory\\)"
-    "Contract.Lowering.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), config\\.dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"
+    "Contract.Lowering.dispatchMustBeAvailable|isAvailable\\(config\\.dispatch\\)"
     "Contract.Listing.wholeOperations|row\\.words <= code\\.size\\(\\)"
-    "Contract.FastInterpreter.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"
-    "Contract.Engine.fastDispatchMustBeAvailable|_config\\.engine != ExecutionEngine::Fast \\|\\| std::ranges::find\\(availableDispatches\\(\\), _config\\.dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)")
+    "Contract.FastInterpreter.dispatchMustBeAvailable|isAvailable\\(dispatch\\)"
+    "Contract.Engine.fastDispatchMustBeAvailable|engines::rowOf\\(_config\\.engine\\)->dispatch == engines::DispatchUse::None \\|\\| fastinterpreter::isAvailable\\(_config\\.dispatch\\)"
+    "Contract.Engine.knownEngine|engines::rowOf\\(_config\\.engine\\) != nullptr")
 set(isolineContractCases)
 foreach(contract IN LISTS isolineContractRows)
     string(FIND "${contract}" "|" separator)

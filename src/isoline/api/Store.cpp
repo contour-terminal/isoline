@@ -24,10 +24,9 @@
 
 #include <isoline/api/CallError.hpp>
 #include <isoline/api/Engine.hpp>
+#include <isoline/api/ExecutionEngines.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
-#include <isoline/fastinterpreter/FastInterpreter.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -38,19 +37,12 @@ namespace isoline::api
 
 namespace
 {
-    /// A store's executor for @p config's engine, the fast one running code lowered for its dispatch: a case
-    /// per ExecutionEngine and no default, so that -Wswitch names this place when an engine is added.
+    /// A store's executor for @p config's engine, the fast one running code lowered for its dispatch.
     [[nodiscard]] std::unique_ptr<runtime::ICodeExecutor> makeExecutor(EngineConfig const& config)
     {
-        switch (config.engine)
-        {
-            case ExecutionEngine::Reference: return std::make_unique<interpreter::ReferenceInterpreter>();
-            case ExecutionEngine::Fast:
-                return std::make_unique<fastinterpreter::FastInterpreter>(config.dispatch);
-        }
-        // Every ExecutionEngine is a case above.
-        core::unreachable(); // uncovered(unknown-engine)
-    } // uncovered(unknown-engine)
+        // Engine's constructor checked that its engine has a row.
+        return engines::rowOf(config.engine)->executor(config.dispatch);
+    }
 
     /// Why the host may not define an entity of a value of @p type, if it may not: a concrete heap names
     /// a type index only a module's own types may name, and bot is the validator's own, no module's.

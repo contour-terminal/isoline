@@ -13,6 +13,11 @@ set(isolineTailCallFamilyFiles
     TailCallControl.cpp TailCallNumeric.cpp TailCallMemory.cpp TailCallSimd.cpp TailCallExceptions.cpp)
 set(isolineTailCallUnavailableFiles TailCallUnavailable.cpp)
 
+# The dispatch names: each Dispatch enumerator, then how command lines and test names spell it. The one
+# source of both: DispatchAvailability.hpp's DispatchNames, and the names of the compiled dispatches the spec
+# tests run (ISOLINE_FAST_DISPATCH_NAMES, below).
+set(isolineDispatchNameRows "Switch|switch" "TailCall|tailcall")
+
 ## @brief Writes a DispatchAvailability.hpp from the template to @p header, for @p row, the tail-call probe
 ## row that passed or is being probed, or "" for none.
 function(isoline_write_dispatch_availability header row)
@@ -31,6 +36,14 @@ function(isoline_write_dispatch_availability header row)
     list(TRANSFORM ISOLINE_TAILCALL_PROBE_FAMILIES PREPEND "\"" OUTPUT_VARIABLE families)
     list(TRANSFORM families APPEND "\"")
     list(JOIN families ", " ISOLINE_FAST_PROBE_FAMILIES)
+    set(names)
+    foreach(nameRow IN LISTS isolineDispatchNameRows)
+        string(REPLACE "|" ";" fields "${nameRow}")
+        list(GET fields 0 enumerator)
+        list(GET fields 1 name)
+        list(APPEND names "{ Dispatch::${enumerator}, \"${name}\" }")
+    endforeach()
+    list(JOIN names ", " ISOLINE_FAST_DISPATCH_NAMES)
     configure_file("${isolineFastAvailabilityTemplate}" "${header}" @ONLY)
 endfunction()
 
@@ -114,17 +127,26 @@ isoline_write_dispatch_availability("${isolineFastAvailabilityHeader}" "${isolin
 # The dispatch rows: the dispatches this build compiles, from the most portable to the fastest, and their
 # sources. Switch is portable C++ and always the first row.
 set(isolineDispatchSources SwitchDispatch.cpp SwitchDispatchCold.cpp)
-# The dispatches by the names the spec runner's --dispatch takes, for the tests that run each one
-# (tests/spec/CMakeLists.txt).
-set(isolineDispatchNames switch)
+set(isolineCompiledDispatches Switch)
 if(isolineTailCallRow)
     message(STATUS "[isoline] fast interpreter dispatches: Switch TailCall (${isolineTailCallRow})")
     list(APPEND isolineDispatchSources ${isolineTailCallFamilyFiles})
-    list(APPEND isolineDispatchNames tailcall)
+    list(APPEND isolineCompiledDispatches TailCall)
 else()
     message(STATUS "[isoline] fast interpreter dispatches: Switch")
     list(APPEND isolineDispatchSources ${isolineTailCallUnavailableFiles})
 endif()
+# The names of the compiled dispatches, as the spec runner's --dispatch takes them, for the tests that run
+# each one (tests/spec/CMakeLists.txt).
+set(isolineDispatchNames)
+foreach(nameRow IN LISTS isolineDispatchNameRows)
+    string(REPLACE "|" ";" fields "${nameRow}")
+    list(GET fields 0 enumerator)
+    list(GET fields 1 name)
+    if(enumerator IN_LIST isolineCompiledDispatches)
+        list(APPEND isolineDispatchNames "${name}")
+    endif()
+endforeach()
 set_property(GLOBAL PROPERTY ISOLINE_FAST_DISPATCH_NAMES ${isolineDispatchNames})
 
 # The frame-size rows of the dispatch files, per build flavour: an optimized build without sanitizers or

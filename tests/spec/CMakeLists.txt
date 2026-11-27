@@ -54,6 +54,10 @@ function(isoline_add_spec_test engine dispatch source path skips)
 endfunction()
 
 get_property(specDispatches GLOBAL PROPERTY ISOLINE_FAST_DISPATCH_NAMES)
+if(NOT specDispatches)
+    message(FATAL_ERROR "tests/spec: no fast dispatch is compiled, so no spec.fast.* test would run; "
+                        "src/isoline/fastinterpreter/CMakeLists.txt must set ISOLINE_FAST_DISPATCH_NAMES first")
+endif()
 
 # One test per imported .wast file and engine, in files.txt's order (isoline_add_spec_test()). An `exclude`
 # row names a file that is deliberately not imported.

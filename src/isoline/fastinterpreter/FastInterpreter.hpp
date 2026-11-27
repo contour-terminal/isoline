@@ -62,16 +62,15 @@ class FastInterpreter final: public runtime::ICodeExecutor
 {
   public:
     /// An interpreter running code lowered for @p dispatch, its slot chunks (and its roots' scratch buffer)
-    /// from the global heap. Precondition (checked): @p dispatch is available (availableDispatches()).
+    /// from the global heap. Precondition (checked): @p dispatch is available (isAvailable()).
     /// @param dispatch The dispatch.
     explicit FastInterpreter(Dispatch dispatch);
 
-    /// An interpreter running code lowered for @p dispatch, its slot chunks from @p slotMemory.
-    /// Precondition (checked): @p dispatch is available (availableDispatches()).
+    /// An interpreter running code lowered for @p dispatch, its slot chunks and its roots' scratch buffer
+    /// from @p slotMemory. Precondition (checked): @p dispatch is available (isAvailable()).
     /// @param dispatch The dispatch.
-    /// @param slotMemory What every invocation's slot chunks come from, and the scratch buffer a sweep
-    /// decodes
-    ///                   their exception roots into; must outlive the interpreter.
+    /// @param slotMemory What every invocation's slot chunks come from, and the buffer a sweep decodes their
+    ///                   exception roots into; must outlive the interpreter.
     FastInterpreter(Dispatch dispatch, std::pmr::memory_resource& slotMemory);
 
     /// The fast engine, whose instances hold their module's LoweredModule.

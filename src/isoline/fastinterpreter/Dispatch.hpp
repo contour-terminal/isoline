@@ -2,7 +2,9 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <string_view>
 
 namespace isoline::fastinterpreter
 {
@@ -20,6 +22,13 @@ enum class Dispatch : uint8_t
     TailCall,
 };
 
+/// A dispatch and how command lines and test names spell it (DispatchNames).
+struct DispatchName
+{
+    Dispatch dispatch;     ///< The dispatch.
+    std::string_view name; ///< Its name: switch or tailcall.
+};
+
 /// The dispatches this build compiled, from the most portable to the fastest: Switch first, always.
 ///
 /// Which compiled is decided when the project is configured (fastinterpreter/CMakeLists.txt).
@@ -29,5 +38,15 @@ enum class Dispatch : uint8_t
 /// The fastest dispatch this build compiled: TailCall where it is available, otherwise Switch.
 /// @return The last of availableDispatches().
 [[nodiscard]] Dispatch bestDispatch() noexcept;
+
+/// Whether this build compiled @p dispatch: whether it is one of availableDispatches().
+/// @param dispatch The dispatch; any value of the type.
+/// @return Whether code lowered for it can run.
+[[nodiscard]] bool isAvailable(Dispatch dispatch) noexcept;
+
+/// The dispatch named @p name, compiled or not.
+/// @param name A name, as nameOf() spells it.
+/// @return The dispatch, or nothing when no dispatch has that name.
+[[nodiscard]] std::optional<Dispatch> dispatchNamed(std::string_view name) noexcept;
 
 } // namespace isoline::fastinterpreter

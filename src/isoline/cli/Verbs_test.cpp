@@ -366,7 +366,18 @@ TEST_CASE("Verbs.loadFailure")
     auto const uncompiled = loadFailure(
         isoline::api::CompileLimitExceeded { .codeIndex = 3, .requested = 200, .limit = 128 }, "a.wat");
     CHECK(uncompiled.refusal == Refusal::InputTooLarge);
-    CHECK(uncompiled.message == "a.wat: error: lowering function 3 needs 200, past the limit of 128");
+    CHECK(uncompiled.message
+          == "a.wat: error: lowering function 3 needs 200 bytes, past the compile budget of 128 bytes");
+    auto const tooManySlots =
+        loadFailure(isoline::api::CompileLimitExceeded { .codeIndex = isoline::api::ModuleLevel,
+                                                         .requested = 5'000'000'000,
+                                                         .limit = 4'294'967'295,
+                                                         .kind = isoline::api::CompileLimit::FrameSlots },
+                    "a.wat");
+    CHECK(
+        tooManySlots.message
+        == "a.wat: error: lowering the module-level records needs 5000000000 slots, past the frame slots of "
+           "4294967295 slots");
 }
 
 TEST_CASE("Verbs.readmeListsEveryRefusal")

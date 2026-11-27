@@ -16,6 +16,9 @@ inline constexpr auto AvailableDispatches = std::to_array<Dispatch>({ @ISOLINE_F
 
 static_assert(AvailableDispatches.front() == Dispatch::Switch, "Switch is compiled everywhere, and listed first");
 
+/// Every dispatch, compiled or not, and how command lines and test names spell it: CMake's dispatch name rows.
+inline constexpr auto DispatchNames = std::to_array<DispatchName>({ @ISOLINE_FAST_DISPATCH_NAMES@ });
+
 /// The tail-call probe rows, in order: each a spelling of a guaranteed tail call. CMake tries those whose
 /// families (TailCallProbeFamilies) name the build's compiler.
 inline constexpr auto TailCallProbeRows = std::to_array<std::string_view>({ @ISOLINE_FAST_PROBE_ROWS@ });

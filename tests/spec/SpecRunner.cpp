@@ -42,6 +42,8 @@
 #include "SpecFeatures.hpp"
 #include "WastReader.hpp"
 #include <isoline/Features.hpp>
+#include <isoline/api/Engine.hpp>
+#include <isoline/api/ExecutionEngines.hpp>
 #include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
@@ -264,7 +266,7 @@ namespace
         Runner(FeatureSet features, SpecEngine const& engine):
             _features { features },
             _engine { engine },
-            _executor { makeExecutor(engine) },
+            _executor { engine.row->executor(engine.dispatch) },
             _store { runtime::StoreLimits {}, runtime::StoreServices { .allocator = _allocator } }
         {
             _registered.emplace("spectest", _store.addModuleInstance(makeSpectest(_store)));
@@ -422,9 +424,13 @@ namespace
             auto const imports = resolveImports(module->module());
             if (!imports)
                 return std::unexpected { imports.error() };
-            auto code = codeFor(_engine, *module);
+            auto code =
+                _engine.row->code(*module,
+                                  api::engines::CodeRequest { .dispatch = _engine.dispatch,
+                                                              .budget = api::LoadLimits {}.maxCompileBytes });
             if (!code)
-                return std::unexpected { harnessFailure(code.error()) };
+                return std::unexpected { harnessFailure(
+                    std::format("lowering refused the module at function {}", code.error().codeIndex)) };
             auto const instance =
                 runtime::instantiate(_store, *_executor, std::move(module), std::move(*code), *imports);
             if (instance)

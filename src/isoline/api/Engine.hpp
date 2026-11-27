@@ -67,6 +67,11 @@ struct EngineConfig
     /// (StoreOptions::limits).
     StoreLimits store {};
 
+    /// What the fast engine allocates a module's lowered code from, through a budget of
+    /// LoadLimits::maxCompileBytes; the global heap when null. The lowered code shares its ownership, so
+    /// it lives as long as any module, or any instance in any store, that holds code lowered into it.
+    std::shared_ptr<std::pmr::memory_resource> loweringMemory = nullptr;
+
     /// What a module this configuration loads depends on: the engine, the mode, the features and, for
     /// the fast engine alone, the dispatch; not the limits.
     /// @return The identity of an engine of this configuration.
@@ -119,9 +124,9 @@ class ThreadPreparation
 
 /// The entry point of the embedding API: it loads modules, under a configuration fixed at construction.
 ///
-/// An engine holds no state but its configuration and the memory it lowers code into, so loading is
-/// const and may run on any number of threads at once, as long as that memory may be allocated from on
-/// any of them (the global heap's may). The modules it loads stay valid after it is gone; each carries the
+/// An engine holds no state but its configuration, so loading is const and may run on any number of
+/// threads at once, as long as its EngineConfig::loweringMemory may be allocated from on any of them (the
+/// global heap's may). The modules it loads stay valid after it is gone; each carries the
 /// engine's identity, which decides which stores may instantiate it.
 class Engine
 {
@@ -129,16 +134,9 @@ class Engine
     /// An engine of @p config.
     /// @param config Its configuration. Its feature set must be closed (checked: an unclosed set is a
     ///               programming error of the embedder; FeatureSet::withPrerequisites() closes one).
-    ///               For the fast engine, its dispatch must be one of availableDispatches() (checked).
+    ///               Its engine must be an ExecutionEngine enumerator (checked), and the fast engine's
+    ///               dispatch one this build compiled (isAvailable(), checked).
     explicit Engine(EngineConfig config) noexcept;
-
-    /// An engine of @p config whose fast engine allocates the code it lowers from @p codeMemory, through
-    /// a budget of LoadLimits::maxCompileBytes per module: the global heap's being the other
-    /// constructor's.
-    /// @param config Its configuration, checked as the other constructor checks it.
-    /// @param codeMemory What lowered code is allocated from. It must outlive every module the engine
-    ///                   loads, which may outlive the engine: a module's code returns its memory here.
-    Engine(EngineConfig config, std::pmr::memory_resource& codeMemory) noexcept;
 
     /// The configuration it was constructed with.
     /// @return The configuration.
@@ -177,7 +175,6 @@ class Engine
 
   private:
     EngineConfig _config;
-    std::pmr::memory_resource* _codeMemory; ///< What lowered code is allocated from; never null.
 };
 
 } // namespace isoline::api

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -89,19 +92,67 @@ struct HostMemoryExhausted
     bool operator==(HostMemoryExhausted const&) const = default;
 };
 
-/// A module the fast engine refused to lower: its code needs more than the engine allows.
-///
-/// Most often it needs more than LoadLimits::maxCompileBytes at once, in bytes. A function whose frame
-/// needs more slots, or whose code more words, than the fast engine's code addresses is refused the same
-/// way, counted in slots or code words: only decode limits raised far past their defaults admit one.
+/// Which of the fast engine's limits a module's lowering exceeded.
+enum class CompileLimit : uint8_t
+{
+    Budget =
+        0, ///< The bytes lowering holds at once, LoadLimits::maxCompileBytes: raising it lifts the refusal.
+    FrameSlots, ///< The slots one frame may have, which the code's 32-bit slot operands address.
+    CodeWords,  ///< The code words of one function, which the code's 32-bit branch targets reach.
+};
+
+/// One row of CompileLimitTable: a compile limit, the unit its requests and limits count in, and what it
+/// bounds.
+struct CompileLimitRow
+{
+    CompileLimit kind;     ///< The limit.
+    std::string_view name; ///< How messages and the embedding guide name it.
+    std::string_view unit; ///< What CompileLimitExceeded::requested and ::limit count.
+    std::string_view rule; ///< What it bounds, and what lifts it.
+};
+
+/// Every compile limit, in CompileLimit's order: the one table the CLI's messages and the embedding guide's
+/// generated block read.
+inline constexpr auto CompileLimitTable = std::to_array<CompileLimitRow>({
+    { .kind = CompileLimit::Budget,
+      .name = "compile budget",
+      .unit = "bytes",
+      .rule = "what lowering a module holds at once, its code included; LoadLimits::maxCompileBytes, "
+              "and raising it lifts the refusal" },
+    { .kind = CompileLimit::FrameSlots,
+      .name = "frame slots",
+      .unit = "slots",
+      .rule = "the slots of one function's frame, at most 2^32 - 1; only decode limits raised far past "
+              "their defaults admit a function past it" },
+    { .kind = CompileLimit::CodeWords,
+      .name = "code words",
+      .unit = "words",
+      .rule = "the code words of one function, which 32-bit branch targets reach; only a body limit "
+              "raised past a gigabyte admits a function past it" },
+});
+
+/// The row of @p kind.
+/// @param kind A compile limit.
+/// @return Its CompileLimitTable row.
+[[nodiscard]] constexpr CompileLimitRow const& compileLimitRow(CompileLimit kind) noexcept
+{
+    return CompileLimitTable[static_cast<std::size_t>(kind)];
+}
+
+/// The codeIndex of a CompileLimitExceeded that came outside any function: lowering the module's own
+/// records.
+inline constexpr auto ModuleLevel = std::numeric_limits<uint32_t>::max();
+
+/// A module the fast engine refused to lower: its code needs more than one of its limits allows.
 struct CompileLimitExceeded
 {
-    /// The function lowering was refused at, by its index in the code section;
-    /// fastinterpreter::NoFunction when the refusal came outside any function.
-    uint32_t codeIndex;
-    uint64_t requested; ///< What the refused reservation asked for.
-    uint64_t limit;     ///< What the engine allows: the compile budget, or the code's own bound.
-    /// Two refusals are equal when function, request and limit are.
+    /// The function lowering was refused at, by its index in the code section; ModuleLevel when the
+    /// refusal came outside any function.
+    uint32_t codeIndex = 0;
+    uint64_t requested = 0; ///< What the refused reservation asked for, in its limit's unit.
+    uint64_t limit = 0;     ///< What the limit allows, in its unit (compileLimitRow()).
+    CompileLimit kind = CompileLimit::Budget; ///< Which limit.
+    /// Two refusals are equal when function, request, limit and kind are.
     bool operator==(CompileLimitExceeded const&) const = default;
 };
 
@@ -110,8 +161,10 @@ struct CompileLimitExceeded
 using LoadError =
     std::variant<ModuleTooLarge, HostMemoryExhausted, DecodeError, ValidationError, CompileLimitExceeded>;
 
-/// Whether @p error refuses a module only for an implementation limit, which an engine with raised
-/// LoadLimits might load, rather than for being malformed or invalid, which no limits change.
+/// Whether @p error refuses a module only for an implementation limit rather than for being malformed or
+/// invalid, which no limits change. Raising LoadLimits lifts ModuleTooLarge, a decode or validation limit,
+/// and a CompileLimitExceeded of CompileLimit::Budget; the other compile limits are the fast engine's own
+/// bounds, which no LoadLimits raise (the reference engine loads such a module).
 /// @param error Why the module was refused.
 /// @return Whether a ModuleTooLarge or a CompileLimitExceeded, or a decode or validation error whose row
 ///         is an implementation limit (binary::isImplementationLimit(), validate::isImplementationLimit()).
