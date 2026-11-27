@@ -10,6 +10,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <limits>
 #include <memory>
@@ -268,14 +269,31 @@ class ChargedVector
     [[nodiscard]] std::span<T> grow(std::size_t count, GrowthFill fill)
     {
         Require(count <= _capacity - _items.size());
-        if (fill == GrowthFill::Zeroed)
-            _items.resize(_items.size() + count, T {});
-        else
+        // Bytes are filled by memset, one pass even in an unoptimised build, where an element loop over
+        // a list of hundreds of MiB costs seconds.
+        if constexpr (std::is_trivially_copyable_v<T> && std::is_trivially_default_constructible_v<T>)
+        {
             _items.resize(_items.size() + count);
-        auto const grown = std::span { _items }.last(count);
-        if (fill == GrowthFill::ForOverwrite && ThisBuildPoisons == OverwritePoison::On)
-            std::ranges::fill(std::as_writable_bytes(grown), std::byte { 0xFF });
-        return grown;
+            auto const grown = std::span { _items }.last(count);
+            if (grown.empty())
+                return grown; // memset takes no null pointer, which an empty vector's data() may be
+            if (fill == GrowthFill::Zeroed)
+                std::memset(grown.data(), 0, grown.size_bytes());
+            else if constexpr (ThisBuildPoisons == OverwritePoison::On)
+                std::memset(grown.data(), 0xFF, grown.size_bytes());
+            return grown;
+        }
+        else
+        {
+            if (fill == GrowthFill::Zeroed)
+                _items.resize(_items.size() + count, T {});
+            else
+                _items.resize(_items.size() + count);
+            auto const grown = std::span { _items }.last(count);
+            if (fill == GrowthFill::ForOverwrite && ThisBuildPoisons == OverwritePoison::On)
+                std::ranges::fill(std::as_writable_bytes(grown), std::byte { 0xFF });
+            return grown;
+        }
     }
 
     /// The number of elements.
@@ -727,6 +745,11 @@ class ValueView
     /// @param index Below childCount() (checked).
     /// @return It.
     [[nodiscard]] ValueView child(std::size_t index) const;
+
+    /// The elements of a list whose elements are packed (a list of scalars, ElementStorage::Pool), as
+    /// stored: each at its width, in host byte order. What a bulk copy of them reads.
+    /// @return Their bytes; empty for every other value, and for an empty list.
+    [[nodiscard]] std::span<std::byte const> packedElementBytes() const noexcept;
 
     /// A variant's, an option's, a result's or an enum's case.
     /// @return The case index (checked).

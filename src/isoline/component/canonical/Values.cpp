@@ -565,6 +565,19 @@ std::size_t ValueView::childCount() const noexcept
     return 0;
 }
 
+std::span<std::byte const> ValueView::packedElementBytes() const noexcept
+{
+    if (_form == ViewForm::Element)
+        return {};
+    auto const shape = shapeRow().shape;
+    if ((shape != ValueShape::List && shape != ValueShape::FixedList)
+        || range().storage != ElementStorage::Pool)
+        return {};
+    auto const& list = range();
+    auto const width = uint64_t { valueShapeRow(list.elementKind).bytes };
+    return _values->_pool.items().subspan(list.offset, list.count * width);
+}
+
 ChildRange ValueView::children() const
 {
     if (_form == ViewForm::Element)

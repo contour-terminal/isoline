@@ -1548,6 +1548,20 @@ TEST_CASE("Values.inPlaceSteps")
     CHECK(values->root(0).string().utf8() == "hi");
     CHECK(values->root(0).string().simpleEncoding() == SimpleEncoding::Utf16);
     CHECK(values->root(1).child(1).scalar<uint16_t>() == 0xbeef);
+    // packedElementBytes(): what a list of scalars holds, as stored; nothing for any other value.
+    CHECK(std::ranges::equal(values->root(1).packedElementBytes(), std::as_bytes(std::span { words })));
+    CHECK(values->root(0).packedElementBytes().empty());
+    CHECK(values->root(1).child(0).packedElementBytes().empty());
+    auto listOfStrings = ValueBuilder { types.arena(), std::vector { strings }, budgetOf() };
+    listOfStrings.begin(1).string("x").end();
+    auto const nodes = listOfStrings.finish();
+    REQUIRE(nodes.has_value());
+    CHECK(nodes->root(0).packedElementBytes().empty());
+    auto fixed = ValueBuilder { types.arena(), std::vector { types.fixedList(u16, 2) }, budgetOf() };
+    fixed.begin(2).scalar(1).scalar(2).end();
+    auto const pair = fixed.finish();
+    REQUIRE(pair.has_value());
+    CHECK(pair->root(0).packedElementBytes().size() == 4);
 
     // A host that leaves elements or bytes unwritten gets zeros there.
     auto partial = ValueBuilder { types.arena(), std::vector { shorts }, budgetOf() };

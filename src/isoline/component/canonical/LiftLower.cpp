@@ -519,6 +519,13 @@ namespace
         return 0; // uncovered(exhaustive-switch)
     }
 
+    /// Whether a scalar of @p rule is lowered into memory as its low bytes, unchanged: loweredScalar()
+    /// changes only a bool's and a float's bits, and a signed integer's only above its width.
+    [[nodiscard]] constexpr bool isStoredAsLowered(ScalarRule rule) noexcept
+    {
+        return rule == ScalarRule::Unsigned || rule == ScalarRule::Signed || rule == ScalarRule::Char;
+    }
+
     /// A scalar's bits as they are written (lower_flat_signed, maybe_scramble_nan32/64 in the
     /// DETERMINISTIC_PROFILE, a bool as 0 or 1): a signed integer sign-extended to 64 bits, which its
     /// core value or its bytes then take the low bits of.
@@ -1084,6 +1091,15 @@ namespace
             auto const& row = valueShapeRow(context().arena[element].kind);
             auto const flat = context().layouts[element.value].flat.front();
             auto writer = BlockWriter { context(), block, size };
+            // Integers and chars are lowered as they are stored, so on a little-endian host the packed
+            // elements are their own lowering: one copy, polled per granule as any other.
+            if (auto const packed = value.packedElementBytes();
+                std::endian::native == std::endian::little && !packed.empty() && isStoredAsLowered(row.rule))
+            {
+                if (auto put = writer.put(packed); !put)
+                    return put;
+                return writer.flush();
+            }
             for (auto const item: value.children())
             {
                 Require(item.kind() == context().arena[element].kind);

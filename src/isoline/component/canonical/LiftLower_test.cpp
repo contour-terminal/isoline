@@ -684,11 +684,36 @@ TEST_CASE("Lists.scalarsInOneCopy")
     auto const loweredShorts = lowered(scalars, { s16List }, shorts);
     CHECK(std::ranges::equal(side.memory().bytes().subspan(std::get<I32>(loweredShorts[0]).bits, 4),
                              littleEndian(0x8000'ffff, 4)));
+    // Bools and floats are lowered element by element (a bool as 0 or 1, a NaN canonical), not copied.
+    auto const loweredBools = lowered(scalars, { boolList }, bools);
+    CHECK(std::ranges::equal(side.memory().bytes().subspan(std::get<I32>(loweredBools[0]).bits, 4),
+                             bytesOf({ 0, 1, 1, 1 })));
+    auto const loweredFloats = lowered(scalars, { f32List }, floats);
+    CHECK(std::ranges::equal(side.memory().bytes().subspan(std::get<I32>(loweredFloats[0]).bits, 8),
+                             littleEndian(0x7fc0'0000'7fc0'0000, 8)));
     side.memory().put(0, littleEndian(0x0000'd800'0000'0041, 8));
     CHECK(trapIn(liftFlat(scalars, std::vector { charList }, std::vector<Value> { I32 { 0 }, I32 { 2 } }, 16))
           == trapOf(TrapCode::InvalidChar, "0xd800"));
     CHECK(side.budget().live()
           == bools.hostBytes() + floats.hostBytes() + shorts.hostBytes() + values.hostBytes());
+}
+
+TEST_CASE("Lists.elementwiseWriteFailureTraps")
+{
+    // A list of bools lowers element by element, through the same buffered writes: a write that fails
+    // mid-list traps there.
+    auto side = Side { FakeGuestMemoryOptions { .failAtWrite = 1 } };
+    auto const boolList = side.compound(ValueKind::List, { side.primitive(ValueKind::Bool) });
+    auto const values = side.build({ boolList }, [](ValueBuilder& builder) {
+        builder.begin(5000);
+        for (auto const index: std::views::iota(uint32_t { 0 }, uint32_t { 5000 }))
+            builder.scalar(index % 2);
+        builder.end();
+    });
+    auto context = side.context();
+    CHECK(trapIn(lowerFlat(context, std::vector { boolList }, rootsOf(values), MaxFlatParams, std::nullopt))
+              .code
+          == TrapCode::OutOfBounds);
 }
 
 TEST_CASE("Lists.lyingLengthTrapsBeforeAllocation")
