@@ -2,6 +2,8 @@
 #pragma once
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <cstdint>
 #include <expected>
@@ -57,6 +59,23 @@ inline constexpr auto Reference = EngineUnderTest {};
 [[nodiscard]] inline EngineUnderTest fast(Dispatch dispatch) noexcept
 {
     return EngineUnderTest { .dispatch = dispatch };
+}
+
+/// The fast interpreter under each available dispatch, one per run of the calling test case (a Catch2
+/// generator: call it once, at the test case's top level).
+[[nodiscard]] inline EngineUnderTest fastEngineOfEachDispatch()
+{
+    return fast(GENERATE(from_range(availableDispatches())));
+}
+
+/// The reference interpreter, then the fast one under each available dispatch, one per run of the calling
+/// test case (a Catch2 generator: call it once, at the test case's top level).
+[[nodiscard]] inline EngineUnderTest referenceAndFastEngineOfEachDispatch()
+{
+    auto engines = std::vector<EngineUnderTest> { Reference };
+    for (auto const dispatch: availableDispatches())
+        engines.push_back(fast(dispatch));
+    return GENERATE_COPY(from_range(engines));
 }
 
 /// One module instantiated on a fresh store, executed by one engine.

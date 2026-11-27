@@ -59,11 +59,13 @@ using isoline::fastinterpreter::FastInterpreter;
 using isoline::fastinterpreter::LoweringConfig;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
+using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::Harness;
 using isoline::fastinterpreter::testing::lowered;
 using isoline::fastinterpreter::testing::memoryInstruction;
 using isoline::fastinterpreter::testing::op;
 using isoline::fastinterpreter::testing::Reference;
+using isoline::fastinterpreter::testing::referenceAndFastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::validated;
 using isoline::runtime::Abrupt;
 using isoline::runtime::ExternValue;
@@ -97,21 +99,6 @@ using Results = std::expected<std::vector<Value>, Abrupt>;
 
 /// The bytes of a 64 KiB page.
 constexpr auto PageBytes = uint64_t { 65'536 };
-
-/// The fast interpreter under every available dispatch, one per run of the test case.
-[[nodiscard]] EngineUnderTest anyFastEngine()
-{
-    return fast(GENERATE(from_range(availableDispatches())));
-}
-
-/// Every engine: the reference interpreter, and the fast one under every available dispatch, one per run.
-[[nodiscard]] EngineUnderTest anyEngine()
-{
-    auto engines = std::vector<EngineUnderTest> { Reference };
-    for (auto const dispatch: availableDispatches())
-        engines.push_back(fast(dispatch));
-    return GENERATE_COPY(from_range(engines));
-}
 
 /// memory.grow of @p memory, dropping its result.
 [[nodiscard]] Bytes growAndDrop(uint32_t memory)
@@ -583,7 +570,7 @@ TEST_CASE("Memory.cacheRefreshedAfterEveryGrowPath")
     // Review Focus 3: whichever way memory 0 grows while a function runs, the function's next access sees
     // the grown memory, at its new size and, where the storage moved, at its new place: a store at the old
     // size lands, and a load of what was stored before the grow reads it back, not a moved-away buffer.
-    auto const engine = anyEngine();
+    auto const engine = referenceAndFastEngineOfEachDispatch();
     auto const [path, pathName] = GENERATE(from_range(growPaths()));
     auto const storage = GENERATE(Storage::Heap, Storage::Moving);
     INFO(pathName << (storage == Storage::Moving ? ", on a memory that moves" : ", on the heap"));
@@ -626,7 +613,7 @@ TEST_CASE("Memory.crossInstanceCallSwitchesMemory0")
 {
     // Instance A calls B's export, which stores to B's memory 0 and loads it back; A then loads its own: each
     // sees its own bytes, A's at an address B's smaller memory does not have.
-    auto const engine = anyEngine();
+    auto const engine = referenceAndFastEngineOfEachDispatch();
     auto const crossCall = GENERATE(CrossCall::Call, CrossCall::ReturnCall);
     INFO((crossCall == CrossCall::Call ? "call" : "return_call"));
     auto linked = Linked { engine };
@@ -684,7 +671,7 @@ TEST_CASE("Memory.boundsMatchReferenceAtTheEdges")
 {
     // Every scalar access at the edges of its memory: in bounds it gives the reference's value and leaves the
     // reference's bytes; out of bounds it traps with the reference's Trap, and writes nothing.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     for (auto const& edge: edgeCases())
     {
         INFO(edge.name);
@@ -703,7 +690,7 @@ TEST_CASE("Memory.generationSkipsUnchangedRefresh")
     // Memory 0 is read again only when some memory grew since it was last read (Store::memoryGeneration()):
     // a call that grows nothing refreshes nothing; a callee's memory.grow refreshes once, at the grow, so its
     // return to the caller finds the generation unchanged; a host's grow refreshes once, where it returns.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = ModuleBuilder {};
     module.type(FuncType { .params = {}, .results = { binary::I32 } });
     module.type(FuncType {});
@@ -748,7 +735,7 @@ TEST_CASE("Memory.sizeAndGrowMatchReference")
 {
     // memory.size and memory.grow of every address type, page size and memory index: the reference's pages,
     // its old size from a grow, and its -1 for a grow past the maximum, of the memory's address type.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     for (auto const type: { AddressType::I32, AddressType::I64 })
     {
         for (auto const pageSizeLog2: { uint8_t { 0 }, uint8_t { 16 } })
@@ -797,7 +784,7 @@ TEST_CASE("Memory.importedMemoryGrownByItsExporter")
 {
     // An imported memory of i64 addresses is memory 0 of the importer too: what the exporter's function
     // stores past the size it grew it from, the importer loads once the call returns, at the new size.
-    auto const engine = anyEngine();
+    auto const engine = referenceAndFastEngineOfEachDispatch();
     auto linked = Linked { engine };
     auto exporter = ModuleBuilder {};
     exporter.type(FuncType { .params = {}, .results = {} });
@@ -911,7 +898,7 @@ TEST_CASE("Memory.growOfAnAliasRefreshesMemory0")
 {
     // A module that imports one memory twice has it as memory 0 and memory 1: memory.grow 1 grows memory 0
     // too, which the next access of memory 0 sees at its new size.
-    auto const engine = anyEngine();
+    auto const engine = referenceAndFastEngineOfEachDispatch();
     auto linked = Linked { engine };
     auto exporter = ModuleBuilder {};
     exporter.memory(Limits { .min = 1, .max = 2, .addressType = AddressType::I32 });

@@ -58,6 +58,7 @@ using isoline::fastinterpreter::LoweringConfig;
 using isoline::fastinterpreter::MaximumGrownChunkSlots;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
+using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::Harness;
 using isoline::fastinterpreter::testing::lowered;
 using isoline::fastinterpreter::testing::op;
@@ -92,12 +93,6 @@ using Outcome = std::expected<void, Abrupt>;
 [[nodiscard]] Value i32(int32_t value)
 {
     return I32 { static_cast<uint32_t>(value) };
-}
-
-/// The fast engine under every available dispatch, one per run of the test case.
-[[nodiscard]] EngineUnderTest anyFastEngine()
-{
-    return fast(GENERATE(from_range(availableDispatches())));
 }
 
 /// The (i32) -> i32 type every recursive guest has.
@@ -347,7 +342,7 @@ TEST_CASE("Calls.sameExhaustionPointAsReference")
     // Whichever limit runs out first, and however the guest recurses, both engines stop at the same entry:
     // the same trap (or the same result, where a tail call never deepens), after the same steps and entries,
     // with nothing left charged.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto const limits = std::vector<std::pair<std::string, StoreLimits>> {
         { "maxCallDepth 50", StoreLimits { .maxCallDepth = 50 } },
         { "maxStackValues 1'000", StoreLimits { .maxStackValues = 1'000 } },
@@ -372,7 +367,7 @@ TEST_CASE("Calls.tiesFollowTheEntryOrder")
 {
     // Where the steps run out at the very entry the depth or the stack budget refuses, the FunctionEntry poll
     // comes first: StepLimitExceeded, on both engines, after the same steps.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     SECTION("a tail call into a costlier callee")
     {
         // f0 return_calls f1, whose frame is past the stack budget f0's fits: f0's charge is given back, and
@@ -437,7 +432,7 @@ TEST_CASE("Calls.tailCallReleasesBeforeCharging")
     auto const module0 = validated(module);
     auto const limits = StoreLimits { .maxStackValues = module0->frameCost(0) + module0->frameCost(1) };
     auto reference = Harness { module, Reference, limits };
-    auto harness = Harness { module, anyFastEngine(), limits };
+    auto harness = Harness { module, fastEngineOfEachDispatch(), limits };
     CHECK(reference.result(1) == i32(0));
     CHECK(harness.result(1) == i32(0));
     CHECK(harness.store().used(Limit::Steps) == reference.store().used(Limit::Steps));
@@ -448,7 +443,7 @@ TEST_CASE("Calls.hostReturnReplacesOutcomeOnInterrupt")
 {
     // A host function that interrupts the store and then returns success: its HostReturn poll replaces the
     // outcome, whether it was called or tail-called.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     for (auto const opcode: { uint8_t { 0x10 }, uint8_t { 0x12 } })
     {
         INFO("opcode " << int { opcode });
@@ -481,7 +476,7 @@ TEST_CASE("Calls.hostReentryNestsAndSharesSteps")
 {
     // Three levels of the guest, each the host's re-entry through HostContext::invoke: one step budget and
     // one depth count over all of them, as the reference counts them.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     for (auto const& limit: { StoreLimits {},
                               StoreLimits { .maxCallDepth = 2 },
                               StoreLimits { .maxSteps = 20 },
@@ -553,7 +548,7 @@ TEST_CASE("Calls.hostReentryNestsAndSharesSteps")
 TEST_CASE("Calls.hostArgumentsEscape")
 {
     // An exnref the guest hands a host survives every later sweep: the host may keep it past its frame.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = ModuleBuilder {};
     module.type(FuncType { .params = { binary::ExnRef }, .results = {} });
     module.importFunction("env", "keep", 0);
@@ -589,7 +584,7 @@ TEST_CASE("Calls.indirectCallTraps")
 {
     // An undefined, an uninitialized and a mistyped table element, and a null reference, trap before the
     // callee's FunctionEntry poll: the same trap and subject, the same steps and polls, as the reference.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = ModuleBuilder {};
     module.type(unaryI32());
     module.type(FuncType { .params = {}, .results = { binary::I32 } });
@@ -677,7 +672,7 @@ TEST_CASE("Calls.stackChargeIsReleasedOnTrap")
 {
     // However a call traps, in its callee, at its entry, at its resolution, in a host function or in a tail
     // call, every frame's charge is given back.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = ModuleBuilder {};
     module.type(unaryI32());
     module.importFunction("env", "fail", 0);
@@ -1031,7 +1026,7 @@ TEST_CASE("Calls.embedderCallsAHostFunctionDirectly")
 {
     // The embedder invokes an exported host function: one FunctionEntry poll, then the host frame with no
     // caller instance, and nothing left charged.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = ModuleBuilder {};
     module.type(unaryI32());
     module.importFunction("env", "host", 0);

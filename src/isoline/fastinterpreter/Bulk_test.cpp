@@ -34,6 +34,7 @@ using isoline::binary::AddressType;
 using isoline::binary::FuncType;
 using isoline::binary::Limits;
 using isoline::binary::Opcode;
+using isoline::binary::testing::Bytes;
 using isoline::binary::testing::code;
 using isoline::binary::testing::i32Const;
 using isoline::binary::testing::localGet;
@@ -44,6 +45,7 @@ using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::OperationId;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
+using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::handWritten;
 using isoline::fastinterpreter::testing::Harness;
 using isoline::fastinterpreter::testing::memoryInstruction;
@@ -75,12 +77,6 @@ constexpr auto LargeBytes = LargeGranules * BulkPollBytes;
 
 /// How far above its source the overlapping copy writes.
 constexpr auto CopyShift = uint64_t { 4'096 };
-
-/// The fast interpreter under every available dispatch, one per run of the test case.
-[[nodiscard]] EngineUnderTest anyFastEngine()
-{
-    return fast(GENERATE(from_range(availableDispatches())));
-}
 
 /// The large operations, each the function of the same index of largeOperations().
 enum class Large : uint8_t
@@ -232,7 +228,7 @@ TEST_CASE("Bulk.granulesMatchReference", "[memory]")
     // the last, which a model of their own confirms; and leaves exactly the reference's memory.
     // Memory-bound, so tagged [memory]: it runs apart, under the hard cap of the isoline_test_memory row; at
     // most three 64 MiB memories are live at once.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     for (auto const operation: { Large::Fill, Large::Copy })
     {
         INFO((operation == Large::Fill ? "memory.fill" : "memory.copy, the destination above the source"));
@@ -265,11 +261,11 @@ TEST_CASE("Bulk.granulesMatchReference", "[memory]")
     }
 }
 
-TEST_CASE("Bulk.stepLimitStopsAtTheSameGranule")
+TEST_CASE("Bulk.stepLimitStopsAtTheSameGranule", "[memory]")
 {
     // Unobserved, the countdown is the executor's alone until it commits: a step budget spent within a fill
     // stops it at the same granule as the reference, with the same steps taken and the same bytes written.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto const limits = StoreLimits { .maxSteps = 100 };
     auto reference = Harness { largeOperations(), Reference, limits };
     auto harness = Harness { largeOperations(), engine, limits };
@@ -288,7 +284,7 @@ TEST_CASE("Bulk.boundsCheckedBeforeAnyWrite")
 {
     // Every range is checked before the first write, as the reference checks it: a trapping fill, copy or
     // init writes nothing, and no range end overflows, a memory64 one whose end is past 2^64 included.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     constexpr auto Page = uint64_t { 65'536 };
     constexpr auto All = std::numeric_limits<uint64_t>::max();
     for (auto const type: { AddressType::I32, AddressType::I64 })
@@ -388,4 +384,72 @@ TEST_CASE("Bulk.memory32OperandsIgnoreTheSlotsHighBits")
           == Value { I32 { 0x5A5A'5A5A } });
     CHECK(harness.trap(0, { I64 { 0x0000'0000'0001'0000 }, I32 { 0x5A }, I64 { 0xFFFF'FFFF'0000'0001 } })
           == TrapCode::OutOfBoundsMemoryAccess);
+}
+
+TEST_CASE("Bulk.everyMemory32OperandIgnoresTheSlotsHighBits")
+{
+    // Code written by hand runs memory.copy and memory.init over i32 memory 0 from three slots holding i64s,
+    // high bits planted in one operand at a time: each operand, the destination, the source and the count, is
+    // read as its low 32 bits, so the operation goes on; read whole, any of them would be out of bounds.
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    constexpr auto High = uint64_t { 0xFFFF'FFFF'0000'0000 };
+    struct Row
+    {
+        char const* name;  ///< The operation.
+        OperationId id;    ///< Its operation.
+        Bytes instruction; ///< Its instruction, which the lowered body ends with.
+        uint64_t indices;  ///< Its immediate (indexPairWord()).
+    };
+    auto const rows = std::vector<Row> {
+        { .name = "memory.copy",
+          .id = OperationId::MemoryCopy,
+          .instruction = prefixed(10, { 0, 0 }),
+          .indices = 0 },
+        { .name = "memory.init",
+          .id = OperationId::MemoryInit,
+          .instruction = prefixed(8, { 0, 0 }),
+          .indices = 0 },
+        { .name = "memory.fill",
+          .id = OperationId::MemoryFill,
+          .instruction = prefixed(11, { 0 }),
+          .indices = 0 },
+    };
+    for (auto const& row: rows)
+    {
+        INFO(row.name);
+        auto const module = withSmallMemory(
+            isoline::fastinterpreter::testing::functionOf({ binary::I64, binary::I64, binary::I64 },
+                                                          {},
+                                                          {},
+                                                          code({ localGet(0),
+                                                                 op(0xA7),
+                                                                 localGet(1),
+                                                                 op(0xA7),
+                                                                 localGet(2),
+                                                                 op(0xA7),
+                                                                 row.instruction })),
+            AddressType::I32);
+        // By hand: the operation over s0, s1, s2; return s3.
+        auto const byHand = [dispatch, &row](LoweredModule const& lowered) {
+            REQUIRE(lowered.functions().front().frameSlots >= 4);
+            return handWritten(lowered,
+                               { headerWord(dispatch, row.id),
+                                 isoline::fastinterpreter::indexPairWord(0, 1),
+                                 2,
+                                 row.indices,
+                                 headerWord(dispatch, OperationId::Return),
+                                 3 });
+        };
+        auto harness = Harness { module, fast(dispatch), byHand };
+        // Destination 16, source 0 (of the segment, for memory.init), count 4.
+        auto const plain = std::array<uint64_t, 3> { 16, 0, 4 };
+        for (auto const planted: std::views::iota(std::size_t { 0 }, plain.size()))
+        {
+            INFO("high bits in operand " << planted);
+            auto arguments = std::vector<Value> {};
+            for (auto const operand: std::views::iota(std::size_t { 0 }, plain.size()))
+                arguments.emplace_back(I64 { plain[operand] | (operand == planted ? High : 0) });
+            CHECK(harness.outcome(0, arguments).has_value());
+        }
+    }
 }

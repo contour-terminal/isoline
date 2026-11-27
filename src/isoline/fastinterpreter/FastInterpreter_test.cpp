@@ -77,6 +77,7 @@ using isoline::fastinterpreter::OperationTable;
 using isoline::fastinterpreter::testing::encodingOf;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
+using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::functionOf;
 using isoline::fastinterpreter::testing::handWritten;
 using isoline::fastinterpreter::testing::Harness;
@@ -153,12 +154,6 @@ namespace
     return Ref { .kind = RefKind::Func,
                  .heap = { .kind = AbstractHeapType::Func },
                  .address = harness.function(0) };
-}
-
-/// The fast engine under every available dispatch, one per run of the test case.
-[[nodiscard]] EngineUnderTest anyFastEngine()
-{
-    return fast(GENERATE(from_range(availableDispatches())));
 }
 
 // --- The programs ----------------------------------------------------------------------------------------
@@ -330,7 +325,7 @@ struct CountDown
 
 TEST_CASE("FastInterpreter.runsArithmeticAndLoops")
 {
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     CHECK(Harness { factorial(), engine }.result(0, { i64(10) }) == i64(3'628'800));
     CHECK(Harness { fibonacci(), engine }.result(0, { i32(40) }) == i64(102'334'155));
     CHECK(Harness { factorial(), engine }.result(0, { i64(0) }) == i64(1));
@@ -338,7 +333,7 @@ TEST_CASE("FastInterpreter.runsArithmeticAndLoops")
 
 TEST_CASE("FastInterpreter.pollsLikeTheReference")
 {
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     for (auto const& shape: countDowns())
     {
         INFO(shape.name);
@@ -360,7 +355,7 @@ TEST_CASE("FastInterpreter.pollsLikeTheReference")
 
 TEST_CASE("FastInterpreter.stepLimitStopsAtTheSamePoll")
 {
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto const limits = StoreLimits { .maxSteps = 500 };
     for (auto const& shape: countDowns())
     {
@@ -393,7 +388,7 @@ TEST_CASE("FastInterpreter.commitsTheStepsOnEveryWayOut")
 {
     // On a store without an observer the countdown lives in the executor alone: what the store counts is
     // what the executor committed on its way out, by a return, a trap in code, or a trap at the entry.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     SECTION("a return, after every loop shape")
     {
         for (auto const& shape: countDowns())
@@ -482,7 +477,7 @@ TEST_CASE("FastInterpreter.interruptStopsASpin", "[threading]")
     // interrupt is the only thing that stops a spinning guest, so the bound on a broken one is its step
     // budget: 10^8 steps take a few seconds under ASan, far longer than the 5 ms the interrupt comes after,
     // and a guest that ran out of them ends StepLimitExceeded, which fails the test.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto harness = Harness { functionOf({}, {}, {}, blockOf(0x03, noValues(), br(0))),
                              engine,
                              StoreLimits { .maxSteps = 100'000'000 } };
@@ -492,7 +487,7 @@ TEST_CASE("FastInterpreter.interruptStopsASpin", "[threading]")
 
 TEST_CASE("FastInterpreter.floatEnvironmentIsPinned")
 {
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto harness = Harness { functionOf({ binary::F32, binary::F32 },
                                         { binary::F32 },
                                         {},
@@ -509,7 +504,7 @@ TEST_CASE("FastInterpreter.runsAFrameOverSixtyFiveThousandSlots")
 {
     // 35'000 v128 locals take two slots each, within the decoder's 50'000 locals: the three i64 locals after
     // them sit past slot 70'000, which no 16-bit slot index names.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     constexpr auto Vectors = uint32_t { 35'000 };
     auto locals = std::vector<ValueType>(Vectors, binary::V128);
     locals.insert(locals.end(), 3, binary::I64);
@@ -536,7 +531,7 @@ TEST_CASE("FastInterpreter.runsAFrameOverSixtyFiveThousandSlots")
 
 TEST_CASE("FastInterpreter.entryChargesAndReleases")
 {
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     SECTION("a return")
     {
         auto harness = Harness { factorial(), engine };
@@ -669,7 +664,7 @@ TEST_CASE("FastInterpreter.nullLocalsNameTheRunningInstancesTypes")
     // Type 1 repeats type 0, so the store interns both as one TypeId and type index 1 is not its TypeId: a
     // (ref null 1) local starts as the null of that TypeId, which a code shared by every store cannot bake
     // in.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto const concrete =
         ValueType { .kind = ValueKind::Ref,
                     .heap = HeapType { .kind = AbstractHeapType::Concrete, .typeIndex = 1 } };
@@ -692,7 +687,7 @@ TEST_CASE("FastInterpreter.nullLocalsNameTheRunningInstancesTypes")
 
 TEST_CASE("FastInterpreter.brTableTakesTheDefaultPastTheLabels")
 {
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     SECTION("every index past the labels, up to the largest")
     {
         // block $2 (block $1 (block $0 (br_table $0 $1 $2 (local.get 0))) 100 return) 101 return) 102
@@ -752,7 +747,7 @@ TEST_CASE("FastInterpreter.brTableTakesTheDefaultPastTheLabels")
 TEST_CASE("FastInterpreter.moveRangeCopiesOverlappingSlots")
 {
     // block (result i64 i64 i64) 1 10 20 30 br 0: the three values move down one slot, over themselves.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = ModuleBuilder {};
     module.type(FuncType { .params = {}, .results = { binary::I64, binary::I64, binary::I64 } });
     module.function(
@@ -770,7 +765,7 @@ TEST_CASE("FastInterpreter.immediateComparesReadThirtyTwoBits")
 {
     // An i32 immediate is stored zero-extended: -1 is 0xFFFF'FFFF, which compares as -1 only when read as 32
     // bits. As 64 bits, 1 < -1 would hold.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto const compared =
         functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), i32Const(-1), op(0x48) }));
     auto const fused = functionOf(
@@ -1334,7 +1329,7 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
 {
     // Each row of every lowering table runs on both engines, over sample operands: the same results, the
     // same traps, the same steps. Together the modules run every operation lowering emits.
-    auto agreement = Agreement { anyFastEngine() };
+    auto agreement = Agreement { fastEngineOfEachDispatch() };
 
     // Every Unary, Binary and BinaryImmediate row, over params of its operand types; a folding row's twin
     // with constants for its right operand.

@@ -58,6 +58,7 @@ using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::OperationId;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
+using isoline::fastinterpreter::testing::fastEngineOfEachDispatch;
 using isoline::fastinterpreter::testing::functionOf;
 using isoline::fastinterpreter::testing::handWritten;
 using isoline::fastinterpreter::testing::Harness;
@@ -83,12 +84,6 @@ namespace binary = isoline::binary;
 
 namespace
 {
-
-/// The fast interpreter under every available dispatch, one per run of the test case.
-[[nodiscard]] EngineUnderTest anyFastEngine()
-{
-    return fast(GENERATE(from_range(availableDispatches())));
-}
 
 /// The elements of the large table: two granules and a part.
 constexpr auto LargeElements = uint32_t { (2 * BulkPollElements) + 100 };
@@ -247,7 +242,7 @@ struct TableRun
 
 TEST_CASE("Tables.opsMatchReference")
 {
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     SECTION("table.grow refused at the store's limit: -1, the refusal recorded as Limit")
     {
         auto const limits = StoreLimits { .maxTableElements = LargeElements + 1 };
@@ -315,7 +310,7 @@ TEST_CASE("Tables.referencesKeepTheirHeap")
     // R6: type 1 repeats type 0, so the store interns both as one TypeId and type index 1 is not its TypeId.
     // A (ref null 1) table is set from an uninitialized (ref null 1) local, and from ref.null 1, then read
     // back: the null reaching the embedder, and the one the table holds, name the TypeId, as the reference's.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto const concrete =
         ValueType { .kind = ValueKind::Ref,
                     .nullable = Nullable::Yes,
@@ -359,7 +354,7 @@ TEST_CASE("Tables.brOnNullToALoopPolls")
     // Review Focus 2: br_on_null to a loop label, taken 100 times, polls at the loop's back-edge each time,
     // exactly where the reference does: (param i32 n) (local funcref r) loop: if n == 0 leave; n -= 1;
     // br_on_null r to the loop.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = functionOf({ binary::I32 },
                              { binary::I32 },
                              { binary::FuncRef },
@@ -534,6 +529,64 @@ TEST_CASE("Tables.table32OperandsIgnoreTheSlotsHighBits")
         CHECK(harness.trap(0, { I64 { 0 }, I64 { 0 }, I64 { 0x0000'0000'0000'0005 } })
               == TrapCode::OutOfBoundsTableAccess);
     }
+    SECTION("table.fill and table.init read every operand as 32 bits")
+    {
+        // High bits planted in one operand at a time: read whole, any would be out of bounds. table.fill's
+        // value is a funcref of two slots; table.init's source and count are i32s of its segment.
+        constexpr auto High = uint64_t { 0xFFFF'FFFF'0000'0000 };
+        auto const null =
+            Value { Ref { .kind = RefKind::Null, .heap = { .kind = AbstractHeapType::Func }, .address = 0 } };
+        {
+            auto const module = withTable(functionOf(
+                { binary::I64, binary::FuncRef, binary::I64 },
+                {},
+                {},
+                code({ localGet(0), op(0xA7), localGet(1), localGet(2), op(0xA7), prefixed(17, { 0 }) })));
+            // By hand: table.fill s0, s1, s3, #0; return s4.
+            auto const byHand = [dispatch](LoweredModule const& lowered) {
+                REQUIRE(lowered.functions().front().frameSlots >= 5);
+                return handWritten(lowered,
+                                   { headerWord(dispatch, OperationId::TableFill),
+                                     indexPairWord(0, 1),
+                                     3,
+                                     0,
+                                     headerWord(dispatch, OperationId::Return),
+                                     4 });
+            };
+            auto harness = Harness { module, fast(dispatch), byHand };
+            CHECK(harness.outcome(0, { I64 { High | 1 }, null, I64 { 2 } }).has_value());
+            CHECK(harness.outcome(0, { I64 { 1 }, null, I64 { High | 2 } }).has_value());
+        }
+        {
+            auto module = withTable(functionOf({ binary::I64, binary::I64, binary::I64 },
+                                               {},
+                                               {},
+                                               code({ localGet(0),
+                                                      op(0xA7),
+                                                      localGet(1),
+                                                      op(0xA7),
+                                                      localGet(2),
+                                                      op(0xA7),
+                                                      prefixed(12, { 1, 0 }) })));
+            // Segment 1, passive: function 0 twice.
+            module.element({ 0x01, 0x00, 0x02, 0x00, 0x00 });
+            // By hand: table.init s0, s1, s2, #(1, 0); return s3.
+            auto const byHand = [dispatch](LoweredModule const& lowered) {
+                REQUIRE(lowered.functions().front().frameSlots >= 4);
+                return handWritten(lowered,
+                                   { headerWord(dispatch, OperationId::TableInit),
+                                     indexPairWord(0, 1),
+                                     2,
+                                     indexPairWord(1, 0),
+                                     headerWord(dispatch, OperationId::Return),
+                                     3 });
+            };
+            auto harness = Harness { module, fast(dispatch), byHand };
+            CHECK(harness.outcome(0, { I64 { High | 1 }, I64 { 0 }, I64 { 2 } }).has_value());
+            CHECK(harness.outcome(0, { I64 { 1 }, I64 { High }, I64 { 2 } }).has_value());
+            CHECK(harness.outcome(0, { I64 { 1 }, I64 { 0 }, I64 { High | 2 } }).has_value());
+        }
+    }
     SECTION("table.grow reads its delta as 32 bits and writes -1 as 32 bits")
     {
         auto const module = withTable(
@@ -564,7 +617,7 @@ TEST_CASE("Tables.importedTablesComeFirst")
 {
     // Table 0 is imported, of i64 addresses and 2 elements; table 1 the module's own, of i32 addresses and 3:
     // table.size and table.grow take each table's own address type, the imported one's first.
-    auto const engine = anyFastEngine();
+    auto const engine = fastEngineOfEachDispatch();
     auto module = ModuleBuilder {};
     module.type(FuncType { .params = {}, .results = { binary::I64, binary::I32, binary::I64 } });
     module.importTable(

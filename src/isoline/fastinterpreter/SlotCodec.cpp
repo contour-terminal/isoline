@@ -33,19 +33,15 @@ runtime::Value loadValue(binary::ValueType const& type, std::span<Slot const> sl
     return runtime::decodeWords(type, words);
 }
 
-runtime::Ref loadReference(Slot const* slots) noexcept
+runtime::Ref loadReference(std::span<Slot const, 2> slots) noexcept
 {
-    auto const words = std::array<uint64_t, 2> { slots[0], slots[1] };
     return std::get<runtime::Ref>(
-        runtime::decodeWords(binary::ValueType { .kind = binary::ValueKind::Ref }, words));
+        runtime::decodeWords(binary::ValueType { .kind = binary::ValueKind::Ref }, slots));
 }
 
-void storeReference(runtime::Ref const& reference, Slot* slots) noexcept
+void storeReference(runtime::Ref const& reference, std::span<Slot, 2> slots) noexcept
 {
-    auto words = std::array<uint64_t, 2> {};
-    runtime::encodeWords(reference, words);
-    slots[0] = words[0];
-    slots[1] = words[1];
+    runtime::encodeWords(reference, slots);
 }
 
 std::array<Slot, 2> nullSlots(binary::HeapType moduleHeap, std::span<uint32_t const> instanceTypes) noexcept
