@@ -47,10 +47,11 @@ enum class VerifierErrorCode : uint8_t
     ReturnsDisagree,        ///< Two returns differ in their values' count or types.
     UseNotDominated,        ///< A value is used where its definition does not dominate the use.
     UnguardedAddress,       ///< A pointer is used that its GuardedUseTable row's guards did not define.
+    CountdownNotStored,     ///< A trap site is reached on a path where the live step countdown is not stored.
 };
 
 /// The last VerifierErrorCode enumerator.
-inline constexpr auto LastVerifierErrorCode = VerifierErrorCode::UnguardedAddress;
+inline constexpr auto LastVerifierErrorCode = VerifierErrorCode::CountdownNotStored;
 
 /// How many VerifierErrorCode enumerators there are.
 inline constexpr auto VerifierErrorCodeCount = std::size_t { std::to_underlying(LastVerifierErrorCode) } + 1;
@@ -88,6 +89,7 @@ inline constexpr auto VerifierErrorTable = std::to_array<VerifierErrorRow>({
     { .code = VerifierErrorCode::ReturnsDisagree, .text = "returns disagree" },
     { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
     { .code = VerifierErrorCode::UnguardedAddress, .text = "address not defined by its guard" },
+    { .code = VerifierErrorCode::CountdownNotStored, .text = "trap site with the countdown not stored" },
 });
 
 static_assert(
@@ -99,6 +101,52 @@ static_assert(
         return index == VerifierErrorCodeCount;
     }(),
     "VerifierErrorTable must hold one row per VerifierErrorCode, at the index of its enumerator");
+
+/// What an operation does to the step countdown's place in the execution state, which every trap site reads:
+/// a trap exits with the countdown the state holds, so the live one must be stored there before it.
+enum class CountdownRule : uint8_t
+{
+    Neutral,  ///< Nothing.
+    TrapSite, ///< May trap: the live countdown must be stored.
+    /// A trap site. The callee leaves the state holding its countdown, which the caller reloads: the state
+    /// stays stored, and the caller's countdown from before the call is stale.
+    Call,
+    Changes, ///< Defines a new live countdown that is not stored (poll).
+    Stores,  ///< Stores the live countdown, when its `field` is the step countdown (storeContext).
+    Reloads, ///< Loads the stored countdown as the live one, when its `field` is it (loadContext).
+};
+
+/// One operation whose CountdownRule its effect does not give.
+struct CountdownRuleRow
+{
+    Operation operation; ///< The operation.
+    CountdownRule rule;  ///< What it does to the countdown.
+};
+
+/// The operations whose rule is not their effect's: every MayTrap operation is a TrapSite and every Call one
+/// a Call; of the rest, these.
+inline constexpr auto CountdownRuleTable = std::to_array<CountdownRuleRow>({
+    { .operation = Operation::Trap, .rule = CountdownRule::TrapSite },
+    { .operation = Operation::PollStored, .rule = CountdownRule::TrapSite },
+    { .operation = Operation::EnterFrame, .rule = CountdownRule::TrapSite },
+    { .operation = Operation::Poll, .rule = CountdownRule::Changes },
+    { .operation = Operation::StoreContext, .rule = CountdownRule::Stores },
+    { .operation = Operation::LoadContext, .rule = CountdownRule::Reloads },
+});
+
+/// What @p operation does to the step countdown's place.
+[[nodiscard]] constexpr CountdownRule countdownRuleOf(Operation operation) noexcept
+{
+    for (auto const& row: CountdownRuleTable)
+        if (row.operation == operation)
+            return row.rule;
+    switch (effectOf(operation))
+    {
+        case Effect::MayTrap: return CountdownRule::TrapSite;
+        case Effect::Call: return CountdownRule::Call;
+        default: return CountdownRule::Neutral;
+    }
+}
 
 /// Why a function is not well-formed, and where.
 struct VerifierError
@@ -121,11 +169,15 @@ struct VerifierError
 /// its row says, a `type` immediate within its schema's types and a `field` immediate's ContextValue
 /// typed as its row says, an access's `size` fitting its type (at most as wide, a float exactly as wide,
 /// a sign extension only when narrower); each target a block other than the entry, passed as many
-/// arguments as it has parameters, of their types; every return of the same values' types. Removed
-/// instructions are skipped.
+/// arguments as it has parameters, of their types; every return of the same values' types; and every trap
+/// site (CountdownRule) reached on every path with the live step countdown stored: no poll since the last
+/// store or reload of it (a call leaves the callee's stored), where a block's entry is stored only when every
+/// edge into it leaves it stored (the entry's always is); a store of the countdown stores the one the block
+/// last polled or reloaded, when it did, and never one a call since made stale. Removed instructions are
+/// skipped.
 /// @param function The function, however it was built.
 /// @return Nothing; or the first fault: every block's structure is checked before any instruction's row,
-///         every row before the returns' agreement, and that before dominance.
+///         every row before the returns' agreement, that before dominance, and that before the countdown.
 [[nodiscard]] std::expected<void, VerifierError> verify(Function const& function);
 
 } // namespace isoline::compiler::intermediate

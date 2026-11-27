@@ -71,33 +71,34 @@ namespace
             _function { function },
             _context { context },
             _definitions { definitionsOf(function, context.memory) },
-            _operands { &context.memory }
+            _operands { &context.memory },
+            _poll { context }
         {
         }
 
         /// Folds every reachable block, in reverse postorder so that a value is folded before its uses.
         [[nodiscard]] PassOutcome run()
         {
-            auto poll = CancellationPoll { _context };
             auto const order = reversePostorderOf(_function, _context.memory);
             for (auto const block: order)
-            {
-                foldBlock(block);
-                if (auto polled = poll.step(_function.block(block).instructions.size() + 1); !polled)
-                    return polled;
-            }
+                if (auto folded = foldBlock(block); !folded)
+                    return folded;
             if (_edgesRemoved == EdgesRemoved::Some)
                 std::ignore = removeUnreachableBlocks(_function, _context.memory);
             return {};
         }
 
       private:
-        /// Folds the instructions of @p block in order, ending it at the first that always traps.
-        void foldBlock(BlockId block)
+        /// Folds the instructions of @p block in order, ending it at the first that always traps, polling the
+        /// cancellation per instruction.
+        /// @return Nothing; or Cancelled.
+        [[nodiscard]] PassOutcome foldBlock(BlockId block)
         {
             auto const count = _function.block(block).instructions.size();
             for (auto const position: std::views::iota(std::size_t { 0 }, count))
             {
+                if (auto polled = _poll.step(1); !polled)
+                    return polled;
                 auto const index = _function.block(block).instructions[position];
                 auto const& instruction = _function.instruction(index);
                 switch (instruction.operation)
@@ -106,16 +107,17 @@ namespace
                     case Operation::TrapIf:
                     case Operation::TrapIfSubject:
                         if (foldTrapIf(block, position, index) == BlockEnd::Ended)
-                            return;
+                            return {};
                         break;
                     case Operation::Branch: foldBranch(index); break;
                     case Operation::Switch: foldSwitch(index); break;
                     default:
                         if (foldOperation(block, position, index) == BlockEnd::Ended)
-                            return;
+                            return {};
                         break;
                 }
             }
+            return {};
         }
 
         /// The constant @p value is, if it is one.
@@ -233,6 +235,7 @@ namespace
         PassContext& _context;
         std::pmr::vector<uint32_t> _definitions;
         std::pmr::vector<uint64_t> _operands;            ///< The operands of the operation being folded.
+        CancellationPoll _poll;                          ///< Polled per instruction.
         EdgesRemoved _edgesRemoved = EdgesRemoved::None; ///< Then unreachable blocks are removed.
     };
 } // namespace

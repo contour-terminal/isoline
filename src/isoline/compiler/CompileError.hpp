@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include <isoline/Features.hpp>
+#include <isoline/compiler/intermediate/Verifier.hpp>
 
 namespace isoline::compiler
 {
@@ -28,10 +29,13 @@ enum class CompileErrorCode : uint8_t
     ArtifactTooLarge,       ///< The module's code exceeds its artifact cap (CompileLimits).
     BranchOutOfRange,       ///< A branch's displacement does not fit its encoding.
     Cancelled,              ///< The compile was cancelled (CompileCancellation).
+    /// A pass left a function ill-formed (intermediate::verify()): a compiler bug, caught before any of the
+    /// function's code is generated, so the module is refused rather than miscompiled.
+    InternalVerificationFailed,
 };
 
 /// The last CompileErrorCode enumerator.
-inline constexpr auto LastCompileErrorCode = CompileErrorCode::Cancelled;
+inline constexpr auto LastCompileErrorCode = CompileErrorCode::InternalVerificationFailed;
 
 /// How many CompileErrorCode enumerators there are.
 inline constexpr auto CompileErrorCodeCount = static_cast<std::size_t>(LastCompileErrorCode) + 1;
@@ -87,6 +91,9 @@ inline constexpr auto CompileErrorTable = std::to_array<CompileErrorRow>({
       .text = "branch out of range",
       .limit = ImplementationLimit::Yes },
     { .code = CompileErrorCode::Cancelled, .text = "compile cancelled", .limit = ImplementationLimit::No },
+    { .code = CompileErrorCode::InternalVerificationFailed,
+      .text = "internal compiler error: ill-formed intermediate code",
+      .limit = ImplementationLimit::No },
 });
 
 static_assert(
@@ -120,13 +127,18 @@ struct CompileError
     std::optional<uint32_t> function {};
     uint64_t requested = 0; ///< For a cap: what the input needed of it; 0 otherwise.
     uint64_t limit = 0;     ///< For a cap: what it allows; 0 otherwise.
+    /// InternalVerificationFailed: the pass after which the function failed to verify (its PassTable name,
+    /// static text), or "end" when only the pipeline's final verification ran; empty otherwise.
+    std::string_view pass {};
+    /// InternalVerificationFailed: the verifier's rule the function broke; none otherwise.
+    std::optional<intermediate::VerifierErrorCode> rule {};
 
     /// Whether both describe the same failure.
     [[nodiscard]] bool operator==(CompileError const&) const = default;
 };
 
-/// A one-line description of @p error: its row's text, then the feature, the function, and what was
-/// requested of which limit, each where the error names it.
+/// A one-line description of @p error: its row's text, then the feature, the function, what was requested of
+/// which limit, and the pass and the verifier's rule, each where the error names it.
 /// @param error The error.
 /// @return The description.
 [[nodiscard]] std::string describe(CompileError const& error);

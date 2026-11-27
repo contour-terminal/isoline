@@ -153,7 +153,7 @@ namespace
                             return fault(checked.error(), block, index);
             if (auto agreed = checkReturns(); !agreed)
                 return agreed;
-            return checkDominance();
+            return checkDominance().and_then([this] { return checkCountdown(); });
         }
 
       private:
@@ -595,6 +595,109 @@ namespace
                             return fault(VerifierErrorCode::UseNotDominated, block, index);
                     }
                 }
+            return {};
+        }
+
+        /// Whether the live step countdown is the one the execution state holds.
+        enum class Countdown : uint8_t
+        {
+            Stored,   ///< It is: a trap here exits with the right countdown.
+            Unstored, ///< A poll changed it since it was stored.
+        };
+
+        /// The countdown's state after @p block entered as @p entry, and, when @p fail is Yes, the first trap
+        /// site of it that finds the countdown unstored, or a store of a countdown the block superseded.
+        enum class Report : uint8_t
+        {
+            No,  ///< Only the state at the end.
+            Yes, ///< Faults too.
+        };
+
+        [[nodiscard]] std::expected<Countdown, VerifierError> countdownThrough(BlockId block,
+                                                                               Countdown entry,
+                                                                               Report report) const
+        {
+            auto state = entry;
+            auto live = std::optional<ValueId> {};  // the countdown the block last polled or reloaded
+            auto stale = std::optional<ValueId> {}; // the one that was live before the block's last call
+            auto const isCountdownField = [this](Instruction const& instruction) {
+                return _function.immediates(instruction.immediates)[0]
+                       == std::to_underlying(ContextValue::StepCountdown);
+            };
+            for (auto const index: _function.block(block).instructions)
+            {
+                auto const& instruction = _function.instruction(index);
+                if (instruction.operation == Operation::Removed)
+                    continue;
+                switch (countdownRuleOf(instruction.operation))
+                {
+                    case CountdownRule::Neutral: break;
+                    case CountdownRule::TrapSite:
+                        if (state == Countdown::Unstored && report == Report::Yes)
+                            return fault(VerifierErrorCode::CountdownNotStored, block, index);
+                        break;
+                    case CountdownRule::Call:
+                        if (state == Countdown::Unstored && report == Report::Yes)
+                            return fault(VerifierErrorCode::CountdownNotStored, block, index);
+                        stale = live;
+                        live.reset();
+                        break;
+                    case CountdownRule::Changes:
+                        state = Countdown::Unstored;
+                        live = _function.operands(instruction.results)[0];
+                        break;
+                    case CountdownRule::Stores:
+                        if (!isCountdownField(instruction))
+                            break;
+                        if (auto const stored = _function.operands(instruction.operands)[0];
+                            ((live && stored != *live) || (stale && stored == *stale))
+                            && report == Report::Yes)
+                            return fault(VerifierErrorCode::CountdownNotStored, block, index);
+                        state = Countdown::Stored;
+                        break;
+                    case CountdownRule::Reloads:
+                        if (!isCountdownField(instruction))
+                            break;
+                        state = Countdown::Stored;
+                        live = _function.operands(instruction.results)[0];
+                        break;
+                }
+            }
+            return state;
+        }
+
+        /// Whether every trap site finds the live countdown stored, on every path: a forward must-analysis
+        /// over one bit per block entry, which only ever falls from Stored to Unstored and is pushed to the
+        /// successors when it does, so each block is walked at most twice, and each edge followed at most
+        /// once, before the final walk that reports.
+        [[nodiscard]] std::expected<void, VerifierError> checkCountdown() const
+        {
+            auto& memory = _function.memory();
+            auto const graph = controlFlowGraphOf(_function, memory);
+            auto entries = std::pmr::vector<Countdown>(_function.blockCount(), Countdown::Stored, &memory);
+            auto worklist = std::pmr::vector<BlockId> { &memory };
+            for (auto const block: blocksOf(_function))
+                worklist.push_back(block);
+            while (!worklist.empty())
+            {
+                auto const block = worklist.back();
+                worklist.pop_back();
+                if (*countdownThrough(block, entries[std::to_underlying(block)], Report::No)
+                    == Countdown::Stored)
+                    continue;
+                for (auto const successor: graph.successors(block))
+                {
+                    auto& entry = entries[std::to_underlying(successor)];
+                    if (entry == Countdown::Unstored || std::to_underlying(successor) == 0)
+                        continue;
+                    entry = Countdown::Unstored;
+                    worklist.push_back(successor);
+                }
+            }
+            for (auto const block: blocksOf(_function))
+                if (auto walked = countdownThrough(block, entries[std::to_underlying(block)], Report::Yes);
+                    !walked)
+                    return std::unexpected { walked.error() };
             return {};
         }
 

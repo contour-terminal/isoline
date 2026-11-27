@@ -45,18 +45,17 @@ enum class Pass : uint8_t
 /// The last Pass enumerator.
 inline constexpr auto LastPass = Pass::EliminateDeadCode;
 
-/// Whether the pass manager verifies the function after each pass.
+/// When the pass manager verifies the function (intermediate::verify()).
 ///
-/// A pass that breaks the function is a compiler bug, so a failed verification is a precondition violation
-/// (Require), never a CompileError. Tests and debug builds pass Yes: every case that compiles runs the
-/// verifier after every pass, the differential fuzzer's included. A release build passes No: the verifier
-/// builds a dominator tree and walks every use, a cost of the same order as the passes themselves, six times
-/// over, and it checks the compiler rather than the guest, which validation already checked. (P5 Task 15's
-/// Compiler picks it by its build.)
-enum class VerifyAfterEachPass : uint8_t
+/// A pass that breaks the function is a compiler bug. Verification turns it into a refusal of the function,
+/// CompileErrorCode::InternalVerificationFailed naming the pass and the rule, so that miscompiled code never
+/// runs; it never aborts the process. A release build verifies once, at the end: one dominator tree and one
+/// walk of every use, against the passes' six. Tests and debug builds verify after every pass, so the error
+/// names the pass that broke the rule. (P5 Task 15's Compiler picks it by its build.)
+enum class Verification : uint8_t
 {
-    No,  ///< Trust the passes.
-    Yes, ///< Verify after each pass.
+    AtEnd,         ///< Once, after the last pass: a release compile.
+    AfterEachPass, ///< After every pass: tests and debug builds.
 };
 
 /// What every pass reads: the module, the configuration, the cancellation, the arena.
@@ -66,12 +65,13 @@ struct PassContext
     CompileConfig const& config;             ///< How it is compiled.
     CompileCancellation const& cancellation; ///< Polled every CancellationInterval units of work.
     std::pmr::memory_resource& memory;       ///< The compile's arena: every temporary allocates from it.
-    VerifyAfterEachPass verify = VerifyAfterEachPass::Yes; ///< Whether runPasses() verifies after each pass.
+    Verification verification = Verification::AtEnd; ///< When runPasses() verifies.
     uint32_t codeIndex = 0; ///< The function's index in the code section, for errors.
 };
 
-/// What a pass ends with: nothing, or Cancelled. A cancelled pass may leave the function half rewritten;
-/// the compile then discards it.
+/// What a pass ends with: nothing, or Cancelled; what runPasses() ends with may also be
+/// InternalVerificationFailed. A failed run may leave the function half rewritten; the compile then discards
+/// it.
 using PassOutcome = std::expected<void, CompileError>;
 
 /// A pass's entry point.
@@ -140,13 +140,13 @@ static_assert(
     }(),
     "every Pass must have a named row in PassTable");
 
-/// Runs @p passes over @p function in their order, verifying after each when the context says so (a failed
-/// verification is a precondition violation, the pass and the fault written to stderr first), then
+/// Runs @p passes over @p function in their order, verifying when the context says (Verification), then
 /// compacts the function (Function::compact()).
 /// @param function A well-formed function (intermediate::verify()).
 /// @param context What the passes read.
 /// @param passes The rows to run; PassTable for a compile.
-/// @return Nothing; or Cancelled, the function then half rewritten.
+/// @return Nothing; or Cancelled; or InternalVerificationFailed naming the pass ("end" when verified only at
+///         the end) and the rule, the function then ill-formed and not compacted.
 [[nodiscard]] PassOutcome runPasses(intermediate::Function& function,
                                     PassContext& context,
                                     std::span<PassRow const> passes);

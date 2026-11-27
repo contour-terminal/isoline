@@ -36,6 +36,8 @@ using isoline::compiler::intermediate::VerifierErrorCode;
 using isoline::compiler::intermediate::VerifierErrorCodeCount;
 using isoline::compiler::intermediate::VerifierErrorTable;
 using isoline::compiler::intermediate::verify;
+using isoline::runtime::PollSite;
+using isoline::runtime::TrapCode;
 
 namespace
 {
@@ -67,6 +69,35 @@ struct Fixture
     /// The index of the last instruction appended.
     [[nodiscard]] uint32_t last() const { return function.instructionCount() - 1; }
 };
+
+/// poll(@p countdown) at a loop's back edge, in the current block.
+ValueId poll(Fixture& fixture, ValueId countdown)
+{
+    return fixture.builder.emit(Operation::Poll,
+                                std::array { Type::I64 },
+                                std::array { countdown },
+                                std::array { uint64_t { std::to_underlying(PollSite::LoopBackEdge) } })[0];
+}
+
+/// storeContext(@p countdown) of the step countdown, in the current block.
+void storeCountdown(Fixture& fixture, ValueId countdown)
+{
+    std::ignore =
+        fixture.builder.emit(Operation::StoreContext,
+                             {},
+                             std::array { countdown },
+                             std::array { uint64_t { std::to_underlying(ContextValue::StepCountdown) } });
+}
+
+/// loadContext of the step countdown, in the current block.
+ValueId reloadCountdown(Fixture& fixture)
+{
+    return fixture.builder.emit(Operation::LoadContext,
+                                std::array { Type::I64 },
+                                {},
+                                std::array<uint64_t, 2> { std::to_underlying(ContextValue::StepCountdown),
+                                                          std::to_underlying(Type::I64) })[0];
+}
 
 /// verify()'s refusal of @p function; fails the test if it accepts.
 VerifierError refusal(Function const& function)
@@ -288,6 +319,14 @@ TEST_CASE("Verifier.rejectsEachErrorCode")
                                                      std::array<uint64_t, 4> { 0, 4, 0, 0 });
                   fixture.builder.ret({});
               } },
+        { .code = VerifierErrorCode::CountdownNotStored,
+          .build =
+              [](Fixture& fixture) {
+                  // A poll changes the countdown, and nothing stores it before the trap.
+                  auto const countdown = fixture.builder.addParameter(fixture.entry, Type::I64);
+                  std::ignore = poll(fixture, countdown);
+                  fixture.builder.trap(TrapCode::Unreachable);
+              } },
     };
     REQUIRE(rows.size() == VerifierErrorCodeCount);
     auto covered = std::set<VerifierErrorCode> {};
@@ -442,6 +481,7 @@ TEST_CASE("Verifier.everyCodeHasItsExactText")
         { .code = VerifierErrorCode::ReturnsDisagree, .text = "returns disagree" },
         { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
         { .code = VerifierErrorCode::UnguardedAddress, .text = "address not defined by its guard" },
+        { .code = VerifierErrorCode::CountdownNotStored, .text = "trap site with the countdown not stored" },
     });
     REQUIRE(expected.size() == VerifierErrorCodeCount);
     for (auto const index: std::views::iota(std::size_t { 0 }, VerifierErrorCodeCount))
@@ -813,5 +853,114 @@ TEST_CASE("Verifier.refusesTheRemainingShapes")
             fixture.builder.ret({});
         }
         CHECK(refusal(fixture.function).code == VerifierErrorCode::ArgumentCount);
+    }
+}
+
+TEST_CASE("Verifier.countdownIsStoredAtEveryTrapSite")
+{
+    // Every trap site (a trap, a trapIf, a MayTrap operation, a call) sees the live countdown stored, on
+    // every path: after a poll, a store of its result; a call leaves the callee's stored.
+    auto const trapIf = [](Fixture& fixture) {
+        std::ignore =
+            fixture.builder.emit(Operation::TrapIf,
+                                 {},
+                                 std::array { fixture.i32(1) },
+                                 std::array { uint64_t { std::to_underlying(TrapCode::Unreachable) } });
+        fixture.builder.ret({});
+    };
+    SECTION("a poll, then its result stored: accepted; not stored, or the old one stored: refused")
+    {
+        for (auto const store: { 0, 1, 2 })
+        {
+            INFO("store " << store);
+            auto fixture = Fixture {};
+            auto const countdown = fixture.builder.addParameter(fixture.entry, Type::I64);
+            auto const next = poll(fixture, countdown);
+            if (store == 1)
+                storeCountdown(fixture, next);
+            if (store == 2)
+                storeCountdown(fixture, countdown);
+            trapIf(fixture);
+            if (store == 1)
+                CHECK(verify(fixture.function).has_value());
+            else
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::CountdownNotStored);
+        }
+    }
+    SECTION("a call leaves the callee's countdown stored; storing the one from before the call is refused")
+    {
+        for (auto const storeStale: { false, true })
+        {
+            INFO("store the stale countdown " << storeStale);
+            auto fixture = Fixture {};
+            auto const countdown = fixture.builder.addParameter(fixture.entry, Type::I64);
+            auto const polled = poll(fixture, countdown);
+            storeCountdown(fixture, polled);
+            std::ignore = fixture.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+            if (storeStale)
+                storeCountdown(fixture, polled);
+            auto const divisor = fixture.i32(0);
+            std::ignore =
+                fixture.builder.emit(Operation::I32DivS, I32Result, std::array { divisor, divisor });
+            fixture.builder.ret({});
+            if (storeStale)
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::CountdownNotStored);
+            else
+                CHECK(verify(fixture.function).has_value());
+        }
+    }
+    SECTION("a reload of the countdown is the live one: storing it is accepted")
+    {
+        auto fixture = Fixture {};
+        std::ignore = fixture.builder.emit(Operation::Call, {}, {}, std::array { uint64_t { 0 } });
+        storeCountdown(fixture, reloadCountdown(fixture));
+        fixture.builder.trap(TrapCode::Unreachable);
+        CHECK(verify(fixture.function).has_value());
+    }
+    SECTION(
+        "a loop whose back edge polls: its header's trap sites need a store; a merge needs every edge stored")
+    {
+        // entry -> header(c); header: [store?] trapIf ...; branch -> latch | exit; latch: poll -> header.
+        for (auto const store: { false, true })
+        {
+            INFO("store " << store);
+            auto fixture = Fixture {};
+            auto& builder = fixture.builder;
+            auto const countdown = builder.addParameter(fixture.entry, Type::I64);
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const header = builder.createBlock();
+            auto const latch = builder.createBlock();
+            auto const exit = builder.createBlock();
+            auto const carried = builder.addParameter(header, Type::I64);
+            builder.jump(header, std::array { countdown });
+            builder.switchTo(header);
+            if (store)
+                storeCountdown(fixture, carried);
+            std::ignore = builder.emit(Operation::TrapIf,
+                                       {},
+                                       std::array { condition },
+                                       std::array { uint64_t { std::to_underlying(TrapCode::Unreachable) } });
+            builder.branch(condition, latch, {}, exit, {});
+            builder.switchTo(latch);
+            auto const next = poll(fixture, carried);
+            builder.jump(header, std::array { next });
+            builder.switchTo(exit);
+            builder.ret({});
+            if (store)
+                CHECK(verify(fixture.function).has_value());
+            else
+                CHECK(refusal(fixture.function)
+                      == VerifierError {
+                          .code = VerifierErrorCode::CountdownNotStored, .block = header, .instruction = 1 });
+        }
+    }
+    SECTION("the entry's countdown is the stored one, and a block no unstored edge enters keeps it")
+    {
+        auto fixture = Fixture {};
+        auto const next = fixture.builder.createBlock();
+        fixture.builder.jump(next, {});
+        fixture.builder.switchTo(next);
+        trapIf(fixture);
+        CHECK(verify(fixture.function).has_value());
     }
 }

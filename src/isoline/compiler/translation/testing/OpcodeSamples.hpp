@@ -92,9 +92,17 @@ struct OpcodeSample
     ModuleBuilder module;           ///< The module.
 };
 
+/// Where a sample's instruction runs.
+enum class Placement : uint8_t
+{
+    Body,   ///< In the function's body.
+    InLoop, ///< In a loop, after a br_if back to it: on a path where a poll changed the countdown.
+};
+
 /// A sample of every instruction of every feature compiledFeatures() holds, in OpcodeTable order. Fails the
 /// test when a compiled numeric row has no operation (numericOperationOf()).
-inline std::vector<OpcodeSample> everyCompiledOpcode()
+/// @param placement Where the instruction runs.
+inline std::vector<OpcodeSample> everyCompiledOpcode(Placement placement = Placement::Body)
 {
     using binary::I32;
     using binary::testing::drop;
@@ -198,6 +206,9 @@ inline std::vector<OpcodeSample> everyCompiledOpcode()
                 body = code({ body, constantOf(operand) });
             body = code({ body, opcodeBytes(info.opcode), drop() });
         }
+        if (placement == Placement::InLoop)
+            body =
+                code({ { 0x03, 0x40 }, localGet(0), { 0x0D, 0x00 }, body, { 0x0B } }); // loop br_if 0 … end
         auto builder = ModuleBuilder {};
         builder.type(FuncType { .params = {}, .results = {} });
         builder.type(FuncType { .params = { I32 }, .results = { I32 } });

@@ -41,7 +41,6 @@ namespace
       public:
         TrivialParameters(Function& function, PassContext& context):
             _function { function },
-            _context { context },
             _places { parameterPlacesOf(function, context.memory) },
             _incoming { incomingEdgesOf(function, context.memory) },
             _substitution { function.valueCount(), context.memory },
@@ -51,20 +50,21 @@ namespace
             _fates(function.valueCount(), ParameterFate::Kept, &context.memory),
             _stack { &context.memory },
             _frames { &context.memory },
-            _members { &context.memory }
+            _members { &context.memory },
+            _poll { context }
         {
         }
 
         [[nodiscard]] PassOutcome run()
         {
-            auto poll = CancellationPoll { _context };
             for (auto const blockIndex: std::views::iota(uint32_t { 1 }, _function.blockCount()))
             {
                 auto const block = BlockId { blockIndex };
                 for (auto const parameter: _function.operands(_function.block(block).parameters))
                     if (_order[std::to_underlying(parameter)] == Unnumbered)
-                        walkFrom(parameter);
-                if (auto polled = poll.step(_incoming.into(block).size() + 1); !polled)
+                        if (auto walked = walkFrom(parameter); !walked)
+                            return walked;
+                if (auto polled = _poll.step(1); !polled)
                     return polled;
             }
             if (_substitution.isEmpty())
@@ -114,12 +114,16 @@ namespace
             _frames.push_back(Frame { .parameter = parameter, .edge = 0 });
         }
 
-        /// Tarjan's walk from @p root, on an explicit stack.
-        void walkFrom(ValueId root)
+        /// Tarjan's walk from @p root, on an explicit stack, polling the cancellation per edge followed and
+        /// per parameter left.
+        /// @return Nothing; or Cancelled.
+        [[nodiscard]] PassOutcome walkFrom(ValueId root)
         {
             enter(root);
             while (!_frames.empty())
             {
+                if (auto polled = _poll.step(1); !polled)
+                    return polled;
                 auto& frame = _frames.back();
                 auto const parameter = frame.parameter;
                 auto const index = std::to_underlying(parameter);
@@ -145,6 +149,7 @@ namespace
                 if (_lowest[index] == _order[index])
                     closeGroup(parameter);
             }
+            return {};
         }
 
         /// Pops the group @p root heads off the stack and decides it.
@@ -194,7 +199,6 @@ namespace
         }
 
         Function& _function;
-        PassContext& _context;
         ParameterPlaces _places;
         IncomingEdges _incoming;
         Substitution _substitution;
@@ -207,6 +211,7 @@ namespace
         std::pmr::vector<ValueId> _members; ///< The group being decided.
         uint32_t _next = 0;                 ///< The next order to give.
         uint32_t _groups = 0;               ///< How many groups are closed.
+        CancellationPoll _poll;             ///< Polled per edge followed and per parameter left.
     };
 } // namespace
 

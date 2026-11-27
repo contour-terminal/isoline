@@ -15,6 +15,7 @@
 #include <memory_resource>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -38,6 +39,7 @@
 #include <isoline/compiler/machine/TargetDescription.hpp>
 #include <isoline/compiler/optimization/FoldingTable.hpp>
 #include <isoline/compiler/optimization/PassTable.hpp>
+#include <isoline/compiler/optimization/Rewrite.hpp>
 #include <isoline/compiler/translation/testing/OpcodeSamples.hpp>
 #include <isoline/compiler/translation/testing/Translation.hpp>
 #include <isoline/interpreter/Numerics.hpp>
@@ -45,7 +47,6 @@
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
-#include <isoline/runtime/testing/ContractViolation.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::binary::FuncType;
@@ -74,7 +75,7 @@ using isoline::compiler::optimization::PassOutcome;
 using isoline::compiler::optimization::PassRow;
 using isoline::compiler::optimization::PassTable;
 using isoline::compiler::optimization::runPasses;
-using isoline::compiler::optimization::VerifyAfterEachPass;
+using isoline::compiler::optimization::Verification;
 using isoline::compiler::translation::testing::oneFunction;
 using isoline::compiler::translation::testing::Options;
 using isoline::compiler::translation::testing::translateOf;
@@ -115,13 +116,13 @@ struct Passes
 
     /// The context of a run over a function allocating from @p memory.
     PassContext contextFor(std::pmr::memory_resource& memory,
-                           VerifyAfterEachPass verify = VerifyAfterEachPass::Yes)
+                           Verification verification = Verification::AfterEachPass)
     {
         return PassContext { .module = *module,
                              .config = config,
                              .cancellation = cancellation,
                              .memory = memory,
-                             .verify = verify,
+                             .verification = verification,
                              .codeIndex = 0 };
     }
 
@@ -130,6 +131,7 @@ struct Passes
     {
         auto context = contextFor(function.memory());
         auto const ran = runPasses(function, context, rows);
+        INFO((ran ? std::string {} : isoline::compiler::describe(ran.error())));
         REQUIRE(ran.has_value());
     }
 };
@@ -158,6 +160,9 @@ std::size_t countOf(Function const& function, Operation operation)
 {
     return listed(function, operation).size();
 }
+
+/// How many listed polls @p function has at @p site (defined with the poll tests).
+std::size_t pollsAt(Function const& function, PollSite site);
 
 /// How many listed instructions @p function has, of any operation but Removed.
 std::size_t instructionsOf(Function const& function)
@@ -625,6 +630,35 @@ TEST_CASE("Optimization.foldsWithReferenceSemantics")
         auto const constants = listed(function, Operation::F32Const);
         REQUIRE(constants.size() == 1);
         CHECK(function.immediates(function.instruction(constants[0]).immediates)[0] == 0x7FC0'0000);
+    }
+    SECTION("in a loop, i32.div_s(1, 0) folds to a trap right after the store of the polled countdown")
+    {
+        // (loop (br_if 0 (local.get 0)) (drop (i32.div_s (i32.const 1) (i32.const 0)))): the division runs on
+        // a path a back edge's poll reaches, so the countdown it traps with is stored first; folding keeps
+        // that store, which verify() checks (CountdownNotStored), right before the trap.
+        auto const translated = translateOf(oneFunction(FuncType { .params = { WasmI32 }, .results = {} },
+                                                        {},
+                                                        code::loop(code::code({ code::localGet(0),
+                                                                                code::brIf(0),
+                                                                                code::i32Const(1),
+                                                                                code::i32Const(0),
+                                                                                Bytes { 0x6D },
+                                                                                code::drop() }))));
+        auto& function = *translated->function;
+        Passes {}.run(function);
+        REQUIRE(countOf(function, Operation::Trap) == 1);
+        auto const trap = listed(function, Operation::Trap)[0];
+        CHECK(function.immediates(function.instruction(trap).immediates)[0]
+              == std::to_underlying(TrapCode::IntegerDivideByZero));
+        auto const holder = std::ranges::find_if(
+            std::views::iota(uint32_t { 0 }, function.blockCount()), [&](uint32_t block) {
+                return std::ranges::contains(function.block(BlockId { block }).instructions, trap);
+            });
+        auto const& instructions = function.block(BlockId { *holder }).instructions;
+        REQUIRE(instructions.size() >= 2);
+        CHECK(function.instruction(instructions[instructions.size() - 2]).operation
+              == Operation::StoreContext);
+        CHECK(pollsAt(function, PollSite::LoopBackEdge) == 1);
     }
     SECTION("i32.div_s(1, 0) translated folds to a trap of IntegerDivideByZero")
     {
@@ -1176,6 +1210,94 @@ TEST_CASE("Optimization.simplifiesControlFlow")
     }
 }
 
+namespace
+{
+
+/// Where the values of a function come from, told apart by that rather than by their IDs, which passes and
+/// compaction renumber: a constant's bits (a foldable operation on constants, evaluated through FoldingTable,
+/// counts as its result), a parameter of the entry by position, a block parameter that every edge passes one
+/// origin (itself aside) as that origin, and anything else as its operation over its operands' origins.
+class Origins
+{
+  public:
+    explicit Origins(Function const& function):
+        _function { function },
+        _definitions { optimization::definitionsOf(function, _memory) },
+        _places { optimization::parameterPlacesOf(function, _memory) },
+        _incoming { optimization::incomingEdgesOf(function, _memory) }
+    {
+    }
+
+    /// The origin of @p value.
+    std::string of(ValueId value)
+    {
+        auto const key = std::to_underlying(value);
+        if (auto const known = _known.find(key); known != _known.end())
+            return known->second;
+        if (!_visiting.insert(key).second)
+            return {}; // a parameter passed itself around a loop
+        auto origin = compute(value);
+        _visiting.erase(key);
+        _known.emplace(key, origin);
+        return origin;
+    }
+
+  private:
+    std::string compute(ValueId value)
+    {
+        auto const definition = _definitions[std::to_underlying(value)];
+        if (definition != isoline::compiler::intermediate::Unnumbered)
+        {
+            auto const& instruction = _function.instruction(definition);
+            if (auto const bits = optimization::constantOf(_function, _definitions, value))
+                return "c" + std::to_string(*bits);
+            auto operands = std::vector<std::string> {};
+            auto bits = std::vector<uint64_t> {};
+            for (auto const operand: _function.operands(instruction.operands))
+            {
+                operands.push_back(of(operand));
+                if (operands.back().starts_with('c'))
+                    bits.push_back(std::stoull(operands.back().substr(1)));
+            }
+            if (auto const row = foldingRowOf(instruction.operation); row && bits.size() == operands.size())
+                if (auto const folded = row->kernel(bits, instruction.type))
+                    return "c" + std::to_string(*folded);
+            auto text = std::string { intermediate::nameOf(instruction.operation) } + "(";
+            for (auto const& operand: operands)
+                text += operand + ",";
+            return text + ")";
+        }
+        auto const block = _places.block[std::to_underlying(value)];
+        auto const position = _places.position[std::to_underlying(value)];
+        if (block == 0)
+            return "p" + std::to_string(position);
+        auto passed = std::set<std::string> {};
+        for (auto const& edge: _incoming.into(BlockId { block }))
+        {
+            auto const argument = _function.operands(isoline::compiler::intermediate::OperandRange {
+                .begin = edge.arguments + position, .count = 1 })[0];
+            if (auto origin = of(argument); !origin.empty())
+                passed.insert(std::move(origin));
+        }
+        if (passed.size() == 1)
+            return *passed.begin();
+        auto text = std::string { "merge(" };
+        for (auto const& origin: passed)
+            text += origin + ",";
+        return text + ")";
+    }
+
+    std::pmr::unsynchronized_pool_resource _memory {};
+    Function const& _function;
+    std::pmr::vector<uint32_t> _definitions;
+    optimization::ParameterPlaces _places;
+    optimization::IncomingEdges _incoming;
+    std::map<uint32_t, std::string> _known {};
+    std::set<uint32_t> _visiting {};
+};
+
+} // namespace
+
 TEST_CASE("Optimization.passesKeepEveryGuard")
 {
     // The guards' lowering contract (intermediate/Guards.hpp) on every edge row: each pass, then the whole
@@ -1189,20 +1311,26 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
         std::to_array({ Operation::CheckMemory, Operation::CheckTable, Operation::CheckDispatch });
     auto const accesses = std::to_array(
         { Operation::Load, Operation::Store, Operation::LoadTableElement, Operation::LoadDispatchType });
-    /// The guards and accesses of @p function with their immediates, in block order.
+    /// The guards and accesses of @p function with their immediates, the guards with the origins of their
+    /// index, base and bound (Origins), in block order.
     auto const signatureOf = [&](Function const& function) {
-        auto found = std::vector<std::pair<Operation, std::vector<uint64_t>>> {};
+        auto origins = Origins { function };
+        auto found = std::vector<std::tuple<Operation, std::vector<uint64_t>, std::vector<std::string>>> {};
         for (auto const block: std::views::iota(uint32_t { 0 }, function.blockCount()))
             for (auto const index: function.block(BlockId { block }).instructions)
             {
                 auto const& instruction = function.instruction(index);
-                if (std::ranges::contains(guards, instruction.operation)
-                    || std::ranges::contains(accesses, instruction.operation))
-                {
-                    auto const immediates = function.immediates(instruction.immediates);
-                    found.emplace_back(instruction.operation,
-                                       std::vector<uint64_t>(immediates.begin(), immediates.end()));
-                }
+                auto const isGuard = std::ranges::contains(guards, instruction.operation);
+                if (!isGuard && !std::ranges::contains(accesses, instruction.operation))
+                    continue;
+                auto const immediates = function.immediates(instruction.immediates);
+                auto operands = std::vector<std::string> {};
+                if (isGuard)
+                    for (auto const operand: function.operands(instruction.operands))
+                        operands.push_back(origins.of(operand));
+                found.emplace_back(instruction.operation,
+                                   std::vector<uint64_t>(immediates.begin(), immediates.end()),
+                                   std::move(operands));
             }
         return found;
     };
@@ -1234,9 +1362,32 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
     {
         INFO("memory edge index " << edge.index << " offset " << edge.offset << " size " << edge.size);
         checkEveryPass([&](Fixture& fixture) {
+            // The base and the bound reach the checks through a merge and a loop header, as context values
+            // do: entry(base, bound, c) -> left | right -> merge(b, d) -> header(b, d) ... -> header | done.
             auto& builder = fixture.builder;
-            auto const base = builder.addParameter(fixture.entry, Type::Pointer);
-            auto const bound = builder.addParameter(fixture.entry, Type::I64);
+            auto const entryBase = builder.addParameter(fixture.entry, Type::Pointer);
+            auto const entryBound = builder.addParameter(fixture.entry, Type::I64);
+            auto const condition = builder.addParameter(fixture.entry, Type::I32);
+            auto const left = builder.createBlock();
+            auto const right = builder.createBlock();
+            auto const merge = builder.createBlock();
+            auto const header = builder.createBlock();
+            auto const mergedBase = builder.addParameter(merge, Type::Pointer);
+            auto const mergedBound = builder.addParameter(merge, Type::I64);
+            auto const base = builder.addParameter(header, Type::Pointer);
+            auto const bound = builder.addParameter(header, Type::I64);
+            auto const entryValues = std::array { entryBase, entryBound };
+            auto const mergedValues = std::array { mergedBase, mergedBound };
+            auto const headerValues = std::array { base, bound };
+            builder.branch(condition, left, {}, right, {});
+            for (auto const side: { left, right })
+            {
+                builder.switchTo(side);
+                builder.jump(merge, entryValues);
+            }
+            builder.switchTo(merge);
+            builder.jump(header, mergedValues);
+            builder.switchTo(header);
             auto const bits = edge.indexType == Type::I32 ? edge.index & 0xFFFF'FFFF : edge.index;
             auto const index = constantIndex(fixture, edge.indexType, bits);
             auto const checkOf = [&](uint64_t size) {
@@ -1255,6 +1406,13 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
             std::ignore = loaded;
             // A call (a stub that may grow the memory) between two equal checks: both stay.
             std::ignore = builder.emit(Operation::CallStub, {}, {}, std::array { uint64_t { 0 } });
+            std::ignore = builder.emit(
+                Operation::LoadContext,
+                std::array { Type::I64 },
+                {},
+                std::array<uint64_t, 2> {
+                    std::to_underlying(isoline::compiler::intermediate::ContextValue::StepCountdown),
+                    std::to_underlying(Type::I64) });
             auto const second = checkOf(edge.size);
             std::ignore = builder.emit(Operation::Store,
                                        {},
@@ -1272,6 +1430,9 @@ TEST_CASE("Optimization.passesKeepEveryGuard")
                                        std::array<uint64_t, 4> { 0, 1, 0, std::to_underlying(Type::I32) });
             builder.jump(exit, {});
             builder.switchTo(exit);
+            auto const done = builder.createBlock();
+            builder.branch(condition, header, headerValues, done, {});
+            builder.switchTo(done);
             builder.ret({});
         });
     }
@@ -1316,60 +1477,70 @@ TEST_CASE("Optimization.everyCompiledOpcodeSurvivesThePasses")
     // Every instruction the compiler compiles, on constant operands where it takes any (so folding has work:
     // zero divisors trap, branches on constants are taken), in both modes: every pass leaves the function
     // well-formed (verified after each), and every reachable poll stays.
+    // Each also inside a loop, after a br_if back to it, where every trap site needs the polled countdown
+    // stored (intermediate::verify(): translateOf() checks it before the passes, runPasses() after each).
+    using isoline::compiler::translation::testing::Placement;
     auto samples = 0;
-    for (auto const mode: { ExecutionMode::Production, ExecutionMode::Deterministic })
-        for (auto const& sample: isoline::compiler::translation::testing::everyCompiledOpcode())
-        {
-            INFO(sample.info->text << (mode == ExecutionMode::Deterministic ? ", deterministic" : ""));
-            auto const translated = translateOf(sample.module, Options { .mode = mode });
-            REQUIRE(translated->function.has_value());
-            auto& function = *translated->function;
-            auto const entryPolls = pollsAt(function, PollSite::FunctionEntry);
-            Passes {}.run(function);
-            CHECK(pollsAt(function, PollSite::FunctionEntry) == entryPolls);
-            CHECK(countOf(function, Operation::EnterFrame) == 1);
-            ++samples;
-        }
-    CHECK(samples == 2 * 201);
+    for (auto const placement: { Placement::Body, Placement::InLoop })
+        for (auto const mode: { ExecutionMode::Production, ExecutionMode::Deterministic })
+            for (auto const& sample: isoline::compiler::translation::testing::everyCompiledOpcode(placement))
+            {
+                INFO(sample.info->text << (mode == ExecutionMode::Deterministic ? ", deterministic" : "")
+                                       << (placement == Placement::InLoop ? ", in a loop" : ""));
+                auto const translated = translateOf(sample.module, Options { .mode = mode });
+                REQUIRE(translated->function.has_value());
+                auto& function = *translated->function;
+                auto const entryPolls = pollsAt(function, PollSite::FunctionEntry);
+                Passes {}.run(function);
+                CHECK(pollsAt(function, PollSite::FunctionEntry) == entryPolls);
+                CHECK(countOf(function, Operation::EnterFrame) == 1);
+                ++samples;
+            }
+    CHECK(samples == 4 * 201);
 }
 
 TEST_CASE("Optimization.verifiesAfterEveryPass")
 {
-    // A pass row that leaves a block without its terminator. Without verification the run completes; with it,
-    // the run fails at that row (Contract.Optimization.brokenPassIsCaught).
+    // A pass row that leaves a block without its terminator, followed by a healthy one. After each pass, the
+    // run is refused naming the broken row; verified only at the end, it is refused naming the end. Either
+    // way an error, never an abort, and the function is not compacted.
     auto const breakTerminator = [](Function& function, PassContext&) -> PassOutcome {
         function.remove(*function.terminator(BlockId { 0 }));
         return {};
     };
-    auto const broken =
-        std::to_array<PassRow>({ { .pass = Pass::FoldConstants, .name = "broken", .run = breakTerminator } });
-    auto fixture = Fixture {};
-    fixture.builder.ret({});
-    auto passes = Passes {};
-    auto context = passes.contextFor(fixture.memory, VerifyAfterEachPass::No);
-    CHECK(runPasses(fixture.function, context, broken).has_value());
-    CHECK_FALSE(verify(fixture.function).has_value());
+    auto const rows = std::to_array<PassRow>({
+        { .pass = Pass::FoldConstants, .name = "broken", .run = breakTerminator },
+        PassTable[0],
+    });
+    struct Row
+    {
+        Verification verification;
+        std::string_view pass;
+    };
+    for (auto const& row:
+         std::to_array<Row>({ { .verification = Verification::AfterEachPass, .pass = "broken" },
+                              { .verification = Verification::AtEnd, .pass = "end" } }))
+    {
+        INFO(row.pass);
+        auto fixture = Fixture {};
+        fixture.builder.ret({});
+        auto passes = Passes {};
+        passes.config = CompileConfig { TargetDescription {}, ExecutionMode::Production };
+        auto context = passes.contextFor(fixture.memory, row.verification);
+        context.codeIndex = 5;
+        auto const ran = runPasses(fixture.function, context, rows);
+        REQUIRE_FALSE(ran.has_value());
+        CHECK(ran.error()
+              == isoline::compiler::CompileError {
+                  .code = CompileErrorCode::InternalVerificationFailed,
+                  .function = 5,
+                  .pass = row.pass,
+                  .rule = isoline::compiler::intermediate::VerifierErrorCode::MissingTerminator });
+    }
     // Every row of the table keeps a well-formed function well-formed (verified after each).
     auto healthy = Fixture {};
     healthy.builder.ret({});
-    passes.run(healthy.function);
-}
-
-TEST_CASE("Contract.Optimization.brokenPassIsCaught", "[.contract]")
-{
-    isoline::runtime::testing::endAtContractViolation();
-    auto const breakTerminator = [](Function& function, PassContext&) -> PassOutcome {
-        function.remove(*function.terminator(BlockId { 0 }));
-        return {};
-    };
-    auto const broken =
-        std::to_array<PassRow>({ { .pass = Pass::FoldConstants, .name = "broken", .run = breakTerminator } });
-    auto fixture = Fixture {};
-    fixture.builder.ret({});
-    auto passes = Passes {};
-    auto context = passes.contextFor(fixture.memory, VerifyAfterEachPass::Yes);
-    std::ignore = runPasses(fixture.function, context, broken);
-    FAIL("SURVIVED: a pass that broke the function");
+    Passes {}.run(healthy.function);
 }
 
 TEST_CASE("Optimization.cancellationStopsThePasses")
@@ -1517,6 +1688,24 @@ void deadLoop(Fixture& fixture, uint32_t width)
     builder.ret({});
 }
 
+/// One loop header of a parameter that @p width + 1 edges pass back as it is, from a switch: a parameter as
+/// wide as Tarjan's walk and the group's decision get.
+void wideLoopHeader(Fixture& fixture, uint32_t width)
+{
+    auto& builder = fixture.builder;
+    auto const input = builder.addParameter(fixture.entry, Type::I32);
+    auto const header = builder.createBlock();
+    auto const exit = builder.createBlock();
+    auto const carried = builder.addParameter(header, Type::I32);
+    builder.jump(header, std::array { fixture.constant(Type::I32, 3) });
+    builder.switchTo(header);
+    auto const passed = std::array { carried };
+    auto cases = std::vector<BranchTo>(width, BranchTo { header, passed });
+    builder.switchOn(input, cases, BranchTo { exit, {} });
+    builder.switchTo(exit);
+    builder.ret(std::array { carried });
+}
+
 /// A shape a pass is timed on.
 struct TimedShape
 {
@@ -1534,6 +1723,9 @@ std::vector<TimedShape> timedShapes()
     };
     return {
         { "nested loops of trivial parameters", alone(Pass::RemoveTrivialParameters), nestedLoops },
+        { "a loop header passed back by a wide switch",
+          alone(Pass::RemoveTrivialParameters),
+          wideLoopHeader },
         { "a chain of constant adds", alone(Pass::FoldConstants), constantChain },
         { "forwarding blocks and jump chains", alone(Pass::SimplifyControlFlow), forwardingAndChains },
         { "a loop of dead parameters and adds", alone(Pass::EliminateDeadCode), deadLoop },
@@ -1554,7 +1746,7 @@ std::vector<double> secondsOf(TimedShape const& shape, std::span<uint32_t const>
             auto fixture = Fixture {};
             shape.build(fixture, size);
             auto passes = Passes {};
-            auto context = passes.contextFor(fixture.memory, VerifyAfterEachPass::No);
+            auto context = passes.contextFor(fixture.memory, Verification::AtEnd);
             auto const start = std::chrono::steady_clock::now();
             auto const ran = runPasses(fixture.function, context, shape.rows);
             auto const seconds =
@@ -1571,23 +1763,39 @@ TEST_CASE("Optimization.everyPassPollsTheCancellation")
 {
     // Each pass on its own, cancelled before it starts, on a function of more work than one interval: it
     // stops with Cancelled, naming the function, rather than running to its end (the bounds-check pass, the
-    // identity until P5 Task 8, does no work).
-    for (auto const& row: PassTable)
+    // identity until P5 Task 8, does no work). Besides many blocks, the work of one walk (a loop header
+    // 70'000 edges wide) and of one block (70'000 instructions), so that a poll per block alone does not
+    // suffice.
+    struct Shape
     {
-        if (row.pass == Pass::EliminateBoundsChecks)
-            continue;
-        INFO(row.name);
-        auto fixture = Fixture {};
-        nestedLoops(fixture, 70'000);
-        auto passes = Passes {};
-        passes.cancellation.cancel();
-        auto context = passes.contextFor(fixture.memory);
-        context.codeIndex = 7;
-        auto const ran = row.run(fixture.function, context);
-        REQUIRE_FALSE(ran.has_value());
-        CHECK(ran.error().code == CompileErrorCode::Cancelled);
-        CHECK(ran.error().function == 7U);
-    }
+        std::string_view name;
+        void (*build)(Fixture&, uint32_t);
+        std::vector<Pass> passes;
+    };
+    auto const everyPass = std::vector<Pass> {
+        Pass::RemoveTrivialParameters, Pass::FoldConstants, Pass::SimplifyControlFlow, Pass::EliminateDeadCode
+    };
+    auto const shapes = std::to_array<Shape>({
+        { "nested loops", nestedLoops, everyPass },
+        { "a wide loop header", wideLoopHeader, { Pass::RemoveTrivialParameters } },
+        { "one long block", constantChain, { Pass::FoldConstants } },
+    });
+    for (auto const& shape: shapes)
+        for (auto const pass: shape.passes)
+        {
+            auto const row = rowOf(pass);
+            INFO(shape.name << ", " << row[0].name);
+            auto fixture = Fixture {};
+            shape.build(fixture, 70'000);
+            auto passes = Passes {};
+            passes.cancellation.cancel();
+            auto context = passes.contextFor(fixture.memory);
+            context.codeIndex = 7;
+            auto const ran = row[0].run(fixture.function, context);
+            REQUIRE_FALSE(ran.has_value());
+            CHECK(ran.error().code == CompileErrorCode::Cancelled);
+            CHECK(ran.error().function == 7U);
+        }
 }
 
 TEST_CASE("Optimization.deepNestingUsesNoRecursion")
@@ -1614,7 +1822,7 @@ TEST_CASE("Optimization.passMemoryIsLinear")
             auto fixture = Fixture {};
             shape.build(fixture, size);
             auto passes = Passes {};
-            auto context = passes.contextFor(fixture.memory, VerifyAfterEachPass::No);
+            auto context = passes.contextFor(fixture.memory, Verification::AtEnd);
             auto const before = fixture.memory.allocated();
             REQUIRE(runPasses(fixture.function, context, shape.rows).has_value());
             bytes[position] = fixture.memory.allocated() - before;
@@ -1647,7 +1855,7 @@ TEST_CASE("Optimization.linearOnLongChains", "[.perf]")
         auto fixture = Fixture {};
         builder(fixture, 1'000'000);
         auto passes = Passes {};
-        auto context = passes.contextFor(fixture.memory, VerifyAfterEachPass::No);
+        auto context = passes.contextFor(fixture.memory, Verification::AtEnd);
         auto const start = std::chrono::steady_clock::now();
         auto const ran = runPasses(fixture.function, context);
         auto const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();

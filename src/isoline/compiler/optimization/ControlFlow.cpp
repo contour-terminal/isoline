@@ -79,7 +79,8 @@ namespace
             _forwards(function.blockCount(), Forward {}, &context.memory),
             _pool { &context.memory },
             _path { &context.memory },
-            _scratch { &context.memory }
+            _scratch { &context.memory },
+            _poll { context }
         {
         }
 
@@ -87,15 +88,15 @@ namespace
         /// @return How many it redirected; or Cancelled.
         [[nodiscard]] std::expected<uint32_t, CompileError> run()
         {
-            findForwardingBlocks();
-            auto poll = CancellationPoll { _context };
+            if (auto found = findForwardingBlocks(); !found)
+                return std::unexpected { found.error() };
             auto redirected = uint32_t { 0 };
             for (auto const blockIndex: std::views::iota(uint32_t { 0 }, _function.blockCount()))
             {
                 auto const block = BlockId { blockIndex };
                 if (auto const index = _function.terminator(block))
                     redirected += redirect(*index);
-                if (auto polled = poll.step(_function.block(block).instructions.size() + 1); !polled)
+                if (auto polled = _poll.step(_function.block(block).instructions.size() + 1); !polled)
                     return std::unexpected { polled.error() };
             }
             return redirected;
@@ -114,18 +115,26 @@ namespace
             return BlockId { static_cast<uint32_t>(_function.immediates(jump.immediates)[0]) };
         }
 
-        /// Marks every block that forwards Unresolved.
-        void findForwardingBlocks()
+        /// Marks every block that forwards Unresolved, polling the cancellation per block and instruction.
+        /// @return Nothing; or Cancelled.
+        [[nodiscard]] PassOutcome findForwardingBlocks()
         {
             auto uses = std::pmr::vector<uint32_t>(_function.valueCount(), 0, &_context.memory);
             for (auto const blockIndex: std::views::iota(uint32_t { 0 }, _function.blockCount()))
-                for (auto const index: _function.block(BlockId { blockIndex }).instructions)
+            {
+                auto const& instructions = _function.block(BlockId { blockIndex }).instructions;
+                for (auto const index: instructions)
                     if (auto const& instruction = _function.instruction(index);
                         instruction.operation != Operation::Removed)
                         for (auto const operand: _function.operands(instruction.operands))
                             ++uses[std::to_underlying(operand)];
+                if (auto polled = _poll.step(instructions.size() + 1); !polled)
+                    return polled;
+            }
             for (auto const blockIndex: std::views::iota(uint32_t { 1 }, _function.blockCount()))
             {
+                if (auto polled = _poll.step(1); !polled)
+                    return polled;
                 auto const block = BlockId { blockIndex };
                 auto const only = onlyInstructionOf(_function, block);
                 if (!only || _function.instruction(*only).operation != Operation::Jump)
@@ -145,6 +154,7 @@ namespace
                 if (!usedElsewhere)
                     _states[blockIndex] = ChainState::Unresolved;
             }
+            return {};
         }
 
         /// The end of @p block's chain, resolved once for every block on it, on an explicit stack.
@@ -265,6 +275,7 @@ namespace
         std::pmr::vector<ValueId> _pool;      ///< The resolved chains' arguments.
         std::pmr::vector<BlockId> _path;      ///< The chain being resolved.
         std::pmr::vector<ValueId> _scratch;   ///< The arguments of the edge being redirected.
+        CancellationPoll _poll;               ///< Polled per block and instruction.
     };
 
     /// Merges each block that ends with a jump into a block with no other predecessor with that block, in
@@ -305,9 +316,10 @@ namespace
                 auto& taken = function.block(next).instructions;
                 auto& into = function.block(head).instructions;
                 into.insert(into.end(), taken.begin(), taken.end());
+                auto const moved = taken.size();
                 taken.clear();
                 merged[std::to_underlying(next)] = 1;
-                if (auto polled = poll.step(into.size()); !polled)
+                if (auto polled = poll.step(moved + 1); !polled)
                     return polled;
             }
         }

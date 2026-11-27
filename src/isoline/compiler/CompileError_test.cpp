@@ -61,6 +61,14 @@ TEST_CASE("CompileError.describe")
           == "function too large in function 0 (7654322 requested, limit 7654321)");
     CHECK(describe(CompileError { .code = CompileErrorCode::ArtifactTooLarge, .requested = 1, .limit = 0 })
           == "compiled code too large (1 requested, limit 0)");
+    CHECK(describe(
+              CompileError { .code = CompileErrorCode::InternalVerificationFailed,
+                             .function = 2,
+                             .pass = "fold-constants",
+                             .rule = isoline::compiler::intermediate::VerifierErrorCode::MissingTerminator })
+          == "internal compiler error: ill-formed intermediate code in function 2 after pass fold-constants: "
+             "block "
+             "does not end with a terminator");
 }
 
 TEST_CASE("CompileError.everyCodeHasItsExactText")
@@ -85,6 +93,8 @@ TEST_CASE("CompileError.everyCodeHasItsExactText")
         { .code = CompileErrorCode::ArtifactTooLarge, .text = "compiled code too large" },
         { .code = CompileErrorCode::BranchOutOfRange, .text = "branch out of range" },
         { .code = CompileErrorCode::Cancelled, .text = "compile cancelled" },
+        { .code = CompileErrorCode::InternalVerificationFailed,
+          .text = "internal compiler error: ill-formed intermediate code" },
     });
     REQUIRE(expected.size() == CompileErrorCodeCount);
     for (auto const index: std::views::iota(std::size_t { 0 }, CompileErrorCodeCount))

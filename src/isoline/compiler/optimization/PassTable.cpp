@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/compiler/optimization/PassTable.hpp>
 
-#include <core/Assert.hpp>
-
 #include <expected>
-#include <format>
-#include <iostream>
 #include <span>
+#include <string_view>
 
 #include <isoline/compiler/CompileConfig.hpp>
 #include <isoline/compiler/CompileError.hpp>
@@ -15,6 +12,22 @@
 
 namespace isoline::compiler::optimization
 {
+
+namespace
+{
+    /// Verifies @p function, naming @p pass in the error when it is ill-formed.
+    [[nodiscard]] PassOutcome verified(intermediate::Function const& function,
+                                       PassContext const& context,
+                                       std::string_view pass)
+    {
+        return intermediate::verify(function).transform_error([&](intermediate::VerifierError const& error) {
+            return CompileError { .code = CompileErrorCode::InternalVerificationFailed,
+                                  .function = context.codeIndex,
+                                  .pass = pass,
+                                  .rule = error.code };
+        });
+    }
+} // namespace
 
 PassOutcome runPasses(intermediate::Function& function, PassContext& context, std::span<PassRow const> passes)
 {
@@ -25,16 +38,13 @@ PassOutcome runPasses(intermediate::Function& function, PassContext& context, st
                                                     .function = context.codeIndex } };
         if (auto ran = row.run(function, context); !ran)
             return ran;
-        if (context.verify == VerifyAfterEachPass::No)
-            continue;
-        auto const verified = intermediate::verify(function);
-        if (!verified)
-            std::cerr << std::format("pass {} left function {} ill-formed: {}\n",
-                                     row.name,
-                                     context.codeIndex,
-                                     describe(verified.error()));
-        Require(verified.has_value());
+        if (context.verification == Verification::AfterEachPass)
+            if (auto checked = verified(function, context, row.name); !checked)
+                return checked;
     }
+    if (context.verification == Verification::AtEnd)
+        if (auto checked = verified(function, context, "end"); !checked)
+            return checked;
     function.compact();
     return {};
 }

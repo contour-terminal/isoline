@@ -703,7 +703,6 @@ namespace
     void Translation::checkDivision(NumericCheck check, ValueId lhs, ValueId rhs)
     {
         auto const& integer = checkOperationsOf(_function.typeOf(rhs));
-        storeCountdownForTrap();
         trapIf(emitValue(integer.isZero, Type::I32, std::array { rhs }),
                runtime::TrapCode::IntegerDivideByZero);
         if (check != NumericCheck::ZeroDivisorOrOverflow)
@@ -721,7 +720,6 @@ namespace
         auto const bounds = truncationBoundsOf(operation);
         Require(bounds.has_value());
         auto const& floating = checkOperationsOf(_function.typeOf(operand));
-        storeCountdownForTrap();
         trapIf(emitValue(floating.equal, Type::I32, std::array { operand, operand }),
                runtime::TrapCode::InvalidConversionToInteger);
         auto const lower = constant(floating.type, bounds->lower);
@@ -1722,6 +1720,8 @@ namespace
 
     void Translation::trapIf(ValueId condition, runtime::TrapCode code)
     {
+        // A trap site: the countdown stored right before it, after its condition (intermediate::verify()).
+        storeCountdownForTrap();
         emitEffect(Operation::TrapIf, std::array { condition }, std::array { immediateOf(code) });
     }
 
