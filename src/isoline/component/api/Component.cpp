@@ -54,6 +54,11 @@ std::expected<validate::CoreModuleShape, isoline::api::LoadError> EngineCoreModu
     return validate::CoreModuleShape { .module = std::move(*loaded) };
 }
 
+FeatureSet EngineCoreModuleValidator::coreFeatures() const noexcept
+{
+    return _engine->config().features;
+}
+
 namespace
 {
 

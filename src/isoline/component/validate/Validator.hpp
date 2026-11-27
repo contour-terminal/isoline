@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 
+#include <isoline/Features.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/component/Features.hpp>
 #include <isoline/component/Limits.hpp>
@@ -116,10 +117,11 @@ enum class ValidationErrorCode : uint8_t
     PostReturnSignature,
     LiftParamsMismatch,
     LiftResultsMismatch,
+    CoreFeatureDisabled,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::LiftResultsMismatch;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::CoreFeatureDisabled;
 
 /// How a validation error's message is built from its row's text and the error's fields.
 enum class ValidationErrorDetail : uint8_t
@@ -134,6 +136,7 @@ enum class ValidationErrorDetail : uint8_t
     IndexNamed, ///< The text formatted with the subject, an index, then the name and previous.
     Mismatch,   ///< As Named, then a line of the error's detail: the mismatch found inside.
     Verbatim,   ///< The error's detail, as it is: a type relation's message, its contexts included.
+    CoreGate,   ///< The text of the CoreFeatureGate in subject (CoreFeatureGateTable).
 };
 
 /// One row of ValidationErrorMessages: an error and how its message reads.
@@ -375,6 +378,10 @@ inline constexpr auto ValidationErrorMessages = std::to_array<ValidationErrorRow
     { .code = ValidationErrorCode::LiftResultsMismatch,
       .text = "lowered result types `{1}` do not match result types `{2}` of core function {0}",
       .detail = ValidationErrorDetail::IndexNamed },
+    // A declared core type needs a core feature the engine lacks: the CoreFeatureGate in subject words it.
+    { .code = ValidationErrorCode::CoreFeatureDisabled,
+      .text = "core feature not enabled",
+      .detail = ValidationErrorDetail::CoreGate },
 });
 
 static_assert(
@@ -389,6 +396,84 @@ static_assert(
         return index == static_cast<std::size_t>(LastValidationErrorCode) + 1;
     }(),
     "ValidationErrorMessages must hold one row per ValidationErrorCode, at the index of its enumerator");
+
+/// A core feature a declared core type needs (a core module type's or a component's own core function
+/// type; embedded modules are the ICoreModuleValidator's), at the site wasmparser 0.263.0 checks it:
+/// WasmFeatures::check_value_type and check_ref_type (validator.rs:245-340), the function type's results
+/// (validator/core/canonical.rs:349-357), and check_table_type, check_memory_type and check_tag_type
+/// (validator/core.rs:719-893).
+enum class CoreFeatureGate : uint8_t
+{
+    Simd,                 ///< A v128.
+    ReferenceTypes,       ///< Any reference but a table's funcref elements.
+    IndexedReference,     ///< A reference to a concrete type.
+    NonNullableReference, ///< A non-nullable func or extern reference.
+    ExceptionReference,   ///< An exn or noexn reference.
+    BottomReference,      ///< A nofunc or noextern reference.
+    MultiValue,           ///< More than one result.
+    Table64,              ///< A table of 64-bit addresses.
+    Memory64,             ///< A memory of 64-bit addresses.
+    CustomPageSize,       ///< A memory of another page size than 64 KiB.
+    Tag,                  ///< A tag.
+};
+
+/// One row of CoreFeatureGateTable: a gate, the core feature it needs and wasm-tools' refusal.
+struct CoreFeatureGateRow
+{
+    CoreFeatureGate gate;  ///< The gate; equal to the row's index.
+    Feature feature;       ///< The core feature it needs.
+    std::string_view text; ///< wasmparser's message.
+};
+
+/// Every CoreFeatureGate, in enumerator order. Isoline has no gc feature: nofunc and noextern, which
+/// wasmparser admits only with gc, follow Isoline's core decoder, which admits them with typed function
+/// references.
+inline constexpr auto CoreFeatureGateTable = std::to_array<CoreFeatureGateRow>({
+    { .gate = CoreFeatureGate::Simd, .feature = Feature::Simd, .text = "SIMD support is not enabled" },
+    { .gate = CoreFeatureGate::ReferenceTypes,
+      .feature = Feature::ReferenceTypes,
+      .text = "reference types support is not enabled" },
+    { .gate = CoreFeatureGate::IndexedReference,
+      .feature = Feature::TypedFunctionReferences,
+      .text = "function references required for index reference types" },
+    { .gate = CoreFeatureGate::NonNullableReference,
+      .feature = Feature::TypedFunctionReferences,
+      .text = "function references required for non-nullable types" },
+    { .gate = CoreFeatureGate::ExceptionReference,
+      .feature = Feature::ExceptionHandling,
+      .text = "exception refs not supported without the exception handling feature" },
+    { .gate = CoreFeatureGate::BottomReference,
+      .feature = Feature::TypedFunctionReferences,
+      .text = "heap types not supported without the gc feature" },
+    { .gate = CoreFeatureGate::MultiValue,
+      .feature = Feature::MultiValue,
+      .text = "func type returns multiple values but the multi-value feature is not enabled" },
+    { .gate = CoreFeatureGate::Table64,
+      .feature = Feature::Memory64,
+      .text = "memory64 must be enabled for 64-bit tables" },
+    { .gate = CoreFeatureGate::Memory64,
+      .feature = Feature::Memory64,
+      .text = "memory64 must be enabled for 64-bit memories" },
+    { .gate = CoreFeatureGate::CustomPageSize,
+      .feature = Feature::CustomPageSizes,
+      .text = "the custom page sizes proposal must be enabled to customize a memory's page size" },
+    { .gate = CoreFeatureGate::Tag,
+      .feature = Feature::ExceptionHandling,
+      .text = "exceptions proposal not enabled" },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: CoreFeatureGateTable)
+        {
+            if (static_cast<std::size_t>(row.gate) != index)
+                return false;
+            ++index;
+        }
+        return index == static_cast<std::size_t>(CoreFeatureGate::Tag) + 1;
+    }(),
+    "CoreFeatureGateTable must hold one row per CoreFeatureGate, at the index of its enumerator");
 
 /// A gated form the validator refuses, at one site: a FeatureDisabled refusal reads its row's text.
 enum class GatedForm : uint8_t
@@ -814,6 +899,11 @@ struct ValidationError
 /// @return Its limit, or nothing for an error of another code.
 [[nodiscard]] std::optional<ComponentLimit> exceededLimit(ValidationError const& error) noexcept;
 
+/// The core feature a CoreFeatureDisabled error needs.
+/// @param error An error.
+/// @return Its core feature, or nothing for an error of another code.
+[[nodiscard]] std::optional<Feature> requiredCoreFeature(ValidationError const& error) noexcept;
+
 /// The message wasm-tools reports for @p error, as ValidationErrorMessages and its row's detail build it.
 /// @param error The error to describe.
 /// @return The message the component suites' assertions match.
@@ -831,6 +921,11 @@ class ICoreModuleValidator
     /// @return The validated module, or why it was refused.
     [[nodiscard]] virtual std::expected<CoreModuleShape, isoline::api::LoadError> validate(
         std::span<std::byte const> bytes) = 0;
+
+    /// The core features the engine runs with: the declared core types (core module types, and a
+    /// component's own core function types) are validated under them too, as embedded modules are.
+    /// @return The features.
+    [[nodiscard]] virtual FeatureSet coreFeatures() const noexcept = 0;
 
   protected:
     ICoreModuleValidator() = default;

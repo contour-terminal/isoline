@@ -360,3 +360,37 @@ TEST_CASE("ComponentPlan.sharedAcrossThreads", "[threading]")
         CHECK(steps == std::size_t { 3 } * 19);
     }
 }
+
+TEST_CASE("Component.declaredCoreTypesKeepToTheEngine")
+{
+    // A core module type importing a tag, under an engine without exception handling (Wasm 2.0): the
+    // engine's validator hands its features to validation, which refuses the declared type.
+    using isoline::component::binary::CoreExternType;
+    using isoline::component::binary::CoreImportDeclaration;
+    using isoline::component::binary::CoreModuleTypeDefinition;
+    using isoline::component::binary::CoreTypeDeclaration;
+    using isoline::component::binary::CoreTypeDefinition;
+    auto builder = ComponentBuilder {};
+    std::ignore = builder.coreType(CoreTypeDefinition {
+        .type = CoreModuleTypeDefinition {
+            .declarations = {
+                CoreTypeDeclaration { .type = isoline::binary::FuncType {} },
+                CoreImportDeclaration { .module = "",
+                                        .name = "t",
+                                        .type = CoreExternType { .kind = isoline::binary::ExternKind::Tag,
+                                                                 .typeIndex = 0 } } } } });
+    std::ignore = builder.import("m",
+                                 isoline::component::binary::ExternDesc {
+                                     .sort = isoline::component::binary::Sort::CoreModule, .index = 0 });
+    auto const bytes = builder.build();
+    auto const loadUnder = [&](isoline::FeatureSet features) {
+        auto const engine = isoline::api::Engine { isoline::api::EngineConfig { .features = features } };
+        auto loader = EngineCoreModuleLoader { engine };
+        auto validator = EngineCoreModuleValidator { engine };
+        return Component::load(engine, bytes, {}, loader, validator);
+    };
+    CHECK(loadUnder(isoline::FeatureSet::wasm3()).has_value());
+    auto const error = errorOf<ValidationError>(loadUnder(isoline::FeatureSet::wasm2()));
+    CHECK(error.code == ValidationErrorCode::CoreFeatureDisabled);
+    CHECK(isoline::component::validate::requiredCoreFeature(error) == isoline::Feature::ExceptionHandling);
+}

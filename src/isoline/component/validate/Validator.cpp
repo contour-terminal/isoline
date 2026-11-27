@@ -463,6 +463,7 @@ namespace
             _features { features },
             _limits { limits },
             _coreModuleValidator { coreModules },
+            _coreFeatures { coreModules.coreFeatures() },
             _arena { limits },
             _layouts { _arena.id() },
             _relation { _arena, _arena, _noBindings, limits },
@@ -606,6 +607,13 @@ namespace
             isoline::binary::ValueType type,
             std::span<CoreFunctionTypeId const> scope,
             DefinitionPosition position) const;
+        [[nodiscard]] Result<void> coreGate(CoreFeatureGate gate, DefinitionPosition position) const;
+        [[nodiscard]] Result<void> declaredValueType(isoline::binary::ValueType const& type,
+                                                     DefinitionPosition position) const;
+        [[nodiscard]] Result<void> declaredFunctionType(isoline::binary::FuncType const& type,
+                                                        DefinitionPosition position) const;
+        [[nodiscard]] Result<void> declaredExternGate(binary::CoreExternType const& type,
+                                                      DefinitionPosition position) const;
         [[nodiscard]] Result<CoreEntityType> declaredEntity(binary::CoreExternType const& type,
                                                             std::span<CoreFunctionTypeId const> scope,
                                                             DefinitionPosition position);
@@ -711,6 +719,8 @@ namespace
         ComponentFeatureSet _features;
         ComponentLimits const& _limits;
         ICoreModuleValidator& _coreModuleValidator;
+        /// The engine's core features, which a declared core type must keep to (coreGate()).
+        FeatureSet _coreFeatures;
         types::TypeArena _arena;
         /// The layout of every value type of the arena, made as each is interned (Task 8): once per
         /// type, from its children's, so that no type is walked twice however many definitions use it.
@@ -1607,6 +1617,57 @@ namespace
         return type;
     }
 
+    Result<void> ComponentValidator::coreGate(CoreFeatureGate gate, DefinitionPosition position) const
+    {
+        auto const& row = CoreFeatureGateTable[static_cast<std::size_t>(gate)];
+        if (_coreFeatures.has(row.feature))
+            return {};
+        return std::unexpected { ValidationError { .code = ValidationErrorCode::CoreFeatureDisabled,
+                                                   .position = position,
+                                                   .subject = static_cast<uint64_t>(gate) } };
+    }
+
+    Result<void> ComponentValidator::declaredValueType(isoline::binary::ValueType const& type,
+                                                       DefinitionPosition position) const
+    {
+        // WasmFeatures::check_value_type and check_ref_type (validator.rs:245-340), in their order.
+        using isoline::binary::AbstractHeapType;
+        if (type.kind == isoline::binary::ValueKind::V128)
+            return coreGate(CoreFeatureGate::Simd, position);
+        if (type.kind != isoline::binary::ValueKind::Ref)
+            return {};
+        if (auto admitted = coreGate(CoreFeatureGate::ReferenceTypes, position); !admitted)
+            return admitted;
+        switch (type.heap.kind)
+        {
+            case AbstractHeapType::Concrete: return coreGate(CoreFeatureGate::IndexedReference, position);
+            case AbstractHeapType::Func:
+            case AbstractHeapType::Extern:
+                if (type.nullable == isoline::binary::Nullable::Yes)
+                    return {};
+                return coreGate(CoreFeatureGate::NonNullableReference, position);
+            case AbstractHeapType::Exn:
+            case AbstractHeapType::NoExn: return coreGate(CoreFeatureGate::ExceptionReference, position);
+            case AbstractHeapType::NoFunc:
+            case AbstractHeapType::NoExtern: return coreGate(CoreFeatureGate::BottomReference, position);
+            case AbstractHeapType::Bot: break; // never decoded
+        }
+        return {};
+    }
+
+    Result<void> ComponentValidator::declaredFunctionType(isoline::binary::FuncType const& type,
+                                                          DefinitionPosition position) const
+    {
+        // check_subtype's function arm (validator/core/canonical.rs:349-357): each type, then the results.
+        for (auto const* list: { &type.params, &type.results })
+            for (auto const& value: *list)
+                if (auto admitted = declaredValueType(value, position); !admitted)
+                    return admitted;
+        if (type.results.size() > 1)
+            return coreGate(CoreFeatureGate::MultiValue, position);
+        return {};
+    }
+
     Result<CoreFunctionTypeId> ComponentValidator::coreFunctionType(isoline::binary::FuncType type,
                                                                     std::span<CoreFunctionTypeId const> scope,
                                                                     DefinitionPosition position)
@@ -1624,14 +1685,55 @@ namespace
         return _arena.intern(std::move(type));
     }
 
+    Result<void> ComponentValidator::declaredExternGate(binary::CoreExternType const& type,
+                                                        DefinitionPosition position) const
+    {
+        // The core features of check_type_ref (core.rs:680-930), at the points wasmparser checks them:
+        // a table's element type (a funcref needs none) before its limits, a table's or memory's address
+        // type and a memory's page size after them, so limits out of order (declaredEntity()) take no
+        // gate. The AST keeps no explicitly encoded 64 KiB page size, which wasmparser gates as well.
+        using isoline::binary::ExternKind;
+        auto const isOrdered = [](isoline::binary::Limits const& limits) {
+            return !limits.max || limits.min <= *limits.max;
+        };
+        auto const isWide = [](isoline::binary::Limits const& limits) {
+            return limits.addressType == isoline::binary::AddressType::I64;
+        };
+        switch (type.kind)
+        {
+            case ExternKind::Func: return {};
+            case ExternKind::Tag: return coreGate(CoreFeatureGate::Tag, position);
+            case ExternKind::Global: return declaredValueType(type.global.type, position);
+            case ExternKind::Table:
+                if (type.table.element != isoline::binary::FuncRef)
+                    if (auto admitted = declaredValueType(type.table.element, position); !admitted)
+                        return admitted;
+                if (isOrdered(type.table.limits) && isWide(type.table.limits))
+                    return coreGate(CoreFeatureGate::Table64, position);
+                return {};
+            case ExternKind::Memory:
+                if (!isOrdered(type.memory.limits))
+                    return {};
+                if (isWide(type.memory.limits))
+                    if (auto admitted = coreGate(CoreFeatureGate::Memory64, position); !admitted)
+                        return admitted;
+                if (type.memory.pageSizeLog2 != isoline::binary::DefaultPageSizeLog2)
+                    return coreGate(CoreFeatureGate::CustomPageSize, position);
+                return {};
+        }
+        return {}; // uncovered(exhaustive-switch)
+    }
+
     Result<CoreEntityType> ComponentValidator::declaredEntity(binary::CoreExternType const& type,
                                                               std::span<CoreFunctionTypeId const> scope,
                                                               DefinitionPosition position)
     {
         // A core module type's import or export (Module::check_type_ref, core.rs:680-930), its types
-        // the declaration scope's, rewritten to canonical ids. The core features are the core
-        // validator's: a declared type is checked by the rules every core feature set shares.
+        // the declaration scope's, rewritten to canonical ids, each checked against the engine's core
+        // features (ICoreModuleValidator::coreFeatures()) where wasmparser checks its features.
         using isoline::binary::ExternKind;
+        if (auto admitted = declaredExternGate(type, position); !admitted)
+            return std::unexpected { admitted.error() };
         auto entity = CoreEntityType { .kind = type.kind };
         auto const limitsOrdered = [&](isoline::binary::Limits const& limits) -> Result<void> {
             if (limits.max && limits.min > *limits.max)
@@ -1666,6 +1768,7 @@ namespace
                     return std::unexpected { element.error() };
                 if (auto ordered = limitsOrdered(type.table.limits); !ordered)
                     return std::unexpected { ordered.error() };
+
                 auto const largest = type.table.limits.addressType == isoline::binary::AddressType::I64
                                          ? ~uint64_t { 0 }
                                          : uint64_t { 0xFFFF'FFFF };
@@ -1682,6 +1785,7 @@ namespace
             case ExternKind::Memory: {
                 if (auto ordered = limitsOrdered(type.memory.limits); !ordered)
                     return std::unexpected { ordered.error() };
+
                 if (std::ranges::find(isoline::binary::ValidPageSizesLog2, type.memory.pageSizeLog2)
                     == isoline::binary::ValidPageSizesLog2.end())
                     return std::unexpected { plainError(ValidationErrorCode::InvalidPageSize, position) };
@@ -1771,7 +1875,8 @@ namespace
                     {
                         if (scope.size() + 1 > _limits.maxTypes)
                             return std::unexpected { capError(ComponentLimit::Types, _limits, position) };
-                        return coreFunctionType(entry.type, scope, position)
+                        return declaredFunctionType(entry.type, position)
+                            .and_then([&] { return coreFunctionType(entry.type, scope, position); })
                             .transform([&](CoreFunctionTypeId id) { scope.push_back(id); });
                     }
                     else if constexpr (std::is_same_v<Entry, binary::CoreOuterAliasDeclaration>)
@@ -1944,6 +2049,8 @@ namespace
                 using Type = std::remove_cvref_t<decltype(type)>;
                 if constexpr (std::is_same_v<Type, isoline::binary::FuncType>)
                 {
+                    if (auto admitted = declaredFunctionType(type, position); !admitted)
+                        return std::unexpected { admitted.error() };
                     // The scope's earlier core types, of which a reference must name a function type.
                     for (auto const* list: { &type.params, &type.results })
                     {
@@ -3545,6 +3652,14 @@ std::optional<ComponentLimit> exceededLimit(ValidationError const& error) noexce
     return static_cast<ComponentLimit>(*error.subject & 0xFFU);
 }
 
+std::optional<Feature> requiredCoreFeature(ValidationError const& error) noexcept
+{
+    if (error.code != ValidationErrorCode::CoreFeatureDisabled || !error.subject
+        || *error.subject >= CoreFeatureGateTable.size())
+        return std::nullopt;
+    return CoreFeatureGateTable[*error.subject].feature;
+}
+
 std::string specMessage(ValidationError const& error)
 {
     auto const& row = ValidationErrorMessages[static_cast<std::size_t>(error.code)];
@@ -3566,6 +3681,9 @@ std::string specMessage(ValidationError const& error)
             return std::vformat(row.text, std::make_format_args(error.name, error.previous)) + "\n"
                    + error.detail;
         case ValidationErrorDetail::Verbatim: return error.detail;
+        case ValidationErrorDetail::CoreGate:
+            Require(subject < CoreFeatureGateTable.size());
+            return std::string { CoreFeatureGateTable[subject].text };
         case ValidationErrorDetail::Label:
             Require(subject < LabelKindTable.size());
             return std::vformat(row.text,

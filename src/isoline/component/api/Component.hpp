@@ -10,6 +10,7 @@
 #include <utility>
 #include <variant>
 
+#include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/EngineIdentity.hpp>
 #include <isoline/api/Module.hpp>
@@ -83,6 +84,9 @@ class EngineCoreModuleValidator final: public validate::ICoreModuleValidator
 
     [[nodiscard]] std::expected<validate::CoreModuleShape, isoline::api::LoadError> validate(
         std::span<std::byte const> bytes) override;
+
+    /// The engine's features, under which declared core types are validated too.
+    [[nodiscard]] FeatureSet coreFeatures() const noexcept override;
 
   private:
     isoline::api::Engine const* _engine;

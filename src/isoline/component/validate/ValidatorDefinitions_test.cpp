@@ -2106,3 +2106,118 @@ TEST_CASE("Validator.everyCapRefusesAtEveryCount")
                                 .needed = row.typeDepth });
     }
 }
+
+TEST_CASE("Validator.declaredCoreTypesKeepToTheEngine")
+{
+    // A declared core type (a core module type's, or a component's own core function type) needs the
+    // core feature wasmparser checks it for, the engine's (ICoreModuleValidator::coreFeatures()): each
+    // gate refuses without its feature, in wasmparser's words, and admits with every feature.
+    using isoline::Feature;
+    using isoline::FeatureSet;
+    using isoline::binary::AbstractHeapType;
+    using isoline::binary::AddressType;
+    using isoline::binary::Nullable;
+    using isoline::binary::ValueKind;
+    using isoline::component::binary::CoreModuleDeclaration;
+    using isoline::component::validate::CoreFeatureGate;
+    using isoline::component::validate::CoreFeatureGateTable;
+    using isoline::component::validate::requiredCoreFeature;
+    using isoline::component::validate::ValidationErrorCode;
+    auto const reference = [](AbstractHeapType heap, Nullable nullable = Nullable::Yes) {
+        return isoline::binary::ValueType { .kind = ValueKind::Ref,
+                                            .nullable = nullable,
+                                            .heap = { .kind = heap, .typeIndex = 0 } };
+    };
+    auto const importing = [](CoreExternType type) {
+        return std::vector<CoreModuleDeclaration> { CoreTypeDeclaration { .type = FuncType {} },
+                                                    CoreImportDeclaration {
+                                                        .module = "", .name = "x", .type = type } };
+    };
+    auto const global = [&](isoline::binary::ValueType type) {
+        return importing(CoreExternType { .kind = ExternKind::Global, .global = { .type = type } });
+    };
+    auto const memory = [&](isoline::binary::MemoryType type) {
+        return importing(CoreExternType { .kind = ExternKind::Memory, .memory = type });
+    };
+    struct Case
+    {
+        CoreFeatureGate gate;
+        std::optional<FuncType> functionType;               ///< A component's own core function type.
+        std::vector<CoreModuleDeclaration> declarations {}; ///< Else a core module type of these.
+    };
+    auto const cases = std::vector<Case> {
+        { .gate = CoreFeatureGate::Simd,
+          .functionType = FuncType { .params = { isoline::binary::V128 }, .results = {} } },
+        { .gate = CoreFeatureGate::ReferenceTypes,
+          .functionType = std::nullopt,
+          .declarations = global(reference(AbstractHeapType::Extern)) },
+        { .gate = CoreFeatureGate::IndexedReference,
+          .functionType = std::nullopt,
+          .declarations = global(reference(AbstractHeapType::Concrete)) },
+        { .gate = CoreFeatureGate::NonNullableReference,
+          .functionType = std::nullopt,
+          .declarations = global(reference(AbstractHeapType::Func, Nullable::No)) },
+        { .gate = CoreFeatureGate::ExceptionReference,
+          .functionType = std::nullopt,
+          .declarations = global(reference(AbstractHeapType::Exn)) },
+        { .gate = CoreFeatureGate::BottomReference,
+          .functionType = std::nullopt,
+          .declarations = global(reference(AbstractHeapType::NoFunc)) },
+        { .gate = CoreFeatureGate::MultiValue,
+          .functionType =
+              FuncType { .params = {}, .results = { isoline::binary::I32, isoline::binary::I32 } } },
+        { .gate = CoreFeatureGate::Table64,
+          .functionType = std::nullopt,
+          .declarations = importing(CoreExternType {
+              .kind = ExternKind::Table,
+              .table = { .element = isoline::binary::FuncRef,
+                         .limits = { .min = 0, .max = std::nullopt, .addressType = AddressType::I64 } } }) },
+        { .gate = CoreFeatureGate::Memory64,
+          .functionType = std::nullopt,
+          .declarations =
+              memory({ .limits = { .min = 0, .max = std::nullopt, .addressType = AddressType::I64 } }) },
+        { .gate = CoreFeatureGate::CustomPageSize,
+          .functionType = std::nullopt,
+          .declarations = memory({ .limits = {}, .pageSizeLog2 = 0 }) },
+        { .gate = CoreFeatureGate::Tag,
+          .functionType = std::nullopt,
+          .declarations = importing(CoreExternType { .kind = ExternKind::Tag, .typeIndex = 0 }) },
+    };
+    REQUIRE(cases.size() == CoreFeatureGateTable.size());
+    auto const validatedUnder = [](Case const& row, FeatureSet features) {
+        auto builder = ComponentBuilder {};
+        if (row.functionType)
+            std::ignore = builder.coreType(CoreTypeDefinition { .type = *row.functionType });
+        else
+        {
+            std::ignore = builder.coreType(
+                CoreTypeDefinition { .type = CoreModuleTypeDefinition { .declarations = row.declarations } });
+            std::ignore = builder.import("m", ExternDesc { .sort = Sort::CoreModule, .index = 0 });
+        }
+        auto coreModules = CoreModuleValidator { features };
+        return validateComponent(
+            builder.pool(), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
+    };
+    for (auto const& row: cases)
+    {
+        auto const& gate = CoreFeatureGateTable[static_cast<std::size_t>(row.gate)];
+        CAPTURE(gate.text);
+        CHECK(validatedUnder(row, FeatureSet::all()).has_value());
+        auto const refused = validatedUnder(row, FeatureSet::all().without(gate.feature));
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == ValidationErrorCode::CoreFeatureDisabled);
+        CHECK(refused.error().subject == static_cast<uint64_t>(row.gate));
+        CHECK(specMessage(refused.error()) == gate.text);
+        CHECK(requiredCoreFeature(refused.error()) == gate.feature);
+    }
+    // A table of funcref needs no feature (check_table_type skips it), and another error has none.
+    auto const plainTable = Case { .gate = CoreFeatureGate::ReferenceTypes,
+                                   .functionType = std::nullopt,
+                                   .declarations = importing(CoreExternType {
+                                       .kind = ExternKind::Table,
+                                       .table = { .element = isoline::binary::FuncRef, .limits = {} } }) };
+    CHECK(validatedUnder(plainTable, FeatureSet::all().without(Feature::ReferenceTypes)).has_value());
+    CHECK_FALSE(
+        requiredCoreFeature(ValidationError { .code = ValidationErrorCode::LimitExceeded, .position = {} })
+            .has_value());
+}
