@@ -19,6 +19,12 @@ include(GNUInstallDirs)
 set(ISOLINE_INSTALL_LIBRARIES
     "isoline_core"   "core"   "isolineCoreTargets"   "isoline"   OFF
     "isoline_text"   "text"   "isolineTextTargets"   "isoline"   OFF)
+# The recipe's fixture (tests/modules/recipe), a library of a testing build with modules only: installed by
+# its component alone, which install-import-fixture-consumer installs to prove the recipe's install row.
+if(ISOLINE_TESTING AND ISOLINE_MODULES)
+    list(APPEND ISOLINE_INSTALL_LIBRARIES
+        "isoline_recipe_fixture" "recipe_fixture" "isolineRecipeFixtureTargets" "isoline-test-fixture" ON)
+endif()
 
 # The debug information of an installed library's objects on MSVC: embedded in them (/Z7), never in a PDB
 # beside the build (/Zi), which a static library's consumer links against by its build path. A prefix that

@@ -7,7 +7,7 @@
 #   target_link_libraries(app PRIVATE isoline::core)
 #
 # A mode asks for the components of what it uses (ConsumerModes.cmake) and links their targets: include-text
-# asks for text alone, beneath which the package loads core.
+# asks for text alone and import-fixture for recipe_fixture alone, beneath which the package loads core.
 #
 # tests/cmake/check-install.cmake configures, builds and runs it with -DISOLINE_CONSUMER_MODE=<mode>.
 # Its own project, so nothing of Isoline's build reaches it: no warning flag, no sanitizer, no

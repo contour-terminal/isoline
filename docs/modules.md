@@ -15,6 +15,11 @@ Studio generator builds it in-tree too):
 cmake -B build -G Ninja -DISOLINE_MODULES=ON
 ```
 
+Each module preset is an ordinary preset with the module on: `clang-modules` (Clang, Debug, ASan and
+UBSan, clang-tidy), `clang-modules-release`, `gcc-modules`, `msvc-modules` (from a Visual Studio Developer
+Command Prompt), `msvc-modules-visual-studio` (the same, under the Visual Studio generator) and, from a
+Linux host, `msvc-wine-modules` (MSVC under wine, [docs/cross-compiling.md](cross-compiling.md)).
+
 A toolchain that cannot build modules is refused at configure time, with the reason, rather than left to
 fail later. The supported compilers are Clang (the GNU front end, targeting the GNU ABI), GCC and MSVC;
 Apple Clang, clang-cl and Clang targeting the MSVC ABI are refused.
@@ -266,6 +271,77 @@ failure whose English diagnostics match the row's regular expression. GCC's
 row matches `error: redefinition of '`, whatever entity follows; MSVC's matches
 `(error|warning) C(2011|4348):`, the two codes its versions report. A compiler that starts accepting the
 order turns it red, which is the reminder to update this table.
+
+## Adding a module
+
+Module `isoline` covers `isoline_core`. Each later public library gets a module of its own, by the
+recipe below. `tests/modules/recipe` follows it with a fixture library, `isoline_recipe_fixture`, whose
+module `isoline.recipe_fixture` re-exports `isoline`, and the tests prove each step.
+
+1. **The library** declares its public headers in a `FILE_SET HEADERS` whose `BASE_DIRS` is `src`, the
+   headers under `src/isoline/<library>/`, so that they install under `include/isoline/<library>/` and
+   are included as `<isoline/<library>/....hpp>` (the fixture's, from its own directory:
+   `isoline/recipe_fixture/RecipeFixture.hpp`). The set is the module's surface, and the module covers
+   nothing else: every `.hpp` beside one of the set must be in the set too, which the lint checks. The
+   library names its consumers' standard in a PUBLIC `target_compile_features(... cxx_std_23)`, which the
+   lint parses the headers in. Its sources stay header-based (`CXX_SCAN_FOR_MODULES OFF`), as
+   `isoline_core`'s do.
+2. **The row**, one `isoline_add_module()` call in the library's `CMakeLists.txt`:
+
+   ```cmake
+   isoline_add_module(
+       NAME isoline.recipe_fixture       # what consumers import
+       LIBRARY isoline_recipe_fixture    # its HEADER_SET is the surface
+       SOURCE isoline.recipe_fixture.cppm
+       NAMESPACES isoline::recipe_fixture
+       IMPORTS isoline)
+   ```
+
+   - `NAMESPACES` are public: the lint exports every name declared directly in them.
+     `INTERNAL_NAMESPACES` are not, nor is any namespace named `detail` or `testing`. A namespace beneath a
+     public one that is neither public nor internal fails the lint.
+   - `IMPORTS` names the modules the unit re-exports with `export import`, and links their module targets
+     PUBLIC, so that an importer of the new module names their types too. A library built on
+     `isoline_core` imports `isoline`: its signatures name `isoline::api` types, and an importer must be
+     able to spell them.
+   - `FOREIGN_NAMES` lists names of another library that the unit re-exports, qualified
+     (`core::async::Task`). Any other name outside the module's namespaces fails the lint.
+3. **The interface unit** is generated, never written by hand: `cmake --build <build> --target
+   isoline_write_module_exports` runs the lint's `--write` for every row, and the result is committed. A new
+   row's unit must exist before its first configure: start it as the single line
+   `export module <name>;`, configure, then generate it.
+4. **The lint**, the test `module-exports-<name>` (label `lint`), checks the committed unit against the
+   headers. Every public name must be exported and none stale, the `export import` lines must equal
+   `IMPORTS`, no macro may be left defined, no declaration may be of internal linkage, no public header may
+   be missing from the set, and the unit must precompile, the modules it imports first. A header changed
+   without `--write` fails it, naming the name.
+5. **The install row**, one row of `ISOLINE_INSTALL_LIBRARIES` (`cmake/IsolineInstallRows.cmake`): the
+   library, its export name (a consumer's `isoline::<name>` and `COMPONENTS <name>`), its export set
+   `isoline<Name>Targets`, its install component, and whether a plain `cmake --install` leaves it out. The
+   module target installs beside the library, in the row's export set and install component, so the
+   module row names neither. What the component needs loaded first is derived from what its library and
+   module target link (the row's `IMPORTS` among them) and installed beside its targets file, so
+   `isolineConfig.cmake`, which names no component, needs no edit. The fixture's row is
+   `isoline_recipe_fixture`, `recipe_fixture`, `isolineRecipeFixtureTargets`, `isoline-test-fixture`
+   (left out of a plain install): `install-import-fixture-consumer` installs that component, asks
+   `find_package(isoline COMPONENTS recipe_fixture)` for it alone, and runs `import isoline.recipe_fixture;`.
+6. **The importers.** An in-tree target imports the module through `isoline_add_module_consumer(<target>
+   <module>)`, which also lifts the clang-tidy checks that misfire on an importer of a module that
+   re-exports another (E2's `import-reexporting`), read from the row. The installed-consumer test gets the
+   module as a row of `ISOLINE_CONSUMER_USES` (`tests/consumer/ConsumerModes.cmake`): the module, the
+   package component that holds it and its target, and a mode that uses it.
+
+The modules planned, one row and one install row per public library, with no other edit to the module
+machinery:
+
+| Module | Namespace | Library | `IMPORTS` | Note |
+|---|---|---|---|---|
+| `isoline.text` | `isoline::text` | the text format (`isoline::text`, installed already) | `isoline` | its library is installed as component `text`; the module row is still to come |
+| `isoline.cache` | `isoline::cache` | the ahead-of-time compilation cache (P8) | `isoline` | |
+| `isoline.component` | `isoline::component` | the component model (P11, P12) | `isoline` | |
+| `isoline.wasi` | `isoline::wasi` | WASI 0.3 (P14) | to be decided, likely `isoline.component` | its binding headers are generated from WIT, so `--write` regenerates the purview after each regeneration of them |
+
+The C API (P17) stays C: `wasm.h` and `isoline.h` are for other languages' bindings, and get no module.
 
 ## The documented exceptions
 

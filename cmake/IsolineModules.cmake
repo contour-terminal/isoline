@@ -233,12 +233,27 @@ endfunction()
 #  - import-then-include: the other order (D7), which compiles on Clang only (module-import-then-include's
 #    probe): 129 readability-redundant-declaration, for the same reason, and no
 #    performance-trivially-destructible, so only the one check is lifted there.
+#  - import-reexporting: an importer of a module that re-exports another (`import isoline.recipe_fixture;`,
+#    whose unit does `export import isoline;`), and of nothing else: 366 readability-redundant-declaration
+#    and 51 performance-trivially-destructible, as for include-then-import. Two imported BMIs hold the same
+#    Isoline declarations in their global module fragments, isoline's and the re-exporting module's, whose
+#    headers include Isoline's: each is taken for a redeclaration of the other. isoline_add_module_consumer()
+#    lifts it on every importer of a row with IMPORTS.
+#  - importing-interface-unit: the interface unit of a row with IMPORTS, whose global module fragment
+#    includes its library's headers, which include Isoline's, before `export import isoline;`: an
+#    include-then-import TU as well as an interface unit. On isoline.recipe_fixture's: 1
+#    misc-unused-using-decls, 366 readability-redundant-declaration, 51 performance-trivially-destructible.
 set(ISOLINE_MODULE_TIDY_FALSE_POSITIVES
     "interface-unit" "misc-unused-using-decls"
     "import-only" "readability-redundant-declaration"
     "include-then-import" "readability-redundant-declaration"
     "include-then-import" "performance-trivially-destructible"
-    "import-then-include" "readability-redundant-declaration")
+    "import-then-include" "readability-redundant-declaration"
+    "import-reexporting" "readability-redundant-declaration"
+    "import-reexporting" "performance-trivially-destructible"
+    "importing-interface-unit" "misc-unused-using-decls"
+    "importing-interface-unit" "readability-redundant-declaration"
+    "importing-interface-unit" "performance-trivially-destructible")
 
 # Whether E1 (D13) applies: CMake drives Clang's GNU front end, whose synthetic BMI command carries `-c`,
 # and the Clang is of a version that warns about it. The lowest version measured to warn is the row:
@@ -253,29 +268,37 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIAN
 endif()
 
 ## @brief Lets clang-tidy run on @p target, a module target or an importer of one, with the checks of
-## ISOLINE_MODULE_TIDY_FALSE_POSITIVES' rows of @p kind lifted (E2, D13) and every other check kept. Call it
-## after isoline_apply_target_policy(), whose clang-tidy command it extends; without clang-tidy it does
-## nothing. A kind without a row refuses the configure.
+## ISOLINE_MODULE_TIDY_FALSE_POSITIVES' rows of each @p kind lifted (E2, D13) and every other check kept:
+## they join the target's ISOLINE_LIFTED_TIDY_CHECKS, which isoline_apply_tidy_command() reads, before or
+## after isoline_apply_target_policy(). Without clang-tidy it changes no command. A kind without a row
+## refuses the configure.
 ##
-## isoline_lift_module_tidy_checks(<target> <kind>)
-function(isoline_lift_module_tidy_checks target kind)
+## isoline_lift_module_tidy_checks(<target> <kind>...)
+function(isoline_lift_module_tidy_checks target)
+    if(NOT ARGN)
+        message(FATAL_ERROR "isoline_lift_module_tidy_checks(${target}): no kind named")
+    endif()
     set(lifted "")
-    set(rows "${ISOLINE_MODULE_TIDY_FALSE_POSITIVES}")
-    while(rows)
-        list(POP_FRONT rows rowKind check)
-        if(rowKind STREQUAL kind)
-            list(APPEND lifted "-${check}")
+    foreach(kind IN LISTS ARGN)
+        set(isKnown OFF)
+        set(rows "${ISOLINE_MODULE_TIDY_FALSE_POSITIVES}")
+        while(rows)
+            list(POP_FRONT rows rowKind check)
+            if(rowKind STREQUAL kind)
+                set(isKnown ON)
+                list(APPEND lifted "-${check}")
+            endif()
+        endwhile()
+        if(NOT isKnown)
+            message(FATAL_ERROR "isoline_lift_module_tidy_checks(${target}): ISOLINE_MODULE_TIDY_FALSE_POSITIVES "
+                                "has no row of kind ${kind}")
         endif()
-    endwhile()
-    if(NOT lifted)
-        message(FATAL_ERROR "isoline_lift_module_tidy_checks(${target}): ISOLINE_MODULE_TIDY_FALSE_POSITIVES has "
-                            "no row of kind ${kind}")
-    endif()
-    if(NOT ISOLINE_CLANG_TIDY_COMMAND)
-        return()
-    endif()
-    list(JOIN lifted "," checks)
-    set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${ISOLINE_CLANG_TIDY_COMMAND};--checks=${checks}")
+    endforeach()
+    get_property(alreadyLifted TARGET ${target} PROPERTY ISOLINE_LIFTED_TIDY_CHECKS)
+    list(APPEND alreadyLifted ${lifted})
+    list(REMOVE_DUPLICATES alreadyLifted)
+    set_property(TARGET ${target} PROPERTY ISOLINE_LIFTED_TIDY_CHECKS "${alreadyLifted}")
+    isoline_apply_tidy_command(${target})
 endfunction()
 
 ## @brief Registers the tripwires of E1 and E2 (D13), as CTests of label `lint`. Called by
@@ -333,6 +356,12 @@ endfunction()
 ## the global property ISOLINE_MODULE_<NAME>_TARGET, which isoline_add_module_consumer() reads, and installs
 ## the target beside LIBRARY (isoline_install_module_target()).
 ##
+## The module target belongs to LIBRARY alone. A copy of LIBRARY made after the row, such as a
+## position-independent twin for the C API's shared library to link (P17a), copies its sources and its
+## HEADERS file set but no FILE_SET CXX_MODULES, and is no module library: it gets no row and no module
+## target, and an importer keeps linking this one, which links LIBRARY. A twin given an install row of its
+## own installs no module beside it.
+##
 ## _isoline_add_module_target(NAME <module> LIBRARY <target> SOURCE <absolute interface unit>
 ##                            [IMPORTS <module>...])
 function(_isoline_add_module_target)
@@ -370,8 +399,14 @@ function(_isoline_add_module_target)
         # upstream.
         isoline_apply_build_options(${target} COMPILE -Wno-error=unused-command-line-argument)
     endif()
-    # E2 (D13), row interface-unit of ISOLINE_MODULE_TIDY_FALSE_POSITIVES: misc-unused-using-decls.
-    isoline_lift_module_tidy_checks(${target} interface-unit)
+    # E2 (D13), rows interface-unit of ISOLINE_MODULE_TIDY_FALSE_POSITIVES (misc-unused-using-decls), or for a
+    # unit that imports, importing-interface-unit (that, readability-redundant-declaration and
+    # performance-trivially-destructible).
+    set(tidyKind interface-unit)
+    if(arg_IMPORTS)
+        set(tidyKind importing-interface-unit)
+    endif()
+    isoline_lift_module_tidy_checks(${target} ${tidyKind})
     set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_TARGET ${target})
     set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_IMPORTS "${arg_IMPORTS}")
     set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_SOURCE "${arg_SOURCE}")
@@ -381,7 +416,9 @@ endfunction()
 
 ## @brief Makes @p target an importer of the named modules: it is scanned for module dependencies
 ## (CXX_SCAN_FOR_MODULES; the project's policies leave CMP0155 OLD, so no other target is) and links each
-## module's target.
+## module's target. An importer of a module whose row has IMPORTS gets E2's import-reexporting lift
+## (isoline_lift_module_tidy_checks()), read from the row; the kinds of its own sources (an include before
+## the import) remain its CMakeLists.txt's to name.
 ##
 ## isoline_add_module_consumer(<target> <module>...)
 function(isoline_add_module_consumer target)
@@ -396,6 +433,11 @@ function(isoline_add_module_consumer target)
                                 "(isoline_add_module(), with ISOLINE_MODULES ON)")
         endif()
         target_link_libraries(${target} PRIVATE ${moduleTarget})
+        get_property(moduleImports GLOBAL PROPERTY ISOLINE_MODULE_${module}_IMPORTS)
+        if(moduleImports)
+            # E2 (D13), rows import-reexporting of ISOLINE_MODULE_TIDY_FALSE_POSITIVES.
+            isoline_lift_module_tidy_checks(${target} import-reexporting)
+        endif()
     endforeach()
 endfunction()
 
@@ -403,8 +445,7 @@ endfunction()
 ##
 ## isoline_add_module(NAME <module> LIBRARY <target> SOURCE <interface unit>
 ##                    NAMESPACES <namespace>... INTERNAL_NAMESPACES <namespace>...
-##                    [IMPORTS <module>...] [FOREIGN_NAMES <qualified name>...]
-##                    [INSTALL_COMPONENT <component>])
+##                    [IMPORTS <module>...] [FOREIGN_NAMES <qualified name>...])
 ##  - NAME is what consumers import; LIBRARY's HEADER_SET is the module's surface; SOURCE is the interface
 ##    unit, relative to the current source directory, generated by the lint's --write and committed.
 ##  - NAMESPACES are public: their names are exported. INTERNAL_NAMESPACES are not, and neither is any
@@ -412,13 +453,15 @@ endfunction()
 ##    neither fails the lint, and so does a public one that is internal by these rules.
 ##  - IMPORTS are re-exported modules (`export import`), FOREIGN_NAMES names of other libraries the module
 ##    re-exports (`export namespace core::async { using core::async::Task; }`).
-##  - INSTALL_COMPONENT is the install component of the module's files, `isoline` by default.
+##  - The module target installs with LIBRARY, in the export set and install component of LIBRARY's row
+##    of ISOLINE_INSTALL_LIBRARIES (cmake/IsolineInstallRows.cmake): the component is that row's, so the
+##    module row names none. With ISOLINE_INSTALL, a LIBRARY without a row refuses the configure.
 ## Writes ${PROJECT_BINARY_DIR}/modules/<NAME>.surface.json and appends NAME to the global property
 ## ISOLINE_MODULE_ROWS. With ISOLINE_TESTING and the export lint (ISOLINE_MODULE_LINT_CLANG, Python 3), it
 ## registers the test module-exports-<NAME> (label lint) and the target isoline_write_module_exports_<NAME>,
 ## which the target isoline_write_module_exports runs with every other row's.
 function(isoline_add_module)
-    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;LIBRARY;SOURCE;INSTALL_COMPONENT"
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;LIBRARY;SOURCE"
                           "NAMESPACES;INTERNAL_NAMESPACES;IMPORTS;FOREIGN_NAMES")
     foreach(required IN ITEMS NAME LIBRARY SOURCE NAMESPACES)
         if(NOT arg_${required})
@@ -430,9 +473,6 @@ function(isoline_add_module)
     endif()
     if(NOT TARGET ${arg_LIBRARY})
         message(FATAL_ERROR "isoline_add_module(${arg_NAME}): LIBRARY ${arg_LIBRARY} is no target")
-    endif()
-    if(NOT arg_INSTALL_COMPONENT)
-        set(arg_INSTALL_COMPONENT "isoline")
     endif()
     # The standard the module's consumers compile with, which the lint parses and precompiles the headers in:
     # the highest cxx_std_<N> of the library's interface compile features (its PUBLIC
@@ -503,7 +543,6 @@ function(isoline_add_module)
 }
 " TARGET ${arg_LIBRARY})
     set_property(GLOBAL APPEND PROPERTY ISOLINE_MODULE_ROWS "${arg_NAME}")
-    set_property(GLOBAL PROPERTY ISOLINE_MODULE_${arg_NAME}_INSTALL_COMPONENT "${arg_INSTALL_COMPONENT}")
     if(ISOLINE_MODULES)
         _isoline_add_module_target(NAME "${arg_NAME}" LIBRARY "${arg_LIBRARY}" SOURCE "${source}"
                                    IMPORTS ${arg_IMPORTS})

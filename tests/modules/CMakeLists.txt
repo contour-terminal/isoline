@@ -5,6 +5,10 @@
 # and then imports, and an ordinary header TU that imports nothing. All three link into isoline_module_test,
 # one program that both includes and imports Isoline (D7).
 
+# The recipe each later public library follows, proven by a fixture module that re-exports isoline: first,
+# since clang-tidy-module-tripwire's import-reexporting source imports it.
+add_subdirectory(recipe)
+
 # The header side: an ordinary TU of the header build, not scanned, linted in full.
 add_library(isoline_module_test_header_side OBJECT HeaderSide.cpp)
 target_link_libraries(isoline_module_test_header_side PUBLIC isoline_core)
@@ -103,6 +107,11 @@ isoline_apply_target_policy(isoline_module_tidy_tripwire)
 # E2 (D13), row import-only of ISOLINE_MODULE_TIDY_FALSE_POSITIVES: readability-redundant-declaration.
 isoline_lift_module_tidy_checks(isoline_module_tidy_tripwire import-only)
 
+add_library(isoline_module_tidy_tripwire_import_reexporting OBJECT tidy-tripwire/ImportReexporting.cpp)
+isoline_add_module_consumer(isoline_module_tidy_tripwire_import_reexporting isoline.recipe_fixture)
+isoline_apply_target_policy(isoline_module_tidy_tripwire_import_reexporting)
+# E2's import-reexporting lift is isoline_add_module_consumer()'s, read from the fixture row's IMPORTS.
+
 add_library(isoline_module_tidy_tripwire_include_then_import OBJECT tidy-tripwire/IncludeThenImport.cpp)
 target_link_libraries(isoline_module_tidy_tripwire_include_then_import PRIVATE isoline_core)
 isoline_add_module_consumer(isoline_module_tidy_tripwire_include_then_import isoline)
@@ -132,10 +141,13 @@ endif()
 
 # The tripwires of E1 and E2: one source of each kind ISOLINE_MODULE_TIDY_FALSE_POSITIVES names.
 get_property(isolineInterfaceUnit GLOBAL PROPERTY ISOLINE_MODULE_isoline_SOURCE)
+get_property(recipeFixtureInterfaceUnit GLOBAL PROPERTY ISOLINE_MODULE_isoline.recipe_fixture_SOURCE)
 isoline_add_module_exception_tripwires(
     TIDY_SOURCES
         "interface-unit" "${isolineInterfaceUnit}"
+        "importing-interface-unit" "${recipeFixtureInterfaceUnit}"
         "import-only" "${CMAKE_CURRENT_SOURCE_DIR}/tidy-tripwire/ImportOnly.cpp"
         "include-then-import" "${CMAKE_CURRENT_SOURCE_DIR}/tidy-tripwire/IncludeThenImport.cpp"
+        "import-reexporting" "${CMAKE_CURRENT_SOURCE_DIR}/tidy-tripwire/ImportReexporting.cpp"
         ${importThenIncludeTidySource}
     BUILD_TARGETS ${importThenIncludeTidyTarget})
