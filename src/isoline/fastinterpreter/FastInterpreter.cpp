@@ -592,6 +592,15 @@ class Invocation final: public runtime::IExceptionRoots
         return fp;
     }
 
+    /// Copies a callee's @p count argument slots from @p arguments to @p destination. The invocation's own
+    /// function has none to copy: its arguments (@p arguments null) are stored into its frame afterwards.
+    static void copyArguments(Slot const* arguments, std::size_t count, Slot* destination) noexcept
+    {
+        if (arguments == nullptr || count == 0)
+            return;
+        std::copy_n(arguments, count, destination);
+    }
+
     /// Where the frame of @p function goes, its arguments at @p arguments in @p argumentsChunk: there, where
     /// the whole frame fits in the chunk; else at the start of chunk @p target, which is reused where it is
     /// large enough and replaced (every chunk after it freed) where it is not, the arguments copied there
@@ -617,7 +626,7 @@ class Invocation final: public runtime::IExceptionRoots
             // Only a call reuses a chunk: its arguments are in the chunk before, and a tail callee alone in a
             // chunk large enough fits after its arguments, at the chunk's start, already.
             auto* const fp = _chunks[target].slots();
-            std::copy_n(arguments, function.paramSlots, fp);
+            copyArguments(arguments, function.paramSlots, fp);
             return { fp, target };
         }
         // No chunk after the arguments' holds an active frame, so they go before the new one is allocated:
@@ -627,8 +636,7 @@ class Invocation final: public runtime::IExceptionRoots
         while (_chunks.size() > keep)
             _chunks.pop_back();
         auto replacement = SlotChunk { _slotMemory, needed };
-        if (arguments != nullptr)
-            std::copy_n(arguments, function.paramSlots, replacement.slots());
+        copyArguments(arguments, function.paramSlots, replacement.slots());
         while (_chunks.size() > target)
             _chunks.pop_back();
         _chunks.push_back(std::move(replacement));
