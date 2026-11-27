@@ -221,6 +221,7 @@ std::expected<ResourceValue, Trap> ResourceOperations::liftOwn(types::ResourceTy
     if (handle.ownership != Ownership::Own)
         return std::unexpected { trapOf(TrapCode::OwnExpected, index) };
     auto const value = ResourceValue { .type = expected, .rep = handle.rep, .ownership = Ownership::Own };
+    _liftedOwns.push_back(value);
     auto removed = table().remove(index);
     Require(removed.has_value());
     return value;

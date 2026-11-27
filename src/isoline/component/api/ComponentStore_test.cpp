@@ -1538,3 +1538,73 @@ TEST_CASE("HostResources.guestToGuestOwnIsNoHosts")
     }
     CHECK(destructor->destroyed == std::vector<uint32_t> { 20 });
 }
+
+TEST_CASE("HostResources.failedResultLiftKeepsTheOwn")
+{
+    // give() -> tuple<own<r>, string> returns make's own and a string out of bounds: the lift to the host
+    // fails after it took the own, which goes back to the guest, whose trap locks the store down. The
+    // host never held it, and the store's end destroys it, once.
+    auto harness = ApiHarness {};
+    auto builder = ComponentBuilder {};
+    auto const r =
+        builder.import("r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto const own = builder.type(TypeDefinition { .type = DefinedValueType { OwnType { .resource = r } } });
+    auto const make = builder.import(
+        "make",
+        ExternDesc { .sort = Sort::Func, .index = functionType(builder, {}, TypeIndex { .index = own }) });
+    auto const pair = builder.type(
+        TypeDefinition { .type = DefinedValueType { TupleType {
+                             .elements = { TypeIndex { .index = own }, PrimitiveValueType::String } } } });
+    auto const memory = builder.coreInstantiate(builder.coreModule(coreModule(MemoryModule)), {});
+    auto const lowered = builder.coreInlineExports({
+        CoreInlineExport { .name = "make", .sort = CoreSort::Func, .index = builder.canonLower(make, {}) },
+        CoreInlineExport { .name = "mem",
+                           .sort = CoreSort::Memory,
+                           .index = builder.aliasCoreExport(memory, "mem", CoreSort::Memory) },
+    });
+    auto const core = builder.coreInstantiate(builder.coreModule(coreModule(R"((module
+      (import "h" "make" (func $make (result i32)))
+      (import "h" "mem" (memory 1))
+      (func (export "give") (result i32)
+        (i32.store (i32.const 64) (call $make))
+        (i32.store (i32.const 68) (i32.const 0xFFFF0000))
+        (i32.store (i32.const 72) (i32.const 16))
+        (i32.const 64))))")),
+                                              { { "h", lowered } });
+    std::ignore = builder.exportItem(
+        "give",
+        Sort::Func,
+        builder.canonLift(
+            builder.aliasCoreExport(core, "give", CoreSort::Func),
+            { option(CanonOptionKind::Memory, builder.aliasCoreExport(memory, "mem", CoreSort::Memory)) },
+            functionType(builder, {}, TypeIndex { .index = pair })));
+    auto const destructor = std::make_shared<RecordingDestructor>();
+    auto const type = HostResourceType { "r", destructor };
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineResource("r", type));
+    auto ownType = linker.ownType(type);
+    REQUIRE(ownType.has_value());
+    require(linker.defineFunction(
+        "make",
+        functionSpec({}, *ownType),
+        hostFunction([&](HostComponentContext& context, Values const&, ValueBuilder& results) -> HostResult {
+            auto fresh = context.newOwn(type, 40);
+            if (!fresh)
+                return std::unexpected { embedderFailure() };
+            results.resource(*fresh);
+            return {};
+        })));
+    {
+        auto store = harness.store();
+        auto instance = instanceOf(store.instantiate(harness.load(builder.build()), linker));
+        CHECK(trapOf(callWith(instance, "give")) == TrapCode::OutOfBounds);
+        auto const held = store.hostResource(type, 40, Ownership::Borrow);
+        REQUIRE(held.has_value());
+        auto const dropped =
+            store.drop(ResourceValue { .type = held->type, .rep = 40, .ownership = Ownership::Own });
+        REQUIRE_FALSE(dropped.has_value());
+        CHECK(dropped.error().failure == ComponentCallFailure::ArgumentMismatch);
+        CHECK(destructor->destroyed.empty());
+    }
+    CHECK(destructor->destroyed == std::vector<uint32_t> { 40 });
+}

@@ -187,6 +187,18 @@ namespace
         return delivered;
     }
 
+    /// Lifts values out of a guest with @p lift: the lift-side twin of deliver(). liftOwn() takes each own
+    /// out of the guest's table as it goes, so when a later value fails the owns lifted before it are in
+    /// no table: they go back to the guest (ComponentStore::undeliver()), whose trap locks the store down.
+    template <typename Lift>
+    [[nodiscard]] auto liftFrom(ComponentStore& store, ResourceOperations& handles, Lift lift)
+    {
+        auto lifted = lift();
+        if (!lifted)
+            store.undeliver(handles.takeLiftedOwns(), OwnHolder::Guest);
+        return lifted;
+    }
+
     /// canon_lift's body (canonLift() guards it).
     [[nodiscard]] std::expected<void, CallError> liftedCall(ComponentStore& store,
                                                             LiftedFunction const& function,
@@ -245,8 +257,9 @@ namespace
             return checked; // uncovered(defence)
 
         // lift_flat_values, then task.return_: on_resolve sees the results before post-return runs.
-        auto results =
-            canonical::liftFlat(context, resultTypes(type), flatResults, canonical::MaxFlatResults);
+        auto results = liftFrom(store, handles, [&] {
+            return canonical::liftFlat(context, resultTypes(type), flatResults, canonical::MaxFlatResults);
+        });
         if (!results)
             return std::unexpected { CallError { std::move(results.error()) } };
         if (auto resolved = resources.tasks().resolve(task.id()); !resolved)
@@ -471,7 +484,9 @@ std::expected<void, CallError> LoweredFunction::run(std::span<isoline::api::Valu
 
     auto start = [&]() -> std::expected<CallArguments, CallError> {
         lends.subtask.state = Subtask::State::Started;
-        auto lifted = canonical::liftFlat(context, params, flatParams, canonical::MaxFlatParams);
+        auto lifted = liftFrom(*_store, handles, [&] {
+            return canonical::liftFlat(context, params, flatParams, canonical::MaxFlatParams);
+        });
         if (!lifted)
             return std::unexpected { CallError { std::move(lifted.error()) } };
         return CallArguments { std::move(*lifted) };

@@ -7,6 +7,7 @@
 // REQUIRE throws, and the store's calls are noexcept).
 
 #include <core/Assert.hpp>
+#include <core/Utils.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -467,6 +468,233 @@ template <typename Builder>
     auto const aInstance = root.instantiate(aComponent, arguments);
     for (auto const* name: { "run-take", "run-str", "run-give" })
         std::ignore = root.exportItem(name, Sort::Func, root.aliasExport(aInstance, name, Sort::Func));
+    return root.build();
+}
+
+/// The names of liftFailures()'s exports, which each fail a lift after an own lifted before it.
+inline constexpr auto LiftFailureExports = std::to_array<std::string_view>({
+    "run-guest-str",
+    "run-guest-handle",
+    "run-guest-record",
+    "run-host-str",
+    "run-host-handle",
+    "run-host-record",
+    "run-give-str",
+    "run-give-handle",
+    "run-give-record",
+});
+
+/// B and A, two instances of one root importing the host resource `r`, `make: func() -> own<r>`, the
+/// record `rec` {h: own<r>, s: string} and three host functions: take-str(own<r>, string),
+/// take2(own<r>, own<r>) and take-rec(rec). B exports those three, and give-str() -> tuple<own<r>,
+/// string>, give-handle() -> tuple<own<r>, own<r>> and give-record() -> rec, each returning make's own
+/// followed by a string out of bounds or the handle index 99. A's run-guest-* pass make's own followed by
+/// such a value to B's take-*, its run-host-* to the host's, and its run-give-* call B's give-*
+/// (LiftFailureExports).
+[[nodiscard]] inline std::vector<std::byte> liftFailures()
+{
+    using binary::CoreInlineExport;
+    using binary::CoreSort;
+    using binary::DefinedValueType;
+    using binary::ExternDesc;
+    using binary::LabeledType;
+    using binary::OwnType;
+    using binary::PrimitiveValueType;
+    using binary::RecordType;
+    using binary::Sort;
+    using binary::SortIndex;
+    using binary::TupleType;
+    using binary::TypeBound;
+    using binary::TypeDefinition;
+    using binary::TypeIndex;
+    using binary::testing::ComponentBuilder;
+    auto const subResource = ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource };
+    // The types every scope declares over its own import of r.
+    struct Scope
+    {
+        uint32_t resource;
+        uint32_t own;
+        uint32_t record;
+    };
+    using Signatures = std::array<std::pair<std::string, uint32_t>, 3>;
+    auto const declare = [&](ComponentBuilder& builder) {
+        auto const resource = builder.import("r", subResource);
+        auto const own =
+            builder.type(TypeDefinition { .type = DefinedValueType { OwnType { .resource = resource } } });
+        auto const definition = builder.type(TypeDefinition {
+            .type = DefinedValueType { RecordType {
+                .fields = { LabeledType { .label = "h", .type = TypeIndex { .index = own } },
+                            LabeledType { .label = "s", .type = PrimitiveValueType::String } } } } });
+        auto const record = builder.import(
+            "rec", ExternDesc { .sort = Sort::Type, .index = definition, .bound = TypeBound::Equal });
+        return Scope { .resource = resource, .own = own, .record = record };
+    };
+    auto const takes = [](ComponentBuilder& builder, Scope const& scope) {
+        auto const own = TypeIndex { .index = scope.own };
+        return Signatures {
+            std::pair { std::string { "take-str" },
+                        functionType(builder, { own, PrimitiveValueType::String }, std::nullopt) },
+            std::pair { std::string { "take2" }, functionType(builder, { own, own }, std::nullopt) },
+            std::pair { std::string { "take-rec" },
+                        functionType(builder, { TypeIndex { .index = scope.record } }, std::nullopt) },
+        };
+    };
+    auto const gives = [](ComponentBuilder& builder, Scope const& scope) {
+        auto const own = TypeIndex { .index = scope.own };
+        auto const tupleOf = [&](binary::ValueTypeRef second) {
+            return TypeIndex {
+                .index = builder.type(
+                    TypeDefinition { .type = DefinedValueType { TupleType { .elements = { own, second } } } })
+            };
+        };
+        return Signatures {
+            std::pair { std::string { "give-str" },
+                        functionType(builder, {}, tupleOf(PrimitiveValueType::String)) },
+            std::pair { std::string { "give-handle" }, functionType(builder, {}, tupleOf(own)) },
+            std::pair { std::string { "give-record" },
+                        functionType(builder, {}, TypeIndex { .index = scope.record }) },
+        };
+    };
+    auto const memoryOptions = [](ComponentBuilder& builder, uint32_t instance) {
+        return std::vector {
+            option(binary::CanonOptionKind::Memory,
+                   builder.aliasCoreExport(instance, "mem", CoreSort::Memory)),
+            option(binary::CanonOptionKind::Realloc,
+                   builder.aliasCoreExport(instance, "realloc", CoreSort::Func)),
+        };
+    };
+    constexpr auto MemoryModule = R"((module
+      (memory (export "mem") 1)
+      (func (export "realloc") (param i32 i32 i32 i32) (result i32) (i32.const 1024))))";
+    auto const importMake = [](ComponentBuilder& builder, Scope const& scope) {
+        return builder.import(
+            "make",
+            ExternDesc { .sort = Sort::Func,
+                         .index = functionType(builder, {}, TypeIndex { .index = scope.own }) });
+    };
+
+    auto b = ComponentBuilder {};
+    {
+        auto const scope = declare(b);
+        auto const make = importMake(b, scope);
+        auto const memory = b.coreInstantiate(b.coreModule(coreModule(MemoryModule)), {});
+        auto const options = memoryOptions(b, memory);
+        auto const lowered = b.coreInlineExports({
+            CoreInlineExport { .name = "make", .sort = CoreSort::Func, .index = b.canonLower(make, {}) },
+            CoreInlineExport { .name = "mem",
+                               .sort = CoreSort::Memory,
+                               .index = b.aliasCoreExport(memory, "mem", CoreSort::Memory) },
+        });
+        auto const core = b.coreInstantiate(b.coreModule(coreModule(R"((module
+          (import "h" "make" (func $make (result i32)))
+          (import "h" "mem" (memory 1))
+          (func (export "take-str") (param i32 i32 i32))
+          (func (export "take2") (param i32 i32))
+          (func (export "take-rec") (param i32 i32 i32))
+          (func (export "give-str") (result i32)
+            (i32.store (i32.const 64) (call $make))
+            (i32.store (i32.const 68) (i32.const 0xFFFF0000))
+            (i32.store (i32.const 72) (i32.const 16))
+            (i32.const 64))
+          (func (export "give-handle") (result i32)
+            (i32.store (i32.const 64) (call $make))
+            (i32.store (i32.const 68) (i32.const 99))
+            (i32.const 64))
+          (func (export "give-record") (result i32)
+            (i32.store (i32.const 64) (call $make))
+            (i32.store (i32.const 68) (i32.const 0xFFFF0000))
+            (i32.store (i32.const 72) (i32.const 16))
+            (i32.const 64))))")),
+                                            { { "h", lowered } });
+        for (auto const& signatures: { takes(b, scope), gives(b, scope) })
+            for (auto const& [name, type]: signatures)
+                std::ignore =
+                    b.exportItem(name,
+                                 Sort::Func,
+                                 b.canonLift(b.aliasCoreExport(core, name, CoreSort::Func), options, type));
+    }
+    auto a = ComponentBuilder {};
+    {
+        auto const scope = declare(a);
+        auto const make = importMake(a, scope);
+        auto const memory = a.coreInstantiate(a.coreModule(coreModule(MemoryModule)), {});
+        auto const options = memoryOptions(a, memory);
+        auto exports = std::vector<CoreInlineExport> {
+            CoreInlineExport { .name = "make", .sort = CoreSort::Func, .index = a.canonLower(make, {}) },
+            CoreInlineExport { .name = "mem",
+                               .sort = CoreSort::Memory,
+                               .index = a.aliasCoreExport(memory, "mem", CoreSort::Memory) },
+        };
+        auto const importLowered = [&](std::string const& name, uint32_t type) {
+            auto const imported = a.import(name, ExternDesc { .sort = Sort::Func, .index = type });
+            exports.push_back(CoreInlineExport {
+                .name = name, .sort = CoreSort::Func, .index = a.canonLower(imported, options) });
+        };
+        for (auto const* prefix: { "guest-", "host-" })
+            for (auto const& [name, type]: takes(a, scope))
+                importLowered(prefix + name, type);
+        for (auto const& [name, type]: gives(a, scope))
+            importLowered(name, type);
+        auto const lowered = a.coreInlineExports(std::move(exports));
+        auto const core = a.coreInstantiate(a.coreModule(coreModule(R"((module
+          (import "h" "make" (func $make (result i32)))
+          (import "h" "mem" (memory 1))
+          (import "h" "guest-take-str" (func $guest-str (param i32 i32 i32)))
+          (import "h" "guest-take2" (func $guest-handle (param i32 i32)))
+          (import "h" "guest-take-rec" (func $guest-record (param i32 i32 i32)))
+          (import "h" "host-take-str" (func $host-str (param i32 i32 i32)))
+          (import "h" "host-take2" (func $host-handle (param i32 i32)))
+          (import "h" "host-take-rec" (func $host-record (param i32 i32 i32)))
+          (import "h" "give-str" (func $give-str (param i32)))
+          (import "h" "give-handle" (func $give-handle (param i32)))
+          (import "h" "give-record" (func $give-record (param i32)))
+          (func (export "run-guest-str") (call $guest-str (call $make) (i32.const 0xFFFF0000) (i32.const 16)))
+          (func (export "run-guest-handle") (call $guest-handle (call $make) (i32.const 99)))
+          (func (export "run-guest-record") (call $guest-record (call $make) (i32.const 0xFFFF0000) (i32.const 16)))
+          (func (export "run-host-str") (call $host-str (call $make) (i32.const 0xFFFF0000) (i32.const 16)))
+          (func (export "run-host-handle") (call $host-handle (call $make) (i32.const 99)))
+          (func (export "run-host-record") (call $host-record (call $make) (i32.const 0xFFFF0000) (i32.const 16)))
+          (func (export "run-give-str") (call $give-str (i32.const 256)))
+          (func (export "run-give-handle") (call $give-handle (i32.const 256)))
+          (func (export "run-give-record") (call $give-record (i32.const 256)))))")),
+                                            { { "h", lowered } });
+        for (auto const name: LiftFailureExports)
+            std::ignore =
+                a.exportItem(std::string { name },
+                             Sort::Func,
+                             a.canonLift(a.aliasCoreExport(core, std::string { name }, CoreSort::Func),
+                                         {},
+                                         functionType(a, {}, std::nullopt)));
+    }
+    auto root = ComponentBuilder {};
+    auto const scope = declare(root);
+    auto const make = importMake(root, scope);
+    auto hostFunctions = std::vector<std::pair<std::string, uint32_t>> {};
+    for (auto const& [name, type]: takes(root, scope))
+        hostFunctions.emplace_back(name, root.import(name, ExternDesc { .sort = Sort::Func, .index = type }));
+    auto const bComponent = root.nested(std::move(b));
+    auto const aComponent = root.nested(std::move(a));
+    auto const shared = std::vector<std::pair<std::string, SortIndex>> {
+        { "r", SortIndex { .sort = Sort::Type, .index = scope.resource } },
+        { "rec", SortIndex { .sort = Sort::Type, .index = scope.record } },
+        { "make", SortIndex { .sort = Sort::Func, .index = make } },
+    };
+    auto const bInstance = root.instantiate(bComponent, shared);
+    auto arguments = shared;
+    auto const fromB = [&](std::string const& name) {
+        return SortIndex { .sort = Sort::Func, .index = root.aliasExport(bInstance, name, Sort::Func) };
+    };
+    for (auto const& [name, function]: hostFunctions)
+    {
+        arguments.emplace_back("guest-" + name, fromB(name));
+        arguments.emplace_back("host-" + name, SortIndex { .sort = Sort::Func, .index = function });
+    }
+    for (auto const* name: { "give-str", "give-handle", "give-record" })
+        arguments.emplace_back(name, fromB(name));
+    auto const aInstance = root.instantiate(aComponent, arguments);
+    for (auto const name: LiftFailureExports)
+        std::ignore = root.exportItem(
+            std::string { name }, Sort::Func, root.aliasExport(aInstance, std::string { name }, Sort::Func));
     return root.build();
 }
 

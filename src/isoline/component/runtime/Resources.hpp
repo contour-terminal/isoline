@@ -398,6 +398,15 @@ class ResourceOperations final: public canonical::HandleOps
     /// has seen the result of: a `realloc` during it may not leave, so it changed no handle.
     void rollBackLoweredOwns() noexcept;
 
+    /// The owns liftOwn() took out of the side's table so far, handed over once: what a lift that fails
+    /// later leaves in no table (ComponentStore::undeliver() takes them back). A lift that succeeds hands
+    /// them on in its values, and the list is dropped with the operations.
+    /// @return The owns, in the order lifted.
+    [[nodiscard]] std::vector<ResourceValue> takeLiftedOwns() noexcept
+    {
+        return std::exchange(_liftedOwns, {});
+    }
+
   private:
     /// The handle table of the side's instance.
     [[nodiscard]] HandleTable& table() noexcept;
@@ -410,7 +419,8 @@ class ResourceOperations final: public canonical::HandleOps
     uint32_t _instance;
     ResourceBindings const* _bindings;
     BorrowScope _scope;
-    std::vector<uint32_t> _loweredOwns {}; ///< The own handles lowerOwn() added, by index.
+    std::vector<uint32_t> _loweredOwns {};     ///< The own handles lowerOwn() added, by index.
+    std::vector<ResourceValue> _liftedOwns {}; ///< The owns liftOwn() took out of the table.
 };
 
 } // namespace isoline::component::runtime

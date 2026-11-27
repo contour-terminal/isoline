@@ -1514,3 +1514,45 @@ TEST_CASE("Calls.guestToGuestFailedLoweringKeepsTheOwn")
     harness.store.reset();
     CHECK(destructor->destroyed == std::vector<uint32_t> { 20 });
 }
+
+TEST_CASE("Calls.failedLiftKeepsTheOwn")
+{
+    // A lift that fails after it took an own out of the guest's table (a string out of bounds, the
+    // handle index 99) hands the own back to the guest, whose trap locks the store down: the store's
+    // end destroys it, once, and no callee runs.
+    auto const engine = GENERATE(from_range(Engines));
+    auto const run = GENERATE(from_range(isoline::component::runtime::testing::LiftFailureExports));
+    INFO(run);
+    auto harness =
+        Harness { isoline::component::runtime::testing::liftFailures(), HarnessOptions { .engine = engine } };
+    auto const identity = std::make_shared<HostResourceIdentity const>(HostResourceIdentity { .name = "r" });
+    auto const destructor = std::make_shared<isoline::component::runtime::testing::RecordingDestructor>();
+    auto next = uint32_t { 30 };
+    auto make = hostFunction([&](ComponentStore& store,
+                                 Values const&,
+                                 ValueBuilder& results) -> std::expected<void, isoline::api::HostFailure> {
+        auto const type = store.hostResourceTypeOf(*identity);
+        if (!type)
+            return std::unexpected { embedderFailure() };
+        results.resource(ResourceValue { .type = *type, .rep = next++ });
+        return {};
+    });
+    auto unreached = hostFunction(
+        [](ComponentStore&, Values const&, ValueBuilder&) -> std::expected<void, isoline::api::HostFailure> {
+            return std::unexpected { embedderFailure(7) };
+        });
+    auto imports = ResolvedImports {};
+    imports.values.emplace_back(HostResourceImport { .identity = identity, .destructor = destructor });
+    imports.values.emplace_back(std::monostate {});
+    imports.values.emplace_back(make);
+    imports.values.emplace_back(unreached);
+    imports.imports = { 0, 1, 2, 3, 3, 3 };
+    auto const root = harness.instance(imports);
+    auto const code = trapCodeOf(call(*harness.store, root, run));
+    CHECK((code == TrapCode::OutOfBounds || code == TrapCode::UnknownHandle));
+    CHECK(unreached->calls == 0);
+    CHECK(harness.store->state() == StoreState::LockedDown);
+    CHECK(destructor->destroyed.empty());
+    harness.store.reset();
+    CHECK(destructor->destroyed == std::vector<uint32_t> { 30 });
+}
