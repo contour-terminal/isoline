@@ -16,8 +16,8 @@ namespace isoline::fastinterpreter
 /// default last, `@<offset>.loop` where the label is a loop's (`br_table s3, s1, #1, #1 → @12 s0, @0.loop
 /// s1`).
 ///
-/// What lowering tests compare. Precondition (checked): the code is a sequence of whole operations,
-/// each header word an OperationId.
+/// What lowering tests compare, the same for code lowered for any dispatch. Precondition (checked): the code
+/// is a sequence of whole operations, each header word one of an available dispatch (operationOfHeader()).
 /// @param function A lowered function.
 /// @return The listing, each line ending with a newline.
 [[nodiscard]] std::string describe(LoweredFunction const& function);

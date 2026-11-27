@@ -105,7 +105,8 @@ struct LoweringError
 /// charged to @p arena, so the module is refused at the first byte past the arena's budget, never after its
 /// peak. The pass is iterative and linear: at most MaxWordsPerBodyUnit code words and WorkPerBodyUnit
 /// entries of work per body unit (LoweredModule::stats()). A function whose frame needs more than
-/// MaxFrameSlots slots is refused before anything is reserved for it.
+/// MaxFrameSlots slots is refused before anything is reserved for it. Its header words are those of
+/// @p config's dispatch (headerWord()): OperationIds under Switch, handler addresses under TailCall.
 ///
 /// Precondition (checked): @p arena is not null; @p config's dispatch is available.
 /// @param module The validated module; the lowered module refers to nothing of it.

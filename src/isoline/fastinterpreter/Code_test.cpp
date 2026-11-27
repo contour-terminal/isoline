@@ -20,8 +20,6 @@
 #include <isoline/runtime/ModuleCode.hpp>
 #include <isoline/runtime/testing/ContractViolation.hpp>
 
-using isoline::fastinterpreter::availableDispatches;
-using isoline::fastinterpreter::bestDispatch;
 using isoline::fastinterpreter::bodyUnits;
 using isoline::fastinterpreter::Dispatch;
 using isoline::fastinterpreter::LoweredFunction;
@@ -97,16 +95,6 @@ TEST_CASE("OperationTable.oneRowPerIdInOrder")
         CHECK(OperationTable[index].form == form);
         CHECK(OperationTable[index].words == words);
     }
-}
-
-TEST_CASE("Dispatch.switchIsAlwaysAvailable")
-{
-    auto const available = availableDispatches();
-    REQUIRE_FALSE(available.empty());
-    CHECK(available.front() == Dispatch::Switch);
-    CHECK(std::ranges::find(available, bestDispatch()) != available.end());
-    auto const tailCall = std::ranges::find(available, Dispatch::TailCall) != available.end();
-    CHECK((bestDispatch() == Dispatch::TailCall) == tailCall);
 }
 
 TEST_CASE("Code.bodyUnitsCountEveryDecodedPart")

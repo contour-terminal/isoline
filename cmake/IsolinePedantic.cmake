@@ -164,6 +164,16 @@ endif()
 
 message(STATUS "[isoline] compile options: ${ISOLINE_COMPILE_OPTIONS}")
 
+## @brief The compile and link options Isoline's policy gives every target it applies to: the warnings,
+## the float policy, sanitizers and coverage, as isoline_apply_target_policy() applies them. What a
+## configure-time probe compiles with, so that it decides as the real build would.
+##
+## isoline_target_policy_flags(<compileOptionsVar> <linkOptionsVar>)
+function(isoline_target_policy_flags compileOptionsVar linkOptionsVar)
+    set(${compileOptionsVar} ${ISOLINE_COMPILE_OPTIONS} PARENT_SCOPE)
+    set(${linkOptionsVar} ${ISOLINE_LINK_OPTIONS} PARENT_SCOPE)
+endfunction()
+
 ## @brief Applies Isoline's warning set, sanitizers, coverage and clang-tidy to @p target.
 ##
 ## isoline_apply_target_policy(<target> [TEST])
@@ -173,7 +183,8 @@ message(STATUS "[isoline] compile options: ${ISOLINE_COMPILE_OPTIONS}")
 ## dialog, Windows Error Reporting) that waits for a click and holds the run until its timeout.
 function(isoline_apply_target_policy target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "TEST" "" "")
-    target_compile_options(${target} PRIVATE ${ISOLINE_COMPILE_OPTIONS})
+    isoline_target_policy_flags(compileOptions linkOptions)
+    target_compile_options(${target} PRIVATE ${compileOptions})
     if(arg_TEST)
         target_compile_options(${target} PRIVATE ${ISOLINE_TEST_COMPILE_OPTIONS})
         if(TARGET core::testing_dialogs)
@@ -182,7 +193,7 @@ function(isoline_apply_target_policy target)
     endif()
     get_target_property(type ${target} TYPE)
     if(type STREQUAL "EXECUTABLE")
-        target_link_options(${target} PRIVATE ${ISOLINE_LINK_OPTIONS})
+        target_link_options(${target} PRIVATE ${linkOptions})
     endif()
     if(ISOLINE_CLANG_TIDY_COMMAND)
         set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${ISOLINE_CLANG_TIDY_COMMAND}")

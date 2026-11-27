@@ -1095,8 +1095,9 @@ TEST_CASE("Contract.Lowering.dispatchMustBeAvailable", "[.contract]")
 {
     isoline::runtime::testing::endAtContractViolation();
     auto const module = validated(functionOf({}, {}, {}, {}));
-    // No build of P4's Task 6 compiles TailCall; Task 8 adds the probe that may.
-    std::ignore = lower(*module, LoweringConfig { .dispatch = Dispatch::TailCall }, arenaOf());
+    // One past the last Dispatch: no build compiles it, whether or not a probe row passed for TailCall.
+    auto const uncompiled = static_cast<Dispatch>(std::to_underlying(Dispatch::TailCall) + 1);
+    std::ignore = lower(*module, LoweringConfig { .dispatch = uncompiled }, arenaOf());
     FAIL("SURVIVED: lowering for a dispatch this build did not compile");
 }
 

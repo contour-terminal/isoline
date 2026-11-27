@@ -1,0 +1,687 @@
+// SPDX-License-Identifier: Apache-2.0
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <expected>
+#include <ranges>
+#include <span>
+#include <type_traits>
+#include <utility>
+
+#include <isoline/binary/Opcode.hpp>
+#include <isoline/fastinterpreter/Code.hpp>
+#include <isoline/fastinterpreter/Context.hpp>
+#include <isoline/fastinterpreter/LoweringTable.hpp>
+#include <isoline/fastinterpreter/SlotCodec.hpp>
+#include <isoline/numerics/Float.hpp>
+#include <isoline/numerics/Integer.hpp>
+#include <isoline/runtime/Interrupt.hpp>
+#include <isoline/runtime/Trap.hpp>
+#include <isoline/runtime/Value.hpp>
+
+// The body of every operation, written once: operation<Id>(State&), which both dispatches instantiate,
+// the switch in its cases and the tail-call backend in its handlers. A body reads its operands after the
+// header word at State::pc, and leaves pc at the operation that runs next.
+//
+// Nothing here names an operation's semantics twice. A numeric operation runs its instruction's kernel
+// (ScalarKernel, by the opcode LoweringRows lowers to it); a fused comparison and branch runs its
+// comparison's kernel and branches as FusionTable says; a conditional branch tests its condition as
+// ConditionalBranchTable says; the rest are bodies of their own (specialOperation()).
+
+namespace isoline::fastinterpreter
+{
+
+/// The typed kernel of a numeric instruction (numerics/), the same the reference interpreter runs: a
+/// function of one or two boxed operands (runtime::I32 and the rest) to a boxed result, a truth value,
+/// or a std::expected of either and the trap. nullptr for an instruction that is not numeric.
+template <binary::Opcode>
+inline constexpr auto ScalarKernel = nullptr;
+
+// clang-format off
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Eqz> = &numerics::eqz<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Eq> = &numerics::eq<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Ne> = &numerics::ne<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32LtS> = &numerics::ltS<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32LtU> = &numerics::ltU<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32GtS> = &numerics::gtS<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32GtU> = &numerics::gtU<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32LeS> = &numerics::leS<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32LeU> = &numerics::leU<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32GeS> = &numerics::geS<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32GeU> = &numerics::geU<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Clz> = &numerics::clz<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Ctz> = &numerics::ctz<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Popcnt> = &numerics::popcnt<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Add> = &numerics::add<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Sub> = &numerics::sub<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Mul> = &numerics::mul<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32DivS> = &numerics::divS<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32DivU> = &numerics::divU<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32RemS> = &numerics::remS<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32RemU> = &numerics::remU<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32And> = &numerics::bitAnd<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Or> = &numerics::bitOr<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Xor> = &numerics::bitXor<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Shl> = &numerics::shl<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32ShrS> = &numerics::shrS<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32ShrU> = &numerics::shrU<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Rotl> = &numerics::rotl<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Rotr> = &numerics::rotr<runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Extend8S> = &numerics::extendSigned<runtime::I32, int8_t>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32Extend16S> = &numerics::extendSigned<runtime::I32, int16_t>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Eqz> = &numerics::eqz<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Eq> = &numerics::eq<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Ne> = &numerics::ne<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64LtS> = &numerics::ltS<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64LtU> = &numerics::ltU<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64GtS> = &numerics::gtS<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64GtU> = &numerics::gtU<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64LeS> = &numerics::leS<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64LeU> = &numerics::leU<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64GeS> = &numerics::geS<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64GeU> = &numerics::geU<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Clz> = &numerics::clz<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Ctz> = &numerics::ctz<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Popcnt> = &numerics::popcnt<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Add> = &numerics::add<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Sub> = &numerics::sub<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Mul> = &numerics::mul<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64DivS> = &numerics::divS<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64DivU> = &numerics::divU<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64RemS> = &numerics::remS<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64RemU> = &numerics::remU<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64And> = &numerics::bitAnd<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Or> = &numerics::bitOr<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Xor> = &numerics::bitXor<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Shl> = &numerics::shl<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64ShrS> = &numerics::shrS<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64ShrU> = &numerics::shrU<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Rotl> = &numerics::rotl<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Rotr> = &numerics::rotr<runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Extend8S> = &numerics::extendSigned<runtime::I64, int8_t>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Extend16S> = &numerics::extendSigned<runtime::I64, int16_t>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64Extend32S> = &numerics::extendSigned<runtime::I64, int32_t>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Eq> = &numerics::feq<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Ne> = &numerics::fne<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Lt> = &numerics::flt<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Gt> = &numerics::fgt<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Le> = &numerics::fle<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Ge> = &numerics::fge<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Abs> = &numerics::fabs<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Neg> = &numerics::fneg<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Ceil> = &numerics::ceil<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Floor> = &numerics::floor<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Trunc> = &numerics::trunc<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Nearest> = &numerics::nearest<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Sqrt> = &numerics::sqrt<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Add> = &numerics::fadd<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Sub> = &numerics::fsub<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Mul> = &numerics::fmul<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Div> = &numerics::fdiv<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Min> = &numerics::fmin<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Max> = &numerics::fmax<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32Copysign> = &numerics::copysign<runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Eq> = &numerics::feq<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Ne> = &numerics::fne<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Lt> = &numerics::flt<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Gt> = &numerics::fgt<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Le> = &numerics::fle<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Ge> = &numerics::fge<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Abs> = &numerics::fabs<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Neg> = &numerics::fneg<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Ceil> = &numerics::ceil<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Floor> = &numerics::floor<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Trunc> = &numerics::trunc<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Nearest> = &numerics::nearest<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Sqrt> = &numerics::sqrt<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Add> = &numerics::fadd<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Sub> = &numerics::fsub<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Mul> = &numerics::fmul<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Div> = &numerics::fdiv<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Min> = &numerics::fmin<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Max> = &numerics::fmax<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64Copysign> = &numerics::copysign<runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32WrapI64> = &numerics::wrap;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncF32S> = &numerics::truncTrapping<runtime::I32, int32_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncF32U> = &numerics::truncTrapping<runtime::I32, uint32_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncF64S> = &numerics::truncTrapping<runtime::I32, int32_t, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncF64U> = &numerics::truncTrapping<runtime::I32, uint32_t, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64ExtendI32S> = &numerics::extendS;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64ExtendI32U> = &numerics::extendU;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncF32S> = &numerics::truncTrapping<runtime::I64, int64_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncF32U> = &numerics::truncTrapping<runtime::I64, uint64_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncF64S> = &numerics::truncTrapping<runtime::I64, int64_t, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncF64U> = &numerics::truncTrapping<runtime::I64, uint64_t, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32ConvertI32S> = &numerics::convert<runtime::F32, int32_t, runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32ConvertI32U> = &numerics::convert<runtime::F32, uint32_t, runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32ConvertI64S> = &numerics::convert<runtime::F32, int64_t, runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32ConvertI64U> = &numerics::convert<runtime::F32, uint64_t, runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32DemoteF64> = &numerics::demote;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64ConvertI32S> = &numerics::convert<runtime::F64, int32_t, runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64ConvertI32U> = &numerics::convert<runtime::F64, uint32_t, runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64ConvertI64S> = &numerics::convert<runtime::F64, int64_t, runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64ConvertI64U> = &numerics::convert<runtime::F64, uint64_t, runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64PromoteF32> = &numerics::promote;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32ReinterpretF32> = &numerics::reinterpret<runtime::I32, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64ReinterpretF64> = &numerics::reinterpret<runtime::I64, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F32ReinterpretI32> = &numerics::reinterpret<runtime::F32, runtime::I32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::F64ReinterpretI64> = &numerics::reinterpret<runtime::F64, runtime::I64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncSatF32S> = &numerics::truncSaturating<runtime::I32, int32_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncSatF32U> = &numerics::truncSaturating<runtime::I32, uint32_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncSatF64S> = &numerics::truncSaturating<runtime::I32, int32_t, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I32TruncSatF64U> = &numerics::truncSaturating<runtime::I32, uint32_t, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncSatF32S> = &numerics::truncSaturating<runtime::I64, int64_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncSatF32U> = &numerics::truncSaturating<runtime::I64, uint64_t, runtime::F32>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncSatF64S> = &numerics::truncSaturating<runtime::I64, int64_t, runtime::F64>;
+template <>
+inline constexpr auto ScalarKernel<binary::Opcode::I64TruncSatF64U> = &numerics::truncSaturating<runtime::I64, uint64_t, runtime::F64>;
+// clang-format on
+
+namespace detail
+{
+    /// The operand and result types of a kernel.
+    template <typename>
+    struct KernelSignature;
+
+    template <typename Result, typename Operand>
+    struct KernelSignature<Result (*)(Operand) noexcept>
+    {
+        using Left = Operand;
+        using Right = Operand;
+        static constexpr auto Arity = 1;
+    };
+
+    template <typename Result, typename LeftOperand, typename RightOperand>
+    struct KernelSignature<Result (*)(LeftOperand, RightOperand) noexcept>
+    {
+        using Left = LeftOperand;
+        using Right = RightOperand;
+        static constexpr auto Arity = 2;
+    };
+
+    /// The signature of @p Kernel.
+    template <auto Kernel>
+    using SignatureOf = KernelSignature<std::remove_cv_t<decltype(Kernel)>>;
+
+    /// Whether @p T is a std::expected: a kernel that may trap.
+    template <typename T>
+    inline constexpr auto IsExpected = false;
+
+    template <typename T, typename E>
+    inline constexpr auto IsExpected<std::expected<T, E>> = true;
+
+    /// The boxed value of type @p Box a slot holds: a 32-bit value from the low half of its slot, where it
+    /// is stored zero-extended, an immediate included.
+    template <typename Box>
+    [[nodiscard]] constexpr Box decode(Word word) noexcept
+    {
+        return Box { static_cast<decltype(Box {}.bits)>(word) };
+    }
+
+    /// The slot holding @p value: a 32-bit value zero-extended, a truth value as the i32 0 or 1.
+    template <typename Box>
+    [[nodiscard]] constexpr Slot encode(Box value) noexcept
+    {
+        if constexpr (std::is_same_v<Box, bool>)
+            return Slot { value ? 1U : 0U };
+        else
+            return Slot { value.bits };
+    }
+
+    /// For operations fused or folded from an instruction, LoweringRows and the tables after it: an index
+    /// past the end when no row holds the operation.
+    inline constexpr auto NoRow = std::size_t { 0xFFFF'FFFF };
+
+    /// The instruction whose Unary or Binary row lowers to @p id, or whose BinaryImmediate row folds into
+    /// it: the instruction whose kernel it runs.
+    [[nodiscard]] consteval std::size_t numericRowOf(OperationId id) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, LoweringRows.size()))
+        {
+            auto const& row = LoweringRows[index];
+            if (row.form != OperationForm::Special && (row.operation == id || row.immediate == id))
+                return index;
+        }
+        return NoRow;
+    }
+
+    /// The FusionTable row whose comparison and branch fuse into @p id, or NoRow.
+    [[nodiscard]] consteval std::size_t fusionRowOf(OperationId id) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, FusionTable.size()))
+        {
+            auto const& row = FusionTable[index];
+            if (row.fused == id || row.fusedLoop == id || row.immediate == id || row.immediateLoop == id)
+                return index;
+        }
+        return NoRow;
+    }
+
+    /// The ConditionalBranchTable row with @p id among its operations, or NoRow.
+    [[nodiscard]] consteval std::size_t conditionalBranchRowOf(OperationId id) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, ConditionalBranchTable.size()))
+        {
+            auto const& row = ConditionalBranchTable[index];
+            if (row.branch == id || row.branchLoop == id || row.move == id || row.moveLoop == id)
+                return index;
+        }
+        return NoRow;
+    }
+
+    /// False, for an operation: what a static_assert in a branch no operation reaches tests.
+    template <OperationId>
+    inline constexpr auto NoOperation = false;
+} // namespace detail
+
+/// The 32-bit slot operand @p Index of the operation at @p pc: they follow the header two to a word, the
+/// first in the low half.
+template <uint32_t Index>
+[[nodiscard]] inline uint32_t slotOperand(Word const* pc) noexcept
+{
+    auto const word = pc[1 + (Index / 2)];
+    if constexpr (Index % 2 == 0)
+        return static_cast<uint32_t>(word);
+    else
+        return static_cast<uint32_t>(word >> 32U);
+}
+
+/// The immediate @p Index of operation @p Id at @p pc: they follow its slot operands, one word each.
+template <OperationId Id, uint32_t Index>
+[[nodiscard]] inline Word immediateOperand(Word const* pc) noexcept
+{
+    constexpr auto Row = operationRow(Id);
+    static_assert(Index < Row.immediates);
+    return pc[1 + ((Row.slots + 1) / 2) + Index];
+}
+
+/// Goes on with the operation after @p Id's.
+template <OperationId Id>
+[[nodiscard]] inline Flow next(State& state) noexcept
+{
+    state.pc += operationRow(Id).words;
+    return Flow::Continue;
+}
+
+/// Polls at a loop back-edge, as every transfer to a loop label does.
+/// @return Flow::Continue to go on, or what leaving with the poll's trap gives.
+[[nodiscard]] inline Flow pollBackEdge(State& state) noexcept
+{
+    if (auto const polled = state.context->gate.poll(runtime::PollSite::LoopBackEdge, state.stepsLeft);
+        !polled) [[unlikely]]
+        return leaveTrapped(*state.context, state.stepsLeft, polled.error());
+    return Flow::Continue;
+}
+
+/// Jumps to @p target, a branch's target word (BranchTargetMask), polling first where @p Poll says so.
+template <LoopPoll Poll>
+[[nodiscard]] inline Flow branchTo(State& state, Word target) noexcept
+{
+    if constexpr (Poll == LoopPoll::Yes)
+    {
+        if (auto const polled = pollBackEdge(state); polled != Flow::Continue) [[unlikely]]
+            return polled;
+    }
+    state.pc = state.context->code + (target & BranchTargetMask);
+    return Flow::Continue;
+}
+
+/// Moves @p count slots from @p source to @p destination, which may overlap: a label's values, which
+/// branches move down to the label's slots.
+inline void moveSlots(Slot* fp, uint32_t destination, uint32_t source, uint64_t count) noexcept
+{
+    std::memmove(fp + destination, fp + source, count * sizeof(Slot));
+}
+
+/// Writes what @p Kernel gives for @p operands to slot @p destination, and goes on; or leaves with its trap.
+template <OperationId Id, auto Kernel, typename... Operands>
+[[nodiscard]] inline Flow applyKernel(State& state, uint32_t destination, Operands... operands) noexcept
+{
+    auto const result = Kernel(operands...);
+    if constexpr (detail::IsExpected<std::remove_cv_t<decltype(result)>>)
+    {
+        if (!result) [[unlikely]]
+            return leaveTrapped(*state.context, state.stepsLeft, result.error());
+        state.fp[destination] = detail::encode(*result);
+    }
+    else
+        state.fp[destination] = detail::encode(result);
+    return next<Id>(state);
+}
+
+/// A numeric operation: its instruction's kernel over its operand slots, or over its left operand's slot and
+/// its immediate, into its destination slot.
+template <OperationId Id>
+[[nodiscard]] inline Flow numericOperation(State& state) noexcept
+{
+    constexpr auto RowIndex = detail::numericRowOf(Id);
+    static_assert(RowIndex != detail::NoRow, "a numeric operation is some instruction's lowering");
+    constexpr auto Kernel = ScalarKernel<LoweringRows[RowIndex].opcode>;
+    using Signature = detail::SignatureOf<Kernel>;
+    constexpr auto Form = operationRow(Id).form;
+    auto const* fp = state.fp;
+    auto const destination = slotOperand<0>(state.pc);
+    auto const left = detail::decode<typename Signature::Left>(fp[slotOperand<1>(state.pc)]);
+    if constexpr (Form == OperationForm::Unary)
+        return applyKernel<Id, Kernel>(state, destination, left);
+    else if constexpr (Form == OperationForm::Binary)
+        return applyKernel<Id, Kernel>(
+            state,
+            destination,
+            left,
+            detail::decode<typename Signature::Right>(fp[slotOperand<2>(state.pc)]));
+    else
+        return applyKernel<Id, Kernel>(
+            state,
+            destination,
+            left,
+            detail::decode<typename Signature::Right>(immediateOperand<Id, 0>(state.pc)));
+}
+
+/// A comparison fused with the br_if or if that consumes its result (FusionTable): br_if branches when the
+/// comparison holds, if continues at its target when it does not; to a loop label it polls first.
+template <OperationId Id>
+[[nodiscard]] inline Flow fusedBranch(State& state) noexcept
+{
+    constexpr auto Fusion = FusionTable[detail::fusionRowOf(Id)];
+    constexpr auto Kernel = ScalarKernel<Fusion.compare>;
+    using Signature = detail::SignatureOf<Kernel>;
+    constexpr auto Row = operationRow(Id);
+    constexpr auto Loop =
+        Fusion.branch == binary::Opcode::BrIf && (Id == Fusion.fusedLoop || Id == Fusion.immediateLoop)
+            ? LoopPoll::Yes
+            : LoopPoll::No;
+    auto const left = detail::decode<typename Signature::Left>(state.fp[slotOperand<0>(state.pc)]);
+    auto holds = false;
+    if constexpr (Signature::Arity == 1)
+        holds = Kernel(left);
+    else if constexpr (Row.slots == 2)
+        holds = Kernel(left, detail::decode<typename Signature::Right>(state.fp[slotOperand<1>(state.pc)]));
+    else
+        holds = Kernel(left, detail::decode<typename Signature::Right>(immediateOperand<Id, 0>(state.pc)));
+    constexpr auto BranchesWhen = Fusion.branch == binary::Opcode::BrIf;
+    if (holds == BranchesWhen)
+        return branchTo<Loop>(state, immediateOperand<Id, Row.immediates - 1>(state.pc));
+    return next<Id>(state);
+}
+
+/// br_if, br_on_null and br_on_non_null (ConditionalBranchTable): when its condition holds it moves the
+/// label's values where it has to, polls to a loop label, and branches.
+template <OperationId Id>
+[[nodiscard]] inline Flow conditionalBranch(State& state) noexcept
+{
+    constexpr auto Branch = ConditionalBranchTable[detail::conditionalBranchRowOf(Id)];
+    constexpr auto Loop = Id == Branch.branchLoop || Id == Branch.moveLoop ? LoopPoll::Yes : LoopPoll::No;
+    constexpr auto Moves = Id == Branch.move || Id == Branch.moveLoop;
+    auto const condition = state.fp[slotOperand<0>(state.pc)];
+    auto holds = false;
+    if constexpr (Branch.opcode == binary::Opcode::BrIf)
+        holds = static_cast<uint32_t>(condition) != 0;
+    else if constexpr (Branch.opcode == binary::Opcode::BrOnNull)
+        holds = isNullReference(condition);
+    else
+        holds = !isNullReference(condition);
+    if (!holds)
+        return next<Id>(state);
+    auto const target = immediateOperand<Id, 0>(state.pc);
+    if constexpr (Moves)
+        moveSlots(state.fp, slotOperand<1>(state.pc), slotOperand<2>(state.pc), target >> 32U);
+    return branchTo<Loop>(state, target);
+}
+
+/// br_table: the index chooses a label's record, the default's for an index past the others; the record
+/// names the target, where the values go, and whether the label is a loop's.
+[[nodiscard]] inline Flow branchTable(State& state) noexcept
+{
+    constexpr auto Id = OperationId::BrTable;
+    constexpr auto Words = operationRow(Id).words;
+    auto const index = static_cast<uint32_t>(state.fp[slotOperand<0>(state.pc)]);
+    auto const source = slotOperand<1>(state.pc);
+    auto const count = immediateOperand<Id, 0>(state.pc);
+    auto const labels = immediateOperand<Id, 1>(state.pc);
+    auto const* record = state.pc + Words + (std::min<uint64_t>(index, labels) * BranchTableEntryWords);
+    auto const destination = static_cast<uint32_t>(record[0] >> 32U);
+    if (count > 0 && destination != source)
+        moveSlots(state.fp, destination, source, count);
+    if (static_cast<LoopPoll>(record[1]) == LoopPoll::Yes)
+        return branchTo<LoopPoll::Yes>(state, record[0]);
+    return branchTo<LoopPoll::No>(state, record[0]);
+}
+
+/// The operations of a body of their own: control without operands, moves, constants, selects, globals,
+/// unconditional branches, if, br_table and return.
+template <OperationId Id>
+[[nodiscard]] inline Flow specialOperation(State& state) noexcept
+{
+    auto* fp = state.fp;
+    auto const* pc = state.pc;
+    if constexpr (Id == OperationId::Unreachable)
+        return leaveTrapped(
+            *state.context, state.stepsLeft, runtime::Trap { runtime::TrapCode::Unreachable });
+    else if constexpr (Id == OperationId::Nop)
+        return next<Id>(state);
+    else if constexpr (Id == OperationId::Move64)
+    {
+        fp[slotOperand<0>(pc)] = fp[slotOperand<1>(pc)];
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::Move128)
+    {
+        moveSlots(fp, slotOperand<0>(pc), slotOperand<1>(pc), 2);
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::MoveRange)
+    {
+        moveSlots(fp, slotOperand<0>(pc), slotOperand<1>(pc), immediateOperand<Id, 0>(pc));
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::Const64)
+    {
+        fp[slotOperand<0>(pc)] = immediateOperand<Id, 0>(pc);
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::Const128)
+    {
+        auto const destination = slotOperand<0>(pc);
+        fp[destination] = immediateOperand<Id, 0>(pc);
+        fp[destination + 1] = immediateOperand<Id, 1>(pc);
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::Return)
+        return leaveReturning(*state.context, state.stepsLeft, slotOperand<0>(pc));
+    else if constexpr (Id == OperationId::GlobalGet)
+    {
+        auto const& global = state.context->store.global(
+            state.context->instance->globals[static_cast<std::size_t>(immediateOperand<Id, 0>(pc))]);
+        auto const width = slotWidth(slotClassOf(global.type.type));
+        storeValue(global.value, std::span { fp + slotOperand<0>(pc), width });
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::GlobalSet)
+    {
+        auto& global = state.context->store.global(
+            state.context->instance->globals[static_cast<std::size_t>(immediateOperand<Id, 0>(pc))]);
+        auto const width = slotWidth(slotClassOf(global.type.type));
+        global.value = loadValue(global.type.type, std::span { fp + slotOperand<0>(pc), width });
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::Select64 || Id == OperationId::Select128)
+    {
+        // The result goes to the first value's slot, so both values are read before it is written.
+        constexpr auto Width = Id == OperationId::Select64 ? 1U : 2U;
+        auto const chosen =
+            static_cast<uint32_t>(fp[slotOperand<3>(pc)]) != 0 ? slotOperand<1>(pc) : slotOperand<2>(pc);
+        moveSlots(fp, slotOperand<0>(pc), chosen, Width);
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::Jump)
+        return branchTo<LoopPoll::No>(state, immediateOperand<Id, 0>(pc));
+    else if constexpr (Id == OperationId::JumpLoop)
+        return branchTo<LoopPoll::Yes>(state, immediateOperand<Id, 0>(pc));
+    else if constexpr (Id == OperationId::If)
+    {
+        if (static_cast<uint32_t>(fp[slotOperand<0>(pc)]) == 0)
+            return branchTo<LoopPoll::No>(state, immediateOperand<Id, 0>(pc));
+        return next<Id>(state);
+    }
+    else if constexpr (Id == OperationId::BrTable)
+        return branchTable(state);
+    else
+        static_assert(detail::NoOperation<Id>, "every operation of Operations.def has a body");
+}
+
+/// Runs operation @p Id at State::pc: its body, chosen by its row.
+/// @param state The registers; pc is left at the operation that runs next.
+/// @return Flow::Continue to go on, or how execution stops.
+template <OperationId Id>
+[[nodiscard]] inline Flow operation(State& state) noexcept
+{
+    if constexpr (operationRow(Id).family == OperationFamily::Numeric)
+        return numericOperation<Id>(state);
+    else if constexpr (detail::fusionRowOf(Id) != detail::NoRow)
+        return fusedBranch<Id>(state);
+    else if constexpr (detail::conditionalBranchRowOf(Id) != detail::NoRow)
+        return conditionalBranch<Id>(state);
+    else
+        return specialOperation<Id>(state);
+}
+
+} // namespace isoline::fastinterpreter

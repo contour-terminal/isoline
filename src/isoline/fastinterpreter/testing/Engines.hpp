@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: Apache-2.0
+#pragma once
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstdint>
+#include <expected>
+#include <memory>
+#include <optional>
+#include <ranges>
+#include <set>
+#include <span>
+#include <variant>
+#include <vector>
+
+#include <isoline/Features.hpp>
+#include <isoline/binary/DecodeLimits.hpp>
+#include <isoline/binary/testing/ModuleBuilder.hpp>
+#include <isoline/fastinterpreter/Code.hpp>
+#include <isoline/fastinterpreter/Dispatch.hpp>
+#include <isoline/fastinterpreter/FastInterpreter.hpp>
+#include <isoline/fastinterpreter/Lowering.hpp>
+#include <isoline/fastinterpreter/testing/Lowering.hpp>
+#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
+#include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/Interrupt.hpp>
+#include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/Store.hpp>
+#include <isoline/runtime/Trap.hpp>
+#include <isoline/runtime/Value.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
+
+/// What the execution tests share: one module instantiated on a fresh store, run by the reference interpreter
+/// or by the fast interpreter under one dispatch, so that a test runs the same module on every engine and
+/// compares what each did.
+namespace isoline::fastinterpreter::testing
+{
+
+/// The engine a Harness runs its module on: the reference interpreter, or the fast one under a dispatch.
+struct EngineUnderTest
+{
+    /// The fast interpreter's dispatch; none for the reference interpreter.
+    std::optional<Dispatch> dispatch;
+};
+
+/// The reference interpreter.
+inline constexpr auto Reference = EngineUnderTest {};
+
+/// The fast interpreter under @p dispatch.
+[[nodiscard]] inline EngineUnderTest fast(Dispatch dispatch) noexcept
+{
+    return EngineUnderTest { .dispatch = dispatch };
+}
+
+/// One module instantiated on a fresh store, executed by one engine.
+class Harness
+{
+  public:
+    /// Decodes, validates and instantiates @p builder's module on @p engine, in a store of @p limits.
+    /// @param observer Observes the store's polls; none when null.
+    Harness(ModuleBuilder const& builder,
+            EngineUnderTest engine,
+            runtime::StoreLimits limits = {},
+            runtime::IPollObserver* observer = nullptr):
+        _store { limits, runtime::StoreServices { .allocator = _allocator, .pollObserver = observer } },
+        _executor { executorOf(engine) }
+    {
+        auto validated =
+            validate::ValidatedModule::load(builder.build(), FeatureSet::all(), binary::DecodeLimits {});
+        REQUIRE(validated.has_value());
+        _validated = *validated;
+        if (engine.dispatch)
+            _code = lowered(_validated, LoweringConfig { .dispatch = *engine.dispatch });
+        auto const address = runtime::instantiate(_store, *_executor, _validated, _code, {});
+        REQUIRE(address.has_value());
+        _address = *address;
+    }
+
+    /// Invokes the module's function @p index.
+    /// @param index The function's index in the module's function index space.
+    /// @param args Its arguments.
+    /// @return Its results, or how it ended abruptly.
+    [[nodiscard]] std::expected<std::vector<runtime::Value>, runtime::Abrupt> outcome(
+        uint32_t index, std::vector<runtime::Value> const& args = {})
+    {
+        auto const address = function(index);
+        auto results = std::vector<runtime::Value>(_store.functionType(address).results.size());
+        return runtime::invokeChecked(_store, *_executor, address, args, results).outcome.transform([&] {
+            return results;
+        });
+    }
+
+    /// The single result of invoking function @p index, which must return one.
+    [[nodiscard]] runtime::Value result(uint32_t index, std::vector<runtime::Value> const& args = {})
+    {
+        auto const results = outcome(index, args);
+        REQUIRE(results.has_value());
+        REQUIRE(results->size() == 1);
+        return results->front();
+    }
+
+    /// The trap invoking function @p index ends with, which it must.
+    [[nodiscard]] runtime::TrapCode trap(uint32_t index, std::vector<runtime::Value> const& args = {})
+    {
+        auto const ended = outcome(index, args);
+        REQUIRE_FALSE(ended.has_value());
+        REQUIRE(std::holds_alternative<runtime::Trap>(ended.error()));
+        return std::get<runtime::Trap>(ended.error()).code;
+    }
+
+    /// The address of the module's function @p index.
+    [[nodiscard]] runtime::FuncAddr function(uint32_t index)
+    {
+        return _store.moduleInstance(_address).functions.at(index);
+    }
+
+    /// The store.
+    [[nodiscard]] runtime::Store& store() noexcept { return _store; }
+
+    /// The module instance.
+    [[nodiscard]] runtime::ModuleInstance const& instance() const { return _store.moduleInstance(_address); }
+
+    /// The lowered code of the module; null on the reference engine.
+    [[nodiscard]] std::shared_ptr<LoweredModule const> const& code() const noexcept { return _code; }
+
+  private:
+    [[nodiscard]] static std::unique_ptr<runtime::ICodeExecutor> executorOf(EngineUnderTest engine)
+    {
+        if (engine.dispatch)
+            return std::make_unique<FastInterpreter>(*engine.dispatch);
+        return std::make_unique<interpreter::ReferenceInterpreter>();
+    }
+
+    runtime::HeapMemoryAllocator _allocator;
+    runtime::Store _store;
+    std::unique_ptr<runtime::ICodeExecutor> _executor;
+    std::shared_ptr<validate::ValidatedModule const> _validated;
+    std::shared_ptr<LoweredModule const> _code;
+    uint32_t _address = 0;
+};
+
+/// The operations of @p function's code, whichever dispatch it was lowered for.
+[[nodiscard]] inline std::set<OperationId> operationsOf(LoweredFunction const& function)
+{
+    auto operations = std::set<OperationId> {};
+    auto const code = std::span { function.code };
+    auto offset = std::size_t { 0 };
+    while (offset < code.size())
+    {
+        auto const operation = operationOfHeader(code[offset]);
+        operations.insert(operation);
+        offset += operationExtent(operation, code.subspan(offset));
+    }
+    return operations;
+}
+
+/// The operations of every function of @p module's code.
+[[nodiscard]] inline std::set<OperationId> operationsOf(LoweredModule const& module)
+{
+    auto operations = std::set<OperationId> {};
+    for (auto const& function: module.functions())
+        operations.merge(operationsOf(function));
+    return operations;
+}
+
+} // namespace isoline::fastinterpreter::testing
