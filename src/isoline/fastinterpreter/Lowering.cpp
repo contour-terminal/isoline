@@ -453,8 +453,8 @@ namespace
         /// @return Whether it did; the br_if or if is then lowered too.
         [[nodiscard]] bool lowerFused(LoweringRow const& row, binary::Instruction const& instruction)
         {
-            if (_position + 1 >= _source.body.size())
-                return false;
+            // A comparison is never the body's last instruction, its end (run() requires it), so the next
+            // one exists.
             auto const& branch = _source.body[_position + 1];
             auto const* fusion = fusionOf(instruction.opcode, branch.opcode);
             if (fusion == nullptr)
@@ -944,8 +944,12 @@ namespace
         {
             switch (entry.kind)
             {
+                // Every caller passes a forwarded local or a constant: what is in its slot already, an
+                // entry of no index list and no chain, never comes here.
+                // uncovered-begin(materialize-in-slot)
                 case EntryKind::Slot:
                 case EntryKind::Run: return;
+                // uncovered-end(materialize-in-slot)
                 case EntryKind::Local:
                     emit(
                         operationFor(MoveOperations, entry.type), { entry.slot, localSlot(entry.local) }, {});
@@ -1072,8 +1076,8 @@ namespace
                                    .requested = slots,
                                    .limit = MaxFrameSlots,
                                    .reason = LoweringFailure::FrameSlots };
-        // uncovered-begin(code-words-past-32-bits)
         if (auto const words = codeBoundWords(validated.module().code[codeIndex]); words > MaxCodeWords)
+            // uncovered-begin(code-words-past-32-bits)
             return LoweringError { .codeIndex = codeIndex,
                                    .requested = words,
                                    .limit = MaxCodeWords,

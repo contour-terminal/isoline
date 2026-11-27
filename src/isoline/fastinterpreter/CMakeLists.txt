@@ -29,18 +29,27 @@ function(isoline_write_dispatch_availability header row)
     configure_file("${isolineFastAvailabilityTemplate}" "${header}" @ONLY)
 endfunction()
 
-## @brief Probes each tail-call row in turn, and sets @p resultVar to the first that compiles the real
-## TailCallControl.cpp with the target policy's flags and warnings as errors, or to "" when none does.
+## @brief Probes each tail-call row of this compiler's family in turn, and sets @p resultVar to the first that
+## compiles the real TailCallControl.cpp with the target policy's flags and warnings as errors, or to "" when
+## none does. A compiler no row names is not probed at all: MSVC has no guaranteed tail call, and an attribute
+## it does not know compiles into plain calls, so its build is pinned to Switch by the rows themselves.
 function(isoline_probe_tail_call resultVar)
     isoline_target_policy_flags(compileOptions linkOptions)
     # Warnings as errors, an unknown attribute's included, which the policy may mute: a compiler that does
-    # not know a row's spelling ignores it and compiles plain calls, which are no tail calls at all.
-    if(MSVC)
-        list(APPEND compileOptions /WX /we5030)
-    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # not know a row's spelling ignores it and compiles plain calls, which are no tail calls at all. clang-cl
+    # takes Clang's own -W options beside MSVC's /WX.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         list(APPEND compileOptions -Werror -Werror=attributes)
+    elseif(MSVC)
+        list(APPEND compileOptions /WX -Werror=unknown-attributes)
     else()
         list(APPEND compileOptions -Werror -Werror=unknown-attributes)
+    endif()
+    # The build's own configuration, so that the probe compiles at the build's optimization level. A
+    # multi-config generator has none to name; its probe compiles unoptimized, which is the stricter case: a
+    # tail call that is guaranteed there (no call inlined away, every local in memory) is guaranteed optimized.
+    if(CMAKE_BUILD_TYPE)
+        set(CMAKE_TRY_COMPILE_CONFIGURATION "${CMAKE_BUILD_TYPE}")
     endif()
     # core-cpp's headers, by the paths its build interface names (or an installed package's plain ones).
     get_target_property(coreBase core::base ALIASED_TARGET)
@@ -51,7 +60,11 @@ function(isoline_probe_tail_call resultVar)
     list(TRANSFORM coreIncludes REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1")
     list(FILTER coreIncludes EXCLUDE REGEX "^\\$<")
     set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-    foreach(row IN LISTS ISOLINE_TAILCALL_PROBE_ROWS)
+    foreach(row families IN ZIP_LISTS ISOLINE_TAILCALL_PROBE_ROWS ISOLINE_TAILCALL_PROBE_FAMILIES)
+        string(REPLACE " " ";" families "${families}")
+        if(NOT CMAKE_CXX_COMPILER_ID IN_LIST families)
+            continue()
+        endif()
         string(MAKE_C_IDENTIFIER "${row}" rowName)
         set(probeInclude "${PROJECT_BINARY_DIR}/dispatch-probe/${rowName}/include")
         isoline_write_dispatch_availability(
@@ -81,8 +94,10 @@ function(isoline_probe_tail_call resultVar)
 endfunction()
 
 if(ISOLINE_FAST_DISPATCH_TAILCALL STREQUAL "AUTO")
-    # An edit of the file the probe compiles, or of the handler it instantiates, probes again.
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS TailCallControl.cpp TailCall.hpp)
+    # An edit of the file the probe compiles, of the handler it instantiates or of the bodies and registers
+    # the handler holds, probes again.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 TailCallControl.cpp TailCall.hpp Operations.hpp Context.hpp)
     isoline_probe_tail_call(isolineTailCallRow)
 elseif(ISOLINE_FAST_DISPATCH_TAILCALL STREQUAL "OFF")
     set(isolineTailCallRow "")

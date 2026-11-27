@@ -48,12 +48,12 @@ set(ISOLINE_FAST_DISPATCH_TAILCALL AUTO CACHE STRING
     "The fast interpreter's TailCall dispatch: AUTO (where a probe row passes) or OFF")
 set_property(CACHE ISOLINE_FAST_DISPATCH_TAILCALL PROPERTY STRINGS AUTO OFF)
 
-# The tail-call probe rows, tried in order: a spelling of a guaranteed tail call, and the compiler families
-# (CMAKE_CXX_COMPILER_ID) that have it. The probe compiles the real TailCallControl.cpp with each spelling,
-# with the target policy's own flags and warnings as errors, and the first that compiles is the build's.
-# MSVC has no guaranteed tail call, and GCC has one from 15 on: no row passes on MSVC or GCC 14, nor on GCC
-# with AddressSanitizer, which keeps the handler's locals addressable across the tail call.
-# GCC's row comes first: GCC 15 and later accept Clang's spelling too, and Clang rejects GCC's, so each
-# compiler takes its own row.
+# The tail-call probe rows: a spelling of a guaranteed tail call, and the compiler families (CMAKE_CXX_COMPILER_ID)
+# that have it. The probe tries, in order, the rows whose families name the build's compiler: it compiles the
+# real TailCallControl.cpp with each spelling, with the target policy's own flags and warnings as errors, and
+# the first that compiles is the build's. A compiler no row names is not probed, and gets Switch alone: MSVC,
+# which has no guaranteed tail call. GCC has one from 15 on, so GCC 14 passes no row, nor does GCC with
+# AddressSanitizer, which keeps the handler's locals addressable across the tail call. Each compiler takes its
+# own spelling, though GCC 15 and later accept Clang's too.
 set(ISOLINE_TAILCALL_PROBE_ROWS "gnu::musttail" "clang::musttail")
 set(ISOLINE_TAILCALL_PROBE_FAMILIES "GNU" "Clang AppleClang")

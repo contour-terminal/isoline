@@ -32,6 +32,8 @@ template <OperationId Id>
 [[nodiscard]] Exit handler(
     Word const* pc, Slot* fp, Context* context, std::byte* memory0, uint64_t memory0Size, uint64_t stepsLeft)
 {
+    // A body that could throw would leave the handler, which is not noexcept, by an exception.
+    static_assert(noexcept(operation<Id>(std::declval<State&>())));
     {
         auto state = State { .pc = pc,
                              .fp = fp,
@@ -54,7 +56,7 @@ template <OperationId Id>
 /// The handlers of one family file: by OperationId, the handler of each operation of @p Families, null for
 /// every other.
 template <OperationFamily... Families>
-[[nodiscard]] constexpr std::array<Handler, OperationCount> familyHandlers() noexcept
+[[nodiscard]] consteval std::array<Handler, OperationCount> familyHandlers() noexcept
 {
     return []<std::size_t... Index>(std::index_sequence<Index...>) {
         return std::array<Handler, OperationCount> { [] {

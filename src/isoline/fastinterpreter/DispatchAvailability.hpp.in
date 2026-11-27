@@ -16,7 +16,8 @@ inline constexpr auto AvailableDispatches = std::to_array<Dispatch>({ @ISOLINE_F
 
 static_assert(AvailableDispatches.front() == Dispatch::Switch, "Switch is compiled everywhere, and listed first");
 
-/// The tail-call probe rows CMake tried, in order: each a spelling of a guaranteed tail call.
+/// The tail-call probe rows, in order: each a spelling of a guaranteed tail call. CMake tries those whose
+/// families (TailCallProbeFamilies) name the build's compiler.
 inline constexpr auto TailCallProbeRows = std::to_array<std::string_view>({ @ISOLINE_FAST_PROBE_ROWS@ });
 
 /// The compiler families (CMake's compiler ids, space-separated) that have each probe row's spelling.
@@ -27,6 +28,12 @@ inline constexpr auto PassedProbeRow = std::string_view { "@ISOLINE_FAST_PASSED_
 
 /// The compiler the build was configured with, as CMake names it (CMAKE_CXX_COMPILER_ID).
 inline constexpr auto CompilerFamily = std::string_view { "@CMAKE_CXX_COMPILER_ID@" };
+
+/// The compiler's version, as CMake names it (CMAKE_CXX_COMPILER_VERSION).
+inline constexpr auto CompilerVersion = std::string_view { "@CMAKE_CXX_COMPILER_VERSION@" };
+
+/// The sanitizers the build instruments with (ISOLINE_SANITIZE): empty, address or thread.
+inline constexpr auto Sanitizers = std::string_view { "@ISOLINE_SANITIZE@" };
 
 /// The TailCall setting the build was configured with: AUTO, where a probe row passes, or OFF.
 inline constexpr auto TailCallSetting = std::string_view { "@ISOLINE_FAST_DISPATCH_TAILCALL@" };

@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
+#include <memory_resource>
 #include <ranges>
 #include <set>
 #include <string>
@@ -56,6 +58,8 @@ using isoline::binary::testing::unreachable;
 using isoline::fastinterpreter::availableDispatches;
 using isoline::fastinterpreter::describe;
 using isoline::fastinterpreter::FusionTable;
+using isoline::fastinterpreter::LoweredFunction;
+using isoline::fastinterpreter::LoweredModule;
 using isoline::fastinterpreter::LoweringRows;
 using isoline::fastinterpreter::MinimumChunkSlots;
 using isoline::fastinterpreter::OperationForm;
@@ -332,8 +336,11 @@ TEST_CASE("FastInterpreter.pollsLikeTheReference")
         auto fastHarness = Harness { shape.module, engine, {}, &fastCounter };
         CHECK(listingOf(fastHarness).contains(shape.name.starts_with("br_table") ? "br_table" : shape.name));
         CHECK(reference.result(0, { i32(shape.argument) }) == fastHarness.result(0, { i32(shape.argument) }));
-        for (auto const site: { PollSite::FunctionEntry, PollSite::LoopBackEdge, PollSite::HostReturn })
-            CHECK(fastCounter.count(site) == referenceCounter.count(site));
+        for (auto const& row: isoline::runtime::PollSiteTable)
+        {
+            INFO(row.name);
+            CHECK(fastCounter.count(row.site) == referenceCounter.count(row.site));
+        }
         CHECK(fastCounter.count(PollSite::LoopBackEdge) == 1'000);
         CHECK(fastCounter.count(PollSite::FunctionEntry) == 1);
     }
@@ -426,22 +433,49 @@ TEST_CASE("FastInterpreter.commitsTheStepsOnEveryWayOut")
     }
 }
 
+namespace
+{
+
+/// Interrupts a store from a thread of its own after a delay, and joins that thread however the test ends,
+/// a failed REQUIRE's exception included.
+class InterruptAfter
+{
+  public:
+    /// Starts the thread, which interrupts @p interrupter after @p delay.
+    InterruptAfter(std::shared_ptr<isoline::runtime::Interrupter> interrupter,
+                   std::chrono::milliseconds delay):
+        _thread { [interrupter = std::move(interrupter), delay] {
+            std::this_thread::sleep_for(delay);
+            interrupter->interrupt();
+        } }
+    {
+    }
+
+    InterruptAfter(InterruptAfter const&) = delete;
+    InterruptAfter(InterruptAfter&&) = delete;
+    InterruptAfter& operator=(InterruptAfter const&) = delete;
+    InterruptAfter& operator=(InterruptAfter&&) = delete;
+
+    ~InterruptAfter() { _thread.join(); }
+
+  private:
+    std::thread _thread;
+};
+
+} // namespace
+
 TEST_CASE("FastInterpreter.interruptStopsASpin", "[threading]")
 {
+    // (loop (br 0)) on a store without an observer, so that the poll's own fast path sees the interrupt. The
+    // interrupt is the only thing that stops a spinning guest, so the bound on a broken one is its step
+    // budget: 10^8 steps take a few seconds under ASan, far longer than the 5 ms the interrupt comes after,
+    // and a guest that ran out of them ends StepLimitExceeded, which fails the test.
     auto const engine = anyFastEngine();
-    // (loop (br 0)), bounded by a step budget no interrupt that works lets it reach.
     auto harness = Harness { functionOf({}, {}, {}, blockOf(0x03, noValues(), br(0))),
                              engine,
-                             StoreLimits { .maxSteps = 1'000'000'000 } };
-    auto interrupter = std::thread { [&interrupt = *harness.store().interrupter()] {
-        std::this_thread::sleep_for(std::chrono::milliseconds { 5 });
-        interrupt.interrupt();
-    } };
-    auto const started = std::chrono::steady_clock::now();
-    auto const trap = harness.trap(0);
-    interrupter.join();
-    CHECK(trap == TrapCode::Interrupted);
-    CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds { 10 });
+                             StoreLimits { .maxSteps = 100'000'000 } };
+    auto const interrupt = InterruptAfter { harness.store().interrupter(), std::chrono::milliseconds { 5 } };
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
 }
 
 TEST_CASE("FastInterpreter.floatEnvironmentIsPinned")
@@ -518,6 +552,118 @@ TEST_CASE("FastInterpreter.entryChargesAndReleases")
             CHECK(harness.trap(0, { i64(5) }) == reference.trap(0, { i64(5) }));
             CHECK(harness.store().chargedStackValues() == 0);
         }
+    }
+}
+
+namespace
+{
+
+/// Counts the allocations it passes on to the global heap.
+class CountingResource final: public std::pmr::memory_resource
+{
+  public:
+    /// The allocations so far.
+    [[nodiscard]] uint64_t allocations() const noexcept { return _allocations; }
+
+  private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override
+    {
+        ++_allocations;
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override
+    {
+        std::pmr::new_delete_resource()->deallocate(pointer, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
+    {
+        return this == &other;
+    }
+
+    uint64_t _allocations = 0;
+};
+
+} // namespace
+
+TEST_CASE("FastInterpreter.entryAllocatesOnlyOnceAdmitted")
+{
+    // The frame's slots are reserved after the FunctionEntry poll, the depth check and the charge: a frame
+    // any of them refuses allocates nothing, as the reference's refuses before its stacks grow. (An outermost
+    // invocation's step budget is fresh, and instantiation's own poll refuses a budget of none: a
+    // step-exhausted entry is a call's, which comes with calls.)
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    auto const refusals = std::vector<std::pair<StoreLimits, TrapCode>> {
+        { StoreLimits { .maxCallDepth = 0 }, TrapCode::CallStackExhausted },
+        { StoreLimits { .maxStackValues = 1 }, TrapCode::CallStackExhausted },
+    };
+    for (auto const& [limits, code]: refusals)
+    {
+        auto memory = CountingResource {};
+        auto harness =
+            Harness { factorial(), EngineUnderTest { .dispatch = dispatch, .slotMemory = &memory }, limits };
+        CHECK(harness.trap(0, { i64(3) }) == code);
+        CHECK(memory.allocations() == 0);
+    }
+    {
+        auto memory = CountingResource {};
+        auto harness =
+            Harness { factorial(), EngineUnderTest { .dispatch = dispatch, .slotMemory = &memory } };
+        harness.store().interrupter()->interrupt();
+        CHECK(harness.trap(0, { i64(3) }) == TrapCode::Interrupted);
+        CHECK(memory.allocations() == 0);
+    }
+    auto memory = CountingResource {};
+    auto harness = Harness { factorial(), EngineUnderTest { .dispatch = dispatch, .slotMemory = &memory } };
+    CHECK(harness.result(0, { i64(3) }) == i64(6));
+    CHECK(memory.allocations() == 1);
+}
+
+TEST_CASE("FastInterpreter.runsTheOperationsNoLoweringEmitsYet")
+{
+    // nop lowers to nothing and v128.const comes with the vector operations, so code written by hand runs
+    // them: (param v128) (result v128), its body nop, const128 s2 #lanes, return s2.
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    auto const byHand = [dispatch](LoweredModule const& lowered) {
+        auto arena = std::make_shared<std::pmr::monotonic_buffer_resource>();
+        auto functions = std::pmr::vector<LoweredFunction>(arena.get());
+        auto const& model = lowered.functions().front();
+        auto& function = functions.emplace_back(arena.get());
+        function.codeIndex = model.codeIndex;
+        function.frameCost = model.frameCost;
+        function.paramSlots = model.paramSlots;
+        function.localSlots = model.localSlots;
+        function.frameSlots = model.frameSlots;
+        function.resultSlots = model.resultSlots;
+        REQUIRE(function.frameSlots >= 4);
+        function.code = { isoline::fastinterpreter::headerWord(dispatch, OperationId::Nop),
+                          isoline::fastinterpreter::headerWord(dispatch, OperationId::Const128),
+                          2,
+                          0x1111,
+                          0x2222,
+                          isoline::fastinterpreter::headerWord(dispatch, OperationId::Return),
+                          2 };
+        return std::make_shared<LoweredModule const>(std::move(arena),
+                                                     std::move(functions),
+                                                     dispatch,
+                                                     lowered.mode(),
+                                                     0,
+                                                     isoline::fastinterpreter::LoweringStats {});
+    };
+    auto harness =
+        Harness { functionOf({ binary::V128 }, { binary::V128 }, {}, localGet(0)), fast(dispatch), byHand };
+    CHECK(harness.result(0, { V128 { .lanes = { 7, 8 } } })
+          == Value { V128 { .lanes = { 0x1111, 0x2222 } } });
+}
+
+TEST_CASE("FastInterpreter.runsTheDispatchItWasMadeFor")
+{
+    for (auto const dispatch: availableDispatches())
+    {
+        CHECK(isoline::fastinterpreter::FastInterpreter { dispatch }.dispatch() == dispatch);
+        CHECK(isoline::fastinterpreter::FastInterpreter { dispatch }.engine()
+              == isoline::runtime::ExecutionEngine::Fast);
     }
 }
 
@@ -1001,6 +1147,23 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
                              i32Const(1) })),
         nullOrNot,
         StoreLimits { .maxSteps = 20 });
+    // br to the function's own label, a return.
+    agreement.check(functionOf({}, { binary::I32 }, {}, code({ i32Const(5), br(0) })), { {} });
+    // Dead code cuts a block's two results, one entry, in the middle: the second block takes one as its
+    // param.
+    {
+        auto module = ModuleBuilder {};
+        module.type(FuncType { .params = {}, .results = { binary::I32 } });
+        module.type(FuncType { .params = {}, .results = { binary::I32, binary::I32 } });
+        module.type(FuncType { .params = { binary::I32 }, .results = {} });
+        module.function(0,
+                        {},
+                        code({ blockOf(0x02, typeIndex(1), code({ i32Const(1), i32Const(2), br(0) })),
+                               blockOf(0x02, typeIndex(2), unreachable()),
+                               drop(),
+                               i32Const(3) }));
+        agreement.check(module, { {} });
+    }
     // move.range and br_table.
     {
         auto module = ModuleBuilder {};
