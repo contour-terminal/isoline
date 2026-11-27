@@ -17,6 +17,25 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
+# The compiler cache, only when Isoline is the build being run: an embedder's launcher is its own.
+# Before the dependencies are resolved, so that a fetched Catch2 is compiled through it too. The module
+# is a verbatim copy; see cmake/portable/README.md.
+if(PROJECT_IS_TOP_LEVEL)
+    include("${PROJECT_SOURCE_DIR}/cmake/portable/CompileCache.cmake")
+    # The module sets CMAKE_CXX_COMPILER_LAUNCHER as a normal variable, so CMakeCache.txt would not
+    # otherwise show which launcher this tree uses. Recorded for CI and for people; nothing reads it.
+    set(ISOLINE_CXX_COMPILER_LAUNCHER "${CMAKE_CXX_COMPILER_LAUNCHER}" CACHE INTERNAL
+        "The compiler launcher cmake/portable/CompileCache.cmake selected for this build tree")
+    if(CMAKE_CXX_COMPILER_LAUNCHER)
+        # The launcher may be `cmake -E env <settings> <launcher>`; the program is its last word.
+        list(GET CMAKE_CXX_COMPILER_LAUNCHER -1 _isolineLauncher)
+        message(STATUS "[isoline] Compiler launcher: ${_isolineLauncher}")
+        unset(_isolineLauncher)
+    else()
+        message(STATUS "[isoline] Compiler launcher: none (compiles uncached)")
+    endif()
+endif()
+
 include(IsolineOptions)
 include(IsolineDependencies)
 include(IsolinePedantic)

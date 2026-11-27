@@ -99,7 +99,8 @@
                 "debug"
             ],
             "cacheVariables": {
-                "ISOLINE_COVERAGE": "ON"
+                "ISOLINE_COVERAGE": "ON",
+                "USE_COMPILER_CACHE": "OFF"
             }
         },
         {
