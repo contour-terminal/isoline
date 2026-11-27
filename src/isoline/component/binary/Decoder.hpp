@@ -68,13 +68,6 @@ enum class DecodeErrorCode : uint8_t
     InvalidValueType,
     InvalidOptionalValueType,
     ZeroByteRequired,
-    EmptyRecord,
-    EmptyVariant,
-    EmptyTuple,
-    EmptyFlags,
-    EmptyEnum,
-    TooManyFlags,
-    EmptyFixedList,
     InvalidResultCount,
     InvalidResults,
     InvalidDestructor,
@@ -84,6 +77,7 @@ enum class DecodeErrorCode : uint8_t
     InvalidCoreOuterAliasKind,
     InvalidCoreOuterAliasTarget,
     InvalidNonFinalSubType,
+    InvalidCoreTypeForm,
     MalformedCoreType,
     InvalidCanonFunction,
     InvalidCanonSort,
@@ -212,15 +206,6 @@ inline constexpr auto DecodeErrorMessages = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::ZeroByteRequired,
       .text = "zero byte required",
       .detail = DecodeErrorDetail::LeadingByte },
-    // Binary.md's grammar conditions on the vector forms, in wasm-tools' validator's words.
-    { .code = DecodeErrorCode::EmptyRecord, .text = "record type must have at least one field" },
-    { .code = DecodeErrorCode::EmptyVariant, .text = "variant type must have at least one case" },
-    { .code = DecodeErrorCode::EmptyTuple, .text = "tuple type must have at least one type" },
-    { .code = DecodeErrorCode::EmptyFlags, .text = "flags must have at least one entry" },
-    { .code = DecodeErrorCode::EmptyEnum, .text = "enum type must have at least one variant" },
-    { .code = DecodeErrorCode::TooManyFlags, .text = "cannot have more than 32 flags" },
-    // Isoline's own: 🔧 is refused, so wasm-tools' wording was never needed.
-    { .code = DecodeErrorCode::EmptyFixedList, .text = "fixed-length list must have at least one element" },
     { .code = DecodeErrorCode::InvalidResultCount,
       .text = "number of results",
       .detail = DecodeErrorDetail::LeadingByte },
@@ -249,8 +234,13 @@ inline constexpr auto DecodeErrorMessages = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::InvalidNonFinalSubType,
       .text = "non-final sub type",
       .detail = DecodeErrorDetail::LeadingByte },
-    // A core function or extern type the core decoder refused, in its words; core GC's rec groups
-    // and subtypes are among them, as Isoline's core decodes no GC.
+    // A core type whose composite type byte is none: wasmparser's read_composite_type.
+    { .code = DecodeErrorCode::InvalidCoreTypeForm,
+      .text = "type",
+      .detail = DecodeErrorDetail::LeadingByte },
+    // A core function or extern type the core decoder refused, in its words; and a core GC type (a
+    // rec group, a subtype, a struct or an array), refused in the words the core decoder refuses one
+    // with, as Isoline's core decodes no GC.
     { .code = DecodeErrorCode::MalformedCoreType,
       .text = "malformed core type",
       .detail = DecodeErrorDetail::CoreError },
@@ -355,7 +345,9 @@ struct DecodeError
 /// whatever the input's shape. Vector counts never reserve memory: a vector grows as its
 /// elements decode, so a count larger than its bytes fails with UnexpectedEnd having allocated
 /// nothing for it. Embedded core modules are not decoded (D10): only their range and preamble are
-/// checked. Component and instance types are scopes of the pool like nested components, read on an
+/// checked. Value types are decoded as encoded: what Binary.md's grammar conditions on their counts
+/// (a record of no fields, flags past 32) is refused by validation, the stage wasm-tools reports it
+/// at. Component and instance types are scopes of the pool like nested components, read on an
 /// explicit stack too and counted against maxNesting; value types nest only through type indices, so
 /// their depth and effective size are the validator's to bound (maxTypeDepth, maxTypeSize). Core types
 /// are read by the core decoder under every core feature Isoline has (FeatureSet::all()); the

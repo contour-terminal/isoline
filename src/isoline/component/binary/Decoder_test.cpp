@@ -877,11 +877,79 @@ TEST_CASE("Decoder.coreReadErrors")
 
 TEST_CASE("Decoder.everyCanonRowDecodes")
 {
-    for (auto const& row: CanonBuiltinTable)
+    // The smallest bytes after each opcode, and how many immediates they store, transcribed from
+    // Binary.md's canon production at the pin rather than derived from a row's shape.
+    struct Minimal
     {
+        uint8_t opcode;
+        std::vector<uint8_t> bytes;
+        std::size_t stored;
+    };
+    auto const minimal = std::vector<Minimal> {
+        { .opcode = 0x00, .bytes = { 0x00, 0x00, 0x00, 0x00 }, .stored = 2 }, // lift: 0x00 f opts ft
+        { .opcode = 0x01, .bytes = { 0x00, 0x00, 0x00 }, .stored = 1 },       // lower: 0x00 f opts
+        { .opcode = 0x02, .bytes = { 0x00 }, .stored = 1 },                   // resource.new rt
+        { .opcode = 0x03, .bytes = { 0x00 }, .stored = 1 },                   // resource.drop rt
+        { .opcode = 0x04, .bytes = { 0x00 }, .stored = 1 },                   // resource.rep rt
+        { .opcode = 0x05, .bytes = {}, .stored = 0 },                         // task.cancel
+        { .opcode = 0x06, .bytes = { 0x00 }, .stored = 1 },                   // subtask.cancel async?
+        { .opcode = 0x09, .bytes = { 0x01, 0x00, 0x00 }, .stored = 0 },       // task.return rs opts
+        { .opcode = 0x0A, .bytes = { 0x7F, 0x00 }, .stored = 2 },             // context.get t i
+        { .opcode = 0x0B, .bytes = { 0x7F, 0x00 }, .stored = 2 },             // context.set t i
+        { .opcode = 0x0C, .bytes = { 0x00 }, .stored = 0 },                   // thread.yield 0x00
+        { .opcode = 0x0D, .bytes = {}, .stored = 0 },                         // subtask.drop
+        { .opcode = 0x0E, .bytes = { 0x00 }, .stored = 1 },                   // stream.new t
+        { .opcode = 0x0F, .bytes = { 0x00, 0x00 }, .stored = 1 },             // stream.read t opts
+        { .opcode = 0x10, .bytes = { 0x00, 0x00 }, .stored = 1 },             // stream.write t opts
+        { .opcode = 0x11, .bytes = { 0x00, 0x00 }, .stored = 2 },             // stream.cancel-read t async?
+        { .opcode = 0x12, .bytes = { 0x00, 0x00 }, .stored = 2 },             // stream.cancel-write t async?
+        { .opcode = 0x13, .bytes = { 0x00 }, .stored = 1 },                   // stream.drop-readable t
+        { .opcode = 0x14, .bytes = { 0x00 }, .stored = 1 },                   // stream.drop-writable t
+        { .opcode = 0x15, .bytes = { 0x00 }, .stored = 1 },                   // future.new t
+        { .opcode = 0x16, .bytes = { 0x00, 0x00 }, .stored = 1 },             // future.read t opts
+        { .opcode = 0x17, .bytes = { 0x00, 0x00 }, .stored = 1 },             // future.write t opts
+        { .opcode = 0x18, .bytes = { 0x00, 0x00 }, .stored = 2 },             // future.cancel-read t async?
+        { .opcode = 0x19, .bytes = { 0x00, 0x00 }, .stored = 2 },             // future.cancel-write t async?
+        { .opcode = 0x1A, .bytes = { 0x00 }, .stored = 1 },                   // future.drop-readable t
+        { .opcode = 0x1B, .bytes = { 0x00 }, .stored = 1 },                   // future.drop-writable t
+        { .opcode = 0x1C, .bytes = { 0x00 }, .stored = 0 },                   // error-context.new opts
+        { .opcode = 0x1D, .bytes = { 0x00 }, .stored = 0 },             // error-context.debug-message opts
+        { .opcode = 0x1E, .bytes = {}, .stored = 0 },                   // error-context.drop
+        { .opcode = 0x1F, .bytes = {}, .stored = 0 },                   // waitable-set.new
+        { .opcode = 0x20, .bytes = { 0x00, 0x00 }, .stored = 1 },       // waitable-set.wait 0x00 m
+        { .opcode = 0x21, .bytes = { 0x00, 0x00 }, .stored = 1 },       // waitable-set.poll 0x00 m
+        { .opcode = 0x22, .bytes = {}, .stored = 0 },                   // waitable-set.drop
+        { .opcode = 0x23, .bytes = {}, .stored = 0 },                   // waitable.join
+        { .opcode = 0x24, .bytes = {}, .stored = 0 },                   // backpressure.inc
+        { .opcode = 0x25, .bytes = {}, .stored = 0 },                   // backpressure.dec
+        { .opcode = 0x26, .bytes = {}, .stored = 0 },                   // thread.index
+        { .opcode = 0x27, .bytes = { 0x00, 0x00 }, .stored = 2 },       // thread.new-indirect ft t
+        { .opcode = 0x28, .bytes = {}, .stored = 0 },                   // thread.resume-later
+        { .opcode = 0x29, .bytes = { 0x00 }, .stored = 0 },             // thread.suspend 0x00
+        { .opcode = 0x2A, .bytes = { 0x00 }, .stored = 0 },             // thread.suspend-then-resume 0x00
+        { .opcode = 0x2B, .bytes = { 0x00 }, .stored = 0 },             // thread.yield-then-resume 0x00
+        { .opcode = 0x2C, .bytes = { 0x00 }, .stored = 0 },             // thread.suspend-then-promote 0x00
+        { .opcode = 0x2D, .bytes = { 0x00 }, .stored = 0 },             // thread.yield-then-promote 0x00
+        { .opcode = 0x2E, .bytes = { 0x00 }, .stored = 1 },             // stream.forward t
+        { .opcode = 0x2F, .bytes = { 0x00 }, .stored = 1 },             // future.forward t
+        { .opcode = 0x40, .bytes = { 0x00, 0x00 }, .stored = 2 },       // thread.spawn-ref sh? ft
+        { .opcode = 0x41, .bytes = { 0x00, 0x00, 0x00 }, .stored = 3 }, // thread.spawn-indirect sh? ft t
+        { .opcode = 0x42, .bytes = { 0x00 }, .stored = 1 },             // thread.available-parallelism sh?
+    };
+    REQUIRE(minimal.size() == CanonBuiltinTable.size());
+    for (auto const index: std::views::iota(std::size_t { 0 }, minimal.size()))
+    {
+        auto const& row = CanonBuiltinTable[index];
+        auto const& expected = minimal[index];
         INFO(row.text);
+        REQUIRE(row.opcode == expected.opcode);
+        auto literal = Bytes {};
+        appendBytes(literal, expected.bytes);
+        // The shape's smallest encoding is Binary.md's, for the rows P11 refuses too.
+        CHECK(minimalImmediates(row) == literal);
+        CHECK(storedImmediates(row) == expected.stored);
         auto element = Bytes { std::byte { row.opcode } };
-        appendBytes(element, minimalImmediates(row));
+        appendBytes(element, literal);
         auto const component = oneOf(8, element);
         auto const refused = row.gate && componentFeatureRow(*row.gate).p11 == Implementation::Refused;
         if (refused)
@@ -893,7 +961,7 @@ TEST_CASE("Decoder.everyCanonRowDecodes")
         }
         auto const canon = canonOf(element, everyFeature());
         CHECK(canon.builtin == row.builtin);
-        CHECK(canon.immediates.size() == storedImmediates(row));
+        CHECK(canon.immediates.size() == expected.stored);
         CHECK(canon.options.empty());
         // A gated row is refused without its gate.
         if (row.gate)
@@ -1052,25 +1120,18 @@ TEST_CASE("Decoder.everyDefinedValueType")
               == DefinedValueType { OptionType { .type = row.type } });
     }
 
-    // Binary.md's grammar conditions, in wasm-tools' words.
-    CHECK(messageOf(oneOf(7, bytesOf({ 0x72, 0x00 }))) == "record type must have at least one field");
-    CHECK(messageOf(oneOf(7, bytesOf({ 0x71, 0x00 }))) == "variant type must have at least one case");
-    CHECK(messageOf(oneOf(7, bytesOf({ 0x6F, 0x00 }))) == "tuple type must have at least one type");
-    CHECK(messageOf(oneOf(7, bytesOf({ 0x6E, 0x00 }))) == "flags must have at least one entry");
-    CHECK(messageOf(oneOf(7, bytesOf({ 0x6D, 0x00 }))) == "enum type must have at least one variant");
-    auto flags32 = bytesOf({ 0x6E, 0x20 });
+    // Binary.md's grammar conditions on counts are decoded as encoded: wasm-tools refuses an empty
+    // record, variant, tuple, flags or enum and more than 32 flags in its validator, and the suites
+    // hold them as assert_invalid, so T4's validator refuses them, in wasm-tools' words.
+    CHECK(valueTypeOf(bytesOf({ 0x72, 0x00 })) == DefinedValueType { RecordType {} });
+    CHECK(valueTypeOf(bytesOf({ 0x71, 0x00 })) == DefinedValueType { VariantType {} });
+    CHECK(valueTypeOf(bytesOf({ 0x6F, 0x00 })) == DefinedValueType { TupleType {} });
+    CHECK(valueTypeOf(bytesOf({ 0x6E, 0x00 })) == DefinedValueType { FlagsType {} });
+    CHECK(valueTypeOf(bytesOf({ 0x6D, 0x00 })) == DefinedValueType { EnumType {} });
     auto flags33 = bytesOf({ 0x6E, 0x21 });
     for (auto const index: std::views::iota(0, 33))
-    {
-        auto const label = "f" + std::to_string(index);
-        if (index < 32)
-            appendName(flags32, label);
-        appendName(flags33, label);
-    }
-    CHECK(std::get<FlagsType>(valueTypeOf(flags32)).labels.size() == 32);
-    auto const tooMany = errorOf(oneOf(7, flags33));
-    CHECK(tooMany == DecodeError { DecodeErrorCode::TooManyFlags, 11 });
-    CHECK(specMessage(tooMany) == "cannot have more than 32 flags");
+        appendName(flags33, "f" + std::to_string(index));
+    CHECK(std::get<FlagsType>(valueTypeOf(flags33)).labels.size() == 33);
 
     // Leading bytes, as binary.wast spells them.
     for (auto const byte: { uint8_t { 0x62 }, uint8_t { 0x44 }, uint8_t { 0x3E } })
@@ -1308,6 +1369,24 @@ TEST_CASE("Decoder.coreTypes")
           == DecodeErrorCode::MalformedCoreType);
     CHECK(errorOf(oneOf(3, bytesOf({ 0x50, 0x01, 0x01, 0x50, 0x00, 0x60, 0x00, 0x00 }))).code
           == DecodeErrorCode::MalformedCoreType);
+    // A byte that begins no core type, at the top or as a subtype's composite type, is wasmparser's
+    // invalid leading byte for type (binary.wast's two module type vectors), not a GC refusal.
+    auto const notRec = errorOf(oneOf(3, bytesOf({ 0x50, 0x01, 0x01, 0x00, 0x50, 0x00, 0x60, 0x00, 0x00 })));
+    CHECK(notRec == DecodeError { DecodeErrorCode::InvalidCoreTypeForm, 14, 0x00 });
+    CHECK(specMessage(notRec) == "invalid leading byte (0x0) for type");
+    auto const notComposite =
+        errorOf(oneOf(3, bytesOf({ 0x50, 0x02, 0x01, 0x50, 0x00, 0x01, 0x60, 0x00, 0x00 })));
+    CHECK(notComposite == DecodeError { DecodeErrorCode::InvalidCoreTypeForm, 16, 0x01 });
+    CHECK(specMessage(notComposite) == "invalid leading byte (0x1) for type");
+    CHECK(messageOf(oneOf(3, bytesOf({ 0x01, 0x60, 0x00, 0x00 }))) == "invalid leading byte (0x1) for type");
+    // Every GC form is refused, a subtype once its supertypes are read, at its first byte.
+    for (auto const form: { 0x4E, 0x5E, 0x5F, 0x5D, 0x65, 0x4C, 0x4D })
+        CHECK(errorOf(oneOf(3, bytesOf({ static_cast<uint8_t>(form), 0x00 }))).code
+              == DecodeErrorCode::MalformedCoreType);
+    CHECK(errorOf(oneOf(3, bytesOf({ 0x00, 0x50, 0x01, 0x07, 0x5F, 0x00 }))).offset == 12);
+    CHECK(errorOf(oneOf(3, bytesOf({ 0x00, 0x4F, 0x00, 0x60, 0x00, 0x00 }))).code
+          == DecodeErrorCode::InvalidNonFinalSubType);
+
     // A core read error is reported as everywhere else.
     CHECK(errorOf(oneOf(3, bytesOf({ 0x60, 0x05 }))).code == DecodeErrorCode::UnexpectedEnd);
 }

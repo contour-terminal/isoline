@@ -309,6 +309,46 @@ struct CoreExportDeclaration
 using CoreModuleDeclaration = std::
     variant<CoreImportDeclaration, CoreTypeDeclaration, CoreOuterAliasDeclaration, CoreExportDeclaration>;
 
+/// What a declaration of a core module type is, in CoreModuleDeclaration's order.
+enum class CoreDeclarationKind : uint8_t
+{
+    Import, ///< `0x00 core:import`: a CoreImportDeclaration.
+    Type,   ///< `0x01 core:rectype`: a CoreTypeDeclaration.
+    Alias,  ///< `0x02 core:alias`: a CoreOuterAliasDeclaration.
+    Export, ///< `0x03 core:exportdecl`: a CoreExportDeclaration.
+};
+
+/// One row of CoreModuleDeclarationTable: a declarator's byte and what it declares.
+struct CoreModuleDeclarationRow
+{
+    uint8_t byte;             ///< Its byte in `core:moduledecl`.
+    CoreDeclarationKind kind; ///< What it declares; its CoreModuleDeclaration alternative.
+};
+
+/// Every declarator of `core:moduledecl`, in CoreModuleDeclaration's order.
+inline constexpr auto CoreModuleDeclarationTable = std::to_array<CoreModuleDeclarationRow>({
+    { .byte = 0x00, .kind = CoreDeclarationKind::Import },
+    { .byte = 0x01, .kind = CoreDeclarationKind::Type },
+    { .byte = 0x02, .kind = CoreDeclarationKind::Alias },
+    { .byte = 0x03, .kind = CoreDeclarationKind::Export },
+});
+
+static_assert(CoreModuleDeclarationTable.size() == std::variant_size_v<CoreModuleDeclaration>,
+              "CoreModuleDeclarationTable holds one row per CoreModuleDeclaration alternative");
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: CoreModuleDeclarationTable)
+        {
+            if (static_cast<std::size_t>(row.kind) != index)
+                return false;
+            ++index;
+        }
+        return true;
+    }(),
+    "CoreModuleDeclarationTable lists the declarators in CoreModuleDeclaration's order");
+
 /// `0x50 md*` of `core:moduletype`: a core module's type. It cannot nest, so its declarations are
 /// held in place rather than in a scope of the pool.
 struct CoreModuleTypeDefinition
@@ -496,7 +536,7 @@ struct LabeledType
 /// `(record (field l t)+)`.
 struct RecordType
 {
-    std::vector<LabeledType> fields; ///< At least one, in encoded order.
+    std::vector<LabeledType> fields; ///< In encoded order; validation requires at least one.
 
     /// Two records are equal when their fields are.
     bool operator==(RecordType const&) const = default;
@@ -515,7 +555,7 @@ struct VariantCase
 /// `(variant case+)`.
 struct VariantType
 {
-    std::vector<VariantCase> cases; ///< At least one, in encoded order.
+    std::vector<VariantCase> cases; ///< In encoded order; validation requires at least one.
 
     /// Two variants are equal when their cases are.
     bool operator==(VariantType const&) const = default;
@@ -534,7 +574,7 @@ struct ListType
 struct FixedListType
 {
     ValueTypeRef element; ///< The element type.
-    uint32_t length = 0;  ///< The number of elements, above zero.
+    uint32_t length = 0;  ///< The number of elements; validation requires more than zero.
 
     /// Two lists are equal when their element types and lengths are.
     bool operator==(FixedListType const&) const = default;
@@ -543,7 +583,7 @@ struct FixedListType
 /// `(tuple t+)`.
 struct TupleType
 {
-    std::vector<ValueTypeRef> elements; ///< At least one, in encoded order.
+    std::vector<ValueTypeRef> elements; ///< In encoded order; validation requires at least one.
 
     /// Two tuples are equal when their element types are.
     bool operator==(TupleType const&) const = default;
@@ -552,7 +592,7 @@ struct TupleType
 /// `(flags l+)`.
 struct FlagsType
 {
-    std::vector<std::string> labels; ///< One to 32, in encoded order.
+    std::vector<std::string> labels; ///< In encoded order; validation requires one to 32.
 
     /// Two flags types are equal when their labels are.
     bool operator==(FlagsType const&) const = default;
@@ -561,7 +601,7 @@ struct FlagsType
 /// `(enum l+)`.
 struct EnumType
 {
-    std::vector<std::string> labels; ///< At least one, in encoded order.
+    std::vector<std::string> labels; ///< In encoded order; validation requires at least one.
 
     /// Two enums are equal when their labels are.
     bool operator==(EnumType const&) const = default;

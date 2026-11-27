@@ -216,6 +216,45 @@ namespace
     /// The byte of `core:deftype` that introduces a module type; after a 0x00, a non-final subtype.
     constexpr auto ModuleTypeForm = uint8_t { 0x50 };
 
+    /// What a byte at the start of a core `rectype` begins, as wasmparser reads one.
+    enum class CoreTypeForm : uint8_t
+    {
+        Function,  ///< 0x60: a function type, which the core decoder reads.
+        RecGroup,  ///< 0x4E: a GC rec group.
+        SubType,   ///< 0x50 or 0x4F: a GC subtype, its supertypes, then its composite type.
+        Composite, ///< A GC composite type (struct, array, continuation) or one of its prefixes.
+    };
+
+    /// One byte that may begin a core `rectype`, and what it begins.
+    struct CoreTypeFormRow
+    {
+        uint8_t byte;      ///< The byte.
+        CoreTypeForm form; ///< What it begins.
+    };
+
+    /// Every byte wasmparser reads at the start of a core `rectype` or a subtype's composite type.
+    constexpr auto CoreTypeForms = std::to_array<CoreTypeFormRow>({
+        { .byte = 0x60, .form = CoreTypeForm::Function },
+        { .byte = 0x4E, .form = CoreTypeForm::RecGroup },
+        { .byte = 0x50, .form = CoreTypeForm::SubType },
+        { .byte = 0x4F, .form = CoreTypeForm::SubType },
+        { .byte = 0x5E, .form = CoreTypeForm::Composite }, // array
+        { .byte = 0x5F, .form = CoreTypeForm::Composite }, // struct
+        { .byte = 0x5D, .form = CoreTypeForm::Composite }, // cont
+        { .byte = 0x65, .form = CoreTypeForm::Composite }, // shared
+        { .byte = 0x4C, .form = CoreTypeForm::Composite }, // describes
+        { .byte = 0x4D, .form = CoreTypeForm::Composite }, // descriptor
+    });
+
+    /// The refusal of a core GC type at @p offset: what Isoline's core decoder, which has no GC, reports
+    /// for one in a type section.
+    [[nodiscard]] constexpr DecodeError coreGcRefusal(uint64_t offset) noexcept
+    {
+        return DecodeError { DecodeErrorCode::MalformedCoreType,
+                             offset,
+                             static_cast<uint64_t>(isoline::binary::DecodeErrorCode::MalformedFunctionType) };
+    }
+
     /// The byte that prefixes a non-final core subtype among a component's core types.
     constexpr auto NonFinalSubTypePrefix = uint8_t { 0x00 };
 
@@ -234,42 +273,6 @@ namespace
     /// The core features a component's core types are decoded under: every one Isoline's core decodes.
     /// The validator checks them against the engine's.
     constexpr auto CoreTypeFeatures = isoline::FeatureSet::all();
-
-    /// How many elements a vector form of `defvaltype` may hold, and how its bounds are refused.
-    struct VectorBounds
-    {
-        uint32_t minimum;                ///< The fewest elements.
-        DecodeErrorCode tooFew;          ///< The error for fewer.
-        std::optional<uint32_t> maximum; ///< The most elements, if bounded.
-        DecodeErrorCode tooMany;         ///< The error for more.
-    };
-
-    /// Binary.md's grammar conditions on the vector forms.
-    constexpr auto RecordBounds = VectorBounds { .minimum = 1,
-                                                 .tooFew = DecodeErrorCode::EmptyRecord,
-                                                 .maximum = std::nullopt,
-                                                 .tooMany = DecodeErrorCode::EmptyRecord };
-    constexpr auto VariantBounds = VectorBounds { .minimum = 1,
-                                                  .tooFew = DecodeErrorCode::EmptyVariant,
-                                                  .maximum = std::nullopt,
-                                                  .tooMany = DecodeErrorCode::EmptyVariant };
-    constexpr auto TupleBounds = VectorBounds { .minimum = 1,
-                                                .tooFew = DecodeErrorCode::EmptyTuple,
-                                                .maximum = std::nullopt,
-                                                .tooMany = DecodeErrorCode::EmptyTuple };
-    constexpr auto FlagsBounds = VectorBounds { .minimum = 1,
-                                                .tooFew = DecodeErrorCode::EmptyFlags,
-                                                .maximum = 32,
-                                                .tooMany = DecodeErrorCode::TooManyFlags };
-    constexpr auto EnumBounds = VectorBounds { .minimum = 1,
-                                               .tooFew = DecodeErrorCode::EmptyEnum,
-                                               .maximum = std::nullopt,
-                                               .tooMany = DecodeErrorCode::EmptyEnum };
-    /// Any count: the vectors Binary.md puts no condition on.
-    constexpr auto AnyCount = VectorBounds { .minimum = 0,
-                                             .tooFew = DecodeErrorCode::UnexpectedEnd,
-                                             .maximum = std::nullopt,
-                                             .tooMany = DecodeErrorCode::UnexpectedEnd };
 
     /// The byte of `core:instantiatearg` that names its argument an instance, the one sort allowed.
     constexpr auto CoreInstantiateArgumentKind = uint8_t { 0x12 };
@@ -334,22 +337,22 @@ namespace
         [[nodiscard]] Result<void> canonSection(SectionContext& section);
         [[nodiscard]] Result<void> unimplementedSection(SectionContext& section);
 
-        // The decoders of the compound defvaltypes, one per row of DefinedValueTypeTable; @p offset is
-        // where the type's byte was read.
-        [[nodiscard]] Result<DefinedValueType> recordType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> variantType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> listType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> fixedListType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> tupleType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> flagsType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> enumType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> optionType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> resultType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> ownType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> borrowType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> streamType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> futureType(Reader& reader, uint64_t offset);
-        [[nodiscard]] Result<DefinedValueType> mapType(Reader& reader, uint64_t offset);
+        // The decoders of the compound defvaltypes, one per row of DefinedValueTypeTable, reading what
+        // follows the type's byte.
+        [[nodiscard]] Result<DefinedValueType> recordType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> variantType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> listType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> fixedListType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> tupleType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> flagsType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> enumType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> optionType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> resultType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> ownType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> borrowType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> streamType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> futureType(Reader& reader);
+        [[nodiscard]] Result<DefinedValueType> mapType(Reader& reader);
 
       private:
         /// One component being read: its pool entry, the reader over what is left of it, its depth.
@@ -401,13 +404,6 @@ namespace
         [[nodiscard]] Result<ImportDefinition> import(Reader& reader);
         [[nodiscard]] Result<ExportDefinition> exportDefinition(Reader& reader);
 
-        /// Reads a vector whose count must lie within @p bounds, refused at @p offset otherwise.
-        template <typename Read>
-        [[nodiscard]] Result<void> forEach(Reader& reader,
-                                           VectorBounds const& bounds,
-                                           uint64_t offset,
-                                           Read read);
-
         [[nodiscard]] Result<void> chargeItems(uint64_t count, uint64_t offset);
         [[nodiscard]] Result<void> countType(uint32_t scope, uint64_t offset);
         [[nodiscard]] static Result<uint8_t> peek(Reader const& reader);
@@ -417,9 +413,7 @@ namespace
         [[nodiscard]] Result<std::optional<ValueTypeRef>> optionalValueType(Reader& reader) const;
         [[nodiscard]] Result<std::optional<ValueTypeRef>> resultList(Reader& reader) const;
         [[nodiscard]] static Result<CoreValueKind> coreValueKind(Reader& reader);
-        [[nodiscard]] Result<std::vector<std::string>> labels(Reader& reader,
-                                                              VectorBounds const& bounds,
-                                                              uint64_t offset);
+        [[nodiscard]] Result<std::vector<std::string>> labels(Reader& reader);
         [[nodiscard]] Result<TypeDefinition> definedType(Reader& reader);
         [[nodiscard]] Result<FunctionTypeDefinition> functionType(Reader& reader, Asyncness asyncness);
         [[nodiscard]] static Result<ResourceTypeDefinition> resourceType(Reader& reader);
@@ -432,6 +426,7 @@ namespace
         [[nodiscard]] Result<isoline::binary::FuncType> coreFuncType(Reader& reader);
         [[nodiscard]] static Result<CoreExternType> coreExternType(Reader& reader);
         [[nodiscard]] Result<CoreModuleDeclaration> coreModuleDeclaration(Reader& reader);
+        [[nodiscard]] Result<isoline::binary::FuncType> coreRecType(Reader& reader);
         [[nodiscard]] Result<CoreTypeDefinition> coreType(Reader& reader);
         [[nodiscard]] Result<void> immediate(Reader& reader,
                                              CanonBuiltinRow const& row,
@@ -456,7 +451,7 @@ namespace
                   "`sh?` reads `shared`, which is 🧵②: only a built-in gated on 🧵② may take it");
 
     /// A decoder of one compound defvaltype.
-    using DefinedValueTypeDecoder = Result<DefinedValueType> (ComponentDecoder::*)(Reader&, uint64_t);
+    using DefinedValueTypeDecoder = Result<DefinedValueType> (ComponentDecoder::*)(Reader&);
 
     /// The decoder of each row of DefinedValueTypeTable, at the row's index.
     constexpr auto DefinedValueTypeDecoders = std::to_array<DefinedValueTypeDecoder>({
@@ -688,22 +683,9 @@ namespace
     template <typename Read>
     Result<void> ComponentDecoder::forEach(Reader& reader, Read read)
     {
-        return forEach(reader, AnyCount, reader.offset(), std::move(read));
-    }
-
-    template <typename Read>
-    Result<void> ComponentDecoder::forEach(Reader& reader,
-                                           VectorBounds const& bounds,
-                                           uint64_t offset,
-                                           Read read)
-    {
         auto const count = reader.readLength();
         if (!count)
             return std::unexpected { fromCore(count.error()) };
-        if (*count < bounds.minimum)
-            return std::unexpected { DecodeError { bounds.tooFew, offset } };
-        if (bounds.maximum && *count > *bounds.maximum)
-            return std::unexpected { DecodeError { bounds.tooMany, offset } };
         for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, *count))
         {
             if (auto charged = chargeItem(reader.offset()); !charged)
@@ -1302,12 +1284,10 @@ namespace
         return row->kind;
     }
 
-    Result<std::vector<std::string>> ComponentDecoder::labels(Reader& reader,
-                                                              VectorBounds const& bounds,
-                                                              uint64_t offset)
+    Result<std::vector<std::string>> ComponentDecoder::labels(Reader& reader)
     {
         auto result = std::vector<std::string> {};
-        auto const read = forEach(reader, bounds, offset, [&]() -> Result<void> {
+        auto const read = forEach(reader, [&]() -> Result<void> {
             return name(reader).transform([&](std::string label) { result.push_back(std::move(label)); });
         });
         if (!read)
@@ -1315,10 +1295,10 @@ namespace
         return result;
     }
 
-    Result<DefinedValueType> ComponentDecoder::recordType(Reader& reader, uint64_t offset)
+    Result<DefinedValueType> ComponentDecoder::recordType(Reader& reader)
     {
         auto record = RecordType {};
-        auto const read = forEach(reader, RecordBounds, offset, [&]() -> Result<void> {
+        auto const read = forEach(reader, [&]() -> Result<void> {
             auto label = name(reader);
             if (!label)
                 return std::unexpected { label.error() };
@@ -1331,10 +1311,10 @@ namespace
         return DefinedValueType { std::move(record) };
     }
 
-    Result<DefinedValueType> ComponentDecoder::variantType(Reader& reader, uint64_t offset)
+    Result<DefinedValueType> ComponentDecoder::variantType(Reader& reader)
     {
         auto variant = VariantType {};
-        auto const read = forEach(reader, VariantBounds, offset, [&]() -> Result<void> {
+        auto const read = forEach(reader, [&]() -> Result<void> {
             auto label = name(reader);
             if (!label)
                 return std::unexpected { label.error() };
@@ -1357,13 +1337,13 @@ namespace
         return DefinedValueType { std::move(variant) };
     }
 
-    Result<DefinedValueType> ComponentDecoder::listType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::listType(Reader& reader)
     {
         return valueType(reader).transform(
             [](ValueTypeRef element) { return DefinedValueType { ListType { .element = element } }; });
     }
 
-    Result<DefinedValueType> ComponentDecoder::fixedListType(Reader& reader, uint64_t offset)
+    Result<DefinedValueType> ComponentDecoder::fixedListType(Reader& reader)
     {
         auto const element = valueType(reader);
         if (!element)
@@ -1371,15 +1351,13 @@ namespace
         auto const length = u32(reader);
         if (!length)
             return std::unexpected { length.error() };
-        if (*length == 0)
-            return std::unexpected { DecodeError { DecodeErrorCode::EmptyFixedList, offset } };
         return DefinedValueType { FixedListType { .element = *element, .length = *length } };
     }
 
-    Result<DefinedValueType> ComponentDecoder::tupleType(Reader& reader, uint64_t offset)
+    Result<DefinedValueType> ComponentDecoder::tupleType(Reader& reader)
     {
         auto tuple = TupleType {};
-        auto const read = forEach(reader, TupleBounds, offset, [&]() -> Result<void> {
+        auto const read = forEach(reader, [&]() -> Result<void> {
             return valueType(reader).transform([&](ValueTypeRef type) { tuple.elements.push_back(type); });
         });
         if (!read)
@@ -1387,27 +1365,27 @@ namespace
         return DefinedValueType { std::move(tuple) };
     }
 
-    Result<DefinedValueType> ComponentDecoder::flagsType(Reader& reader, uint64_t offset)
+    Result<DefinedValueType> ComponentDecoder::flagsType(Reader& reader)
     {
-        return labels(reader, FlagsBounds, offset).transform([](std::vector<std::string> labels) {
+        return labels(reader).transform([](std::vector<std::string> labels) {
             return DefinedValueType { FlagsType { .labels = std::move(labels) } };
         });
     }
 
-    Result<DefinedValueType> ComponentDecoder::enumType(Reader& reader, uint64_t offset)
+    Result<DefinedValueType> ComponentDecoder::enumType(Reader& reader)
     {
-        return labels(reader, EnumBounds, offset).transform([](std::vector<std::string> labels) {
+        return labels(reader).transform([](std::vector<std::string> labels) {
             return DefinedValueType { EnumType { .labels = std::move(labels) } };
         });
     }
 
-    Result<DefinedValueType> ComponentDecoder::optionType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::optionType(Reader& reader)
     {
         return valueType(reader).transform(
             [](ValueTypeRef type) { return DefinedValueType { OptionType { .type = type } }; });
     }
 
-    Result<DefinedValueType> ComponentDecoder::resultType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::resultType(Reader& reader)
     {
         auto const ok = optionalValueType(reader);
         if (!ok)
@@ -1418,33 +1396,33 @@ namespace
         return DefinedValueType { ResultType { .ok = *ok, .error = *error } };
     }
 
-    Result<DefinedValueType> ComponentDecoder::ownType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::ownType(Reader& reader)
     {
         return u32(reader).transform(
             [](uint32_t resource) { return DefinedValueType { OwnType { .resource = resource } }; });
     }
 
-    Result<DefinedValueType> ComponentDecoder::borrowType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::borrowType(Reader& reader)
     {
         return u32(reader).transform(
             [](uint32_t resource) { return DefinedValueType { BorrowType { .resource = resource } }; });
     }
 
-    Result<DefinedValueType> ComponentDecoder::streamType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::streamType(Reader& reader)
     {
         return optionalValueType(reader).transform([](std::optional<ValueTypeRef> element) {
             return DefinedValueType { StreamType { .element = element } };
         });
     }
 
-    Result<DefinedValueType> ComponentDecoder::futureType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::futureType(Reader& reader)
     {
         return optionalValueType(reader).transform([](std::optional<ValueTypeRef> element) {
             return DefinedValueType { FutureType { .element = element } };
         });
     }
 
-    Result<DefinedValueType> ComponentDecoder::mapType(Reader& reader, uint64_t /*offset*/)
+    Result<DefinedValueType> ComponentDecoder::mapType(Reader& reader)
     {
         auto const key = valueType(reader);
         if (!key)
@@ -1531,9 +1509,8 @@ namespace
             return std::unexpected { admitted.error() };
         auto const decoder =
             DefinedValueTypeDecoders[static_cast<std::size_t>(row - DefinedValueTypeTable.begin())];
-        return (this->*decoder)(reader, offset).transform([](DefinedValueType type) {
-            return TypeDefinition { .type = std::move(type) };
-        });
+        return (this->*decoder)(reader).transform(
+            [](DefinedValueType type) { return TypeDefinition { .type = std::move(type) }; });
     }
 
     Result<void> ComponentDecoder::typeEntry(Reader& reader,
@@ -1640,7 +1617,9 @@ namespace
         auto type = isoline::binary::decodeEmbeddedFuncType(reader, CoreTypeFeatures);
         if (!type)
             return std::unexpected { fromCoreType(type.error()) };
-        // Charged once read: the core decoder bounds one type's vectors by maxParams and maxResults.
+        // Charged once read, the one exception to charging before growth: the core decoder bounds one
+        // type's vectors by maxParams and maxResults (1000 each), and its readVector reserves at most
+        // min(count, 4096) elements up front, so one type holds a bounded number before it is charged.
         if (auto charged = chargeItems(type->params.size() + type->results.size(), offset); !charged)
             return std::unexpected { charged.error() };
         return std::move(*type);
@@ -1664,9 +1643,14 @@ namespace
         auto const byte = u8(reader);
         if (!byte)
             return std::unexpected { byte.error() };
-        switch (*byte)
+        auto const row =
+            std::ranges::find(CoreModuleDeclarationTable, *byte, &CoreModuleDeclarationRow::byte);
+        if (row == CoreModuleDeclarationTable.end())
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::InvalidModuleTypeDeclaration, offset, *byte } };
+        switch (row->kind)
         {
-            case 0x00: {
+            case CoreDeclarationKind::Import: {
                 auto module = name(reader);
                 if (!module)
                     return std::unexpected { module.error() };
@@ -1678,12 +1662,12 @@ namespace
                         .module = std::move(*module), .name = std::move(*field), .type = type } };
                 });
             }
-            case 0x01:
+            case CoreDeclarationKind::Type:
                 // A core:rectype in the core type section's encoding: a bare 0x50 is a subtype here.
-                return coreFuncType(reader).transform([](isoline::binary::FuncType type) {
+                return coreRecType(reader).transform([](isoline::binary::FuncType type) {
                     return CoreModuleDeclaration { CoreTypeDeclaration { .type = std::move(type) } };
                 });
-            case 0x02: {
+            case CoreDeclarationKind::Alias: {
                 auto const sortOffset = reader.offset();
                 auto const sort = u8(reader);
                 if (!sort)
@@ -1706,7 +1690,7 @@ namespace
                                                                                .outerIndex = index } };
                 });
             }
-            case 0x03: {
+            case CoreDeclarationKind::Export: {
                 auto exportName = name(reader);
                 if (!exportName)
                     return std::unexpected { exportName.error() };
@@ -1715,10 +1699,49 @@ namespace
                                                                            .type = type } };
                 });
             }
-            default:
-                return std::unexpected { DecodeError {
-                    DecodeErrorCode::InvalidModuleTypeDeclaration, offset, *byte } };
         }
+        return std::unexpected { DecodeError {
+            DecodeErrorCode::InvalidModuleTypeDeclaration, offset, *byte } };
+    }
+
+    Result<isoline::binary::FuncType> ComponentDecoder::coreRecType(Reader& reader)
+    {
+        // As wasmparser reads a rec group, up to its composite type's byte; Isoline's core has no GC, so
+        // every form but a function type is then refused as the core decoder refuses one.
+        auto const offset = reader.offset();
+        auto const byte = peek(reader);
+        if (!byte)
+            return std::unexpected { byte.error() };
+        auto const formOf = [](uint8_t candidate) {
+            auto const row = std::ranges::find(CoreTypeForms, candidate, &CoreTypeFormRow::byte);
+            return row == CoreTypeForms.end() ? std::optional<CoreTypeForm> {} : std::optional { row->form };
+        };
+        auto const form = formOf(*byte);
+        if (!form)
+            return std::unexpected { DecodeError { DecodeErrorCode::InvalidCoreTypeForm, offset, *byte } };
+        switch (*form)
+        {
+            case CoreTypeForm::Function: return coreFuncType(reader);
+            case CoreTypeForm::RecGroup:
+            case CoreTypeForm::Composite: return std::unexpected { coreGcRefusal(offset) };
+            case CoreTypeForm::SubType: {
+                std::ignore = u8(reader);
+                auto const supertypes =
+                    forEach(reader, [&]() { return u32(reader).transform([](uint32_t) {}); });
+                if (!supertypes)
+                    return std::unexpected { supertypes.error() };
+                auto const compositeOffset = reader.offset();
+                auto const composite = peek(reader);
+                if (!composite)
+                    return std::unexpected { composite.error() };
+                auto const compositeForm = formOf(*composite);
+                if (compositeForm != CoreTypeForm::Function && compositeForm != CoreTypeForm::Composite)
+                    return std::unexpected { DecodeError {
+                        DecodeErrorCode::InvalidCoreTypeForm, compositeOffset, *composite } };
+                return std::unexpected { coreGcRefusal(offset) };
+            }
+        }
+        return std::unexpected { DecodeError { DecodeErrorCode::InvalidCoreTypeForm, offset, *byte } };
     }
 
     Result<CoreTypeDefinition> ComponentDecoder::coreType(Reader& reader)
@@ -1751,7 +1774,7 @@ namespace
                 return std::unexpected { DecodeError {
                     DecodeErrorCode::InvalidNonFinalSubType, formOffset, *form } };
         }
-        return coreFuncType(reader).transform(
+        return coreRecType(reader).transform(
             [](isoline::binary::FuncType type) { return CoreTypeDefinition { .type = std::move(type) }; });
     }
 

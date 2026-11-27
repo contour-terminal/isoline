@@ -455,7 +455,10 @@ The decoded pool then holds at most about `maxDecodedItems` × the largest item'
 growth), plus its copy of the input and the names copied out of it, each at most `maxComponentBytes`.
 The largest item is a nested component, its definition and its pool entry: 112 bytes with libstdc++ on
 x86-64, so the defaults bound the pool at about 1000000 × 112 × 2 = 224 MB beyond 2 × 256 MiB. The
-sizes differ with libc++ and the MSVC STL.
+sizes differ with libc++ and the MSVC STL. Component and instance types are scopes too: `maxNesting` counts them together
+with the components around them, the outermost component included, where wasm-tools caps the nesting
+of component types (100) apart from that of components, so a type nested 100 deep inside the outermost
+component is refused here and accepted there.
 
 ## Interrupts and poll sites
 
