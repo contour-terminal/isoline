@@ -77,14 +77,18 @@ class LiveBytesBudget
     ///         refused charge changes nothing.
     [[nodiscard]] std::expected<void, BudgetExceeded> charge(uint64_t bytes) noexcept;
 
-    /// Charges as many bytes as the budget has left, up to @p most, and at least @p least: one atomic
-    /// decision, so a growth sized by it never fails on headroom another thread took meanwhile.
+    /// Charges as many whole units as the budget has left, up to @p most bytes, and at least @p least:
+    /// one atomic decision, so a growth sized by it never fails on headroom another thread took
+    /// meanwhile, and never holds a partial unit's bytes.
     /// @param least The fewest bytes that will do; more than @p most, nothing will.
     /// @param most The bytes wanted.
-    /// @return The bytes charged, from @p least to @p most; or the refusal when fewer than @p least are
-    ///         left, which changes nothing.
+    /// @param unit The granule of the charge, an element's size; @p least and @p most are multiples of
+    ///        it (checked).
+    /// @return The bytes charged, a multiple of @p unit from @p least to @p most; or the refusal when
+    ///         fewer than @p least are left, which changes nothing.
     [[nodiscard]] std::expected<uint64_t, BudgetExceeded> chargeWithin(uint64_t least,
-                                                                       uint64_t most) noexcept;
+                                                                       uint64_t most,
+                                                                       uint64_t unit) noexcept;
 
     /// Releases bytes charged before.
     /// @param bytes At most what is live (checked).
@@ -171,12 +175,11 @@ class ChargedVector
         auto const doubled = _capacity > MostElements / 2 ? MostElements : _capacity * 2;
         // One charge decides the growth against the headroom it sees: as much of the doubled capacity as
         // the budget has left, never less than needed. Whatever another thread charges, the growth fits.
-        auto const granted = _budget->chargeWithin(needed * Unit, std::max(needed, doubled) * Unit);
+        auto const granted = _budget->chargeWithin(needed * Unit, std::max(needed, doubled) * Unit, Unit);
         if (!granted)
             return std::unexpected { granted.error() };
-        auto const capacity = *granted / Unit;
-        _budget->release(*granted - (capacity * Unit)); // a partial element's bytes, if any
-        auto const bytes = capacity * Unit;
+        auto const bytes = *granted;
+        auto const capacity = bytes / Unit;
         try
         {
             _items.reserve(static_cast<std::size_t>(capacity));

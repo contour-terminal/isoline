@@ -2010,6 +2010,25 @@ TEST_CASE("Validator.everyCapRefusesAtEveryCount")
     // modules; 2 components (the nested one and its export); 6 instances (3 core, the instantiation,
     // the inline one and its export); 8 functions (2 aliased core ones, 3 resource built-ins, the
     // lowering, the lifting and its export); 4 exports; one core table, memory, global and tag.
+    //
+    // The measured caps, by the definition that binds each (a size or depth cap accepts at one past the
+    // largest measure, as it refuses `size >= cap` and `depth > cap`):
+    // - TypeSize 15: everyKindLibrary()'s module type, 1 + 1 each for t, g and m, 2 for the tag e (sized
+    //   as its function type [] -> []), and 2 + 1 + 1 for floats and 2 + 2 + 0 for refs: 14.
+    // - TypeDepth 4: the root's export "i" of the inline instance, which is 3 deep over the instantiated
+    //   instance's 2 over its resource "r"'s 1; the root's own measure takes in each export, so 4.
+    // - Types 7: the three core types, the resource, the function type `promote`, the component type and
+    //   the export of the resource "r", which adds a type of its own.
+    // - ResourceTypes 5: the root's resource, the nested component's, the fresh one its instantiation
+    //   mints, the instance type's abstract "r", and the one the component type's export of that
+    //   instance type mints.
+    // - SubtypingSteps 4: the ascription of `promote` to the export "f", a step for the function, its
+    //   parameter's name, the parameter f32 and the result f64 (names under 64 bytes add none).
+    // - SubstitutedTypes 4: 1 + its 1 export each for the two substituted instances, the nested
+    //   component's instantiation and the component type's exported instance.
+    // - CoreMatchingSteps 16: 6 for the library's instantiation (a step per export), 5 for the inline
+    //   exports (a step per name) and 5 for the importer's instantiation (a step per import); the
+    //   names' bytes add none at these lengths.
     auto const pool = everyCountedDefinition();
     REQUIRE(accepted(pool));
     auto const rows = std::vector<CapRow> {
@@ -2042,6 +2061,11 @@ TEST_CASE("Validator.everyCapRefusesAtEveryCount")
     // The measure of an instance, a core one instantiated or of inline exports, or a component one of
     // inline exports: its depth over its exports', and its size their sum, which outgrows any one of
     // them when one entity is exported many times.
+    // - instantiated 15/2: the instance of everyKindLibrary() is 1 + its entries' 13 = 14, as large as
+    //   the module type, which is measured first and so refuses first; 2 deep over its entries.
+    // - core inline 82/2: 1 + 20 exports of floats at 2 + 1 + 1 each = 81; 2 deep.
+    // - component inline 62/3: 1 + 20 exports of the lifted `promote` at 1 + f32 + f64 each = 61; 3 deep,
+    //   over the function's 2 over its primitives' 1.
     auto instantiated = withEveryKind();
     auto coreInline = withEveryKind();
     auto inlineExports = std::vector<CoreInlineExport> {};

@@ -1341,25 +1341,37 @@ TEST_CASE("LiveBytesBudget.chargesWithinTheHeadroom", "[threading]")
 {
     // As much as is left, up to the most wanted, never less than the least: one decision.
     auto budget = LiveBytesBudget { 100 };
-    auto const all = budget.chargeWithin(10, 40);
+    auto const all = budget.chargeWithin(10, 40, 1);
     REQUIRE(all.has_value());
     CHECK(*all == 40);
     REQUIRE(budget.charge(50).has_value());
-    auto const rest = budget.chargeWithin(5, 40);
+    auto const rest = budget.chargeWithin(5, 40, 1);
     REQUIRE(rest.has_value());
     CHECK(*rest == 10);
     CHECK(budget.live() == 100);
     budget.release(30);
-    auto const refused = budget.chargeWithin(31, 40);
+    auto const refused = budget.chargeWithin(31, 40, 1);
     REQUIRE_FALSE(refused.has_value());
     CHECK(refused.error().requested == 31);
     CHECK(refused.error().live == 70);
     CHECK(budget.live() == 70);
-    auto const exact = budget.chargeWithin(30, 30);
+    auto const exact = budget.chargeWithin(30, 30, 1);
     REQUIRE(exact.has_value());
     CHECK(*exact == 30);
     budget.release(30);
-    CHECK_FALSE(budget.chargeWithin(11, 10).has_value());
+    CHECK_FALSE(budget.chargeWithin(11, 10, 1).has_value());
+    CHECK(budget.live() == 70);
+
+    // In whole units: of the 30 left, 3 units of 8 bytes, the 6 bytes of a partial one never charged;
+    // and a least of 4 units refused, though 30 bytes are left.
+    auto const units = budget.chargeWithin(8, 40, 8);
+    REQUIRE(units.has_value());
+    CHECK(*units == 24);
+    CHECK(budget.live() == 94);
+    budget.release(24);
+    auto const partial = budget.chargeWithin(32, 40, 8);
+    REQUIRE_FALSE(partial.has_value());
+    CHECK(partial.error().requested == 32);
     CHECK(budget.live() == 70);
 
     // Four threads take what is left of a limit of 3, one or two bytes at a time: the budget never holds
@@ -1373,7 +1385,7 @@ TEST_CASE("LiveBytesBudget.chargesWithinTheHeadroom", "[threading]")
             threads.emplace_back([&shared, &overLimit] {
                 for ([[maybe_unused]] auto const round: std::views::iota(0, 10'000))
                 {
-                    auto const granted = shared.chargeWithin(1, 2);
+                    auto const granted = shared.chargeWithin(1, 2, 1);
                     if (!granted)
                         continue;
                     if (shared.live() > shared.limit())
@@ -1399,7 +1411,8 @@ TEST_CASE("ChargedVector.growthTakesTheHeadroomLeft")
     REQUIRE(vector.reserveFor(40).has_value());
     for (auto const value: std::views::iota(uint64_t { 0 }, uint64_t { 40 }))
         vector.append(value);
-    // Needed 41, doubled 80: (905 - 320) / 8 = 73 elements, the 585th byte's partial element released.
+    // Needed 41, doubled 80: (905 - 320) / 8 = 73 elements; the last byte, a partial element, is never
+    // charged, not even for a moment.
     REQUIRE(vector.reserveFor(1).has_value());
     CHECK(vector.chargedBytes() == 73 * Unit);
     CHECK(budget->live() == 73 * Unit);
@@ -1491,8 +1504,12 @@ TEMPLATE_TEST_CASE("ChargedVector.everyPathOfEveryElementType",
     auto outcome = std::string_view { "accepted" };
     try
     {
-        if (!vector.reserveFor(pastMax))
+        auto const reserved = vector.reserveFor(pastMax);
+        if (!reserved)
+        {
             outcome = "refused";
+            CHECK(reserved.error().requested == std::numeric_limits<uint64_t>::max());
+        }
     }
     catch (std::length_error const&)
     {

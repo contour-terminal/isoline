@@ -599,13 +599,17 @@ std::expected<void, BudgetExceeded> LiveBytesBudget::charge(uint64_t bytes) noex
     return {};
 }
 
-std::expected<uint64_t, BudgetExceeded> LiveBytesBudget::chargeWithin(uint64_t least, uint64_t most) noexcept
+std::expected<uint64_t, BudgetExceeded> LiveBytesBudget::chargeWithin(uint64_t least,
+                                                                      uint64_t most,
+                                                                      uint64_t unit) noexcept
 {
+    Require(unit != 0 && least % unit == 0 && most % unit == 0);
     auto current = _live.load(std::memory_order_relaxed);
     auto granted = uint64_t { 0 };
     do
     {
         granted = std::min(most, _limit - current);
+        granted -= granted % unit;
         if (granted < least)
             return std::unexpected { BudgetExceeded {
                 .requested = least, .live = current, .limit = _limit } };
