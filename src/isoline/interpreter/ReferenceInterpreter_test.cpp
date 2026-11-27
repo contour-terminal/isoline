@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -23,13 +25,21 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/FloatEnvironment.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/Interrupt.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/FloatEnvironment.hpp>
+#include <isoline/runtime/testing/PollCounter.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/Validator.hpp>
 
 using isoline::FeatureSet;
@@ -42,27 +52,54 @@ using isoline::binary::GlobalType;
 using isoline::binary::Instruction;
 using isoline::binary::Limits;
 using isoline::binary::MemoryType;
-using isoline::binary::Module;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
 using isoline::binary::TableType;
 using isoline::binary::ValueType;
+using isoline::binary::testing::Bytes;
+using isoline::binary::testing::call;
+using isoline::binary::testing::code;
 using isoline::binary::testing::encodeU32;
+using isoline::binary::testing::i32Const;
+using isoline::binary::testing::i64Const;
+using isoline::binary::testing::localGet;
+using isoline::binary::testing::memoryAccess;
+using isoline::binary::testing::memoryFill;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::interpreter::ReferenceInterpreter;
 using isoline::runtime::Abrupt;
+using isoline::runtime::ExnAddr;
 using isoline::runtime::ExternValue;
 using isoline::runtime::F32;
 using isoline::runtime::FuncAddr;
+using isoline::runtime::governedBits;
+using isoline::runtime::HeapMemoryAllocator;
+using isoline::runtime::HostContext;
+using isoline::runtime::HostFailure;
+using isoline::runtime::HostFailureKind;
+using isoline::runtime::hostFloatControlLayout;
 using isoline::runtime::I32;
 using isoline::runtime::I64;
+using isoline::runtime::IPollObserver;
+using isoline::runtime::Limit;
+using isoline::runtime::makeHostFunction;
+using isoline::runtime::MismatchKind;
+using isoline::runtime::PollSite;
+using isoline::runtime::Ref;
 using isoline::runtime::Store;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::Thrown;
 using isoline::runtime::Trap;
 using isoline::runtime::TrapCode;
-using isoline::runtime::UnlimitedAllocator;
 using isoline::runtime::Value;
+using isoline::runtime::ValueMismatch;
+using isoline::runtime::testing::departFromIeeeDefaults;
+using isoline::runtime::testing::HostFloatEnvironment;
+using isoline::runtime::testing::InterruptWatchdog;
+using isoline::runtime::testing::PollCounter;
+using isoline::runtime::testing::PollTrigger;
+using isoline::runtime::testing::TriggerWait;
+using isoline::validate::FrameShape;
 
 namespace
 {
@@ -73,59 +110,6 @@ constexpr auto PageSize = isoline::binary::pageSize(MemoryType {});
 constexpr auto TypeI32 = isoline::binary::I32;
 constexpr auto TypeI64 = isoline::binary::I64;
 constexpr auto TypeF32 = isoline::binary::F32;
-
-/// Bytes of a function body, assembled from pieces.
-using Bytes = std::vector<uint8_t>;
-
-/// The concatenation of @p pieces.
-Bytes code(std::initializer_list<Bytes> pieces)
-{
-    auto out = Bytes {};
-    for (auto const& piece: pieces)
-        out.insert(out.end(), piece.begin(), piece.end());
-    return out;
-}
-
-/// The signed LEB128 encoding of @p value.
-Bytes encodeS64(int64_t value)
-{
-    auto out = Bytes {};
-    while (true)
-    {
-        auto const byte = static_cast<uint8_t>(value & 0x7F);
-        value >>= 7;
-        auto const done = (value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0);
-        out.push_back(done ? byte : static_cast<uint8_t>(byte | 0x80));
-        if (done)
-            return out;
-    }
-}
-
-Bytes i32Const(int32_t value)
-{
-    return code({ { 0x41 }, encodeS64(value) });
-}
-
-Bytes i64Const(int64_t value)
-{
-    return code({ { 0x42 }, encodeS64(value) });
-}
-
-Bytes localGet(uint32_t index)
-{
-    return code({ { 0x20 }, encodeU32(index) });
-}
-
-Bytes call(uint32_t index)
-{
-    return code({ { 0x10 }, encodeU32(index) });
-}
-
-/// A load or store of @p opcode byte with alignment exponent @p align and offset @p offset.
-Bytes memoryAccess(uint8_t opcode, uint32_t align, uint32_t offset)
-{
-    return code({ { opcode }, encodeU32(align), encodeU32(offset) });
-}
 
 /// An active element segment for table 0 at @p offset, listing @p functions.
 Bytes activeElements(uint8_t offset, Bytes const& functions)
@@ -159,15 +143,27 @@ class Harness
     }
 
     /// Decodes, validates and instantiates @p builder's module in a store of @p limits.
-    Harness(ModuleBuilder const& builder, std::vector<ExternValue> const& imports, StoreLimits limits):
-        _store { _allocator, limits }
+    /// @param observer Observes the store's polls; none when null.
+    Harness(ModuleBuilder const& builder,
+            std::vector<ExternValue> const& imports,
+            StoreLimits limits,
+            IPollObserver* observer = nullptr):
+        _store { limits,
+                 isoline::runtime::StoreServices { .allocator = _allocator, .pollObserver = observer } }
     {
         instantiate(builder, imports);
     }
 
-    /// Creates the harness with host functions that @p bind adds to the store before instantiation.
+    /// Creates the harness, in a store of @p limits, with host functions that @p bind adds to the
+    /// store before instantiation.
+    /// @param observer Observes the store's polls; none when null.
     template <typename Bind>
-    Harness(ModuleBuilder const& builder, Bind&& bind): _store { _allocator }
+    Harness(ModuleBuilder const& builder,
+            Bind&& bind,
+            StoreLimits limits = {},
+            IPollObserver* observer = nullptr):
+        _store { limits,
+                 isoline::runtime::StoreServices { .allocator = _allocator, .pollObserver = observer } }
     {
         instantiate(builder, std::forward<Bind>(bind)(_store));
     }
@@ -180,7 +176,19 @@ class Harness
     {
         auto const address = function(index);
         auto results = std::vector<Value>(_store.functionType(address).results.size());
-        return _interpreter.invoke(_store, address, args, results).transform([&] { return results; });
+        return isoline::runtime::invokeChecked(_store, _interpreter, address, args, results)
+            .outcome.transform([&] { return results; });
+    }
+
+    /// How invoking the module's function @p index ends abruptly, which it must.
+    /// @param index The function's index in the module's function index space.
+    /// @param args Its arguments.
+    /// @return How it ended.
+    Abrupt abrupt(uint32_t index, std::vector<Value> const& args = {})
+    {
+        auto const ended = outcome(index, args);
+        REQUIRE_FALSE(ended.has_value());
+        return ended.error();
     }
 
     /// Invokes the module's function @p index, which must not throw.
@@ -223,30 +231,51 @@ class Harness
 
     [[nodiscard]] ReferenceInterpreter& interpreter() noexcept { return _interpreter; }
 
+    /// The validated module the harness instantiated.
+    [[nodiscard]] isoline::validate::ValidatedModule const& validated() const noexcept { return *_validated; }
+
+    /// The value of the module's global @p index.
+    /// @param index The global's index in the module's global index space.
+    [[nodiscard]] Value global(uint32_t index)
+    {
+        return _store.global(_store.moduleInstance(_address).globals.at(index)).value;
+    }
+
   private:
     void instantiate(ModuleBuilder const& builder, std::vector<ExternValue> const& imports)
     {
         // Every feature Isoline knows, so that a test may use any instruction it executes.
         auto const features = FeatureSet::all();
-        auto const bytes = builder.build();
-        auto module = isoline::binary::decodeModule(bytes, features);
-        REQUIRE(module.has_value());
-        REQUIRE(isoline::validate::validateModule(*module, features).has_value());
-        auto const address = isoline::runtime::instantiate(
-            _store, _interpreter, std::make_shared<Module const>(std::move(*module)), imports);
+        auto validated = isoline::validate::ValidatedModule::load(
+            builder.build(), features, isoline::binary::DecodeLimits {});
+        REQUIRE(validated.has_value());
+        _validated = *validated;
+        auto const address =
+            isoline::runtime::instantiate(_store, _interpreter, std::move(*validated), imports);
         REQUIRE(address.has_value());
         _address = *address;
     }
 
-    UnlimitedAllocator _allocator;
+    HeapMemoryAllocator _allocator;
     Store _store;
     ReferenceInterpreter _interpreter;
+    std::shared_ptr<isoline::validate::ValidatedModule const> _validated;
     uint32_t _address = 0;
 };
 
 FuncType signature(std::vector<ValueType> params, std::vector<ValueType> results)
 {
     return FuncType { .params = std::move(params), .results = std::move(results) };
+}
+
+/// Adds a host function of @p type, implemented by @p function, to @p store.
+/// @return Its address.
+template <isoline::runtime::HostCallable F>
+FuncAddr addHost(Store& store, FuncType type, F function)
+{
+    auto const address = store.addHostFunction(std::move(type), makeHostFunction(std::move(function)));
+    REQUIRE(address.has_value());
+    return *address;
 }
 
 } // namespace
@@ -487,6 +516,8 @@ TEST_CASE("ReferenceInterpreter.interpretDeepNesting")
     auto builder = ModuleBuilder {};
     builder.type(signature({}, { TypeI32 })).function(0, {}, std::move(body));
     auto harness = Harness { builder };
+    // Its 100'000 labels are within its frame's static cost, which the default stack budget allows.
+    CHECK(harness.validated().frameShape(0) == FrameShape { .maxOperands = 1, .maxLabels = Depth });
     CHECK(harness.result(0) == i32(1));
 }
 
@@ -553,13 +584,15 @@ TEST_CASE("ReferenceInterpreter.hostCall")
     auto harness =
         Harness { builder, [&](Store& store) {
                      auto const host =
-                         store.addHostFunction(signature({ TypeI32 }, { TypeI32 }),
-                                               [&](std::span<Value const> args,
-                                                   std::span<Value> results) -> std::expected<void, Trap> {
-                                                   ++calls;
-                                                   results[0] = I32 { std::get<I32>(args[0]).bits * 2 };
-                                                   return {};
-                                               });
+                         addHost(store,
+                                 signature({ TypeI32 }, { TypeI32 }),
+                                 [&](HostContext&,
+                                     std::span<Value const> args,
+                                     std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     ++calls;
+                                     results[0] = I32 { std::get<I32>(args[0]).bits * 2 };
+                                     return {};
+                                 });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
     CHECK(harness.result(1, { i32(21) }) == i32(42));
@@ -572,11 +605,13 @@ TEST_CASE("ReferenceInterpreter.hostTrapPropagates")
     builder.type(signature({}, {})).importFunction("env", "fail", 0).function(0, {}, call(0));
     auto harness =
         Harness { builder, [](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
-                             return std::unexpected { Trap { TrapCode::HostTrap } };
-                         });
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [](HostContext&,
+                                                  std::span<Value const>,
+                                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   return std::unexpected { Trap { TrapCode::HostTrap } };
+                                               });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
     CHECK(harness.trap(1) == TrapCode::HostTrap);
@@ -631,7 +666,7 @@ TEST_CASE("ReferenceInterpreter.bulkMemory")
     CHECK(harness.result(0) == Value { I32 { 0xABAB'ABAB } });
     CHECK(harness.trap(1) == TrapCode::OutOfBoundsMemoryAccess);
     CHECK(harness.result(2) == i32(3));
-    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes.size()
+    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes().size()
           == 3 * PageSize);
 }
 
@@ -653,7 +688,7 @@ TEST_CASE("Interpreter.byteGranularMemory")
     CHECK(harness.result(0) == i32(4));
     CHECK(harness.result(1) == i32(0));
     CHECK(harness.result(3) == i32(0));
-    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes.size()
+    CHECK(harness.store().memory(harness.store().moduleInstance(harness.address()).memories[0]).bytes().size()
           == 4);
 }
 
@@ -777,13 +812,16 @@ TEST_CASE("ReferenceInterpreter.hostReentersWasm")
     Harness* self = nullptr;
     auto harness =
         Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
+                     auto const host = addHost(
+                         store,
                          signature({}, { TypeI32 }),
-                         [&](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                             auto const inner = self->invoke(2);
-                             if (!inner)
-                                 return std::unexpected { inner.error() };
-                             results[0] = inner->front();
+                         [&](HostContext& context,
+                             std::span<Value const>,
+                             std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                             auto inner = std::vector<Value>(1);
+                             if (auto const done = context.invoke(self->function(2), {}, inner); !done)
+                                 return done;
+                             results[0] = inner.front();
                              return {};
                          });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
@@ -845,49 +883,309 @@ TEST_CASE("ReferenceInterpreter.hostReentryIsBounded")
     auto reentries = uint32_t { 0 };
     auto harness =
         Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
-                             ++reentries;
-                             return self->invoke(1).transform([](auto const&) {});
-                         });
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [&](HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   ++reentries;
+                                                   return context.invoke(self->function(1), {}, {});
+                                               });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
     self = &harness;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
-    CHECK(reentries == ReferenceInterpreter::MaxNestedInvocations);
+    CHECK(reentries == StoreLimits {}.maxNestedInvocations);
+    // Every host call scope ended with its abrupt exit.
+    CHECK(harness.store().hostCallsInProgress() == 0);
     // Every invocation unwound: the interpreter runs on as fresh, and hits the same bound again.
     reentries = 0;
     CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
-    CHECK(reentries == ReferenceInterpreter::MaxNestedInvocations);
+    CHECK(reentries == StoreLimits {}.maxNestedInvocations);
 }
 
-TEST_CASE("ReferenceInterpreter.hostExceptionUnwindsInvocationCount")
+TEST_CASE("ReferenceInterpreter.nestedInvocationsFollowTheLimit")
 {
-    // Function 1 calls the host; the callback throws on its first call, then re-enters forever.
+    // As hostReentryIsBounded, in a store that allows 7 invocations at once, which it counts.
     auto builder = ModuleBuilder {};
     builder.type(signature({}, {})).importFunction("env", "reenter", 0).function(0, {}, call(0));
     Harness* self = nullptr;
     auto reentries = uint32_t { 0 };
-    auto shouldThrow = true;
+    auto deepest = uint64_t { 0 };
+    auto refused = isoline::runtime::Entry::Refused;
     auto harness =
-        Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Trap> {
-                             if (shouldThrow)
-                                 throw std::runtime_error { "host failure" };
-                             ++reentries;
-                             return self->invoke(1).transform([](auto const&) {});
-                         });
+        Harness { builder,
+                  [&](Store& store) {
+                      auto const host =
+                          addHost(store,
+                                  signature({}, {}),
+                                  [&](HostContext& context,
+                                      std::span<Value const>,
+                                      std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                      ++reentries;
+                                      deepest =
+                                          std::max(deepest, context.store().used(Limit::NestedInvocations));
+                                      auto const nested = isoline::runtime::invokeChecked(
+                                          self->store(), self->interpreter(), self->function(1), {}, {});
+                                      if (!nested.outcome && deepest == 7)
+                                          refused = nested.entry;
+                                      return nested.outcome;
+                                  });
+                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                  },
+                  StoreLimits { .maxNestedInvocations = 7 } };
+    self = &harness;
+    CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
+    CHECK(reentries == 7);
+    // The store counts the invocations in progress, and they all ended.
+    CHECK(harness.store().used(Limit::NestedInvocations) == 0);
+
+    CHECK(deepest == 7);
+    // The call past the limit entered, and trapped, as a call too deep does.
+    CHECK(refused == isoline::runtime::Entry::Entered);
+}
+
+TEST_CASE("ReferenceInterpreter.hostTakesI64AndI32")
+{
+    // import (func (param i64 i32) (result i64)), which returns a + b; function 1 passes its own params.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI64, TypeI32 }, { TypeI64 }))
+        .importFunction("env", "add", 0)
+        .function(0, {}, code({ localGet(0), localGet(1), call(0) }));
+    auto harness =
+        Harness { builder, [](Store& store) {
+                     auto const host =
+                         addHost(store,
+                                 signature({ TypeI64, TypeI32 }, { TypeI64 }),
+                                 [](HostContext&,
+                                    std::span<Value const> args,
+                                    std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     results[0] =
+                                         I64 { std::get<I64>(args[0]).bits + std::get<I32>(args[1]).bits };
+                                     return {};
+                                 });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
-    self = &harness;
-    CHECK_THROWS_AS(std::ignore = harness.invoke(1), std::runtime_error);
-    // The throwing invocation left no count behind: the full nesting bound is still available.
-    shouldThrow = false;
-    CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
-    CHECK(reentries == ReferenceInterpreter::MaxNestedInvocations);
+    CHECK(harness.result(1, { I64 { 0x1'0000'0000 }, I32 { 2 } }) == Value { I64 { 0x1'0000'0002 } });
+}
+
+namespace
+{
+
+/// A module whose function 1 calls its import 0, of type [] -> [i32], implemented by @p function.
+template <isoline::runtime::HostCallable F>
+Harness callingHost(F function)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 })).importFunction("env", "host", 0).function(0, {}, call(0));
+    return Harness { builder, [&](Store& store) {
+                        auto const host = addHost(store, signature({}, { TypeI32 }), std::move(function));
+                        return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                    } };
+}
+
+} // namespace
+
+TEST_CASE("ReferenceInterpreter.hostResultOfWrongKindIsAHostFailure")
+{
+    // The host writes an f32 into its i32 result: the call ends with a host failure, not an abort.
+    auto harness = callingHost([](HostContext&,
+                                  std::span<Value const>,
+                                  std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+        results[0] = F32 {};
+        return {};
+    });
+    CHECK(harness.abrupt(1)
+          == Abrupt {
+              HostFailure { HostFailureKind::ResultMismatch, 0, ValueMismatch { MismatchKind::Kind, 0 } } });
+}
+
+TEST_CASE("ReferenceInterpreter.hostFailurePassesThrough")
+{
+    // A host's own failure ends the invocation exactly as the host reported it.
+    auto const failure =
+        HostFailure { .kind = HostFailureKind::Embedder, .code = 7, .mismatch = std::nullopt };
+    auto harness = callingHost(
+        [&](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+            return std::unexpected { Abrupt { failure } };
+        });
+    CHECK(harness.abrupt(1) == Abrupt { failure });
+}
+
+TEST_CASE("ReferenceInterpreter.forgedThrownIsAHostFailure")
+{
+    // A host throwing an exception the store never allocated is a host failure: no handler sees it.
+    auto harness = callingHost(
+        [](HostContext&, std::span<Value const>, std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+            return std::unexpected { Abrupt { Thrown { .exception = 999 } } };
+        });
+    CHECK(harness.abrupt(1)
+          == Abrupt {
+              HostFailure { .kind = HostFailureKind::ResultMismatch, .code = 0, .mismatch = std::nullopt } });
+}
+
+TEST_CASE("ReferenceInterpreter.hostReentersThroughItsContext")
+{
+    // The host finds the caller's export "inc" and invokes it through its context: inc(41) = 42.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, { TypeI32 }))
+        .type(signature({ TypeI32 }, { TypeI32 }))
+        .importFunction("env", "host", 0)
+        .function(0, {}, call(0))
+        .function(1, {}, code({ localGet(0), i32Const(1), { 0x6A } })) // i32.add
+        .exportFunction("inc", 2);
+    auto caller = std::optional<uint32_t> {};
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host =
+                         addHost(store,
+                                 signature({}, { TypeI32 }),
+                                 [&](HostContext& context,
+                                     std::span<Value const>,
+                                     std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     caller = context.callerInstance();
+                                     auto const& exports =
+                                         context.store().moduleInstance(caller.value_or(0)).exports;
+                                     auto const inc = std::ranges::find(
+                                         exports, "inc", [](auto const& entry) { return entry.first; });
+                                     auto const args = std::vector<Value> { I32 { 41 } };
+                                     return context.invoke(inc->second.address, args, results);
+                                 });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    CHECK(harness.result(1) == i32(42));
+    CHECK(caller == harness.address());
+}
+
+TEST_CASE("ReferenceInterpreter.tailCalledHostSeesItsCaller")
+{
+    // A host function reached by return_call is called by the instance whose frame it replaced.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "host", 0)
+        .function(0, {}, code({ { 0x12, 0x00 } }));
+    auto caller = std::optional<uint32_t> {};
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [&](HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   caller = context.callerInstance();
+                                                   return {};
+                                               });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    REQUIRE(harness.invoke(1).has_value());
+    CHECK(caller == harness.address());
+}
+
+TEST_CASE("ReferenceInterpreter.hostWritesItsCallersMemory")
+{
+    // The host writes 42 at byte 3 of its caller's memory 0, which the caller then loads; the caller has
+    // no memory 1.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "host", 0)
+        .memory(atLeast(1))
+        .function(1, {}, code({ call(0), i32Const(3), memoryAccess(0x2D, 0, 0) })); // i32.load8_u
+    auto second = std::optional<std::span<std::byte>> { std::span<std::byte> {} };
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     auto const host = addHost(store,
+                                               signature({}, {}),
+                                               [&](HostContext& context,
+                                                   std::span<Value const>,
+                                                   std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                                   second = context.callerMemory(1);
+                                                   auto const memory = context.callerMemory(0);
+                                                   if (!memory || memory->size() < 4)
+                                                       return std::unexpected { Abrupt { HostFailure {} } };
+                                                   (*memory)[3] = std::byte { 42 };
+                                                   return {};
+                                               });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
+                 } };
+    CHECK(harness.result(1) == i32(42));
+    CHECK(second == std::nullopt);
+}
+
+TEST_CASE("ReferenceInterpreter.hostSeesTheInstanceThatCalledIt")
+{
+    // Three instances: an empty one at 0, B at 1 and A at 2. A calls B's two exports, one calling the
+    // host, one tail-calling it; the host sees B both times, not A beneath it nor 0, and writes 42 at
+    // byte 3 of B's memory, which B loads, while A's stays 0.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, isoline::runtime::StoreServices { .allocator = allocator } };
+    auto interpreter = ReferenceInterpreter {};
+    auto const load = [&](ModuleBuilder const& builder, std::vector<ExternValue> const& imports) {
+        auto validated = isoline::validate::ValidatedModule::load(
+            builder.build(), FeatureSet::all(), isoline::binary::DecodeLimits {});
+        REQUIRE(validated.has_value());
+        auto const address =
+            isoline::runtime::instantiate(store, interpreter, std::move(*validated), imports);
+        REQUIRE(address.has_value());
+        return *address;
+    };
+    auto callers = std::vector<std::optional<uint32_t>> {};
+    auto const host = addHost(store,
+                              signature({}, {}),
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  callers.push_back(context.callerInstance());
+                                  auto const memory = context.callerMemory(0);
+                                  if (!memory || memory->size() < 4)
+                                      return std::unexpected { Abrupt { HostFailure {} } };
+                                  (*memory)[3] = std::byte { 42 };
+                                  return {};
+                              });
+    REQUIRE(load(ModuleBuilder {}, {}) == 0);
+
+    auto b = ModuleBuilder {};
+    b.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "host", 0)
+        .memory(atLeast(1))
+        .function(1, {}, code({ call(0), i32Const(3), memoryAccess(0x2D, 0, 0) })) // i32.load8_u
+        .function(0, {}, code({ { 0x12, 0x00 } }))                                 // return_call 0
+        .exportFunction("viaCall", 1)
+        .exportFunction("viaTail", 2);
+    auto const bAddress = load(b, { ExternValue { .kind = ExternKind::Func, .address = host } });
+    REQUIRE(bAddress == 1);
+    auto const& bExports = store.moduleInstance(bAddress).exports;
+
+    auto a = ModuleBuilder {};
+    a.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("b", "viaTail", 0)
+        .importFunction("b", "viaCall", 1)
+        .memory(atLeast(1))
+        .function(
+            1, {}, code({ call(0), call(1), i32Const(3), memoryAccess(0x2D, 0, 0), { 0x6A } })); // + A's byte
+    auto const aAddress = load(a, { bExports.at(1).second, bExports.at(0).second });
+    REQUIRE(aAddress == 2);
+
+    auto results = std::vector<Value>(1);
+    auto const run = isoline::runtime::invokeChecked(
+        store, interpreter, store.moduleInstance(aAddress).functions.at(2), {}, results);
+    REQUIRE(run.outcome.has_value());
+    CHECK(results.front() == i32(42));
+    CHECK(callers == std::vector<std::optional<uint32_t>> { bAddress, bAddress });
+}
+
+TEST_CASE("ReferenceInterpreter.stackValuesFollowTheLimit")
+{
+    // Function 0 holds 20 locals and calls function 1: past a store's 10 stack values, the call traps.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .function(0, std::vector<ValueType>(20, isoline::binary::I32), call(1))
+        .function(0, {}, {});
+    CHECK(Harness { builder, {}, StoreLimits { .maxStackValues = 10 } }.trap(0)
+          == TrapCode::CallStackExhausted);
+    CHECK(Harness { builder }.invoke(0).has_value());
 }
 
 namespace
@@ -1374,28 +1672,33 @@ TEST_CASE("Interpreter.callRefOfAHostReference")
         .type(signature({}, { nonNullTo0 }))
         .importFunction("env", "callee", 1)
         .function(0, {}, code({ call(0), callRef0() }));
-    auto harness = Harness {
-        builder,
-        [](Store& store) {
-            auto const callee = store.addHostFunction(
-                signature({}, { TypeI32 }),
-                [](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                    results[0] = I32 { 7 };
-                    return {};
-                });
-            auto const typeId = store.function(callee).typeId;
-            auto const reference = Ref { .kind = RefKind::Func,
-                                         .heap = { .kind = isoline::binary::AbstractHeapType::Func },
-                                         .address = callee };
-            auto const provider = store.addHostFunction(
-                signature({}, { isoline::binary::concreteRef(typeId, isoline::binary::Nullable::No) }),
-                [reference](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                    results[0] = reference;
-                    return {};
-                });
-            return std::vector { ExternValue { .kind = ExternKind::Func, .address = provider } };
-        }
-    };
+    auto harness =
+        Harness { builder, [](Store& store) {
+                     auto const callee =
+                         addHost(store,
+                                 signature({}, { TypeI32 }),
+                                 [](HostContext&,
+                                    std::span<Value const>,
+                                    std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     results[0] = I32 { 7 };
+                                     return {};
+                                 });
+                     auto const typeId = store.function(callee).typeId;
+                     auto const reference = Ref { .kind = RefKind::Func,
+                                                  .heap = { .kind = isoline::binary::AbstractHeapType::Func },
+                                                  .address = callee };
+                     auto const provider = addHost(
+                         store,
+                         signature({},
+                                   { isoline::binary::concreteRef(typeId, isoline::binary::Nullable::No) }),
+                         [reference](HostContext&,
+                                     std::span<Value const>,
+                                     std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                             results[0] = reference;
+                             return {};
+                         });
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = provider } };
+                 } };
     CHECK(harness.result(1) == i32(7));
 }
 
@@ -1465,12 +1768,15 @@ TEST_CASE("Interpreter.returnCallToHost")
         .function(0, {}, code({ i32Const(35), call(1), { 0x6A } })); // i32.add
     auto harness =
         Harness { builder, [](Store& store) {
-                     auto const seven = store.addHostFunction(
-                         signature({}, { TypeI32 }),
-                         [](std::span<Value const>, std::span<Value> results) -> std::expected<void, Trap> {
-                             results[0] = I32 { 7 };
-                             return {};
-                         });
+                     auto const seven =
+                         addHost(store,
+                                 signature({}, { TypeI32 }),
+                                 [](HostContext&,
+                                    std::span<Value const>,
+                                    std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                     results[0] = I32 { 7 };
+                                     return {};
+                                 });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = seven } };
                  } };
     CHECK(harness.result(1) == i32(7));
@@ -1637,11 +1943,13 @@ TEST_CASE("Interpreter.throwRefRethrows")
                          { 0x0B, 0x00, 0x0B },
                          { 0x0A },
                          { 0x0B, 0x00, 0x0B } }));
-    // A store of one exception: throw_ref allocates none, so one invocation fits, and a second throw
-    // does not, as the store never frees an exception.
+    // A store of one exception: throw_ref allocates none, so one invocation fits; the next one's throw
+    // finds the arena full, and its sweep reclaims the first invocation's exception, which nothing
+    // refers to any more.
     auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 1 } };
     CHECK(harness.result(0) == i32(7));
-    CHECK(harness.trap(0) == TrapCode::ExceptionLimitExceeded);
+    CHECK(harness.result(0) == i32(7));
+    CHECK(harness.store().liveExceptions() == 1);
 }
 
 TEST_CASE("Interpreter.throwRefOfNullTraps")
@@ -1741,17 +2049,21 @@ TEST_CASE("Interpreter.exceptionCrossesHost")
     auto ownException = false;
     auto harness =
         Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
+                     auto const host = addHost(
+                         store,
                          signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Abrupt> {
+                         [&](HostContext& context,
+                             std::span<Value const>,
+                             std::span<Value>) noexcept -> std::expected<void, Abrupt> {
                              if (!ownException)
-                                 return self->outcome(1).transform([](auto const&) {});
-                             // An exception of the host's own making, of the guest's tag.
-                             auto& own = self->store();
-                             auto const tag = own.moduleInstance(self->address()).tags.at(0);
-                             auto const exception = own.addException(tag, { i32(9) });
-                             REQUIRE(exception.has_value());
-                             return std::unexpected { Abrupt { Thrown { .exception = *exception } } };
+                                 return context.invoke(self->function(1), {}, {});
+                             // An exception of the host's own making, of the guest's tag. The embedder
+                             // calls it directly too, without a caller instance.
+                             auto const tag = context.store().moduleInstance(self->address()).tags.at(0);
+                             return context.addException(tag, { i32(9) }).and_then([](auto exception) {
+                                 return std::expected<void, Abrupt> { std::unexpected {
+                                     Abrupt { Thrown { .exception = exception } } } };
+                             });
                          });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
@@ -1813,8 +2125,8 @@ TEST_CASE("Interpreter.importedTagIsTheSameTag")
     auto harness =
         Harness { builder, [&](Store& store) {
                      // A decoy first, so that no TagAddr equals the tag index naming it.
-                     static_cast<void>(store.addTag(store.internType(signature({}, {}))));
-                     shared = store.addTag(store.internType(signature({}, {})));
+                     static_cast<void>(store.addTag(store.internType(signature({}, {}))).value());
+                     shared = store.addTag(store.internType(signature({}, {}))).value();
                      return std::vector { ExternValue { .kind = ExternKind::Tag, .address = shared } };
                  } };
     CHECK(harness.result(0) == i32(1));
@@ -1881,21 +2193,1377 @@ TEST_CASE("Interpreter.hostThrowsAPayloadOfItsTagsKinds")
                          tryTable(NoResult, ClauseCatch, 0, 0),
                          call(0),
                          { 0x0B, 0x00, 0x0B, 0x1A } }));
-    Harness* self = nullptr;
     auto harness =
-        Harness { builder, [&](Store& store) {
-                     auto const host = store.addHostFunction(
-                         signature({}, {}),
-                         [&](std::span<Value const>, std::span<Value>) -> std::expected<void, Abrupt> {
-                             auto& own = self->store();
-                             auto const tag = own.moduleInstance(self->address()).tags.at(0);
-                             auto const exception =
-                                 own.addException(tag, { I64 { 42 }, F32 { 0x3F80'0000 } });
-                             REQUIRE(exception.has_value());
-                             return std::unexpected { Abrupt { Thrown { .exception = *exception } } };
-                         });
+        Harness { builder, [](Store& store) {
+                     auto const host =
+                         addHost(store,
+                                 signature({}, {}),
+                                 [](HostContext& context,
+                                    std::span<Value const>,
+                                    std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                     auto const tag =
+                                         context.store().moduleInstance(*context.callerInstance()).tags.at(0);
+                                     return context.addException(tag, { I64 { 42 }, F32 { 0x3F80'0000 } })
+                                         .and_then([](auto exception) {
+                                             return std::expected<void, Abrupt> { std::unexpected {
+                                                 Abrupt { Thrown { .exception = exception } } } };
+                                         });
+                                 });
                      return std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
                  } };
-    self = &harness;
     CHECK(harness.result(1) == Value { I64 { 42 } });
+}
+
+namespace
+{
+
+/// A host import of type [] -> [] that runs @p function, added to @p store.
+/// @return The imports binding it.
+template <isoline::runtime::HostCallable F>
+std::vector<ExternValue> hostImport(Store& store, F function)
+{
+    return { ExternValue { .kind = ExternKind::Func,
+                           .address = addHost(store, signature({}, {}), std::move(function)) } };
+}
+
+/// The rounds a guest that a test interrupts runs at most: should its poll go missing, it ends
+/// normally, which fails the test, rather than hanging it.
+constexpr auto MaxRounds = int32_t { 1 } << 24;
+
+/// A loop of MaxRounds rounds, counted down in local 0, an i32 the function declares: spins until
+/// interrupted.
+Bytes spin()
+{
+    return code({ i32Const(MaxRounds),
+                  { 0x21, 0x00 }, // local.set 0
+                  isoline::binary::testing::loop(code({ localGet(0),
+                                                        i32Const(1),
+                                                        { 0x6B, 0x22, 0x00 }, // i32.sub; local.tee 0
+                                                        isoline::binary::testing::brIf(0) })) });
+}
+
+/// A try_table of @p clauses clauses that catch tag 1, around a throw of tag 0, which none catches.
+Bytes uncaughtPast(uint32_t clauses)
+{
+    auto body = code({ { 0x1F, 0x40 }, encodeU32(clauses) });
+    for ([[maybe_unused]] auto const clause: std::views::iota(uint32_t { 0 }, clauses))
+        body.insert(body.end(), { 0x00, 0x01, 0x00 }); // catch 1 0
+    body.insert(body.end(), { 0x08, 0x00, 0x0B });     // throw 0; end
+    return body;
+}
+
+} // namespace
+
+TEST_CASE("ReferenceInterpreter.interruptIsStickyBeforeEntry")
+{
+    // export "work" first calls host "entered", then returns 1.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "entered", 0)
+        .function(1, {}, code({ call(0), i32Const(1) }));
+    auto entered = 0;
+    auto harness =
+        Harness { builder, [&](Store& store) {
+                     return hostImport(store,
+                                       [&](HostContext&,
+                                           std::span<Value const>,
+                                           std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                           ++entered;
+                                           return {};
+                                       });
+                 } };
+    harness.store().interrupter()->interrupt();
+    CHECK(harness.trap(1) == TrapCode::Interrupted);
+    CHECK(harness.trap(1) == TrapCode::Interrupted);
+    // The host import invoked directly does not run either.
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(entered == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.interruptStopsBulkFillWithinOneGranule")
+{
+    // A 1024-page memory, filled whole: 64 MiB, 1024 granules.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .memory(atLeast(1024))
+        .function(0, {}, code({ i32Const(0), i32Const(0xAB), i32Const(64 << 20), memoryFill() }));
+    auto counter = PollCounter { PollTrigger { .site = PollSite::BulkGranule, .ordinal = 3 } };
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    counter.interruptAtTrigger(harness.store().interrupter());
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(counter.pollsAfterTrigger() == 0);
+    CHECK(counter.count(PollSite::BulkGranule) == 3);
+    // The two granules before the third poll were filled, and nothing after them.
+    auto const bytes =
+        harness.store().memory(harness.store().moduleInstance(harness.address()).memories.at(0)).bytes();
+    CHECK(bytes[(2 * isoline::runtime::BulkPollBytes) - 1] == std::byte { 0xAB });
+    CHECK(bytes[2 * isoline::runtime::BulkPollBytes] == std::byte { 0 });
+}
+
+TEST_CASE("ReferenceInterpreter.copyGranulesRunBackwardsAboveTheSource")
+{
+    // memory.copy of three granules one granule up, within one memory: the last granule is copied
+    // first, so an interrupt after it leaves exactly that granule copied. Only the source's last
+    // granule holds 0xAB, which tells the two orders apart.
+    constexpr auto Granule = static_cast<int32_t>(isoline::runtime::BulkPollBytes);
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .memory(atLeast(4))
+        .function(0,
+                  {},
+                  code({ i32Const(2 * Granule),
+                         i32Const(0xAB),
+                         i32Const(Granule),
+                         memoryFill(),
+                         i32Const(Granule),
+                         i32Const(0),
+                         i32Const(3 * Granule),
+                         { 0xFC, 0x0A, 0x00, 0x00 } })); // memory.copy
+    // The fill polls once, the copy before each of its granules: interrupted before its second.
+    auto counter = PollCounter { PollTrigger { .site = PollSite::BulkGranule, .ordinal = 3 } };
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    counter.interruptAtTrigger(harness.store().interrupter());
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    auto const bytes =
+        harness.store().memory(harness.store().moduleInstance(harness.address()).memories.at(0)).bytes();
+    constexpr auto GranuleBytes = isoline::runtime::BulkPollBytes;
+    CHECK(bytes[3 * GranuleBytes] == std::byte { 0xAB });
+    CHECK(bytes[(4 * GranuleBytes) - 1] == std::byte { 0xAB });
+    CHECK(bytes[GranuleBytes] == std::byte { 0 });
+}
+
+TEST_CASE("ReferenceInterpreter.copyGranulesRunBackwardsWheneverTheDestinationIsAbove")
+{
+    // The order is the addresses' alone (runtime::copyOrder()), not whether the ranges overlap: a copy
+    // of two granules to four granules up runs backwards too, within one memory and from memory 1 into
+    // memory 0. Only the source's second granule holds 0xAB, so an interrupt before the copy's second
+    // granule leaves 0xAB at the destination's second granule backwards, and nothing forwards.
+    constexpr auto Granule = static_cast<int32_t>(isoline::runtime::BulkPollBytes);
+    constexpr auto GranuleBytes = isoline::runtime::BulkPollBytes;
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .memory(atLeast(8))
+        .memory(atLeast(8))
+        .function(0,
+                  {},
+                  code({ i32Const(Granule),
+                         i32Const(0xAB),
+                         i32Const(Granule),
+                         memoryFill(),
+                         i32Const(4 * Granule),
+                         i32Const(0),
+                         i32Const(2 * Granule),
+                         memoryCopy(0, 0) }))
+        .function(0,
+                  {},
+                  code({ i32Const(Granule),
+                         i32Const(0xAB),
+                         i32Const(Granule),
+                         { 0xFC, 0x0B, 0x01 }, // memory.fill of memory 1
+                         i32Const(4 * Granule),
+                         i32Const(0),
+                         i32Const(2 * Granule),
+                         memoryCopy(0, 1) }));
+    for (auto const function: { 0U, 1U })
+    {
+        CAPTURE(function);
+        // The fill polls once, the copy before each of its granules: interrupted before its second.
+        auto counter = PollCounter { PollTrigger { .site = PollSite::BulkGranule, .ordinal = 3 } };
+        auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+        counter.interruptAtTrigger(harness.store().interrupter());
+        CHECK(harness.trap(function) == TrapCode::Interrupted);
+        auto const bytes =
+            harness.store().memory(harness.store().moduleInstance(harness.address()).memories.at(0)).bytes();
+        CHECK(bytes[5 * GranuleBytes] == std::byte { 0xAB });
+        CHECK(bytes[(6 * GranuleBytes) - 1] == std::byte { 0xAB });
+        CHECK(bytes[4 * GranuleBytes] == std::byte { 0 });
+    }
+}
+
+TEST_CASE("ReferenceInterpreter.pollsAtEveryBackEdgeAndEntry")
+{
+    // Each row runs 10 rounds, each calling $empty (function 0), directly or through table 0 or a
+    // function reference.
+    auto const init = code({ i32Const(10), { 0x21, 0x00 } });                        // local.set 0
+    auto const countdown = code({ localGet(0), i32Const(1), { 0x6B, 0x22, 0x00 } }); // i32.sub; local.tee 0
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ FuncRef }, {}))
+        .type(signature({ TypeI32 }, {}))
+        .tag(0)
+        .table(TableType { .element = FuncRef, .limits = atLeast(2) })
+        .element(activeElements(0, { 0x00, 0x09 })) // table 0: $empty, $selfIndirect
+        .element({ 0x03, 0x00, 0x02, 0x00, 0x0A })  // declares $empty and $selfRef for ref.func
+        .function(0, {}, {})
+        // br_if back to the loop while the count is not 0.
+        .function(
+            0,
+            { TypeI32 },
+            code({ init, { 0x03, 0x40 }, call(0), countdown, isoline::binary::testing::brIf(0), { 0x0B } }))
+        // br_table: the loop while the count is not 0, else out of the block around it.
+        .function(0,
+                  { TypeI32 },
+                  code({ init,
+                         { 0x02, 0x40, 0x03, 0x40 },
+                         call(0),
+                         countdown,
+                         { 0x45 },                   // i32.eqz
+                         { 0x0E, 0x01, 0x00, 0x01 }, // br_table 0 1
+                         { 0x0B, 0x0B } }))
+        // br_on_non_null: a loop of type [funcref] -> [], re-entered with ref.func 0 while the count
+        // is not 0.
+        .function(0,
+                  { TypeI32 },
+                  code({ init,
+                         { 0xD0, 0x70 }, // ref.null func
+                         { 0x03, 0x01 }, // loop (type 1)
+                         { 0x1A },       // drop
+                         call(0),
+                         countdown,
+                         { 0x04, 0x70, 0xD2, 0x00, 0x05, 0xD0, 0x70, 0x0B }, // if: ref.func 0 else ref.null
+                         { 0xD6, 0x00 },                                     // br_on_non_null 0
+                         { 0x0B } }))
+        // try_table (catch_all $loop): a throw while the count is not 0.
+        .function(0,
+                  { TypeI32 },
+                  code({ init,
+                         { 0x03, 0x40 },
+                         { 0x1F, 0x40, 0x01, 0x02, 0x00 }, // try_table (catch_all 0)
+                         call(0),
+                         countdown,
+                         { 0x04, 0x40, 0x08, 0x00, 0x0B }, // if: throw 0
+                         { 0x0B, 0x0B } }))
+        // $self(n): call $empty; return_call $self(n - 1) while n > 1.
+        .function(2,
+                  {},
+                  code({ call(0),
+                         localGet(0),
+                         i32Const(1),
+                         { 0x4B, 0x04, 0x40 }, // i32.gt_u; if
+                         localGet(0),
+                         i32Const(1),
+                         { 0x6B, 0x12, 0x05 }, // i32.sub; return_call 5
+                         { 0x0B } }))
+        // br_on_null back to the loop with null while the count is not 0.
+        .function(0,
+                  { TypeI32 },
+                  code({ init,
+                         { 0x03, 0x40 },
+                         call(0),
+                         countdown,
+                         { 0x04, 0x70, 0xD0, 0x70, 0x05, 0xD2, 0x00, 0x0B }, // if: ref.null else ref.func 0
+                         { 0xD5, 0x00, 0x1A },                               // br_on_null 0; drop
+                         { 0x0B } }))
+        // As br_if's row, calling $empty through call_indirect.
+        .function(0,
+                  { TypeI32 },
+                  code({ init,
+                         { 0x03, 0x40 },
+                         i32Const(0),
+                         { 0x11, 0x00, 0x00 }, // call_indirect (type 0) 0
+                         countdown,
+                         isoline::binary::testing::brIf(0),
+                         { 0x0B } }))
+        // As br_if's row, calling $empty through call_ref.
+        .function(0,
+                  { TypeI32 },
+                  code({ init,
+                         { 0x03, 0x40 },
+                         { 0xD2, 0x00, 0x14, 0x00 }, // ref.func 0; call_ref (type 0)
+                         countdown,
+                         isoline::binary::testing::brIf(0),
+                         { 0x0B } }))
+        // $selfIndirect(n): as $self, through return_call_indirect of table element 1.
+        .function(2,
+                  {},
+                  code({ call(0),
+                         localGet(0),
+                         i32Const(1),
+                         { 0x4B, 0x04, 0x40 },
+                         localGet(0),
+                         i32Const(1),
+                         { 0x6B },
+                         i32Const(1),
+                         { 0x13, 0x02, 0x00 }, // return_call_indirect (type 2) 0
+                         { 0x0B } }))
+        // $selfRef(n): as $self, through return_call_ref.
+        .function(2,
+                  {},
+                  code({ call(0),
+                         localGet(0),
+                         i32Const(1),
+                         { 0x4B, 0x04, 0x40 },
+                         localGet(0),
+                         i32Const(1),
+                         { 0x6B, 0xD2, 0x0A, 0x15, 0x02 }, // i32.sub; ref.func 10; return_call_ref (type 2)
+                         { 0x0B } }));
+
+    struct Row
+    {
+        uint32_t function;
+        std::vector<Value> args;
+        uint64_t backEdges;
+        uint64_t entries;
+    };
+    auto const rows = std::vector<Row> {
+        { .function = 1, .args = {}, .backEdges = 9, .entries = 1 + 10 },
+        { .function = 2, .args = {}, .backEdges = 9, .entries = 1 + 10 },
+        { .function = 3, .args = {}, .backEdges = 9, .entries = 1 + 10 },
+        { .function = 4, .args = {}, .backEdges = 9, .entries = 1 + 10 },
+        { .function = 5, .args = { i32(10) }, .backEdges = 0, .entries = 1 + 10 + 9 },
+        { .function = 6, .args = {}, .backEdges = 9, .entries = 1 + 10 },
+        { .function = 7, .args = {}, .backEdges = 9, .entries = 1 + 10 },
+        { .function = 8, .args = {}, .backEdges = 9, .entries = 1 + 10 },
+        { .function = 9, .args = { i32(10) }, .backEdges = 0, .entries = 1 + 10 + 9 },
+        { .function = 10, .args = { i32(10) }, .backEdges = 0, .entries = 1 + 10 + 9 },
+    };
+    for (auto const& row: rows)
+    {
+        INFO("function " << row.function);
+        auto counter = PollCounter {};
+        auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+        CHECK(harness.outcome(row.function, row.args).has_value());
+        CHECK(counter.count(PollSite::LoopBackEdge) == row.backEdges);
+        CHECK(counter.count(PollSite::FunctionEntry) == row.entries);
+        // A step per poll, so a budget of exactly that many steps runs the call, and one fewer traps.
+        auto const steps = row.backEdges + row.entries;
+        CHECK(harness.store().used(Limit::Steps) == steps);
+        CHECK(Harness { builder, {}, StoreLimits { .maxSteps = steps } }.outcome(row.function, row.args));
+        CHECK(Harness { builder, {}, StoreLimits { .maxSteps = steps - 1 } }.trap(row.function, row.args)
+              == TrapCode::StepLimitExceeded);
+    }
+}
+
+TEST_CASE("ReferenceInterpreter.interruptStopsTailRecursion", "[threading]")
+{
+    // $f(n): return_call $f(n - 1) while n is not 0: no back-edge at all, interrupted from another
+    // thread long before n runs out.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .function(0,
+                  {},
+                  code({ localGet(0),
+                         { 0x04, 0x40 }, // if
+                         localGet(0),
+                         i32Const(1),
+                         { 0x6B, 0x12, 0x00 }, // i32.sub; return_call 0
+                         { 0x0B } }));
+    auto counter = PollCounter { PollTrigger { .site = PollSite::FunctionEntry, .ordinal = 2 } };
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    auto watchdog = InterruptWatchdog { counter, harness.store().interrupter() };
+    CHECK(harness.trap(0, { i32(MaxRounds) }) == TrapCode::Interrupted);
+    CHECK(watchdog.finish() == TriggerWait::Triggered);
+}
+
+TEST_CASE("ReferenceInterpreter.interruptFromAnotherThread", "[threading]")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).function(0, { TypeI32 }, spin());
+    auto counter = PollCounter { PollTrigger { .site = PollSite::LoopBackEdge, .ordinal = 1 } };
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    auto watchdog = InterruptWatchdog { counter, harness.store().interrupter() };
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(watchdog.finish() == TriggerWait::Triggered);
+    // Sticky: the next call runs nothing.
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+}
+
+TEST_CASE("ReferenceInterpreter.interruptReplacesTheHostOutcome")
+{
+    // The host raises the interrupt and returns: whatever it returns, the call ends Interrupted.
+    enum class Ending : uint8_t
+    {
+        Success,
+        Failure,
+        Throw,
+    };
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).tag(0).importFunction("env", "interrupts", 0).function(0, {}, call(0));
+    for (auto const ending: { Ending::Success, Ending::Failure, Ending::Throw })
+    {
+        INFO("ending " << static_cast<int>(ending));
+        Harness* self = nullptr;
+        auto harness = Harness { builder, [&](Store& store) {
+                                    return hostImport(
+                                        store,
+                                        [&](HostContext& context,
+                                            std::span<Value const>,
+                                            std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                            self->store().interrupter()->interrupt();
+                                            switch (ending)
+                                            {
+                                                case Ending::Success: return {};
+                                                case Ending::Failure:
+                                                    return std::unexpected { Abrupt {
+                                                        HostFailure { .kind = HostFailureKind::Embedder,
+                                                                      .code = 1,
+                                                                      .mismatch = std::nullopt } } };
+                                                case Ending::Throw: break;
+                                            }
+                                            auto const tag =
+                                                context.store().moduleInstance(self->address()).tags.at(0);
+                                            return context.addException(tag, {}).and_then([](auto exception) {
+                                                return std::expected<void, Abrupt> { std::unexpected {
+                                                    Abrupt { Thrown { .exception = exception } } } };
+                                            });
+                                        });
+                                } };
+        self = &harness;
+        CHECK(harness.trap(1) == TrapCode::Interrupted);
+    }
+}
+
+TEST_CASE("ReferenceInterpreter.absorbedNestedInterruptStillEndsTheCall")
+{
+    // The host invokes a spinning function, which is interrupted at its first back-edge; the host
+    // swallows the Interrupted and returns success, and the outer call still ends Interrupted.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "absorbs", 0)
+        .function(0, {}, call(0))
+        .function(0, { TypeI32 }, spin());
+    auto counter = PollCounter { PollTrigger { .site = PollSite::LoopBackEdge, .ordinal = 1 } };
+    auto nested = std::expected<void, Abrupt> {};
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  nested = context.invoke(self->function(2), {}, {});
+                                  return {};
+                              });
+        },
+        StoreLimits {},
+        &counter,
+    };
+    self = &harness;
+    counter.interruptAtTrigger(harness.store().interrupter());
+    CHECK(harness.trap(1) == TrapCode::Interrupted);
+    CHECK(nested == std::unexpected { Abrupt { Trap { TrapCode::Interrupted } } });
+    CHECK(counter.count(PollSite::HostReturn) == 1);
+}
+
+TEST_CASE("ReferenceInterpreter.pollsWhileUnwinding")
+{
+    // A throw past one try_table of 3 x 4096 clauses that do not catch it: 12289 labels and clauses
+    // scanned, so 3 polls at Unwind.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .tag(0)
+        .tag(0)
+        .function(0, {}, uncaughtPast(3 * isoline::runtime::UnwindPollItems));
+    auto counter = PollCounter {};
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    CHECK(std::holds_alternative<Thrown>(harness.abrupt(0)));
+    CHECK(counter.count(PollSite::Unwind) == 3);
+    // Unwinding charges no step: the call's one step is its entry.
+    CHECK(counter.count(PollSite::FunctionEntry) == 1);
+    CHECK(harness.store().used(Limit::Steps) == 1);
+}
+
+TEST_CASE("ReferenceInterpreter.interruptStopsALongUnwind")
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .tag(0)
+        .tag(0)
+        .function(0, {}, uncaughtPast(3 * isoline::runtime::UnwindPollItems));
+    auto counter = PollCounter { PollTrigger { .site = PollSite::Unwind, .ordinal = 2 } };
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    counter.interruptAtTrigger(harness.store().interrupter());
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(counter.pollsAfterTrigger() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.interruptStopsUnwindingPastLabels")
+{
+    // A throw from inside 4096 nested blocks: the 4096th label unwound past polls, and is interrupted.
+    constexpr auto Depth = static_cast<int>(isoline::runtime::UnwindPollItems);
+    auto body = Bytes {};
+    for ([[maybe_unused]] auto const level: std::views::iota(0, Depth))
+        body.insert(body.end(), { 0x02, 0x40 }); // block
+    body.insert(body.end(), { 0x08, 0x00 });     // throw 0
+    for ([[maybe_unused]] auto const level: std::views::iota(0, Depth))
+        body.push_back(0x0B); // end
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).tag(0).function(0, {}, body);
+    auto counter = PollCounter { PollTrigger { .site = PollSite::Unwind, .ordinal = 1 } };
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    counter.interruptAtTrigger(harness.store().interrupter());
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(counter.count(PollSite::Unwind) == 1);
+}
+
+TEST_CASE("ReferenceInterpreter.tableOperationsPollPerElementGranule")
+{
+    // A table of 4 granules of BulkPollElements: $empty at element 0 and at the last element of the
+    // first granule, null elsewhere.
+    constexpr auto Granule = static_cast<int32_t>(isoline::runtime::BulkPollElements);
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .table(TableType { .element = FuncRef, .limits = atLeast(4 * isoline::runtime::BulkPollElements) })
+        .element(activeElements(0, { 0x00 }))
+        .element(code({ { 0x00 }, i32Const(Granule - 1), { 0x0B, 0x01, 0x00 } }))
+        .function(0, {}, {})
+        // table.copy one element up, of two granules: overlapping within each granule and across them.
+        .function(
+            0, {}, code({ i32Const(1), i32Const(0), i32Const(2 * Granule), { 0xFC, 0x0E, 0x00, 0x00 } }))
+        // table.fill of two granules and one element.
+        .function(
+            0,
+            {},
+            code({ i32Const(Granule), { 0xD0, 0x70 }, i32Const((2 * Granule) + 1), { 0xFC, 0x11, 0x00 } }));
+    auto counter = PollCounter {};
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    auto const& elements =
+        harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0)).elements;
+    auto const isFunction = [&](int32_t index) {
+        return elements.at(static_cast<std::size_t>(index)).kind == isoline::runtime::RefKind::Func;
+    };
+
+    auto const beforeCopy = counter.count(PollSite::BulkGranule);
+    REQUIRE(harness.outcome(1).has_value());
+    CHECK(counter.count(PollSite::BulkGranule) - beforeCopy == 2);
+    // As if copied at once: each element holds what the one below it held. Within a granule the copy
+    // runs backwards (element 2 is not element 0's), and the upper granule is copied first (element
+    // Granule + 1 is not element Granule - 1's).
+    CHECK(isFunction(1));
+    CHECK_FALSE(isFunction(2));
+    CHECK(isFunction(Granule));
+    CHECK_FALSE(isFunction(Granule + 1));
+
+    auto const beforeFill = counter.count(PollSite::BulkGranule);
+    REQUIRE(harness.outcome(2).has_value());
+    CHECK(counter.count(PollSite::BulkGranule) - beforeFill == 3);
+    CHECK_FALSE(isFunction(Granule));
+}
+
+TEST_CASE("ReferenceInterpreter.tableCopyOntoItself")
+{
+    // A table.copy whose source and destination are the same range changes nothing, and still polls.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .table(TableType { .element = FuncRef, .limits = atLeast(4) })
+        .element(activeElements(0, { 0x00, 0x00 }))
+        .function(0, {}, code({ i32Const(0), i32Const(0), i32Const(4), { 0xFC, 0x0E, 0x00, 0x00 } }));
+    auto counter = PollCounter {};
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    auto const before = counter.count(PollSite::BulkGranule);
+    REQUIRE(harness.outcome(0).has_value());
+    CHECK(counter.count(PollSite::BulkGranule) - before == 1);
+    auto const& elements =
+        harness.store().table(harness.store().moduleInstance(harness.address()).tables.at(0)).elements;
+    CHECK(elements[1].kind == isoline::runtime::RefKind::Func);
+    CHECK(elements[2].kind == isoline::runtime::RefKind::Null);
+}
+
+TEST_CASE("ReferenceInterpreter.interruptStopsUnwindingPastFrames")
+{
+    // A throw from inside 4095 nested blocks of a callee: its frame, unwound past after them, is the
+    // 4096th item scanned, polls, and is interrupted.
+    constexpr auto Depth = static_cast<int>(isoline::runtime::UnwindPollItems) - 1;
+    auto body = Bytes {};
+    for ([[maybe_unused]] auto const level: std::views::iota(0, Depth))
+        body.insert(body.end(), { 0x02, 0x40 }); // block
+    body.insert(body.end(), { 0x08, 0x00 });     // throw 0
+    for ([[maybe_unused]] auto const level: std::views::iota(0, Depth))
+        body.push_back(0x0B); // end
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).tag(0).function(0, {}, call(1)).function(0, {}, body);
+    auto counter = PollCounter { PollTrigger { .site = PollSite::Unwind, .ordinal = 1 } };
+    auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+    counter.interruptAtTrigger(harness.store().interrupter());
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(counter.count(PollSite::Unwind) == 1);
+}
+
+namespace
+{
+
+/// global.get 0; i32.const 1; i32.add; global.set 0: counts in global 0.
+Bytes countInGlobal()
+{
+    return code({ { 0x23, 0x00 }, i32Const(1), { 0x6A }, { 0x24, 0x00 } });
+}
+
+/// A module whose global 0, a mutable i32, counts the entries of function 0, of type 0 [] -> [] and
+/// @p locals i32 locals, which counts and then calls itself.
+ModuleBuilder countingRecursion(uint32_t locals)
+{
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .global(GlobalType { .type = TypeI32, .mutability = Mutability::Var }, i32Const(0))
+        .function(0, std::vector<ValueType>(locals, TypeI32), code({ countInGlobal(), call(0) }));
+    return builder;
+}
+
+/// A countdown loop of 10 rounds in local 0, an i32 the function declares: 1 entry and 9 back-edges,
+/// so 10 steps.
+Bytes loop10()
+{
+    return code({ i32Const(10),
+                  { 0x21, 0x00 }, // local.set 0
+                  isoline::binary::testing::loop(code({ localGet(0),
+                                                        i32Const(1),
+                                                        { 0x6B, 0x22, 0x00 }, // i32.sub; local.tee 0
+                                                        isoline::binary::testing::brIf(0) })) });
+}
+
+} // namespace
+
+TEST_CASE("ReferenceInterpreter.stackLimitIsTheStaticFrameCost")
+{
+    // f has no params and 8 locals, and its body holds at most 2 operands and no labels: its frame
+    // costs 0 + 8 + 2 + 0 + 1 = 11. 100 frames charge 1'100; the 101st would exceed that.
+    auto const builder = countingRecursion(8);
+    auto harness = Harness { builder, {}, StoreLimits { .maxStackValues = 1'100 } };
+    CHECK(harness.validated().frameShape(0) == FrameShape { .maxOperands = 2, .maxLabels = 0 });
+    CHECK(harness.validated().frameCost(0) == 11);
+    CHECK(harness.trap(0) == TrapCode::CallStackExhausted);
+    CHECK(harness.global(0) == i32(100));
+    // Every frame's charge was given back.
+    CHECK(harness.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.hostMediatedRecursionHitsTheSameCap")
+{
+    // f (cost 11, as above, and function 1 here) calls host h (cost 1), which invokes f through its
+    // context and passes on whatever it ends with. Each round charges 12; with 1'000 invocations
+    // allowed, only the stack cap binds: f's 101st entry would charge 99 x 12 + 11 + 1 + 11 = 1'211.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "h", 0)
+        .global(GlobalType { .type = TypeI32, .mutability = Mutability::Var }, i32Const(0))
+        .function(0, std::vector<ValueType>(8, TypeI32), code({ countInGlobal(), call(0) }));
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  return context.invoke(self->function(1), {}, {});
+                              });
+        },
+        StoreLimits { .maxStackValues = 1'200, .maxNestedInvocations = 1'000 },
+    };
+    self = &harness;
+    CHECK(harness.trap(1) == TrapCode::CallStackExhausted);
+    CHECK(harness.global(0) == i32(100));
+    CHECK(harness.store().chargedStackValues() == 0);
+    CHECK(harness.store().used(Limit::NestedInvocations) == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.zeroCostFramesAreCharged")
+{
+    // (func $r (call $r)) holds nothing, and still costs 1: a budget of 50 traps entering the 51st.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).function(0, {}, call(0));
+    auto counter = PollCounter {};
+    auto harness = Harness { builder, {}, StoreLimits { .maxStackValues = 50 }, &counter };
+    CHECK(harness.trap(0) == TrapCode::CallStackExhausted);
+    CHECK(counter.count(PollSite::FunctionEntry) == 51);
+    CHECK(harness.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.stepLimitIsExact")
+{
+    // 1 entry + 9 back-edges = 10 steps.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).function(0, { TypeI32 }, loop10());
+    CHECK(Harness { builder, {}, StoreLimits { .maxSteps = 10 } }.invoke(0).has_value());
+    CHECK(Harness { builder, {}, StoreLimits { .maxSteps = 9 } }.trap(0) == TrapCode::StepLimitExceeded);
+}
+
+TEST_CASE("ReferenceInterpreter.stepBudgetIsPerOutermostCall")
+{
+    // Function 1 is loop10, 10 steps; function 2 calls host h (function 0), which invokes function 1.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "h", 0)
+        .function(0, { TypeI32 }, loop10())
+        .function(0, {}, call(0));
+    Harness* self = nullptr;
+    auto const bind = [&](Store& store) {
+        return hostImport(store,
+                          [&](HostContext& context,
+                              std::span<Value const>,
+                              std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                              return context.invoke(self->function(1), {}, {});
+                          });
+    };
+
+    // Two consecutive calls of 10 steps each both fit a budget of 10.
+    auto harness = Harness { builder, bind, StoreLimits { .maxSteps = 10 } };
+    self = &harness;
+    CHECK(harness.invoke(1).has_value());
+    CHECK(harness.invoke(1).has_value());
+
+    // A host-nested call shares its caller's budget: function 2's entry, h's entry, the nested 10 and
+    // h's return take 13 steps.
+    CHECK(harness.trap(2) == TrapCode::StepLimitExceeded);
+    auto fits = Harness { builder, bind, StoreLimits { .maxSteps = 13 } };
+    self = &fits;
+    CHECK(fits.invoke(2).has_value());
+    CHECK(fits.store().used(Limit::Steps) == 13);
+    auto tooFew = Harness { builder, bind, StoreLimits { .maxSteps = 12 } };
+    self = &tooFew;
+    CHECK(tooFew.trap(2) == TrapCode::StepLimitExceeded);
+}
+
+TEST_CASE("ReferenceInterpreter.callDepthCountsAcrossInvocations")
+{
+    // maxCallDepth counts the Wasm frames of every invocation in progress, not of one: function 1 calls
+    // host h (function 0), which invokes function 2. Function 2 alone fits a depth of 1; nested in
+    // function 1's frame it is the second, so a depth of 1 refuses it and a depth of 2 lets it run.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .importFunction("env", "h", 0)
+        .function(0, {}, call(0))
+        .function(0, {}, {});
+    Harness* self = nullptr;
+    auto const bind = [&](Store& store) {
+        return hostImport(store,
+                          [&](HostContext& context,
+                              std::span<Value const>,
+                              std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                              return context.invoke(self->function(2), {}, {});
+                          });
+    };
+    auto shallow = Harness { builder, bind, StoreLimits { .maxCallDepth = 1 } };
+    self = &shallow;
+    CHECK(shallow.invoke(2).has_value());
+    CHECK(shallow.trap(1) == TrapCode::CallStackExhausted);
+    auto deep = Harness { builder, bind, StoreLimits { .maxCallDepth = 2 } };
+    self = &deep;
+    CHECK(deep.invoke(1).has_value());
+}
+
+TEST_CASE("ReferenceInterpreter.frameChargeReturnsToZero")
+{
+    // However an invocation ends, every frame's charge is given back, each in a store of its own.
+    SECTION("call stack exhausted")
+    {
+        auto builder = ModuleBuilder {};
+        builder.type(signature({}, {})).function(0, { TypeI64, TypeI64 }, call(0));
+        auto harness = Harness { builder };
+        CHECK(harness.trap(0) == TrapCode::CallStackExhausted);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+    SECTION("an uncaught throw from depth 50")
+    {
+        // f(n) = n == 0 ? throw : f(n - 1), entered with 49.
+        auto builder = ModuleBuilder {};
+        builder.type(signature({ TypeI32 }, {}))
+            .tag(0)
+            .function(0,
+                      {},
+                      code({ localGet(0),
+                             { 0x45, 0x04, 0x40 }, // i32.eqz; if
+                             i32Const(0),
+                             { 0x08, 0x00 }, // throw 0
+                             { 0x05 },       // else
+                             localGet(0),
+                             i32Const(1),
+                             { 0x6B },
+                             call(0),
+                             { 0x0B } }));
+        auto counter = PollCounter {};
+        auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+        CHECK(std::holds_alternative<Thrown>(harness.abrupt(0, { i32(49) })));
+        CHECK(counter.count(PollSite::FunctionEntry) == 50);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+    SECTION("interrupted")
+    {
+        auto builder = ModuleBuilder {};
+        builder.type(signature({}, {})).function(0, {}, call(1)).function(0, { TypeI32 }, spin());
+        auto counter = PollCounter { PollTrigger { .site = PollSite::LoopBackEdge, .ordinal = 5 } };
+        auto harness = Harness { builder, {}, StoreLimits {}, &counter };
+        counter.interruptAtTrigger(harness.store().interrupter());
+        CHECK(harness.trap(0) == TrapCode::Interrupted);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+    SECTION("a host callee's trap")
+    {
+        auto builder = ModuleBuilder {};
+        builder.type(signature({}, {})).importFunction("env", "h", 0).function(0, {}, call(0));
+        auto harness = Harness { builder, [](Store& store) {
+                                    return hostImport(
+                                        store,
+                                        [](HostContext&,
+                                           std::span<Value const>,
+                                           std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                            return std::unexpected { Abrupt { Trap { TrapCode::HostTrap } } };
+                                        });
+                                } };
+        CHECK(harness.trap(1) == TrapCode::HostTrap);
+        CHECK(harness.store().chargedStackValues() == 0);
+    }
+}
+
+TEST_CASE("ReferenceInterpreter.hostFrameIsCharged")
+{
+    // h takes an i32 and an i64 and returns an i32: its frame costs 2 + 1 + 1 = 4, charged before it
+    // runs, whether the embedder or Wasm (f, of cost 4: 1 param, 2 operands and itself) calls it.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32, TypeI64 }, { TypeI32 }))
+        .type(signature({ TypeI32 }, { TypeI32 }))
+        .importFunction("env", "h", 0)
+        .function(1, {}, code({ localGet(0), i64Const(2), call(0) }));
+    auto calls = 0;
+    auto const bind = [&](Store& store) {
+        return std::vector { ExternValue {
+            .kind = ExternKind::Func,
+            .address = addHost(store,
+                               signature({ TypeI32, TypeI64 }, { TypeI32 }),
+                               [&](HostContext&,
+                                   std::span<Value const> args,
+                                   std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                   ++calls;
+                                   results[0] = args[0];
+                                   return {};
+                               }) } };
+    };
+    CHECK(isoline::runtime::hostFrameCost(signature({ TypeI32, TypeI64 }, { TypeI32 })) == 4);
+    auto const args = std::vector<Value> { i32(7), I64 { 2 } };
+
+    auto tight = Harness { builder, bind, StoreLimits { .maxStackValues = 3 } };
+    CHECK(tight.trap(0, args) == TrapCode::CallStackExhausted);
+    CHECK(calls == 0);
+    auto exact = Harness { builder, bind, StoreLimits { .maxStackValues = 4 } };
+    CHECK(exact.result(0, args) == i32(7));
+    CHECK(calls == 1);
+
+    // Called from f, the host frame comes on top of f's 4: 7 is too few, 8 enough.
+    CHECK(Harness { builder, bind, StoreLimits { .maxStackValues = 7 } }.trap(1, { i32(5) })
+          == TrapCode::CallStackExhausted);
+    CHECK(calls == 1);
+    auto enough = Harness { builder, bind, StoreLimits { .maxStackValues = 8 } };
+    CHECK(enough.result(1, { i32(5) }) == i32(5));
+    CHECK(enough.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.callPollsBeforeDepthAndStack")
+{
+    // f (function 0, cost 1) calls g (function 1, 8 locals: cost 9). At a callee entry the poll comes
+    // first, then the depth, then the stack charge: a call refused for its stack or depth has cost its
+    // step, and a spent budget traps before either.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .function(0, {}, call(1))
+        .function(0, std::vector<ValueType>(8, TypeI32), {});
+
+    SECTION("stack")
+    {
+        auto refused = Harness { builder, {}, StoreLimits { .maxStackValues = 9, .maxSteps = 2 } };
+        CHECK(refused.trap(0) == TrapCode::CallStackExhausted);
+        CHECK(refused.store().used(Limit::Steps) == 2);
+        CHECK(Harness { builder, {}, StoreLimits { .maxStackValues = 9, .maxSteps = 1 } }.trap(0)
+              == TrapCode::StepLimitExceeded);
+        CHECK(Harness { builder, {}, StoreLimits { .maxStackValues = 10, .maxSteps = 2 } }.invoke(0));
+    }
+    SECTION("depth")
+    {
+        auto refused = Harness { builder, {}, StoreLimits { .maxCallDepth = 1, .maxSteps = 2 } };
+        CHECK(refused.trap(0) == TrapCode::CallStackExhausted);
+        CHECK(refused.store().used(Limit::Steps) == 2);
+        CHECK(Harness { builder, {}, StoreLimits { .maxCallDepth = 1, .maxSteps = 1 } }.trap(0)
+              == TrapCode::StepLimitExceeded);
+    }
+}
+
+TEST_CASE("ReferenceInterpreter.spentBudgetReplacesTheHostOutcome")
+{
+    // A host function that traps, invoked directly: its entry and its return take 2 steps. With both
+    // left, its trap is the outcome; with 1, the return's poll finds the budget spent, which replaces it.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {})).importFunction("env", "h", 0);
+    auto calls = 0;
+    auto const bind = [&](Store& store) {
+        return hostImport(store,
+                          [&](HostContext&,
+                              std::span<Value const>,
+                              std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                              ++calls;
+                              return std::unexpected { Abrupt { Trap { TrapCode::HostTrap } } };
+                          });
+    };
+    CHECK(Harness { builder, bind, StoreLimits { .maxSteps = 2 } }.trap(0) == TrapCode::HostTrap);
+    CHECK(calls == 1);
+    CHECK(Harness { builder, bind, StoreLimits { .maxSteps = 1 } }.trap(0) == TrapCode::StepLimitExceeded);
+    CHECK(calls == 2);
+}
+
+TEST_CASE("ReferenceInterpreter.tailCallReleasesTheCallerFirst")
+{
+    // f and g each hold 4 locals and cost 5; f return_calls g. The caller's charge is given back before
+    // the callee's is taken, so a cap of 5 holds them one after the other.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .function(0, std::vector<ValueType>(4, TypeI32), { 0x12, 0x01 }) // return_call 1
+        .function(0, std::vector<ValueType>(4, TypeI32), {});
+    auto harness = Harness { builder, {}, StoreLimits { .maxStackValues = 5 } };
+    CHECK(harness.validated().frameCost(0) == 5);
+    CHECK(harness.validated().frameCost(1) == 5);
+    CHECK(harness.invoke(0).has_value());
+    CHECK(harness.store().chargedStackValues() == 0);
+}
+
+TEST_CASE("ReferenceInterpreter.hostChangeOfTheFloatEnvironmentDoesNotLeak")
+{
+    // Host h (function 0) rounds upward and flushes subnormals, then re-enters f32.add (function 1)
+    // with its own operands; function 2 calls h and then adds its arguments.
+    constexpr auto One = uint32_t { 0x3F80'0000 };
+    constexpr auto Tiny = uint32_t { 0x3080'0000 }; // 2^-30: 1 + Tiny rounds to 1, upward to the next float.
+    constexpr auto Subnormal = uint32_t { 0x0000'0001 };
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeF32, TypeF32 }, { TypeF32 }))
+        .importFunction("env", "h", 0)
+        .function(1, {}, code({ localGet(0), localGet(1), { 0x92 } }))           // f32.add
+        .function(1, {}, code({ call(0), localGet(0), localGet(1), { 0x92 } })); // h; f32.add
+    auto const host = HostFloatEnvironment {};
+    auto const embedderControl = isoline::runtime::readFloatControl();
+    auto nested = std::vector<uint32_t> {};
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  departFromIeeeDefaults();
+                                  for (auto const& [lhs, rhs]:
+                                       { std::pair { One, Tiny }, std::pair { Subnormal, Subnormal } })
+                                  {
+                                      auto const args = std::array<Value, 2> { F32 { lhs }, F32 { rhs } };
+                                      auto results = std::array<Value, 1> {};
+                                      if (auto const added = context.invoke(self->function(1), args, results);
+                                          !added)
+                                          return added;
+                                      nested.push_back(std::get<F32>(results[0]).bits);
+                                  }
+                                  return {};
+                              });
+        },
+    };
+    self = &harness;
+
+    // The re-entered guest runs under the defaults, and so does its caller once h has returned.
+    CHECK(harness.result(2, { F32 { One }, F32 { Tiny } }) == Value { F32 { One } });
+    CHECK(harness.result(2, { F32 { Subnormal }, F32 { Subnormal } }) == Value { F32 { 2 * Subnormal } });
+    CHECK(nested == std::vector { One, 2 * Subnormal, One, 2 * Subnormal });
+
+    // What h did to the environment ends with the embedder's call.
+    CHECK(std::fegetround() == FE_TONEAREST);
+    CHECK(governedBits(hostFloatControlLayout(), isoline::runtime::readFloatControl())
+          == governedBits(hostFloatControlLayout(), embedderControl));
+}
+
+namespace
+{
+
+/// The catch_ref clause's byte.
+constexpr auto ClauseCatchRef = uint8_t { 0x01 };
+
+/// exnref, as a value type.
+constexpr auto TypeExnRef = isoline::binary::ExnRef;
+
+/// block (result exnref) try_table (@p clause 0 0) @p throwing end unreachable end: what @p throwing
+/// throws, caught as an exnref; by tag 0 when @p clause is catch_ref.
+Bytes caught(Bytes const& throwing, uint8_t clause = ClauseCatchAllRef)
+{
+    return code({ { 0x02, ExnRefResult }, tryTable(NoResult, clause, 0, 0), throwing, { 0x0B, 0x00, 0x0B } });
+}
+
+/// loop: caught(@p throwing, @p clause), dropped, as many rounds as the i32 local @p counter holds.
+Bytes dropRounds(uint32_t counter, Bytes const& throwing, uint8_t clause = ClauseCatchAllRef)
+{
+    return code({ { 0x03, NoResult },
+                  caught(throwing, clause),
+                  { 0x1A }, // drop
+                  localGet(counter),
+                  i32Const(1),
+                  { 0x6B, 0x22 }, // i32.sub; local.tee
+                  encodeU32(counter),
+                  { 0x0D, 0x00, 0x0B } }); // br_if 0; end
+}
+
+/// throw $e @p payload, $e a tag of one i32 param.
+Bytes throwI32(int32_t payload)
+{
+    return code({ i32Const(payload), throwTag(0) });
+}
+
+} // namespace
+
+TEST_CASE("ReferenceInterpreter.reclaimsDroppedExceptions")
+{
+    // A million rounds of throw, catch_ref and drop in a store of 16 exceptions: every sweep reclaims
+    // the dropped ones, so the cap bounds the exceptions held at once, not the throws.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .tag(0)
+        .function(1, {}, dropRounds(0, throwTag(0), ClauseCatchRef));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.invoke(0, { i32(1'000'000) }).has_value());
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.keepsExceptionsInLocals")
+{
+    // block (result i32) try_table (catch $e 0)
+    //   caught(throw $e 42) local.set 0; 20 rounds of caught(throw $e 7) drop; local.get 0 throw_ref
+    // end unreachable end: the sweeps the rounds take keep the exception local 0 holds.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(1,
+                  { TypeExnRef, TypeI32 },
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         caught(throwI32(42)),
+                         { 0x21, 0x00 }, // local.set 0
+                         i32Const(20),
+                         { 0x21, 0x01 }, // local.set 1
+                         dropRounds(1, throwI32(7)),
+                         localGet(0),
+                         { 0x0A }, // throw_ref
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(0) == i32(42));
+}
+
+TEST_CASE("ReferenceInterpreter.keepsExceptionsInPayloads")
+{
+    // B = caught(throw $b 42); A = caught(throw $a B), kept in global 0 only; 20 rounds of throw and
+    // drop; then throw_ref A, caught by $a, hands B, whose throw_ref the outer catch $b unpacks: B
+    // survived the sweeps through A's payload.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({ TypeExnRef }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .tag(1)
+        .global(GlobalType { .type = TypeExnRef, .mutability = Mutability::Var }, { 0xD0, 0x69 })
+        .function(2,
+                  { TypeExnRef, TypeI32 },
+                  code({ caught(throwI32(42)),
+                         { 0x21, 0x00 }, // local.set 0: B
+                         caught(code({ localGet(0), throwTag(1) })),
+                         { 0x24, 0x00 },             // global.set 0: A
+                         { 0xD0, 0x69, 0x21, 0x00 }, // local 0 = ref.null exn: only A holds B
+                         i32Const(20),
+                         { 0x21, 0x01 },
+                         dropRounds(1, throwI32(7)),
+                         { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         { 0x02, ExnRefResult },
+                         tryTable(NoResult, ClauseCatch, 1, 0),
+                         { 0x23, 0x00, 0x0A }, // global.get 0; throw_ref A
+                         { 0x0B, 0x00, 0x0B },
+                         { 0x0A }, // throw_ref B
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(0) == i32(42));
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.noSweepUnderAHostFrame")
+{
+    // Function 2 calls the host, which invokes function 1: 17 rounds of throw and drop. A host's
+    // locals are no roots, so no sweep runs under it, and the 17th throw traps in a store of 16. The
+    // same rounds invoked by the embedder sweep, and succeed.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .importFunction("env", "host", 0)
+        .tag(0)
+        .function(1, {}, dropRounds(0, throwTag(0)))
+        .function(0, {}, call(0));
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context, std::span<Value const>, std::span<Value>) noexcept {
+                                  auto const args = std::array { i32(17) };
+                                  return context.invoke(self->function(1), args, {});
+                              });
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    self = &harness;
+    CHECK(harness.trap(2) == TrapCode::ExceptionLimitExceeded);
+    CHECK(harness.invoke(1, { i32(17) }).has_value());
+}
+
+TEST_CASE("ReferenceInterpreter.keepsOuterFramesExceptionsAcrossHostReentry")
+{
+    // Function 2 catches $e 42 into local 0, calls the host, which re-enters for 10 rounds of throw
+    // and drop (no sweep under it), then calls function 1 for 20 more, which sweep with function 2's
+    // frame beneath: local 0 survives both, and its throw_ref reaches the outer catch.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, {}))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "host", 1)
+        .tag(0)
+        .function(0, {}, dropRounds(0, throwI32(7)))
+        .function(2,
+                  { TypeExnRef },
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         caught(throwI32(42)),
+                         { 0x21, 0x00 },
+                         call(0),
+                         i32Const(20),
+                         call(1),
+                         localGet(0),
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    Harness* self = nullptr;
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context, std::span<Value const>, std::span<Value>) noexcept {
+                                  auto const args = std::array { i32(10) };
+                                  return context.invoke(self->function(1), args, {});
+                              });
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    self = &harness;
+    CHECK(harness.result(2) == i32(42));
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.hostStashedExceptionSurvives")
+{
+    // Function 1 hands caught(throw $e 42) to the host, which keeps its address past its frame; 20
+    // rounds of throw and drop later, in a store of 16, the address still names that exception: an
+    // exnref argument escapes, and no sweep reclaims it or hands its slot to another.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({ TypeExnRef }, {}))
+        .type(signature({}, {}))
+        .importFunction("env", "stash", 1)
+        .tag(0)
+        .function(2, {}, code({ caught(throwI32(42)), call(0) }))
+        .function(0, {}, dropRounds(0, throwI32(7)));
+    auto stashed = std::optional<ExnAddr> {};
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return std::vector { ExternValue {
+                .kind = ExternKind::Func,
+                .address = addHost(store,
+                                   signature({ TypeExnRef }, {}),
+                                   [&](HostContext&, std::span<Value const> args, std::span<Value>) noexcept
+                                       -> std::expected<void, Abrupt> {
+                                       stashed = std::get<Ref>(args[0]).address;
+                                       return {};
+                                   }) } };
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    REQUIRE(harness.invoke(1).has_value());
+    REQUIRE(stashed.has_value());
+    REQUIRE(harness.invoke(2, { i32(20) }).has_value());
+    CHECK(harness.store().isLiveException(*stashed));
+    CHECK(harness.store().exception(*stashed).payload == std::vector { i32(42) });
+}
+
+TEST_CASE("ReferenceInterpreter.interruptStopsThrowCatchLoop", "[threading]")
+{
+    // loop $l (try_table (catch_all $l) (throw $e)): every throw's exception is dropped, so the sweeps
+    // never let the arena of 16 stop the loop; the catch's branch to the loop polls, and an interrupt
+    // from another thread ends it.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .tag(0)
+        .function(0,
+                  {},
+                  code({ { 0x03, NoResult },
+                         tryTable(NoResult, ClauseCatchAll, 0, 0),
+                         throwTag(0),
+                         { 0x0B, 0x0B } }));
+    auto counter = PollCounter { PollTrigger { .site = PollSite::LoopBackEdge, .ordinal = 1'000 } };
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 }, &counter };
+    auto watchdog = InterruptWatchdog { counter, harness.store().interrupter() };
+    CHECK(harness.trap(0) == TrapCode::Interrupted);
+    CHECK(watchdog.finish() == TriggerWait::Triggered);
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("ReferenceInterpreter.hostEscapesWhatItKeeps")
+{
+    // Function 1 puts caught(throw $e 42) in global 0 and calls the host, which reads it through its
+    // read-only store, borrowed for its frame, and escapes it to keep it; the guest then clears the
+    // global, and 20 rounds of throw and drop in a store of 16 leave the kept exception alone.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, {}))
+        .importFunction("env", "keep", 1)
+        .tag(0)
+        .global(GlobalType { .type = TypeExnRef, .mutability = Mutability::Var }, { 0xD0, 0x69 })
+        .function(1,
+                  {},
+                  code({ caught(throwI32(42)),
+                         { 0x24, 0x00 }, // global.set 0
+                         call(0),
+                         { 0xD0, 0x69, 0x24, 0x00 } })) // global 0 = ref.null exn
+        .function(0, {}, dropRounds(0, throwI32(7)));
+    auto kept = std::optional<ExnAddr> {};
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return hostImport(store,
+                              [&](HostContext& context,
+                                  std::span<Value const>,
+                                  std::span<Value>) noexcept -> std::expected<void, Abrupt> {
+                                  auto const& store = context.store();
+                                  auto const global =
+                                      store.moduleInstance(context.callerInstance().value()).globals.at(0);
+                                  auto const& value = store.global(global).value;
+                                  kept = std::get<Ref>(value).address;
+                                  context.markEscaped(value);
+                                  return {};
+                              });
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    REQUIRE(harness.invoke(1).has_value());
+    REQUIRE(kept.has_value());
+    REQUIRE(harness.invoke(2, { i32(20) }).has_value());
+    CHECK(harness.store().isLiveException(*kept));
+    CHECK(harness.store().exception(*kept).payload == std::vector { i32(42) });
+}
+
+TEST_CASE("ReferenceInterpreter.keepsExceptionsOnTheOperandStack")
+{
+    // block (result i32) try_table (catch $e 0)
+    //   caught(throw $e 42); i32.const 20; call $rounds; throw_ref
+    // end unreachable end: the exnref waits on the operand stack, beneath the call, while the 20
+    // rounds sweep a store of 16; it is the only reference to its exception.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .function(0, {}, dropRounds(0, throwI32(7)))
+        .function(1,
+                  {},
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         caught(throwI32(42)),
+                         i32Const(20),
+                         call(0),
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(1) == i32(42));
+}
+
+TEST_CASE("ReferenceInterpreter.keepsTheExceptionsOfAPayloadBeingThrown")
+{
+    // 15 rounds of throw and drop, then caught(throw $e 42), the 16th, fills the arena; throw $a takes
+    // that exnref straight off the operand stack, so while its allocation sweeps, the payload being
+    // thrown is the exnref's only reference. catch $a hands it back, and its throw_ref reaches catch $e.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({ TypeExnRef }, {}))
+        .type(signature({}, { TypeI32 }))
+        .tag(0)
+        .tag(1)
+        .function(2,
+                  { TypeI32 },
+                  code({ i32Const(15),
+                         { 0x21, 0x00 },
+                         dropRounds(0, throwI32(7)),
+                         { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         { 0x02, ExnRefResult },
+                         tryTable(NoResult, ClauseCatch, 1, 0),
+                         caught(throwI32(42)),
+                         throwTag(1),
+                         { 0x0B, 0x00, 0x0B },
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness { builder, {}, StoreLimits { .maxExceptions = 16 } };
+    CHECK(harness.result(0) == i32(42));
+}
+
+TEST_CASE("ReferenceInterpreter.keepsAnExceptionAHostReturned")
+{
+    // The host allocates $e 42 and returns its exnref, unescaped: once pushed, the operand stack keeps
+    // it through the 20 rounds' sweeps, and its throw_ref reaches catch $e.
+    auto builder = ModuleBuilder {};
+    builder.type(signature({ TypeI32 }, {}))
+        .type(signature({}, { TypeExnRef }))
+        .type(signature({}, { TypeI32 }))
+        .importFunction("env", "make", 1)
+        .tag(0)
+        .function(0, {}, dropRounds(0, throwI32(7)))
+        .function(2,
+                  {},
+                  code({ { 0x02, I32Result },
+                         tryTable(NoResult, ClauseCatch, 0, 0),
+                         call(0),
+                         i32Const(20),
+                         call(1),
+                         { 0x0A },
+                         { 0x0B, 0x00, 0x0B } }));
+    auto harness = Harness {
+        builder,
+        [&](Store& store) {
+            return std::vector { ExternValue {
+                .kind = ExternKind::Func,
+                .address = addHost(
+                    store,
+                    signature({}, { TypeExnRef }),
+                    [](HostContext& context, std::span<Value const>, std::span<Value> results) noexcept
+                        -> std::expected<void, Abrupt> {
+                        auto const tag =
+                            context.store().moduleInstance(context.callerInstance().value()).tags.at(0);
+                        return context.addException(tag, { i32(42) }).transform([&](ExnAddr exception) {
+                            results[0] = Ref { .kind = isoline::runtime::RefKind::Exn,
+                                               .heap = TypeExnRef.heap,
+                                               .address = exception };
+                        });
+                    }) } };
+        },
+        StoreLimits { .maxExceptions = 16 },
+    };
+    CHECK(harness.result(2) == i32(42));
+    CHECK(harness.store().liveExceptions() <= 16);
+}
+
+TEST_CASE("Interpreter.uninitializedTypedLocalNamesItsTypeId")
+{
+    // Types 0 and 1 are equal, so they share TypeId 0 and type 2 gets TypeId 1: a (ref null 2) local
+    // starts as the null of TypeId 1, as ref.null 2 does, not of type index 2.
+    using isoline::runtime::Ref;
+    auto const nullableTo2 = isoline::binary::concreteRef(2, isoline::binary::Nullable::Yes);
+    auto builder = ModuleBuilder {};
+    builder.type(signature({}, {}))
+        .type(signature({}, {}))
+        .type(signature({ TypeI32 }, {}))
+        .type(signature({}, { nullableTo2 }))
+        .function(3, { nullableTo2 }, code({ localGet(0) }))
+        .function(3, {}, code({ { 0xD0, 0x02 } })); // ref.null 2
+    auto harness = Harness { builder };
+    auto const local = harness.result(0);
+    REQUIRE(std::holds_alternative<Ref>(local));
+    CHECK(std::get<Ref>(local).heap.typeIndex == 1);
+    CHECK(local == harness.result(1));
 }

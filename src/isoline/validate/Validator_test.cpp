@@ -25,6 +25,7 @@
 using isoline::Feature;
 using isoline::FeatureSet;
 using isoline::binary::DecodeErrorCode;
+using isoline::binary::DecodeLimits;
 using isoline::binary::decodeModule;
 using isoline::binary::ExternKind;
 using isoline::binary::F32;
@@ -39,6 +40,8 @@ using isoline::binary::Mutability;
 using isoline::binary::TableType;
 using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
+using isoline::validate::FrameShape;
+using isoline::validate::ModuleShape;
 using isoline::validate::NoFunction;
 using isoline::validate::NoInstruction;
 using isoline::validate::specMessage;
@@ -61,17 +64,18 @@ Limits between(uint64_t min, uint64_t max)
     return Limits { .min = min, .max = max, .addressType = isoline::binary::AddressType::I32 };
 }
 
-/// Decodes and validates @p builder's module; fails the test when it does not decode.
-std::expected<void, ValidationError> validated(ModuleBuilder const& builder,
-                                               FeatureSet const& features = FeatureSet::wasm2())
+/// Decodes and validates @p builder's module under @p limits; fails the test when it does not decode.
+std::expected<ModuleShape, ValidationError> validated(ModuleBuilder const& builder,
+                                                      FeatureSet const& features = FeatureSet::wasm2(),
+                                                      DecodeLimits const& limits = {})
 {
     auto const bytes = builder.build();
-    auto const module = decodeModule(bytes, features);
+    auto const module = decodeModule(bytes, features, limits);
     if (!module)
         UNSCOPED_INFO("decode error " << static_cast<int>(module.error().code) << " at "
                                       << module.error().offset);
     REQUIRE(module.has_value());
-    return validateModule(*module, features);
+    return validateModule(*module, features, limits);
 }
 
 /// The error validating @p builder's module reports, or nullopt when it is valid.
@@ -155,6 +159,7 @@ TEST_CASE("Validator.wideNeedsTwoResults")
     auto const decoded = decodeModule(bytes, FeatureSet::wasm3());
     REQUIRE_FALSE(decoded.has_value());
     CHECK(decoded.error().code == DecodeErrorCode::IllegalOpcode);
+    CHECK(decoded.error().disabled == Feature::WideArithmetic);
 }
 
 TEST_CASE("Validator.unreachablePolymorphic")
@@ -304,6 +309,191 @@ TEST_CASE("Validator.elseResetsReachability")
     CHECK(errorOf(ifOf({ 0x42, 0x01 })) == ValidationErrorCode::TypeMismatch);
     CHECK(errorOf(ifOf({})) == ValidationErrorCode::TypeMismatch);
     CHECK(errorOf(ifOf({ 0x6A })) == ValidationErrorCode::TypeMismatch);
+}
+
+TEST_CASE("Validator.frameShape")
+{
+    // (block (block i32.const 1 i32.const 2 drop drop)): two operands at most, two labels below the
+    // function's own.
+    auto const nestedPushes =
+        voidFunctionOf({ 0x02, 0x40, 0x02, 0x40, 0x41, 0x01, 0x41, 0x02, 0x1A, 0x1A, 0x0B, 0x0B });
+    auto const shape = validated(nestedPushes, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    REQUIRE(shape->functions.size() == 1);
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 2 });
+}
+
+TEST_CASE("Validator.frameShapePerFunction")
+{
+    // One shape per code entry, in order; an empty body has none of either, and the Unknown operands
+    // of unreachable code count like any other.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .function(0, {}, {})
+        .function(0, {}, { 0x00, 0x1A, 0x1A, 0x1A }) // unreachable drop drop drop: pops, pushes nothing
+        .function(0, {}, { 0x00, 0x41, 0x01, 0x41, 0x02, 0x41, 0x03, 0x1A, 0x1A, 0x1A });
+    auto const shape = validated(builder, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions
+          == std::vector<FrameShape> {
+              FrameShape {}, FrameShape {}, FrameShape { .maxOperands = 3, .maxLabels = 0 } });
+}
+
+TEST_CASE("Validator.frameShapeOfDeepNesting")
+{
+    // 100'000 nested blocks: the depth is recorded without recursing.
+    constexpr auto Depth = 100'000;
+    auto body = std::vector<uint8_t> {};
+    body.reserve(std::size_t { 3 } * Depth);
+    for ([[maybe_unused]] auto const level: std::views::iota(0, Depth))
+        body.insert(body.end(), { 0x02, 0x40 });
+    body.insert(body.end(), Depth, 0x0B);
+    auto const shape = validated(voidFunctionOf(std::move(body)), FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 0, .maxLabels = Depth });
+}
+
+TEST_CASE("Validator.frameShapeCountsRestoredUnknowns")
+{
+    // unreachable br_if 0 to the function's label of [i32 i32]: br_if pops its operands, Unknowns of
+    // the polymorphic stack, and pushes them back (popAndRestore), and those are the body's only
+    // operands.
+    auto const restored =
+        functionOf(FuncType { .params = {}, .results = { I32, I32 } }, { 0x00, 0x0D, 0x00 });
+    auto const shape = validated(restored, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 0 });
+}
+
+TEST_CASE("Validator.frameShapeOfBlockParameters")
+{
+    // i32.const 1 block (param i32) (result i32) i32.const 2 i32.add end drop: the block's parameter
+    // stays an operand inside it, beneath the constant.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .type(FuncType { .params = { I32 }, .results = { I32 } })
+        .function(0, {}, { 0x41, 0x01, 0x02, 0x01, 0x41, 0x02, 0x6A, 0x0B, 0x1A });
+    auto const shape = validated(builder, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 1 });
+}
+
+TEST_CASE("Validator.frameShapeOfIfElse")
+{
+    // i32.const 0 if (result i32) i32.const 1 else i32.const 3 i32.const 4 i32.const 5 i32.add i32.add
+    // end drop: the else branch, which starts again at the if's height, is the deeper one.
+    auto const ifElse = voidFunctionOf({ 0x41,
+                                         0x00,
+                                         0x04,
+                                         0x7F,
+                                         0x41,
+                                         0x01,
+                                         0x05,
+                                         0x41,
+                                         0x03,
+                                         0x41,
+                                         0x04,
+                                         0x41,
+                                         0x05,
+                                         0x6A,
+                                         0x6A,
+                                         0x0B,
+                                         0x1A });
+    auto const shape = validated(ifElse, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 3, .maxLabels = 1 });
+}
+
+TEST_CASE("Validator.frameShapeOfLoops")
+{
+    // loop block loop i32.const 1 drop end end end: a loop is a label like a block.
+    auto const loops =
+        voidFunctionOf({ 0x03, 0x40, 0x02, 0x40, 0x03, 0x40, 0x41, 0x01, 0x1A, 0x0B, 0x0B, 0x0B });
+    auto const shape = validated(loops, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 1, .maxLabels = 3 });
+}
+
+TEST_CASE("Validator.frameShapeOfTryTable")
+{
+    // block try_table (catch_all 0) i32.const 1 i32.const 2 drop drop end end: a try_table is a label.
+    auto const tryTable = voidFunctionOf(
+        { 0x02, 0x40, 0x1F, 0x40, 0x01, 0x02, 0x00, 0x41, 0x01, 0x41, 0x02, 0x1A, 0x1A, 0x0B, 0x0B });
+    auto const shape = validated(tryTable, FeatureSet::wasm3());
+    REQUIRE(shape.has_value());
+    CHECK(shape->functions.at(0) == FrameShape { .maxOperands = 2, .maxLabels = 2 });
+}
+
+namespace
+{
+
+/// A module of a function $f of type [] -> [i32 x 1000], and a function [] -> [] whose body is
+/// @p calls calls of $f, then unreachable.
+ModuleBuilder multiValueCalls(uint32_t calls)
+{
+    auto body = std::vector<uint8_t> {};
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, calls))
+        body.insert(body.end(), { 0x10, 0x00 });
+    body.push_back(0x00);
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = std::vector<isoline::binary::ValueType>(1000, I32) })
+        .type(FuncType {})
+        .function(0, {}, { 0x00 })
+        .function(1, {}, std::move(body));
+    return builder;
+}
+
+} // namespace
+
+TEST_CASE("Validator.operandStackIsCapped")
+{
+    // A body's operand stack may hold maxOperandsPerInstruction operands per instruction, plus one
+    // function type's results: one call of $f fits (3 instructions: 4 x 3 + 1000 = 1012 >= 1000), the
+    // second of two does not (4 x 4 + 1000 = 1016 < 2000), and is the instruction refused.
+    auto const one = validated(multiValueCalls(1), FeatureSet::wasm3());
+    REQUIRE(one.has_value());
+    CHECK(one->functions.at(1) == FrameShape { .maxOperands = 1000, .maxLabels = 0 });
+
+    auto const two = validated(multiValueCalls(2), FeatureSet::wasm3());
+    REQUIRE_FALSE(two.has_value());
+    CHECK(two.error() == ValidationError { ValidationErrorCode::OperandStackLimitExceeded, 1, 1 });
+    CHECK(specMessage(two.error()) == "operand stack limit exceeded");
+
+    // The limit is the embedder's.
+    auto const raised = validated(
+        multiValueCalls(2), FeatureSet::wasm3(), DecodeLimits { .maxOperandsPerInstruction = 1000 });
+    REQUIRE(raised.has_value());
+    CHECK(raised->functions.at(1) == FrameShape { .maxOperands = 2000, .maxLabels = 0 });
+}
+
+TEST_CASE("Validator.operandStackSlackCoversWideLabels")
+{
+    // A label's arity may reach maxParams: in unreachable code, a loop of 5000 params pushes all of
+    // them at once, which the per-instruction share of a 5-instruction body (4 x 5 = 20) does not
+    // cover, so the slack is the wider of maxParams and maxResults (20 + 5000 >= 5000).
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .type(FuncType { .params = std::vector<isoline::binary::ValueType>(5000, I32), .results = {} })
+        .function(0, {}, { 0x00, 0x03, 0x01, 0x00, 0x0B });
+    auto const wide = validated(builder, FeatureSet::wasm3(), DecodeLimits { .maxParams = 5000 });
+    REQUIRE(wide.has_value());
+    CHECK(wide->functions.at(0) == FrameShape { .maxOperands = 5000, .maxLabels = 1 });
+}
+
+TEST_CASE("Validator.implementationLimitsAreDistinguishable")
+{
+    // Over a limit the embedder may raise, or invalid whatever the limits: only the operand stack
+    // cap is the former.
+    for (auto const& row: isoline::validate::ValidationErrorTable)
+    {
+        INFO("error: " << row.specMessage);
+        CHECK(isImplementationLimit(row.code)
+              == (row.code == ValidationErrorCode::OperandStackLimitExceeded));
+    }
+    auto const two = validated(multiValueCalls(2), FeatureSet::wasm3());
+    REQUIRE_FALSE(two.has_value());
+    CHECK(isImplementationLimit(two.error().code));
+    CHECK_FALSE(isImplementationLimit(ValidationErrorCode::TypeMismatch));
 }
 
 TEST_CASE("Validator.validateDeepNesting")
@@ -1832,4 +2022,69 @@ TEST_CASE("Validator.returnCallResultMismatch")
           == ValidationErrorCode::TypeMismatch);
     CHECK(typedReferenceCheck(FuncType { .params = {}, .results = { I32 } }, { 0x15, 0x09 })
           == ValidationErrorCode::UnknownType);
+}
+
+TEST_CASE("Validator.disabledProposalIsNamed")
+{
+    // Each module is invalid without one proposal, refused as the spec's validator without it refuses
+    // it, and names the proposal; the spec's message comes first.
+    auto twoMemories = ModuleBuilder {};
+    twoMemories.memory(atLeast(1)).memory(atLeast(1));
+    auto twoTables = ModuleBuilder {};
+    twoTables.table(TableType { .element = FuncRef, .limits = atLeast(1) })
+        .table(TableType { .element = FuncRef, .limits = atLeast(1) });
+    auto twoResults = ModuleBuilder {};
+    twoResults.type(FuncType { .params = {}, .results = { I32, I32 } });
+    auto constantSum = ModuleBuilder {};
+    constantSum.global(GlobalType { .type = I32, .mutability = Mutability::Const },
+                       { 0x41, 0x01, 0x41, 0x02, 0x6A });
+    auto notConstant = ModuleBuilder {};
+    notConstant.global(GlobalType { .type = I32, .mutability = Mutability::Const }, { 0x41, 0x01, 0x1A });
+    struct Row
+    {
+        std::string_view name;
+        ModuleBuilder const& module;
+        FeatureSet features;
+        ValidationErrorCode code;
+        std::optional<Feature> disabled;
+    };
+    auto const rows = std::to_array<Row>({
+        { "two memories",
+          twoMemories,
+          FeatureSet::wasm2(),
+          ValidationErrorCode::MultipleMemories,
+          Feature::MultiMemory },
+        { "two tables",
+          twoTables,
+          FeatureSet::none(),
+          ValidationErrorCode::MultipleTables,
+          Feature::ReferenceTypes },
+        { "two results",
+          twoResults,
+          FeatureSet::none(),
+          ValidationErrorCode::InvalidResultArity,
+          Feature::MultiValue },
+        { "constant i32.add",
+          constantSum,
+          FeatureSet::wasm2(),
+          ValidationErrorCode::ConstantExpressionRequired,
+          Feature::ExtendedConst },
+        { "constant drop",
+          notConstant,
+          FeatureSet::wasm3(),
+          ValidationErrorCode::ConstantExpressionRequired,
+          std::nullopt },
+    });
+    for (auto const& row: rows)
+    {
+        INFO(row.name);
+        auto const result = validated(row.module, row.features);
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == row.code);
+        CHECK(result.error().disabled == row.disabled);
+        CHECK(specMessage(result.error()).starts_with(specMessage(row.code)));
+    }
+    auto const twoMemoriesRefused = validated(twoMemories, FeatureSet::wasm2());
+    REQUIRE_FALSE(twoMemoriesRefused.has_value());
+    CHECK(specMessage(twoMemoriesRefused.error()) == "multiple memories (multi-memory not enabled)");
 }

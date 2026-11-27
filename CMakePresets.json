@@ -73,6 +73,17 @@
             }
         },
         {
+            "name": "clang-tsan",
+            "displayName": "Clang Debug + TSan",
+            "inherits": [
+                "clang-common",
+                "debug"
+            ],
+            "cacheVariables": {
+                "ISOLINE_SANITIZE": "thread"
+            }
+        },
+        {
             "name": "clang-release",
             "displayName": "Clang Release",
             "inherits": [
@@ -153,6 +164,20 @@
             }
         },
         {
+            "name": "clangcl-cross-release",
+            "displayName": "Windows x64 cross (clang-cl) Release",
+            "description": "Windows x64 from Linux: clang-cl against an msvc-wine install, release STL; tests run under wine",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "release"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/windows-clangcl-cross.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON"
+            }
+        },
+        {
             "name": "aarch64-cross-common",
             "hidden": true,
             "description": "Linux aarch64 from an x86_64 Linux host against a Debian sysroot; tests run under qemu-user",
@@ -184,30 +209,59 @@
     ],
     "buildPresets": [
         { "name": "clang-asan", "configurePreset": "clang-asan" },
+        { "name": "clang-tsan", "configurePreset": "clang-tsan" },
         { "name": "clang-release", "configurePreset": "clang-release" },
         { "name": "clang-coverage", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
         { "name": "macos-clang", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
+        { "name": "clangcl-cross-release", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "configurePreset": "clang-aarch64-cross-release" }
     ],
     "testPresets": [
         {
-            "name": "isoline-test-common",
+            "name": "isoline-test-base",
             "hidden": true,
             "output": {
                 "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 900
+            }
+        },
+        {
+            "name": "isoline-test-common",
+            "hidden": true,
+            "inherits": "isoline-test-base",
+            "description": "Every test but the perf label's, which asserts wall-clock latency and runs on request only",
+            "filter": {
+                "exclude": {
+                    "label": "perf"
+                }
             }
         },
         { "name": "clang-asan", "inherits": "isoline-test-common", "configurePreset": "clang-asan" },
+        { "name": "clang-tsan", "inherits": "isoline-test-common", "configurePreset": "clang-tsan" },
         { "name": "clang-release", "inherits": "isoline-test-common", "configurePreset": "clang-release" },
+        {
+            "name": "clang-release-perf",
+            "inherits": "isoline-test-base",
+            "configurePreset": "clang-release",
+            "description": "The perf label alone: the interrupt latency, measured in a release build on a quiet machine",
+            "filter": {
+                "include": {
+                    "label": "perf"
+                }
+            }
+        },
         { "name": "clang-coverage", "inherits": "isoline-test-common", "configurePreset": "clang-coverage" },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },
+        { "name": "clangcl-cross-release", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-release" },
         { "name": "clang-aarch64-cross", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross" },
         { "name": "clang-aarch64-cross-release", "inherits": "isoline-test-common", "configurePreset": "clang-aarch64-cross-release" }
     ]

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <compare>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -276,5 +277,11 @@ enum class ExternKind : uint8_t
     Global,
     Tag,
 };
+
+/// The last ExternKind enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastExternKind = ExternKind::Tag;
+
+/// The number of ExternKind enumerators, one index space each, as LastExternKind counts them.
+inline constexpr auto ExternKindCount = static_cast<std::size_t>(LastExternKind) + 1;
 
 } // namespace isoline::binary

@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/Features.hpp>
 #include <isoline/binary/Types.hpp>
 
 namespace isoline::validate
@@ -51,10 +52,11 @@ enum class ValidationErrorCode : uint8_t
     InvalidCustomPageSize,
     UninitializedLocal,
     NonEmptyTagResultType,
+    OperandStackLimitExceeded,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::NonEmptyTagResultType;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::OperandStackLimitExceeded;
 
 /// What the reference interpreter appends to an error's message.
 enum class MessageDetail : uint8_t
@@ -129,13 +131,21 @@ static_assert(
     }(),
     "memoryBoundRow() finds every MemoryBoundTable row at its own index");
 
+/// What a validation error says of the module: that it is invalid, or only that it is past a limit.
+enum class ValidationErrorKind : uint8_t
+{
+    Invalid,             ///< Invalid under any limits: the spec's validation refuses it.
+    ImplementationLimit, ///< Past a binary::DecodeLimits value: a module a raised limit may accept.
+};
+
 /// One row of ValidationErrorTable: an error and the message the spec test suite expects for it.
 struct ValidationErrorRow
 {
     ValidationErrorCode code; ///< The error this row describes; equal to the row's index.
     std::string_view
         specMessage; ///< The reference interpreter's message, which spec tests match as a prefix.
-    MessageDetail detail = MessageDetail::None; ///< What the interpreter appends to it.
+    MessageDetail detail = MessageDetail::None;              ///< What the interpreter appends to it.
+    ValidationErrorKind kind = ValidationErrorKind::Invalid; ///< Invalid, or past an implementation limit.
 };
 
 /// Every validation error, one row per ValidationErrorCode enumerator, in enumerator order.
@@ -214,6 +224,11 @@ inline constexpr auto ValidationErrorTable = std::to_array<ValidationErrorRow>({
     { .code = ValidationErrorCode::UninitializedLocal, .specMessage = "uninitialized local" },
     // Exception handling: a tag whose function type has results.
     { .code = ValidationErrorCode::NonEmptyTagResultType, .specMessage = "non-empty tag result type" },
+    // Isoline's own implementation limit, DecodeLimits::maxOperandsPerInstruction; the spec suite has
+    // no such error.
+    { .code = ValidationErrorCode::OperandStackLimitExceeded,
+      .specMessage = "operand stack limit exceeded",
+      .kind = ValidationErrorKind::ImplementationLimit },
 });
 
 static_assert(
@@ -311,16 +326,20 @@ struct ValidationError
     /// @param instruction The failing instruction's index in that body, or NoInstruction.
     /// @param subject The index the error names, if any.
     /// @param mismatch The operands that did not match, if the validator recorded them.
+    /// @param disabled The proposal the validator's FeatureSet lacks that would admit the module past
+    ///                 this point; empty when none would.
     constexpr explicit ValidationError(ValidationErrorCode code,
                                        uint32_t function = NoFunction,
                                        uint32_t instruction = NoInstruction,
                                        std::optional<uint32_t> subject = {},
-                                       std::optional<OperandMismatch> mismatch = {}) noexcept:
+                                       std::optional<OperandMismatch> mismatch = {},
+                                       std::optional<Feature> disabled = {}) noexcept:
         code { code },
         function { function },
         instruction { instruction },
         subject { subject },
-        mismatch { std::move(mismatch) }
+        mismatch { std::move(mismatch) },
+        disabled { disabled }
     {
     }
 
@@ -342,6 +361,12 @@ struct ValidationError
     /// empty where the validator records no operands.
     std::optional<OperandMismatch> mismatch;
 
+    /// The proposal the validator's FeatureSet lacks that would admit the module past this point: a
+    /// second memory's multi-memory, a type of two results' multi-value, a constant i32.add's
+    /// extended-const. The error is the one the spec suite expects of a validator without it, and the
+    /// message appends the proposal (appendDisabledFeature()).
+    std::optional<Feature> disabled;
+
     bool operator==(ValidationError const&) const = default;
 };
 
@@ -353,31 +378,45 @@ struct ValidationError
     return ValidationErrorTable[static_cast<std::size_t>(code)].specMessage;
 }
 
+/// Whether @p code reports a module past an implementation limit (binary::DecodeLimits), not an
+/// invalid one.
+/// @param code The error.
+/// @return Whether its row's kind is ImplementationLimit.
+[[nodiscard]] constexpr bool isImplementationLimit(ValidationErrorCode code) noexcept
+{
+    return ValidationErrorTable[static_cast<std::size_t>(code)].kind
+           == ValidationErrorKind::ImplementationLimit;
+}
+
 /// The message the reference interpreter reports for @p error: its row's message, followed by what
-/// its detail names: the index, the size bound, or the operands.
+/// its detail names (the index, the size bound, or the operands), and then by the disabled proposal
+/// that would admit the module, when the error names one (appendDisabledFeature()).
 /// @param error The error to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(ValidationError const& error)
 {
     auto const& row = ValidationErrorTable[static_cast<std::size_t>(error.code)];
-    if (row.detail == MessageDetail::Operands && error.mismatch)
-        return std::format("{}: instruction requires {} but stack has {}",
-                           row.specMessage,
-                           resultTypeText(error.mismatch->required),
-                           resultTypeText(error.mismatch->actual));
-    if (!error.subject)
+    auto const message = [&]() -> std::string {
+        if (row.detail == MessageDetail::Operands && error.mismatch)
+            return std::format("{}: instruction requires {} but stack has {}",
+                               row.specMessage,
+                               resultTypeText(error.mismatch->required),
+                               resultTypeText(error.mismatch->actual));
+        if (!error.subject)
+            return std::string { row.specMessage };
+        switch (row.detail)
+        {
+            case MessageDetail::None:
+            case MessageDetail::Operands: break;
+            case MessageDetail::Index: return std::format("{} {}", row.specMessage, *error.subject);
+            case MessageDetail::MemoryBound:
+                return std::format("{} {}", row.specMessage, MemoryBoundTable.at(*error.subject).bound);
+            case MessageDetail::TableBound:
+                return std::format("{} {}", row.specMessage, AddressBoundTable.at(*error.subject).tableBound);
+        }
         return std::string { row.specMessage };
-    switch (row.detail)
-    {
-        case MessageDetail::None:
-        case MessageDetail::Operands: break;
-        case MessageDetail::Index: return std::format("{} {}", row.specMessage, *error.subject);
-        case MessageDetail::MemoryBound:
-            return std::format("{} {}", row.specMessage, MemoryBoundTable.at(*error.subject).bound);
-        case MessageDetail::TableBound:
-            return std::format("{} {}", row.specMessage, AddressBoundTable.at(*error.subject).tableBound);
-    }
-    return std::string { row.specMessage };
+    }();
+    return appendDisabledFeature(message, error.disabled);
 }
 
 } // namespace isoline::validate

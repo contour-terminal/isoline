@@ -131,11 +131,12 @@ using Value = std::variant<I32, I64, F32, F64, V128, Ref>;
 }
 
 /// Whether @p values are one value of each kind @p types names, in order: what the host boundary
-/// checks of arguments, results and exception payloads (a reference's heap is not checked).
+/// checks first of arguments, results and exception payloads (a reference's heap is checkValues()'s).
 /// @param values The values.
 /// @param types The types they must be of.
 /// @return Whether the counts match and each value's kind is its type's.
-[[nodiscard]] inline bool haveKinds(std::span<Value const> values, std::span<binary::ValueType const> types)
+[[nodiscard]] inline bool haveKinds(std::span<Value const> values,
+                                    std::span<binary::ValueType const> types) noexcept
 {
     return std::ranges::equal(values, types, {}, kindOf, &binary::ValueType::kind);
 }

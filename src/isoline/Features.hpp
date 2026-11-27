@@ -5,7 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <format>
+#include <optional>
 #include <ranges>
+#include <string>
 #include <string_view>
 
 namespace isoline
@@ -219,6 +222,19 @@ static_assert(
 [[nodiscard]] constexpr FeatureRow const& featureRow(Feature feature) noexcept
 {
     return FeatureTable[static_cast<std::size_t>(feature)];
+}
+
+/// A refusal's message, followed by the disabled proposal that would have accepted the module, as
+/// decode and validation errors spell it: "multiple memories (multi-memory not enabled)". The
+/// message comes first, so the spec suite's prefix match sees it unchanged.
+/// @param message The refusal's message.
+/// @param disabled The proposal; none leaves @p message as it is.
+/// @return The message.
+[[nodiscard]] inline std::string appendDisabledFeature(std::string message, std::optional<Feature> disabled)
+{
+    if (!disabled)
+        return message;
+    return std::format("{} ({} not enabled)", message, featureRow(*disabled).name);
 }
 
 constexpr FeatureSet FeatureSet::upTo(Standard newest) noexcept

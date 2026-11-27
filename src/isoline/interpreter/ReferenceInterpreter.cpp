@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -25,10 +26,14 @@
 #include <isoline/interpreter/Numerics.hpp>
 #include <isoline/interpreter/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
+#include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/ValueCheck.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::interpreter
 {
@@ -52,10 +57,11 @@ namespace
     using runtime::fits;
     using runtime::FuncAddr;
     using runtime::FunctionInstance;
-    using runtime::haveKinds;
+    using runtime::GranuleOrder;
     using runtime::I32;
     using runtime::I64;
     using runtime::ModuleInstance;
+    using runtime::PollSite;
     using runtime::Ref;
     using runtime::RefKind;
     using runtime::Store;
@@ -70,16 +76,9 @@ namespace
     /// or the exception no handler of the invocation caught.
     using Step = std::expected<void, Abrupt>;
 
-    /// How many entries (operands, locals and labels, over all frames) the stacks may hold before
-    /// a call or a block entry traps with CallStackExhausted, as the spec lets an implementation do
-    /// when a resource runs out. Store::maxCallDepth() alone would let deep calls of functions with
-    /// many locals (up to the decoder's 50000 each), or with a call inside many nested blocks (one
-    /// label each per frame), claim gigabytes; this bounds the stacks to about 100 MiB.
-    ///
-    /// The budget is checked before each call and each block entry, so the stacks may overshoot it
-    /// by what one step adds: one function's parameters and locals, or the operands one frame
-    /// pushes between two block entries. Both are bounded by the decoder's limits on one function.
-    constexpr auto MaxStackValues = std::size_t { 1 } << 22;
+    /// What memory.grow and table.grow push when the store refuses: -1, as an address of either type
+    /// reads it.
+    constexpr auto RefusedGrowth = std::numeric_limits<uint64_t>::max();
 
     /// A trap that names an index: call_indirect's table element, an i32 index zero-extended.
     ///
@@ -191,12 +190,14 @@ namespace
     struct Frame
     {
         ModuleInstance* instance = nullptr;     ///< The instance the function belongs to.
+        uint32_t instanceAddress = 0;           ///< That instance's address in the store.
         binary::Function const* code = nullptr; ///< Its code.
         std::size_t localsBase = 0;             ///< Its first local's index in the locals stack.
         std::size_t labelsBase = 0;             ///< The label stack's height when it began.
         std::size_t valuesBase = 0;             ///< The operand stack's height when it began.
         uint32_t arity = 0;                     ///< How many results it returns.
         uint32_t pc = 0;                        ///< The index of its next instruction.
+        uint64_t cost = 0; ///< Its static stack cost, charged to the store until it ends.
     };
 
     /// The parameter and result counts of a block type.
@@ -207,29 +208,52 @@ namespace
     };
 
     /// One invocation's execution: the operand, locals, label and frame stacks, all on the heap.
-    class Machine
+    ///
+    /// Its operand and locals stacks are exception roots (runtime::IExceptionRoots), registered with
+    /// the store while it lives, so that a sweep of the exception arena keeps every exception they
+    /// refer to, in its frames and in those of every invocation it is nested in.
+    class Machine final: public runtime::IExceptionRoots
     {
       public:
         /// @param store The store to execute on.
+        /// @param executor What a host function it calls re-enters the guest through: the interpreter.
         /// @param depth The frames active over every invocation in progress; kept up to date.
-        Machine(Store& store, uint32_t& depth): _store { store }, _depth { depth } {}
+        Machine(Store& store, runtime::ICodeExecutor& executor, uint32_t& depth):
+            _store { store }, _executor { executor }, _depth { depth }, _rootsRegistration { store, *this }
+        {
+        }
 
         Machine(Machine const&) = delete;
         Machine(Machine&&) = delete;
         Machine& operator=(Machine const&) = delete;
         Machine& operator=(Machine&&) = delete;
 
-        /// Gives back the depth of the frames a trap left behind.
-        ~Machine() { _depth -= static_cast<uint32_t>(_frames.size()); }
+        /// Gives back the depth and the stack charges of the frames a trap, an uncaught exception or an
+        /// interrupt left behind.
+        ~Machine() override
+        {
+            _depth -= static_cast<uint32_t>(_frames.size());
+            for (auto const& frame: _frames)
+                _store.releaseFrame(frame.cost);
+        }
+
+        /// Appends its operand and locals stacks: every operand and local of its active frames.
+        /// @param ranges Receives them.
+        void appendExceptionRoots(std::vector<std::span<Value const>>& ranges) const override
+        {
+            ranges.emplace_back(_values);
+            ranges.emplace_back(_locals);
+        }
 
         /// Invokes @p function with @p args and writes its results to @p results.
         [[nodiscard]] Step run(FuncAddr function, std::span<Value const> args, std::span<Value> results)
         {
             auto const& type = _store.functionType(function);
-            Require(haveKinds(args, type.params));
+            // The caller's to check: arguments of the function's types, references in this store.
+            Require(runtime::checkValues(_store, args, type.params).has_value());
             Require(results.size() == type.results.size());
             _values.assign(args.begin(), args.end());
-            if (auto const entered = call(function); !entered)
+            if (auto const entered = enterCallee(function, callerInstance()); !entered)
                 return entered;
             while (!_frames.empty())
             {
@@ -288,61 +312,125 @@ namespace
                           _values.end() - static_cast<std::ptrdiff_t>(arity));
         }
 
-        /// Whether the operand, locals and label stacks together hold MaxStackValues entries.
-        [[nodiscard]] bool stacksExhausted() const noexcept
-        {
-            return _values.size() + _locals.size() + _labels.size() >= MaxStackValues;
-        }
-
         // --- Calls ---
 
-        /// Calls @p address: pushes a Wasm frame, its arguments moved off the operand stack into
-        /// its locals, or runs a host function to completion.
-        [[nodiscard]] Step call(FuncAddr address)
+        /// Polls the store at @p site (Store::poll()).
+        /// @param site Where execution polls.
+        /// @return Nothing to go on, or Trap{Interrupted}.
+        [[nodiscard]] Step poll(PollSite site) noexcept
         {
+            if (auto const polled = _store.poll(site); !polled)
+                return std::unexpected { Abrupt { polled.error() } };
+            return {};
+        }
+
+        /// What a bulk operation polls before each granule (runtime::forEachGranule()).
+        [[nodiscard]] auto granulePoll() noexcept
+        {
+            return [this]() noexcept {
+                return _store.poll(PollSite::BulkGranule);
+            };
+        }
+
+        /// Enters @p address, the one routine every call, tail call and the embedder's entry go
+        /// through: polls at FunctionEntry, then pushes a Wasm frame, its arguments moved off the
+        /// operand stack into its locals, or runs a host function to completion. Either charges its
+        /// frame's static cost to the store first (validate::ValidatedModule::frameCost(),
+        /// runtime::hostFrameCost()), after the poll and the depth check, and traps with
+        /// CallStackExhausted when that would exceed StoreLimits::maxStackValues, as the spec lets an
+        /// implementation do when a resource runs out; so does a Wasm frame at maxCallDepth. The
+        /// validator bounds each frame's operands and labels, so the stacks never hold more than the
+        /// charged sum.
+        /// @param address The callee.
+        /// @param caller The instance a host callee is called by; nullopt for the embedder.
+        [[nodiscard]] Step enterCallee(FuncAddr address, std::optional<uint32_t> caller)
+        {
+            if (auto const polled = poll(PollSite::FunctionEntry); !polled)
+                return polled;
             auto const& function = _store.function(address);
             if (function.isHost())
-                return callHost(function);
-            if (_depth >= _store.maxCallDepth() || stacksExhausted())
+                return callHost(function, caller);
+            if (_depth >= _store.limits().maxCallDepth)
                 return trap(TrapCode::CallStackExhausted);
 
             auto& owner = _store.moduleInstance(function.moduleInstance);
             auto const& code = owner.module->code.at(function.codeIndex);
             auto const& type = _store.type(function.typeId);
+            // Only an instance of no code lacks its validated module (Store::addModuleInstance()).
+            auto const cost = owner.validated->frameCost(function.codeIndex);
+            if (auto const charged = _store.chargeFrame(cost); !charged)
+                return std::unexpected { Abrupt { charged.error() } };
             auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const localsBase = _locals.size();
             _locals.insert(_locals.end(), _values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
+            // A typed null local names its type by TypeId, in store form, as ref.null's does (nullOf()).
             for (auto const& run: code.locals)
-                _locals.insert(_locals.end(), run.count, runtime::defaultValue(run.type));
+                _locals.insert(_locals.end(),
+                               run.count,
+                               runtime::defaultValue(binary::mapTypeIndex(
+                                   run.type, [&](uint32_t index) { return owner.types.at(index); })));
             _frames.push_back(Frame { .instance = &owner,
+                                      .instanceAddress = function.moduleInstance,
                                       .code = &code,
                                       .localsBase = localsBase,
                                       .labelsBase = _labels.size(),
                                       .valuesBase = _values.size(),
                                       .arity = static_cast<uint32_t>(type.results.size()),
-                                      .pc = 0 });
+                                      .pc = 0,
+                                      .cost = cost });
             ++_depth;
             return {};
         }
 
-        /// Runs a host function synchronously: it may grow memories and tables, and invoke Wasm.
-        [[nodiscard]] Step callHost(FunctionInstance const& function)
+        /// The instance of the current frame: the caller of a function it calls; nullopt before the
+        /// first frame, when the embedder is the caller.
+        [[nodiscard]] std::optional<uint32_t> callerInstance() const noexcept
+        {
+            if (_frames.empty())
+                return std::nullopt;
+            return _frames.back().instanceAddress;
+        }
+
+        /// Runs a host function synchronously: it may grow memories and tables, and invoke Wasm
+        /// through its context. What it ends with is checked (runtime::checkHostOutcome()): a result
+        /// not of its type, or a thrown exception the store does not hold, is a HostFailure. It polls
+        /// at HostReturn whatever the host returned, and an interrupt replaces that outcome: a host
+        /// that absorbed a nested Interrupted cannot extend the call. Its frame's static cost
+        /// (runtime::hostFrameCost()) is charged while it runs, whatever it returns. Once it returns, its
+        /// HostCallScope re-establishes the IEEE floating-point defaults it may have changed.
+        /// @param function The host function.
+        /// @param caller The instance whose code called it; nullopt when the embedder did.
+        [[nodiscard]] Step callHost(FunctionInstance const& function, std::optional<uint32_t> caller)
         {
             auto const& type = _store.type(function.typeId);
+            auto const cost = runtime::hostFrameCost(type);
+            if (auto const charged = _store.chargeFrame(cost); !charged)
+                return std::unexpected { Abrupt { charged.error() } };
             auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const args = std::vector<Value>(_values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
+            // An exnref handed to a host may be kept past its frame: it escapes, never reclaimed.
+            for (auto const& arg: args)
+                _store.markEscaped(arg);
             auto results = std::vector<Value>(type.results.size());
             std::ranges::transform(type.results, results.begin(), runtime::defaultValue);
-            if (auto const done = function.host(args, results); !done)
+            auto const done = [&] {
+                auto const scope = runtime::HostCallScope { _store };
+                auto context = runtime::HostContext { _store, _executor, caller };
+                return runtime::checkHostOutcome(
+                    _store, type, function.host->call(context, args, results), results);
+            }();
+            _store.releaseFrame(cost);
+            if (auto const polled = poll(PollSite::HostReturn); !polled)
+                return polled;
+            if (!done)
             {
-                // An exception it throws is thrown on in its caller.
+                // An exception it throws, one of the store's, is thrown on in its caller.
                 if (auto const* thrown = std::get_if<Thrown>(&done.error()))
                     return unwind(thrown->exception);
                 return std::unexpected { done.error() };
             }
-            Require(haveKinds(results, type.results));
             _values.insert(_values.end(), results.begin(), results.end());
             return {};
         }
@@ -351,7 +439,8 @@ namespace
         void doReturn() { discardFrame(frame().arity); }
 
         /// Discards the current frame: its labels, its locals and its operands but the top @p keep,
-        /// which move down to where its operands began.
+        /// which move down to where its operands began; and gives its stack charge back. Every frame
+        /// that ends goes through here, but those a trap leaves behind (~Machine()).
         void discardFrame(uint32_t keep)
         {
             auto const ending = frame();
@@ -360,15 +449,19 @@ namespace
             _locals.resize(ending.localsBase);
             _frames.pop_back();
             --_depth;
+            _store.releaseFrame(ending.cost);
         }
 
-        /// Tail-calls @p address: discards the current frame but the callee's arguments, then calls
-        /// it in the frame's place. A Wasm callee's frame replaces it, so neither the depth nor the
-        /// stacks grow; a host callee runs, and its results are the current frame's.
+        /// Tail-calls @p address: discards the current frame but the callee's arguments, its charge
+        /// given back, then enters it in the frame's place. A Wasm callee's frame replaces it, so
+        /// neither the depth nor the stacks grow; a host callee runs, and its results are the current
+        /// frame's.
         [[nodiscard]] Step tailCall(FuncAddr address)
         {
+            // A host callee is called by the instance whose frame it replaces.
+            auto const caller = callerInstance();
             discardFrame(static_cast<uint32_t>(_store.functionType(address).params.size()));
-            return call(address);
+            return enterCallee(address, caller);
         }
 
         /// The function call_indirect and return_call_indirect call: the table element the popped
@@ -390,10 +483,11 @@ namespace
         /// The function call_ref and return_call_ref call: the popped reference's.
         [[nodiscard]] std::expected<FuncAddr, Abrupt> referencedCallee(Instruction const& instruction)
         {
-            // Validation typed the reference (ref null $t), so only null is a trap. A host boundary
-            // checks the kinds of the values it passes, not yet their types (P3), so a function of
-            // another type is a checked abort here rather than a call that reads its arguments past
-            // the operand stack.
+            // Validation typed the reference (ref null $t), so only null is a trap. Every value that
+            // crosses the host boundary (arguments, host results, exception payloads) is checked
+            // against its type, reference heaps included (runtime::checkValues()), so no host can
+            // hand the guest a function of another type: the Require below is unreachable from a
+            // host argument or result, and guards the interpreter's own invariant.
             auto const reference = popRef();
             if (reference.kind == RefKind::Null)
                 return trap(TrapCode::NullFunctionReference);
@@ -416,12 +510,10 @@ namespace
                      .results = static_cast<uint32_t>(type.results.size()) };
         }
 
-        /// Enters a block, loop, if or try_table whose operands are on the stack; traps with
-        /// CallStackExhausted when the stacks hold MaxStackValues entries already.
-        [[nodiscard]] Step enter(Instruction const& instruction, LabelKind kind)
+        /// Enters a block, loop, if or try_table whose operands are on the stack. Its label is within
+        /// its frame's charged cost (the frame shape's deepest label nesting).
+        void enter(Instruction const& instruction, LabelKind kind)
         {
-            if (stacksExhausted())
-                return trap(TrapCode::CallStackExhausted);
             auto const arity = blockArity(instruction);
             _labels.push_back(Label {
                 .kind = kind,
@@ -431,38 +523,47 @@ namespace
                 .continuation = kind == LabelKind::Loop ? frame().pc : instruction.endIndex + 1,
                 .tryTable = kind == LabelKind::TryTable ? &instruction : nullptr,
             });
-            return {};
         }
 
-        /// Branches to label @p depth; the label one beyond the innermost is the function body's.
-        void branch(uint32_t depth)
+        /// Branches to label @p depth, the one routine every branching instruction and every catch
+        /// goes through: polls at LoopBackEdge when the label is a loop's. The label one beyond the
+        /// innermost is the function body's, and a branch to it returns.
+        /// @return Nothing, or Trap{Interrupted} from the poll.
+        [[nodiscard]] Step transferToLabel(uint32_t depth)
         {
             auto const labelCount = _labels.size() - frame().labelsBase;
             Require(depth <= labelCount);
             if (depth == labelCount)
             {
                 doReturn();
-                return;
+                return {};
             }
             auto const index = _labels.size() - 1 - depth;
             auto const label = _labels[index];
+            if (label.kind == LabelKind::Loop)
+            {
+                if (auto const polled = poll(PollSite::LoopBackEdge); !polled)
+                    return polled;
+            }
             keepTop(label.arity, label.height);
             _labels.resize(label.kind == LabelKind::Loop ? index + 1 : index);
             frame().pc = label.continuation;
+            return {};
         }
 
-        void branchTable(Instruction const& instruction)
+        [[nodiscard]] Step branchTable(Instruction const& instruction)
         {
             auto const labels = binary::labelsOf(*frame().code, instruction);
             auto const selector = popI32();
-            branch(selector < labels.size() - 1 ? labels[selector] : labels.back());
+            return transferToLabel(selector < labels.size() - 1 ? labels[selector] : labels.back());
         }
 
         [[nodiscard]] Step ifThen(Instruction const& instruction)
         {
             auto const condition = popI32();
-            if (auto const entered = enter(instruction, LabelKind::Block); !entered || condition != 0)
-                return entered;
+            enter(instruction, LabelKind::Block);
+            if (condition != 0)
+                return {};
             // Into the else branch, or to the end, whose execution leaves the label.
             frame().pc = instruction.elseIndex == instruction.endIndex ? instruction.endIndex
                                                                        : instruction.elseIndex + 1;
@@ -500,20 +601,35 @@ namespace
         /// clause that does, by tag (by TagAddr, so an imported tag is the tag it imports) or catching
         /// all, gets the operand stack as the try_table found it, pushes what it hands its label and
         /// branches there, as from outside the try_table.
-        /// @return Nothing once caught; Thrown when no frame of this invocation catches it.
+        ///
+        /// It polls at Unwind every runtime::UnwindPollItems labels, catch clauses and frames it
+        /// scans, so a throw past many of them stays interruptible.
+        /// @return Nothing once caught; Thrown when no frame of this invocation catches it; or
+        ///         Trap{Interrupted} from a poll.
         [[nodiscard]] Step unwind(ExnAddr exception)
         {
             auto const& thrown = _store.exception(exception);
+            auto scanned = uint64_t { 0 };
+            auto const scan = [&]() noexcept -> Step {
+                ++scanned;
+                if (scanned % runtime::UnwindPollItems != 0)
+                    return {};
+                return poll(PollSite::Unwind);
+            };
             while (!_frames.empty())
             {
                 while (_labels.size() > frame().labelsBase)
                 {
+                    if (auto const polled = scan(); !polled)
+                        return polled;
                     auto const label = _labels.back();
                     _labels.pop_back();
                     if (label.kind != LabelKind::TryTable)
                         continue;
                     for (auto const& clause: binary::catchClausesOf(*frame().code, *label.tryTable))
                     {
+                        if (auto const polled = scan(); !polled)
+                            return polled;
                         if (!catches(clause, thrown.tag))
                             continue;
                         _values.resize(label.height);
@@ -523,16 +639,13 @@ namespace
                             push(Ref { .kind = RefKind::Exn,
                                        .heap = { .kind = binary::AbstractHeapType::Exn },
                                        .address = exception });
-                        branch(clause.label);
-                        return {};
+                        return transferToLabel(clause.label);
                     }
                 }
                 // No handler in this frame: it ends, and its caller's labels are tried next.
-                auto const ending = frame();
-                _values.resize(ending.valuesBase);
-                _locals.resize(ending.localsBase);
-                _frames.pop_back();
-                --_depth;
+                if (auto const polled = scan(); !polled)
+                    return polled;
+                discardFrame(0);
             }
             return std::unexpected { Abrupt { Thrown { .exception = exception } } };
         }
@@ -580,10 +693,10 @@ namespace
             auto const raw = row.access == MemoryAccessKind::Store ? rawBits(pop()) : uint64_t { 0 };
             auto& target = memory(instruction.b);
             auto const address = popAddress(target.type.limits.addressType);
-            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes.size());
+            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes().size());
             if (!effective)
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            auto const bytes = std::span { target.bytes }.subspan(*effective, width);
+            auto const bytes = target.bytes().subspan(*effective, width);
             if (row.access == MemoryAccessKind::Store)
             {
                 for (auto const index: std::views::iota(0U, width))
@@ -609,10 +722,10 @@ namespace
                               : std::array<std::byte, 16> {};
             auto& target = memory(instruction.b);
             auto const address = popAddress(target.type.limits.addressType);
-            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes.size());
+            auto const effective = effectiveAddress(address, instruction.c, width, target.bytes().size());
             if (!effective)
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            auto const bytes = std::span { target.bytes }.subspan(*effective, width);
+            auto const bytes = target.bytes().subspan(*effective, width);
             // Where in the vector the accessed bytes sit: lane `lane` of a lane access, else the start.
             auto const offset = row.shape == VectorShape::Lane ? width * instruction.lane : std::size_t { 0 };
             auto const lanes = std::span { vector }.subspan(offset, width);
@@ -664,13 +777,14 @@ namespace
             auto const address = instance().memories.at(instruction.a);
             auto const type = _store.memory(address).type.limits.addressType;
             auto const delta = popAddress(type);
-            pushAddress(type, static_cast<uint64_t>(_store.growMemory(address, delta)));
+            pushAddress(type, _store.growMemory(address, delta).value_or(RefusedGrowth));
         }
 
         void memorySize(Instruction const& instruction)
         {
             auto const& target = memory(instruction.a);
-            pushAddress(target.type.limits.addressType, target.bytes.size() / binary::pageSize(target.type));
+            pushAddress(target.type.limits.addressType,
+                        target.bytes().size() / binary::pageSize(target.type));
         }
 
         [[nodiscard]] Step memoryFill(Instruction const& instruction)
@@ -680,10 +794,18 @@ namespace
             auto const count = popAddress(type);
             auto const value = static_cast<std::byte>(popI32());
             auto const destination = popAddress(type);
-            if (!fits(destination, count, target.bytes.size()))
+            auto const bytes = target.bytes();
+            if (!fits(destination, count, bytes.size()))
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            std::ranges::fill(std::span { target.bytes }.subspan(destination, count), value);
-            return {};
+            auto poll = granulePoll();
+            return runtime::forEachGranule(count,
+                                           runtime::BulkPollBytes,
+                                           GranuleOrder::Ascending,
+                                           poll,
+                                           [&](uint64_t offset, uint64_t size) {
+                                               std::ranges::fill(bytes.subspan(destination + offset, size),
+                                                                 value);
+                                           });
         }
 
         [[nodiscard]] Step memoryCopy(Instruction const& instruction)
@@ -696,13 +818,23 @@ namespace
             auto const count = popAddress(countType);
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
-            if (!fits(source, count, sourceMemory.bytes.size())
-                || !fits(destination, count, destinationMemory.bytes.size()))
+            auto const sourceBytes = sourceMemory.bytes();
+            auto const destinationBytes = destinationMemory.bytes();
+            if (!fits(source, count, sourceBytes.size())
+                || !fits(destination, count, destinationBytes.size()))
                 return trap(TrapCode::OutOfBoundsMemoryAccess);
-            if (count != 0)
-                std::memmove(
-                    destinationMemory.bytes.data() + destination, sourceMemory.bytes.data() + source, count);
-            return {};
+            // Granule by granule, in the order that keeps an overlapping copy within one memory
+            // correct; memmove, as one granule may overlap itself.
+            auto poll = granulePoll();
+            return runtime::forEachGranule(count,
+                                           runtime::BulkPollBytes,
+                                           runtime::copyOrder(source, destination),
+                                           poll,
+                                           [&](uint64_t offset, uint64_t size) {
+                                               std::memmove(destinationBytes.data() + destination + offset,
+                                                            sourceBytes.data() + source + offset,
+                                                            size);
+                                           });
         }
 
         [[nodiscard]] Step memoryInit(Instruction const& instruction)
@@ -715,9 +847,10 @@ namespace
             return runtime::copySegment(segment,
                                         source,
                                         count,
-                                        std::span { target.bytes },
+                                        target.bytes(),
                                         destination,
-                                        TrapCode::OutOfBoundsMemoryAccess);
+                                        TrapCode::OutOfBoundsMemoryAccess,
+                                        granulePoll());
         }
 
         // --- Tables ---
@@ -760,7 +893,7 @@ namespace
             auto const type = _store.table(address).type.limits.addressType;
             auto const delta = popAddress(type);
             auto const init = popRef();
-            pushAddress(type, static_cast<uint64_t>(_store.growTable(address, delta, init)));
+            pushAddress(type, _store.growTable(address, delta, init).value_or(RefusedGrowth));
         }
 
         [[nodiscard]] Step tableFill(Instruction const& instruction)
@@ -770,10 +903,18 @@ namespace
             auto const count = popAddress(type);
             auto const value = popRef();
             auto const destination = popAddress(type);
-            if (!fits(destination, count, target.elements.size()))
+            auto const elements = std::span { target.elements };
+            if (!fits(destination, count, elements.size()))
                 return trap(TrapCode::OutOfBoundsTableAccess);
-            std::ranges::fill(std::span { target.elements }.subspan(destination, count), value);
-            return {};
+            auto poll = granulePoll();
+            return runtime::forEachGranule(count,
+                                           runtime::BulkPollElements,
+                                           GranuleOrder::Ascending,
+                                           poll,
+                                           [&](uint64_t offset, uint64_t size) {
+                                               std::ranges::fill(elements.subspan(destination + offset, size),
+                                                                 value);
+                                           });
         }
 
         [[nodiscard]] Step tableCopy(Instruction const& instruction)
@@ -786,16 +927,27 @@ namespace
             auto const count = popAddress(countType);
             auto const source = popAddress(sourceType);
             auto const destination = popAddress(destinationType);
-            if (!fits(source, count, sourceTable.elements.size())
-                || !fits(destination, count, destinationTable.elements.size()))
+            auto const sourceElements = std::span<Ref const> { sourceTable.elements };
+            auto const destinationElements = std::span { destinationTable.elements };
+            if (!fits(source, count, sourceElements.size())
+                || !fits(destination, count, destinationElements.size()))
                 return trap(TrapCode::OutOfBoundsTableAccess);
-            // Through a copy, as the two ranges may overlap within one table.
-            auto const slice =
-                std::vector<Ref>(sourceTable.elements.begin() + static_cast<std::ptrdiff_t>(source),
-                                 sourceTable.elements.begin() + static_cast<std::ptrdiff_t>(source + count));
-            std::ranges::copy(slice,
-                              destinationTable.elements.begin() + static_cast<std::ptrdiff_t>(destination));
-            return {};
+            // Granule by granule, in the order that keeps an overlapping copy within one table
+            // correct, and within a granule in the same direction, as it may overlap itself.
+            auto const order = runtime::copyOrder(source, destination);
+            auto poll = granulePoll();
+            return runtime::forEachGranule(
+                count, runtime::BulkPollElements, order, poll, [&](uint64_t offset, uint64_t size) {
+                    auto const from = sourceElements.subspan(source + offset, size);
+                    auto const to = destinationElements.subspan(destination + offset, size);
+                    // A copy onto itself changes nothing, and std::ranges::copy may not overlap it.
+                    if (from.data() == to.data())
+                        return;
+                    if (order == GranuleOrder::Ascending)
+                        std::ranges::copy(from, to.begin());
+                    else
+                        std::ranges::copy_backward(from, to.end());
+                });
         }
 
         [[nodiscard]] Step tableInit(Instruction const& instruction)
@@ -811,7 +963,8 @@ namespace
                                         count,
                                         std::span { target.elements },
                                         destination,
-                                        TrapCode::OutOfBoundsTableAccess);
+                                        TrapCode::OutOfBoundsTableAccess,
+                                        granulePoll());
         }
 
         // --- Dispatch ---
@@ -930,43 +1083,45 @@ namespace
                 // Control
                 case Opcode::Unreachable: return trap(TrapCode::Unreachable);
                 case Opcode::Nop: return {};
-                case Opcode::Block: return enter(instruction, LabelKind::Block);
-                case Opcode::Loop: return enter(instruction, LabelKind::Loop);
+                case Opcode::Block: enter(instruction, LabelKind::Block); return {};
+                case Opcode::Loop: enter(instruction, LabelKind::Loop); return {};
                 case Opcode::If: return ifThen(instruction);
                 case Opcode::Else: frame().pc = instruction.endIndex; return {};
-                case Opcode::TryTable: return enter(instruction, LabelKind::TryTable);
+                case Opcode::TryTable: enter(instruction, LabelKind::TryTable); return {};
                 case Opcode::Throw: return throwException(instruction);
                 case Opcode::ThrowRef: return throwReference();
                 case Opcode::End: end(); return {};
-                case Opcode::Br: branch(instruction.a); return {};
+                case Opcode::Br: return transferToLabel(instruction.a);
                 case Opcode::BrIf:
                     if (popI32() != 0)
-                        branch(instruction.a);
+                        return transferToLabel(instruction.a);
                     return {};
-                case Opcode::BrOnNull:
-                    if (auto const reference = popRef(); reference.kind == RefKind::Null)
-                        branch(instruction.a);
-                    else
-                        push(reference);
+                case Opcode::BrOnNull: {
+                    auto const reference = popRef();
+                    if (reference.kind == RefKind::Null)
+                        return transferToLabel(instruction.a);
+                    push(reference);
                     return {};
+                }
                 case Opcode::BrOnNonNull:
                     // A reference branches as its label's last value; a null falls through without it.
                     if (auto const reference = popRef(); reference.kind != RefKind::Null)
                     {
                         push(reference);
-                        branch(instruction.a);
+                        return transferToLabel(instruction.a);
                     }
                     return {};
-                case Opcode::BrTable: branchTable(instruction); return {};
+                case Opcode::BrTable: return branchTable(instruction);
                 case Opcode::Return: doReturn(); return {};
-                case Opcode::Call: return call(instance().functions.at(instruction.a));
+                case Opcode::Call:
+                    return enterCallee(instance().functions.at(instruction.a), callerInstance());
                 case Opcode::CallIndirect:
                     return indirectCallee(instruction).and_then([this](FuncAddr callee) {
-                        return call(callee);
+                        return enterCallee(callee, callerInstance());
                     });
                 case Opcode::CallRef:
                     return referencedCallee(instruction).and_then([this](FuncAddr callee) {
-                        return call(callee);
+                        return enterCallee(callee, callerInstance());
                     });
                 case Opcode::ReturnCall: return tailCall(instance().functions.at(instruction.a));
                 case Opcode::ReturnCallIndirect:
@@ -1049,11 +1204,13 @@ namespace
         // uncovered-end(execute-default)
 
         Store& _store;
+        runtime::ICodeExecutor& _executor;
         uint32_t& _depth;
         std::vector<Value> _values;
         std::vector<Value> _locals;
         std::vector<Label> _labels;
         std::vector<Frame> _frames;
+        runtime::ExceptionRootsRegistration _rootsRegistration; ///< Last, so that it ends first.
     };
 } // namespace
 
@@ -1062,23 +1219,12 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
                                                          std::span<Value const> args,
                                                          std::span<Value> results)
 {
-    // Float results are the spec's only in the default floating-point environment.
+    // Float results are the spec's only in the default floating-point environment, which the
+    // invocation's scope establishes (runtime::FloatEnvironmentScope).
     assert(std::fegetround() == FE_TONEAREST);
-    if (_invocations >= MaxNestedInvocations)
-        return trap(TrapCode::CallStackExhausted);
-    // Unwinds on every exit, an exception thrown by a host callback included.
-    struct InvocationGuard
-    {
-        uint32_t& count;
-        explicit InvocationGuard(uint32_t& counter): count { counter } { ++count; }
-        InvocationGuard(InvocationGuard const&) = delete;
-        InvocationGuard& operator=(InvocationGuard const&) = delete;
-        InvocationGuard(InvocationGuard&&) = delete;
-        InvocationGuard& operator=(InvocationGuard&&) = delete;
-        ~InvocationGuard() { --count; }
-    };
-    auto const guard = InvocationGuard { _invocations };
-    return Machine { store, _depth }.run(function, args, results);
+    // The invocation's scope, its nesting limit and its step budget, is the entry's to open.
+    Require(store.invocationDepth() > 0);
+    return Machine { store, *this, _depth }.run(function, args, results);
 }
 
 std::expected<Value, Trap> ReferenceInterpreter::evaluateConst(Store& store,

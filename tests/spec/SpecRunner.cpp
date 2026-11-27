@@ -43,13 +43,15 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
-#include <isoline/validate/Subtyping.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
-#include <isoline/validate/Validator.hpp>
 
 namespace isoline::spectest
 {
@@ -77,29 +79,22 @@ namespace
         return Failure { .stage = Stage::Exception, .message = "uncaught exception" };
     }
 
-    /// The failure of an invocation that ended abruptly: a trap at @p stage, or an uncaught exception.
+    /// The failure of a host function: the spectest module's never fail, so it is the harness's.
+    [[nodiscard]] Failure hostFailure(runtime::HostFailure const& failure)
+    {
+        return harnessFailure(
+            std::format("host failure {} (code {})", static_cast<int>(failure.kind), failure.code));
+    }
+
+    /// The failure of an invocation that ended abruptly: a trap at @p stage, an uncaught exception, or
+    /// a host failure.
     [[nodiscard]] Failure abruptFailure(Stage stage, runtime::Abrupt const& abrupt)
     {
         if (auto const* thrown = std::get_if<runtime::Thrown>(&abrupt))
             return thrownFailure(*thrown);
+        if (auto const* failure = std::get_if<runtime::HostFailure>(&abrupt))
+            return hostFailure(*failure);
         return trapFailure(stage, std::get<runtime::Trap>(abrupt));
-    }
-
-    /// Whether @p value is of @p type: what the interpreter requires of every argument.
-    [[nodiscard]] bool hasType(Value const& value, binary::ValueType const& type)
-    {
-        switch (type.kind)
-        {
-            case binary::ValueKind::I32: return std::holds_alternative<runtime::I32>(value);
-            case binary::ValueKind::I64: return std::holds_alternative<runtime::I64>(value);
-            case binary::ValueKind::F32: return std::holds_alternative<runtime::F32>(value);
-            case binary::ValueKind::F64: return std::holds_alternative<runtime::F64>(value);
-            case binary::ValueKind::V128: return std::holds_alternative<runtime::V128>(value);
-            case binary::ValueKind::Ref: break;
-        }
-        // An argument's heap is that of the script's value, ref.null func for a (ref null $t) too.
-        auto const* const ref = std::get_if<runtime::Ref>(&value);
-        return ref && validate::topOf(ref->heap.kind) == validate::topOf(type.heap.kind);
     }
 
     [[nodiscard]] std::expected<std::vector<std::byte>, Failure> readFile(std::filesystem::path const& path)
@@ -126,10 +121,10 @@ namespace
         };
         auto instance = runtime::ModuleInstance {};
         instance.module = std::make_shared<Module const>();
-        auto const ignore = [](std::span<Value const>,
-                               std::span<Value>) -> std::expected<void, runtime::Abrupt> {
-            return {};
-        };
+        auto const ignore = runtime::makeHostFunction(
+            [](runtime::HostContext&,
+               std::span<Value const>,
+               std::span<Value>) noexcept -> std::expected<void, runtime::Abrupt> { return {}; });
         for (auto const& function: std::to_array<HostFunction>({
                  { .name = "print", .params = {} },
                  { .name = "print_i32", .params = { I32 } },
@@ -141,7 +136,7 @@ namespace
              }))
         {
             auto const address =
-                store.addHostFunction(FuncType { .params = function.params, .results = {} }, ignore);
+                store.addHostFunction(FuncType { .params = function.params, .results = {} }, ignore).value();
             instance.exports.emplace_back(std::string { function.name },
                                           ExternValue { .kind = ExternKind::Func, .address = address });
         }
@@ -210,7 +205,9 @@ namespace
     {
       public:
         Runner(std::filesystem::path directory, FeatureSet features):
-            _directory { std::move(directory) }, _features { features }, _store { _allocator }
+            _directory { std::move(directory) },
+            _features { features },
+            _store { runtime::StoreLimits {}, runtime::StoreServices { .allocator = _allocator } }
         {
             _registered.emplace("spectest", _store.addModuleInstance(makeSpectest(_store)));
         }
@@ -248,13 +245,13 @@ namespace
                     return expectFailure(command, perform(command.action), Stage::Execute);
                 case CommandKind::AssertTrapModule:
                 case CommandKind::AssertUninstantiable:
-                    return expectFailure(command, instantiateFile(command.file), Stage::Instantiate);
+                    return expectFailure(command, instantiateCommandModule(command), Stage::Instantiate);
                 case CommandKind::AssertInvalid:
-                    return expectFailure(command, loadModule(command.file), Stage::Validate);
+                    return expectFailure(command, loadModule(command), Stage::Validate);
                 case CommandKind::AssertMalformed:
-                    return expectFailure(command, loadModule(command.file), Stage::Decode);
+                    return expectFailure(command, loadModule(command), Stage::Decode);
                 case CommandKind::AssertUnlinkable:
-                    return expectFailure(command, instantiateFile(command.file), Stage::Link);
+                    return expectFailure(command, instantiateCommandModule(command), Stage::Link);
                 case CommandKind::AssertException:
                     return expectFailure(command, perform(command.action), Stage::Exception);
                 case CommandKind::AssertInvalidCustom: return assertInvalidCustom(command);
@@ -283,10 +280,10 @@ namespace
         /// refused with a message starting with the expected one.
         [[nodiscard]] Outcome assertInvalidCustom(Command const& command) const
         {
-            auto const module = loadModule(command.file);
+            auto const module = loadModule(command);
             if (!module)
                 return checkFailure(Stage::Custom, command.text, module.error());
-            auto const& errors = (*module)->customErrors;
+            auto const& errors = (*module)->module().customErrors;
             auto const matches = [&](binary::CustomSectionError const& error) {
                 return binary::specMessage(error.code).starts_with(command.text);
             };
@@ -300,21 +297,38 @@ namespace
                 Stage::Custom, command.text, Failure { .stage = Stage::Custom, .message = message });
         }
 
-        /// Reads, decodes and validates a module file.
-        [[nodiscard]] std::expected<std::shared_ptr<binary::Module const>, Failure> loadModule(
-            std::string const& file) const
+        /// The bytes of a command's module.
+        [[nodiscard]] std::expected<std::vector<std::byte>, Failure> moduleBytes(Command const& command) const
         {
-            auto const bytes = readFile(_directory / file);
-            if (!bytes)
-                return std::unexpected { bytes.error() };
-            auto module = binary::decodeModule(*bytes, _features);
-            if (!module)
-                return std::unexpected { Failure { .stage = Stage::Decode,
-                                                   .message = binary::specMessage(module.error()) } };
-            if (auto const valid = validate::validateModule(*module, _features); !valid)
-                return std::unexpected { Failure { .stage = Stage::Validate,
-                                                   .message = validate::specMessage(valid.error()) } };
-            return std::make_shared<binary::Module const>(std::move(*module));
+            return readFile(_directory / command.file);
+        }
+
+        /// Decodes and validates a module.
+        [[nodiscard]] std::expected<std::shared_ptr<validate::ValidatedModule const>, Failure> loadModule(
+            std::span<std::byte const> bytes) const
+        {
+            struct Describe
+            {
+                Failure operator()(binary::DecodeError const& error) const
+                {
+                    return Failure { .stage = Stage::Decode, .message = binary::specMessage(error) };
+                }
+                Failure operator()(validate::ValidationError const& error) const
+                {
+                    return Failure { .stage = Stage::Validate, .message = validate::specMessage(error) };
+                }
+            };
+            return validate::ValidatedModule::load(bytes, _features, binary::DecodeLimits {})
+                .transform_error(
+                    [](validate::ModuleError const& error) { return std::visit(Describe {}, error); });
+        }
+
+        /// Decodes and validates a command's module.
+        [[nodiscard]] std::expected<std::shared_ptr<validate::ValidatedModule const>, Failure> loadModule(
+            Command const& command) const
+        {
+            return moduleBytes(command).and_then(
+                [this](std::vector<std::byte> const& bytes) { return loadModule(bytes); });
         }
 
         /// Resolves a module's imports against the registered modules, in import order.
@@ -343,9 +357,9 @@ namespace
         }
 
         [[nodiscard]] std::expected<uint32_t, Failure> instantiateModule(
-            std::shared_ptr<binary::Module const> module)
+            std::shared_ptr<validate::ValidatedModule const> module)
         {
-            auto const imports = resolveImports(*module);
+            auto const imports = resolveImports(module->module());
             if (!imports)
                 return std::unexpected { imports.error() };
             auto const instance = runtime::instantiate(_store, _interpreter, std::move(module), *imports);
@@ -358,6 +372,10 @@ namespace
                     return Failure { .stage = Stage::Link,
                                      .message = std::string { runtime::specMessage(error.code) } };
                 }
+                Failure operator()(runtime::LimitExceeded const& exceeded) const
+                {
+                    return Failure { .stage = Stage::Instantiate, .message = runtime::describe(exceeded) };
+                }
                 Failure operator()(runtime::AllocationFailure const& failure) const
                 {
                     return Failure { .stage = Stage::Instantiate,
@@ -368,13 +386,14 @@ namespace
                     return trapFailure(Stage::Instantiate, trap);
                 }
                 Failure operator()(runtime::Thrown const& thrown) const { return thrownFailure(thrown); }
+                Failure operator()(runtime::HostFailure const& failure) const { return hostFailure(failure); }
             };
             return std::unexpected { std::visit(Describe {}, instance.error()) };
         }
 
-        [[nodiscard]] std::expected<uint32_t, Failure> instantiateFile(std::string const& file)
+        [[nodiscard]] std::expected<uint32_t, Failure> instantiateCommandModule(Command const& command)
         {
-            return loadModule(file).and_then([&](std::shared_ptr<binary::Module const> module) {
+            return loadModule(command).and_then([&](std::shared_ptr<validate::ValidatedModule const> module) {
                 return instantiateModule(std::move(module));
             });
         }
@@ -384,7 +403,7 @@ namespace
         [[nodiscard]] Outcome defineModule(Command const& command)
         {
             _current = std::nullopt; // the commands after a module that failed fail too
-            auto module = loadModule(command.file);
+            auto module = loadModule(command);
             if (!module)
                 return std::unexpected { describeFailure(module.error()) };
             if (command.name)
@@ -402,7 +421,7 @@ namespace
         /// ModuleInstance.
         [[nodiscard]] Outcome defineDefinition(Command const& command)
         {
-            auto module = loadModule(command.file);
+            auto module = loadModule(command);
             if (!module)
                 return std::unexpected { describeFailure(module.error()) };
             if (command.name)
@@ -470,18 +489,16 @@ namespace
             if (target->kind != ExternKind::Func)
                 return std::unexpected { harnessFailure(std::format("'{}' is no function", action.field)) };
             auto const& type = _store.functionType(target->address);
-            if (action.args.size() != type.params.size()
-                || !std::ranges::all_of(
-                    std::views::iota(std::size_t { 0 }, type.params.size()),
-                    [&](std::size_t index) { return hasType(action.args[index], type.params[index]); }))
-                return std::unexpected { harnessFailure(
-                    std::format("arguments {} do not match '{}'", describeAll(action.args), action.field)) };
             auto results = std::vector<Value> {};
             for (auto const& resultType: type.results)
                 results.push_back(runtime::defaultValue(resultType));
-            auto const invoked = _interpreter.invoke(_store, target->address, action.args, results);
-            if (!invoked)
-                return std::unexpected { abruptFailure(Stage::Execute, invoked.error()) };
+            auto const invoked =
+                runtime::invokeChecked(_store, _interpreter, target->address, action.args, results);
+            if (invoked.entry == runtime::Entry::Refused)
+                return std::unexpected { harnessFailure(
+                    std::format("arguments {} do not match '{}'", describeAll(action.args), action.field)) };
+            if (!invoked.outcome)
+                return std::unexpected { abruptFailure(Stage::Execute, invoked.outcome.error()) };
             return results;
         }
 
@@ -497,13 +514,13 @@ namespace
 
         std::filesystem::path _directory;
         FeatureSet _features;
-        runtime::UnlimitedAllocator _allocator;
+        runtime::HeapMemoryAllocator _allocator;
         runtime::Store _store;
         interpreter::ReferenceInterpreter _interpreter;
         std::optional<uint32_t> _current;
         std::map<std::string, uint32_t, std::less<>> _named;
         std::map<std::string, uint32_t, std::less<>> _registered;
-        std::map<std::string, std::shared_ptr<binary::Module const>, std::less<>> _definitions;
+        std::map<std::string, std::shared_ptr<validate::ValidatedModule const>, std::less<>> _definitions;
     };
 
     /// Runs the script in @p directory.

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -79,6 +80,16 @@ std::optional<DecodeErrorCode> errorOf(std::span<std::byte const> bytes,
     if (result)
         return std::nullopt;
     return result.error().code;
+}
+
+/// The disabled proposal the decoder names for @p bytes under @p features (DecodeError::disabled).
+/// @return It; nothing when the module decodes or the error names none.
+std::optional<Feature> disabledOf(std::span<std::byte const> bytes, FeatureSet const& features)
+{
+    auto const result = decodeModule(bytes, features, DecodeLimits {});
+    if (result)
+        return std::nullopt;
+    return result.error().disabled;
 }
 
 /// The module @p bytes decode to; fails the test when they do not.
@@ -289,6 +300,24 @@ TEST_CASE("Decoder.decodeRejectsHugeVectorCount")
           == DecodeErrorCode::LengthOutOfBounds);
 }
 
+TEST_CASE("Decoder.implementationLimitsAreDistinguishable")
+{
+    // Over a limit the embedder may raise, or malformed whatever the limits.
+    for (auto const& row: isoline::binary::DecodeErrorTable)
+    {
+        INFO("error: " << row.specMessage);
+        CHECK(isImplementationLimit(row.code)
+              == (row.code == DecodeErrorCode::ImplementationLimitExceeded
+                  || row.code == DecodeErrorCode::TooManyLocals));
+    }
+    auto const limited =
+        ModuleBuilder {}.type(FuncType {}).function(0, std::vector(4, isoline::binary::I32), {}).build();
+    auto const result = decodeModule(limited, FeatureSet::wasm2(), DecodeLimits { .maxLocals = 3 });
+    REQUIRE_FALSE(result.has_value());
+    CHECK(isImplementationLimit(result.error().code));
+    CHECK_FALSE(isImplementationLimit(DecodeErrorCode::MalformedSectionId));
+}
+
 TEST_CASE("Decoder.tooManyLocals")
 {
     // Two runs of 0x80000000 i32 overflow a u32.
@@ -297,8 +326,13 @@ TEST_CASE("Decoder.tooManyLocals")
                    0x02, 0x80, 0x80, 0x80, 0x80, 0x08, 0x7F, 0x80, 0x80, 0x80, 0x80, 0x08, 0x7F, 0x0B });
     auto const result = decodeModule(bytes, FeatureSet::wasm2());
     REQUIRE_FALSE(result.has_value());
-    CHECK(result.error().code == DecodeErrorCode::TooManyLocals);
+    CHECK(result.error().code == DecodeErrorCode::LocalCountOverflow);
     CHECK(result.error().offset == 22);
+    // Malformed, not past a limit: the highest maxLocals a u32 holds refuses it alike.
+    CHECK_FALSE(isImplementationLimit(result.error().code));
+    CHECK(errorOf(
+              bytes, FeatureSet::wasm2(), DecodeLimits { .maxLocals = std::numeric_limits<uint32_t>::max() })
+          == DecodeErrorCode::LocalCountOverflow);
 
     // Within a u32 but past DecodeLimits::maxLocals.
     auto const limited =
@@ -619,10 +653,13 @@ TEST_CASE("Decoder.globals")
     CHECK(module.globals[1].type.mutability == Mutability::Var);
     CHECK(module.globals[1].init[0].c == 0x3FF0'0000'0000'0000);
 
-    // spec binary.wast: an init expression missing its end reads the next section as an opcode.
-    CHECK(errorOf(moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03, 0x02, 0x01, 0x00, 0x06, 0x05,
-                             0x01, 0x7F, 0x00, 0x41, 0x00, 0x0A, 0x04, 0x01, 0x02, 0x00, 0x0B }))
-          == DecodeErrorCode::IllegalOpcode);
+    // spec binary.wast: an init expression missing its end reads the next section as an opcode, here
+    // throw_ref (0x0A), whose proposal WebAssembly 2.0 lacks; the message is "illegal opcode 0a" all the
+    // same.
+    auto const missingEnd = moduleOf({ 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03, 0x02, 0x01, 0x00, 0x06, 0x05,
+                                       0x01, 0x7F, 0x00, 0x41, 0x00, 0x0A, 0x04, 0x01, 0x02, 0x00, 0x0B });
+    CHECK(errorOf(missingEnd) == DecodeErrorCode::IllegalOpcode);
+    CHECK(disabledOf(missingEnd, FeatureSet::wasm2()) == Feature::ExceptionHandling);
     // ref.func belongs to reference types.
     auto const refFunc = moduleOf({ 0x06, 0x06, 0x01, 0x70, 0x00, 0xD2, 0x00, 0x0B });
     CHECK_FALSE(errorOf(refFunc).has_value());
@@ -634,11 +671,13 @@ TEST_CASE("Decoder.refFuncNeedsReferenceTypes")
     // Initializers whose type decodes without reference types, so the ref.func gate is what fails.
     auto const elementOffset = moduleOf({ 0x09, 0x07, 0x01, 0x00, 0xD2, 0x00, 0x0B, 0x01, 0x00 });
     CHECK(errorOf(elementOffset, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+    CHECK(disabledOf(elementOffset, FeatureSet::none()) == Feature::ReferenceTypes);
     CHECK_FALSE(
         errorOf(elementOffset, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
             .has_value());
     auto const i32Global = moduleOf({ 0x06, 0x06, 0x01, 0x7F, 0x00, 0xD2, 0x00, 0x0B });
     CHECK(errorOf(i32Global, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+    CHECK(disabledOf(i32Global, FeatureSet::none()) == Feature::ReferenceTypes);
     CHECK_FALSE(errorOf(i32Global, FeatureSet::none().with(Feature::ReferenceTypes).with(Feature::BulkMemory))
                     .has_value());
 }
@@ -1055,9 +1094,11 @@ TEST_CASE("Decoder.typeIndexImmediate")
     for (auto const opcode: { uint8_t { 0x14 }, uint8_t { 0xD4 }, uint8_t { 0xD5 }, uint8_t { 0xD6 } })
     {
         INFO(int { opcode });
-        CHECK(errorOf(functionWith({ opcode, 0x00 }),
-                      FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
+        auto const withoutTypedReferences = FeatureSet::wasm3().without(Feature::TypedFunctionReferences);
+        CHECK(errorOf(functionWith({ opcode, 0x00 }), withoutTypedReferences)
               == DecodeErrorCode::IllegalOpcode);
+        CHECK(disabledOf(functionWith({ opcode, 0x00 }), withoutTypedReferences)
+              == Feature::TypedFunctionReferences);
     }
 }
 
@@ -1093,6 +1134,7 @@ TEST_CASE("Decoder.tailCallsNeedTheirFeatures")
         INFO(int { row.body.front() } << " without " << static_cast<int>(row.disabled));
         CHECK(errorOf(functionWith(row.body), FeatureSet::wasm3().without(row.disabled))
               == DecodeErrorCode::IllegalOpcode);
+        CHECK(disabledOf(functionWith(row.body), FeatureSet::wasm3().without(row.disabled)) == row.disabled);
     }
     CHECK_FALSE(
         errorOf(functionWith({ 0x12, 0x00 }), FeatureSet::wasm3().without(Feature::TypedFunctionReferences))
@@ -1193,8 +1235,211 @@ TEST_CASE("Decoder.illegalOpcodeNamesItsBytes")
     CHECK(messageOf({ 0xFC, 0x12 }) == "illegal opcode fc 12");
     CHECK(messageOf({ 0xFC, 0x80, 0x02 }) == "illegal opcode fc 100");
     CHECK(messageOf({ 0xFD, 0x9A, 0x01 }) == "illegal opcode 9a");
-    // An instruction of a disabled proposal is named as an unknown one is.
-    CHECK(messageOf({ 0xFD, 0x0C }, FeatureSet::none()) == "illegal opcode 0c");
+    // An instruction of a disabled proposal is named as an unknown one is, then its feature.
+    CHECK(messageOf({ 0xFD, 0x0C }, FeatureSet::none()) == "illegal opcode 0c (simd not enabled)");
+}
+
+namespace
+{
+
+/// A module a disabled proposal would decode, the spec's error without it, and the proposal named.
+struct GatedForm
+{
+    std::string_view name;           ///< What it uses.
+    std::vector<std::byte> bytes;    ///< The module.
+    FeatureSet features;             ///< The decoder's set, which lacks the proposal.
+    DecodeErrorCode code;            ///< The error a decoder of that set reports, as the spec's.
+    std::optional<Feature> disabled; ///< The proposal named; none where no proposal decodes it.
+};
+
+} // namespace
+
+TEST_CASE("Decoder.everyGatedFormNamesItsProposal")
+{
+    auto const wasm3 = FeatureSet::wasm3();
+    auto const rows = std::vector<GatedForm> {
+        { "tag section",
+          moduleOf({ 0x0D, 0x01, 0x00 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedSectionId,
+          Feature::ExceptionHandling },
+        { "data count section",
+          moduleOf({ 0x0C, 0x01, 0x00 }),
+          FeatureSet::none(),
+          DecodeErrorCode::MalformedSectionId,
+          Feature::BulkMemory },
+        { "unknown section",
+          moduleOf({ 0x0E, 0x01, 0x00 }),
+          wasm3,
+          DecodeErrorCode::MalformedSectionId,
+          std::nullopt },
+        { "v128",
+          moduleOf({ 0x01, 0x05, 0x01, 0x60, 0x01, 0x7B, 0x00 }),
+          FeatureSet::none(),
+          DecodeErrorCode::MalformedReferenceType,
+          Feature::Simd },
+        { "exnref",
+          moduleOf({ 0x01, 0x05, 0x01, 0x60, 0x01, 0x69, 0x00 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedReferenceType,
+          Feature::ExceptionHandling },
+        { "(ref null $t)",
+          moduleOf({ 0x01, 0x06, 0x01, 0x60, 0x01, 0x63, 0x00, 0x00 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedReferenceType,
+          Feature::TypedFunctionReferences },
+        { "unknown value type",
+          moduleOf({ 0x01, 0x05, 0x01, 0x60, 0x01, 0x50, 0x00 }),
+          wasm3,
+          DecodeErrorCode::MalformedReferenceType,
+          std::nullopt },
+        { "ref.null of a type index",
+          functionWith({ 0xD0, 0x00, 0x1A }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedReferenceType,
+          Feature::TypedFunctionReferences },
+        { "ref.null exn",
+          functionWith({ 0xD0, 0x69, 0x1A }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedReferenceType,
+          Feature::ExceptionHandling },
+        { "tag import",
+          moduleOf({ 0x02, 0x08, 0x01, 0x01, 0x6D, 0x01, 0x74, 0x04, 0x00, 0x00 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedImportKind,
+          Feature::ExceptionHandling },
+        { "tag export",
+          moduleOf({ 0x07, 0x05, 0x01, 0x01, 0x74, 0x04, 0x00 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedExportKind,
+          Feature::ExceptionHandling },
+        { "passive element segment",
+          moduleOf({ 0x09, 0x02, 0x01, 0x01 }),
+          FeatureSet::none(),
+          DecodeErrorCode::MalformedElementSegmentKind,
+          Feature::BulkMemory },
+        { "declarative element segment",
+          moduleOf({ 0x09, 0x02, 0x01, 0x03 }),
+          FeatureSet::none(),
+          DecodeErrorCode::MalformedElementSegmentKind,
+          Feature::ReferenceTypes },
+        { "element segment flags 8",
+          moduleOf({ 0x09, 0x02, 0x01, 0x08 }),
+          wasm3,
+          DecodeErrorCode::MalformedElementSegmentKind,
+          std::nullopt },
+        { "passive data segment",
+          moduleOf({ 0x0B, 0x02, 0x01, 0x01 }),
+          FeatureSet::none(),
+          DecodeErrorCode::MalformedDataSegmentKind,
+          Feature::BulkMemory },
+        { "data segment flags 3",
+          moduleOf({ 0x0B, 0x02, 0x01, 0x03 }),
+          wasm3,
+          DecodeErrorCode::MalformedDataSegmentKind,
+          std::nullopt },
+        { "i64 memory",
+          moduleOf({ 0x05, 0x03, 0x01, 0x04, 0x01 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::LimitsFlagTooLarge,
+          Feature::Memory64 },
+        { "page size, 2.0 grammar",
+          moduleOf({ 0x05, 0x04, 0x01, 0x08, 0x01, 0x00 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::LimitsFlagTooLarge,
+          Feature::CustomPageSizes },
+        { "page size, 3.0 grammar",
+          moduleOf({ 0x05, 0x04, 0x01, 0x08, 0x01, 0x00 }),
+          wasm3,
+          DecodeErrorCode::MalformedLimitsFlags,
+          Feature::CustomPageSizes },
+        { "i64 page size, 2.0 grammar",
+          moduleOf({ 0x05, 0x04, 0x01, 0x0C, 0x01, 0x00 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::LimitsFlagTooLarge,
+          Feature::Memory64 },
+        { "table page size",
+          moduleOf({ 0x04, 0x05, 0x01, 0x70, 0x08, 0x01, 0x00 }),
+          wasm3.with(Feature::CustomPageSizes),
+          DecodeErrorCode::MalformedLimitsFlags,
+          std::nullopt },
+        { "limits flags 2",
+          moduleOf({ 0x05, 0x03, 0x01, 0x02, 0x01 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::LimitsFlagTooLarge,
+          std::nullopt },
+        { "table with initializer",
+          moduleOf({ 0x04, 0x02, 0x01, 0x40 }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedReferenceType,
+          Feature::TypedFunctionReferences },
+        { "block type index",
+          functionWith({ 0x02, 0x00, 0x0B }),
+          FeatureSet::none(),
+          DecodeErrorCode::MalformedReferenceType,
+          Feature::MultiValue },
+        { "call_indirect table index",
+          functionWith({ 0x41, 0x00, 0x11, 0x00, 0x01 }),
+          FeatureSet::none(),
+          DecodeErrorCode::ZeroByteExpected,
+          Feature::ReferenceTypes },
+        { "memory.size memory index",
+          functionWith({ 0x3F, 0x01, 0x1A }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::ZeroByteExpected,
+          Feature::MultiMemory },
+        { "memarg memory index",
+          functionWith({ 0x41, 0x00, 0x28, 0x40, 0x00, 0x00, 0x1A }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedMemopFlags,
+          Feature::MultiMemory },
+        { "memarg alignment 32",
+          functionWith({ 0x41, 0x00, 0x28, 0x20, 0x00, 0x1A }),
+          FeatureSet::wasm2(),
+          DecodeErrorCode::MalformedMemopFlags,
+          std::nullopt },
+    };
+    for (auto const& row: rows)
+    {
+        INFO(row.name);
+        auto const result = decodeModule(row.bytes, row.features, DecodeLimits {});
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().code == row.code);
+        CHECK(result.error().disabled == row.disabled);
+        // The spec's message comes first, whatever the proposal named.
+        CHECK(
+            isoline::binary::specMessage(result.error()).starts_with(isoline::binary::specMessage(row.code)));
+    }
+}
+
+TEST_CASE("Decoder.disabledFeatureIsNamed")
+{
+    using isoline::binary::isImplementationLimit;
+    // v128.const without SIMD: the feature that would decode it, at the opcode.
+    auto const simd = decodeModule(functionWith({ 0xFD, 0x0C }), FeatureSet::wasm2().without(Feature::Simd));
+    REQUIRE_FALSE(simd.has_value());
+    CHECK(simd.error().code == DecodeErrorCode::IllegalOpcode);
+    CHECK(simd.error().disabled == Feature::Simd);
+    CHECK(isoline::binary::specMessage(simd.error()) == "illegal opcode 0c (simd not enabled)");
+    CHECK_FALSE(isImplementationLimit(simd.error().code));
+    // return_call_ref needs typed function references beside tail calls: the first one missing, in
+    // FeatureTable order, is named.
+    auto const tailCall = decodeModule(functionWith({ 0x15, 0x00 }), FeatureSet::wasm2());
+    REQUIRE_FALSE(tailCall.has_value());
+    CHECK(tailCall.error().disabled == Feature::TailCall);
+    auto const typedRefs =
+        decodeModule(functionWith({ 0x15, 0x00 }), FeatureSet::wasm2().with(Feature::TailCall));
+    REQUIRE_FALSE(typedRefs.has_value());
+    CHECK(typedRefs.error().disabled == Feature::TypedFunctionReferences);
+    // An opcode of no proposal names none.
+    auto const unknown = decodeModule(functionWith({ 0x06 }), FeatureSet::wasm3());
+    REQUIRE_FALSE(unknown.has_value());
+    CHECK(unknown.error().code == DecodeErrorCode::IllegalOpcode);
+    CHECK_FALSE(unknown.error().disabled.has_value());
+    // An error that names no proposal reads as the spec's alone.
+    auto const bare = isoline::binary::DecodeError { DecodeErrorCode::IllegalOpcode, 0 };
+    CHECK_FALSE(bare.disabled.has_value());
+    CHECK(isoline::binary::specMessage(bare) == "illegal opcode");
 }
 
 TEST_CASE("Decoder.subjectOfAnErrorWithoutDetail")
@@ -1399,6 +1644,7 @@ TEST_CASE("Decoder.featureGated")
         auto const bytes = functionWith(row.body);
         INFO("first opcode byte " << int { row.body[0] });
         CHECK(errorOf(bytes, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+        CHECK(disabledOf(bytes, FeatureSet::none()) == row.feature);
         CHECK_FALSE(
             errorOf(bytes, FeatureSet::none().with(row.feature).with(Feature::BulkMemory)).has_value());
     }
@@ -1619,6 +1865,9 @@ TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
             continue;
         }
         CHECK(errorOf(bytes, FeatureSet::none()) == DecodeErrorCode::IllegalOpcode);
+        auto const named = disabledOf(bytes, FeatureSet::none());
+        REQUIRE(named.has_value());
+        CHECK(row.required.has(*named));
         // Accepted with its proposal: code naming a data segment then gets as far as wanting the
         // data count section, which this module lacks.
         auto const namesDataSegment =
@@ -1635,6 +1884,7 @@ TEST_CASE("Decoder.everyOpcodeGatedByItsProposal")
                 continue;
             INFO("without " << feature.name);
             CHECK(errorOf(bytes, enabled.without(feature.feature)) == DecodeErrorCode::IllegalOpcode);
+            CHECK(disabledOf(bytes, enabled.without(feature.feature)) == feature.feature);
         }
     }
 }

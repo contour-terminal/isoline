@@ -8,36 +8,11 @@
 
 #include <isoline/Features.hpp>
 #include <isoline/binary/DecodeError.hpp>
+#include <isoline/binary/DecodeLimits.hpp>
 #include <isoline/binary/Module.hpp>
 
 namespace isoline::binary
 {
-
-/// The implementation limits the decoder enforces (spec §9, Robustness), published so embedders
-/// know them; exceeding one is ImplementationLimitExceeded, or TooManyLocals for maxLocals.
-///
-/// The defaults are those the JavaScript embedding fixes, which every browser engine shares.
-struct DecodeLimits
-{
-    uint32_t maxTypes = 1'000'000;            ///< Entries of the type section.
-    uint32_t maxFunctions = 1'000'000;        ///< Entries of the function section.
-    uint32_t maxImports = 100'000;            ///< Imports, each item of a compact entry one.
-    uint32_t maxExports = 100'000;            ///< Entries of the export section.
-    uint32_t maxGlobals = 1'000'000;          ///< Entries of the global section.
-    uint32_t maxTables = 100'000;             ///< Tables, imported and defined alike, as JS allows.
-    uint32_t maxMemories = 100;               ///< Memories, imported and defined alike.
-    uint32_t maxTags = 1'000'000;             ///< Entries of the tag section.
-    uint32_t maxDataSegments = 100'000;       ///< Entries of the data section.
-    uint32_t maxElementSegments = 10'000'000; ///< Entries of the element section.
-    uint32_t maxElementItems = 10'000'000;    ///< Items of one element segment.
-    uint32_t maxLocals = 50'000;              ///< Declared locals of one function, over all its runs.
-    uint32_t maxParams = 1'000;               ///< Parameters of one function type.
-    uint32_t maxResults = 1'000;              ///< Results of one function type.
-    uint32_t maxFunctionBodySize = 7'654'321; ///< Bytes of one function body, its locals included.
-    uint32_t maxBrTableSize = 65'520;         ///< Labels of one br_table.
-    /// Catch clauses of one try_table: as many as br_table may name labels, as each clause names one.
-    uint32_t maxCatchClauses = 65'520;
-};
 
 /// Decodes a binary module.
 ///

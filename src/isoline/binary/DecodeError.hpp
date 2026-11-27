@@ -30,6 +30,7 @@ enum class DecodeErrorCode : uint8_t
     JunkAfterLastSection,
     MalformedUtf8Encoding,
     TooManyLocals,
+    LocalCountOverflow,
     IllegalOpcode,
     MalformedReferenceType,
     MalformedImportKind,
@@ -69,6 +70,13 @@ enum class DecodeErrorDetail : uint8_t
     FeaturePrerequisite, ///< The feature and the prerequisite it lacks, by name.
 };
 
+/// What a decode error says of the module: that it is malformed, or that it is past a limit.
+enum class DecodeErrorKind : uint8_t
+{
+    Malformed,           ///< Not a module under any limits: the binary format refuses it.
+    ImplementationLimit, ///< Past a DecodeLimits value: a module a raised limit may decode.
+};
+
 /// One row of DecodeErrorTable: an error and the message the spec test suite expects for it.
 struct DecodeErrorRow
 {
@@ -76,6 +84,7 @@ struct DecodeErrorRow
     std::string_view
         specMessage; ///< The reference interpreter's message, which spec tests match as a prefix.
     DecodeErrorDetail detail = DecodeErrorDetail::None; ///< What the message appends to specMessage.
+    DecodeErrorKind kind = DecodeErrorKind::Malformed;  ///< Malformed, or past an implementation limit.
 };
 
 /// Every decode error, one row per DecodeErrorCode enumerator, in enumerator order.
@@ -94,7 +103,12 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::SectionSizeMismatch, .specMessage = "section size mismatch" },
     { .code = DecodeErrorCode::JunkAfterLastSection, .specMessage = "junk after last section" },
     { .code = DecodeErrorCode::MalformedUtf8Encoding, .specMessage = "malformed UTF-8 encoding" },
-    { .code = DecodeErrorCode::TooManyLocals, .specMessage = "too many locals" },
+    // Past DecodeLimits::maxLocals: a raised limit may decode the function.
+    { .code = DecodeErrorCode::TooManyLocals,
+      .specMessage = "too many locals",
+      .kind = DecodeErrorKind::ImplementationLimit },
+    // Past 2^32 - 1 locals, which the binary format refuses whatever the limits: malformed.
+    { .code = DecodeErrorCode::LocalCountOverflow, .specMessage = "too many locals" },
     // The interpreter appends the opcode's bytes: "illegal opcode ff", or "illegal opcode fc 12".
     { .code = DecodeErrorCode::IllegalOpcode,
       .specMessage = "illegal opcode",
@@ -119,7 +133,9 @@ inline constexpr auto DecodeErrorTable = std::to_array<DecodeErrorRow>({
     { .code = DecodeErrorCode::ZeroByteExpected, .specMessage = "zero byte expected" },
     { .code = DecodeErrorCode::LengthOutOfBounds, .specMessage = "length out of bounds" },
     // The interpreter has no decode-time limit; this is Isoline's own wording.
-    { .code = DecodeErrorCode::ImplementationLimitExceeded, .specMessage = "implementation limit exceeded" },
+    { .code = DecodeErrorCode::ImplementationLimitExceeded,
+      .specMessage = "implementation limit exceeded",
+      .kind = DecodeErrorKind::ImplementationLimit },
     // The interpreter reads sections in their fixed order, so a repeated or misplaced one is left over
     // when it expects the end of the module.
     { .code = DecodeErrorCode::DuplicateSection, .specMessage = "unexpected content after last section" },
@@ -163,6 +179,13 @@ static_assert(
     "DecodeErrorTable must hold one row per DecodeErrorCode, at the index of its enumerator");
 
 /// A decode failure: what went wrong, where, and what it names.
+///
+/// A module that uses a proposal the FeatureSet does not enable is refused as a decoder of a standard
+/// without the proposal refuses it: with the code, and so the message prefix, the spec suite expects
+/// there (an unknown opcode's IllegalOpcode, a tag section's MalformedSectionId, an i64 memory's limits
+/// flag). Such an error names in disabled the proposal that would decode the module past that point,
+/// and the message appends it ("illegal opcode 0c (simd not enabled)"), so an embedder knows what to
+/// enable.
 struct DecodeError
 {
     /// Builds an error; the code and offset are required, so one that forgets its code does not
@@ -170,16 +193,23 @@ struct DecodeError
     /// @param code What went wrong.
     /// @param offset The absolute byte offset it is reported at.
     /// @param subject What it names, as its row's detail reads it; empty when it names nothing.
+    /// @param disabled The proposal the decoder's FeatureSet lacks that would decode the module past
+    ///                 this point; empty when none would.
     constexpr DecodeError(DecodeErrorCode code,
                           std::size_t offset,
-                          std::optional<uint64_t> subject = {}) noexcept:
-        code { code }, offset { offset }, subject { subject }
+                          std::optional<uint64_t> subject = {},
+                          std::optional<Feature> disabled = {}) noexcept:
+        code { code }, offset { offset }, subject { subject }, disabled { disabled }
     {
     }
 
     DecodeErrorCode code;            ///< What went wrong.
     std::size_t offset;              ///< The absolute byte offset in the module the error is reported at.
     std::optional<uint64_t> subject; ///< What it names; see opcodeSubject() and prerequisiteSubject().
+    std::optional<Feature> disabled; ///< The disabled proposal that would decode it, if any.
+
+    /// Two errors are equal when their code, offset, subject and disabled proposal are.
+    bool operator==(DecodeError const&) const = default;
 };
 
 /// The subject of an IllegalOpcode error: the opcode as read.
@@ -207,34 +237,47 @@ struct DecodeError
     return DecodeErrorTable[static_cast<std::size_t>(code)].specMessage;
 }
 
+/// Whether @p code reports a module past an implementation limit (DecodeLimits), not a malformed one.
+/// @param code The error.
+/// @return Whether its row's kind is ImplementationLimit.
+[[nodiscard]] constexpr bool isImplementationLimit(DecodeErrorCode code) noexcept
+{
+    return DecodeErrorTable[static_cast<std::size_t>(code)].kind == DecodeErrorKind::ImplementationLimit;
+}
+
 /// The message the reference interpreter reports for @p error: its row's message, followed by what
-/// the error names when the row has a detail and the error a subject.
+/// the error names when the row has a detail and the error a subject, and then by the disabled
+/// proposal that would decode the module, when the error names one (appendDisabledFeature()).
 /// @param error The error to describe.
 /// @return The message the spec suite's assertions match as a prefix.
 [[nodiscard]] inline std::string specMessage(DecodeError const& error)
 {
     auto const& row = DecodeErrorTable[static_cast<std::size_t>(error.code)];
-    if (!error.subject)
+    auto const message = [&]() -> std::string {
+        if (!error.subject)
+            return std::string { row.specMessage };
+        auto const subject = *error.subject;
+        // The name of the feature whose index is the low byte of @p bits.
+        auto const nameOf = [](uint64_t bits) {
+            return featureRow(static_cast<Feature>(bits & 0xFFU)).name;
+        };
+        switch (row.detail)
+        {
+            case DecodeErrorDetail::None: break;
+            case DecodeErrorDetail::OpcodeBytes: {
+                auto const prefix = (subject >> 32U) & 0xFFU;
+                auto const code = subject & 0xFFFF'FFFFU;
+                if (prefix == 0)
+                    return std::format("{} {:02x}", row.specMessage, code);
+                return std::format("{} {:02x} {:02x}", row.specMessage, prefix, code);
+            }
+            case DecodeErrorDetail::FeaturePrerequisite:
+                return std::format(
+                    "{}: {} requires {}", row.specMessage, nameOf(subject), nameOf(subject >> 8U));
+        }
         return std::string { row.specMessage };
-    auto const subject = *error.subject;
-    switch (row.detail)
-    {
-        case DecodeErrorDetail::None: break;
-        case DecodeErrorDetail::OpcodeBytes: {
-            auto const prefix = subject >> 32U;
-            auto const code = subject & 0xFFFF'FFFFU;
-            if (prefix == 0)
-                return std::format("{} {:02x}", row.specMessage, code);
-            return std::format("{} {:02x} {:02x}", row.specMessage, prefix, code);
-        }
-        case DecodeErrorDetail::FeaturePrerequisite: {
-            auto const nameOf = [](uint64_t index) {
-                return featureRow(static_cast<Feature>(index & 0xFFU)).name;
-            };
-            return std::format("{}: {} requires {}", row.specMessage, nameOf(subject), nameOf(subject >> 8U));
-        }
-    }
-    return std::string { row.specMessage };
+    }();
+    return appendDisabledFeature(message, error.disabled);
 }
 
 } // namespace isoline::binary

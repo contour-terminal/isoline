@@ -13,6 +13,8 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <stdexcept>
+#include <utility>
 
 namespace isoline::testing
 {
@@ -30,9 +32,25 @@ namespace
         return instance;
     }
 
+    /// The most live bytes an allocation may leave; the default refuses nothing.
+    std::size_t& liveLimit() noexcept
+    {
+        static auto limit = std::numeric_limits<std::size_t>::max();
+        return limit;
+    }
+
+    /// What the throwing operator new throws for a refused allocation.
+    RefusalException& refusalException() noexcept
+    {
+        static auto refusal = RefusalException::BadAlloc;
+        return refusal;
+    }
+
     void* allocate(std::size_t size) noexcept
     {
         if (size > std::numeric_limits<std::size_t>::max() - HeaderBytes)
+            return nullptr;
+        if (size > liveLimit() - std::min(liveLimit(), counts().liveBytes))
             return nullptr;
         auto* const block = static_cast<std::byte*>(std::malloc(size + HeaderBytes));
         if (block == nullptr)
@@ -44,10 +62,22 @@ namespace
         return block + HeaderBytes;
     }
 
+    /// The std::length_error a refused allocation throws. Its message is allocated, past the budget,
+    /// so the budget is lifted while it is built, or building it would recurse.
+    std::length_error lengthError()
+    {
+        auto const limit = std::exchange(liveLimit(), std::numeric_limits<std::size_t>::max());
+        auto error = std::length_error { "allocation refused" };
+        liveLimit() = limit;
+        return error;
+    }
+
     void* allocateOrThrow(std::size_t size)
     {
         if (auto* const pointer = allocate(size))
             return pointer;
+        if (refusalException() == RefusalException::LengthError)
+            throw lengthError();
         throw std::bad_alloc {};
     }
 
@@ -71,6 +101,22 @@ AllocationCounts allocationCounts() noexcept
 void resetAllocationPeak() noexcept
 {
     counts().peakBytes = counts().liveBytes;
+}
+
+AllocationLimit::AllocationLimit(std::size_t extraBytes, RefusalException refusal) noexcept:
+    _previous { liveLimit() }, _previousRefusal { refusalException() }
+{
+    refusalException() = refusal;
+    auto const live = counts().liveBytes;
+    liveLimit() = extraBytes > std::numeric_limits<std::size_t>::max() - live
+                      ? std::numeric_limits<std::size_t>::max()
+                      : live + extraBytes;
+}
+
+AllocationLimit::~AllocationLimit()
+{
+    liveLimit() = _previous;
+    refusalException() = _previousRefusal;
 }
 
 } // namespace isoline::testing

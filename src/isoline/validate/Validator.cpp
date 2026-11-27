@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include <isoline/Features.hpp>
+#include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
@@ -60,6 +62,7 @@ namespace
         ValidationErrorCode code;                ///< What went wrong.
         std::optional<uint32_t> subject;         ///< The unknown or undeclared index, if it names one.
         std::optional<OperandMismatch> mismatch; ///< The operands that did not match, if recorded.
+        std::optional<Feature> disabled;         ///< The disabled proposal that would admit it, if any.
     };
 
     /// The outcome of a check whose position its caller knows.
@@ -68,7 +71,8 @@ namespace
     /// @return The failure of a check with @p code, naming no index.
     [[nodiscard]] std::unexpected<Fault> fail(ValidationErrorCode code) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = std::nullopt, .mismatch = std::nullopt } };
+        return std::unexpected { Fault {
+            .code = code, .subject = std::nullopt, .mismatch = std::nullopt, .disabled = std::nullopt } };
     }
 
     /// @return The failure @p fault, passed on.
@@ -80,7 +84,8 @@ namespace
     /// @return The failure of a check with @p code about the index @p subject.
     [[nodiscard]] std::unexpected<Fault> failNaming(ValidationErrorCode code, uint32_t subject) noexcept
     {
-        return std::unexpected { Fault { .code = code, .subject = subject, .mismatch = std::nullopt } };
+        return std::unexpected { Fault {
+            .code = code, .subject = subject, .mismatch = std::nullopt, .disabled = std::nullopt } };
     }
 
     /// @return Success when @p holds, else the failure @p code.
@@ -89,6 +94,25 @@ namespace
         if (!holds)
             return fail(code);
         return {};
+    }
+
+    /// @return The failure of a check with @p code, naming @p feature as the disabled proposal that
+    ///         would admit what failed.
+    [[nodiscard]] std::unexpected<Fault> failDisabled(ValidationErrorCode code, Feature feature) noexcept
+    {
+        return std::unexpected { Fault {
+            .code = code, .subject = std::nullopt, .mismatch = std::nullopt, .disabled = feature } };
+    }
+
+    /// @return Success when @p holds or @p features enables @p feature, else failDisabled().
+    [[nodiscard]] Check checkUnlessEnabled(bool holds,
+                                           FeatureSet features,
+                                           Feature feature,
+                                           ValidationErrorCode code) noexcept
+    {
+        if (holds || features.has(feature))
+            return {};
+        return failDisabled(code, feature);
     }
 
     /// @return Success when @p index is below @p count, else the failure @p code naming it.
@@ -103,7 +127,7 @@ namespace
     [[nodiscard]] ValidationError errorAt(Fault fault, uint32_t function, uint32_t instruction) noexcept
     {
         return ValidationError {
-            fault.code, function, instruction, fault.subject, std::move(fault.mismatch)
+            fault.code, function, instruction, fault.subject, std::move(fault.mismatch), fault.disabled
         };
     }
 
@@ -265,6 +289,7 @@ namespace
     {
         Module const& module;
         FeatureSet features;
+        binary::DecodeLimits limits;             ///< The limits bodies are validated under.
         std::vector<uint32_t> functionTypes;     ///< The type index of every function, imports first.
         std::vector<TableType> tables;           ///< Every table, imports first.
         std::vector<MemoryType> memories;        ///< Every memory, imports first.
@@ -470,11 +495,13 @@ namespace
 
         /// Types @p body.
         /// @param body The body and what it is typed against.
-        /// @return Nothing when it is valid, else the first error and the instruction it is at.
-        [[nodiscard]] std::expected<void, BodyError> validate(Body const& body)
+        /// @return Its frame shape when it is valid, else the first error and the instruction it is at.
+        [[nodiscard]] std::expected<FrameShape, BodyError> validate(Body const& body)
         {
             _operands.clear();
             _frames.clear();
+            _shape = FrameShape {};
+            _peakOperands = 0;
             _localRunEnds.clear();
             startLocalInitialization();
             auto end = uint64_t { 0 };
@@ -484,23 +511,43 @@ namespace
                 _localRunEnds.push_back(end);
             }
 
+            // One instruction pushes at most one function type's results or one label's arity, which
+            // a block type's params make up to maxParams, so checking after each keeps the stack within
+            // that of the cap, however many operands the body would pile up. The slack is the wider of
+            // the two, so that a valid body of few instructions and one wide label is never refused.
+            auto const& limits = _context.limits;
+            auto const slack = std::max(limits.maxParams, limits.maxResults);
+            auto const maxOperands = std::min<uint64_t>(
+                (uint64_t { limits.maxOperandsPerInstruction } * body.instructions.size()) + slack,
+                std::numeric_limits<uint32_t>::max());
             pushFrame(Opcode::Block, BlockSignature { .params = {}, .results = body.results });
             for (auto const [index, instruction]: core::views::enumerate(body.instructions))
             {
                 // The decoder resolves block structure: the final end closes the body's frame.
                 Require(!_frames.empty());
-                if (auto const result = step(body, instruction); !result)
+                auto const result = step(body, instruction).and_then([&] {
+                    return check(_peakOperands <= maxOperands,
+                                 ValidationErrorCode::OperandStackLimitExceeded);
+                });
+                if (!result)
                     return std::unexpected { BodyError { .fault = result.error(),
                                                          .instruction = static_cast<uint32_t>(index) } };
             }
             Require(_frames.empty());
-            return {};
+            // Checked: every step, the final end included, kept the peak within maxOperands, which
+            // fits a uint32_t.
+            _shape.maxOperands = static_cast<uint32_t>(_peakOperands);
+            return _shape;
         }
 
       private:
         // --- The operand and control stacks, as the spec appendix names them ---
 
-        void push(Operand const& operand) { _operands.push_back(operand); }
+        void push(Operand const& operand)
+        {
+            _operands.push_back(operand);
+            _peakOperands = std::max(_peakOperands, _operands.size());
+        }
 
         void pushAll(std::span<ValueType const> types)
         {
@@ -561,7 +608,8 @@ namespace
                 mismatch.actual.insert(mismatch.actual.end(), top.begin(), top.end());
                 return fail(Fault { .code = ValidationErrorCode::TypeMismatch,
                                     .subject = std::nullopt,
-                                    .mismatch = std::move(mismatch) });
+                                    .mismatch = std::move(mismatch),
+                                    .disabled = std::nullopt });
             }
             _operands.resize(_operands.size() - taken);
             return {};
@@ -604,6 +652,8 @@ namespace
                                       .height = _operands.size(),
                                       .setLocalsHeight = _setLocals.size(),
                                       .reachability = Reachability::Reachable });
+            // The body's own frame, the function's label, is not one of its labels.
+            _shape.maxLabels = std::max(_shape.maxLabels, static_cast<uint32_t>(_frames.size() - 1));
             pushAll(signature.params);
         }
 
@@ -1243,6 +1293,8 @@ namespace
         std::vector<uint32_t> _setLocals;    ///< The non-defaultable locals set in the open blocks.
         std::vector<uint64_t> _setStamps;    ///< Per local index, _generation while it is set.
         uint64_t _generation = 0;            ///< The stamp of the body being validated; never 0.
+        FrameShape _shape;                   ///< The high-water marks of the body being validated.
+        std::size_t _peakOperands = 0;       ///< The operand high-water mark, before it is narrowed.
     };
 
     // --- The module ---------------------------------------------------------------------------
@@ -1251,9 +1303,10 @@ namespace
     class ModuleValidator
     {
       public:
-        ModuleValidator(Module const& module, FeatureSet features):
+        ModuleValidator(Module const& module, FeatureSet features, binary::DecodeLimits const& limits):
             _context { .module = module,
                        .features = features,
+                       .limits = limits,
                        .functionTypes = {},
                        .tables = {},
                        .memories = {},
@@ -1266,7 +1319,7 @@ namespace
         {
         }
 
-        [[nodiscard]] std::expected<void, ValidationError> validate()
+        [[nodiscard]] std::expected<ModuleShape, ValidationError> validate()
         {
             return checkTypeSection()
                 .and_then([this] { return checkImports(); })
@@ -1280,7 +1333,8 @@ namespace
                 .and_then([this] { return checkBodies(); })
                 .and_then([this] { return checkStart(); })
                 .and_then([this] { return checkExports(); })
-                .and_then([this] { return checkCounts(); });
+                .and_then([this] { return checkCounts(); })
+                .transform([this] { return std::move(_shape); });
         }
 
       private:
@@ -1374,13 +1428,14 @@ namespace
 
         [[nodiscard]] std::expected<void, ValidationError> checkTypes() const
         {
-            // Before multi-value, a function returns at most one value.
+            // Before multi-value, a function returns at most one value; with it the types are not scanned.
             if (_context.features.has(Feature::MultiValue))
                 return {};
-            return atModule(
-                check(std::ranges::all_of(module().types,
-                                          [](FuncType const& type) { return type.results.size() <= 1; }),
-                      ValidationErrorCode::InvalidResultArity));
+            if (std::ranges::all_of(module().types,
+                                    [](FuncType const& type) { return type.results.size() <= 1; }))
+                return {};
+            return moduleError(
+                failDisabled(ValidationErrorCode::InvalidResultArity, Feature::MultiValue).error());
         }
 
         /// Types a constant expression of type @p type: constness first, as the interpreter checks
@@ -1390,8 +1445,10 @@ namespace
             for (auto const& instruction: expression)
             {
                 auto const row = std::ranges::find(ConstantTable, instruction.opcode, &ConstantRow::opcode);
-                if (row == ConstantTable.end() || (row->required && !_context.features.has(*row->required)))
+                if (row == ConstantTable.end())
                     return fail(ValidationErrorCode::ConstantExpressionRequired);
+                if (row->required && !_context.features.has(*row->required))
+                    return failDisabled(ValidationErrorCode::ConstantExpressionRequired, *row->required);
                 if (instruction.opcode != Opcode::GlobalGet)
                     continue;
                 if (instruction.a >= _context.importedGlobalCount)
@@ -1407,7 +1464,9 @@ namespace
                 .results = std::span { &type, 1 },
                 .globals = std::span { _context.globals }.first(_context.importedGlobalCount),
             };
-            return _bodies.validate(body).transform_error([](BodyError const& error) { return error.fault; });
+            return _bodies.validate(body)
+                .transform([](FrameShape const&) {})
+                .transform_error([](BodyError const& error) { return error.fault; });
         }
 
         [[nodiscard]] std::expected<void, ValidationError> checkGlobals()
@@ -1503,6 +1562,7 @@ namespace
         [[nodiscard]] std::expected<void, ValidationError> checkBodies()
         {
             auto const importedFunctions = _context.functionTypes.size() - module().functions.size();
+            _shape.functions.reserve(module().code.size());
             for (auto const [index, function]: core::views::enumerate(module().code))
             {
                 auto const functionIndex = static_cast<uint32_t>(importedFunctions + index);
@@ -1516,9 +1576,11 @@ namespace
                                          .localRuns = function.locals,
                                          .results = type.results,
                                          .globals = _context.globals };
-                if (auto const result = _bodies.validate(body); !result)
+                auto const shape = _bodies.validate(body);
+                if (!shape)
                     return std::unexpected { errorAt(
-                        result.error().fault, functionIndex, result.error().instruction) };
+                        shape.error().fault, functionIndex, shape.error().instruction) };
+                _shape.functions.push_back(*shape);
             }
             return {};
         }
@@ -1592,28 +1654,33 @@ namespace
         [[nodiscard]] std::expected<void, ValidationError> checkCounts() const
         {
             // WebAssembly 2.0 still allows one memory; reference types lifted the MVP's one table.
-            return atModule(
-                check(_context.memories.size() <= 1 || _context.features.has(Feature::MultiMemory),
-                      ValidationErrorCode::MultipleMemories)
-                    .and_then([this] {
-                        return check(_context.tables.size() <= 1
-                                         || _context.features.has(Feature::ReferenceTypes),
-                                     ValidationErrorCode::MultipleTables);
-                    }));
+            return atModule(checkUnlessEnabled(_context.memories.size() <= 1,
+                                               _context.features,
+                                               Feature::MultiMemory,
+                                               ValidationErrorCode::MultipleMemories)
+                                .and_then([this] {
+                                    return checkUnlessEnabled(_context.tables.size() <= 1,
+                                                              _context.features,
+                                                              Feature::ReferenceTypes,
+                                                              ValidationErrorCode::MultipleTables);
+                                }));
         }
 
         Context _context;
         BodyValidator _bodies;
         Function _constantSideTables; ///< Constant expressions hold no br_table or typed select.
+        ModuleShape _shape;           ///< The frame shapes of the bodies validated so far.
     };
 
 } // namespace
 
-std::expected<void, ValidationError> validateModule(binary::Module const& module, FeatureSet const& features)
+std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
+                                                           FeatureSet const& features,
+                                                           binary::DecodeLimits const& limits)
 {
     // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
     Require(features.checkPrerequisites().has_value());
-    return ModuleValidator { module, features }.validate();
+    return ModuleValidator { module, features, limits }.validate();
 }
 
 } // namespace isoline::validate

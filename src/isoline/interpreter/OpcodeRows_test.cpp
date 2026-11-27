@@ -21,9 +21,12 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/Validator.hpp>
 
 // One generated module per row of the opcode table: each row's instruction must decode to that row,
@@ -33,6 +36,7 @@
 // it proves the interpreter has a case or a table row for it: one without ends the process.
 
 using isoline::FeatureSet;
+using isoline::binary::DecodeLimits;
 using isoline::binary::decodeModule;
 using isoline::binary::ExnRef;
 using isoline::binary::FuncRef;
@@ -45,7 +49,6 @@ using isoline::binary::Limits;
 using isoline::binary::MemoryAccess;
 using isoline::binary::MemoryAccessKind;
 using isoline::binary::memoryAccessOf;
-using isoline::binary::Module;
 using isoline::binary::Mutability;
 using isoline::binary::NonNullFuncRef;
 using isoline::binary::Opcode;
@@ -59,6 +62,7 @@ using isoline::binary::ValueType;
 using isoline::binary::VectorShape;
 using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::ModuleBuilder;
+using isoline::validate::ValidatedModule;
 using isoline::validate::validateModule;
 
 namespace
@@ -343,13 +347,13 @@ TEST_CASE("Opcode.everyRowDecodes")
         if (row.signature == OpcodeSignature::Special && memoryAccessOf(row.opcode) == nullptr)
             ++specialRows;
         auto const fixture = fixtureOf(row);
-        auto const bytes = moduleOf(fixture).build();
-        auto module = decodeModule(bytes, features);
-        REQUIRE(module.has_value());
-        REQUIRE(module->code.size() == 2);
+        auto validated = ValidatedModule::load(moduleOf(fixture).build(), features, DecodeLimits {});
+        REQUIRE(validated.has_value());
+        auto const& module = (*validated)->module();
+        REQUIRE(module.code.size() == 2);
         // A fixed-signature row's instruction directly follows the local.get of each operand, so it must
         // decode as that very row; a fixture's is somewhere in its body.
-        auto const& body = module->code[1].body;
+        auto const& body = module.code[1].body;
         if (row.signature != OpcodeSignature::Special)
         {
             CHECK(body.at(fixture.params.size()).opcode == row.opcode);
@@ -360,21 +364,21 @@ TEST_CASE("Opcode.everyRowDecodes")
             auto const own = std::span { body }.first(body.size() - 1);
             CHECK(std::ranges::find(own, row.opcode, &Instruction::opcode) != own.end());
         }
-        auto const valid = validateModule(*module, features);
-        REQUIRE(valid.has_value());
 
         // Any end of its own will do (results, a trap or an exception): only a missing case aborts.
-        auto const allocator = isoline::runtime::UnlimitedAllocator {};
-        auto store = isoline::runtime::Store { allocator };
+        auto allocator = isoline::runtime::HeapMemoryAllocator {};
+        auto store = isoline::runtime::Store { isoline::runtime::StoreLimits {},
+                                               isoline::runtime::StoreServices { .allocator = allocator } };
         auto interpreter = isoline::interpreter::ReferenceInterpreter {};
-        auto const instance = isoline::runtime::instantiate(
-            store, interpreter, std::make_shared<Module const>(std::move(*module)), {});
+        auto const instance = isoline::runtime::instantiate(store, interpreter, std::move(*validated), {});
         REQUIRE(instance.has_value());
         auto const function = store.moduleInstance(*instance).functions.at(1);
         auto args = std::vector<isoline::runtime::Value> {};
         std::ranges::transform(fixture.params, std::back_inserter(args), isoline::runtime::defaultValue);
         auto results = std::vector<isoline::runtime::Value>(fixture.results.size());
-        std::ignore = interpreter.invoke(store, function, args, results);
+        // Its arguments are its params' defaults, so the call always enters and the row runs.
+        CHECK(isoline::runtime::invokeChecked(store, interpreter, function, args, results).entry
+              == isoline::runtime::Entry::Entered);
     }
     // Every fixture serves a row: none is left over from an instruction since removed.
     CHECK(fixtures().size() == specialRows);

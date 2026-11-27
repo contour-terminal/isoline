@@ -56,6 +56,18 @@ foreach(usage IN ITEMS "1" "1;--features" "1;--features;wasm4" "x;--features;was
     set_tests_properties(spec-usage-${usageName} PROPERTIES LABELS unit PASS_REGULAR_EXPRESSION "usage: ")
 endforeach()
 
+# The api's Require() checks, which end the process: Engine's constructor refuses a feature set not
+# closed over its prerequisites. Judged by the check's own text (PASS_REGULAR_EXPRESSION, which ignores
+# the exit status), so that an abort elsewhere does not pass for it; the line the canary prints when the
+# check let the call through fails it.
+add_executable(isoline_require_canary canary/RequireCanary.cpp)
+target_link_libraries(isoline_require_canary PRIVATE isoline::core)
+isoline_apply_target_policy(isoline_require_canary TEST)
+add_test(NAME isoline_require_canary COMMAND isoline_require_canary)
+set_tests_properties(isoline_require_canary PROPERTIES LABELS unit TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "Precondition failed[.] _config[.]features[.]checkPrerequisites[(][)][.]has_value[(][)]"
+    FAIL_REGULAR_EXPRESSION "require-canary: an engine of an open feature set was constructed")
+
 # The coverage ratchet's checker, tested on fixture reports: it needs Python, not a coverage build.
 # The Python tests name the interpreter by its path, not as the imported target Python3::Interpreter:
 # CMake runs an executable target through CMAKE_CROSSCOMPILING_EMULATOR, and a cross build's emulator
@@ -80,9 +92,18 @@ endif()
 
 # The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced
 # global operator new (AllocationCounter.cpp). The replacement is program-wide, hence a binary of its
-# own.
-add_executable(isoline_memory_test memory/AllocationCounter.cpp memory/MemoryBounds_test.cpp)
-target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
-isoline_apply_target_policy(isoline_memory_test TEST)
-add_test(NAME isoline_memory_test COMMAND isoline_memory_test)
-set_tests_properties(isoline_memory_test PROPERTIES LABELS unit)
+# own. TSan's runtime defines operator new itself, not replaceably, so a TSan build leaves it out; the
+# bounds hold under every other build.
+if(NOT ISOLINE_SANITIZE STREQUAL "thread")
+    add_executable(isoline_memory_test memory/AllocationCounter.cpp memory/MemoryBounds_test.cpp)
+    target_link_libraries(isoline_memory_test PRIVATE isoline::core Catch2::Catch2WithMain)
+    isoline_apply_target_policy(isoline_memory_test TEST)
+    # The [host-memory] cases refuse allocations at every budget. MSVC's debug STL allocates a container
+    # proxy in container constructors that are noexcept, where a refusal terminates (a debug-CRT dialog
+    # under wine) before Engine::load or Store::instantiate can refuse it, so the Debug configuration of
+    # an MSVC or clang-cl build (clangcl-cross-debug, msvc-debug) leaves them out. Every other build runs
+    # them, a Windows release build included (clangcl-cross-release, under wine).
+    add_test(NAME isoline_memory_test
+        COMMAND isoline_memory_test "$<IF:$<AND:$<BOOL:${MSVC}>,$<CONFIG:Debug>>,~[host-memory],*>")
+    set_tests_properties(isoline_memory_test PROPERTIES LABELS unit TIMEOUT 600)
+endif()

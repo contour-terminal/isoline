@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace isoline::testing
 {
@@ -23,6 +24,36 @@ struct AllocationCounts
 
 /// Sets the peak to the bytes live now, so that it measures what follows.
 void resetAllocationPeak() noexcept;
+
+/// What the throwing operator new throws for an allocation an AllocationLimit refuses.
+enum class RefusalException : uint8_t
+{
+    BadAlloc,    ///< std::bad_alloc: the host is out of memory.
+    LengthError, ///< std::length_error: what a container throws for a size past its max_size().
+};
+
+/// A budget on what one stretch of code may allocate: while it lives, operator new refuses (throws
+/// std::bad_alloc, or what the limit names; the nothrow forms return null) any allocation that would
+/// leave more than the budget allocated beyond what was live when it began. Its destructor lifts the
+/// budget again.
+class AllocationLimit
+{
+  public:
+    /// Starts the budget.
+    /// @param extraBytes The most the code may hold beyond what is live now.
+    /// @param refusal What the throwing operator new throws for a refused allocation.
+    explicit AllocationLimit(std::size_t extraBytes,
+                             RefusalException refusal = RefusalException::BadAlloc) noexcept;
+    ~AllocationLimit();
+    AllocationLimit(AllocationLimit const&) = delete;
+    AllocationLimit& operator=(AllocationLimit const&) = delete;
+    AllocationLimit(AllocationLimit&&) = delete;
+    AllocationLimit& operator=(AllocationLimit&&) = delete;
+
+  private:
+    std::size_t _previous;             ///< The limit before this one, restored by the destructor.
+    RefusalException _previousRefusal; ///< The refusal before this one, restored by the destructor.
+};
 
 /// What one stretch of code allocated: construct it just before the code, read it just after.
 class AllocationScope

@@ -12,9 +12,11 @@
 
 #include <isoline/binary/Module.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::runtime
 {
@@ -91,9 +93,11 @@ struct LinkError
     bool operator==(LinkError const&) const = default;
 };
 
-/// Why instantiation failed: an import did not bind, the store could not allocate a memory or table,
-/// initialization trapped, or the start function threw an exception it did not catch.
-using InstantiationError = std::variant<LinkError, AllocationFailure, Trap, Thrown>;
+/// Why instantiation failed: an import did not bind, the instance would exceed one of the store's
+/// limits, the store could not allocate a memory or table, initialization trapped, the start
+/// function threw an exception it did not catch, or a host function it called failed.
+using InstantiationError =
+    std::variant<LinkError, LimitExceeded, AllocationFailure, Trap, Thrown, HostFailure>;
 
 /// Executes code for instantiation: constant expressions, and the start function.
 ///
@@ -103,7 +107,17 @@ class ICodeExecutor
   public:
     virtual ~ICodeExecutor() = default;
 
-    /// Invokes a function.
+    /// Invokes a function, within an invocation already open (InvocationScope: runtime::invokeChecked()
+    /// or runtime::instantiate() opened it; checked).
+    ///
+    /// What every engine must do, so that the limits cut off at the same point in all of them: poll
+    /// the store (Store::poll()) at every PollSiteTable site, in the order its rows state; count the call
+    /// depth (StoreLimits::maxCallDepth) across every invocation of the store in progress, so that a
+    /// host function invoking Wasm again nests within the depth of the call that reached it; charge every
+    /// frame's static cost through Store::chargeFrame() at its entry (validate::ValidatedModule::
+    /// frameCost() for a Wasm frame, hostFrameCost() for a host frame), after the FunctionEntry poll
+    /// and the maxCallDepth check, and give it back through Store::releaseFrame() however the frame
+    /// ends; and reach guest code only from here.
     /// @param store The store holding it.
     /// @param function Its address.
     /// @param args Its arguments, matching its parameter types.
@@ -134,23 +148,65 @@ class ICodeExecutor
 /// segments are dropped too. The first segment that is out of bounds traps; the segments before it
 /// stay written, and the instance stays in the store. Last, it runs the start function.
 ///
-/// Tables and memories are allocated before the instance is added to the store, so an
-/// AllocationFailure leaves no instance behind (the tables and memories allocated before the
-/// failing one stay in the store, unreferenced). A trap from a global's initializer, an element
+/// Before anything is allocated or interned, the instance and everything it defines (its memories and
+/// tables, by count and by their minimum bytes and elements; the types the store does not hold yet;
+/// its tags) are checked against what is left of the store's limits (Store::checkInstanceDemand), so
+/// a limit refusal (LimitExceeded) leaves no instance, memory, table, type or tag behind; imported
+/// entities claim nothing. Tables and memories are allocated before the instance is added to the
+/// store, so an AllocationFailure leaves no instance behind, and the tables and memories allocated
+/// before the failing one are released (Store::releaseTrailing), their bytes and elements returned to
+/// the store's budgets, so a retry gets its quota back. A trap from a global's initializer, an element
 /// segment, or later, leaves the instance in the store, as the spec's partial instantiation does.
 ///
-/// Precondition: @p module passed validateModule; it is not validated again here. Every external
+/// Instantiation is one invocation (InvocationScope) with a RefusalScope of its own. Its polls charge the
+/// outermost invocation's step budget: a fresh one when instantiation is the outermost, the caller's when
+/// a host function instantiates. Its start function, nested in it, shares that budget, and the start
+/// function's refused grows stay in its RefusalScope. Past StoreLimits::maxNestedInvocations it traps with
+/// CallStackExhausted.
+///
+/// It runs in two steps. The first prepares (the TypeIds, the imports' check, the demand check, the
+/// instance to be) and changes nothing in the store: running out of memory there throws std::bad_alloc
+/// (or std::length_error) out of instantiate(), the store as it was, for the embedding API to refuse.
+/// The second changes the store and is noexcept: the store is not exception-safe midway through a
+/// change, so running out of memory there terminates, as it does in invokeChecked().
+///
+/// The instance keeps @p module, and its module is @p module's, sharing its ownership. Every external
 /// value in @p imports names an entity of @p store (checked), and there are no more of them than the
 /// module has imports (checked).
 /// @param store The store to allocate in.
 /// @param executor Evaluates constant expressions and runs the start function.
-/// @param module The validated module.
+/// @param module The validated module (checked: not null).
 /// @param imports The external values its imports bind to, in import order.
 /// @return The address of the new module instance, or why instantiation failed.
 [[nodiscard]] std::expected<uint32_t, InstantiationError> instantiate(
     Store& store,
     ICodeExecutor& executor,
-    std::shared_ptr<binary::Module const> module,
+    std::shared_ptr<validate::ValidatedModule const> module,
+    std::span<ExternValue const> imports);
+
+/// What instantiateReporting() ended with: the instance or the error, and the grows instantiation was
+/// refused.
+struct InstantiationOutcome
+{
+    /// The address of the new module instance, or why instantiation failed.
+    std::expected<uint32_t, InstantiationError> instance;
+    /// Instantiation's own first refused memory.grow and table.grow, those of its start function,
+    /// never those of an invocation nested in it: why a start function that gave up after a -1 gave up.
+    GrowthRecord refusedGrowth;
+};
+
+/// Instantiates a module as instantiate() does, and reports the grows its RefusalScope recorded, as
+/// invokeChecked() reports a call's.
+/// @param store The store to allocate in.
+/// @param executor Evaluates constant expressions and runs the start function.
+/// @param module The validated module (checked: not null).
+/// @param imports The external values its imports bind to, in import order.
+/// @return The instance or the error, and the refused grows; none when instantiation was refused
+///         before it began (past StoreLimits::maxNestedInvocations).
+[[nodiscard]] InstantiationOutcome instantiateReporting(
+    Store& store,
+    ICodeExecutor& executor,
+    std::shared_ptr<validate::ValidatedModule const> module,
     std::span<ExternValue const> imports);
 
 } // namespace isoline::runtime

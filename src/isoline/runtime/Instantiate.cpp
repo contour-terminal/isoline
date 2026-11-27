@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -20,11 +21,14 @@
 #include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/Interrupt.hpp>
+#include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/Subtyping.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::runtime
 {
@@ -69,8 +73,9 @@ namespace
                                      binary::MemoryType const& required) noexcept
     {
         return memory.type.pageSizeLog2 == required.pageSizeLog2
-               && limitsMatch(
-                   memory.bytes.size() / binary::pageSize(memory.type), memory.type.limits, required.limits);
+               && limitsMatch(memory.bytes().size() / binary::pageSize(memory.type),
+                              memory.type.limits,
+                              required.limits);
     }
 
     /// Whether @p global matches the global type @p required, in store form: its mutability exactly,
@@ -100,6 +105,24 @@ namespace
         return instance.tags;
     }
 
+    /// @p a + @p b, or 2^64 - 1 when that overflows.
+    [[nodiscard]] constexpr uint64_t saturatingAdd(uint64_t a, uint64_t b) noexcept
+    {
+        return b > std::numeric_limits<uint64_t>::max() - a ? std::numeric_limits<uint64_t>::max() : a + b;
+    }
+
+    /// @p a * @p b, or 2^64 - 1 when that overflows. Precondition: @p b is not zero.
+    [[nodiscard]] constexpr uint64_t saturatingMultiply(uint64_t a, uint64_t b) noexcept
+    {
+        return a > std::numeric_limits<uint64_t>::max() / b ? std::numeric_limits<uint64_t>::max() : a * b;
+    }
+
+    /// A store's refusal to allocate, as the instantiation error it is.
+    [[nodiscard]] InstantiationError instantiationError(AllocationError const& error) noexcept
+    {
+        return std::visit([](auto const& refusal) { return InstantiationError { refusal }; }, error);
+    }
+
     /// The address or offset a constant expression of an address type evaluated to.
     [[nodiscard]] uint64_t addressOf(Value const& value) noexcept
     {
@@ -115,23 +138,24 @@ namespace
       public:
         Instantiation(Store& store,
                       ICodeExecutor& executor,
-                      std::shared_ptr<Module const> module,
+                      std::shared_ptr<validate::ValidatedModule const> validated,
                       std::span<ExternValue const> imports):
-            _store { store }, _executor { executor }, _module { std::move(module) }, _imports { imports }
+            _store { store },
+            _executor { executor },
+            _validated { std::move(validated) },
+            _module { validate::ValidatedModule::moduleOf(_validated) },
+            _imports { imports }
         {
-            Require(_module != nullptr);
             Require(_imports.size() <= _module->imports.size());
         }
 
+        /// Instantiates, polling at Instantiation first: an interrupted store instantiates nothing.
+        /// What prepare() allocates may throw; once commit() changes the store, nothing is thrown.
         [[nodiscard]] std::expected<uint32_t, InstantiationError> run()
         {
-            resolveTypes();
-            return checkImports()
-                .and_then([this] { return allocate(); })
-                .and_then([this] { return initializeTables(); })
-                .and_then([this] { return initializeMemories(); })
-                .and_then([this] { return runStart(); })
-                .transform([this] { return _address; });
+            if (auto const polled = _store.poll(PollSite::Instantiation); !polled)
+                return std::unexpected { InstantiationError { polled.error() } };
+            return prepare().and_then([this](ModuleInstance pending) { return commit(std::move(pending)); });
         }
 
       private:
@@ -159,7 +183,10 @@ namespace
                 else if (auto const found = _store.findType(storeForm(type)))
                     _types.push_back(*found);
                 else
+                {
                     _types.push_back(next++);
+                    _newTypeUnits += Store::typeUnits(type);
+                }
             }
         }
 
@@ -232,12 +259,37 @@ namespace
 
         // --- Allocation ---
 
-        /// Allocates the tables and memories first, into an instance not yet in the store, so an
-        /// allocation failure leaves no half-built instance registered and no type interned; then
-        /// interns the types, registers the instance and allocates the rest.
-        [[nodiscard]] Step allocate()
+        /// What the module's own entities claim of the store's limits: its defined memories and
+        /// tables with their minimum sizes, the types the store does not hold yet, and its tags.
+        [[nodiscard]] InstanceDemand demand() const noexcept
         {
-            auto pending = ModuleInstance { .module = _module,
+            auto demand = InstanceDemand { .memories = module().memories.size(),
+                                           .tables = module().tables.size(),
+                                           .memoryBytes = 0,
+                                           .tableElements = 0,
+                                           .typeUnits = _newTypeUnits,
+                                           .tags = module().tags.size() };
+            for (auto const& memory: module().memories)
+                demand.memoryBytes = saturatingAdd(
+                    demand.memoryBytes, saturatingMultiply(memory.limits.min, binary::pageSize(memory)));
+            for (auto const& table: module().tables)
+                demand.tableElements = saturatingAdd(demand.tableElements, table.type.limits.min);
+            return demand;
+        }
+
+        /// Everything before the store changes: the module's TypeIds, the imports' check, its demand
+        /// against the store's limits, and the instance to be, with its imports in its index spaces.
+        /// It changes nothing in the store, so running out of memory here (std::bad_alloc or
+        /// std::length_error, which it lets through) leaves the store as it was.
+        [[nodiscard]] std::expected<ModuleInstance, InstantiationError> prepare()
+        {
+            resolveTypes();
+            if (auto const linked = checkImports(); !linked)
+                return std::unexpected { linked.error() };
+            if (auto const fits = _store.checkInstanceDemand(demand()); !fits)
+                return std::unexpected { InstantiationError { fits.error() } };
+            auto pending = ModuleInstance { .validated = _validated,
+                                            .module = _module,
                                             .types = _types,
                                             .functions = {},
                                             .tables = {},
@@ -249,8 +301,35 @@ namespace
                                             .exports = {} };
             for (auto const& value: _imports)
                 indexSpace(pending, value.kind).push_back(value.address);
+            return pending;
+        }
+
+        /// Changes the store: allocates the tables and memories into @p pending, not yet in the store,
+        /// so an allocation failure leaves no half-built instance registered and no type interned, and
+        /// releases the tables and memories it allocated (Store::releaseTrailing); then interns the
+        /// types, registers the instance, allocates the rest, initializes it and runs its start
+        /// function. noexcept: the store is not exception-safe midway, so running out of memory here
+        /// terminates, as it does in invokeChecked().
+        [[nodiscard]] std::expected<uint32_t, InstantiationError> commit(ModuleInstance pending) noexcept
+        {
+            return allocate(pending)
+                .and_then([this] { return initializeTables(); })
+                .and_then([this] { return initializeMemories(); })
+                .and_then([this] { return runStart(); })
+                .transform([this] { return _address; });
+        }
+
+        /// Allocates @p pending's tables and memories, then registers it and allocates the rest.
+        [[nodiscard]] Step allocate(ModuleInstance& pending)
+        {
+            auto const firstTable = static_cast<TableAddr>(_store.tableCount());
+            auto const firstMemory = static_cast<MemAddr>(_store.memoryCount());
             return allocateTables(pending)
                 .and_then([&] { return allocateMemories(pending); })
+                .or_else([&](InstantiationError const& error) -> Step {
+                    _store.releaseTrailing(firstTable, firstMemory);
+                    return std::unexpected { error };
+                })
                 .and_then([&] {
                     internTypes();
                     _address = _store.addModuleInstance(std::move(pending));
@@ -281,7 +360,12 @@ namespace
         void allocateTags()
         {
             for (auto const& tag: module().tags)
-                instance().tags.push_back(_store.addTag(_types.at(tag.typeIndex)));
+            {
+                // checkInstanceDemand() found room for every tag.
+                auto const address = _store.addTag(_types.at(tag.typeIndex));
+                Require(address.has_value());
+                instance().tags.push_back(*address);
+            }
         }
 
         [[nodiscard]] Step allocateTables(ModuleInstance& pending)
@@ -292,7 +376,7 @@ namespace
                 auto const address = _store.addTable(
                     type, Ref { .kind = RefKind::Null, .heap = type.element.heap, .address = 0 });
                 if (!address)
-                    return std::unexpected { address.error() };
+                    return std::unexpected { instantiationError(address.error()) };
                 pending.tables.push_back(*address);
             }
             return {};
@@ -304,7 +388,7 @@ namespace
             {
                 auto const address = _store.addMemory(type);
                 if (!address)
-                    return std::unexpected { address.error() };
+                    return std::unexpected { instantiationError(address.error()) };
                 pending.memories.push_back(*address);
             }
             return {};
@@ -357,6 +441,17 @@ namespace
             return {};
         }
 
+        /// Polls at BulkGranule before every BulkPollElements items of an element segment's
+        /// evaluation, the first included, whichever their encoding.
+        /// @param item The index of the item about to be evaluated.
+        /// @return Nothing to go on, or Trap{Interrupted}.
+        [[nodiscard]] std::expected<void, Trap> pollItem(std::size_t item) noexcept
+        {
+            if (item % BulkPollElements != 0)
+                return {};
+            return _store.poll(PollSite::BulkGranule);
+        }
+
         /// The references @p segment's items evaluate to.
         [[nodiscard]] std::expected<std::vector<Ref>, Trap> referencesOf(ElementSegment const& segment)
         {
@@ -364,16 +459,22 @@ namespace
             if (auto const* indices = std::get_if<std::vector<uint32_t>>(&segment.items))
             {
                 refs.reserve(indices->size());
-                for (auto const index: *indices)
+                for (auto const [item, index]: core::views::enumerate(*indices))
+                {
+                    if (auto const polled = pollItem(item); !polled)
+                        return std::unexpected { polled.error() };
                     refs.push_back(Ref { .kind = RefKind::Func,
                                          .heap = { .kind = binary::AbstractHeapType::Func },
                                          .address = instance().functions[index] });
+                }
                 return refs;
             }
             auto const& expressions = std::get<std::vector<ConstExpr>>(segment.items);
             refs.reserve(expressions.size());
-            for (auto const& expression: expressions)
+            for (auto const [item, expression]: core::views::enumerate(expressions))
             {
+                if (auto const polled = pollItem(item); !polled)
+                    return std::unexpected { polled.error() };
                 auto const value = evaluate(expression);
                 if (!value)
                     return std::unexpected { value.error() };
@@ -402,6 +503,14 @@ namespace
 
         // --- Initialization ---
 
+        /// What a segment copy polls before each granule.
+        [[nodiscard]] auto granulePoll() noexcept
+        {
+            return [this]() noexcept {
+                return _store.poll(PollSite::BulkGranule);
+            };
+        }
+
         /// Copies each active element segment into its table, as table.init then elem.drop; drops
         /// each declarative one. Traps at the first segment out of the table's bounds.
         [[nodiscard]] Step initializeTables()
@@ -423,7 +532,8 @@ namespace
                                                         refs.size(),
                                                         std::span { elements },
                                                         addressOf(*offset),
-                                                        TrapCode::OutOfBoundsTableAccess);
+                                                        TrapCode::OutOfBoundsTableAccess,
+                                                        granulePoll());
                         !copied)
                         return std::unexpected { copied.error() };
                 }
@@ -445,13 +555,14 @@ namespace
                 if (!offset)
                     return std::unexpected { offset.error() };
                 auto const source = std::span<std::byte const> { segment.bytes };
-                auto& bytes = _store.memory(instance().memories[segment.memory]).bytes;
+                auto const bytes = _store.memory(instance().memories[segment.memory]).bytes();
                 if (auto const copied = copySegment(source,
                                                     0,
                                                     source.size(),
-                                                    std::span { bytes },
+                                                    bytes,
                                                     addressOf(*offset),
-                                                    TrapCode::OutOfBoundsMemoryAccess);
+                                                    TrapCode::OutOfBoundsMemoryAccess,
+                                                    granulePoll());
                     !copied)
                     return std::unexpected { copied.error() };
                 instance().data[index].reset();
@@ -463,6 +574,8 @@ namespace
         {
             if (!module().start)
                 return {};
+            if (auto const polled = _store.poll(PollSite::Instantiation); !polled)
+                return std::unexpected { InstantiationError { polled.error() } };
             auto const function = instance().functions[*module().start];
             return _executor.invoke(_store, function, {}, {}).transform_error([](Abrupt const& abrupt) {
                 return std::visit([](auto const& outcome) { return InstantiationError { outcome }; }, abrupt);
@@ -476,19 +589,38 @@ namespace
 
         Store& _store;
         ICodeExecutor& _executor;
-        std::shared_ptr<Module const> _module;
+        std::shared_ptr<validate::ValidatedModule const> _validated;
+        std::shared_ptr<Module const> _module; ///< _validated's module.
         std::span<ExternValue const> _imports;
         std::vector<TypeId> _types; ///< The TypeId of each of the module's types, by type index.
+        uint64_t _newTypeUnits = 0; ///< The type units of the types the store does not hold yet.
         uint32_t _address = 0;
     };
 } // namespace
 
-std::expected<uint32_t, InstantiationError> instantiate(Store& store,
-                                                        ICodeExecutor& executor,
-                                                        std::shared_ptr<binary::Module const> module,
-                                                        std::span<ExternValue const> imports)
+std::expected<uint32_t, InstantiationError> instantiate(
+    Store& store,
+    ICodeExecutor& executor,
+    std::shared_ptr<validate::ValidatedModule const> module,
+    std::span<ExternValue const> imports)
 {
-    return Instantiation { store, executor, std::move(module), imports }.run();
+    return instantiateReporting(store, executor, std::move(module), imports).instance;
+}
+
+InstantiationOutcome instantiateReporting(Store& store,
+                                          ICodeExecutor& executor,
+                                          std::shared_ptr<validate::ValidatedModule const> module,
+                                          std::span<ExternValue const> imports)
+{
+    // One invocation, with a fresh step budget its polls charge and its start function shares, and
+    // its own refusal scope, so the start function's refused grows stay in it.
+    if (auto const nesting = store.checkInvocationNesting(); !nesting)
+        return InstantiationOutcome { .instance = std::unexpected { InstantiationError { nesting.error() } },
+                                      .refusedGrowth = {} };
+    auto const invocation = InvocationScope { store };
+    auto const scope = RefusalScope { store };
+    auto const instance = Instantiation { store, executor, std::move(module), imports }.run();
+    return InstantiationOutcome { .instance = instance, .refusedGrowth = scope.record() };
 }
 
 } // namespace isoline::runtime

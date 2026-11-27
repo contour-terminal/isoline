@@ -34,10 +34,12 @@ enum class TrapCode : uint8_t
     HostTrap,
     NullExceptionReference,
     ExceptionLimitExceeded,
+    Interrupted,
+    StepLimitExceeded,
 };
 
 /// The last TrapCode enumerator, for checking TrapTable's size.
-inline constexpr auto LastTrapCode = TrapCode::ExceptionLimitExceeded;
+inline constexpr auto LastTrapCode = TrapCode::StepLimitExceeded;
 
 /// What the reference interpreter appends to a trap's message.
 enum class TrapDetail : uint8_t
@@ -77,6 +79,10 @@ inline constexpr auto TrapTable = std::to_array<TrapRow>({
     { .code = TrapCode::NullExceptionReference, .specMessage = "null exception reference" },
     // A throw past the store's exception limits (StoreLimits): Isoline's, the spec has none.
     { .code = TrapCode::ExceptionLimitExceeded, .specMessage = "exception limit exceeded" },
+    // The store's interrupt was raised (Interrupter): Isoline's, the spec has none.
+    { .code = TrapCode::Interrupted, .specMessage = "interrupted" },
+    // The outermost invocation spent StoreLimits::maxSteps: Isoline's, the spec has none.
+    { .code = TrapCode::StepLimitExceeded, .specMessage = "step limit exceeded" },
 });
 
 static_assert(

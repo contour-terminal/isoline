@@ -1,14 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstdint>
 #include <expected>
+#include <vector>
 
 #include <isoline/Features.hpp>
+#include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/validate/ValidationError.hpp>
 
 namespace isoline::validate
 {
+
+/// The static shape of one function's frame, as validation finds it: what an engine must hold for it
+/// beyond its parameters and locals.
+struct FrameShape
+{
+    /// The most operands the function's operand stack holds at once, Unknown ones of unreachable code
+    /// included.
+    uint32_t maxOperands = 0;
+
+    /// The deepest nesting of blocks, loops, ifs and try_tables, the function's own label excluded.
+    uint32_t maxLabels = 0;
+
+    /// Whether both shapes hold the same high-water marks.
+    [[nodiscard]] bool operator==(FrameShape const&) const = default;
+};
+
+/// The static shapes of a module's functions.
+struct ModuleShape
+{
+    std::vector<FrameShape> functions; ///< One per code section entry, in order.
+};
 
 /// Validates a decoded module against the WebAssembly 3.0 type system, as far as @p features
 /// enables its proposals (typed function references, exception handling, memory64, SIMD and the
@@ -33,8 +57,9 @@ namespace isoline::validate
 /// (checked), as any set decodeModule accepted is.
 /// @param module The decoded module.
 /// @param features The proposals whose typing rules apply; those decodeModule accepted.
-/// @return Nothing when the module is valid; otherwise the first error found.
-[[nodiscard]] std::expected<void, ValidationError> validateModule(binary::Module const& module,
-                                                                  FeatureSet const& features);
+/// @param limits The implementation limits; the validator enforces maxOperandsPerInstruction.
+/// @return The shape of each function's frame when the module is valid; otherwise the first error found.
+[[nodiscard]] std::expected<ModuleShape, ValidationError> validateModule(
+    binary::Module const& module, FeatureSet const& features, binary::DecodeLimits const& limits = {});
 
 } // namespace isoline::validate
