@@ -167,13 +167,13 @@ memory 1, the sums that reach or pass 2^64, pages of one byte, a memory of no pa
 
 **Spectre.** On the checked path the effective address is masked by a data-dependent select: all ones where
 the access fits, zero where it does not, so code running ahead of a mispredicted check reads memory's first
-bytes and nothing past them. The mask is the sign of the bytes left after the access, derived from the same
+bytes and nothing past them. The mask is `runtime::rangeMask()` of the access's bytes, derived from the same
 bound as the check but not from its outcome, which the compiler would know on the predicted path and fold
-away; or'ed with the sign of the offset itself, since an offset of 2^63 or more never fits (memories are
-allocated, so their sizes stay below 2^63) and its bytes left would otherwise wrap to a positive count, a
-speculative read below the base the guest chooses; and or'ed with the sign of the size less the width, since
-a memory smaller than the access fits nothing and its size less the width wraps, which would leave the bytes
-left positive for offsets just below 2^63 (`accessMask()`, `Memory.accessMaskAtTheEdges`). What remains is the
+away: the sign of the bytes left after the access, or'ed with the sign of the bytes left after its offset and
+with the sign of the offset itself. An offset of 2^63 or more never fits (memories are allocated, so their sizes
+stay below 2^63) and its bytes left would otherwise wrap to a positive count, a speculative read below the base
+the guest chooses; a memory smaller than the access leaves its bytes left after the access negative for every
+offset below 2^63 (`accessMask()`, `Memory.accessMaskAtTheEdges`). What remains is the
 masked access itself, which reads the access's width of bytes at the memory's base: for a memory smaller than
 the access, code ahead of the check may read fewer than that many bytes past its end; the check itself still
 traps. An i32 address is read as 32 bits whatever its slot holds, so the
@@ -214,21 +214,27 @@ own and against the reference byte for byte. `Tables.opsMatchReference` does the
 `table.copy` one up over three granules, and `Bulk.stepLimitStopsAtTheSameGranule` for a step budget spent
 mid-fill on an unobserved store.
 
-**Spectre and the bulk loops: no select.** The explicit checks decide before the first write, and every item a
-granule then touches lies within the ranges they checked. A loop running ahead of a mispredicted check
-speculatively writes nothing that retires, and the bytes or references it moves are never used as an address or
-an index on their way, so there is no dependent access a guest could time. A masked offset would also turn a
-mispredicted copy into one of the memory's first bytes, which buys nothing.
+**Spectre and the bulk loops: the ranges are masked.** After the explicit checks, `fillItems()`, `copyItems()`
+and `copySegment()` mask their offsets and counts with `runtime::rangeMask()`, once per operation, so that code
+running ahead of a mispredicted check sees empty ranges at the start of the memory or table. Without it a guest
+could train the check in bounds, then copy one byte from an out-of-bounds source: the speculative copy moves a
+host byte into guest memory, store-to-load forwarding hands it to the guest's next load, and a load dependent on
+that leaks it. The mask is the sign of the items left after the range, of those left after its first item, and
+of the offset and the count themselves; sizes stay below 2^63, so for an offset and a count below 2^63 the
+differences cannot wrap past the sign. Every bounds check derives its mask from it: `accessMask()` is the mask of
+an access's bytes, `elementMask()` of one element (`Segment.rangeMaskAtTheEdges`, every pair of 8-bit offsets and
+counts against a model, and the 64-bit edges). The bodies are the ones the reference interpreter and P5's compiled
+stubs run too, so the mask protects every engine.
 
 **Table indices are masked like addresses.** `table.get`, `table.set` and `call_indirect` read their element at
 the index `elementChecked()` returns: the explicit `index >= size` check, then the index anded with
-`elementMask()`, which is `accessMask()` of a one-element access, the same select derived from the same bound
-(the sign of the elements left after the element, of the index itself, and of the size less one). An index of
+`elementMask()`, which is `runtime::rangeMask()` of a one-element range, the same select derived from the same
+bound. An index of
 2^63 or more, or any index into a table of no elements, masks to zero (`Tables.elementMaskAtTheEdges`, around
 0, size − 1, size, 2^32 − 1, 2^63 and 2^64 − 1). What remains: a masked index reads the table's first element,
 and for a table of no elements code ahead of the check may read one element at its base. Optimized for x86-64,
 the mask is `sub`, `or`, `or` and `cmovns` before the element's address is formed, in the `table.get` and
-`table.set` handlers and in `call_indirect`'s resolution. The fill, copy and init loops take no mask, as above.
+`table.set` handlers and in `call_indirect`'s resolution.
 
 **i32 operands of memories and tables are read as 32 bits.** An index, address, size, count or delta of a
 memory or table of i32 addresses is read as the low 32 bits of its slot (`narrowToAddressType()`), whatever

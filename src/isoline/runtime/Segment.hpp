@@ -2,9 +2,11 @@
 #pragma once
 
 #include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <ranges>
 #include <span>
 #include <type_traits>
@@ -23,6 +25,32 @@ namespace isoline::runtime
 [[nodiscard]] constexpr bool fits(uint64_t offset, uint64_t count, uint64_t size) noexcept
 {
     return offset <= size && count <= size - offset;
+}
+
+/// The Spectre mask of @p count items from @p offset in something of @p size items: all ones where they fit
+/// (fits()), zero where they do not, computed without a branch from the same bound, so that code running
+/// ahead of a mispredicted check sees an empty range at the start, never one the guest chose.
+///
+/// It is the sign of the items left after the range, of the items left after its first, and of the offset
+/// and the count themselves, any of them negative meaning the range does not fit. Sizes stay below 2^63 (what
+/// they measure is allocated), so for an offset and a count below 2^63 the differences cannot wrap past the
+/// sign, and an offset or a count of 2^63 or more never fits. Every bounds check of an executor derives its
+/// mask from it: a memory access of width bytes, a table element, the ranges of a bulk operation.
+///
+/// A template over the unsigned type, so that a test can try every pair of a narrow one.
+/// @param offset The first item.
+/// @param count How many items.
+/// @param size The size; below half the type's range.
+/// @return The mask.
+template <std::unsigned_integral U>
+[[nodiscard]] constexpr U rangeMask(U offset, U count, U size) noexcept
+{
+    using Signed = std::make_signed_t<U>;
+    constexpr auto SignShift = std::numeric_limits<U>::digits - 1;
+    auto const room = static_cast<Signed>(static_cast<U>(size - offset));
+    auto const left = static_cast<Signed>(static_cast<U>(size - offset - count));
+    auto const signs = left | room | static_cast<Signed>(offset) | static_cast<Signed>(count);
+    return static_cast<U>(~static_cast<U>(signs >> SignShift));
 }
 
 /// A poll a bulk operation calls before each granule: Store::poll(PollSite::BulkGranule), or a test's.
@@ -78,7 +106,8 @@ template <typename T>
 inline constexpr auto GranuleItems = BulkPollBytes / sizeof(T);
 
 /// Fills @p count items of @p target from @p destination with @p value, as memory.fill and table.fill do:
-/// the range is checked before anything is written, so an out-of-bounds fill changes nothing. The fill runs
+/// the range is checked before anything is written, so an out-of-bounds fill changes nothing, and masked by
+/// rangeMask(), so that code ahead of a mispredicted check fills nothing. The fill runs
 /// upwards in granules of GranuleItems<T>, polling before each, so a poll that fails leaves the granules
 /// before it filled.
 ///
@@ -101,6 +130,10 @@ template <typename T, GranulePoll Poll>
 {
     if (!fits(destination, count, target.size()))
         return trap(outOfBounds);
+    // Spectre: ahead of a mispredicted check the range is masked to an empty one at the start (rangeMask()).
+    auto const mask = rangeMask<uint64_t>(destination, count, target.size());
+    destination &= mask;
+    count &= mask;
     return forEachGranule(
         count, GranuleItems<T>, GranuleOrder::Ascending, poll, [&](uint64_t offset, uint64_t size) {
             std::ranges::fill(target.subspan(static_cast<std::size_t>(destination + offset),
@@ -111,7 +144,8 @@ template <typename T, GranulePoll Poll>
 
 /// Copies @p count items from @p source of @p from to @p destination of @p to, as memory.copy and
 /// table.copy do, @p from and @p to being the same memory or table or two of them: both ranges are checked
-/// before anything is written, so an out-of-bounds copy changes nothing. The copy runs in granules of
+/// before anything is written, so an out-of-bounds copy changes nothing, and masked by rangeMask(), so that
+/// code ahead of a mispredicted check copies nothing. The copy runs in granules of
 /// GranuleItems<T>, polling before each, in copyOrder()'s order, and within a granule in the same direction,
 /// so that an overlapping copy within one memory or table is correct and a poll that fails leaves the
 /// granules before it copied.
@@ -137,6 +171,14 @@ template <typename T, GranulePoll Poll>
 {
     if (!fits(source, count, from.size()) || !fits(destination, count, to.size()))
         return trap(outOfBounds);
+    // Spectre: ahead of a mispredicted check both ranges are masked to empty ones at the start (rangeMask()),
+    // so no speculative copy moves host bytes into the guest's memory, where its next load could forward
+    // them.
+    auto const mask =
+        rangeMask<uint64_t>(source, count, from.size()) & rangeMask<uint64_t>(destination, count, to.size());
+    source &= mask;
+    destination &= mask;
+    count &= mask;
     auto const order = copyOrder(source, destination);
     return forEachGranule(count, GranuleItems<T>, order, poll, [&](uint64_t offset, uint64_t size) {
         auto const granuleFrom =
@@ -155,7 +197,8 @@ template <typename T, GranulePoll Poll>
 
 /// Copies part of a segment into a table or memory, as table.init and memory.init do, and as
 /// instantiation does with each whole active segment: both ranges are checked before anything is
-/// copied, so an out-of-bounds copy changes nothing. The copy runs in granules of BulkPollBytes
+/// copied, so an out-of-bounds copy changes nothing, and masked by rangeMask(), so that code ahead of a
+/// mispredicted check copies nothing. The copy runs in granules of BulkPollBytes
 /// bytes, polling before each, so a poll that fails leaves the granules before it copied.
 /// @param segment The segment's items: element references or data bytes; empty once dropped.
 /// @param source The first item of @p segment to copy.
@@ -176,6 +219,12 @@ template <typename T, GranulePoll Poll>
 {
     if (!fits(source, count, segment.size()) || !fits(destination, count, target.size()))
         return trap(outOfBounds);
+    // Spectre: ahead of a mispredicted check both ranges are masked to empty ones at the start (rangeMask()).
+    auto const mask = rangeMask<uint64_t>(source, count, segment.size())
+                      & rangeMask<uint64_t>(destination, count, target.size());
+    source &= mask;
+    destination &= mask;
+    count &= mask;
     // A segment is never the table or memory it is copied into, so the granules go upwards.
     return forEachGranule(
         count, GranuleItems<T>, GranuleOrder::Ascending, poll, [&](uint64_t offset, uint64_t size) {
