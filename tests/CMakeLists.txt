@@ -177,6 +177,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME check-conformance-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance_test.py")
     set_tests_properties(check-conformance-selftest PROPERTIES LABELS lint)
+    # The pinned-tool fetcher's lock rows, digest check and cache, on fixture archives: offline.
+    add_test(NAME fetch-tools-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/fetch-tools_test.py")
+    set_tests_properties(fetch-tools-selftest PROPERTIES LABELS lint)
 endif()
 
 # How long the text memory suite may run before its timeout stops it: five minutes natively. Under ASan
