@@ -10,6 +10,7 @@ and run on the host in every tree.
 |---|---|---|---|
 | `clangcl-cross-debug` | Windows x64, Debug | `cmake/toolchains/windows-clangcl-cross.cmake` | wine |
 | `clangcl-cross-release` | Windows x64, Release | the same | wine |
+| `msvc-wine-modules` | Windows x64, Debug, C++ modules | `cmake/toolchains/windows-msvc-wine-cross.cmake` | wine |
 | `clang-aarch64-cross` | Linux aarch64, Debug | `cmake/toolchains/aarch64-linux-gnu-clang.cmake` | `qemu-aarch64-static` |
 | `clang-aarch64-cross-release` | Linux aarch64, Release | the same | `qemu-aarch64-static` |
 
@@ -45,6 +46,37 @@ own**, `out/clangcl-cross-debug/wineprefix` (cache variable `MSVC_WINE_PREFIX`),
 way, e.g. `out/clangcl-cross-debug/wine-run.sh out/clangcl-cross-debug/src/isoline/isoline_test.exe`. The
 prefix's wineserver lingers a few seconds after the last test; stop it at once with
 `WINEPREFIX=$PWD/out/clangcl-cross-debug/wineprefix wineserver -k`.
+
+## Windows x64 with C++ modules: MSVC under wine
+
+clang-cl builds no C++ modules: CMake has no module dependency scanning for it, so
+`cmake --preset clangcl-cross-debug -DISOLINE_MODULES=ON` fails at configure time, naming clang-cl
+(`cmake/IsolineModuleSupport.cmake`). The clang-cl trees instead run `module-scanning-tripwire` (label
+`lint`), which configures a probe project of one module (`tests/cmake/module-scanning-probe/`) with the
+same toolchain and passes while CMake refuses it. Once CMake scans modules for clang-cl it fails, and its refused row should become a lane.
+
+Microsoft's own compiler is the module lane: `msvc-wine-modules` runs msvc-wine's `cl.exe`, `link.exe`
+and `lib.exe` under wine, with Ninja and `ISOLINE_MODULES=ON`. It needs the same msvc-wine install as
+above, including the wrappers its `install.sh` writes into `bin/x64/`:
+
+```sh
+cmake --preset msvc-wine-modules
+cmake --build --preset msvc-wine-modules
+ctest --preset msvc-wine-modules
+```
+
+- **The compiler runs in the build's own prefix.** msvc-wine's wrappers would run in the user's
+  `~/.wine`. The toolchain file calls each one through a runner written into the build,
+  `out/msvc-wine-modules/msvc-wine-bin/<tool>`, which runs it in `out/msvc-wine-modules/wineprefix`, the
+  prefix the tests run in.
+- **The static CRT.** The preset sets `CMAKE_MSVC_RUNTIME_LIBRARY` to
+  `MultiThreaded$<$<CONFIG:Debug>:Debug>`, so a test binary needs no MSVC runtime DLL under wine.
+- **Debug information in the objects (`/Z7`).** In a new prefix, the first `/Zi` compile fails with C1902
+  ("Program database manager mismatch") because `mspdbsrv.exe` is not up yet. `/Z7` needs no PDB server,
+  so the toolchain file sets `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` to `Embedded`.
+
+The two Windows toolchain files share `cmake/toolchains/msvc-wine-common.cmake`: the install and its
+versions, the prefix, and the `wine-run.sh` emulator.
 
 ## Linux aarch64: clang and qemu-user
 

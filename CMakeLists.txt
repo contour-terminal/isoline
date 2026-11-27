@@ -40,6 +40,7 @@ include(IsolineOptions)
 include(IsolineDependencies)
 include(IsolinePedantic)
 include(IsolineCappedTest)
+include(IsolineModules)
 
 if(ISOLINE_TESTING)
     enable_testing()

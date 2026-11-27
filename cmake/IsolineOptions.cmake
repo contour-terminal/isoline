@@ -13,6 +13,12 @@ option(ISOLINE_COVERAGE "Instrument Isoline's own targets for source-based cover
 option(ISOLINE_INSTALL
        "Install Isoline's libraries and headers as the CMake package isoline (cmake/IsolineInstall.cmake)"
        ${PROJECT_IS_TOP_LEVEL})
+option(ISOLINE_MODULES
+       "Build the C++ module isoline too; the configure fails on a toolchain that cannot (IsolineModules.cmake)"
+       OFF)
+option(ISOLINE_EXPECT_IMPORT_STD
+       "Fail, rather than skip, the install test of import std; where the toolchain provides no std module"
+       OFF)
 option(ISOLINE_FETCH_DEPS
        "Fetch a dependency (Catch2) with CPM when neither the parent project nor find_package() provides it"
        OFF)

@@ -129,12 +129,29 @@ foreach(canaryCase IN LISTS isolineRequireCanaryCases)
         FAIL_REGULAR_EXPRESSION "the check let the call through")
 endforeach()
 
+# The C++ module support table (cmake/IsolineModuleSupport.cmake), in script mode: its floors, refusals
+# and generator rows, and the same-LLVM rule for clang-tidy, each a row of expected verdicts.
+add_test(NAME module-support
+         COMMAND "${CMAKE_COMMAND}" -P "${PROJECT_SOURCE_DIR}/tests/cmake/module-support_test.cmake")
+set_tests_properties(module-support PROPERTIES LABELS lint TIMEOUT 60)
+
 # How check-install tells that an installed file names a path of the build (tests/cmake/check-install-paths.cmake),
 # in script mode, beside the install tests that use it and registered with or without them.
 add_test(NAME check-install-paths
          COMMAND "${CMAKE_COMMAND}" "-DWORK_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/check-install-paths"
                  -P "${PROJECT_SOURCE_DIR}/tests/cmake/check-install-paths_test.cmake")
 set_tests_properties(check-install-paths PROPERTIES LABELS lint TIMEOUT 60)
+# A compiler the table refuses because CMake cannot scan its modules (Apple Clang, clang-cl) gets the
+# tripwire that probes CMake itself, module-scanning-tripwire (cmake/IsolineModules.cmake).
+isoline_add_module_tripwires()
+# The opt-in, from the other side: a build with ISOLINE_MODULES OFF builds nothing of modules (no module
+# target, no scan). It reads the Ninja build files, so it is registered under a Ninja generator only.
+if(NOT ISOLINE_MODULES AND CMAKE_GENERATOR MATCHES "^Ninja")
+    add_test(NAME modules-off-build
+             COMMAND "${CMAKE_COMMAND}" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+                     -P "${PROJECT_SOURCE_DIR}/tests/cmake/expect-no-module-build.cmake")
+    set_tests_properties(modules-off-build PROPERTIES LABELS lint TIMEOUT 60)
+endif()
 
 # The coverage ratchet's checker, tested on fixture reports: it needs Python, not a coverage build.
 # The Python tests name the interpreter by its path, not as the imported target Python3::Interpreter:
