@@ -28,6 +28,9 @@ using isoline::component::ComponentLimits;
 using isoline::component::types::AnyTypeId;
 using isoline::component::types::ComponentTypeId;
 using isoline::component::types::ComponentTypeInfo;
+using isoline::component::types::CoreExportType;
+using isoline::component::types::CoreFunctionTypeId;
+using isoline::component::types::CoreModuleTypeInfo;
 using isoline::component::types::DefinedType;
 using isoline::component::types::ExternType;
 using isoline::component::types::FunctionTypeId;
@@ -886,4 +889,43 @@ TEST_CASE("Subtyping.nameIndexChargedOnce")
     CHECK(afterFirst > 1'000);
     REQUIRE(relation.isSubtype(provided, second).has_value());
     CHECK(relation.steps() - afterFirst < 50);
+}
+
+TEST_CASE("Subtyping.coreTypesAcrossArenas")
+{
+    // Core function types of two arenas compare by their joint canonical ids, as validate::TypeMatcher
+    // compares two modules' (binary::jointCanonicalTypeIds): a 20-level chain t_i = (func (param
+    // (ref t_{i-1}) (ref t_{i-1}))), a tree of 2^20 types walked unshared, costs a step per type of the
+    // two arenas, once per relation.
+    static constexpr auto Levels = uint32_t { 20 };
+    auto const chain = [](TypeArena& arena, isoline::binary::ValueType leaf) {
+        auto previous = arena.intern(isoline::binary::FuncType { .params = { leaf }, .results = {} });
+        for ([[maybe_unused]] auto const level: std::views::iota(uint32_t { 0 }, Levels))
+        {
+            auto const reference =
+                isoline::binary::concreteRef(previous.value, isoline::binary::Nullable::No);
+            previous =
+                arena.intern(isoline::binary::FuncType { .params = { reference, reference }, .results = {} });
+        }
+        return previous;
+    };
+    auto const module = [](TypeArena& arena, CoreFunctionTypeId type) {
+        return arena.add(CoreModuleTypeInfo {
+            .exports = { CoreExportType {
+                .name = std::string { "f" },
+                .type = { .kind = isoline::binary::ExternKind::Func, .typeIndex = type.value } } } });
+    };
+    auto left = TypeArena { ComponentLimits {} };
+    auto right = TypeArena { ComponentLimits {} };
+    // The right arena's ids are shifted by a type of its own, so equal ids would not mean equal types.
+    std::ignore = right.intern(isoline::binary::FuncType {});
+    auto const provided = module(left, chain(left, isoline::binary::I32));
+    auto const required = module(right, chain(right, isoline::binary::I32));
+    auto const other = module(right, chain(right, isoline::binary::I64));
+    auto relation = TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} };
+    CHECK(relation.isSubtype(ExternType { provided }, ExternType { required }).has_value());
+    INFO(std::format("{} steps", relation.steps()));
+    CHECK(relation.steps() <= std::size_t { 8 } * Levels);
+    CHECK(mismatch(relation.isSubtype(ExternType { provided }, ExternType { other })).code
+          == RelationErrorCode::CoreMismatch);
 }

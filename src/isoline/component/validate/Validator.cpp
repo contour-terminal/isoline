@@ -635,6 +635,14 @@ namespace
         /// The core modules, once run() succeeded.
         [[nodiscard]] std::vector<CoreModuleShape> takeCoreModules() { return std::move(_coreModules); }
 
+        /// What the validation cost, once run() succeeded.
+        [[nodiscard]] ValidationWork work() const noexcept
+        {
+            auto counted = _work;
+            counted.subtypingSteps = _relation.steps();
+            return counted;
+        }
+
         /// Every scope's index spaces, once run() succeeded.
         [[nodiscard]] std::vector<ScopeInfo> takeScopes() { return std::move(_scopes); }
 
@@ -811,6 +819,10 @@ namespace
                                                DefinitionPosition position);
         [[nodiscard]] Result<void> coreExportAlias(binary::AliasDefinition const& alias,
                                                    DefinitionPosition position);
+        [[nodiscard]] Result<void> chargeCoreMatching(DefinitionPosition position);
+        [[nodiscard]] ValidationError relationRefusal(RelationError error,
+                                                      ValidationErrorCode code,
+                                                      DefinitionPosition position) const;
         [[nodiscard]] types::NamedExtern const* instanceExport(types::InstanceTypeId instance,
                                                                std::string const& name);
         [[nodiscard]] Result<void> instance(binary::InstanceDefinition const& instance,
@@ -855,6 +867,7 @@ namespace
         /// The component and instance types found to name no resource they do not bind: a later walk
         /// skips them, so a closed type shared by many definitions is walked once.
         std::set<AnyTypeId> _closedTypes {};
+        ValidationWork _work {};
         /// The exports of each instance type an export alias looked into, ordered by name, by its id.
         std::map<uint32_t, std::vector<uint32_t>> _exportIndices {};
     };
@@ -2146,6 +2159,8 @@ namespace
         auto const& type = _arena[*module];
         for (auto const& import: type.imports)
         {
+            if (auto charged = chargeCoreMatching(position); !charged)
+                return std::unexpected { charged.error() };
             auto const argument = arguments.find(import.module.str());
             if (argument == arguments.end())
                 return std::unexpected { namedError(
@@ -2172,6 +2187,8 @@ namespace
         }
         for (auto const& entry: type.exports)
         {
+            if (auto charged = chargeCoreMatching(position); !charged)
+                return std::unexpected { charged.error() };
             auto combined =
                 combine(measure,
                         TypeMeasure { .depth = 1, .effectiveSize = coreEntitySize(_arena, entry.type) },
@@ -2191,6 +2208,8 @@ namespace
         auto names = std::set<std::string_view> {};
         for (auto const& entry: exports.exports)
         {
+            if (auto charged = chargeCoreMatching(position); !charged)
+                return std::unexpected { charged.error() };
             auto const entity = coreEntityAt(binary::sortOf(entry.sort), entry.index, position);
             if (!entity)
                 return std::unexpected { entity.error() };
@@ -2477,11 +2496,8 @@ namespace
             if (!ascribed)
                 return std::unexpected { ascribed.error() };
             if (auto related = _relation.isSubtype(*exported, *ascribed); !related)
-            {
-                auto refused = plainError(ValidationErrorCode::AscriptionMismatch, position);
-                refused.detail = std::move(related.error().message);
-                return std::unexpected { std::move(refused) };
-            }
+                return std::unexpected { relationRefusal(
+                    std::move(related.error()), ValidationErrorCode::AscriptionMismatch, position) };
             exported = std::move(ascribed);
         }
         if (auto added =
@@ -2995,6 +3011,7 @@ namespace
             }
             auto const type = top.pending.back();
             top.pending.pop_back();
+            ++_work.resourceWalkSteps;
             if (!_arena.namesResource(type) || _closedTypes.contains(type)
                 || !top.visited.insert(type).second)
                 continue;
@@ -3073,6 +3090,26 @@ namespace
         return {}; // uncovered(exhaustive-switch)
     }
 
+    Result<void> ComponentValidator::chargeCoreMatching(DefinitionPosition position)
+    {
+        // Isoline's own bound: wasm-tools matches every core instantiation without one.
+        if (++_work.coreMatchingSteps > _limits.maxCoreMatchingSteps)
+            return std::unexpected { capError(ComponentLimit::CoreMatchingSteps, _limits, position) };
+        return {};
+    }
+
+    ValidationError ComponentValidator::relationRefusal(RelationError error,
+                                                        ValidationErrorCode code,
+                                                        DefinitionPosition position) const
+    {
+        // A relation out of steps is the validation's budget spent, not a mismatch: it reports the limit.
+        if (error.code == RelationErrorCode::StepLimit)
+            return capError(ComponentLimit::SubtypingSteps, _limits, position);
+        auto refused = plainError(code, position);
+        refused.detail = std::move(error.message);
+        return refused;
+    }
+
     types::NamedExtern const* ComponentValidator::instanceExport(types::InstanceTypeId instance,
                                                                  std::string const& name)
     {
@@ -3080,8 +3117,10 @@ namespace
         // alias costs O(log n), never a scan of every export.
         auto const& exports = _arena[instance].exports;
         auto [entry, inserted] = _exportIndices.try_emplace(instance.value);
+        ++_work.exportLookupSteps;
         if (inserted)
         {
+            _work.exportLookupSteps += exports.size();
             entry->second.reserve(exports.size());
             for (auto const position: std::views::iota(std::size_t { 0 }, exports.size()))
                 entry->second.push_back(static_cast<uint32_t>(position));
@@ -3288,11 +3327,8 @@ namespace
         }
         auto bound = _relation.satisfyImports(arguments, *component);
         if (!bound)
-        {
-            auto refused = plainError(ValidationErrorCode::InstantiationMismatch, position);
-            refused.detail = std::move(bound.error().message);
-            return std::unexpected { std::move(refused) };
-        }
+            return std::unexpected { relationRefusal(
+                std::move(bound.error()), ValidationErrorCode::InstantiationMismatch, position) };
         auto const fresh = freshResourcesFor(_arena, _arena[*component]);
         if (!fresh)
             return std::unexpected { limitError(fresh.error(), position) };
@@ -3727,7 +3763,8 @@ std::expected<std::shared_ptr<ValidatedComponent const>, ValidationError> valida
                              .types = validator.takeArena(),
                              .scopes = validator.takeScopes(),
                              .type = validator.takeRootType(),
-                             .coreModules = validator.takeCoreModules() });
+                             .coreModules = validator.takeCoreModules(),
+                             .work = validator.work() });
 }
 
 } // namespace isoline::component::validate

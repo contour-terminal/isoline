@@ -70,6 +70,11 @@ struct ComponentLimits
     uint32_t maxCoreGlobals = 1'000'000;
     /// Per component, its core tag index space (MAX_CORE_INDEX_SPACE_ITEMS).
     uint32_t maxCoreTags = 1'000'000;
+    /// Per validation, all core instantiations together: one step per import looked up and matched,
+    /// and per export or inline export measured. wasm-tools bounds none of it; a crafted component of
+    /// 4'096 instantiations of a module of 100'000 imports would take 4 x 10^8 lookups. Ten million
+    /// covers a thousand instantiations of ten thousand imports, far past what toolchains emit.
+    uint32_t maxCoreMatchingSteps = 10'000'000;
 
     /// Two sets of limits are equal when every limit is.
     bool operator==(ComponentLimits const&) const = default;
@@ -104,10 +109,11 @@ enum class ComponentLimit : uint8_t
     CoreMemories,
     CoreGlobals,
     CoreTags,
+    CoreMatchingSteps,
 };
 
 /// The last ComponentLimit enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastComponentLimit = ComponentLimit::CoreTags;
+inline constexpr auto LastComponentLimit = ComponentLimit::CoreMatchingSteps;
 
 /// The number of ComponentLimit enumerators, as LastComponentLimit counts them.
 inline constexpr auto ComponentLimitCount = static_cast<std::size_t>(LastComponentLimit) + 1;
@@ -213,9 +219,11 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
     // Isoline's own: wasm-tools bounds neither, and walks its types recursively.
     { .limit = ComponentLimit::SubtypingSteps,
       .name = "maxSubtypingSteps",
-      .rule = "steps of one type relation (validation's subtype checks, a linker's resolve): one per pair of "
-              "types compared and per name looked up or compared, plus one per 64 bytes of the names "
-              "compared; it bounds the relation's memo at as many entries",
+      .rule =
+          "steps of one type relation: a whole validation's subtype checks together (instantiations and "
+          "ascribed exports share one relation), or one linker resolve; one per pair of types compared and "
+          "per name looked up or compared, plus one per 64 bytes of the names compared; it bounds the "
+          "relation's memo at as many entries",
       .message = "subtyping steps exceed the limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxSubtypingSteps; } },
     { .limit = ComponentLimit::SubstitutedTypes,
@@ -276,6 +284,16 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .rule = "entries of one component's core tag index space, each an alias of a core instance's export",
       .message = "tags count exceeds limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxCoreTags; } },
+    // Isoline's own: wasm-tools matches every core instantiation without a bound.
+    { .limit = ComponentLimit::CoreMatchingSteps,
+      .name = "maxCoreMatchingSteps",
+      .rule =
+          "steps of all core instantiations of one validation: one per import looked up and matched, and per "
+          "export or inline export measured",
+      .message = "core matching steps exceed the limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t {
+          return limits.maxCoreMatchingSteps;
+      } },
 });
 
 static_assert(

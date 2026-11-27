@@ -45,6 +45,18 @@ struct ScopeInfo
     std::vector<types::ComponentTypeId> components {};        ///< Sort component.
 };
 
+/// What the bounded walks of one validation cost: the work counts tests pin the validator's time
+/// bounds by, as ratios between inputs of size n and 2n, never by wall time.
+struct ValidationWork
+{
+    uint64_t coreMatchingSteps =
+        0; ///< Charged to maxCoreMatchingSteps: core imports matched, exports measured.
+    uint64_t resourceWalkSteps = 0; ///< Types the free-resource walks took up, the ones skipped included.
+    uint64_t exportLookupSteps =
+        0;                       ///< Export alias lookups, plus the entries their name indices were built of.
+    uint64_t subtypingSteps = 0; ///< The validation's TypeRelation steps.
+};
+
 /// A component that passed validation: immutable, shared by every Component, plan and store built
 /// from it. Only validateComponent() makes one.
 struct ValidatedComponent
@@ -54,6 +66,7 @@ struct ValidatedComponent
     std::vector<ScopeInfo> scopes;            ///< Per entry of the pool, by its index: its index spaces.
     types::ComponentTypeInfo type;            ///< The root's imports and exports, typed.
     std::vector<CoreModuleShape> coreModules; ///< The embedded core modules, by ordinal (D10).
+    ValidationWork work {};                   ///< What validating it cost.
 };
 
 } // namespace isoline::component::validate

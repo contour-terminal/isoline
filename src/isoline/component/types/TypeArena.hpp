@@ -778,6 +778,14 @@ class TypeArena
     /// @return The count.
     [[nodiscard]] std::size_t coreFunctionTypeCount() const noexcept { return _coreFunctions.size(); }
 
+    /// The core function types the arena holds, by id: a type section, each concrete reference to an
+    /// earlier type, as binary::jointCanonicalTypeIds() reads one.
+    /// @return The types.
+    [[nodiscard]] std::span<isoline::binary::FuncType const> coreFunctionTypes() const noexcept
+    {
+        return _coreFunctions;
+    }
+
     /// Adds a core module type; its name indices are computed.
     /// @param type The type, its imports unique by (module, name) and its exports by name.
     /// @return Its id.

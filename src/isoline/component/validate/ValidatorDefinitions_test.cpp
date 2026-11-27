@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -33,8 +34,10 @@
 
 using isoline::binary::ExternKind;
 using isoline::binary::FuncType;
+using isoline::binary::GlobalType;
 using isoline::binary::I32;
 using isoline::binary::Limits;
+using isoline::binary::TableType;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::component::ComponentFeatureSet;
 using isoline::component::ComponentLimit;
@@ -1146,4 +1149,224 @@ TEST_CASE("Validator.moduleTypeSubtyping")
                                   CoreImportDeclaration { .module = "lib", .name = "nothing", .type = func },
                                   CoreExportDeclaration { .name = "g", .type = func } }))
           == "ascribed type of export is not compatible with item's type\nmissing expected export `g`");
+}
+
+TEST_CASE("Validator.moreCaps")
+{
+    // The component functions and the four core spaces wasm-tools caps besides those of
+    // Validator.indexSpaceCaps: one past the cap is refused, in its words.
+    auto limits = ComponentLimits {};
+    limits.maxFunctions = 1;
+    limits.maxCoreTables = 1;
+    limits.maxCoreMemories = 1;
+    limits.maxCoreGlobals = 1;
+    limits.maxCoreTags = 1;
+    auto functions = ComponentBuilder {};
+    auto const type = functions.type(function({}));
+    std::ignore = functions.import("a", ExternDesc { .sort = Sort::Func, .index = type });
+    std::ignore = functions.import("b", ExternDesc { .sort = Sort::Func, .index = type });
+    CHECK(refusalText(functions.pool(), limits) == "functions count exceeds limit of 1");
+    CHECK(refusalText(withLibrary().pool(), limits) == "memories count exceeds limit of 1");
+
+    auto module = ModuleBuilder {};
+    module.type(FuncType {})
+        .table(TableType { .limits = Limits { .min = 1, .max = std::nullopt } })
+        .global(GlobalType { .type = I32 }, { 0x41, 0x00 }) // i32.const 0
+        .tag(0)
+        .exportEntity("table", ExternKind::Table, 0)
+        .exportEntity("global", ExternKind::Global, 0)
+        .exportEntity("tag", ExternKind::Tag, 0);
+    auto const entities = moduleBytes(module);
+    auto const twice = [&](std::string const& name, CoreSort sort) {
+        auto builder = ComponentBuilder {};
+        std::ignore = builder.coreModule(entities);
+        std::ignore = builder.coreInstantiate(0, {});
+        std::ignore = builder.aliasCoreExport(0, name, sort);
+        std::ignore = builder.aliasCoreExport(0, name, sort);
+        return builder.pool();
+    };
+    CHECK(refusalText(twice("table", CoreSort::Table), limits) == "tables count exceeds limit of 1");
+    CHECK(refusalText(twice("global", CoreSort::Global), limits) == "globals count exceeds limit of 1");
+    CHECK(refusalText(twice("tag", CoreSort::Tag), limits) == "tags count exceeds limit of 1");
+}
+
+TEST_CASE("Validator.repeatedOptions")
+{
+    // check_options (component.rs:2652-2875): every option once, whatever it is.
+    auto lowered = withLibrary();
+    auto const type = lowered.type(function({}));
+    std::ignore = lowered.import("f", ExternDesc { .sort = Sort::Func, .index = type });
+    auto const lowering = [&](std::vector<CanonOption> options) {
+        auto builder = lowered;
+        std::ignore = builder.canonLower(0, std::move(options));
+        return builder.pool();
+    };
+    CHECK(refusalText(lowering({ option(CanonOptionKind::Memory, 0),
+                                 option(CanonOptionKind::Realloc, Realloc),
+                                 option(CanonOptionKind::Realloc, Realloc) }))
+          == "canonical option `realloc` is specified more than once");
+    CHECK(refusalText(lowering(
+              { option(CanonOptionKind::Callback, Nothing), option(CanonOptionKind::Callback, Nothing) }))
+          == "canonical option `callback` is specified more than once");
+    auto lifted = withLibrary();
+    auto const result = lifted.type(function({}, PrimitiveValueType::U32));
+    std::ignore = lifted.canonLift(
+        Number,
+        { option(CanonOptionKind::PostReturn, One), option(CanonOptionKind::PostReturn, One) },
+        result);
+    CHECK(refusalText(lifted.pool()) == "canonical option `post-return` is specified more than once");
+}
+
+TEST_CASE("Validator.loweredParametersSpill")
+{
+    // A lowering of more than 16 flat parameters passes them through memory (ComponentFuncType::lower,
+    // component_types.rs:1236-1359), which then needs the memory option; the realloc it does not.
+    auto const lowering = [](uint32_t params, std::vector<CanonOption> options) {
+        auto builder = withLibrary();
+        auto const signature = builder.type(function(u32Params(params)));
+        std::ignore = builder.import("f", ExternDesc { .sort = Sort::Func, .index = signature });
+        std::ignore = builder.canonLower(0, std::move(options));
+        return builder.pool();
+    };
+    CHECK(accepted(lowering(16, {})));
+    CHECK(refusalText(lowering(17, {})) == "canonical option `memory` is required");
+    CHECK(accepted(lowering(17, { option(CanonOptionKind::Memory, 0) })));
+}
+
+namespace
+{
+/// withLibrary(), then an instance of @p imports inline exports f0, f1, ... of Nothing, and @p count
+/// instantiations of a module importing each of them from "lib".
+[[nodiscard]] ComponentPool coreInstantiations(uint32_t imports, uint32_t count)
+{
+    auto importer = ModuleBuilder {};
+    importer.type(FuncType {});
+    auto exports = std::vector<CoreInlineExport> {};
+    for (auto const index: std::views::iota(uint32_t { 0 }, imports))
+    {
+        importer.importFunction("lib", "f" + std::to_string(index), 0);
+        exports.push_back(CoreInlineExport {
+            .name = "f" + std::to_string(index), .sort = CoreSort::Func, .index = Nothing });
+    }
+    auto builder = withLibrary();
+    auto const instance = builder.coreInlineExports(std::move(exports));
+    auto const module = builder.coreModule(moduleBytes(importer));
+    for ([[maybe_unused]] auto const instantiation: std::views::iota(uint32_t { 0 }, count))
+        std::ignore = builder.coreInstantiate(module, { { "lib", instance } });
+    return builder.pool();
+}
+
+/// The core matching steps of library() instantiated: its nine exports measured.
+constexpr auto LibrarySteps = uint64_t { 9 };
+} // namespace
+
+TEST_CASE("Validator.coreMatchingBudget")
+{
+    // Every core import looked up and matched, and every export or inline export measured, is a step
+    // of maxCoreMatchingSteps, over all of a validation's core instantiations: k instantiations of a
+    // module of n imports cost k x n, and twice the instantiations twice that.
+    auto const steps = [](uint32_t imports, uint32_t count) {
+        auto const result = validated(coreInstantiations(imports, count));
+        REQUIRE(result.has_value());
+        return (*result)->work.coreMatchingSteps;
+    };
+    auto const single = steps(100, 10);
+    auto const twice = steps(100, 20);
+    INFO(std::format("core matching {} at n, {} at 2n", single, twice));
+    // Required, not checked: a validation that charges nothing would run the crafted case below unbounded.
+    REQUIRE(single == LibrarySteps + 100 + (uint64_t { 10 } * 100));
+    REQUIRE(twice - single == uint64_t { 10 } * 100);
+
+    auto limits = ComponentLimits {};
+    limits.maxCoreMatchingSteps = static_cast<uint32_t>(single);
+    CHECK(validated(coreInstantiations(100, 10), limits).has_value());
+    limits.maxCoreMatchingSteps = static_cast<uint32_t>(single - 1);
+    auto const refused = refusal(coreInstantiations(100, 10), limits);
+    CHECK(exceededLimit(refused) == ComponentLimit::CoreMatchingSteps);
+    CHECK(specMessage(refused) == std::format("core matching steps exceed the limit of {}", single - 1));
+
+    // The crafted case: a module of 100'000 imports instantiated 4'095 times is 4 x 10^8 lookups to
+    // wasm-tools. The default budget of 10^7 refuses it at its hundredth instantiation; a budget of
+    // 10^6, which keeps the suite quick and counts the same, at its ninth: library()'s 9 steps, the
+    // 100'000 inline exports and eight instantiations fit, the ninth's imports do not. Definitions 0-12
+    // are withLibrary()'s eleven, the inline exports and the module; the instantiations follow.
+    limits.maxCoreMatchingSteps = 1'000'000;
+    auto const crafted = refusal(coreInstantiations(100'000, 4'095), limits);
+    CHECK(exceededLimit(crafted) == ComponentLimit::CoreMatchingSteps);
+    CHECK(crafted.position.definition == 13 + 8);
+}
+
+TEST_CASE("Validator.subtypingBudgetSpansValidation")
+{
+    // One relation serves the whole validation: its steps add up over every ascribed export and
+    // every instantiation, and running out of them reports maxSubtypingSteps, not a mismatch.
+    auto const ascribing = [](uint32_t exports) {
+        auto builder = withLibrary();
+        for (auto const index: std::views::iota(uint32_t { 0 }, exports))
+        {
+            auto const type = builder.type(function(u32Params(16)));
+            auto const ascribed = builder.type(function(u32Params(16)));
+            auto const lifted = builder.canonLift(Wide, {}, type);
+            std::ignore = builder.exportItem("f" + std::to_string(index),
+                                             Sort::Func,
+                                             lifted,
+                                             ExternDesc { .sort = Sort::Func, .index = ascribed });
+        }
+        return builder.pool();
+    };
+    auto const one = validated(ascribing(1));
+    auto const two = validated(ascribing(2));
+    REQUIRE(one.has_value());
+    REQUIRE(two.has_value());
+    auto const single = (*one)->work.subtypingSteps;
+    auto const both = (*two)->work.subtypingSteps;
+    INFO(std::format("subtyping {} for one export, {} for two", single, both));
+    CHECK(single > 0);
+    CHECK(both == 2 * single);
+
+    auto limits = ComponentLimits {};
+    limits.maxSubtypingSteps = static_cast<uint32_t>(both);
+    CHECK(validated(ascribing(2), limits).has_value());
+    limits.maxSubtypingSteps = static_cast<uint32_t>(both - 1);
+    auto const refused = refusal(ascribing(2), limits);
+    CHECK(exceededLimit(refused) == ComponentLimit::SubtypingSteps);
+    CHECK(specMessage(refused) == std::format("subtyping steps exceed the limit of {}", both - 1));
+
+    // An instantiation's arguments are checked by the same relation.
+    auto child = ComponentBuilder {};
+    auto const childType = child.type(function({}));
+    std::ignore = child.import("a", ExternDesc { .sort = Sort::Func, .index = childType });
+    auto parent = ComponentBuilder {};
+    std::ignore = parent.nested(std::move(child));
+    auto const parentType = parent.type(function({}));
+    std::ignore = parent.import("f", ExternDesc { .sort = Sort::Func, .index = parentType });
+    std::ignore = parent.instantiate(0, { { "a", SortIndex { .sort = Sort::Func, .index = 0 } } });
+    limits.maxSubtypingSteps = 0;
+    CHECK(exceededLimit(refusal(parent.pool(), limits)) == ComponentLimit::SubtypingSteps);
+}
+
+TEST_CASE("Validator.exportLookupWork")
+{
+    // An instance type's exports are indexed by name once per validation: n aliases of an instance of n
+    // exports cost the n entries indexed and n lookups, at n as at 2n, never n x n.
+    auto const work = [](uint32_t exports) {
+        auto declarations = TypeScopeBuilder {};
+        auto const type = declarations.type(function({}));
+        for (auto const index: std::views::iota(uint32_t { 0 }, exports))
+            std::ignore = declarations.exportItem("f" + std::to_string(index),
+                                                  ExternDesc { .sort = Sort::Func, .index = type });
+        auto builder = ComponentBuilder {};
+        auto const instance = builder.instanceType(std::move(declarations));
+        std::ignore = builder.import("i", ExternDesc { .sort = Sort::Instance, .index = instance });
+        for (auto const index: std::views::iota(uint32_t { 0 }, exports))
+            std::ignore = builder.aliasExport(0, "f" + std::to_string(index), Sort::Func);
+        auto const result = validated(builder.pool());
+        REQUIRE(result.has_value());
+        return (*result)->work.exportLookupSteps;
+    };
+    auto const single = work(500);
+    auto const twice = work(1'000);
+    INFO(std::format("export lookup work {} at n, {} at 2n", single, twice));
+    CHECK(single == uint64_t { 2 } * 500);
+    CHECK(twice == 2 * single);
 }

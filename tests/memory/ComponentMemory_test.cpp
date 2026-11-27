@@ -28,6 +28,7 @@
 #include <isoline/component/binary/Decoder.hpp>
 #include <isoline/component/binary/testing/Builder.hpp>
 #include <isoline/component/binary/testing/DecoderFixtures.hpp>
+#include <isoline/component/validate/ValidatedComponent.hpp>
 #include <isoline/component/validate/Validator.hpp>
 #include <isoline/component/validate/testing/CoreModuleValidator.hpp>
 
@@ -60,6 +61,7 @@ using isoline::component::binary::testing::section;
 using isoline::component::binary::testing::TypeScopeBuilder;
 using isoline::component::validate::validateComponent;
 using isoline::component::validate::ValidationError;
+using isoline::component::validate::ValidationWork;
 using isoline::component::validate::testing::CoreModuleValidator;
 using isoline::testing::AllocationLimit;
 
@@ -268,6 +270,7 @@ struct BudgetedValidation
 {
     std::optional<ValidationError> error; ///< The validation error; empty when it validated.
     Budget budget = Budget::Kept;         ///< Whether the budget refused an allocation.
+    ValidationWork work {};               ///< What the validation cost, when it validated.
 };
 
 /// Validates @p pool under a budget of @p budget bytes; nothing is asserted under it.
@@ -282,6 +285,8 @@ BudgetedValidation validateUnderBudget(ComponentPool pool, std::size_t budget)
             std::move(pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
         if (!result)
             outcome.error = std::move(result.error());
+        else
+            outcome.work = (*result)->work;
     }
     catch (std::bad_alloc const&)
     {
@@ -418,9 +423,10 @@ TEST_CASE("Validator.manyAliasesLinear")
 {
     // 100'000 outer aliases of one type into a nested component, each walked for resources and charged
     // to the component's budget of maxTypeSize: validation holds no more than its budget per byte of
-    // the component, at n and at 2n. The bound is the budget, not a ratio of the two peaks: the index
-    // space is one vector, whose capacity at 2n is up to 3 x its capacity at n with the MSVC STL's
-    // growth of 1.5 (measured 2.24 x there), so a 2.2 x ratio would assert the STL, not the validator.
+    // the component, at n and at 2n. The memory bound is the budget, not a ratio of the two peaks: the
+    // index space is one vector, whose capacity at 2n is up to 3 x its capacity at n with the MSVC
+    // STL's growth of 1.5 (measured 2.24 x there), so a 2.2 x ratio would assert the STL, not the
+    // validator. Time is the work counted, which no library changes: twice the aliases, twice the work.
     auto const validateWith = [](uint32_t aliases) {
         auto builder = ComponentBuilder {};
         auto const tuple = builder.type(
@@ -435,9 +441,13 @@ TEST_CASE("Validator.manyAliasesLinear")
         INFO(std::format("{} aliases, budget {} bytes", aliases, budget));
         CHECK(outcome.budget == Budget::Kept);
         CHECK_FALSE(outcome.error.has_value());
+        return outcome.work.resourceWalkSteps + outcome.work.subtypingSteps;
     };
-    validateWith(50'000);
-    validateWith(100'000);
+    auto const single = validateWith(50'000);
+    auto const twice = validateWith(100'000);
+    INFO(std::format("work {} at n, {} at 2n", single, twice));
+    CHECK(single >= 50'000);
+    CHECK(twice * 10 <= single * 21);
 }
 
 TEST_CASE("Validator.manyExportAliasesLinear")
@@ -462,9 +472,14 @@ TEST_CASE("Validator.manyExportAliasesLinear")
         INFO(std::format("{} exports, budget {} bytes", exports, budget));
         CHECK(outcome.budget == Budget::Kept);
         CHECK_FALSE(outcome.error.has_value());
+        return outcome.work.exportLookupSteps;
     };
-    validateWith(25'000);
-    validateWith(50'000);
+    // An index per instance: n entries indexed once and n lookups, at n as at 2n.
+    auto const single = validateWith(25'000);
+    auto const twice = validateWith(50'000);
+    INFO(std::format("export lookup work {} at n, {} at 2n", single, twice));
+    CHECK(single == 50'000);
+    CHECK(twice * 10 <= single * 21);
 }
 
 TEST_CASE("Validator.sharedClosedTypeWalkedOnce")
@@ -472,30 +487,41 @@ TEST_CASE("Validator.sharedClosedTypeWalkedOnce")
     // A closed component type (it binds the resource its functions name) of 2'000 functions, aliased
     // into 1'000 nested components (maxComponents): each alias must check it names no outer resource,
     // which wasm-tools walks every time (1'000 x 2'000 types). Found closed once, it is skipped after:
-    // the validation stays within its budget, and finishes in the suite's time.
-    auto declarations = TypeScopeBuilder {};
-    auto const resource = declarations.import(
-        "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
-    auto const own = declarations.type(TypeDefinition { .type = OwnType { .resource = resource } });
-    for (auto const index: std::views::iota(0, 2'000))
-    {
-        auto const function = declarations.type(TypeDefinition {
-            .type = FunctionTypeDefinition { .params = { LabeledType { .label = std::format("p{}", index),
+    // the validation stays within its budget, and its walk grows by a step per component: at n and 2n
+    // components, the walk differs by n steps' worth, not by n x 2'000.
+    auto const validateWith = [](uint32_t components) {
+        auto declarations = TypeScopeBuilder {};
+        auto const resource = declarations.import(
+            "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+        auto const own = declarations.type(TypeDefinition { .type = OwnType { .resource = resource } });
+        for (auto const index: std::views::iota(0, 2'000))
+        {
+            auto const function = declarations.type(TypeDefinition {
+                .type =
+                    FunctionTypeDefinition { .params = { LabeledType { .label = std::format("p{}", index),
                                                                        .type = TypeIndex { .index = own } } },
                                              .result = std::nullopt } });
-        std::ignore = declarations.import(std::format("f{}", index),
-                                          ExternDesc { .sort = Sort::Func, .index = function });
-    }
-    auto builder = ComponentBuilder {};
-    auto const closed = builder.componentType(std::move(declarations));
-    for ([[maybe_unused]] auto const component: std::views::iota(0, 1'000))
-    {
-        auto nested = ComponentBuilder {};
-        std::ignore = nested.aliasOuter(Sort::Type, 1, closed);
-        std::ignore = builder.nested(std::move(nested));
-    }
-    auto const outcome = validateUnderBudget(builder.pool(), componentBudget(builder.build().size()));
-    CHECK(outcome.budget == Budget::Kept);
-    if (outcome.error)
-        FAIL(isoline::component::validate::specMessage(*outcome.error));
+            std::ignore = declarations.import(std::format("f{}", index),
+                                              ExternDesc { .sort = Sort::Func, .index = function });
+        }
+        auto builder = ComponentBuilder {};
+        auto const closed = builder.componentType(std::move(declarations));
+        for ([[maybe_unused]] auto const component: std::views::iota(uint32_t { 0 }, components))
+        {
+            auto nested = ComponentBuilder {};
+            std::ignore = nested.aliasOuter(Sort::Type, 1, closed);
+            std::ignore = builder.nested(std::move(nested));
+        }
+        auto const outcome = validateUnderBudget(builder.pool(), componentBudget(builder.build().size()));
+        CHECK(outcome.budget == Budget::Kept);
+        if (outcome.error)
+            FAIL(isoline::component::validate::specMessage(*outcome.error));
+        return outcome.work.resourceWalkSteps;
+    };
+    auto const single = validateWith(500);
+    auto const twice = validateWith(1'000);
+    INFO(std::format("resource walk {} at n, {} at 2n", single, twice));
+    // The type walked once (its 2'000 functions, a parameter each, and their resource) at either size.
+    CHECK(single >= 2'000);
+    CHECK(twice - single <= uint64_t { 500 } * 4);
 }

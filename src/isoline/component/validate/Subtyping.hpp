@@ -401,6 +401,7 @@ class TypeRelation
                                           types::CoreEntityType const& required,
                                           std::string const& context);
     [[nodiscard]] bool coreEquivalent(Side subSide, uint32_t sub, uint32_t super);
+    [[nodiscard]] Outcome<void> buildJointCoreIds();
     /// Which list of an arena a name index orders.
     enum class IndexedList : uint8_t
     {
@@ -452,6 +453,10 @@ class TypeRelation
     std::map<IndexKey, std::vector<uint32_t>> _nameIndices {};
     /// The step limit a cross-arena core type comparison reached, which its bool result cannot carry.
     std::optional<Failure> _coreFailure {};
+    /// Across two arenas, the joint canonical ids of their core function types, the sub arena's then
+    /// the super arena's (binary::jointCanonicalTypeIds()): built on the first comparison, charged a
+    /// step per type, and rebuilt only if an arena gained core types since.
+    std::vector<uint32_t> _jointCoreIds {};
 };
 
 /// Mints a fresh resource type for every resource a component type defines, as each instantiation of

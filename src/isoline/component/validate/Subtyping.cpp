@@ -21,10 +21,10 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/binary/TypeCanon.hpp>
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/CoreTypes.hpp>
-#include <isoline/validate/Subtyping.hpp>
 
 namespace isoline::component::validate
 {
@@ -635,47 +635,34 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startEntity(Side act
 bool TypeRelation::coreEquivalent(Side subSide, uint32_t sub, uint32_t super)
 {
     // Within one arena core function types are canonical: equal ids are equivalent types. Across two,
-    // their structures are compared, a concrete reference by the pair of types it names, each pair a
-    // step; a pair met again is compared again, which the steps bound.
+    // equal joint canonical ids are, as validate::TypeMatcher matches two modules' types: built once
+    // per relation in O(n log n), each comparison after is O(1), however deep the types nest.
     if (_isSameArena)
         return sub == super;
-    auto const& subArena = arena(subSide);
-    auto const& superArena = arena(opposite(subSide));
-    auto pending = std::vector<std::pair<uint32_t, uint32_t>> { { sub, super } };
-    while (!pending.empty())
+    if (auto built = buildJointCoreIds(); !built)
     {
-        auto const [subId, superId] = pending.back();
-        pending.pop_back();
-        if (auto stepped = step(); !stepped)
-        {
-            _coreFailure = stepped.error();
-            return false;
-        }
-        auto const& provided = subArena[types::CoreFunctionTypeId { .value = subId }];
-        auto const& required = superArena[types::CoreFunctionTypeId { .value = superId }];
-        if (provided.params.size() != required.params.size()
-            || provided.results.size() != required.results.size())
-            return false;
-        auto const compare = [&](isoline::binary::ValueType const& first,
-                                 isoline::binary::ValueType const& second) {
-            return isoline::validate::isEquivalentWith(
-                first, second, [&](uint32_t subType, uint32_t superType) {
-                    pending.emplace_back(subType, superType);
-                    return true;
-                });
-        };
-        for (auto const index: std::views::iota(std::size_t { 0 }, provided.params.size()))
-        {
-            if (!compare(provided.params[index], required.params[index]))
-                return false;
-        }
-        for (auto const index: std::views::iota(std::size_t { 0 }, provided.results.size()))
-        {
-            if (!compare(provided.results[index], required.results[index]))
-                return false;
-        }
+        _coreFailure = built.error();
+        return false;
     }
-    return true;
+    auto const subCount = _sub.coreFunctionTypeCount();
+    auto const jointId = [&](Side side, uint32_t id) {
+        auto const position = side == Side::Sub ? std::size_t { id } : subCount + id;
+        Require(position < _jointCoreIds.size());
+        return _jointCoreIds[position];
+    };
+    return jointId(subSide, sub) == jointId(opposite(subSide), super);
+}
+
+TypeRelation::Outcome<void> TypeRelation::buildJointCoreIds()
+{
+    auto const count = _sub.coreFunctionTypeCount() + _super.coreFunctionTypeCount();
+    if (_jointCoreIds.size() == count)
+        return {};
+    if (auto stepped = step(count); !stepped)
+        return stepped;
+    auto const sections = std::array { _sub.coreFunctionTypes(), _super.coreFunctionTypes() };
+    _jointCoreIds = isoline::binary::jointCanonicalTypeIds(sections);
+    return {};
 }
 
 TypeRelation::Outcome<void> TypeRelation::matchCore(Side subSide,
