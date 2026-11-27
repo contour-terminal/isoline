@@ -22,6 +22,7 @@
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/validate/ValidationError.hpp>
 #include <isoline/validate/Validator.hpp>
+#include <isoline/validate/testing/BranchBodies.hpp>
 
 using isoline::Feature;
 using isoline::FeatureSet;
@@ -2366,4 +2367,60 @@ TEST_CASE("Validator.brTableChecksEveryLabelInPlace")
     };
     CHECK(twice(i64) == std::nullopt);
     CHECK(twice({ 0x41, 0x00 }) == ValidationErrorCode::TypeMismatch);
+}
+
+namespace
+{
+
+/// Counts the type comparisons a validation makes.
+class ComparisonCounter final: public isoline::validate::IValidationObserver
+{
+  public:
+    void typeCompared() noexcept override { ++_comparisons; }
+
+    /// @return The comparisons counted so far.
+    [[nodiscard]] uint64_t comparisons() const noexcept { return _comparisons; }
+
+  private:
+    uint64_t _comparisons = 0;
+};
+
+/// How many type comparisons validating @p bytes makes; fails the test when it is not valid.
+uint64_t comparisonsOf(std::vector<std::byte> const& bytes)
+{
+    auto const features = FeatureSet::wasm3();
+    auto const module = decodeModule(bytes, features, DecodeLimits {});
+    REQUIRE(module.has_value());
+    auto counter = ComparisonCounter {};
+    auto const shape = validateModule(*module, features, DecodeLimits {}, counter);
+    REQUIRE(shape.has_value());
+    return counter.comparisons();
+}
+
+} // namespace
+
+TEST_CASE("Validator.branchCostIsLinear")
+{
+    // The deterministic half of the memory suite's [branch-cost] timing: branches to labels of a thousand
+    // operands cost type comparisons linear in the branches, not in the branches times their arity.
+    // Popping and pushing each label's operands made these 10^7 and 4 * 10^7.
+    constexpr auto Arity = uint64_t { 1000 };
+
+    // 10'000 br_ifs to one label: its operands are checked once, and each condition once.
+    constexpr auto BrIfs = uint64_t { 10'000 };
+    auto const brIfs = comparisonsOf(isoline::validate::testing::brIfsToWideLabel(Arity, BrIfs));
+    CAPTURE(brIfs);
+    CHECK(brIfs >= BrIfs + Arity); // every condition, and the label's operands at least once
+    CHECK(brIfs <= BrIfs + (2 * Arity));
+
+    // 4 br_tables of 10'000 labels over 100 blocks sharing one type: per br_table, its block's params and
+    // results, its condition, and its labels' two type lists (the blocks' and the function's) once each.
+    constexpr auto Tables = uint64_t { 4 };
+    constexpr auto Labels = uint64_t { 10'000 };
+    auto const tables = comparisonsOf(isoline::validate::testing::wideBrTables(Arity, 100, Labels, Tables));
+    CAPTURE(tables);
+    constexpr auto PerTable = (4 * Arity) + 1;
+    constexpr auto Blocks = uint64_t { 102 }; // the 100 blocks, the function, and one to spare
+    CHECK(tables >= Tables * (1 + Arity));    // per br_table, its condition and at least one label list
+    CHECK(tables <= (Tables * PerTable) + (Blocks * 2 * Arity));
 }
