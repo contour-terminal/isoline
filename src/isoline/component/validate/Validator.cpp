@@ -3496,6 +3496,12 @@ namespace
         auto const isLower = context == canonical::FlattenContext::Lower;
         auto const& signature = _arena[function];
         layOutCopies();
+        // The || is what bounds this scan. Every value type flattens to at least one core value, so
+        // flatParamsShape answers Fits only for at most MaxFlatParams parameters, and it stops reading
+        // after MaxFlatParams + 1 flat values when it answers Overflows: either way it reads a constant
+        // number of parameters, and any_of runs only after Fits, over at most MaxFlatParams of them.
+        // Swapped, any_of would walk every parameter of every lowering and lifting, so n canonical
+        // definitions of one n-parameter function type would cost n^2.
         auto const paramsNeedMemory =
             canonical::flatParamsShape(_layouts, signature) == canonical::FlatShape::Overflows
             || std::ranges::any_of(signature.params,

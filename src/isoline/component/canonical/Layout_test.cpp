@@ -165,6 +165,8 @@ TEST_CASE("Layout.matchesReferenceTable")
     auto const flags17 = types.labelled(ValueKind::Flags, 17);
     auto const flags32 = types.labelled(ValueKind::Flags, 32);
     auto const flags2 = types.labelled(ValueKind::Flags, 2);
+    auto const flags8 = types.labelled(ValueKind::Flags, 8);
+    auto const flags16 = types.labelled(ValueKind::Flags, 16);
     auto const tupleBBHW = types.tuple({ u8, u8, u16, u32 });
     auto const tupleBHBW = types.tuple({ u8, u16, u8, u32 });
     auto const tupleHB = types.tuple({ u16, u8 });
@@ -177,6 +179,8 @@ TEST_CASE("Layout.matchesReferenceTable")
     auto const resultEmpty = types.wrap(ValueKind::Result, { std::nullopt, std::nullopt });
     auto const enum257 = types.labelled(ValueKind::Enum, 257);
     auto const enum256 = types.labelled(ValueKind::Enum, 256);
+    auto const enum65536 = types.labelled(ValueKind::Enum, 65'536);
+    auto const enum65537 = types.labelled(ValueKind::Enum, 65'537);
     auto const recordU8String = types.record({ u8, string });
     auto const layouts = types.layouts();
 
@@ -195,6 +199,9 @@ TEST_CASE("Layout.matchesReferenceTable")
         { .type = flags17, .size = 4, .alignment = 4, .flat = { I32 } },
         { .type = flags32, .size = 4, .alignment = 4, .flat = { I32 } },
         { .type = flags2, .size = 1, .alignment = 1, .flat = { I32 } },
+        // elem_size_flags' boundaries: 8 labels still fit a u8, 16 still a u16.
+        { .type = flags8, .size = 1, .alignment = 1, .flat = { I32 } },
+        { .type = flags16, .size = 2, .alignment = 2, .flat = { I32 } },
         { .type = types.primitive(ValueKind::Bool), .size = 1, .alignment = 1, .flat = { I32 } },
         { .type = types.primitive(ValueKind::S64), .size = 8, .alignment = 8, .flat = { I64 } },
         { .type = types.primitive(ValueKind::Char), .size = 4, .alignment = 4, .flat = { I32 } },
@@ -213,6 +220,9 @@ TEST_CASE("Layout.matchesReferenceTable")
         { .type = resultEmpty, .size = 1, .alignment = 1, .flat = { I32 } },
         { .type = enum256, .size = 1, .alignment = 1, .flat = { I32 } },
         { .type = enum257, .size = 2, .alignment = 2, .flat = { I32 } },
+        // discriminant_type's u16/u32 boundary: 65'536 cases still fit a u16.
+        { .type = enum65536, .size = 2, .alignment = 2, .flat = { I32 } },
+        { .type = enum65537, .size = 4, .alignment = 4, .flat = { I32 } },
     };
     for (auto const& row: rows)
     {
@@ -232,7 +242,10 @@ TEST_CASE("Layout.matchesReferenceTable")
     CHECK(layouts[variantF32U64].payloadOffset == 8);
     CHECK(layouts[resultU8F32].payloadOffset == 4);
     CHECK(layouts[optionU8].payloadOffset == 1);
+    CHECK(layouts[enum256].discriminantBytes == 1);
     CHECK(layouts[enum257].discriminantBytes == 2);
+    CHECK(layouts[enum65536].discriminantBytes == 2);
+    CHECK(layouts[enum65537].discriminantBytes == 4);
     CHECK(layouts[recordU8U32].discriminantBytes == 0);
     CHECK(layouts[string].size64 == 16);
     CHECK(layouts[string].alignment64 == 8);
