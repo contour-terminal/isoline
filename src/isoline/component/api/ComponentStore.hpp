@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -91,6 +92,11 @@ class HostComponentContext
     [[nodiscard]] std::expected<ResourceValue, canonical::Trap> newOwn(HostResourceType const& type,
                                                                        uint32_t rep) const;
 
+    /// Drops an own the host holds: ComponentStore::drop() of the store the call runs in.
+    /// @param value The own.
+    /// @return As ComponentStore::drop().
+    [[nodiscard]] std::expected<void, ComponentCallError> drop(ResourceValue value) const noexcept;
+
   private:
     ComponentStore* _store;
 };
@@ -133,7 +139,8 @@ class ComponentFunction
 {
   public:
     /// The function's type, in its component's arena: its parameters and result.
-    [[nodiscard]] types::FunctionTypeInfo const& type() const noexcept;
+    /// @return It; null once its store is gone, as the arena may be gone with it.
+    [[nodiscard]] types::FunctionTypeInfo const* type() const noexcept;
 
     /// Two handles are equal when they name one function of one store.
     [[nodiscard]] bool operator==(ComponentFunction const& other) const noexcept
@@ -145,14 +152,16 @@ class ComponentFunction
     friend class ComponentInstance;
 
     ComponentFunction(uint64_t serial,
+                      std::weak_ptr<void const> alive,
                       runtime::LiftedRef lifted,
                       types::TypeArena const& arena,
                       types::FunctionTypeId type) noexcept:
-        _serial { serial }, _lifted { lifted }, _arena { &arena }, _type { type }
+        _serial { serial }, _alive { std::move(alive) }, _lifted { lifted }, _arena { &arena }, _type { type }
     {
     }
 
     uint64_t _serial;
+    std::weak_ptr<void const> _alive; ///< The store's alive-token; expired once the store is gone.
     runtime::LiftedRef _lifted;
     types::TypeArena const* _arena;
     types::FunctionTypeId _type;
@@ -162,7 +171,8 @@ struct StoreState;
 
 /// An instance of a component in a ComponentStore: its exports, called through the canonical ABI.
 ///
-/// Cheap to copy; it refers to its store, which must outlive it, and keeps its component alive.
+/// Cheap to copy; it refers to its store without keeping it alive, and keeps its component alive. Once
+/// the store is gone every member refuses (StoreDeleted) rather than reach it.
 class ComponentInstance
 {
   public:
@@ -170,13 +180,17 @@ class ComponentInstance
     /// the instance the root exports as `api`).
     /// @param path The path.
     /// @return The function; none for no such export, an export of another sort, or a function the
-    ///         component re-exports from its imports (which the host calls where it defined it).
-    [[nodiscard]] std::optional<ComponentFunction> function(std::string_view path) const;
+    ///         component re-exports from its imports (which the host calls where it defined it); or
+    ///         StoreDeleted once the store is gone.
+    [[nodiscard]] std::expected<std::optional<ComponentFunction>, ComponentCallError> function(
+        std::string_view path) const;
 
     /// Calls @p function with @p args, which the call lends and the caller keeps. Before anything runs
-    /// it refuses a function of another store (ForeignFunction), a locked-down store (LockedDown), and
-    /// arguments not of the function's arena, count or types, or handles not of the resource types its
-    /// parameters name (ArgumentMismatch); none of these changes the store. Any failure past them locks
+    /// it refuses a store that is gone (StoreDeleted), a function of another store (ForeignFunction), a
+    /// locked-down store (LockedDown), and arguments not of the function's arena, count or types,
+    /// handles not of the resource types its parameters name, or owns the host does not hold
+    /// (ArgumentMismatch); none of these changes the store. The owns among @p args pass to the guest, so
+    /// the host holds them no longer; the owns among the results are the host's. Any failure past them locks
     /// the store down (D6). As canonical calls do, the host running out of memory ends the process.
     /// @param function A function of this instance's store.
     /// @param args One root per parameter, built in the function's arena (argumentsFor()).
@@ -187,9 +201,10 @@ class ComponentInstance
     /// A builder of @p function's arguments: its arena, one root per parameter, charged to the store's
     /// live-bytes budget.
     /// @param function A function.
-    /// @return The builder.
+    /// @return The builder; or StoreDeleted once the store is gone (the budget is the store's).
     /// @throws std::bad_alloc When the builder cannot be stored.
-    [[nodiscard]] canonical::ValueBuilder argumentsFor(ComponentFunction const& function) const;
+    [[nodiscard]] std::expected<canonical::ValueBuilder, ComponentCallError> argumentsFor(
+        ComponentFunction const& function) const;
 
     /// The component it is an instance of.
     [[nodiscard]] Component const& component() const noexcept { return _component; }
@@ -204,12 +219,13 @@ class ComponentInstance
     ComponentInstance(StoreState& state,
                       uint64_t serial,
                       uint32_t instance,
-                      Component const& component) noexcept:
-        _state { &state }, _serial { serial }, _instance { instance }, _component { component }
-    {
-    }
+                      Component const& component) noexcept;
+
+    /// The store's state, or null once the store is gone.
+    [[nodiscard]] StoreState* live() const noexcept { return _alive.expired() ? nullptr : _state; }
 
     StoreState* _state;
+    std::weak_ptr<void const> _alive; ///< The store's alive-token; expired once the store is gone.
     uint64_t _serial;
     uint32_t _instance;
     Component _component;
@@ -269,6 +285,11 @@ struct StoreState
     uint64_t serial = 0;                 ///< Unique in the process: what tells its handles apart.
     isoline::api::EngineIdentity engine; ///< The engine its components must be of.
     ComponentLimits limits;              ///< Its caps.
+    /// Expires when the state is destroyed: what every handle checks before it reaches the store.
+    std::shared_ptr<void const> alive = std::make_shared<char const>('\0');
+    /// The owns the host holds, by (runtime type, rep), with how many of each (R12): what a lift to the
+    /// host or hostResource(Own) adds, and a drop or a lowering to the guest takes.
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> hostOwns {};
 };
 
 /// A store of component instances (D2), the embedder's handle on a runtime::ComponentStore.
@@ -317,26 +338,33 @@ class ComponentStore
         Component const& component, Linker const& linker) noexcept;
 
     /// Drops an own the host holds (R12): a host type's destructor runs, once for this drop; a guest
-    /// type's destructor runs through the canonical ABI, as `resource.drop` would run it. A borrow, a
-    /// resource type the store does not have, a guest drop in a locked-down store, and a drop while the
-    /// store instantiates are refused, nothing run.
+    /// type's destructor runs through the canonical ABI, as `resource.drop` would run it. The store
+    /// tracks the owns the host holds, so each is dropped or passed on once. Refused, nothing run: a
+    /// moved-from store (StoreDeleted), a drop while the store instantiates (Instantiating), a borrow, a
+    /// resource type the store does not have, an own the host does not hold (ArgumentMismatch), and a
+    /// guest drop in a locked-down store (LockedDown).
     /// @param value The own.
-    /// @return Nothing; or ArgumentMismatch (a borrow, an unknown type), LockedDown, or the guest
-    ///         destructor's Trap, Interrupted or HostFailure, which lock the store down.
+    /// @return Nothing; or the refusal; or the guest destructor's Trap, Interrupted or HostFailure, which
+    ///         lock the store down.
     [[nodiscard]] std::expected<void, ComponentCallError> drop(ResourceValue value) noexcept;
 
     /// A handle value of a host resource, for the embedder to pass to a guest: an own the guest's table
     /// takes when it is lowered, or a borrow lent for one call.
     /// @param type The resource's type, one the store's instantiations imported.
     /// @param rep The host's representation of the resource.
-    /// @param ownership Own or Borrow.
+    /// @param ownership Own, which the host then holds (drop() or a call takes it), or Borrow.
     /// @return The handle value; or WrongResource when no instantiation of the store imported @p type.
-    /// @throws std::bad_alloc When the trap's message cannot be stored.
-    [[nodiscard]] std::expected<ResourceValue, canonical::Trap> hostResource(
-        HostResourceType const& type, uint32_t rep, canonical::Ownership ownership) const;
+    /// @throws std::bad_alloc When the trap's message or the held own cannot be stored.
+    [[nodiscard]] std::expected<ResourceValue, canonical::Trap> hostResource(HostResourceType const& type,
+                                                                             uint32_t rep,
+                                                                             canonical::Ownership ownership);
 
     /// Whether a trap locked the store down (D6): no guest code of it runs again.
     [[nodiscard]] bool isLockedDown() const noexcept;
+
+    /// Whether a call or an instantiation of the store runs: when moving it is a precondition violation,
+    /// which a C wrapper refuses as an error value instead.
+    [[nodiscard]] bool isBusy() const noexcept;
 
     /// The runtime store, for what the api does not cover.
     [[nodiscard]] runtime::ComponentStore& runtime() noexcept { return _state->runtime; }

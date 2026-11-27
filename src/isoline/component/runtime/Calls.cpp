@@ -266,6 +266,8 @@ namespace
                                             .code = 0,
                                             .mismatch = std::nullopt } } };
         }
+        if (auto checked = callee.checkResults(store, *built); !checked)
+            return std::unexpected { CallError { checked.error() } };
         return onResolve(std::move(*built));
     }
 } // namespace

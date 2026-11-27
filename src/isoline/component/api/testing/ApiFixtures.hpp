@@ -149,16 +149,26 @@ void require(std::expected<T, LinkerError> const& defined)
     return called->root(0).scalar<uint32_t>();
 }
 
+/// The function at @p path of @p instance, if any (REQUIREd: the store lives).
+[[nodiscard]] inline std::optional<ComponentFunction> lookup(ComponentInstance const& instance,
+                                                             std::string_view path)
+{
+    auto found = instance.function(path);
+    REQUIRE(found.has_value());
+    return *found;
+}
+
 /// Calls @p name of @p instance with the u32 arguments @p args.
 [[nodiscard]] inline std::expected<canonical::Values, ComponentCallError> callWith(
     ComponentInstance& instance, std::string_view name, std::vector<uint32_t> const& args = {})
 {
-    auto const function = instance.function(name);
+    auto const function = lookup(instance, name);
     REQUIRE(function.has_value());
     auto builder = instance.argumentsFor(*function);
+    REQUIRE(builder.has_value());
     for (auto const arg: args)
-        builder.scalar(arg);
-    auto built = builder.finish();
+        builder->scalar(arg);
+    auto built = builder->finish();
     REQUIRE(built.has_value());
     return instance.call(*function, *built);
 }

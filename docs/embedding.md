@@ -575,23 +575,34 @@ or types, or a handle of another resource type than its parameter's (`ArgumentMi
 without entering a guest or locking the store down. Every failure is a `ComponentCallError` whose
 failure is a row of `ComponentCallFailureTable`, which names its detail and what it does to the store:
 
-| Failure            | Detail                | Store       |
-|--------------------|-----------------------|-------------|
-| `Trap`             | `canonical::Trap`     | locked down |
-| `Interrupted`      | the `Interrupted` trap | locked down |
-| `HostFailure`      | `api::HostFailure`    | locked down |
-| `LockedDown`       | none                  | unchanged   |
-| `ArgumentMismatch` | `canonical::ValueError` | unchanged |
-| `ForeignFunction`  | none                  | unchanged   |
+<!-- component-call-failures:begin -->
+- `Trap` (`canonical::Trap`): locked down; component call trapped.
+- `Interrupted` (`canonical::Trap`): locked down; component call interrupted.
+- `HostFailure` (`isoline::api::HostFailure`): locked down; host function failed.
+- `LockedDown` (`std::monostate`): unchanged; component store is locked down.
+- `ArgumentMismatch` (`canonical::ValueError`): unchanged; arguments do not match the function.
+- `ForeignFunction` (`std::monostate`): unchanged; function or resource of another component store.
+- `StoreDeleted` (`std::monostate`): unchanged; component store is gone.
+- `Instantiating` (`std::monostate`): unchanged; component store is instantiating.
+<!-- component-call-failures:end -->
+
+The block is generated from `api::ComponentCallFailureTable`; `CallError.docsMatchTable` fails, printing
+the block as it should read, when the two part. An instance or function whose store is gone refuses with
+`StoreDeleted` rather than reach it.
 
 A host function (`IHostComponentFunction`) is `noexcept`: it fails by returning a `HostFailure`, which
 ends the call and locks the store down; results not of its type are `HostFailure{ResultMismatch}`. An
-own handle among its arguments is the host's (lifting removed it from the guest's table); the host
-hands it back or drops it with `ComponentStore::drop`, which runs a host type's destructor, or a guest
+own handle among its arguments is the host's (lifting removed it from the guest's table). The store keeps
+a table of the owns the host holds, as Wasmtime does: lifting an own to the host, as an argument or a
+call's result, and `hostResource(Own)` add one; `drop`, passing it to a call and returning it from a host
+function take one, and an own the host does not hold is refused (`ArgumentMismatch`, or the host
+function's `HostFailure`), so a resource is destroyed once. The host hands an own back or drops it with
+`ComponentStore::drop`, which runs a host type's destructor, or a guest
 type's through the canonical ABI (refused in a locked-down store), and refuses a borrow. A host type's
 destructor also runs once for each own a guest table still holds when the store is destroyed, never at
 lockdown. The store is move-only; its instances and functions stay valid across a move, and moving it
-while a call or an instantiation of it runs is a precondition violation.
+while a call or an instantiation of it runs is a precondition violation (`isBusy()` tells). A drop while
+the store instantiates, from a host function a start function calls, is refused (`Instantiating`).
 
 ## Interrupts and poll sites
 

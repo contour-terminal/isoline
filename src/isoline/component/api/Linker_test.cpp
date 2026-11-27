@@ -43,6 +43,7 @@ using isoline::component::api::testing::constantFunction;
 using isoline::component::api::testing::functionSpec;
 using isoline::component::api::testing::hostFunction;
 using isoline::component::api::testing::instanceOf;
+using isoline::component::api::testing::lookup;
 using isoline::component::api::testing::primitive;
 using isoline::component::api::testing::refusalAs;
 using isoline::component::api::testing::require;
@@ -133,6 +134,15 @@ void exportRunCalling(ComponentBuilder& builder, uint32_t function)
                                       functionSpec({}, primitive(linker, ValueKind::U32)),
                                       constantFunction(value)));
     return linker;
+}
+
+/// The code of a refused definition (REQUIREd to be refused).
+template <typename T>
+[[nodiscard]] LinkerErrorCode refusalCode(
+    std::expected<T, isoline::component::api::LinkerError> const& defined)
+{
+    REQUIRE_FALSE(defined.has_value());
+    return defined.error().code;
 }
 
 } // namespace
@@ -289,6 +299,12 @@ TEST_CASE("Linker.instanceExportsAreChecked")
     auto inner = TypeScopeBuilder {};
     std::ignore = inner.exportItem(
         "f", ExternDesc { .sort = Sort::Func, .index = functionType(inner, {}, PrimitiveValueType::U32) });
+    // A type the linker need not define.
+    std::ignore = inner.exportItem(
+        "t",
+        ExternDesc {
+            .sort = Sort::Type,
+            .index = inner.type(TypeDefinition { .type = DefinedValueType { PrimitiveValueType::U32 } }) });
     auto outer = TypeScopeBuilder {};
     std::ignore = outer.exportItem(
         "nested", ExternDesc { .sort = Sort::Instance, .index = outer.instanceType(std::move(inner)) });
@@ -371,13 +387,17 @@ TEST_CASE("Linker.foreignInstanceRefused")
     auto instance = instanceOf(storeA.instantiate(consumer, linker));
     CHECK(u32Of(callWith(instance, "run", { 5 })) == 5);
     // A function of another store's instance is refused by the call, before anything runs.
-    auto const foreign = instance.function("run");
+    auto const foreign = lookup(instance, "run");
     REQUIRE(foreign.has_value());
     auto arguments = instance.argumentsFor(*foreign);
-    arguments.scalar(1);
-    auto const built = arguments.finish();
+    REQUIRE(arguments.has_value());
+    arguments->scalar(1);
+    auto const built = arguments->finish();
     REQUIRE(built.has_value());
     auto other = instanceOf(storeB.instantiate(provider, Linker { ComponentConfig {} }));
+    auto const foreignBuilder = other.argumentsFor(*foreign);
+    REQUIRE_FALSE(foreignBuilder.has_value());
+    CHECK(foreignBuilder.error().failure == ComponentCallFailure::ForeignFunction);
     auto const called = other.call(*foreign, *built);
     REQUIRE_FALSE(called.has_value());
     CHECK(called.error().failure == ComponentCallFailure::ForeignFunction);
@@ -589,4 +609,122 @@ TEST_CASE("Linker.resourceAliasMustMatch")
     CHECK(other.resolve(component).back().outcome
           == ImportOutcome {
               TypeMismatch { .matched = "r-alias", .detail = "resource types are not the same" } });
+}
+
+TEST_CASE("Linker.storeInstanceResourcesBound")
+{
+    // An instance of a store exporting a resource satisfies an import of `(sub resource)` by name.
+    auto harness = ApiHarness {};
+    auto store = harness.store();
+    auto provider = ComponentBuilder {};
+    std::ignore = provider.exportItem("r", Sort::Type, provider.resource());
+    auto const provided =
+        instanceOf(store.instantiate(harness.load(provider.build()), Linker { ComponentConfig {} }));
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineInstance("prov", provided));
+    auto builder = ComponentBuilder {};
+    auto scope = TypeScopeBuilder {};
+    std::ignore =
+        scope.exportItem("r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    std::ignore = builder.import(
+        "prov", ExternDesc { .sort = Sort::Instance, .index = builder.instanceType(std::move(scope)) });
+    auto const consumer = harness.load(builder.build());
+    CHECK(outcomeOf(linker, consumer) == ImportOutcome { Satisfied { .matched = "prov" } });
+    CHECK(store.instantiate(consumer, linker).has_value());
+}
+
+TEST_CASE("Linker.capsAndMoves")
+{
+    // The linker's arena keeps to its caps: a refusal names the cap, and the linker is as it was.
+    auto limits = isoline::component::ComponentLimits {};
+    limits.maxResourceTypes = 1;
+    auto linker = Linker { ComponentConfig { .limits = limits } };
+    require(linker.defineResource("a", HostResourceType { "a", nullptr }));
+    auto const second = linker.defineResource("b", HostResourceType { "b", nullptr });
+    REQUIRE_FALSE(second.has_value());
+    CHECK(refusalCode(second) == LinkerErrorCode::TypeLimit);
+    auto const own = linker.ownType(HostResourceType { "c", nullptr });
+    REQUIRE_FALSE(own.has_value());
+    CHECK(refusalCode(own) == LinkerErrorCode::TypeLimit);
+
+    auto small = isoline::component::ComponentLimits {};
+    small.maxTypeSize = 3;
+    auto sized = Linker { ComponentConfig { .limits = small } };
+    auto const u32 = primitive(sized, ValueKind::U32);
+    auto const wide = sized.defineFunction("f", functionSpec({ u32, u32, u32 }, u32), constantFunction(1));
+    REQUIRE_FALSE(wide.has_value());
+    CHECK(refusalCode(wide) == LinkerErrorCode::TypeLimit);
+
+    // The paths of the other definitions are checked as a function's are.
+    auto harness = ApiHarness {};
+    auto store = harness.store();
+    auto const component = harness.load(liftedIdentity().build());
+    auto const instance = instanceOf(store.instantiate(component, Linker { ComponentConfig {} }));
+    auto const module = harness.engine.load(isoline::component::binary::testing::identityModule());
+    REQUIRE(module.has_value());
+    CHECK(refusalCode(sized.defineInstance("Bad", instance)) == LinkerErrorCode::InvalidPath);
+    CHECK(refusalCode(sized.defineModule("Bad", *module)) == LinkerErrorCode::InvalidPath);
+    CHECK(refusalCode(sized.defineComponent("Bad", component)) == LinkerErrorCode::InvalidPath);
+
+    // A moved linker keeps its definitions.
+    auto moved = std::move(linker);
+    auto const& view = moved;
+    CHECK(view.types().valueTypeCount() > 0);
+    auto assigned = Linker { ComponentConfig {} };
+    assigned = std::move(moved);
+    CHECK(
+        refusalAs<UnsatisfiedImport>(store.instantiate(harness.load(instanceUser("ns:p/i@1.0.0")), assigned))
+            .name
+        == "ns:p/i@1.0.0");
+    CHECK(refusalCode(assigned.defineResource("a", HostResourceType { "a", nullptr }))
+          == LinkerErrorCode::Redefinition);
+}
+
+TEST_CASE("Linker.definitionKindsAreChecked")
+{
+    // An instance import defined as a function, and a type import defined anyway, which needs nothing.
+    auto harness = ApiHarness {};
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineFunction(
+        "host", functionSpec({}, primitive(linker, ValueKind::U32)), constantFunction(1)));
+    require(linker.defineResource("t", HostResourceType { "t", nullptr }));
+    CHECK(outcomeOf(linker, harness.load(instanceUser("host")))
+          == ImportOutcome { TypeMismatch { .matched = "host", .detail = "expected instance, found func" } });
+    auto builder = ComponentBuilder {};
+    std::ignore = builder.import("t",
+                                 ExternDesc { .sort = Sort::Type,
+                                              .index = builder.type(TypeDefinition {
+                                                  .type = DefinedValueType { PrimitiveValueType::U32 } }) });
+    CHECK(outcomeOf(linker, harness.load(builder.build())) == ImportOutcome { Satisfied { .matched = "t" } });
+}
+
+TEST_CASE("Linker.componentOfAnotherEngineRefused")
+{
+    // A component defined for a component-typed import must be of the store's engine.
+    auto harness = ApiHarness {};
+    auto otherEngine = isoline::api::Engine { isoline::api::EngineConfig {
+        .mode = isoline::api::ExecutionMode::Deterministic } };
+    auto loader = isoline::component::api::EngineCoreModuleLoader { otherEngine };
+    auto validator = isoline::component::api::EngineCoreModuleValidator { otherEngine };
+    auto foreign = isoline::component::api::Component::load(
+        otherEngine, liftedIdentity().build(), {}, loader, validator);
+    REQUIRE(foreign.has_value());
+    auto builder = ComponentBuilder {};
+    auto scope = TypeScopeBuilder {};
+    std::ignore = scope.exportItem(
+        "id",
+        ExternDesc { .sort = Sort::Func,
+                     .index = scope.type(TypeDefinition {
+                         .type = FunctionTypeDefinition {
+                             .asyncness = Asyncness::Sync,
+                             .params = { LabeledType { .label = "x", .type = PrimitiveValueType::U32 } },
+                             .result = PrimitiveValueType::U32 } }) });
+    std::ignore = builder.import(
+        "c", ExternDesc { .sort = Sort::Component, .index = builder.componentType(std::move(scope)) });
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineComponent("c", *foreign));
+    auto store = harness.store();
+    CHECK(refusalAs<isoline::api::EngineMismatch>(store.instantiate(harness.load(builder.build()), linker))
+          == isoline::api::EngineMismatch {});
+    CHECK_FALSE(store.isLockedDown());
 }

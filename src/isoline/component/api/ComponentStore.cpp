@@ -11,10 +11,12 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <map>
 #include <memory>
 #include <new>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -79,6 +81,62 @@ namespace
         return next.fetch_add(1, std::memory_order_relaxed);
     }
 
+    using HostOwnKey = std::pair<uint32_t, uint32_t>;
+
+    /// Every own among @p values, in pre-order. A list of scalars holds none, so it is skipped whole.
+    [[nodiscard]] std::vector<ResourceValue> ownsOf(canonical::Values const& values)
+    {
+        auto owns = std::vector<ResourceValue> {};
+        auto pending = std::vector<canonical::ValueView> {};
+        for (auto const root: std::views::iota(std::size_t { 0 }, values.rootCount()))
+            pending.push_back(values.root(root));
+        while (!pending.empty())
+        {
+            auto const view = pending.back();
+            pending.pop_back();
+            if (view.kind() == types::ValueKind::Own)
+                owns.push_back(view.resource());
+            else if (view.kind() != types::ValueKind::Borrow && view.childCount() != 0
+                     && view.packedElementBytes().empty())
+                for (auto const child: view.children())
+                    pending.push_back(child);
+        }
+        return owns;
+    }
+
+    /// The host holds @p owns now: each is counted in the store's table.
+    void hold(StoreState& state, std::span<ResourceValue const> owns)
+    {
+        for (auto const& own: owns)
+            ++state.hostOwns[HostOwnKey { own.type.value, own.rep }];
+    }
+
+    /// The host gives up @p owns: each must be held (as often as it occurs), else nothing is taken.
+    [[nodiscard]] std::expected<void, canonical::ValueError> release(StoreState& state,
+                                                                     std::span<ResourceValue const> owns)
+    {
+        auto wanted = std::map<HostOwnKey, uint32_t> {};
+        for (auto const& own: owns)
+            ++wanted[HostOwnKey { own.type.value, own.rep }];
+        for (auto const& [key, count]: wanted)
+            if (auto const held = state.hostOwns.find(key);
+                held == state.hostOwns.end() || held->second < count)
+                return std::unexpected { canonical::ValueError {
+                    .code = canonical::ValueErrorCode::TypeMismatch,
+                    .path = {},
+                    .detail = std::format("an own of resource type {} rep {} the host does not hold",
+                                          key.first,
+                                          key.second) } };
+        for (auto const& [key, count]: wanted)
+        {
+            auto const held = state.hostOwns.find(key);
+            held->second -= count;
+            if (held->second == 0)
+                state.hostOwns.erase(held);
+        }
+        return {};
+    }
+
     /// The runtime's view of a linker's host function in one store.
     class LinkedFunction final: public runtime::IHostCallee
     {
@@ -93,9 +151,23 @@ namespace
             canonical::Values const& args,
             canonical::ValueBuilder& results) noexcept override
         {
-            // The store's ComponentStore cannot move while a call runs (checked there).
+            // The store's ComponentStore cannot move while a call runs (checked there). The owns lifted
+            // into the arguments left the guest's table: the host holds them (R12).
+            hold(*_state, ownsOf(args));
             auto context = HostComponentContext { *_state->owner };
             return _function->call(context, args, results);
+        }
+
+        [[nodiscard]] std::expected<void, isoline::api::HostFailure> checkResults(
+            runtime::ComponentStore&, canonical::Values const& results) noexcept override
+        {
+            // The owns returned go to the guest: the host must hold each, and holds it no more.
+            if (!release(*_state, ownsOf(results)))
+                return std::unexpected { isoline::api::HostFailure {
+                    .kind = isoline::api::HostFailureKind::ArgumentMismatch,
+                    .code = 0,
+                    .mismatch = std::nullopt } };
+            return {};
         }
 
       private:
@@ -211,14 +283,37 @@ std::expected<ResourceValue, canonical::Trap> HostComponentContext::newOwn(HostR
     return _store->hostResource(type, rep, canonical::Ownership::Own);
 }
 
-types::FunctionTypeInfo const& ComponentFunction::type() const noexcept
+std::expected<void, ComponentCallError> HostComponentContext::drop(ResourceValue value) const noexcept
 {
-    return (*_arena)[_type];
+    return _store->drop(value);
 }
 
-std::optional<ComponentFunction> ComponentInstance::function(std::string_view path) const
+types::FunctionTypeInfo const* ComponentFunction::type() const noexcept
 {
-    auto& store = _state->runtime;
+    if (_alive.expired())
+        return nullptr;
+    return &(*_arena)[_type];
+}
+
+ComponentInstance::ComponentInstance(StoreState& state,
+                                     uint64_t serial,
+                                     uint32_t instance,
+                                     Component const& component) noexcept:
+    _state { &state },
+    _alive { state.alive },
+    _serial { serial },
+    _instance { instance },
+    _component { component }
+{
+}
+
+std::expected<std::optional<ComponentFunction>, ComponentCallError> ComponentInstance::function(
+    std::string_view path) const
+{
+    auto* const state = live();
+    if (state == nullptr)
+        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
+    auto& store = state->runtime;
     auto exports = store.exportsOf(_instance);
     auto value = std::optional<runtime::SlotValue> {};
     for (auto const segment: std::views::split(path, PathSeparator))
@@ -228,37 +323,44 @@ std::optional<ComponentFunction> ComponentInstance::function(std::string_view pa
         {
             auto const* instance = std::get_if<runtime::InstanceRef>(&*value);
             if (instance == nullptr)
-                return std::nullopt;
+                return std::optional<ComponentFunction> {};
             exports = store.exportsOf(*instance);
         }
         auto const found = std::ranges::find(exports, name, &runtime::NamedValue::name);
         if (found == exports.end())
-            return std::nullopt;
+            return std::optional<ComponentFunction> {};
         value = found->value;
     }
     if (!value)
-        return std::nullopt; // uncovered(split-yields-a-segment)
+        return std::optional<ComponentFunction> {}; // uncovered(split-yields-a-segment)
     auto const* function = std::get_if<runtime::ComponentFunction>(&*value);
     if (function == nullptr)
-        return std::nullopt;
+        return std::optional<ComponentFunction> {};
     auto const* lifted = std::get_if<runtime::LiftedRef>(function);
     if (lifted == nullptr)
-        return std::nullopt;
+        return std::optional<ComponentFunction> {};
     auto const& definition = store.lifted(*lifted);
-    return ComponentFunction { _serial, *lifted, *definition.side.arena, definition.type };
+    return ComponentFunction { _serial, _alive, *lifted, *definition.side.arena, definition.type };
 }
 
 std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
     ComponentFunction const& function, canonical::Values const& args) noexcept
 {
+    auto* const state = live();
+    if (state == nullptr)
+        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
     if (function._serial != _serial)
         return std::unexpected { callError(ComponentCallFailure::ForeignFunction) };
-    auto& store = _state->runtime;
+    auto& store = state->runtime;
     if (store.state() == runtime::StoreState::LockedDown)
         return std::unexpected { callError(ComponentCallFailure::LockedDown) };
     auto const& lifted = store.lifted(function._lifted);
-    if (auto checked = checkArguments(store, _state->limits, lifted, args); !checked)
+    if (auto checked = checkArguments(store, state->limits, lifted, args); !checked)
         return std::unexpected { std::move(checked.error()) };
+    // The owns passed go to the guest's table: the host must hold each, and holds it no more.
+    if (auto released = release(*state, ownsOf(args)); !released)
+        return std::unexpected { callError(ComponentCallFailure::ArgumentMismatch,
+                                           std::move(released.error())) };
     auto results = std::optional<canonical::Values> {};
     auto start = [&]() -> std::expected<runtime::CallArguments, runtime::CallError> {
         return runtime::CallArguments { std::cref(args) };
@@ -269,17 +371,25 @@ std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
     };
     if (auto called = runtime::canonLift(store, lifted, start, resolve); !called)
         return std::unexpected { fromRuntime(std::move(called.error())) };
+    // The owns returned left the guest's table: the host holds them (R12).
+    hold(*state, ownsOf(*results));
     return std::move(*results);
 }
 
-canonical::ValueBuilder ComponentInstance::argumentsFor(ComponentFunction const& function) const
+std::expected<canonical::ValueBuilder, ComponentCallError> ComponentInstance::argumentsFor(
+    ComponentFunction const& function) const
 {
-    auto const& type = function.type();
+    auto* const state = live();
+    if (state == nullptr)
+        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
+    if (function._serial != _serial)
+        return std::unexpected { callError(ComponentCallFailure::ForeignFunction) };
     auto params = std::vector<types::TypeId> {};
-    params.reserve(type.params.size());
-    for (auto const& param: type.params)
+    for (auto const& param: (*function._arena)[function._type].params)
         params.push_back(param.second);
-    return canonical::ValueBuilder { *function._arena, params, _state->runtime.liveBytes() };
+    return std::expected<canonical::ValueBuilder, ComponentCallError> {
+        std::in_place, *function._arena, params, state->runtime.liveBytes()
+    };
 }
 
 bool ComponentInstance::belongsTo(ComponentStore const& store) const noexcept
@@ -310,7 +420,7 @@ ComponentStore::ComponentStore(isoline::api::Engine const& engine,
 namespace
 {
     /// Whether a call or an instantiation of @p state runs: what forbids moving its store.
-    [[nodiscard]] bool isBusy(StoreState const& state) noexcept
+    [[nodiscard]] bool isBusyState(StoreState const& state) noexcept
     {
         return state.runtime.activeCalls() != 0
                || state.runtime.state() == runtime::StoreState::Instantiating;
@@ -319,7 +429,7 @@ namespace
 
 ComponentStore::ComponentStore(ComponentStore&& other) noexcept
 {
-    Require(other._state == nullptr || !isBusy(*other._state));
+    Require(other._state == nullptr || !isBusyState(*other._state));
     _state = std::move(other._state);
     if (_state != nullptr)
         _state->owner = this;
@@ -329,8 +439,8 @@ ComponentStore& ComponentStore::operator=(ComponentStore&& other) noexcept
 {
     if (this == &other)
         return *this;
-    Require(other._state == nullptr || !isBusy(*other._state));
-    Require(_state == nullptr || !isBusy(*_state));
+    Require(other._state == nullptr || !isBusyState(*other._state));
+    Require(_state == nullptr || !isBusyState(*_state));
     _state = std::move(other._state);
     if (_state != nullptr)
         _state->owner = this;
@@ -344,13 +454,22 @@ std::shared_ptr<isoline::api::Interrupter> const& ComponentStore::interrupter() 
     return _state->runtime.coreStore().interrupter();
 }
 
-std::expected<ResourceValue, canonical::Trap> ComponentStore::hostResource(
-    HostResourceType const& type, uint32_t rep, canonical::Ownership ownership) const
+std::expected<ResourceValue, canonical::Trap> ComponentStore::hostResource(HostResourceType const& type,
+                                                                           uint32_t rep,
+                                                                           canonical::Ownership ownership)
 {
     auto const bound = _state->runtime.hostResourceTypeOf(*type.identity());
     if (!bound)
         return std::unexpected { canonical::trapOf(canonical::TrapCode::WrongResource, rep) };
-    return ResourceValue { .type = *bound, .rep = rep, .ownership = ownership };
+    auto const value = ResourceValue { .type = *bound, .rep = rep, .ownership = ownership };
+    if (ownership == canonical::Ownership::Own)
+        hold(*_state, std::span { &value, 1 });
+    return value;
+}
+
+bool ComponentStore::isBusy() const noexcept
+{
+    return _state != nullptr && isBusyState(*_state);
 }
 
 bool ComponentStore::isLockedDown() const noexcept
@@ -399,7 +518,11 @@ std::expected<ComponentInstance, InstantiateComponentError> ComponentStore::inst
 
 std::expected<void, ComponentCallError> ComponentStore::drop(ResourceValue value) noexcept
 {
+    if (_state == nullptr)
+        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
     auto& store = _state->runtime;
+    if (store.state() == runtime::StoreState::Instantiating)
+        return std::unexpected { callError(ComponentCallFailure::Instantiating) };
     if (value.ownership != canonical::Ownership::Own)
         return std::unexpected { argumentMismatch(
             canonical::ValueErrorCode::TypeMismatch, {}, "a borrow, which only its lender drops") };
@@ -409,6 +532,12 @@ std::expected<void, ComponentCallError> ComponentStore::drop(ResourceValue value
             canonical::ValueErrorCode::TypeMismatch,
             {},
             std::format("resource type {} is not of the store", value.type.value)) };
+    auto const* const guestType = std::get_if<runtime::GuestImplementor>(&types[value.type]);
+    if (guestType != nullptr && store.state() == runtime::StoreState::LockedDown)
+        return std::unexpected { callError(ComponentCallFailure::LockedDown) };
+    if (auto released = release(*_state, std::span { &value, 1 }); !released)
+        return std::unexpected { callError(ComponentCallFailure::ArgumentMismatch,
+                                           std::move(released.error())) };
     return std::visit(
         core::Overloaded {
             [&](runtime::HostImplementor const& host) -> std::expected<void, ComponentCallError> {
@@ -418,17 +547,17 @@ std::expected<void, ComponentCallError> ComponentStore::drop(ResourceValue value
                 return {};
             },
             [&](runtime::GuestImplementor const& guest) -> std::expected<void, ComponentCallError> {
-                if (store.state() == runtime::StoreState::LockedDown)
-                    return std::unexpected { callError(ComponentCallFailure::LockedDown) };
                 if (!guest.destructor)
                     return {};
                 auto destroyed = store.callGuestDestructor(guest, guest.componentInstance, value.rep);
                 if (!destroyed)
                 {
-                    // A trap in guest code locks the store down (D6), as `resource.drop`'s would.
-                    store.lockDown();
-                    return std::unexpected { fromRuntime(
-                        runtime::CallError { std::move(destroyed.error()) }) };
+                    // A trap in guest code locks the store down (D6), as `resource.drop`'s would: as its
+                    // failure's row says.
+                    auto error = fromRuntime(runtime::CallError { std::move(destroyed.error()) });
+                    if (componentCallFailureRow(error.failure).effect == StoreEffect::LocksDown)
+                        store.lockDown();
+                    return std::unexpected { std::move(error) };
                 }
                 return {};
             },

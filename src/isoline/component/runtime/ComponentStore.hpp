@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -65,6 +66,20 @@ class IHostCallee
     /// @return Nothing, or the host's failure, which ends the call and locks the store down.
     [[nodiscard]] virtual std::expected<void, isoline::api::HostFailure> call(
         ComponentStore& store, canonical::Values const& args, canonical::ValueBuilder& results) noexcept = 0;
+
+    /// Checks the results call() built, once ValueBuilder::finish() found them of their types and before
+    /// they are lowered into the caller: the api layer takes the owns among them from those the host
+    /// holds here. Nothing by default.
+    /// @param store The store the call runs in.
+    /// @param results The results.
+    /// @return Nothing, or the host's failure, which ends the call and locks the store down.
+    [[nodiscard]] virtual std::expected<void, isoline::api::HostFailure> checkResults(
+        ComponentStore& store, canonical::Values const& results) noexcept
+    {
+        std::ignore = store;
+        std::ignore = results;
+        return {};
+    }
 
   protected:
     IHostCallee() = default;

@@ -81,4 +81,10 @@ if(ISOLINE_TESTING)
     endif()
     add_test(NAME isoline_component_test COMMAND isoline_component_test)
     set_tests_properties(isoline_component_test PROPERTIES LABELS unit TIMEOUT 600)
+    # The guide's generated blocks are checked against their tables (CallError.docsMatchTable).
+    target_compile_definitions(isoline_component_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    # Moving a store while its call runs is a contract violation: the hidden case reports it and exits.
+    isoline_add_contract_test(NAME isoline_component_contract_store_moved_while_busy SPELLING contract
+                              CHECK "[^\n]*isBusyState[^\n]*"
+                              COMMAND isoline_component_test "ComponentStore.movedWhileBusyIsAContractViolation")
 endif()

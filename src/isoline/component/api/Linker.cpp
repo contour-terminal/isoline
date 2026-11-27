@@ -384,8 +384,10 @@ class Linker::Walk
                     return push(runtime::ComponentImport { .code = provided.code() });
                 },
                 [](InstanceDefinition const&) -> std::expected<uint32_t, Failure> {
-                    return std::unexpected { Unsatisfied {} }; // uncovered(instance-is-not-a-leaf)
+                    // uncovered-begin(instance-is-not-a-leaf)
+                    return std::unexpected { Unsatisfied {} };
                 },
+                // uncovered-end(instance-is-not-a-leaf)
             },
             definition);
     }
@@ -648,10 +650,12 @@ std::expected<types::TypeId, LinkerError> Linker::handleType(HostResourceType co
         return std::unexpected { std::move(resource.error()) };
     auto interned = _arena.intern(types::DefinedType { .kind = kind, .resource = *resource });
     if (!interned)
+        // uncovered-begin(handle-measure)
         return std::unexpected { linkerError(
             LinkerErrorCode::TypeLimit,
             type.name(),
             std::string { LimitTable[static_cast<std::size_t>(interned.error().limit)].name }) };
+    // uncovered-end(handle-measure)
     return *interned;
 }
 
@@ -724,8 +728,9 @@ std::expected<void, LinkerError> Linker::defineModule(std::string path, isoline:
 std::expected<void, LinkerError> Linker::defineComponent(std::string path, Component const& component)
 {
     if (!component.validated().typeId)
-        return std::unexpected { linkerError(LinkerErrorCode::UntypedComponent,
-                                             std::move(path)) }; // uncovered(root-type-cap)
+        // uncovered-begin(root-type-cap)
+        return std::unexpected { linkerError(LinkerErrorCode::UntypedComponent, std::move(path)) };
+    // uncovered-end(root-type-cap)
     return define(std::move(path), ComponentDefinition { .component = component });
 }
 
