@@ -27,7 +27,7 @@
 #include <isoline/interpreter/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/ConstantExpression.hpp>
-#include <isoline/runtime/HostFunction.hpp>
+#include <isoline/runtime/HostCall.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Segment.hpp>
 #include <isoline/runtime/Store.hpp>
@@ -363,41 +363,24 @@ namespace
             return _frames.back().instanceAddress;
         }
 
-        /// Runs a host function synchronously: it may grow memories and tables, and invoke Wasm
-        /// through its context. What it ends with is checked (runtime::checkHostOutcome()): a result
-        /// not of its type, or a thrown exception the store does not hold, is a HostFailure. It polls
-        /// at HostReturn whatever the host returned, and an interrupt replaces that outcome: a host
-        /// that absorbed a nested Interrupted cannot extend the call. Its frame's static cost
-        /// (runtime::hostFrameCost()) is charged while it runs, whatever it returns. Once it returns, its
-        /// HostCallScope re-establishes the IEEE floating-point defaults it may have changed.
+        /// Runs a host function synchronously, through runtime::callHostFunction(), the one host-frame
+        /// routine of every engine: it charges the frame, escapes the arguments, calls the host under a
+        /// HostCallScope, checks its outcome and polls at HostReturn. Its arguments leave the operand
+        /// stack, and its results take their place. An exception it throws, one of the store's, is
+        /// thrown on in its caller.
         /// @param function The host function.
         /// @param caller The instance whose code called it; nullopt when the embedder did.
         [[nodiscard]] Step callHost(FunctionInstance const& function, std::optional<uint32_t> caller)
         {
             auto const& type = _store.type(function.typeId);
-            auto const cost = runtime::hostFrameCost(type);
-            if (auto const charged = _store.chargeFrame(cost); !charged)
-                return std::unexpected { Abrupt { charged.error() } };
             auto const paramCount = static_cast<std::ptrdiff_t>(type.params.size());
             auto const args = std::vector<Value>(_values.end() - paramCount, _values.end());
             _values.resize(_values.size() - static_cast<std::size_t>(paramCount));
-            // An exnref handed to a host may be kept past its frame: it escapes, never reclaimed.
-            for (auto const& arg: args)
-                _store.markEscaped(arg);
             auto results = std::vector<Value>(type.results.size());
-            std::ranges::transform(type.results, results.begin(), runtime::defaultValue);
-            auto const done = [&] {
-                auto const scope = runtime::HostCallScope { _store };
-                auto context = runtime::HostContext { _store, _executor, caller };
-                return runtime::checkHostOutcome(
-                    _store, type, function.host->call(context, args, results), results);
-            }();
-            _store.releaseFrame(cost);
-            if (auto const polled = poll(PollSite::HostReturn); !polled)
-                return polled;
-            if (!done)
+            if (auto const done =
+                    runtime::callHostFunction(_store, _executor, function, caller, args, results);
+                !done)
             {
-                // An exception it throws, one of the store's, is thrown on in its caller.
                 if (auto const* thrown = std::get_if<Thrown>(&done.error()))
                     return unwind(thrown->exception);
                 return std::unexpected { done.error() };
