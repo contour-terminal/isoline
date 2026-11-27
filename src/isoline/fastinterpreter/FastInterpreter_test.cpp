@@ -75,6 +75,7 @@ using isoline::fastinterpreter::MaximumGrownChunkSlots;
 using isoline::fastinterpreter::OperationForm;
 using isoline::fastinterpreter::OperationId;
 using isoline::fastinterpreter::OperationTable;
+using isoline::fastinterpreter::testing::CountingResource;
 using isoline::fastinterpreter::testing::encodingOf;
 using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
@@ -563,38 +564,6 @@ TEST_CASE("FastInterpreter.entryChargesAndReleases")
         }
     }
 }
-
-namespace
-{
-
-/// Counts the allocations it passes on to the global heap.
-class CountingResource final: public std::pmr::memory_resource
-{
-  public:
-    /// The allocations so far.
-    [[nodiscard]] uint64_t allocations() const noexcept { return _allocations; }
-
-  private:
-    void* do_allocate(std::size_t bytes, std::size_t alignment) override
-    {
-        ++_allocations;
-        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
-    }
-
-    void do_deallocate(void* pointer, std::size_t bytes, std::size_t alignment) override
-    {
-        std::pmr::new_delete_resource()->deallocate(pointer, bytes, alignment);
-    }
-
-    [[nodiscard]] bool do_is_equal(std::pmr::memory_resource const& other) const noexcept override
-    {
-        return this == &other;
-    }
-
-    uint64_t _allocations = 0;
-};
-
-} // namespace
 
 TEST_CASE("FastInterpreter.entryAllocatesOnlyOnceAdmitted")
 {
