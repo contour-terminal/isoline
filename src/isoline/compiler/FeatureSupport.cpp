@@ -60,6 +60,34 @@ namespace
           .feature = Feature::ExceptionHandling },
     });
 
+    /// A module position that needs a feature by being there at all, whatever types it names.
+    enum class Position : uint8_t
+    {
+        Tag, ///< A tag, defined or imported.
+    };
+
+    /// A position that needs a feature: what checkPosition() refuses when that feature is deferred.
+    struct PositionFeatureRow
+    {
+        Position position; ///< The position; equal to the row's index.
+        Feature feature;   ///< The feature a module holding it needs.
+    };
+
+    /// Every position that needs a feature, in Position order.
+    constexpr auto PositionFeatureTable = std::to_array<PositionFeatureRow>({
+        { .position = Position::Tag, .feature = Feature::ExceptionHandling },
+    });
+
+    static_assert(
+        [] {
+            auto index = std::size_t { 0 };
+            for (auto const& row: PositionFeatureTable)
+                if (static_cast<std::size_t>(row.position) != index++)
+                    return false;
+            return true;
+        }(),
+        "PositionFeatureTable must hold one row per Position, at the index of its enumerator");
+
     /// Whether the compiler defers @p feature.
     [[nodiscard]] constexpr bool isDeferred(Feature feature) noexcept
     {
@@ -72,6 +100,15 @@ namespace
     {
         return std::unexpected { CompileError {
             .code = CompileErrorCode::UnsupportedFeature, .feature = feature, .function = function } };
+    }
+
+    /// Checks a use of @p position: refused when the feature its row names is deferred.
+    [[nodiscard]] std::expected<void, CompileError> checkPosition(Position position) noexcept
+    {
+        auto const feature = PositionFeatureTable[static_cast<std::size_t>(position)].feature;
+        if (isDeferred(feature))
+            return unsupported(feature, std::nullopt);
+        return {};
     }
 
     /// checkOpcode(), for an instruction in a body or, with no function, in a constant expression.
@@ -167,15 +204,15 @@ namespace
         });
     }
 
-    /// Checks an import's own type positions: a table's element, a global's type; a tag is exception
-    /// handling's. A function's type is the type section's.
+    /// Checks an import's own type positions: a table's element, a global's type; a tag is its
+    /// position's row. A function's type is the type section's.
     [[nodiscard]] std::expected<void, CompileError> checkImport(binary::Import const& import) noexcept
     {
         switch (import.kind)
         {
             case binary::ExternKind::Table: return checkValueType(import.table.element, std::nullopt);
             case binary::ExternKind::Global: return checkValueType(import.global.type, std::nullopt);
-            case binary::ExternKind::Tag: return unsupported(Feature::ExceptionHandling, std::nullopt);
+            case binary::ExternKind::Tag: return checkPosition(Position::Tag);
             case binary::ExternKind::Func:
             case binary::ExternKind::Memory: return {};
         }
@@ -193,12 +230,12 @@ namespace
         });
     }
 
-    /// Checks the tags: any is exception handling's.
+    /// Checks the tags: any is refused by its position's row.
     [[nodiscard]] std::expected<void, CompileError> checkTags(binary::Module const& module) noexcept
     {
         if (module.tags.empty())
             return {};
-        return unsupported(Feature::ExceptionHandling, std::nullopt);
+        return checkPosition(Position::Tag);
     }
 
     /// Checks one body: its locals, then each instruction, dead code included.

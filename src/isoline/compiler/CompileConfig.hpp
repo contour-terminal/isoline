@@ -53,15 +53,29 @@ class CompileCancellation
 
 /// How a module is compiled: for which target, in which execution mode, with which guard and within
 /// which caps. Fixed at the Compiler's construction; equal configurations give byte-identical code,
-/// and every field is part of an artifact's key (P8).
+/// and every field is part of an artifact's key (P8). The target and the mode have no default: every
+/// caller names both, so no compile silently targets a default host or picks a mode by omission.
 struct CompileConfig
 {
+    /// A configuration for @p target in @p mode.
+    /// @param target What code is generated for.
+    /// @param mode Production or Deterministic.
+    /// @param spectre Whether checked addresses are also clamped; Enabled unless the caller opts out.
+    /// @param limits The caps on the module's input; the published defaults unless the caller narrows them.
+    CompileConfig(machine::TargetDescription target,
+                  runtime::ExecutionMode mode,
+                  SpectreGuard spectre = SpectreGuard::Enabled,
+                  CompileLimits limits = {}) noexcept:
+        target { target }, mode { mode }, spectre { spectre }, limits { limits }
+    {
+    }
+
     machine::TargetDescription target; ///< What code is generated for.
     /// Production or Deterministic: whether NaN results are canonicalized after every operation that
     /// may produce one.
-    runtime::ExecutionMode mode = runtime::ExecutionMode::Production;
-    SpectreGuard spectre = SpectreGuard::Enabled; ///< Whether checked addresses are also clamped.
-    CompileLimits limits {};                      ///< The caps on the module's input.
+    runtime::ExecutionMode mode;
+    SpectreGuard spectre; ///< Whether checked addresses are also clamped.
+    CompileLimits limits; ///< The caps on the module's input.
 
     /// Whether both configure the same compile.
     [[nodiscard]] bool operator==(CompileConfig const&) const = default;

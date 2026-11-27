@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cstddef>
 #include <ranges>
 #include <set>
@@ -59,4 +60,36 @@ TEST_CASE("CompileError.describe")
           == "function too large in function 0 (7654322 requested, limit 7654321)");
     CHECK(describe(CompileError { .code = CompileErrorCode::ArtifactTooLarge, .requested = 1, .limit = 0 })
           == "compiled code too large (1 requested, limit 0)");
+}
+
+TEST_CASE("CompileError.everyCodeHasItsExactText")
+{
+    // The text of every code, as describe() renders a bare error of it: a changed text is a changed
+    // published message, so each is pinned here rather than checked only for being non-empty.
+    struct Expected
+    {
+        CompileErrorCode code;
+        std::string_view text;
+    };
+    auto const expected = std::to_array<Expected>({
+        { .code = CompileErrorCode::UnsupportedFeature, .text = "feature not supported by the compiler" },
+        { .code = CompileErrorCode::FunctionTooLarge, .text = "function too large" },
+        { .code = CompileErrorCode::TooManyInstructions, .text = "too many instructions" },
+        { .code = CompileErrorCode::TooManyBlockParameters, .text = "too many block parameters" },
+        { .code = CompileErrorCode::BudgetExceeded, .text = "compile memory budget exceeded" },
+        { .code = CompileErrorCode::HostMemoryExhausted, .text = "host memory exhausted" },
+        { .code = CompileErrorCode::FrameTooLarge, .text = "frame too large" },
+        { .code = CompileErrorCode::ArtifactTooLarge, .text = "compiled code too large" },
+        { .code = CompileErrorCode::BranchOutOfRange, .text = "branch out of range" },
+        { .code = CompileErrorCode::Cancelled, .text = "compile cancelled" },
+    });
+    REQUIRE(expected.size() == CompileErrorCodeCount);
+    for (auto const index: std::views::iota(std::size_t { 0 }, CompileErrorCodeCount))
+    {
+        auto const& [code, text] = expected[index];
+        INFO(text);
+        CHECK(static_cast<std::size_t>(code) == index);
+        CHECK(compileErrorRow(code).text == text);
+        CHECK(describe(CompileError { .code = code }) == text);
+    }
 }

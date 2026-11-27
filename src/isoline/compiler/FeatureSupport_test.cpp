@@ -153,6 +153,7 @@ TEST_CASE("FeatureSupport.refusesByUseNotBySet")
         .table(TableType { .element = isoline::binary::FuncRef, .limits = atLeast(1) }, { 0xD0, 0x70 })
         .global(GlobalType { .type = isoline::binary::I64, .mutability = Mutability::Var }, { 0x42, 0x07 })
         .element({ 0x05, 0x70, 0x01, 0xD0, 0x70, 0x0B }) // passive funcref (ref.null func)
+        .element({ 0x01, 0x00, 0x01, 0x00 })             // passive elem func 0: function indices
         .data({ 0x00, 0x41, 0x00, 0x0B, 0x01, 0xAA })    // memory 0 at 0: one byte
         .function(0,
                   { isoline::binary::F64, isoline::binary::ExternRef },

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <thread>
+#include <type_traits>
 
 #include <isoline/compiler/CompileConfig.hpp>
 #include <isoline/compiler/CompileLimits.hpp>
@@ -12,6 +13,13 @@ using isoline::compiler::CompileCancellation;
 using isoline::compiler::CompileConfig;
 using isoline::compiler::CompileLimits;
 using isoline::compiler::SpectreGuard;
+using isoline::compiler::machine::TargetDescription;
+using isoline::runtime::ExecutionMode;
+
+// The target and the mode are required: a configuration names both, or does not compile.
+static_assert(!std::is_default_constructible_v<CompileConfig>);
+static_assert(!std::is_constructible_v<CompileConfig, TargetDescription>);
+static_assert(std::is_constructible_v<CompileConfig, TargetDescription, ExecutionMode>);
 
 TEST_CASE("CompileConfig.defaults")
 {
@@ -23,7 +31,7 @@ TEST_CASE("CompileConfig.defaults")
     CHECK(limits.maxTotalBlockParameters == 4'000'000);
     CHECK(limits.artifactBytesPerModuleByte == 4);
     CHECK(limits.artifactBytesFloor == uint64_t { 64 } * 1024);
-    auto const config = CompileConfig {};
+    auto const config = CompileConfig { TargetDescription {}, ExecutionMode::Production };
     CHECK(config.spectre == SpectreGuard::Enabled);
     CHECK(config.limits == limits);
     static_assert(SpectreGuard {} == SpectreGuard::Disabled, "the zero value is the negative case");
@@ -31,13 +39,13 @@ TEST_CASE("CompileConfig.defaults")
 
 TEST_CASE("CompileConfig.equalityCoversEveryField")
 {
-    auto const base = CompileConfig {};
-    CHECK(base == CompileConfig {});
+    auto const base = CompileConfig { TargetDescription {}, ExecutionMode::Production };
+    CHECK(base == CompileConfig { TargetDescription {}, ExecutionMode::Production });
     auto spectre = base;
     spectre.spectre = SpectreGuard::Disabled;
     CHECK(spectre != base);
     auto mode = base;
-    mode.mode = isoline::runtime::ExecutionMode::Deterministic;
+    mode.mode = ExecutionMode::Deterministic;
     CHECK(mode != base);
     auto target = base;
     target.target.abi = isoline::compiler::machine::OperatingSystemAbi::Windows;
