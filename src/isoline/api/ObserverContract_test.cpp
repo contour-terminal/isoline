@@ -126,6 +126,7 @@ struct ObservedApi
     isoline::api::Table table =
         store.defineTable(TableType { .element = FuncRef, .limits = OnePage }, NullFunction).value();
     isoline::api::Global global = store.defineGlobal(MutableI32, I32 { .bits = 7 }).value();
+    std::optional<isoline::api::Instance> instance; ///< The instance whose function callActing() calls.
 
     /// Calls a function that polls, with @p act run by the observer.
     void callActing(std::function<void(ObservedApi&)> act)
@@ -134,8 +135,9 @@ struct ObservedApi
         builder.type(FuncType {}).function(0, {}, {}).exportFunction("polls", 0);
         auto const module = engine.load(builder.build());
         REQUIRE(module.has_value());
-        auto const instance = store.instantiate(*module, isoline::api::Imports {});
-        REQUIRE(instance.has_value());
+        auto instantiated = store.instantiate(*module, isoline::api::Imports {});
+        REQUIRE(instantiated.has_value());
+        instance = std::move(*instantiated);
         auto const function = instance->function("polls");
         REQUIRE(function.has_value());
         observer.actAtNextPoll([this, act = std::move(act)] { act(*this); });
@@ -214,6 +216,12 @@ std::vector<RefusedAct> const& refusedActs()
         { "api::Store::memoryRange",
           {},
           [](ObservedApi& a) { std::ignore = a.store.memoryRange(a.memory, 0, 4); } },
+        { "api::Instance::call",
+          {},
+          [](ObservedApi& a) { std::ignore = a.instance->call(*a.instance->function("polls"), {}, {}); } },
+        { "api::Instance::memoryRange",
+          {},
+          [](ObservedApi& a) { std::ignore = a.instance->memoryRange(a.memory, 0, 4); } },
     };
     return acts;
 }
@@ -347,6 +355,14 @@ TEST_CASE("Contract.Observer.setGlobal", "[.contract]")
 TEST_CASE("Contract.Observer.tableSet", "[.contract]")
 {
     refuse("api::Store::tableSet");
+}
+TEST_CASE("Contract.Observer.instanceCall", "[.contract]")
+{
+    refuse("api::Instance::call");
+}
+TEST_CASE("Contract.Observer.instanceMemoryRange", "[.contract]")
+{
+    refuse("api::Instance::memoryRange");
 }
 TEST_CASE("Contract.Observer.memoryRange", "[.contract]")
 {

@@ -610,7 +610,8 @@ class Instance
     ///         of exports, StoreDeleted when its store is gone.
     [[nodiscard]] std::expected<Extern, ExportAccessError> exportAt(uint32_t index) const noexcept;
 
-    /// Calls @p function, as Store::call() does once the instance's store is found alive.
+    /// Calls @p function, as Store::call() does once the instance's store is found alive. A poll observer
+    /// must not call it (runtime::IPollObserver, checked): an invocation re-enters the guest.
     ///
     /// Exnrefs among the results are escaped, valid for the store's life. noexcept: the call changes
     /// the store, so running out of memory midway terminates (see Store).
@@ -626,7 +627,8 @@ class Instance
                                                       std::span<Value> results) const noexcept;
 
     /// A view of @p size bytes of @p memory from @p address, valid until the memory grows or the next call
-    /// into the store, either of which may move it.
+    /// into the store, either of which may move it. A writable view: a poll observer must not take it
+    /// (runtime::IPollObserver, checked); the store's const memoryRange() is the read-only one.
     /// @param memory A memory of this instance's store; Store::memoryRange() reaches one without an
     ///               instance.
     /// @param address The first byte's address.

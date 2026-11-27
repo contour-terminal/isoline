@@ -308,6 +308,8 @@ set(isolineContractRows
     "Contract.Observer.setGlobal|_pollObservation == PollObservation::Idle"
     "Contract.Observer.tableSet|_pollObservation == PollObservation::Idle"
     "Contract.Observer.memoryRange|_pollObservation == PollObservation::Idle"
+    "Contract.Observer.instanceCall|_pollObservation == PollObservation::Idle"
+    "Contract.Observer.instanceMemoryRange|_pollObservation == PollObservation::Idle"
     "Contract.Store.lentBudgetForbidsStorePolls|_budgetState == BudgetState::Settled"
     "Contract.Store.lentBudgetForbidsChargingFrames|_budgetState == BudgetState::Settled"
     "Contract.Store.lentBudgetForbidsReleasingFrames|_budgetState == BudgetState::Settled"

@@ -210,6 +210,8 @@ inline constexpr auto ObserverRefusedEntryPoints = std::to_array<ObserverRefusal
     { .entryPoint = "api::Store::setGlobal", .writes = "a global's value" },
     { .entryPoint = "api::Store::tableSet", .writes = "a table element" },
     { .entryPoint = "api::Store::memoryRange", .writes = "a memory's bytes (the mutable view)" },
+    { .entryPoint = "api::Instance::call", .writes = "anything: an invocation re-enters the guest" },
+    { .entryPoint = "api::Instance::memoryRange", .writes = "a memory's bytes (the mutable view)" },
 });
 
 /// Observes every poll of a store: what poll-counting tests and profilers use.
@@ -222,6 +224,12 @@ inline constexpr auto ObserverRefusedEntryPoints = std::to_array<ObserverRefusal
 /// api::Store::globalValue(), tableGet(), memorySize(), the read-only memoryRange(), and the types; they mark
 /// an escaped exception (Store::markEscaped()), which is bookkeeping that allocates and moves nothing. The
 /// observer may also interrupt the store (Interrupter::interrupt()).
+///
+/// The read-only memoryRange() is api::Store's const overload, so an observer reaches it through a const
+/// store: `std::as_const(store).memoryRange(memory, offset, length)`. Called on a non-const store, overload
+/// resolution picks the writable view, which is refused, and the process ends. api::Instance has no
+/// read-only view: its memoryRange() and call() are refused (their own rows above), so an observer reads an
+/// instance's memory through the const store.
 class IPollObserver
 {
   public:
