@@ -473,6 +473,40 @@ function(isoline_language_feature_help feature outVar)
     set(${outVar} "${help}" PARENT_SCOPE)
 endfunction()
 
+## @brief Sets OUT_ERROR to why the paths a configure selected differ from EXPECTED, or to "": EXPECTED is
+## empty (anything goes), `native` or `fallback`, and FEATURES and PATHS are every feature of the rows
+## and its selected path, in the same order. A CI lane names the path it exists to build
+## (ISOLINE_EXPECT_LANGUAGE_FEATURES), so a compiler or preset change cannot move it to the other one.
+##
+## isoline_language_feature_expectation(EXPECTED <path> FEATURES <feature>... PATHS <path>... OUT_ERROR <var>)
+function(isoline_language_feature_expectation)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "EXPECTED;OUT_ERROR" "FEATURES;PATHS")
+    set(error "")
+    list(LENGTH arg_FEATURES featureCount)
+    list(LENGTH arg_PATHS pathCount)
+    if(NOT "${arg_EXPECTED}" STREQUAL "" AND NOT "${arg_EXPECTED}" MATCHES "^(native|fallback)$")
+        set(error "ISOLINE_EXPECT_LANGUAGE_FEATURES must be empty, native or fallback, not '${arg_EXPECTED}'")
+    elseif(NOT "${arg_EXPECTED}" STREQUAL "")
+        if(featureCount EQUAL 0 OR NOT featureCount EQUAL pathCount)
+            set(error "ISOLINE_EXPECT_LANGUAGE_FEATURES=${arg_EXPECTED}, but ${pathCount} paths were selected for "
+                      "${featureCount} features")
+        else()
+            set(differing "")
+            foreach(feature path IN ZIP_LISTS arg_FEATURES arg_PATHS)
+                if(NOT path STREQUAL arg_EXPECTED)
+                    list(APPEND differing "${feature} is ${path}")
+                endif()
+            endforeach()
+            if(differing)
+                list(JOIN differing ", " differing)
+                set(error "ISOLINE_EXPECT_LANGUAGE_FEATURES=${arg_EXPECTED}, but ${differing}")
+            endif()
+        endif()
+    endif()
+    string(CONCAT error ${error})
+    set(${arg_OUT_ERROR} "${error}" PARENT_SCOPE)
+endfunction()
+
 ## @brief Defines ISOLINE_<FEATURE> (a STRING, default AUTO) for each feature of the rows.
 function(_isoline_define_language_feature_options)
     isoline_language_features_of(features ${ISOLINE_LANGUAGE_FEATURE_ROWS})
@@ -496,6 +530,7 @@ endfunction()
 ## without the native path, or a value that is not AUTO, ON or OFF) is a FATAL_ERROR, and so is a pinned
 ## contract semantic its rows do not select.
 function(isoline_select_language_features)
+    set(selectedPaths "")
     isoline_resolve_language_features(
         ROWS ${ISOLINE_LANGUAGE_FEATURE_ROWS}
         COMPILER "${CMAKE_CXX_COMPILER_ID}"
@@ -513,7 +548,14 @@ function(isoline_select_language_features)
         set(ISOLINE_${upper}_STANDARD "${selected_${upper}_STANDARD}" PARENT_SCOPE)
         set(ISOLINE_${upper}_FLAGS "${selected_${upper}_FLAGS}" PARENT_SCOPE)
         set(ISOLINE_${upper}_LINK_LIBRARIES "${selected_${upper}_LINK_LIBRARIES}" PARENT_SCOPE)
+        list(APPEND selectedPaths "${selected_${upper}_PATH}")
     endforeach()
+    isoline_language_features_of(features ${ISOLINE_LANGUAGE_FEATURE_ROWS})
+    isoline_language_feature_expectation(EXPECTED "${ISOLINE_EXPECT_LANGUAGE_FEATURES}" FEATURES ${features}
+                                         PATHS ${selectedPaths} OUT_ERROR expectationError)
+    if(NOT expectationError STREQUAL "")
+        message(FATAL_ERROR "[isoline] ${expectationError}")
+    endif()
 
     isoline_consumer_floor(ROWS ${ISOLINE_CONSUMER_FLOOR_ROWS} OUT_LINE floorLine OUT_REACHED floorReached)
     message(STATUS "[isoline] C++26 consumer floor: ${floorLine}")

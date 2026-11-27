@@ -369,6 +369,30 @@ foreach(row IN LISTS reportRows)
     endif()
 endforeach()
 
+# What a lane expects of the selected paths: rows expected|features|paths|expectedError (features and paths
+# separated by spaces; an empty expectedError is no error, otherwise a regular expression).
+set(expectationRows
+    "|reflection annotations contracts|native fallback native|"
+    "native|reflection annotations contracts|native native native|"
+    "fallback|reflection annotations contracts|fallback fallback fallback|"
+    "native|reflection annotations contracts|native fallback native|^ISOLINE_EXPECT_LANGUAGE_FEATURES=native, but annotations is fallback$"
+    "fallback|reflection annotations contracts|native native fallback|^ISOLINE_EXPECT_LANGUAGE_FEATURES=fallback, but reflection is native, annotations is native$"
+    "native|reflection annotations contracts|native native|^ISOLINE_EXPECT_LANGUAGE_FEATURES=native, but 2 paths were selected for 3 features$"
+    "native|||^ISOLINE_EXPECT_LANGUAGE_FEATURES=native, but 0 paths were selected for 0 features$"
+    "maybe|reflection|native|^ISOLINE_EXPECT_LANGUAGE_FEATURES must be empty, native or fallback, not 'maybe'$")
+foreach(row IN LISTS expectationRows)
+    string(REGEX MATCH "^([^|]*)[|]([^|]*)[|]([^|]*)[|](.*)$" matched "${row}")
+    set(expectedError "${CMAKE_MATCH_4}")
+    string(REPLACE " " ";" features "${CMAKE_MATCH_2}")
+    string(REPLACE " " ";" paths "${CMAKE_MATCH_3}")
+    isoline_language_feature_expectation(EXPECTED "${CMAKE_MATCH_1}" FEATURES ${features} PATHS ${paths}
+                                         OUT_ERROR error)
+    math(EXPR caseCount "${caseCount} + 1")
+    if((expectedError STREQUAL "" AND NOT error STREQUAL "") OR NOT error MATCHES "${expectedError}")
+        string(APPEND failures "\n  expectation ${row}\n    got '${error}'")
+    endif()
+endforeach()
+
 get_property(selectionCases GLOBAL PROPERTY selectionCases)
 list(LENGTH selectionCases selectionCaseCount)
 math(EXPR caseCount "${caseCount} + ${selectionCaseCount}")

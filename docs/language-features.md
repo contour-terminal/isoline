@@ -624,6 +624,55 @@ and the fallback is deleted.
 
 Each has a build and a test preset. `gcc-debug` keeps `AUTO`, so on GCC 16.2 it goes native.
 
+## CI
+
+`.github/workflows/build.yml` builds both paths on every push to master, every pull request and every
+`workflow_dispatch`:
+
+| Job | Compiler | Preset | Path |
+|---|---|---|---|
+| `linux-gcc-cxx26` | GCC 16.2.0 (the `gcc:16.2.0` image, pinned by its index digest) | `gcc-cxx26` | native, required |
+| `linux-gcc` | GCC 14 (Ubuntu 24.04) | `gcc-debug`, `gcc-release` | fallback: "GNU 14.2 is below GNU 16.2" |
+| the Clang, Apple Clang, MSVC and GCC 15 modules jobs | their own | their own | fallback |
+
+`linux-gcc-cxx26` is one row of a matrix in the shape of `linux-gcc-modules`: the preset, the compiler and
+the release it must report (`compilerVersion`), where CMake and Ninja come from (`pinned`: the release
+archives of `scripts/tools.lock`), and the path its features must take (`languageFeatures`). Adding a native
+lane means adding a row. The job refuses to go on unless:
+
+- every tool reports its row's version (`scripts/fetch-tools.py --check-version`), the compiler the row's
+  release and no snapshot, so a changed image cannot swap it;
+- configure succeeds with `-DISOLINE_EXPECT_LANGUAGE_FEATURES=native`: every feature of the rows took the
+  native path, which holds the lane even should its preset change. `linux-gcc` passes `fallback`.
+
+`ISOLINE_EXPECT_LANGUAGE_FEATURES` (empty, `native` or `fallback`) compares the path of every feature the
+rows define, so a feature added as a row is held to it too; `language-features-selftest` pins its cases.
+The build then runs the compile-commands check as a dependency, and the test suite runs the native
+canaries, the compile-fail tests, the install tests and everything else. The image is pinned by digest: a
+digest that no longer names an image fails the pull, so the job never runs on an image nobody measured.
+
+**Required** means the job has no `continue-on-error`, and a pull request merges only when every job,
+this one included, is green. The repository has no branch protection to enforce it: the rule is the
+merge-when-green rule every Isoline pull request follows.
+
+### Updating an image pin
+
+A container job names its image by tag and digest, `gcc:16.2.0@sha256:…`, and the digest decides: the tag
+is only read by people. The digest is the tag's *index* digest, the multi-architecture manifest list, not
+one platform's manifest: the index is what the tag names on every architecture, and the runner pulls its
+own platform's image through it. To move a pin to a new image:
+
+```sh
+skopeo inspect --raw docker://docker.io/library/gcc:16.2.0 | sha256sum
+```
+
+hashes the raw index, which is its digest, and `skopeo inspect` without `--raw` reports the same value as
+`Digest`. The per-platform digests the index lists under `manifests`, and the image ID of a pulled image,
+are the wrong ones: they name one architecture's image. Replace the tag and the digest on the job's `container:` line in
+`.github/workflows/build.yml`, and the `compilerVersion` of its matrix row to the release the image ships.
+The same applies to `linux-gcc-modules`' `gcc:15.2.0` pin. A digest whose last character is changed fails
+the pull, which is how to check that a pin is in force.
+
 ## Measured facts (GCC 16.2.1, Clang 22.1.8, 2026-11-27)
 
 - `-std=c++26 -freflection` provides everything the reflection probe uses. `#include <meta>` compiles
