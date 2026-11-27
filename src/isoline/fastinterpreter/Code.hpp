@@ -17,6 +17,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/fastinterpreter/Dispatch.hpp>
+#include <isoline/fastinterpreter/LoweringAllocator.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/ModuleCode.hpp>
 
@@ -364,13 +365,13 @@ struct LoweringStats
 /// One function's lowered code and the records its execution needs.
 ///
 /// A frame is laid out as the parameters, then the declared locals (together localSlots), then the
-/// operand stack, frameSlots in all. Every container allocates from the lowering arena, which the
-/// LoweredModule holding the function keeps alive.
+/// operand stack, frameSlots in all. Every container allocates its storage from the lowering arena
+/// (LoweringAllocator), which the LoweredModule holding the function keeps alive.
 struct LoweredFunction
 {
-    /// A function with no code yet, whose containers allocate from @p resource. Not noexcept: a standard
-    /// library may allocate in a container's constructor (MSVC's debug containers allocate a proxy), and the
-    /// lowering arena refuses an allocation past its budget by throwing.
+    /// A function with no code yet, whose containers allocate their storage from @p resource. Not noexcept: a
+    /// standard library may allocate bookkeeping in a container's constructor (MSVC's debug containers
+    /// allocate a proxy, from the process heap: LoweringAllocator), which may fail.
     /// @param resource The lowering arena.
     explicit LoweredFunction(std::pmr::memory_resource* resource):
         code(resource),
@@ -389,12 +390,12 @@ struct LoweredFunction
     uint32_t frameSlots = 0; ///< The slots of its whole frame, the highest operand stack included.
     uint32_t resultSlots = 0; ///< The slots of its results.
 
-    std::pmr::vector<Word> code;              ///< Its operations.
-    std::pmr::vector<LocalInitRun> localInit; ///< How its declared locals start, in slot order.
-    std::pmr::vector<OperandNode> operands;   ///< Its operand stack tree, which sites name nodes of.
-    std::pmr::vector<SiteRecord> sites;       ///< Its call and throw sites, in code order.
-    std::pmr::vector<HandlerRecord> handlers; ///< Its try_tables.
-    std::pmr::vector<CatchRecord> catches;    ///< Their catch clauses, one run per handler.
+    LoweringVector<Word> code;              ///< Its operations.
+    LoweringVector<LocalInitRun> localInit; ///< How its declared locals start, in slot order.
+    LoweringVector<OperandNode> operands;   ///< Its operand stack tree, which sites name nodes of.
+    LoweringVector<SiteRecord> sites;       ///< Its call and throw sites, in code order.
+    LoweringVector<HandlerRecord> handlers; ///< Its try_tables.
+    LoweringVector<CatchRecord> catches;    ///< Their catch clauses, one run per handler.
 };
 
 /// A module's code as the fast interpreter runs it: every defined function, lowered once, at load.
@@ -415,7 +416,7 @@ class LoweredModule final: public runtime::ModuleCode
     /// @param loweredBytes What the arena charged for lowering the module.
     /// @param stats What lowering it took.
     LoweredModule(std::shared_ptr<std::pmr::memory_resource> arena,
-                  std::pmr::vector<LoweredFunction> functions,
+                  LoweringVector<LoweredFunction> functions,
                   Dispatch dispatch,
                   runtime::ExecutionMode mode,
                   uint64_t loweredBytes,
@@ -448,7 +449,7 @@ class LoweredModule final: public runtime::ModuleCode
   private:
     // Declared first, so it is destroyed last: every container below allocates from it.
     std::shared_ptr<std::pmr::memory_resource> _arena;
-    std::pmr::vector<LoweredFunction> _functions;
+    LoweringVector<LoweredFunction> _functions;
     Dispatch _dispatch;
     runtime::ExecutionMode _mode;
     uint64_t _loweredBytes;

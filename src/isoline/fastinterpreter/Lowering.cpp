@@ -18,10 +18,10 @@
 #include <optional>
 #include <ranges>
 #include <span>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include <isoline/fastinterpreter/IndexMap.hpp>
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
 
@@ -187,8 +187,8 @@ namespace
 
     /// The slots of the params and results of each of @p module's types, allocated from @p resource: what
     /// a block of the type keeps on the stack, computed once for every function.
-    [[nodiscard]] std::pmr::vector<TypeSlots> typeSlotsOf(binary::Module const& module,
-                                                          std::pmr::memory_resource* resource)
+    [[nodiscard]] LoweringVector<TypeSlots> typeSlotsOf(binary::Module const& module,
+                                                        std::pmr::memory_resource* resource)
     {
         auto const slotsOf = [](std::span<ValueType const> types) {
             auto slots = uint64_t { 0 };
@@ -196,7 +196,7 @@ namespace
                 slots += widthOf(type);
             return slots;
         };
-        auto slots = std::pmr::vector<TypeSlots>(resource);
+        auto slots = LoweringVector<TypeSlots>(resource);
         slots.reserve(module.types.size());
         for (auto const& type: module.types)
             slots.push_back(TypeSlots { .params = slotsOf(type.params), .results = slotsOf(type.results) });
@@ -204,10 +204,10 @@ namespace
     }
 
     /// The value types of @p module's imported globals, in order, allocated from @p resource.
-    [[nodiscard]] std::pmr::vector<ValueType> importedGlobalTypes(binary::Module const& module,
-                                                                  std::pmr::memory_resource* resource)
+    [[nodiscard]] LoweringVector<ValueType> importedGlobalTypes(binary::Module const& module,
+                                                                std::pmr::memory_resource* resource)
     {
-        auto types = std::pmr::vector<ValueType>(resource);
+        auto types = LoweringVector<ValueType>(resource);
         types.reserve(module.importedCount(binary::ExternKind::Global));
         for (auto const& import: module.imports)
             if (import.kind == binary::ExternKind::Global)
@@ -288,7 +288,7 @@ namespace
             }
             _function.frameSlots = _maxTop;
             // Reserved at the bound; the copy holds what the function needs, and frees the rest.
-            _code = std::pmr::vector<Word>(_code.begin(), _code.end(), _code.get_allocator());
+            _code = LoweringVector<Word>(_code.begin(), _code.end(), _code.get_allocator());
             return _work;
         }
 
@@ -825,9 +825,9 @@ namespace
             entry.olderForwarder = NoEntry;
             if (entry.kind == EntryKind::Local)
             {
-                auto const chain = _chains.try_emplace(entry.local, NoEntry).first;
-                entry.olderForwarder = chain->second;
-                chain->second = position;
+                auto& newest = _chains.findOrInsert(entry.local, NoEntry);
+                entry.olderForwarder = newest;
+                newest = position;
             }
             if (entry.kind != EntryKind::Slot)
                 _unmaterialized.push_back(position);
@@ -898,12 +898,12 @@ namespace
         /// Unlinks @p entry, at @p position, from its local's chain, whose newest forwarder it is.
         void leaveChain(Entry const& entry, uint32_t position)
         {
-            auto const chain = _chains.find(entry.local);
-            Require(chain != _chains.end() && chain->second == position);
+            auto* const newest = _chains.find(entry.local);
+            Require(newest != nullptr && *newest == position);
             if (entry.olderForwarder == NoEntry)
-                _chains.erase(chain);
+                _chains.erase(entry.local);
             else
-                chain->second = entry.olderForwarder;
+                *newest = entry.olderForwarder;
         }
 
         /// Cuts the stack back to @p height values, the top at @p slot: what dead code leaves of it at a
@@ -996,10 +996,10 @@ namespace
         /// Materializes every entry forwarding @p local, which then holds its value in its own slot.
         void materializeChain(uint32_t local)
         {
-            auto const chain = _chains.find(local);
-            if (chain == _chains.end())
+            auto const* const newest = _chains.find(local);
+            if (newest == nullptr)
                 return;
-            auto position = chain->second;
+            auto position = *newest;
             while (position != NoEntry)
             {
                 auto& entry = _stack[position];
@@ -1008,7 +1008,7 @@ namespace
                 entry.kind = EntryKind::Slot;
                 entry.olderForwarder = NoEntry;
             }
-            _chains.erase(chain);
+            _chains.erase(local);
         }
 
         /// Appends @p operation with its slot operands and immediates, as OperationTable lays it out.
@@ -1037,16 +1037,16 @@ namespace
         binary::FuncType const& _type;
         ModuleContext const& _context;
         LoweredFunction& _function;
-        std::pmr::vector<Word>& _code;
-        std::pmr::vector<LocalRun> _localRuns;
-        std::pmr::vector<Entry> _stack;
-        std::pmr::vector<uint32_t> _unmaterialized; ///< The positions of entries not in their slot, rising.
-        std::pmr::unordered_map<uint32_t, uint32_t> _chains; ///< Each forwarded local's newest forwarder.
-        std::pmr::vector<Control> _controls;                 ///< The open blocks, the function's body first.
-        uint32_t _top = 0;                                   ///< The home slot of the next entry pushed.
-        uint32_t _maxTop = 0;                                ///< The highest _top reached: the frame's slots.
-        uint32_t _height = 0;                                ///< The values on the stack.
-        std::size_t _position = 0; ///< The body index of the instruction being lowered.
+        LoweringVector<Word>& _code;
+        LoweringVector<LocalRun> _localRuns;
+        LoweringVector<Entry> _stack;
+        LoweringVector<uint32_t> _unmaterialized; ///< The positions of entries not in their slot, rising.
+        IndexMap _chains;                         ///< Each forwarded local's newest forwarder.
+        LoweringVector<Control> _controls;        ///< The open blocks, the function's body first.
+        uint32_t _top = 0;                        ///< The home slot of the next entry pushed.
+        uint32_t _maxTop = 0;                     ///< The highest _top reached: the frame's slots.
+        uint32_t _height = 0;                     ///< The values on the stack.
+        std::size_t _position = 0;                ///< The body index of the instruction being lowered.
         Reachability _reachability = Reachability::Reachable;
         uint64_t _work = 0;
     };
@@ -1098,7 +1098,7 @@ namespace
     [[nodiscard]] std::expected<LoweringStats, LoweringError> lowerFunctions(
         validate::ValidatedModule const& validated,
         ILoweringArena& arena,
-        std::pmr::vector<LoweredFunction>& functions,
+        LoweringVector<LoweredFunction>& functions,
         uint32_t& codeIndex)
     {
         auto const& module = validated.module();
@@ -1136,7 +1136,7 @@ namespace
 
     /// Writes every operation's header word for @p dispatch (headerWord()): lowering emits OperationIds,
     /// which TailCall code replaces by the addresses of their handlers. One pass over the code, linear.
-    void threadCode(std::pmr::vector<LoweredFunction>& functions, Dispatch dispatch)
+    void threadCode(LoweringVector<LoweredFunction>& functions, Dispatch dispatch)
     {
         for (auto& function: functions)
         {
@@ -1174,9 +1174,9 @@ std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     auto const budget = arena->budget();
     auto codeIndex = NoFunction;
     auto stats = std::expected<LoweringStats, LoweringError> {};
-    // Constructed within the try: a standard library may allocate in a container's constructor (MSVC's debug
-    // containers allocate a proxy), which the arena may refuse.
-    auto functions = std::optional<std::pmr::vector<LoweredFunction>> {};
+    // Constructed within the try: a standard library may allocate bookkeeping in a container's constructor
+    // (MSVC's debug containers allocate a proxy, from the process heap: LoweringAllocator), which may fail.
+    auto functions = std::optional<LoweringVector<LoweredFunction>> {};
     try
     {
         functions.emplace(arena.get());
