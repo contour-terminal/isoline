@@ -9,6 +9,7 @@
 
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/meta/EnumRows.hpp>
 
 namespace isoline::text
 {
@@ -165,6 +166,9 @@ inline constexpr auto LaneShapes = std::to_array<LaneShape>({
     { .keyword = "f64x2", .number = LaneNumber::Float, .laneBytes = 8 },
 });
 
+static_assert(meta::firstRepeatedKey(LaneShapes, &LaneShape::keyword) == meta::NoRepeatedKey,
+              "LaneShapes must hold each shape keyword once, as the reader takes the first row it names");
+
 /// The keyword of one kind of try_table catch clause.
 struct CatchKeyword
 {
@@ -180,6 +184,12 @@ inline constexpr auto CatchKeywords = std::to_array<CatchKeyword>({
     { .keyword = "catch_all", .kind = binary::CatchKind::CatchAll },
     { .keyword = "catch_all_ref", .kind = binary::CatchKind::CatchAllRef },
 });
+
+static_assert(meta::firstRepeatedKey(CatchKeywords, &CatchKeyword::keyword) == meta::NoRepeatedKey,
+              "CatchKeywords must hold each keyword once, as the reader takes the first row it names");
+static_assert(meta::firstRepeatedKey(CatchKeywords, &CatchKeyword::kind) == meta::NoRepeatedKey,
+              "CatchKeywords must hold each catch kind once, as the writer spells a clause by the first row "
+              "that holds it");
 
 /// One kind of entity an import or export names: its keyword and its index space.
 struct ExternRow
@@ -197,6 +207,12 @@ inline constexpr auto ExternRows = std::to_array<ExternRow>({
     { .keyword = "global", .kind = binary::ExternKind::Global, .space = IndexSpace::Global },
     { .keyword = "tag", .kind = binary::ExternKind::Tag, .space = IndexSpace::Tag },
 });
+
+static_assert(meta::firstRepeatedKey(ExternRows, &ExternRow::keyword) == meta::NoRepeatedKey,
+              "ExternRows must hold each keyword once, as the reader takes the first row it names");
+static_assert(meta::firstRepeatedKey(ExternRows, &ExternRow::kind) == meta::NoRepeatedKey,
+              "ExternRows must hold each kind once, as the writer spells an import or export by the first "
+              "row that holds it");
 
 /// The memory-argument keyword of an offset, followed by its `nat` (spec §6.5.5).
 inline constexpr auto OffsetPrefix = std::string_view { "offset=" };

@@ -5,12 +5,16 @@
 #include <array>
 #include <cstddef>
 #include <limits>
+#include <optional>
+#include <span>
 #include <type_traits>
 #include <utility>
 
 // The checks of the tables indexed by an enum: one row per enumerator, each at its enumerator's index.
 // They are C++23 and installed, so that every table states its check through them on every compiler,
-// and a reflection check that finds a table wrong names the row firstMisplacedRow() finds.
+// and a reflection check that finds a table wrong names the row firstMisplacedRow() finds. Beside them
+// is the check of a table keyed by a member, a name or a spelling, which a lookup by that key reads:
+// firstRepeatedKey(). Reflection adds nothing to it, so such a table has no row in EnumTables.def.
 
 namespace isoline::meta
 {
@@ -68,6 +72,57 @@ template <auto Last>
 [[nodiscard]] consteval bool sizedByEnum(std::size_t count) noexcept
 {
     return count == EnumeratorCount<Last>;
+}
+
+/// What firstRepeatedKey() returns for a table no two rows of which share a key.
+inline constexpr auto NoRepeatedKey = std::numeric_limits<std::size_t>::max();
+
+namespace detail
+{
+    /// firstRepeatedKey(), where @p unkeyed is empty when every row has a key. A value, not a pointer:
+    /// GCC 14 and 15 refuse to compare the address of a temporary with null in constant evaluation.
+    template <typename Row, std::size_t Count, typename Key>
+    [[nodiscard]] consteval std::size_t firstRepeatedKeyOf(std::array<Row, Count> const& rows,
+                                                           Key Row::* key,
+                                                           std::optional<Key> const& unkeyed) noexcept
+    {
+        auto index = std::size_t { 0 };
+        for (auto const& row: rows)
+        {
+            auto const earlier = std::span(rows).first(index);
+            if ((!unkeyed.has_value() || row.*key != *unkeyed)
+                && std::ranges::find(earlier, row.*key, key) != earlier.end())
+                return index;
+            ++index;
+        }
+        return NoRepeatedKey;
+    }
+} // namespace detail
+
+/// The first row of @p rows whose @p key an earlier row holds: a lookup by that key finds the earlier
+/// row only.
+/// @param rows The table.
+/// @param key The member keying each row.
+/// @return The index of that row, or NoRepeatedKey when no two rows share a key.
+template <typename Row, std::size_t Count, typename Key>
+[[nodiscard]] consteval std::size_t firstRepeatedKey(std::array<Row, Count> const& rows,
+                                                     Key Row::* key) noexcept
+{
+    return detail::firstRepeatedKeyOf(rows, key, std::optional<Key> {});
+}
+
+/// The first row of @p rows whose @p key an earlier row holds, but @p unkeyed, which means the row has
+/// no such key and may repeat: a lookup by that key finds the earlier row only.
+/// @param rows The table.
+/// @param key The member keying each row.
+/// @param unkeyed The value of @p key a row without one holds.
+/// @return The index of that row, or NoRepeatedKey when no two rows share a key but @p unkeyed.
+template <typename Row, std::size_t Count, typename Key>
+[[nodiscard]] consteval std::size_t firstRepeatedKey(std::array<Row, Count> const& rows,
+                                                     Key Row::* key,
+                                                     std::type_identity_t<Key> const& unkeyed) noexcept
+{
+    return detail::firstRepeatedKeyOf(rows, key, std::optional<Key> { unkeyed });
 }
 
 } // namespace isoline::meta

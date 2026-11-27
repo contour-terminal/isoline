@@ -54,6 +54,11 @@ inline constexpr auto VerbOptions = std::to_array<VerbOptionRow>({
 static_assert(meta::firstMisplacedRow<LastVerbOption>(VerbOptions, &VerbOptionRow::option)
                   == meta::NoMisplacedRow,
               "VerbOptions must hold one row per VerbOption, at the index of its enumerator");
+static_assert(meta::firstRepeatedKey(VerbOptions, &VerbOptionRow::name) == meta::NoRepeatedKey,
+              "VerbOptions must spell each long option once: the command line tells the options apart by it");
+static_assert(
+    meta::firstRepeatedKey(VerbOptions, &VerbOptionRow::shortName, '\0') == meta::NoRepeatedKey,
+    "VerbOptions must spell each short option once: the command line tells the options apart by it");
 
 /// A verb's command line, parsed.
 struct VerbArguments

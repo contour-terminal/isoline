@@ -20,6 +20,7 @@
 #include <isoline/binary/NameSection.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/Annotations.hpp>
 #include <isoline/text/FieldReader.hpp>
 #include <isoline/text/InstructionReader.hpp>
@@ -130,6 +131,8 @@ namespace
           .define = &FieldReader::skip,
           .read = &FieldReader::readData },
     });
+    static_assert(meta::firstRepeatedKey(FieldRows, &FieldRow::keyword) == meta::NoRepeatedKey,
+                  "FieldRows must hold each field keyword once, as the reader takes the first row it names");
 
     /// The index space a field of each FieldRows keyword binds its own identifier into.
     struct FieldSpace
@@ -149,6 +152,9 @@ namespace
         { .keyword = "elem", .space = IndexSpace::Element },
         { .keyword = "data", .space = IndexSpace::Data },
     });
+    static_assert(
+        meta::firstRepeatedKey(FieldSpaces, &FieldSpace::keyword) == meta::NoRepeatedKey,
+        "FieldSpaces must hold each field keyword once, as the reader takes the first row it names");
 } // namespace
 
 // ---------------------------------------------------------------------------------------------

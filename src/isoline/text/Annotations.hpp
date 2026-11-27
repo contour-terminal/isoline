@@ -14,6 +14,7 @@
 
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/NameSection.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/SExpression.hpp>
 #include <isoline/text/TextError.hpp>
 
@@ -59,6 +60,14 @@ inline constexpr auto SectionWords = std::to_array<SectionWord>({
     { .word = "first", .section = binary::SectionAnchor::Type },
     { .word = "last", .section = binary::SectionAnchor::Data },
 });
+
+static_assert(meta::firstRepeatedKey(SectionWords, &SectionWord::word) == meta::NoRepeatedKey,
+              "SectionWords must hold each word once, as the reader takes the first row it names");
+static_assert(
+    meta::firstRepeatedKey(SectionWords, &SectionWord::section)
+        == meta::EnumeratorCount < binary::LastSectionAnchor > -1,
+    "SectionWords must name every SectionAnchor but BeforeFirst once before the aliases first and last, "
+    "as the writer spells an anchor by the first row that holds it");
 
 /// Where an `@custom` annotation asks for its custom section: before or after a section, whether the
 /// module has that section or not. Placements order as the reference's `compare_place`: by section,

@@ -166,6 +166,9 @@ inline constexpr auto FeatureChoices = std::to_array<FeatureChoiceRow>({
 static_assert(meta::firstMisplacedRow<LastFeatureChoice>(FeatureChoices, &FeatureChoiceRow::choice)
                   == meta::NoMisplacedRow,
               "FeatureChoices must hold one row per FeatureChoice, at the index of its enumerator");
+static_assert(
+    meta::firstRepeatedKey(FeatureChoices, &FeatureChoiceRow::name) == meta::NoRepeatedKey,
+    "FeatureChoices must name each --features value once, as the parser takes the first row it names");
 
 /// The proposals a FeatureChoice names.
 /// @param choice The choice.
@@ -232,6 +235,9 @@ inline constexpr auto Verbs = std::to_array<VerbRow>({
     { .name = "disassemble", .help = "Writes a binary (.wasm) as text (.wat).", .run = &disassembleVerb },
 });
 
+static_assert(meta::firstRepeatedKey(Verbs, &VerbRow::name) == meta::NoRepeatedKey,
+              "Verbs must name each verb once, as the command line runs the first row it names");
+
 /// The magic number and version a binary starts with.
 using Preamble = std::array<std::byte, 8>;
 
@@ -287,5 +293,8 @@ inline constexpr auto BinaryFormats = std::to_array<BinaryFormat>({
                     std::byte { 0x00 } },
       .disassemble = &refuseComponentBinary },
 });
+
+static_assert(meta::firstRepeatedKey(BinaryFormats, &BinaryFormat::preamble) == meta::NoRepeatedKey,
+              "BinaryFormats must hold each preamble once, as disassemble takes the first row it matches");
 
 } // namespace isoline::cli

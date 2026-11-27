@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/SExpression.hpp>
 #include <isoline/text/TextError.hpp>
 
@@ -113,6 +114,12 @@ inline constexpr auto ValueTypeKeywords = std::to_array<ValueTypeKeyword>({
     { .keyword = "nullexnref", .type = binary::NullExnRef },
 });
 
+static_assert(meta::firstRepeatedKey(ValueTypeKeywords, &ValueTypeKeyword::keyword) == meta::NoRepeatedKey,
+              "ValueTypeKeywords must hold each keyword once, as the reader takes the first row it names");
+static_assert(
+    meta::firstRepeatedKey(ValueTypeKeywords, &ValueTypeKeyword::type) == meta::NoRepeatedKey,
+    "ValueTypeKeywords must hold each type once, as the writer spells a type by the first row that holds it");
+
 /// One keyword that spells an abstract heap type.
 struct HeapTypeKeyword
 {
@@ -128,6 +135,12 @@ inline constexpr auto HeapTypeKeywords = std::to_array<HeapTypeKeyword>({
     { .keyword = "noexn", .heap = binary::AbstractHeapType::NoExn },
 });
 
+static_assert(meta::firstRepeatedKey(HeapTypeKeywords, &HeapTypeKeyword::keyword) == meta::NoRepeatedKey,
+              "HeapTypeKeywords must hold each keyword once, as the reader takes the first row it names");
+static_assert(meta::firstRepeatedKey(HeapTypeKeywords, &HeapTypeKeyword::heap) == meta::NoRepeatedKey,
+              "HeapTypeKeywords must hold each heap type once, as the writer spells a heap type by the first "
+              "row that holds it");
+
 /// One keyword that spells an address type.
 struct AddressTypeKeyword
 {
@@ -140,6 +153,10 @@ inline constexpr auto AddressTypeKeywords = std::to_array<AddressTypeKeyword>({
     { .keyword = "i32", .type = binary::AddressType::I32 },
     { .keyword = "i64", .type = binary::AddressType::I64 },
 });
+
+static_assert(meta::firstRepeatedKey(AddressTypeKeywords, &AddressTypeKeyword::keyword)
+                  == meta::NoRepeatedKey,
+              "AddressTypeKeywords must hold each keyword once, as the reader takes the first row it names");
 
 /// Whether a keyword is part of the text format's vocabulary.
 /// @param text The keyword.

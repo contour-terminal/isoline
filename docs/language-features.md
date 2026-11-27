@@ -396,6 +396,23 @@ A misplaced row is the one `meta::firstMisplacedRow()` finds, the C++23 search e
 uses. Reflection only names its row and enumerator ("row 0 names WriteError::PageSizeNotWritable,
 where WriteError::TextTooLarge belongs").
 
+A table keyed by a name or a spelling, not by an enum, has no row: its check is that no two rows share
+the key a lookup reads, which `meta::firstRepeatedKey()` states in C++23 beside the table, and which
+reflection could only restate. Exactly these are checked:
+
+- by the key the reader or the command line looks up: the CLI's `Verbs`, `VerbOptions` (long and short
+  spellings, `'\0'` meaning none), `FeatureChoices` (by value) and `BinaryFormats` (by preamble); the text
+  format's `ValueTypeKeywords`, `HeapTypeKeywords`, `AddressTypeKeywords`, `SectionWords`, `LaneShapes`,
+  `CatchKeywords`, `ExternRows` and `TopLevelForms`, and in source files `SideWords` (`text/Annotations.cpp`),
+  `SimpleEscapes` (by escape character, `text/Lexer.cpp`), `FieldRows` and `FieldSpaces`
+  (`text/ModuleReader.cpp`);
+- by the value the writer spells by the first row that holds it: `ValueTypeKeywords` (type),
+  `HeapTypeKeywords` (heap type), `CatchKeywords` (catch kind) and `ExternRows` (extern kind).
+  `SectionWords` repeats an anchor on purpose (`first` and `last`), so its check is that the first repeat is
+  the row after one per `SectionAnchor` but `BeforeFirst`: every anchor's own word comes before the aliases.
+
+The CLI's `Refusals`, indexed by `Refusal`, is an `ENUM` row.
+
 ### Discovery
 
 The check compiles one generated umbrella header, which includes every `.hpp` of the header sets of

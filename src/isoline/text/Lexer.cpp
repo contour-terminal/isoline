@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/Digits.hpp>
 #include <isoline/text/TextError.hpp>
 #include <isoline/text/TextLimits.hpp>
@@ -265,6 +266,8 @@ namespace
         { .name = '\'', .value = '\'' },
         { .name = '"', .value = '"' },
     });
+    static_assert(meta::firstRepeatedKey(SimpleEscapes, &SimpleEscape::name) == meta::NoRepeatedKey,
+                  "SimpleEscapes must hold each escape once, as the lexer takes the first row it names");
 
     /// The largest Unicode scalar value.
     constexpr auto MaxScalar = uint32_t { 0x10'FFFF };
