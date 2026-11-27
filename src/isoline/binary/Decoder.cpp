@@ -20,6 +20,7 @@
 #include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/ByteReader.hpp>
 #include <isoline/binary/DecodeError.hpp>
+#include <isoline/binary/Encodings.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
@@ -36,231 +37,8 @@ namespace
     /// How many items readVector() reserves before reading the first; push_back grows beyond.
     constexpr auto MaxUpFrontReservation = std::size_t { 4096 };
 
-    /// The magic number every module starts with, "\0asm", read as a little-endian word.
-    constexpr auto Magic = uint32_t { 0x6D73'6100 };
-
-    /// The only binary format version there is.
-    constexpr auto Version = uint32_t { 1 };
-
-    /// The id of a custom section, which may appear anywhere.
-    constexpr auto CustomSectionId = uint8_t { 0 };
-
-    /// The byte that introduces a function type in the type section.
-    constexpr auto FuncTypeForm = uint8_t { 0x60 };
-
     /// The bit of a signed LEB128 byte that says another byte follows.
     constexpr auto LebContinuation = uint8_t { 0x80 };
-
-    /// Whether a type byte is a whole type, or the start of a reference whose heap type follows.
-    enum class TypeForm : uint8_t
-    {
-        Complete,    ///< The byte is the type.
-        HeapFollows, ///< A heap type follows; the row's type gives the reference's nullability.
-    };
-
-    /// One encoding of a type byte: the byte, the type it stands for, and the proposal it needs.
-    struct TypeEncoding
-    {
-        uint8_t byte;                       ///< The byte, an s7 in the binary grammar.
-        ValueType type;                     ///< The type it encodes; its heap read on for HeapFollows.
-        std::optional<Feature> required;    ///< The proposal that introduced it, unless it is MVP.
-        TypeForm form = TypeForm::Complete; ///< Whether a heap type follows.
-    };
-
-    /// The reference types WebAssembly 3.0 adds beyond funcref and externref, wherever a reference
-    /// type may stand: exception handling's shorthands, and typed function references' (ref ht) and
-    /// (ref null ht), whose heap type follows. The GC proposal's shorthands are no type here.
-    constexpr auto Wasm3ReferenceEncodings = std::to_array<TypeEncoding>({
-        { .byte = 0x69, .type = ExnRef, .required = Feature::ExceptionHandling },
-        { .byte = 0x74, .type = NullExnRef, .required = Feature::ExceptionHandling },
-        { .byte = 0x64,
-          .type = ValueType { .kind = ValueKind::Ref, .nullable = Nullable::No },
-          .required = Feature::TypedFunctionReferences,
-          .form = TypeForm::HeapFollows },
-        { .byte = 0x63,
-          .type = ValueType { .kind = ValueKind::Ref, .nullable = Nullable::Yes },
-          .required = Feature::TypedFunctionReferences,
-          .form = TypeForm::HeapFollows },
-    });
-
-    /// @p head followed by Wasm3ReferenceEncodings; for the tables below, at compile time only.
-    template <std::size_t N>
-    [[nodiscard]] consteval auto withWasm3References(std::array<TypeEncoding, N> const& head) noexcept
-    {
-        auto all = std::array<TypeEncoding, N + Wasm3ReferenceEncodings.size()> {};
-        auto out = all.begin();
-        for (auto const& row: head)
-            *out++ = row;
-        for (auto const& row: Wasm3ReferenceEncodings)
-            *out++ = row;
-        return all;
-    }
-
-    /// Every value type decoded.
-    constexpr auto ValueTypeEncodings = withWasm3References(std::to_array<TypeEncoding>({
-        { .byte = 0x7F, .type = I32, .required = std::nullopt },
-        { .byte = 0x7E, .type = I64, .required = std::nullopt },
-        { .byte = 0x7D, .type = F32, .required = std::nullopt },
-        { .byte = 0x7C, .type = F64, .required = std::nullopt },
-        { .byte = 0x7B, .type = V128, .required = Feature::Simd },
-        { .byte = 0x70, .type = FuncRef, .required = Feature::ReferenceTypes },
-        { .byte = 0x6F, .type = ExternRef, .required = Feature::ReferenceTypes },
-    }));
-
-    /// Every reference type decoded where only a reference type may stand: funcref was a table's
-    /// element type in the MVP already.
-    constexpr auto RefTypeEncodings = withWasm3References(std::to_array<TypeEncoding>({
-        { .byte = 0x70, .type = FuncRef, .required = std::nullopt },
-        { .byte = 0x6F, .type = ExternRef, .required = Feature::ReferenceTypes },
-    }));
-
-    /// One abstract heap type's code, as ref.null and a (ref ht) or (ref null ht) give it.
-    struct HeapEncoding
-    {
-        uint8_t byte;                    ///< The code, an s7: a negative s33.
-        AbstractHeapType kind;           ///< The abstract heap type it names.
-        std::optional<Feature> required; ///< The proposal that introduced it, unless it is MVP.
-    };
-
-    /// Every abstract heap type decoded: func and extern, and exception handling's exn and noexn. The
-    /// GC heaps (any, eq, i31, struct, array, none, nofunc, noextern) are malformed without GC, as
-    /// the pinned wasm-tools has them.
-    constexpr auto AbstractHeapEncodings = std::to_array<HeapEncoding>({
-        { .byte = 0x70, .kind = AbstractHeapType::Func, .required = std::nullopt },
-        { .byte = 0x6F, .kind = AbstractHeapType::Extern, .required = Feature::ReferenceTypes },
-        { .byte = 0x69, .kind = AbstractHeapType::Exn, .required = Feature::ExceptionHandling },
-        { .byte = 0x74, .kind = AbstractHeapType::NoExn, .required = Feature::ExceptionHandling },
-    });
-
-    /// The byte that announces a table with an initializer (typed function references), followed
-    /// by a zero byte, the table type and the initializer.
-    constexpr auto TableWithInitializer = uint8_t { 0x40 };
-
-    /// What an import or an export names with one kind byte, and the proposal that introduced it.
-    struct ExternKindRow
-    {
-        ExternKind kind;                 ///< The kind of entity; its enumerator is the byte.
-        std::optional<Feature> required; ///< The proposal that introduced it, unless it is MVP.
-    };
-
-    /// What an import, or an export, names, by its kind byte.
-    constexpr auto ExternKinds = std::to_array<ExternKindRow>({
-        { .kind = ExternKind::Func, .required = std::nullopt },
-        { .kind = ExternKind::Table, .required = std::nullopt },
-        { .kind = ExternKind::Memory, .required = std::nullopt },
-        { .kind = ExternKind::Global, .required = std::nullopt },
-        { .kind = ExternKind::Tag, .required = Feature::ExceptionHandling },
-    });
-
-    static_assert(
-        [] {
-            auto index = std::size_t { 0 };
-            for (auto const& row: ExternKinds)
-                if (static_cast<std::size_t>(row.kind) != index++)
-                    return false;
-            return true;
-        }(),
-        "ExternKinds holds one row per kind byte, at the index of the ExternKind it decodes to");
-
-    /// What a try_table's catch clause is, by its kind byte.
-    constexpr auto CatchKinds = std::to_array<CatchKind>({
-        CatchKind::Catch,
-        CatchKind::CatchRef,
-        CatchKind::CatchAll,
-        CatchKind::CatchAllRef,
-    });
-
-    /// Whether a segment names its table or memory, or uses index 0 implicitly.
-    enum class IndexEncoding : uint8_t
-    {
-        Implicit, ///< No index is encoded; the segment initializes table or memory 0.
-        Explicit, ///< A u32 index precedes the offset expression.
-    };
-
-    /// How an element segment encodes the type of its items.
-    enum class ElementTypeEncoding : uint8_t
-    {
-        Implicit, ///< Not encoded: (ref func) for function indices, funcref for expressions.
-        ElemKind, ///< An element kind byte, of which 0x00 (ref func) is the only one.
-        RefType,  ///< A reference type.
-    };
-
-    /// How an element segment encodes its items.
-    enum class ItemEncoding : uint8_t
-    {
-        FunctionIndices, ///< Function indices, each standing for (ref.func index).
-        Expressions,     ///< Constant expressions.
-    };
-
-    /// How an element segment's flags shape it (WebAssembly 2.0, §5.5.12).
-    struct ElementForm
-    {
-        SegmentMode mode;                ///< How the segment is used.
-        IndexEncoding table;             ///< Whether a table index precedes the offset.
-        ElementTypeEncoding type;        ///< How the item type is encoded.
-        ItemEncoding items;              ///< How the items are encoded.
-        std::optional<Feature> required; ///< The proposal that introduced the form.
-    };
-
-    /// Every element segment form, indexed by its flags.
-    constexpr auto ElementForms = std::to_array<ElementForm>({
-        { SegmentMode::Active,
-          IndexEncoding::Implicit,
-          ElementTypeEncoding::Implicit,
-          ItemEncoding::FunctionIndices,
-          std::nullopt },
-        { SegmentMode::Passive,
-          IndexEncoding::Implicit,
-          ElementTypeEncoding::ElemKind,
-          ItemEncoding::FunctionIndices,
-          Feature::BulkMemory },
-        { SegmentMode::Active,
-          IndexEncoding::Explicit,
-          ElementTypeEncoding::ElemKind,
-          ItemEncoding::FunctionIndices,
-          Feature::BulkMemory },
-        { SegmentMode::Declarative,
-          IndexEncoding::Implicit,
-          ElementTypeEncoding::ElemKind,
-          ItemEncoding::FunctionIndices,
-          Feature::ReferenceTypes },
-        { SegmentMode::Active,
-          IndexEncoding::Implicit,
-          ElementTypeEncoding::Implicit,
-          ItemEncoding::Expressions,
-          Feature::BulkMemory },
-        { SegmentMode::Passive,
-          IndexEncoding::Implicit,
-          ElementTypeEncoding::RefType,
-          ItemEncoding::Expressions,
-          Feature::BulkMemory },
-        { SegmentMode::Active,
-          IndexEncoding::Explicit,
-          ElementTypeEncoding::RefType,
-          ItemEncoding::Expressions,
-          Feature::BulkMemory },
-        { SegmentMode::Declarative,
-          IndexEncoding::Implicit,
-          ElementTypeEncoding::RefType,
-          ItemEncoding::Expressions,
-          Feature::ReferenceTypes },
-    });
-
-    /// How a data segment's flags shape it.
-    struct DataForm
-    {
-        SegmentMode mode;                ///< How the segment is used.
-        IndexEncoding memory;            ///< Whether a memory index precedes the offset.
-        std::optional<Feature> required; ///< The proposal that introduced the form.
-    };
-
-    /// Every data segment form, indexed by its flags. Flags 2 was the MVP's memory index 2, which
-    /// no MVP module could validly use.
-    constexpr auto DataForms = std::to_array<DataForm>({
-        { SegmentMode::Active, IndexEncoding::Implicit, std::nullopt },
-        { SegmentMode::Passive, IndexEncoding::Implicit, Feature::BulkMemory },
-        { SegmentMode::Active, IndexEncoding::Explicit, Feature::BulkMemory },
-    });
 
     /// What a byte read where an instruction starts is.
     enum class OpcodeByteRole : uint8_t
@@ -290,97 +68,12 @@ namespace
         return opcodeSubject(prefix, code);
     }
 
-    /// Which bounds a limits flag announces.
-    enum class LimitsBound : uint8_t
-    {
-        Minimum,           ///< A minimum only.
-        MinimumAndMaximum, ///< A minimum, then a maximum.
-    };
-
-    /// Whether a page size exponent follows a limits flag's bounds (custom-page-sizes).
-    enum class PageSizeField : uint8_t
-    {
-        Default,  ///< None: the page size is 64 KiB.
-        Exponent, ///< A u32 exponent, the page size's base-2 logarithm; memories only.
-    };
-
     /// What limits are read for: a table's flags admit no page size.
     enum class LimitsOf : uint8_t
     {
         Table,
         Memory,
     };
-
-    /// One limits flag byte WebAssembly 3.0 admits: what follows it, and the proposals it needs.
-    struct LimitsFlagRow
-    {
-        uint8_t flags;           ///< The flag byte.
-        LimitsBound bound;       ///< The bounds that follow.
-        AddressType addressType; ///< The address type of the memory or table.
-        PageSizeField pageSize;  ///< Whether a page size follows the bounds.
-        FeatureSet required;     ///< The proposals that admit it; none for the MVP's flags.
-    };
-
-    constexpr auto NeedsMemory64 = FeatureSet::none().with(Feature::Memory64);
-    constexpr auto NeedsPageSizes = FeatureSet::none().with(Feature::CustomPageSizes);
-    constexpr auto NeedsMemory64AndPageSizes = NeedsMemory64.with(Feature::CustomPageSizes);
-
-    /// The limits flags of tables and memories: bit 0 a maximum, bit 2 i64 addresses, bit 3 a custom
-    /// page size (memories only). Any other byte is MalformedLimitsFlags; in WebAssembly 2.0's grammar
-    /// only the first two rows exist.
-    constexpr auto LimitsFlagTable = std::to_array<LimitsFlagRow>({
-        { .flags = 0x00,
-          .bound = LimitsBound::Minimum,
-          .addressType = AddressType::I32,
-          .pageSize = PageSizeField::Default,
-          .required = FeatureSet::none() },
-        { .flags = 0x01,
-          .bound = LimitsBound::MinimumAndMaximum,
-          .addressType = AddressType::I32,
-          .pageSize = PageSizeField::Default,
-          .required = FeatureSet::none() },
-        { .flags = 0x04,
-          .bound = LimitsBound::Minimum,
-          .addressType = AddressType::I64,
-          .pageSize = PageSizeField::Default,
-          .required = NeedsMemory64 },
-        { .flags = 0x05,
-          .bound = LimitsBound::MinimumAndMaximum,
-          .addressType = AddressType::I64,
-          .pageSize = PageSizeField::Default,
-          .required = NeedsMemory64 },
-        { .flags = 0x08,
-          .bound = LimitsBound::Minimum,
-          .addressType = AddressType::I32,
-          .pageSize = PageSizeField::Exponent,
-          .required = NeedsPageSizes },
-        { .flags = 0x09,
-          .bound = LimitsBound::MinimumAndMaximum,
-          .addressType = AddressType::I32,
-          .pageSize = PageSizeField::Exponent,
-          .required = NeedsPageSizes },
-        { .flags = 0x0C,
-          .bound = LimitsBound::Minimum,
-          .addressType = AddressType::I64,
-          .pageSize = PageSizeField::Exponent,
-          .required = NeedsMemory64AndPageSizes },
-        { .flags = 0x0D,
-          .bound = LimitsBound::MinimumAndMaximum,
-          .addressType = AddressType::I64,
-          .pageSize = PageSizeField::Exponent,
-          .required = NeedsMemory64AndPageSizes },
-    });
-
-    static_assert(
-        [] {
-            auto index = uint8_t { 0 };
-            for (auto const& row: LimitsFlagTable | std::views::take(2))
-                if (row.flags != index++ || row.required != FeatureSet::none()
-                    || row.pageSize != PageSizeField::Default)
-                    return false;
-            return true;
-        }(),
-        "LimitsFlagTable's first two rows are WebAssembly 2.0's flags 0x00 and 0x01, indexed by them");
 
     /// Which grammar a table's or memory's limits follow.
     enum class LimitsGrammar : uint8_t
@@ -430,15 +123,12 @@ namespace
     /// Multi-memory's, as WebAssembly 3.0 has it: bit 6 says a memory index follows, the six bits
     /// below it are the alignment exponent, which the validator bounds, and no higher bit is set.
     constexpr auto MemArgGrammar3 = MemArgGrammar { .flagsLimit = 0x80,
-                                                    .memoryIndexBit = 0x40,
+                                                    .memoryIndexBit = MemArgMemoryIndexFlag,
                                                     .errorAt = FlagsErrorPosition::FirstByte };
 
     /// The proposal that brought memory indices: MemArgGrammar3, and a u32 index in memory.size,
     /// memory.grow, memory.fill, memory.copy and memory.init where 2.0 has the reserved zero byte.
     constexpr auto MemoryIndexFeature = Feature::MultiMemory;
-
-    /// The block type byte of a block without a result.
-    constexpr auto EmptyBlockType = uint8_t { 0x40 };
 
     /// Where decoded instructions go: a body, and the side tables its instructions index.
     struct CodeSink
@@ -483,7 +173,7 @@ namespace
 
         [[nodiscard]] std::expected<Module, DecodeError> decode();
 
-        // The section decoders, one per row of SectionTable.
+        // The section decoders, one per row of SectionEncodings.
         [[nodiscard]] std::expected<void, DecodeError> typeSection();
         [[nodiscard]] std::expected<void, DecodeError> importSection();
         [[nodiscard]] std::expected<void, DecodeError> functionSection();
@@ -597,9 +287,16 @@ namespace
         [[nodiscard]] std::expected<std::string, DecodeError> readName();
         [[nodiscard]] std::expected<ConstExpr, DecodeError> readConstExpr();
         [[nodiscard]] std::optional<uint8_t> peekByte() const;
-        /// Reads the reserved zero byte; a nonzero one is ZeroByteExpected, naming @p proposal when it is
-        /// one the decoder's set lacks that would read an index there.
-        [[nodiscard]] std::expected<void, DecodeError> expectZeroByte(std::optional<Feature> proposal = {});
+        /// Reads the byte @p expected, as a byte and not as a LEB128; any other is ZeroByteExpected, as
+        /// every such byte is zero, naming @p proposal when it is one the decoder's set lacks that would
+        /// read an index there.
+        [[nodiscard]] std::expected<void, DecodeError> expectByte(uint8_t expected,
+                                                                  std::optional<Feature> proposal = {});
+        /// Reads ReservedZeroByte, naming @p proposal as expectByte does.
+        [[nodiscard]] std::expected<void, DecodeError> expectZeroByte(std::optional<Feature> proposal = {})
+        {
+            return expectByte(ReservedZeroByte, proposal);
+        }
         [[nodiscard]] std::expected<void, DecodeError> readIndex(uint32_t& index);
         /// Reads a memory index immediate into @p index: a u32 under multi-memory, else the reserved
         /// zero byte, which names memory 0.
@@ -692,6 +389,8 @@ namespace
         /// DecodeLimits::maxTables and maxMemories with those the module defines.
         uint32_t _importedTables = 0;
         uint32_t _importedMemories = 0;
+        /// The last non-custom section read, which a custom section read next is anchored to.
+        SectionAnchor _lastSection = SectionAnchor::BeforeFirst;
 
         /// The side tables of the constant expression being read. No valid constant expression
         /// uses them, so they only take what an invalid one holds, and are cleared for the next.
@@ -711,30 +410,28 @@ namespace
         std::optional<BranchHintSection> _branchHintSection;
     };
 
-    /// One non-custom section: its id, the proposal it needs, and its decoder.
-    struct SectionRow
-    {
-        uint8_t id;                                                  ///< The section id.
-        std::optional<Feature> required;                             ///< The proposal that added it.
-        std::expected<void, DecodeError> (ModuleDecoder::*decode)(); ///< Decodes its contents.
-    };
+    /// One non-custom section's decoder, at the index of its row in SectionEncodings.
+    using SectionDecoder = std::expected<void, DecodeError> (ModuleDecoder::*)();
 
-    /// Every non-custom section, in the order a module must list them; each appears at most once.
-    constexpr auto SectionTable = std::to_array<SectionRow>({
-        { .id = 1, .required = std::nullopt, .decode = &ModuleDecoder::typeSection },
-        { .id = 2, .required = std::nullopt, .decode = &ModuleDecoder::importSection },
-        { .id = 3, .required = std::nullopt, .decode = &ModuleDecoder::functionSection },
-        { .id = 4, .required = std::nullopt, .decode = &ModuleDecoder::tableSection },
-        { .id = 5, .required = std::nullopt, .decode = &ModuleDecoder::memorySection },
-        { .id = 13, .required = Feature::ExceptionHandling, .decode = &ModuleDecoder::tagSection },
-        { .id = 6, .required = std::nullopt, .decode = &ModuleDecoder::globalSection },
-        { .id = 7, .required = std::nullopt, .decode = &ModuleDecoder::exportSection },
-        { .id = 8, .required = std::nullopt, .decode = &ModuleDecoder::startSection },
-        { .id = 9, .required = std::nullopt, .decode = &ModuleDecoder::elementSection },
-        { .id = 12, .required = Feature::BulkMemory, .decode = &ModuleDecoder::dataCountSection },
-        { .id = 10, .required = std::nullopt, .decode = &ModuleDecoder::codeSection },
-        { .id = 11, .required = std::nullopt, .decode = &ModuleDecoder::dataSection },
+    /// The decoder of every row of SectionEncodings, in its order.
+    constexpr auto SectionDecoders = std::to_array<SectionDecoder>({
+        &ModuleDecoder::typeSection,
+        &ModuleDecoder::importSection,
+        &ModuleDecoder::functionSection,
+        &ModuleDecoder::tableSection,
+        &ModuleDecoder::memorySection,
+        &ModuleDecoder::tagSection,
+        &ModuleDecoder::globalSection,
+        &ModuleDecoder::exportSection,
+        &ModuleDecoder::startSection,
+        &ModuleDecoder::elementSection,
+        &ModuleDecoder::dataCountSection,
+        &ModuleDecoder::codeSection,
+        &ModuleDecoder::dataSection,
     });
+
+    static_assert(SectionDecoders.size() == SectionEncodings.size(),
+                  "SectionDecoders holds one decoder per row of SectionEncodings");
 
     /// A compact import encoding: the discriminator byte that takes the kind byte's place after an
     /// empty item name, and the decoder of the entry's remainder.
@@ -755,7 +452,7 @@ namespace
         if (auto result = preamble(); !result)
             return std::unexpected { result.error() };
 
-        // The rank in SectionTable of the last non-custom section read.
+        // The rank in SectionEncodings of the last non-custom section read.
         auto lastRank = std::optional<std::size_t> {};
         while (auto const id = peekByte())
         {
@@ -768,25 +465,26 @@ namespace
                 continue;
             }
 
-            auto const row = std::ranges::find(SectionTable, *id, &SectionRow::id);
-            if (row == SectionTable.end() || missingFeature(row->required))
+            auto const row = std::ranges::find(SectionEncodings, *id, &SectionEncoding::id);
+            if (row == SectionEncodings.end() || missingFeature(row->required))
                 return std::unexpected { DecodeError {
                     DecodeErrorCode::MalformedSectionId,
                     idOffset,
                     std::nullopt,
-                    row == SectionTable.end() ? std::nullopt : missingFeature(row->required) } };
-            auto const rank = static_cast<std::size_t>(row - SectionTable.begin());
+                    row == SectionEncodings.end() ? std::nullopt : missingFeature(row->required) } };
+            auto const rank = static_cast<std::size_t>(row - SectionEncodings.begin());
             if (lastRank && rank == *lastRank)
                 return std::unexpected { DecodeError { DecodeErrorCode::DuplicateSection, idOffset } };
             if (lastRank && rank < *lastRank)
                 return std::unexpected { DecodeError { DecodeErrorCode::SectionOutOfOrder, idOffset } };
             lastRank = rank;
+            _lastSection = row->anchor;
 
             auto const size = _reader.readLength();
             if (!size)
                 return std::unexpected { size.error() };
             auto const start = _reader.offset();
-            if (auto result = (this->*row->decode)(); !result)
+            if (auto result = (this->*SectionDecoders[rank])(); !result)
                 return std::unexpected { result.error() };
             if (_reader.offset() != start + *size)
                 return std::unexpected { DecodeError { DecodeErrorCode::SectionSizeMismatch, start } };
@@ -808,12 +506,12 @@ namespace
         auto const magic = _reader.readFixedU32();
         if (!magic)
             return std::unexpected { magic.error() };
-        if (*magic != Magic)
+        if (*magic != ModuleMagic)
             return std::unexpected { DecodeError { DecodeErrorCode::MagicHeaderNotDetected, 0 } };
         auto const version = _reader.readFixedU32();
         if (!version)
             return std::unexpected { version.error() };
-        if (*version != Version)
+        if (*version != BinaryVersion)
             return std::unexpected { DecodeError { DecodeErrorCode::UnknownBinaryVersion, 4 } };
         return {};
     }
@@ -842,8 +540,10 @@ namespace
                     BranchHintSection { .custom = _module.customs.size(), .payloadOffset = _reader.offset() };
         }
         return _reader.readBytes(*size - consumed).transform([&](std::span<std::byte const> payload) {
-            _module.customs.push_back(CustomSection {
-                .name = std::move(*name), .bytes = std::vector<std::byte>(payload.begin(), payload.end()) });
+            _module.customs.push_back(
+                CustomSection { .name = std::move(*name),
+                                .bytes = std::vector<std::byte>(payload.begin(), payload.end()),
+                                .after = _lastSection });
         });
     }
 
@@ -858,13 +558,7 @@ namespace
                                                    _moduleSize } };
         // Code that names a data segment needs the data count section, so that a single pass can
         // validate it; initializers are not code here, as in the interpreter.
-        auto const namesDataSegment = [](Instruction const& instruction) {
-            auto const immediate = opcodeInfo(instruction.opcode).immediate;
-            return immediate == ImmediateKind::MemoryInit || immediate == ImmediateKind::DataIndex;
-        };
-        if (!_module.dataCount && std::ranges::any_of(_module.code, [&](Function const& function) {
-                return std::ranges::any_of(function.body, namesDataSegment);
-            }))
+        if (!_module.dataCount && codeNamesDataSegment(_module))
             return std::unexpected { DecodeError { DecodeErrorCode::DataCountSectionRequired, _moduleSize } };
         return {};
     }
@@ -1140,10 +834,11 @@ namespace
         auto const mutability = readByte();
         if (!mutability)
             return std::unexpected { mutability.error() };
-        if (*mutability > 0x01)
+        if (*mutability != ImmutableGlobal && *mutability != MutableGlobal)
             return std::unexpected { DecodeError { DecodeErrorCode::MalformedMutability, mutabilityOffset } };
         return GlobalType { .type = *type,
-                            .mutability = *mutability == 0x01 ? Mutability::Var : Mutability::Const };
+                            .mutability =
+                                *mutability == MutableGlobal ? Mutability::Var : Mutability::Const };
     }
 
     std::expected<ExternKind, DecodeError> ModuleDecoder::readExternKind(DecodeErrorCode malformed)
@@ -1188,12 +883,13 @@ namespace
         return std::to_integer<uint8_t>(*byte);
     }
 
-    std::expected<void, DecodeError> ModuleDecoder::expectZeroByte(std::optional<Feature> proposal)
+    std::expected<void, DecodeError> ModuleDecoder::expectByte(uint8_t expected,
+                                                               std::optional<Feature> proposal)
     {
-        // A zero byte, not a zero LEB128: the reserved memory index before multi-memory.
+        // A byte, not a LEB128: an overlong encoding of it is malformed.
         auto const byteOffset = _reader.offset();
         return readByte().and_then([&](uint8_t byte) -> std::expected<void, DecodeError> {
-            if (byte != 0x00)
+            if (byte != expected)
                 return std::unexpected { DecodeError {
                     DecodeErrorCode::ZeroByteExpected, byteOffset, std::nullopt, missingFeature(proposal) } };
             return {};
@@ -1460,7 +1156,7 @@ namespace
 
     std::expected<uint32_t, DecodeError> ModuleDecoder::readTagType()
     {
-        return expectZeroByte().and_then([this] { return _reader.readU32(); });
+        return expectByte(ExceptionAttribute).and_then([this] { return _reader.readU32(); });
     }
 
     std::expected<void, DecodeError> ModuleDecoder::readMemArg(Instruction& instruction)
@@ -1762,7 +1458,7 @@ namespace
                 auto const kind = readByte();
                 if (!kind)
                     return std::unexpected { kind.error() };
-                if (*kind != 0x00)
+                if (*kind != FuncElementKind)
                     return std::unexpected { DecodeError { DecodeErrorCode::MalformedElementKind,
                                                            kindOffset } };
                 break;

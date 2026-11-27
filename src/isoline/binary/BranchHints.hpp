@@ -22,11 +22,16 @@ enum class BranchLikelihood : uint8_t
     Likely,   ///< Hint byte 0x01: the branch is likely to be taken.
 };
 
-/// A branch hint of the `metadata.code.branch_hint` section, attached to an if or br_if.
+/// A branch hint of the `metadata.code.branch_hint` section, attached to an instruction of a function
+/// body. Only the decoder requires that instruction to be an if or br_if: the text reader attaches an
+/// `@metadata.code.branch_hint` annotation to whatever instruction follows it, and the encoder writes
+/// it, so that the decoder refuses a hint on anything else, as the reference interpreter's check does.
 struct BranchHint
 {
-    uint32_t function = 0;    ///< The hinted function's index in the function index space.
-    uint32_t instruction = 0; ///< The index of the hinted if or br_if in that function's Function::body.
+    uint32_t function = 0; ///< The hinted function's index in the function index space.
+    /// The index of the hinted instruction in that function's Function::body; an if or br_if in every
+    /// hint the decoder keeps.
+    uint32_t instruction = 0;
     BranchLikelihood likelihood = BranchLikelihood::Unlikely; ///< What the hint says.
 };
 
@@ -47,6 +52,7 @@ enum class CustomErrorCode : uint8_t
 struct CustomErrorRow
 {
     CustomErrorCode code;         ///< The error this row describes; equal to the row's index.
+    std::string_view section;     ///< The name of the custom section it refuses.
     std::string_view specMessage; ///< The text the spec suite's assert_invalid_custom matches as a prefix.
 };
 
@@ -60,12 +66,16 @@ struct CustomErrorRow
 /// are Isoline's.
 inline constexpr auto CustomErrorTable = std::to_array<CustomErrorRow>({
     { .code = CustomErrorCode::BranchHintMalformed,
+      .section = BranchHintSectionName,
       .specMessage = "@metadata.code.branch_hint annotation: malformed" },
     { .code = CustomErrorCode::BranchHintOutOfOrder,
+      .section = BranchHintSectionName,
       .specMessage = "@metadata.code.branch_hint annotation: invalid order" },
     { .code = CustomErrorCode::BranchHintInvalidTarget,
+      .section = BranchHintSectionName,
       .specMessage = "@metadata.code.branch_hint annotation: invalid target" },
     { .code = CustomErrorCode::BranchHintDuplicateSection,
+      .section = BranchHintSectionName,
       .specMessage = "@metadata.code.branch_hint annotation: duplicate section" },
 });
 
@@ -97,6 +107,14 @@ struct CustomSectionError
     /// @return Whether this error and the other are the same refusal.
     [[nodiscard]] constexpr bool operator==(CustomSectionError const&) const noexcept = default;
 };
+
+/// The custom section an error of @p code refuses.
+/// @param code The error.
+/// @return Its row's section name in CustomErrorTable.
+[[nodiscard]] constexpr std::string_view customSectionOf(CustomErrorCode code) noexcept
+{
+    return CustomErrorTable[static_cast<std::size_t>(code)].section;
+}
 
 /// The message the spec test suite expects for @p code.
 /// @param code The error to describe.

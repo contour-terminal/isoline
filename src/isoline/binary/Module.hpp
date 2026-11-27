@@ -341,11 +341,37 @@ struct DataSegment
     std::vector<std::byte> bytes;            ///< Its contents.
 };
 
-/// A custom section, kept verbatim.
+/// Where a custom section sits among the non-custom ones: after the one an enumerator names, or
+/// before them all. The enumerators follow the order the binary format lists the sections in, the
+/// tag section after the memory section and the data count section before the code section.
+enum class SectionAnchor : uint8_t
+{
+    BeforeFirst, ///< Before every non-custom section.
+    Type,        ///< After the type section.
+    Import,      ///< After the import section.
+    Function,    ///< After the function section.
+    Table,       ///< After the table section.
+    Memory,      ///< After the memory section.
+    Tag,         ///< After the tag section.
+    Global,      ///< After the global section.
+    Export,      ///< After the export section.
+    Start,       ///< After the start section.
+    Element,     ///< After the element section.
+    DataCount,   ///< After the data count section.
+    Code,        ///< After the code section.
+    Data,        ///< After the data section: at the module's end.
+};
+
+/// A custom section, kept verbatim, with its place among the other sections.
 struct CustomSection
 {
     std::string name;             ///< The section's name.
     std::vector<std::byte> bytes; ///< Its payload after the name.
+
+    /// The last non-custom section before it, in section order, or BeforeFirst. The decoder records
+    /// the last section it read before this one, and the encoder writes the section right after that
+    /// anchor's slot; within one slot, custom sections keep their order in Module::customs.
+    SectionAnchor after = SectionAnchor::Data;
 };
 
 /// A decoded module: every section's contents, in index-space order.
@@ -401,6 +427,21 @@ struct Module
 {
     Require(import.moduleIndex < module.importModules.size());
     return module.importModules[import.moduleIndex];
+}
+
+/// Whether some function body of @p module names a data segment: holds a memory.init or a data.drop,
+/// which need the data count section. Constant expressions do not count, as they are no code.
+/// @param module The module whose code to search.
+/// @return Whether any instruction of its code section takes a data segment index.
+[[nodiscard]] inline bool codeNamesDataSegment(Module const& module) noexcept
+{
+    auto const namesDataSegment = [](Instruction const& instruction) {
+        auto const immediate = opcodeInfo(instruction.opcode).immediate;
+        return immediate == ImmediateKind::MemoryInit || immediate == ImmediateKind::DataIndex;
+    };
+    return std::ranges::any_of(module.code, [&](Function const& function) {
+        return std::ranges::any_of(function.body, namesDataSegment);
+    });
 }
 
 /// The 16 immediate bytes of a v128.const or i8x16.shuffle of @p module: a v128.const's vector,

@@ -41,6 +41,7 @@ using isoline::binary::localType;
 using isoline::binary::Module;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
+using isoline::binary::SectionAnchor;
 using isoline::binary::SegmentMode;
 using isoline::binary::selectTypesOf;
 using isoline::binary::testing::encodeU32;
@@ -248,10 +249,30 @@ TEST_CASE("Decoder.customSectionsAnywhere")
     REQUIRE(module.customs.size() == 2);
     CHECK(module.customs[0].name == "a");
     CHECK(module.customs[0].bytes == rawBytes({ 0xAB, 0xCD }));
+    CHECK(module.customs[0].after == SectionAnchor::Type);
     CHECK(module.customs[1].name == "b");
     CHECK(module.customs[1].bytes.empty());
+    CHECK(module.customs[1].after == SectionAnchor::Code);
     CHECK(module.types.size() == 1);
     CHECK(module.functions.size() == 1);
+}
+
+TEST_CASE("Decoder.recordsCustomAnchor")
+{
+    // Each custom section records the last non-custom section before it: none, then the import
+    // section, after which the type section's slot is no longer the one that counts.
+    auto const bytes = ModuleBuilder {}
+                           .rawSection(0, { 0x01, 'a' })
+                           .rawSection(1, { 0x01, 0x60, 0x00, 0x00 })
+                           .rawSection(2, { 0x01, 0x01, 'm', 0x01, 'f', 0x00, 0x00 })
+                           .rawSection(0, { 0x01, 'b' })
+                           .rawSection(0, { 0x01, 'c' })
+                           .build();
+    auto const module = decoded(bytes);
+    REQUIRE(module.customs.size() == 3);
+    CHECK(module.customs[0].after == SectionAnchor::BeforeFirst);
+    CHECK(module.customs[1].after == SectionAnchor::Import);
+    CHECK(module.customs[2].after == SectionAnchor::Import);
 }
 
 TEST_CASE("Decoder.customSectionMalformed")
