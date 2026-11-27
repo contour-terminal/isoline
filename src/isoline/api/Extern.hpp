@@ -84,8 +84,8 @@ namespace detail
     };
 } // namespace detail
 
-/// A function of a store: a handle which only the store makes (Instance::function(), Store::define()),
-/// so that it always names a function the store holds.
+/// A function of a store: a handle which only the store makes (Instance::function(), exportAt(),
+/// Store::define(), Store::function(Ref const&)), so that it always names a function the store holds.
 class Function
 {
   public:
@@ -122,8 +122,8 @@ class Function
     FuncType const* _type;   ///< Its type, held by that store; never null.
 };
 
-/// A linear memory of a store: a handle which only the store makes (Instance::memory()), so that it
-/// always names a memory the store holds.
+/// A linear memory of a store: a handle which only the store makes (Instance::memory(), exportAt(),
+/// Store::defineMemory()), so that it always names a memory the store holds.
 class Memory
 {
   public:
@@ -153,8 +153,9 @@ class Memory
     MemAddr _address;        ///< Its address in that store.
 };
 
-/// A global of a store: a handle which only the store makes (Instance::global()), so that it always
-/// names a global the store holds. Store::globalValue() and Store::setGlobal() read and write it.
+/// A global of a store: a handle which only the store makes (Instance::global(), exportAt(),
+/// Store::defineGlobal()), so that it always names a global the store holds. Store::globalValue() and
+/// Store::setGlobal() read and write it.
 class Global
 {
   public:
@@ -185,8 +186,9 @@ class Global
     GlobalAddr _address;     ///< Its address in that store.
 };
 
-/// A table of a store: a handle which only the store makes (Instance::table()), so that it always
-/// names a table the store holds. Store::tableGet(), Store::tableSet() and Store::growTable() reach it.
+/// A table of a store: a handle which only the store makes (Instance::table(), exportAt(),
+/// Store::defineTable()), so that it always names a table the store holds. Store::tableGet(),
+/// Store::tableSet() and Store::growTable() reach it.
 class Table
 {
   public:
@@ -216,8 +218,8 @@ class Table
     TableAddr _address;      ///< Its address in that store.
 };
 
-/// An exception tag of a store: a handle which only the store makes (Instance::tag()), so that it
-/// always names a tag the store holds. An UncaughtException's tag compares with its address().
+/// An exception tag of a store: a handle which only the store makes (Instance::tag(), exportAt()), so
+/// that it always names a tag the store holds. An UncaughtException's tag compares with its address().
 class Tag
 {
   public:

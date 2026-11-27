@@ -8,6 +8,8 @@
 // magnitude over the bound, and a constant cost per item is well under it.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
 #include <array>
@@ -29,6 +31,7 @@
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Store.hpp>
+#include <isoline/api/testing/EngineRows.hpp>
 #include <isoline/api/testing/RuntimeAccess.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
@@ -455,7 +458,9 @@ TEST_CASE("MemoryBounds.positionalInstantiateRefusesHostMemoryBeforeTheStoreChan
         isoline::binary::GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const };
     auto builder = ModuleBuilder {};
     builder.importGlobal("env", "g", constI32);
-    auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+    auto const row = GENERATE(from_range(isoline::api::testing::engineRows()));
+    auto const engine =
+        isoline::api::Engine { isoline::api::testing::contract::configOf(isoline::api::StoreLimits {}, row) };
     auto allocator = isoline::runtime::HeapMemoryAllocator {};
     auto store = isoline::api::Store { engine, allocator };
     auto const module = engine.load(builder.build());
@@ -599,10 +604,12 @@ TEST_CASE("MemoryBounds.defineRefusesHostMemoryLeavingTheStoreUnchanged", "[host
     // storage is made: each define is refused as HostMemoryExhausted, and the store is as it was, nothing
     // recorded and nothing charged, so the next define takes the address the refused one would have.
     using isoline::api::MemoryType;
+    auto const row = GENERATE(from_range(isoline::api::testing::engineRows()));
     for (auto const refusal: { RefusalException::BadAlloc, RefusalException::LengthError })
     {
         CAPTURE(refusal);
-        auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+        auto const engine = isoline::api::Engine { isoline::api::testing::contract::configOf(
+            isoline::api::StoreLimits {}, row) };
         auto allocator = PremadeMemoryAllocator { DefineAttempts + 1 };
         auto store = isoline::api::Store { engine, allocator };
         auto& runtime = isoline::api::testing::runtimeOf(store);

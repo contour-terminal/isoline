@@ -12,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -42,6 +43,8 @@ using isoline::api::Extern;
 using isoline::api::ExternKind;
 using isoline::api::ForeignHandle;
 using isoline::api::ForeignImport;
+using isoline::api::Function;
+using isoline::api::FunctionRefError;
 using isoline::api::FuncType;
 using isoline::api::Global;
 using isoline::api::GlobalAccessError;
@@ -771,6 +774,7 @@ TEST_CASE("Externs.foreignMemoryIsAnError", "[api]")
     REQUIRE(memory.address() == own.address());
     CHECK_FALSE(memory.isOf(store.id()));
     CHECK(errorOf(store.memorySize(memory)) == MemoryAccessError::ForeignHandle);
+    CHECK(errorOf(store.memoryType(memory)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(store.memoryRange(memory, 0, 1)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(store.memoryRange(memory, 0, 0)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(store.growMemory(memory, 1)) == MemoryGrowthError { ForeignHandle {} });
@@ -812,6 +816,7 @@ TEST_CASE("Externs.hostHandlesAfterStoreDeleteAreForeign", "[api]")
     CHECK_FALSE(table.isOf(later.id()));
     CHECK_FALSE(global.isOf(later.id()));
     CHECK(errorOf(later.memorySize(memory)) == MemoryAccessError::ForeignHandle);
+    CHECK(errorOf(later.memoryType(memory)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(later.memoryRange(memory, 0, 1)) == MemoryAccessError::ForeignHandle);
     CHECK(errorOf(later.growMemory(memory, 1)) == MemoryGrowthError { ForeignHandle {} });
     CHECK(errorOf(later.tableSize(table)) == TableAccessError::ForeignHandle);
@@ -892,6 +897,11 @@ TEST_CASE("Externs.defineRefusesInvalidTypes", "[api]")
     CHECK(errorOf(store.defineGlobal(GlobalType { .type = bottom, .mutability = Mutability::Const },
                                      Value { nullFunc() }))
           == bottomHeap);
+    // A table holds references: an element type of numbers is no table's, whatever init it is given.
+    auto const nonReference =
+        DefineError { InvalidType { .reason = InvalidTypeReason::NonReferenceElement } };
+    CHECK(errorOf(store.defineTable(TableType { .element = TypeI32, .limits = atLeast(0) }, nullFunc()))
+          == nonReference);
     // Only the page sizes custom-page-sizes admits, 1 byte and 64 KiB; a size past a u64 included.
     auto const pageSize = DefineError { InvalidType { .reason = InvalidTypeReason::PageSize } };
     for (auto const log2: { uint8_t { 1 },
@@ -1161,4 +1171,107 @@ TEST_CASE("Externs.storeCallArgumentMismatch", "[api]")
     CHECK(calls == 0);
     REQUIRE(store.call(function, right, results).has_value());
     CHECK(calls == 1);
+}
+
+namespace
+{
+
+/// A host function of no params and no results that does nothing.
+std::shared_ptr<isoline::api::IHostFunction> doNothing()
+{
+    return makeHostFunction([](HostContext&, std::span<Value const>, std::span<Value>) noexcept {
+        return std::expected<void, Abrupt> {};
+    });
+}
+
+/// The fields of @p type, compared with @p limits and @p pageSizeLog2.
+void checkMemoryType(MemoryType const& type, Limits const& limits, uint8_t pageSizeLog2)
+{
+    CHECK(type.limits.min == limits.min);
+    CHECK(type.limits.max == limits.max);
+    CHECK(type.limits.addressType == limits.addressType);
+    CHECK(type.pageSizeLog2 == pageSizeLog2);
+}
+
+} // namespace
+
+TEST_CASE("Externs.functionFromReference", "[api]")
+{
+    // A funcref names a function to call and to ask the type of, an element segment's that no instance
+    // exports included; anything else is refused as a value.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto fixture = Fixture { row };
+    auto& store = *fixture.store;
+    auto const answerType = FuncType { .params = {}, .results = { TypeI32 } };
+    auto builder = ModuleBuilder {};
+    builder.type(answerType)
+        .table(TableType { .element = isoline::binary::FuncRef, .limits = atLeast(2) })
+        .function(0, {}, code({ i32Const(42) }))
+        .exportEntity("t", ExternKind::Table, 0)
+        .element({ 0x00, 0x41, 0x00, 0x0B, 0x01, 0x00 }); // active, table 0 from 0: function 0
+    auto const instance = fixture.instantiate(builder);
+    auto const table = exported(instance.table("t"));
+
+    auto const answer = valueOf(store.function(valueOf(store.tableGet(table, 0))));
+    CHECK(answer.isOf(store.id()));
+    CHECK(answer.type() == answerType);
+    auto results = std::array<Value, 1> {};
+    REQUIRE(store.call(answer, {}, results).has_value());
+    CHECK(results[0] == Value { I32 { 42 } });
+    // A host-defined function's reference names it back, at the last address the store holds.
+    auto const host = valueOf(store.define(FuncType {}, doNothing()));
+    REQUIRE(host.address() + 1 == runtimeOf(store).functionCount());
+    auto const named = valueOf(store.function(funcRef(host.address())));
+    CHECK(named.address() == host.address());
+    CHECK(named.type() == FuncType {});
+    CHECK(store.call(named, {}, {}).has_value());
+
+    CHECK(errorOf(store.function(valueOf(store.tableGet(table, 1)))) == FunctionRefError::Null);
+    CHECK(errorOf(store.function(externRef(0))) == FunctionRefError::NotFunction);
+    auto const exception =
+        Ref { .kind = RefKind::Exn, .heap = { .kind = AbstractHeapType::Exn }, .address = 0 };
+    CHECK(errorOf(store.function(exception)) == FunctionRefError::NotFunction);
+    auto const count = static_cast<uint32_t>(runtimeOf(store).functionCount());
+    CHECK(errorOf(store.function(funcRef(count))) == FunctionRefError::UnknownAddress);
+    CHECK(errorOf(store.function(funcRef(std::numeric_limits<uint32_t>::max())))
+          == FunctionRefError::UnknownAddress);
+
+    // Another store's reference, live or deleted, at an address this store holds no function at.
+    auto other = Fixture { row };
+    auto foreignAddress = uint32_t { 0 };
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, count + 1))
+        foreignAddress = valueOf(other.store->define(FuncType {}, doNothing())).address();
+    REQUIRE(foreignAddress == count);
+    auto const foreignRef = funcRef(foreignAddress);
+    REQUIRE(other.store->function(foreignRef).has_value());
+    CHECK(errorOf(store.function(foreignRef)) == FunctionRefError::UnknownAddress);
+    other.store.reset();
+    CHECK(errorOf(store.function(foreignRef)) == FunctionRefError::UnknownAddress);
+}
+
+TEST_CASE("Externs.memoryTypeFollowsGrowth", "[api]")
+{
+    // A memory's type is its current size in pages, with the maximum, address type and page size it was
+    // made with: for a host-made memory and for an instance's, reached through a re-exported import.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto fixture = Fixture { row };
+    auto& store = *fixture.store;
+    auto const made = between(1, 4, AddressType::I64);
+    auto const tiny = valueOf(store.defineMemory(MemoryType { .limits = made, .pageSizeLog2 = 0 }));
+    checkMemoryType(valueOf(store.memoryType(tiny)), made, 0);
+    REQUIRE(valueOf(store.growMemory(tiny, 2)) == 1);
+    checkMemoryType(valueOf(store.memoryType(tiny)), between(3, 4, AddressType::I64), 0);
+
+    auto const exporter = fixture.instantiate();
+    auto imports = Imports {};
+    imports.define("x", "m", exported(exporter.memory("m")));
+    auto reexporting = ModuleBuilder {};
+    reexporting.importMemory("x", "m", atLeast(1)).exportEntity("m", ExternKind::Memory, 0);
+    auto const importer = fixture.instantiate(reexporting, imports);
+    auto const reexported = exported(importer.memory("m"));
+    REQUIRE(reexported.address() == exported(exporter.memory("m")).address());
+    auto const defaultPage = isoline::binary::DefaultPageSizeLog2;
+    checkMemoryType(valueOf(store.memoryType(reexported)), atLeast(1), defaultPage);
+    REQUIRE(valueOf(store.growMemory(exported(exporter.memory("m")), 2)) == 1);
+    checkMemoryType(valueOf(store.memoryType(reexported)), atLeast(3), defaultPage);
 }

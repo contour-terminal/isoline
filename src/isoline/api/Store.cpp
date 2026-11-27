@@ -369,6 +369,9 @@ std::expected<Memory, DefineError> Store::defineMemory(MemoryType const& type) n
 
 std::expected<Table, DefineError> Store::defineTable(TableType const& type, Ref init) noexcept
 {
+    if (type.element.kind != ValueKind::Ref)
+        return std::unexpected { DefineError {
+            InvalidType { .reason = InvalidTypeReason::NonReferenceElement } } };
     if (auto const definable = checkDefinable(type.element); !definable)
         return std::unexpected { definable.error() };
     if (auto const checked = checkValue(init, type.element); !checked)
@@ -401,6 +404,16 @@ std::expected<MemorySize, MemoryAccessError> Store::memorySize(Memory const& mem
     auto const& instance = _runtime.memory(memory.address());
     auto const bytes = static_cast<uint64_t>(instance.bytes().size());
     return MemorySize { .pages = bytes / binary::pageSize(instance.type), .bytes = bytes };
+}
+
+std::expected<MemoryType, MemoryAccessError> Store::memoryType(Memory const& memory) const noexcept
+{
+    if (!memory.isOf(*_id))
+        return std::unexpected { MemoryAccessError::ForeignHandle };
+    auto const& instance = _runtime.memory(memory.address());
+    auto type = instance.type;
+    type.limits.min = static_cast<uint64_t>(instance.bytes().size()) / binary::pageSize(instance.type);
+    return type;
 }
 
 std::expected<std::span<std::byte>, MemoryAccessError> Store::memoryRange(Memory const& memory,
@@ -514,6 +527,18 @@ std::expected<TableType, TableAccessError> Store::tableType(Table const& table) 
     auto type = instance.type;
     type.limits.min = instance.elements.size();
     return type;
+}
+
+std::expected<Function, FunctionRefError> Store::function(Ref const& reference) const noexcept
+{
+    if (reference.kind == RefKind::Null)
+        return std::unexpected { FunctionRefError::Null };
+    // A host object's, an exception's, or any kind added later: only a funcref names a function.
+    if (reference.kind != RefKind::Func)
+        return std::unexpected { FunctionRefError::NotFunction };
+    if (reference.address >= _runtime.functionCount())
+        return std::unexpected { FunctionRefError::UnknownAddress };
+    return Function { handleLink(), reference.address, _runtime.functionType(reference.address) };
 }
 
 std::expected<void, CallError> Store::call(Function const& function,

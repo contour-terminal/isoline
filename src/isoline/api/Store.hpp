@@ -69,12 +69,11 @@ struct ImportCountMismatch
     bool operator==(ImportCountMismatch const&) const = default;
 };
 
-/// Why Store::instantiate() or instantiateByPosition() failed: the module is of another engine; positional
-/// externs are not one per
-/// import; an import is bound to another store's entity; an import did not link (no definition, or one of
-/// another kind or type); the instance would exceed one of the store's limits; a memory or table could not be
-/// allocated; the host ran out of memory before anything was added to the store; or initializing it (a
-/// segment, the start function) failed as a call does.
+/// Why Store::instantiate() or instantiateByPosition() failed: the module is of another engine;
+/// positional externs are not one per import; an import is bound to another store's entity; an import
+/// did not link (no definition, or one of another kind or type); the instance would exceed one of the
+/// store's limits; a memory or table could not be allocated; the host ran out of memory before anything
+/// was added to the store; or initializing it (a segment, the start function) failed as a call does.
 using InstantiateError = std::variant<EngineMismatch,
                                       ImportCountMismatch,
                                       ForeignImport,
@@ -87,9 +86,10 @@ using InstantiateError = std::variant<EngineMismatch,
 /// What is wrong with a type the host gave the store to define an entity of (InvalidType).
 enum class InvalidTypeReason : uint8_t
 {
-    ConcreteTypeIndex, ///< It names a concrete type index, which only a module's own types may name.
-    PageSize,          ///< A memory's page size is not one custom-page-sizes admits (1 byte, 64 KiB).
-    BottomHeap,        ///< It names the bot heap: the validator's own type, which no module may declare.
+    ConcreteTypeIndex,   ///< It names a concrete type index, which only a module's own types may name.
+    PageSize,            ///< A memory's page size is not one custom-page-sizes admits (1 byte, 64 KiB).
+    BottomHeap,          ///< It names the bot heap: the validator's own type, which no module may declare.
+    NonReferenceElement, ///< A table's element type is not a reference type.
 };
 
 /// A type no entity the host defines may have (Store::define(), defineMemory(), defineTable(),
@@ -117,6 +117,14 @@ enum class MemoryAccessError : uint8_t
     ForeignHandle, ///< The memory is another store's (or a store's that is gone).
     OutOfBounds,   ///< A byte of the range lies outside the memory.
     StoreDeleted,  ///< The instance's store is gone: Instance's accessors.
+};
+
+/// Why Store::function(Ref const&) could not name the function a reference refers to.
+enum class FunctionRefError : uint8_t
+{
+    Null,           ///< The reference is null.
+    NotFunction,    ///< It refers to something else: a host object (externref) or an exception (exnref).
+    UnknownAddress, ///< The store holds no function at its address (another store's reference, say).
 };
 
 /// Why the store could not read or write a global (Store::globalValue(), Store::setGlobal()).
@@ -182,9 +190,12 @@ struct StoreOptions
 /// and Tag) are one unit, used by one thread at a time; the unit may move between threads between calls.
 /// Destroying the store on one thread while another thread holds or uses one of its handles is a
 /// contract violation: the alive-token a handle checks guards against a store destroyed before the use,
-/// on the same thread, and synchronizes nothing. Its interrupter (interrupter()) is the one thing another
-/// thread may use while it runs. A host function implementation shared by several stores (one Imports used by
-/// stores on several threads) is called on each of their threads at once, so it must be thread-safe.
+/// on the same thread, and synchronizes nothing. Destroying the store from inside one of its own host
+/// functions, while a call into it runs, is a contract violation the token cannot catch either: the call
+/// in progress still uses the store when the host function returns. Its interrupter (interrupter()) is
+/// the one thing another thread may use while it runs. A host function implementation shared by several
+/// stores (one Imports used by stores on several threads) is called on each of their threads at once, so
+/// it must be thread-safe.
 ///
 /// Nothing but the constructor throws. Where the host runs out of memory before anything is added to the
 /// store, the call is refused (HostMemoryExhausted): instantiate() while it prepares, define() while it
@@ -252,7 +263,7 @@ class Store
     /// @param module A module of an engine of this store's identity.
     /// @param imports The definitions its imports are bound to.
     /// @return The instance (see Instance for a store that is gone); or EngineMismatch for a module of
-    ///         another engine, ForeignImport for an import bound to another store's instance, LinkError
+    ///         another engine, ForeignImport for an import bound to another store's entity, LinkError
     ///         (UnknownImport for an import with no definition, IncompatibleImportType for one of another
     ///         kind or type), LimitExceeded, AllocationFailure, HostMemoryExhausted when the host ran
     ///         out of memory before the instance was begun (runtime::instantiate()'s first step), or a
@@ -276,6 +287,16 @@ class Store
     ///         once its imports are found.
     [[nodiscard]] std::expected<Instance, InstantiateError> instantiateByPosition(
         Module const& module, std::span<Extern const> imports) noexcept;
+
+    /// The function @p reference refers to: what a funcref read from a table or a global, returned by a
+    /// call or passed to a host function names, as a handle to call or to ask the type of.
+    ///
+    /// A reference names no store, only an address: one of another store at an address this store
+    /// holds a function at names this store's function. Pass a reference of this store.
+    /// @param reference A reference value.
+    /// @return The function; Null for a null reference, NotFunction for one to a host object or an
+    ///         exception, UnknownAddress for an address at which the store holds no function.
+    [[nodiscard]] std::expected<Function, FunctionRefError> function(Ref const& reference) const noexcept;
 
     /// Calls @p function, with no instance: a host function define() added, or a function an instance of
     /// the store exports. It is the one checked entry into the guest (runtime::invokeChecked()), which
@@ -322,8 +343,9 @@ class Store
     /// StoreLimits::maxTables and maxTableElements, every size checked before an element is allocated.
     /// @param type Its type, in store form.
     /// @param init What every element starts with, of the element type.
-    /// @return The table; InvalidType (ConcreteTypeIndex, BottomHeap) when its element type names a
-    ///         concrete type index or the bot heap; ValueMismatch for an @p init not of the element type (a
+    /// @return The table; InvalidType when its element type is not a reference type
+    ///         (NonReferenceElement) or names a concrete type index or the bot heap (ConcreteTypeIndex,
+    ///         BottomHeap); ValueMismatch for an @p init not of the element type (a
     ///         reference of another heap, or naming what the store does not hold, included), before anything
     ///         is charged; LimitExceeded of Tables or TableElements; AllocationFailure of Table with
     ///         TypeMaximum for a minimum above its maximum or past its type's reach, or HostMemory for its
@@ -344,14 +366,21 @@ class Store
                                                                   Value value) noexcept;
 
     /// The current size of @p memory, which a call into the store may grow.
-    /// @param memory A memory of this store: an instance's, or one defineMemory() added.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
     /// @return Its size in pages and in bytes; ForeignHandle for a memory of another store.
     [[nodiscard]] std::expected<MemorySize, MemoryAccessError> memorySize(
         Memory const& memory) const noexcept;
 
+    /// The type of @p memory as it is now: its minimum the current size in pages, which a call into the
+    /// store may grow; its maximum, address type and page size those it was made with.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
+    /// @return Its type; ForeignHandle for a memory of another store.
+    [[nodiscard]] std::expected<MemoryType, MemoryAccessError> memoryType(
+        Memory const& memory) const noexcept;
+
     /// A view of @p length bytes of @p memory from @p offset, valid until the next call into the store or
     /// grow of the memory, either of which may move it.
-    /// @param memory A memory of this store: an instance's, or one defineMemory() added.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
     /// @param offset The first byte's offset.
     /// @param length The number of bytes; 0 views nothing, at any offset.
     /// @return The view; ForeignHandle for a memory of another store, OutOfBounds when a byte of it lies
@@ -361,7 +390,7 @@ class Store
 
     /// Grows @p memory by @p deltaPages zeroed pages, as memory.grow does: through the guest's own path,
     /// charged against StoreLimits::maxMemoryBytes alike, so that its limits and refusals are the guest's.
-    /// @param memory A memory of this store: an instance's, or one defineMemory() added.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
     /// @param deltaPages The number of pages to add.
     /// @return The old size in pages; or, the memory unchanged: ForeignHandle for a memory of another
     ///         store, or the Refusal memory.grow would have met (TypeMaximum, Limit, Embedder,
@@ -375,12 +404,12 @@ class Store
     ///
     /// An exnref value is escaped (runtime::Store::markEscaped()): the embedder holds it now, so it stays
     /// valid for the store's life.
-    /// @param global A global of any instance of this store.
+    /// @param global A global of this store: an instance's export, or one defineGlobal() added.
     /// @return Its value; ForeignHandle for a global of another store.
     [[nodiscard]] std::expected<Value, GlobalAccessError> globalValue(Global const& global) noexcept;
 
     /// Assigns @p value to @p global, as global.set does.
-    /// @param global A global of any instance of this store.
+    /// @param global A global of this store: an instance's export, or one defineGlobal() added.
     /// @param value Its new value, of its type.
     /// @return Nothing, or, the global unchanged: ForeignHandle for a global of another store, Immutable
     ///         for a const one, ValueMismatch for a value not of its type (a reference of another heap,
@@ -389,27 +418,27 @@ class Store
                                                                    Value value) noexcept;
 
     /// The type of @p global, in its store's form (a concrete heap names a TypeId of the store).
-    /// @param global A global of any instance of this store.
+    /// @param global A global of this store: an instance's export, or one defineGlobal() added.
     /// @return Its type; ForeignHandle for a global of another store.
     [[nodiscard]] std::expected<GlobalType, GlobalAccessError> globalType(
         Global const& global) const noexcept;
 
     /// The current size of @p table, in elements, which a call into the store may grow.
-    /// @param table A table of any instance of this store.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
     /// @return Its size; ForeignHandle for a table of another store.
     [[nodiscard]] std::expected<uint64_t, TableAccessError> tableSize(Table const& table) const noexcept;
 
     /// The element at @p index of @p table, as table.get reads it.
     ///
     /// An exnref element is escaped, as globalValue()'s is.
-    /// @param table A table of any instance of this store.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
     /// @param index The element's index.
     /// @return The element; ForeignHandle for a table of another store, OutOfBounds for an index not
     ///         below its size.
     [[nodiscard]] std::expected<Ref, TableAccessError> tableGet(Table const& table, uint64_t index) noexcept;
 
     /// Assigns @p value to the element at @p index of @p table, as table.set does.
-    /// @param table A table of any instance of this store.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
     /// @param index The element's index.
     /// @param value The element's new value, of the table's element type.
     /// @return Nothing, or, the table unchanged: ForeignHandle for a table of another store, OutOfBounds
@@ -421,7 +450,7 @@ class Store
     /// Grows @p table by @p delta elements holding @p init, as table.grow does: through the guest's
     /// own path, charged against StoreLimits::maxTableElements alike, so that its limits and refusals
     /// are the guest's.
-    /// @param table A table of any instance of this store.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
     /// @param delta The number of elements to add.
     /// @param init What the new elements hold, of the table's element type.
     /// @return The old size; or, the table unchanged: ForeignHandle for a table of another store,
@@ -434,7 +463,7 @@ class Store
                                                                       Ref init) noexcept;
 
     /// The type of @p table, in its store's form, its minimum the table's current size.
-    /// @param table A table of any instance of this store.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
     /// @return Its type; ForeignHandle for a table of another store.
     [[nodiscard]] std::expected<TableType, TableAccessError> tableType(Table const& table) const noexcept;
 

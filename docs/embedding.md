@@ -36,8 +36,8 @@ auto const called = instance->call(*instance->function("run"), args, results);
 
 1. **`Engine`** holds an `EngineConfig` and nothing else: the features modules are decoded and
    validated with, the execution engine and mode, the `LoadLimits`, and the `StoreLimits` every store
-   made for it keeps to unless it overrides them (`StoreOptions`). The feature set must be closed over its prerequisites (checked);
-   `FeatureSet::withPrerequisites()` closes one.
+   made for it keeps to unless it overrides them (`StoreOptions`). The feature set must be closed over
+   its prerequisites (checked); `FeatureSet::withPrerequisites()` closes one.
 2. **`Module`** is what `Engine::load()` makes of a module's bytes: decoded, validated and described
    (`imports()`, `exports()`), never linked. A module loads whatever it imports. It carries the
    engine's `EngineIdentity` (engine, mode, features), and only a store of an engine of the same
@@ -60,10 +60,11 @@ definition of its name, kind and type.
 `Store::instantiateByPosition(module, externs)` binds the imports by position instead, as `wasm.h`'s
 `wasm_instance_new()` does: one `Extern` of the store per import, in import order. Names play no part,
 so a module importing `("m", "x")` twice, as a function and as a global, links both, which one `Imports`
-definition of `("m", "x")` cannot. The count is checked first (`ImportCountMismatch { expected, given }`),
-then each extern's store (`ForeignImport { index }`, its position as index), and linking checks kinds and
-types as it does for named definitions. Both forms share one linking path, so the limits, the
-nested-instantiation budget and the errors after the lookup are the same.
+definition of `("m", "x")` cannot. The module's engine is checked first (`EngineMismatch`), then the count
+(`ImportCountMismatch { expected, given }`), then each extern's store (`ForeignImport { index }`, its
+position as index), and linking checks kinds and types as it does for named definitions. Both forms
+share one linking path, so the limits, the nested-instantiation budget and the errors after the lookup
+are the same.
 
 ## Threads
 
@@ -98,7 +99,9 @@ nested-instantiation budget and the errors after the lookup are the same.
   the store must be alive when the definition is made, and only that store links it (`ForeignImport`
   from any other). The definition keeps the store's identity (`StoreId`), never the store, so it may
   outlive the store safely.
-- Handles name their store's entities for as long as the store lives, and are safe to keep after it:
+- Handles name their store's entities for as long as the store lives, and are safe to keep after it is
+  destroyed between calls (destroying it from inside one of its own host functions, while a call into it
+  runs, is a contract violation nothing catches: the call still uses the store):
   each one holds the store's *alive-token*, a `std::weak_ptr` to a token the store owns and destroys
   first, and checks it before it reads the store. Nothing dereferences a store that is gone:
   - An `Instance` whose store is gone reports it: `call()` fails with a `CallError` whose `detail` is
@@ -114,9 +117,9 @@ nested-instantiation budget and the errors after the lookup are the same.
     store, a deleted one included, refuses it with `ForeignHandle` and reads nothing: the `Store`
     accessors (`call()`, `globalValue()`, `tableGet()`, `memoryRange()`, `growMemory()`, …) and the
     `Instance` ones (`call()`, `memoryRange()`, `memorySize()`) alike; `instantiateByPosition()`
-    refuses it as `ForeignImport`. No contract check guards a handle's store, with one exception:
-    `Imports::define()` of an instance or an extern, a builder the C API does not reach, checks that its
-    store is alive, as above.
+    refuses it as `ForeignImport`. The only checks that abort on a handle's store are those above: the
+    accessors returning a reference into it (`Function::type()`, `Tag::type()`, `store()`), and
+    `Imports::define()` of an instance or an extern, a builder the C API does not reach.
 - A memory view (`Store::memoryRange()`, `Instance::memoryRange()`) is valid until the next call into the
   store or grow of the memory, either of which may move it.
 
@@ -165,6 +168,7 @@ without an instance:
 | `growTable(table, delta, init)` | the old size | `TableGrowthError`: `ForeignHandle`, `InitValueMismatch`, or a `Refusal` |
 | `tableType(table)` | its `TableType`, its minimum the current size | `ForeignHandle` |
 | `memorySize(memory)` | its `MemorySize`, in pages and bytes | `ForeignHandle` |
+| `memoryType(memory)` | its `MemoryType`, its minimum the current size in pages | `ForeignHandle` |
 | `memoryRange(memory, offset, length)` | a view of its bytes | `ForeignHandle`, `OutOfBounds` |
 | `growMemory(memory, deltaPages)` | the old size in pages | `MemoryGrowthError`: `ForeignHandle`, or a `Refusal` |
 
@@ -187,13 +191,21 @@ alternative always means the guest's own refusal: `MemoryGrowthError` is `Foreig
 `Instance::memoryRange()`) is valid until the next call into the store or grow of that memory; a view
 of length 0 is valid at any offset.
 
+`Store::function(ref)` names the function a funcref refers to, one read from a table or a global,
+returned by a call or passed to a host function, as a `Function` to call or to ask the type of, an
+element-segment function no instance exports included. It refuses a null reference
+(`FunctionRefError::Null`), a reference to a host object or an exception (`NotFunction`), and an
+address at which the store holds no function (`UnknownAddress`). A reference names no store, only an
+address, so one of another store at an address this store holds a function at names this store's
+function: pass a reference of this store.
+
 The store also defines entities without an instance, to bind to an import or share between instances:
 
 | Call | Returns | Refusals (`DefineError`) |
 |---|---|---|
 | `define(type, function)` | a `Function` | `InvalidType`, `LimitExceeded` (`Types`), `HostMemoryExhausted` |
 | `defineMemory(type)` | a `Memory` of `type.limits.min` zeroed pages | `InvalidType`, `LimitExceeded` (`Memories`, `MemoryBytes`), `AllocationFailure`, `HostMemoryExhausted` |
-| `defineTable(type, init)` | a `Table` of `type.limits.min` elements, each `init` | `InvalidType`, `ValueMismatch`, `LimitExceeded` (`Tables`, `TableElements`), `AllocationFailure`, `HostMemoryExhausted` |
+| `defineTable(type, init)` | a `Table` of `type.limits.min` elements, each `init` | `InvalidType` (`NonReferenceElement` too), `ValueMismatch`, `LimitExceeded` (`Tables`, `TableElements`), `AllocationFailure`, `HostMemoryExhausted` |
 | `defineGlobal(type, value)` | a `Global` of `value` | `InvalidType`, `ValueMismatch`, `HostMemoryExhausted` |
 
 A defined memory or table takes a module's own path: the same charges against the store's limits and
@@ -325,12 +337,11 @@ factory (`Store::create`) is to check it for every engine, against the store's e
 than only its engine's, and to report a refusal as a value; so must any engine code that relies on a
 limit (a guard region sized for `maxMemoryBytes`).
 
-Each count or
-size caps the whole store; each refusal names its `Limit`. `Store::used(limit)` reads what the store
-holds of one: the counts and sizes of its entities; the frames' stack values and the invocations in
-progress (0 between calls); and for `Steps`, the steps the latest outermost call or instantiation took,
-the invocations nested in it included, kept after it ended. `CallDepth` reads 0, as the executor counts
-it while it runs. A limit the guest reaches at run time traps (`CallStackExhausted`,
+Each count or size caps the whole store; each refusal names its `Limit`. `Store::used(limit)` reads
+what the store holds of one: the counts and sizes of its entities; the frames' stack values and the
+invocations in progress (0 between calls); and for `Steps`, the steps the latest outermost call or
+instantiation took, the invocations nested in it included, kept after it ended. `CallDepth` reads 0, as
+the executor counts it while it runs. A limit the guest reaches at run time traps (`CallStackExhausted`,
 `ExceptionLimitExceeded`, `StepLimitExceeded`) or makes a `grow` return -1 (`Refusal::Limit`); one an
 instantiation would exceed refuses it with `LimitExceeded`. The defaults:
 
