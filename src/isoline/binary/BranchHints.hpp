@@ -48,6 +48,9 @@ enum class CustomErrorCode : uint8_t
     BranchHintDuplicateSection, ///< A module holds a second branch hint section.
 };
 
+/// The last CustomErrorCode enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastCustomErrorCode = CustomErrorCode::BranchHintDuplicateSection;
+
 /// One row of CustomErrorTable.
 struct CustomErrorRow
 {
@@ -85,7 +88,7 @@ static_assert(
         for (auto const& row: CustomErrorTable)
             if (static_cast<std::size_t>(row.code) != index++)
                 return false;
-        return true;
+        return index == static_cast<std::size_t>(LastCustomErrorCode) + 1;
     }(),
     "CustomErrorTable must hold one row per CustomErrorCode, at the index of its enumerator");
 

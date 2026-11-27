@@ -55,6 +55,9 @@ enum class AnnotationKind : uint8_t
     Name,       ///< `@name`: a name in the name section (the annotations proposal).
 };
 
+/// The last AnnotationKind enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastAnnotationKind = AnnotationKind::Name;
+
 /// One annotation Isoline understands: its id, and what it means.
 struct KnownAnnotation
 {
@@ -81,7 +84,7 @@ static_assert(
                 return false;
             ++index;
         }
-        return true;
+        return index == static_cast<std::size_t>(LastAnnotationKind) + 1;
     }(),
     "KnownAnnotations must hold one row per AnnotationKind, at the index of its enumerator, in id order");
 

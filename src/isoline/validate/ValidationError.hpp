@@ -87,7 +87,8 @@ inline constexpr auto AddressBoundTable = std::to_array<AddressBoundRow>({
 static_assert(AddressBoundTable[static_cast<std::size_t>(binary::AddressType::I32)].addressType
                       == binary::AddressType::I32
                   && AddressBoundTable[static_cast<std::size_t>(binary::AddressType::I64)].addressType
-                         == binary::AddressType::I64,
+                         == binary::AddressType::I64
+                  && AddressBoundTable.size() == static_cast<std::size_t>(binary::LastAddressType) + 1,
               "AddressBoundTable holds one row per AddressType, at the index of its enumerator");
 
 /// The bound a memory size error spells for one address type and page size.
@@ -281,6 +282,13 @@ static_assert(AbstractHeapTypeNames.size()
                   == static_cast<std::size_t>(binary::AbstractHeapType::Concrete) + 1,
               "AbstractHeapTypeNames holds one name per AbstractHeapType");
 
+/// The text format's spelling of a number or vector type, by ValueKind: I32 through V128, every kind
+/// but Ref.
+inline constexpr auto NumberNames = std::to_array<std::string_view>({ "i32", "i64", "f32", "f64", "v128" });
+
+static_assert(NumberNames.size() == static_cast<std::size_t>(binary::ValueKind::V128) + 1,
+              "NumberNames holds one name per ValueKind, I32 through V128");
+
 /// The text format's spelling of @p type, after valid.ml's string_of_valtype: i32, v128,
 /// (ref null func), bot for an operand of unknown type. A concrete reference is Isoline's own
 /// spelling, (ref 3) by its type index; valid.ml prints the substituted definition type instead.
@@ -288,7 +296,6 @@ static_assert(AbstractHeapTypeNames.size()
 /// @return Its spelling.
 [[nodiscard]] inline std::string typeText(std::optional<binary::ValueType> const& type)
 {
-    constexpr auto NumberNames = std::to_array<std::string_view>({ "i32", "i64", "f32", "f64", "v128" });
     if (!type)
         return "bot";
     if (type->kind != binary::ValueKind::Ref)

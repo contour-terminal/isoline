@@ -137,7 +137,7 @@ static_assert(
         for (auto const& row: ExternKinds)
             if (static_cast<std::size_t>(row.kind) != index++)
                 return false;
-        return true;
+        return index == static_cast<std::size_t>(LastExternKind) + 1;
     }(),
     "ExternKinds holds one row per kind byte, at the index of the ExternKind it decodes to");
 

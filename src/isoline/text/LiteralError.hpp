@@ -18,12 +18,18 @@ enum class LiteralError : uint8_t
     TooLong,    ///< The text is longer than TextLimits::maxNumberLength.
 };
 
+/// The last LiteralError enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastLiteralError = LiteralError::TooLong;
+
 /// The text error each LiteralError is reported as, indexed by the LiteralError.
-constexpr auto LiteralErrorCodes = std::to_array<TextErrorCode>({
+inline constexpr auto LiteralErrorCodes = std::to_array<TextErrorCode>({
     TextErrorCode::UnknownOperator,    // NotANumber: the reference's parser reads no literal there.
     TextErrorCode::ConstantOutOfRange, // OutOfRange
     TextErrorCode::NumberTooLong,      // TooLong
 });
+
+static_assert(LiteralErrorCodes.size() == static_cast<std::size_t>(LastLiteralError) + 1,
+              "LiteralErrorCodes holds one text error per LiteralError");
 
 /// The text error a literal error is reported as.
 /// @param error The literal error.

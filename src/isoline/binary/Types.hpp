@@ -171,6 +171,9 @@ enum class AddressType : uint8_t
     I64,
 };
 
+/// The last AddressType enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastAddressType = AddressType::I64;
+
 /// The size bounds of a memory (in pages) or a table (in elements).
 struct Limits
 {
