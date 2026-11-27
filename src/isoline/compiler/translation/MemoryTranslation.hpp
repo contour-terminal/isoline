@@ -12,6 +12,7 @@
 #include <ranges>
 #include <utility>
 
+#include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/compiler/ContextLayout.hpp>
 #include <isoline/compiler/intermediate/Operation.hpp>
@@ -79,6 +80,22 @@ static_assert(
         return MemoryAccessTable.back().opcode == binary::Opcode::I64Store32;
     }(),
     "MemoryAccessTable must hold i32.load to i64.store32, one row per opcode, in Opcode order");
+
+static_assert(
+    [] {
+        for (auto const& row: MemoryAccessTable)
+        {
+            auto const* access = binary::memoryAccessOf(row.opcode);
+            if (access == nullptr || access->width != row.size
+                || (access->access == binary::MemoryAccessKind::Load) != (row.kind == AccessKind::Load)
+                || (access->extension == binary::Extension::Sign)
+                       != (row.extension == intermediate::Extension::Sign))
+                return false;
+        }
+        return true;
+    }(),
+    "MemoryAccessTable agrees with binary::MemoryAccessTable on each access's direction, width and "
+    "extension");
 
 /// Which of an instruction's index immediates a stub takes first, each as an I32 constant.
 enum class StubIndices : uint8_t
@@ -201,7 +218,7 @@ inline constexpr auto MaxStubIndices = std::size_t { 2 };
 
 /// The row of @p opcode in MemoryAccessTable.
 /// @return It; none for every instruction but a scalar load or store.
-[[nodiscard]] std::optional<MemoryAccessRow> memoryAccessOf(binary::Opcode opcode) noexcept;
+[[nodiscard]] std::optional<MemoryAccessRow> scalarAccessOf(binary::Opcode opcode) noexcept;
 
 /// The row of @p opcode in StubCallTable.
 /// @return It; none for an instruction that never runs as a stub.

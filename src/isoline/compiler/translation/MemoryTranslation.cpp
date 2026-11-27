@@ -8,7 +8,7 @@
 namespace isoline::compiler::translation
 {
 
-std::optional<MemoryAccessRow> memoryAccessOf(binary::Opcode opcode) noexcept
+std::optional<MemoryAccessRow> scalarAccessOf(binary::Opcode opcode) noexcept
 {
     // The table is the run of opcodes from i32.load to i64.store32 (its static_assert).
     auto const first = std::to_underlying(MemoryAccessTable.front().opcode);

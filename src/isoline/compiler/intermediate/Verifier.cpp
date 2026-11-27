@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <isoline/compiler/intermediate/Dominators.hpp>
+#include <isoline/compiler/intermediate/Guards.hpp>
 
 namespace isoline::compiler::intermediate
 {
@@ -34,6 +35,8 @@ namespace
     {
         uint32_t block = std::numeric_limits<uint32_t>::max(); ///< Its block; the maximum while undefined.
         uint32_t position = 0;                                 ///< Its position in the block.
+        /// The operation whose result it is; Removed for a block parameter.
+        Operation operation = Operation::Removed;
 
         /// Whether the value has a definition.
         [[nodiscard]] bool isDefined() const noexcept
@@ -147,14 +150,15 @@ namespace
         /// Records @p value's definition at @p block and @p position.
         [[nodiscard]] std::expected<void, VerifierErrorCode> define(ValueId value,
                                                                     uint32_t block,
-                                                                    uint32_t position)
+                                                                    uint32_t position,
+                                                                    Operation operation = Operation::Removed)
         {
             if (std::to_underlying(value) >= _definitions.size())
                 return std::unexpected { VerifierErrorCode::UndefinedValue };
             auto& definition = _definitions[std::to_underlying(value)];
             if (definition.isDefined())
                 return std::unexpected { VerifierErrorCode::RedefinedValue };
-            definition = Definition { .block = block, .position = position };
+            definition = Definition { .block = block, .position = position, .operation = operation };
             return {};
         }
 
@@ -203,7 +207,8 @@ namespace
                              _function.immediatePoolSize()))
                     return fault(VerifierErrorCode::RangeOutOfBounds, blockId, index);
                 for (auto const result: _function.operands(instruction.results))
-                    if (auto defined = define(result, blockIndex, static_cast<uint32_t>(position + 1));
+                    if (auto defined = define(
+                            result, blockIndex, static_cast<uint32_t>(position + 1), instruction.operation);
                         !defined)
                         return fault(defined.error(), blockId, index);
                 if (isTerminator(instruction.operation) && position != lastLive)
@@ -228,8 +233,24 @@ namespace
                 return checkOperands(instruction, arguments)
                     .and_then([&] { return checkTypedImmediates(instruction); })
                     .and_then([&] { return checkResults(instruction); })
-                    .and_then([&] { return checkArguments(instruction); });
+                    .and_then([&] { return checkArguments(instruction); })
+                    .and_then([&] { return checkGuardedUse(instruction); });
             });
+        }
+
+        /// A use of a guarded pointer takes it from one of its GuardedUseTable row's guards, so that no
+        /// address reaches an access past its select or with an offset added after it.
+        [[nodiscard]] std::expected<void, VerifierErrorCode> checkGuardedUse(
+            Instruction const& instruction) const
+        {
+            auto const use = guardedUseOf(instruction.operation);
+            if (!use)
+                return {};
+            auto const pointer = _function.operands(instruction.operands)[use->operand];
+            auto const definedBy = _definitions[std::to_underlying(pointer)].operation;
+            if (std::ranges::find(use->guards, definedBy) == use->guards.end())
+                return std::unexpected { VerifierErrorCode::UnguardedAddress };
+            return {};
         }
 
         /// The fixed fields, then whole repeated groups only, each value within its field, each target

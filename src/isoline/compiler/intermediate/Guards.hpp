@@ -18,6 +18,13 @@
 //    access past the end. Comparing a wrapped end, or comparing the index against bound - (offset + size)
 //    without treating a negative difference as past the end, lets a memory smaller than its access, or an
 //    offset that wraps, through.
+//
+// Nothing but fixed field offsets is ever added to a guarded pointer after its select: a table element's
+// RefLayout offsets and a dispatch row's FunctionDispatch offsets, which stay within the element or row the
+// select chose or within the first bytes past 0. A load or store has no offset of its own, and every use of
+// a pointer is held to come from its guard (GuardedUseTable), so an offset the guest chose never reaches an
+// address after its select, where it would make 0 + offset a guest-chosen absolute address under
+// misspeculation. Only guardAddress adds a variable offset, and it is itself a guard: 0 stays 0.
 
 #include <array>
 #include <cstddef>
@@ -117,6 +124,60 @@ static_assert(
         return true;
     }(),
     "every operation that returns a guarded Pointer has a GuardTable row, and only those");
+
+/// Which guards may produce the pointer one operand of an operation uses.
+struct GuardedUseRow
+{
+    Operation operation;             ///< The operation that uses a pointer.
+    uint8_t operand;                 ///< Which of its operands the pointer is.
+    std::array<Operation, 2> guards; ///< The operations that may define it; a repeated one fills the pair.
+};
+
+/// Every use of a guarded pointer, with the guards its pointer must come from: what the verifier checks
+/// (VerifierErrorCode::UnguardedAddress), so that no pass or translation feeds an access an address that
+/// skipped its select or took an offset after it.
+inline constexpr auto GuardedUseTable = std::to_array<GuardedUseRow>({
+    { .operation = Operation::Load,
+      .operand = 0,
+      .guards = { Operation::CheckMemory, Operation::GuardAddress } },
+    { .operation = Operation::Store,
+      .operand = 0,
+      .guards = { Operation::CheckMemory, Operation::GuardAddress } },
+    { .operation = Operation::GuardAddress,
+      .operand = 0,
+      .guards = { Operation::CheckMemory, Operation::GuardAddress } },
+    { .operation = Operation::LoadTableElement,
+      .operand = 0,
+      .guards = { Operation::CheckTable, Operation::CheckTable } },
+    { .operation = Operation::StoreTableElement,
+      .operand = 0,
+      .guards = { Operation::CheckTable, Operation::CheckTable } },
+    { .operation = Operation::LoadDispatchType,
+      .operand = 0,
+      .guards = { Operation::CheckDispatch, Operation::CheckDispatch } },
+    { .operation = Operation::CallIndirect,
+      .operand = 0,
+      .guards = { Operation::CheckDispatch, Operation::CheckDispatch } },
+});
+
+/// The row of @p operation in GuardedUseTable; none when it uses no guarded pointer.
+[[nodiscard]] constexpr std::optional<GuardedUseRow> guardedUseOf(Operation operation) noexcept
+{
+    for (auto const& row: GuardedUseTable)
+        if (row.operation == operation)
+            return row;
+    return std::nullopt;
+}
+
+static_assert(
+    [] {
+        for (auto const& row: GuardedUseTable)
+            for (auto const guard: row.guards)
+                if (!guardRowOf(guard).has_value())
+                    return false;
+        return true;
+    }(),
+    "every guard GuardedUseTable names has a GuardTable row");
 
 /// The index a guard reads from an operand of @p type holding @p bits: an I32's low 32 bits,
 /// zero-extended; an I64's 64.

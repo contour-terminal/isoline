@@ -626,6 +626,11 @@ namespace
                 return {};
             }
             case Opcode::GlobalSet: {
+                // The cell's type, as global.get checks it: a Ref the compiler cannot represent never
+                // reaches a cell either way.
+                if (auto type = irTypeOf(_input.index.globalType(instruction.a).type, _input.codeIndex);
+                    !type)
+                    return std::unexpected { type.error() };
                 auto const value = pop();
                 emitEffect(
                     Operation::StoreGlobal, std::array { value }, std::array { uint64_t { instruction.a } });
@@ -776,7 +781,7 @@ namespace
 
     Translation::Outcome Translation::memoryInstruction(binary::Instruction const& instruction)
     {
-        if (auto const row = memoryAccessOf(instruction.opcode))
+        if (auto const row = scalarAccessOf(instruction.opcode))
         {
             access(instruction, *row);
             return {};
@@ -826,7 +831,6 @@ namespace
                                            row.type,
                                            std::array { address },
                                            std::array { uint64_t { memory },
-                                                        uint64_t { 0 },
                                                         uint64_t { row.size },
                                                         immediateOf(row.extension),
                                                         immediateOf(row.type) }));
@@ -834,7 +838,7 @@ namespace
             case AccessKind::Store:
                 emitEffect(Operation::Store,
                            std::array { address, *value },
-                           std::array { uint64_t { memory }, uint64_t { 0 }, uint64_t { row.size } });
+                           std::array { uint64_t { memory }, uint64_t { row.size } });
                 break;
         }
     }
@@ -954,7 +958,7 @@ namespace
         _arguments.push_back(row);
         auto const passed = top(arguments);
         _arguments.insert(_arguments.end(), passed.begin(), passed.end());
-        storeCountdown();
+        // The countdown was stored at checkTable, the first trap site, and has not changed since.
         auto const results = _builder.emit(Operation::CallIndirect,
                                            _resultScratch,
                                            _arguments,

@@ -279,14 +279,11 @@ TEST_CASE("Function.printsEveryFormOfInstruction")
                                       std::array { Type::Pointer },
                                       std::array { index, base, bound },
                                       std::array<uint64_t, 3> { 0, 16, 4 })[0];
-    auto const loaded = builder.emit(Operation::Load,
-                                     std::array { Type::I64 },
-                                     std::array { address },
-                                     std::array { immediate(0),
-                                                  immediate(0),
-                                                  immediate(1),
-                                                  immediate(1),
-                                                  immediate(std::to_underlying(Type::I64)) })[0];
+    auto const loaded = builder.emit(
+        Operation::Load,
+        std::array { Type::I64 },
+        std::array { address },
+        std::array { immediate(0), immediate(1), immediate(1), immediate(std::to_underlying(Type::I64)) })[0];
     auto const results = builder.emit(Operation::Call,
                                       std::array { Type::I32, Type::F64 },
                                       std::array { loaded, index },
@@ -302,7 +299,7 @@ TEST_CASE("Function.printsEveryFormOfInstruction")
     CHECK(print(function)
           == "b0(v0:i32, v1:ptr, v2:i64):\n"
              "  v3 = check_memory v0, v1, v2 [memory=0, offset=16, size=4]\n"
-             "  v4 = load v3 [memory=0, offset=0, size=1, extension=1, type=i64]\n"
+             "  v4 = load v3 [memory=0, size=1, extension=1, type=i64]\n"
              "  v5, v6 = call v4, v0 [function=7]\n"
              "  switch v5, b1(), b1()\n"
              "b1():\n"

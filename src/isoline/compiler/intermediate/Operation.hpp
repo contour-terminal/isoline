@@ -439,8 +439,8 @@ enum class ImmediateSchema : uint8_t
     Function,     ///< {function}: ref.func, call, call_import.
     Memory,       ///< {memory}: memoryBase, memoryBound.
     MemoryAccess, ///< {memory, offset, size}: checkMemory.
-    Load,         ///< {memory, offset, size, extension, type}: load, whose result is a numeric type.
-    StoreAccess,  ///< {memory, offset, size}: store, of its value's width or narrower.
+    Load,         ///< {memory, size, extension, type}: load, whose result is a numeric type.
+    StoreAccess,  ///< {memory, size}: store, of its value's width or narrower.
     Offset,       ///< {offset}: guardAddress.
     TableCheck,   ///< {table, trap}: checkTable.
     Table,        ///< {table}: tableSize.
@@ -496,7 +496,8 @@ namespace detail
     inline constexpr auto FunctionFields = std::to_array({ Function });
     inline constexpr auto MemoryFields = std::to_array({ Memory });
     inline constexpr auto MemoryAccessFields = std::to_array({ Memory, Offset, Size });
-    inline constexpr auto LoadFields = std::to_array({ Memory, Offset, Size, Extension, Type });
+    inline constexpr auto LoadFields = std::to_array({ Memory, Size, Extension, Type });
+    inline constexpr auto StoreFields = std::to_array({ Memory, Size });
     inline constexpr auto OffsetFields = std::to_array({ Offset });
     inline constexpr auto TableCheckFields = std::to_array({ Table, Trap });
     inline constexpr auto TableFields = std::to_array({ Table });
@@ -532,7 +533,7 @@ inline constexpr auto ImmediateSchemaTable = std::to_array<ImmediateSchemaRow>({
       .types = NumberTypes,
       .width = AccessWidth::OfType },
     { .schema = ImmediateSchema::StoreAccess,
-      .fixed = detail::MemoryAccessFields,
+      .fixed = detail::StoreFields,
       .repeated = detail::NoFields,
       .width = AccessWidth::OfValue },
     { .schema = ImmediateSchema::Offset, .fixed = detail::OffsetFields, .repeated = detail::NoFields },

@@ -176,8 +176,9 @@ ISOLINE_OPERATION(CanonicalizeNan, "canonicalize_nan", Float, SameAsOperand0, Pu
 // index is the memory's address type, I32 for a 32-bit memory, I64 for a 64-bit one. The guard's exact
 // computation is GuardTable's row and guardMemoryAccess() (Guards.hpp). guardAddress(address) is a
 // dominated check's replacement: address + offset, 0 when address is 0. A load and a store take such an
-// address, their offset added to it. A memory's size is its bound, shifted by its page size; memory 0's
-// base and bound are context values, every other memory's memoryBase and memoryBound.
+// address as it is, with no offset of their own: nothing is added to a guarded address after its select
+// (GuardedUseTable, which the verifier holds every use to). A memory's size is its bound, shifted by its
+// page size; memory 0's base and bound are context values, every other memory's memoryBase and memoryBound.
 ISOLINE_OPERATION(CheckMemory, "check_memory", CheckMemory, Pointer, MayTrap, MemoryAccess)
 ISOLINE_OPERATION(GuardAddress, "guard_address", Pointer, Pointer, Pure, Offset)
 ISOLINE_OPERATION(Load, "load", Pointer, FromImmediate, ReadsMemory, Load)

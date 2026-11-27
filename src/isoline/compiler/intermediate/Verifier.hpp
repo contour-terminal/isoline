@@ -46,10 +46,11 @@ enum class VerifierErrorCode : uint8_t
     ArgumentType,           ///< An argument's type is not its parameter's.
     ReturnsDisagree,        ///< Two returns differ in their values' count or types.
     UseNotDominated,        ///< A value is used where its definition does not dominate the use.
+    UnguardedAddress,       ///< A pointer is used that its GuardedUseTable row's guards did not define.
 };
 
 /// The last VerifierErrorCode enumerator.
-inline constexpr auto LastVerifierErrorCode = VerifierErrorCode::UseNotDominated;
+inline constexpr auto LastVerifierErrorCode = VerifierErrorCode::UnguardedAddress;
 
 /// How many VerifierErrorCode enumerators there are.
 inline constexpr auto VerifierErrorCodeCount = std::size_t { std::to_underlying(LastVerifierErrorCode) } + 1;
@@ -86,6 +87,7 @@ inline constexpr auto VerifierErrorTable = std::to_array<VerifierErrorRow>({
     { .code = VerifierErrorCode::ArgumentType, .text = "branch argument type mismatch" },
     { .code = VerifierErrorCode::ReturnsDisagree, .text = "returns disagree" },
     { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
+    { .code = VerifierErrorCode::UnguardedAddress, .text = "address not defined by its guard" },
 });
 
 static_assert(

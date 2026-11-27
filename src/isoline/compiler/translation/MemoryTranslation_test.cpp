@@ -167,11 +167,8 @@ TEST_CASE("MemoryTranslation.loadChecksOffsetPlusSize")
     CHECK(operandsOf(function, load)[0] == resultOf(function, check));
     CHECK(std::ranges::equal(
         immediatesOf(function, load),
-        std::array<uint64_t, 5> { 0,
-                                  0,
-                                  4,
-                                  immediateOf(isoline::compiler::intermediate::Extension::Zero),
-                                  immediateOf(Type::I32) }));
+        std::array<uint64_t, 4> {
+            0, 4, immediateOf(isoline::compiler::intermediate::Extension::Zero), immediateOf(Type::I32) }));
     // The base and bound are memory 0's context values: no memory_base or memory_bound.
     auto const text = translated->text();
     CHECK(text.contains("v2 = load_context [field=memory0_base, type=ptr]"));
@@ -198,7 +195,7 @@ TEST_CASE("MemoryTranslation.indexKeepsTheAddressType")
         CHECK(instructionsOf(function, Operation::I64ExtendI32U).empty());
         auto const store = onlyOf(function, Operation::Store);
         CHECK(operandsOf(function, store)[0] == resultOf(function, check));
-        CHECK(std::ranges::equal(immediatesOf(function, store), std::array<uint64_t, 3> { 0, 0, 2 }));
+        CHECK(std::ranges::equal(immediatesOf(function, store), std::array<uint64_t, 2> { 0, 2 }));
     }
 }
 
@@ -320,7 +317,8 @@ TEST_CASE("MemoryTranslation.callIndirectCheckOrder")
 {
     // call_indirect, in the reference's order: the element (UndefinedElement), a null element
     // (UninitializedElement, naming the index), the dispatch row (UndefinedElement, naming the index), the
-    // type (IndirectCallTypeMismatch), then the call of the row, all before the callee's entry.
+    // type (IndirectCallTypeMismatch), then the call of the row, all before the callee's entry. The countdown
+    // stored at the first trap site is the call's: no second store.
     auto builder = ModuleBuilder {};
     builder.type(FuncType { .params = { I64 }, .results = { I32 } });
     builder.type(FuncType { .params = { I64, I32 }, .results = { I32 } });
@@ -338,7 +336,6 @@ TEST_CASE("MemoryTranslation.callIndirectCheckOrder")
                                           Operation::TypeId,
                                           Operation::I32Ne,
                                           Operation::TrapIf,
-                                          Operation::StoreContext,
                                           Operation::CallIndirect });
     auto const operations = operationsFrom(function, first);
     REQUIRE(operations.size() >= expected.size());
@@ -355,7 +352,7 @@ TEST_CASE("MemoryTranslation.callIndirectCheckOrder")
     CHECK(immediatesOf(function, dispatch)[0] == immediateOf(TrapCode::UndefinedElement));
     CHECK(immediatesOf(function, first + 6)[0] == 0);
     CHECK(immediatesOf(function, first + 8)[0] == immediateOf(TrapCode::IndirectCallTypeMismatch));
-    auto const call = first + 10;
+    auto const call = first + 9;
     auto const arguments = operandsOf(function, call);
     REQUIRE(arguments.size() == 2);
     CHECK(arguments[0] == resultOf(function, dispatch));
@@ -660,10 +657,10 @@ TEST_CASE("MemoryTranslation.wideIndirectCallsRefuseAtThePoolCap", "[.hostile]")
 TEST_CASE("MemoryTranslation.lookupsMissOutsideTheirTables")
 {
     using isoline::compiler::translation::indexCountOf;
-    using isoline::compiler::translation::memoryAccessOf;
+    using isoline::compiler::translation::scalarAccessOf;
     using isoline::compiler::translation::stubCallOf;
-    CHECK_FALSE(memoryAccessOf(Opcode::Nop).has_value());
-    CHECK_FALSE(memoryAccessOf(Opcode::MemorySize).has_value());
+    CHECK_FALSE(scalarAccessOf(Opcode::Nop).has_value());
+    CHECK_FALSE(scalarAccessOf(Opcode::MemorySize).has_value());
     CHECK_FALSE(stubCallOf(Opcode::Nop).has_value());
     CHECK_FALSE(stubCallOf(Opcode::TableSize).has_value());
     CHECK_FALSE(stubCallOf(Opcode::V128Load).has_value());

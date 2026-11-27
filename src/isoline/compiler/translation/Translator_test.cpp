@@ -1092,6 +1092,16 @@ TEST_CASE("Translator.deferredTypesAreRefusedWhereTheyAppear")
                              code({ { 0xFD, 0x0C }, Bytes(16, 0x00) }));
               return builder;
           } },
+        { "global.set of a typed global",
+          [&] {
+              auto builder =
+                  oneFunction(FuncType { .params = {}, .results = {} }, {}, { 0xD2, 0x00, 0x24, 0x00 });
+              builder.global(isoline::binary::GlobalType { .type = typed,
+                                                           .mutability = isoline::binary::Mutability::Var },
+                             { 0xD0, 0x00 });
+              builder.element({ 0x03, 0x00, 0x01, 0x00 });
+              return builder;
+          } },
         { "ref.null of a concrete type",
           [&] { return oneFunction(FuncType { .params = {}, .results = {} }, {}, { 0xD0, 0x00, 0x1A }); } },
         { "a call of a v128 result",

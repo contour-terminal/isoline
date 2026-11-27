@@ -272,6 +272,22 @@ TEST_CASE("Verifier.rejectsEachErrorCode")
                   builder.switchTo(merge);
                   builder.ret(std::array { leftValue });
               } },
+        { .code = VerifierErrorCode::UnguardedAddress,
+          .build =
+              [](Fixture& fixture) {
+                  // A load of memory 0's base itself: an address no checkMemory guarded.
+                  auto const base = fixture.builder.emit(
+                      Operation::LoadContext,
+                      std::array { Type::Pointer },
+                      {},
+                      std::array<uint64_t, 2> { std::to_underlying(ContextValue::Memory0Base),
+                                                std::to_underlying(Type::Pointer) })[0];
+                  std::ignore = fixture.builder.emit(Operation::Load,
+                                                     std::array { Type::I32 },
+                                                     std::array { base },
+                                                     std::array<uint64_t, 4> { 0, 4, 0, 0 });
+                  fixture.builder.ret({});
+              } },
     };
     REQUIRE(rows.size() == VerifierErrorCodeCount);
     auto covered = std::set<VerifierErrorCode> {};
@@ -425,6 +441,7 @@ TEST_CASE("Verifier.everyCodeHasItsExactText")
         { .code = VerifierErrorCode::ArgumentType, .text = "branch argument type mismatch" },
         { .code = VerifierErrorCode::ReturnsDisagree, .text = "returns disagree" },
         { .code = VerifierErrorCode::UseNotDominated, .text = "use not dominated by its definition" },
+        { .code = VerifierErrorCode::UnguardedAddress, .text = "address not defined by its guard" },
     });
     REQUIRE(expected.size() == VerifierErrorCodeCount);
     for (auto const index: std::views::iota(std::size_t { 0 }, VerifierErrorCodeCount))
@@ -448,15 +465,27 @@ struct TypedRow
 };
 
 /// The immediates of a load of @p size bytes into @p type, extended as @p extension says.
-std::array<uint64_t, 5> loadOf(uint64_t size, Extension extension, Type type)
+std::array<uint64_t, 4> loadOf(uint64_t size, Extension extension, Type type)
 {
-    return { 0, 0, size, std::to_underlying(extension), std::to_underlying(type) };
+    return { 0, size, std::to_underlying(extension), std::to_underlying(type) };
 }
 
-/// A load from a Pointer parameter of the entry with @p immediates, its result of @p type.
-void emitLoad(Fixture& fixture, Type type, std::array<uint64_t, 5> const& immediates)
+/// A guarded address: checkMemory of parameters of the entry.
+ValueId guardedAddress(Fixture& fixture)
 {
-    auto const address = fixture.builder.addParameter(fixture.entry, Type::Pointer);
+    auto const index = fixture.builder.addParameter(fixture.entry, Type::I32);
+    auto const base = fixture.builder.addParameter(fixture.entry, Type::Pointer);
+    auto const bound = fixture.builder.addParameter(fixture.entry, Type::I64);
+    return fixture.builder.emit(Operation::CheckMemory,
+                                std::array { Type::Pointer },
+                                std::array { index, base, bound },
+                                std::array<uint64_t, 3> { 0, 0, 8 })[0];
+}
+
+/// A load from a guarded address with @p immediates, its result of @p type.
+void emitLoad(Fixture& fixture, Type type, std::array<uint64_t, 4> const& immediates)
+{
+    auto const address = guardedAddress(fixture);
     std::ignore =
         fixture.builder.emit(Operation::Load, std::array { type }, std::array { address }, immediates);
 }
@@ -464,10 +493,10 @@ void emitLoad(Fixture& fixture, Type type, std::array<uint64_t, 5> const& immedi
 /// A store of @p size bytes of a parameter of @p type.
 void emitStore(Fixture& fixture, Type type, uint64_t size)
 {
-    auto const address = fixture.builder.addParameter(fixture.entry, Type::Pointer);
+    auto const address = guardedAddress(fixture);
     auto const value = fixture.builder.addParameter(fixture.entry, type);
     std::ignore = fixture.builder.emit(
-        Operation::Store, {}, std::array { address, value }, std::array<uint64_t, 3> { 0, 0, size });
+        Operation::Store, {}, std::array { address, value }, std::array<uint64_t, 2> { 0, size });
 }
 
 /// The immediates of a context value @p value of @p type.
@@ -602,6 +631,32 @@ TEST_CASE("Verifier.typedImmediatesFitTheirTypes")
 
 TEST_CASE("Verifier.refusesTheRemainingShapes")
 {
+    SECTION("an access whose address took an offset after its select")
+    {
+        // load(guardAddress(checkMemory)) is guarded; a load of an address computed from a guarded one by
+        // anything else (here a select between it and the base) is refused.
+        auto fixture = Fixture {};
+        auto const address = guardedAddress(fixture);
+        auto const moved = fixture.builder.emit(
+            Operation::GuardAddress, std::array { Type::Pointer }, std::array { address }, constant(16))[0];
+        std::ignore = fixture.builder.emit(Operation::Load,
+                                           std::array { Type::I32 },
+                                           std::array { moved },
+                                           loadOf(4, Extension::Zero, Type::I32));
+        fixture.builder.ret({});
+        CHECK(verify(fixture.function).has_value());
+        auto other = Fixture {};
+        auto const guarded = guardedAddress(other);
+        auto const condition = other.i32(1);
+        auto const chosen = other.builder.emit(
+            Operation::Select, std::array { Type::Pointer }, std::array { guarded, guarded, condition })[0];
+        std::ignore = other.builder.emit(Operation::Load,
+                                         std::array { Type::I32 },
+                                         std::array { chosen },
+                                         loadOf(4, Extension::Zero, Type::I32));
+        other.builder.ret({});
+        CHECK(refusal(other.function).code == VerifierErrorCode::UnguardedAddress);
+    }
     SECTION("a block parameter that names no value")
     {
         auto fixture = Fixture {};
