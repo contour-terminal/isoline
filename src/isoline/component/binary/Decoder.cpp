@@ -651,14 +651,15 @@ namespace
         auto desc = ExternDesc { .sort = *sort };
         if (*sort == Sort::Type)
         {
-            auto const offset = reader.offset();
+            auto const boundOffset = reader.offset();
             auto const bound = u8(reader);
             if (!bound)
                 return std::unexpected { bound.error() };
-            auto const row = std::ranges::find(TypeBounds, *bound, &TypeBoundRow::byte);
-            if (row == TypeBounds.end())
-                return std::unexpected { DecodeError { DecodeErrorCode::InvalidTypeBound, offset, *bound } };
-            desc.bound = row->bound;
+            auto const boundRow = std::ranges::find(TypeBounds, *bound, &TypeBoundRow::byte);
+            if (boundRow == TypeBounds.end())
+                return std::unexpected { DecodeError {
+                    DecodeErrorCode::InvalidTypeBound, boundOffset, *bound } };
+            desc.bound = boundRow->bound;
             if (desc.bound == TypeBound::SubResource)
                 return desc;
         }
