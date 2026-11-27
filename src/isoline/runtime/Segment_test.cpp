@@ -346,3 +346,64 @@ TEST_CASE("Segment.copyItems")
         CHECK(to == from);
     }
 }
+
+TEST_CASE("Segment.rangeMaskAtTheEdges")
+{
+    using isoline::runtime::rangeMask;
+    // Every offset and count of 8 bits against sizes below 2^7: the mask is all ones exactly where fits()
+    // says the range fits, so the bound it is derived from is the check's, wherever the differences would
+    // wrap.
+    for (auto const size: { 0U, 1U, 2U, 63U, 64U, 126U, 127U })
+    {
+        for (auto const offset: std::views::iota(0U, 256U))
+        {
+            for (auto const count: std::views::iota(0U, 256U))
+            {
+                auto const expected =
+                    offset <= size && count <= size - offset ? uint8_t { 0xFF } : uint8_t { 0 };
+                auto const mask = rangeMask<uint8_t>(
+                    static_cast<uint8_t>(offset), static_cast<uint8_t>(count), static_cast<uint8_t>(size));
+                if (mask != expected)
+                {
+                    INFO("size " << size << ", offset " << offset << ", count " << count);
+                    CHECK(mask == expected);
+                }
+            }
+        }
+    }
+    // The 64-bit edges: sums past 2^64, offsets and counts of 2^63 and more, a size of 0.
+    constexpr auto All = std::numeric_limits<uint64_t>::max();
+    constexpr auto Half = uint64_t { 1 } << 63U;
+    constexpr auto Size = uint64_t { 4 } * BulkPollBytes;
+    struct Row
+    {
+        uint64_t offset;
+        uint64_t count;
+        uint64_t size;
+        uint64_t mask;
+    };
+    constexpr auto Rows = std::to_array<Row>({
+        { .offset = 0, .count = 0, .size = 0, .mask = All },
+        { .offset = 0, .count = 1, .size = 0, .mask = 0 },
+        { .offset = 1, .count = 0, .size = 0, .mask = 0 },
+        { .offset = 0, .count = Size, .size = Size, .mask = All },
+        { .offset = Size, .count = 0, .size = Size, .mask = All },
+        { .offset = Size, .count = 1, .size = Size, .mask = 0 },
+        { .offset = 1, .count = Size, .size = Size, .mask = 0 },
+        { .offset = 8, .count = All - 7, .size = Size, .mask = 0 },
+        { .offset = All - 7, .count = 16, .size = Size, .mask = 0 },
+        { .offset = Half, .count = 0, .size = Size, .mask = 0 },
+        { .offset = 0, .count = Half, .size = Size, .mask = 0 },
+        { .offset = Half - 1, .count = 1, .size = Size, .mask = 0 },
+        { .offset = 16, .count = Half + 16, .size = Size, .mask = 0 },
+        { .offset = All, .count = All, .size = Size, .mask = 0 },
+    });
+    for (auto const& row: Rows)
+    {
+        INFO("offset " << row.offset << ", count " << row.count << ", size " << row.size);
+        CHECK(rangeMask<uint64_t>(row.offset, row.count, row.size) == row.mask);
+        CHECK(fits(row.offset, row.count, row.size) == (row.mask == All));
+    }
+    static_assert(rangeMask<uint64_t>(16, Half + 16, Size) == 0);
+    static_assert(rangeMask<uint64_t>(0, Size, Size) == All);
+}

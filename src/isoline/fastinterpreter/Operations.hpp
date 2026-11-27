@@ -687,14 +687,26 @@ template <OperationId Id>
     return next<Id>(state);
 }
 
+/// The two slots of the reference whose first is slot @p slot of the frame @p fp.
+[[nodiscard]] inline std::span<Slot, 2> referenceSlots(Slot* fp, uint32_t slot) noexcept
+{
+    return std::span<Slot, 2> { fp + slot, 2 };
+}
+
+/// @copydoc referenceSlots(Slot*, uint32_t)
+[[nodiscard]] inline std::span<Slot const, 2> referenceSlots(Slot const* fp, uint32_t slot) noexcept
+{
+    return std::span<Slot const, 2> { fp + slot, 2 };
+}
+
 /// A bulk operation (memory.fill, memory.copy, memory.init and the table operations alike): its ranges
 /// checked before anything is written, then its granules, each polled at runtime::PollSite::BulkGranule
 /// through the executor's gate, in the order and with the partial writes of every engine
 /// (runtime::fillItems(), runtime::copyItems(), runtime::copySegment()).
 ///
-/// Spectre (docs/fast-interpreter.md): no select. The explicit checks decide before the first write, every
-/// item a granule touches is in bounds of what they checked, and no byte or reference it moves is used as an
-/// address or an index on its way, so the loop has no gadget a mispredicted check would open.
+/// Spectre (docs/fast-interpreter.md): the shared bodies mask their ranges by runtime::rangeMask() once,
+/// after the explicit checks, so that code ahead of a mispredicted check sees empty ranges at the start: a
+/// speculative copy that moved host bytes into the guest's memory would hand them to its next load.
 template <OperationId Id>
 [[nodiscard]] inline Flow bulkOperation(State& state) noexcept
 {
@@ -754,7 +766,7 @@ template <OperationId Id>
         done = runtime::fillItems(std::span { table.elements },
                                   narrowToAddressType(destination, type),
                                   narrowToAddressType(count, type),
-                                  loadReference(fp + slotOperand<1>(state.pc)),
+                                  loadReference(referenceSlots(fp, slotOperand<1>(state.pc))),
                                   runtime::TrapCode::OutOfBoundsTableAccess,
                                   poll);
     }
@@ -815,7 +827,7 @@ template <OperationId Id>
         auto const grown = context.store
                                .growTable(address,
                                           narrowToAddressType(fp[slotOperand<2>(pc)], type),
-                                          loadReference(fp + slotOperand<1>(pc)))
+                                          loadReference(referenceSlots(fp, slotOperand<1>(pc))))
                                .value_or(std::numeric_limits<uint64_t>::max());
         fp[slotOperand<0>(pc)] = narrowToAddressType(grown, type);
         return next<Id>(state);
@@ -829,9 +841,9 @@ template <OperationId Id>
             return leaveTrapped(
                 context, state.stepsLeft, runtime::Trap { runtime::TrapCode::OutOfBoundsTableAccess });
         if constexpr (Id == OperationId::TableGet)
-            storeReference(table.elements[*index], fp + slotOperand<0>(pc));
+            storeReference(table.elements[*index], referenceSlots(fp, slotOperand<0>(pc)));
         else
-            table.elements[*index] = loadReference(fp + slotOperand<1>(pc));
+            table.elements[*index] = loadReference(referenceSlots(fp, slotOperand<1>(pc)));
         return next<Id>(state);
     }
 }
@@ -1022,7 +1034,7 @@ template <OperationId Id>
         storeReference(runtime::Ref { .kind = runtime::RefKind::Func,
                                       .heap = { .kind = binary::AbstractHeapType::Func },
                                       .address = function },
-                       fp + slotOperand<0>(pc));
+                       referenceSlots(fp, slotOperand<0>(pc)));
         return next<Id>(state);
     }
     else if constexpr (Id == OperationId::RefIsNull)
