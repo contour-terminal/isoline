@@ -201,7 +201,7 @@ std::expected<void, Refusal> MemoryInstance::grow(uint64_t newBytes) noexcept
         Require(keepsItsTail(*_memory));
     }
     else
-        Require(_view.base == before.base && _view.bytes == before.bytes);
+        Require(_view.bytes == before.bytes && (before.bytes == 0 || _view.base == before.base));
     return grown;
 }
 

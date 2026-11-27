@@ -294,7 +294,7 @@ set(isolineContractRows
     "Contract.Store.bindOnlyExistingFunctions|address < _dispatchView\\.rows"
     "Contract.Store.bindOnlyTheInstancesOwnFunctions|_functions\\[address\\]\\.moduleInstance == moduleInstance"
     "Contract.Store.bindOnlyWhereRowsAreKept|_dispatchRows == DispatchRows::Kept"
-    "Contract.Store.refusedGrowLeavesTheMemory|_view\\.base == before\\.base && _view\\.bytes == before\\.bytes"
+    "Contract.Store.refusedGrowLeavesTheMemory|_view\\.bytes == before\\.bytes && \\(before\\.bytes == 0 \\|\\| _view\\.base == before\\.base\\)"
     "Contract.Store.grantedGrowReachesItsSize|_view\\.bytes == newBytes"
     "Contract.Listing.wholeOperations|row\\.words <= code\\.size\\(\\)"
     "Contract.FastInterpreter.dispatchMustBeAvailable|isAvailable\\(dispatch\\)"

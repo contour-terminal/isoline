@@ -222,7 +222,9 @@ class TableInstance
     /// @param elements Its slots.
     TableInstance(binary::TableType type, std::vector<Ref> elements) noexcept;
 
-    /// A move keeps the slots' storage, so the view moves with them.
+    /// A move keeps the slots' storage, so the view moves with them; the moved-from table is left with
+    /// no slots and a view of none. Unlike MemoryInstance, whose storage is behind a pointer, the moves
+    /// are written out, so that neither side's view is a copy of the other's.
     TableInstance(TableInstance&& other) noexcept;
     /// @copydoc TableInstance(TableInstance&&)
     TableInstance& operator=(TableInstance&& other) noexcept;
@@ -263,6 +265,10 @@ class MemoryInstance
   public:
     /// @param type Its type as allocated.
     /// @param memory Its storage (checked: not null).
+    ///
+    /// Unlike TableInstance, it keeps the implicit moves: the storage sits behind a pointer that a move
+    /// hands over, so the view copied with it stays the moved-to instance's. The moved-from instance
+    /// holds no storage and a stale view: it may only be destroyed or assigned to.
     MemoryInstance(binary::MemoryType type, std::unique_ptr<ILinearMemory> memory);
 
     binary::MemoryType type; ///< Its type as allocated; its size is bytes().size() / pageSize(type).
@@ -294,8 +300,9 @@ class MemoryInstance
     /// (ILinearMemory::grow(), GrowRequest), and updates the view: only the store, which charges the growth
     /// against its budget, grows a memory. A storage that cannot keep that tail refuses with Guard.
     /// Preconditions (checked), the storage's contract: a grow it grants leaves exactly @p newBytes and the
-    /// tail (keepsItsTail()), one it refuses leaves the bytes where and as large as they were, so that the view
-    /// and the store's generation stay true; a refusal could not undo a grow already made.
+    /// tail (keepsItsTail()), one it refuses leaves the bytes where and as large as they were (where only if
+    /// there are any: an empty view views nothing), so that the view and the store's generation stay true; a
+    /// refusal could not undo a grow already made.
     /// @param newBytes The new size in bytes.
     /// @return Nothing, or the storage's refusal.
     [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept;

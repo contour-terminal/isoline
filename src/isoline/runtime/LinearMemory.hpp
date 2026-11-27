@@ -64,7 +64,8 @@ class ILinearMemory
   public:
     virtual ~ILinearMemory() = default;
 
-    /// The accessible bytes: the memory's size, a whole number of its pages.
+    /// The accessible bytes: the memory's size, a whole number of its pages. Their address and size
+    /// change only through grow().
     /// @return Its bytes; valid until the next grow().
     [[nodiscard]] virtual std::span<std::byte> bytes() noexcept = 0;
 
@@ -95,7 +96,11 @@ class ILinearMemory
 
     /// Grows the memory to @p request's newBytes, the added bytes zeroed, keeping its requiredTailBytes past
     /// the new end, readable or guarded. The store calls it only within the allocation request's maximumBytes
-    /// and the store's budget, never to shrink, and charges the budget only when this succeeds.
+    /// and the store's budget, never to shrink, and charges the budget only when this succeeds. A grow it
+    /// grants leaves bytes() exactly newBytes large; one it refuses leaves them where and as large as they
+    /// were (an empty memory's address may change, since an empty view views nothing). The store checks both
+    /// after every call, and a memory that breaks either violates its contract: compiled code keeps a view of
+    /// the bytes while Store::memoryGeneration() is unchanged.
     /// @param request The new size, and the tail it needs.
     /// @return Nothing; or, the memory unchanged, why it was refused: Embedder when the embedder
     ///         declines it, HostMemory when the host has no memory for it, Guard when it cannot keep the

@@ -242,6 +242,31 @@ TEST_CASE("Store.tableViewsFollowEveryGrowPath")
     CHECK(generationOf(store) == 0);
 }
 
+TEST_CASE("Store.tableInstanceMovesCarryTheView")
+{
+    // A move hands the slots over, and with them the view: the moved-to table shows them where they were,
+    // the moved-from one shows no slots, by construction and by assignment alike. The moved-from state is
+    // specified (TableInstance's moves), so it is read, through the slot each table was moved out of.
+    using isoline::runtime::TableInstance;
+    auto tables = std::array<std::optional<TableInstance>, 3> {};
+    tables[0].emplace(OneToAThousandSlots, std::vector<Ref>(3, NullFunction));
+    auto const* const slots = tables[0]->elements().data();
+
+    tables[1].emplace(std::move(*tables[0]));
+    CHECK(tables[1]->view().data == slots);
+    CHECK(showsElements(tables[1]->view(), tables[1]->elements()));
+    CHECK(showsElements(tables[0]->view(), tables[0]->elements()));
+    CHECK(tables[0]->view().size == 0);
+
+    tables[2].emplace(OneToAThousandSlots, std::vector<Ref>(5, NullFunction));
+    *tables[2] = std::move(*tables[1]);
+    CHECK(tables[2]->view().data == slots);
+    CHECK(tables[2]->view().size == 3);
+    CHECK(showsElements(tables[2]->view(), tables[2]->elements()));
+    CHECK(showsElements(tables[1]->view(), tables[1]->elements()));
+    CHECK(tables[1]->view().size == 0);
+}
+
 TEST_CASE("Store.viewsStayWhereTheyAre")
 {
     // Executors point at the views (compiler::InstanceContext): adding memories and tables, growing them and
@@ -665,14 +690,15 @@ TEST_CASE("Views.dispatchFollowsAnInstantiationInAHostCall")
 namespace
 {
 
-/// How a LyingMemory breaks ILinearMemory's grow contract.
+/// How a LyingMemory bends ILinearMemory's grow contract: all but MovesWhileEmpty break it.
 enum class Lie : uint8_t
 {
     MovesWhenRefusing, ///< A refused grow leaves the bytes elsewhere.
     GrowsShort,        ///< A granted grow leaves fewer bytes than asked for.
+    MovesWhileEmpty,   ///< A refused grow of no bytes moves them: allowed, an empty view views nothing.
 };
 
-/// An embedder's storage that breaks the grow contract as @p lie says, from an allocator of it.
+/// An embedder's storage that bends the grow contract as @p lie says, from an allocator of it.
 class LyingAllocator final: public IMemoryAllocator
 {
   public:
@@ -688,25 +714,47 @@ class LyingAllocator final: public IMemoryAllocator
     class Memory final: public isoline::runtime::ILinearMemory
     {
       public:
-        Memory(uint64_t size, Lie lie): _bytes(static_cast<std::size_t>(size)), _lie { lie } {}
+        /// @p size bytes, and the tail any size needs past them, which it owns.
+        Memory(uint64_t size, Lie lie): _storage(storageFor(size)), _size { size }, _lie { lie } {}
 
-        [[nodiscard]] std::span<std::byte> bytes() noexcept override { return _bytes; }
-        [[nodiscard]] std::span<std::byte const> bytes() const noexcept override { return _bytes; }
+        [[nodiscard]] std::span<std::byte> bytes() noexcept override
+        {
+            return std::span { _storage }.first(static_cast<std::size_t>(_size));
+        }
+        [[nodiscard]] std::span<std::byte const> bytes() const noexcept override
+        {
+            return std::span { _storage }.first(static_cast<std::size_t>(_size));
+        }
         [[nodiscard]] uint64_t guardBytes() const noexcept override { return 0; }
-        [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
+        [[nodiscard]] uint64_t tailBytes() const noexcept override { return _storage.size() - _size; }
+        [[nodiscard]] std::expected<void, Refusal> grow(
+            isoline::runtime::GrowRequest const& request) noexcept override
         {
             switch (_lie)
             {
                 case Lie::MovesWhenRefusing:
-                    _bytes = std::vector<std::byte>(_bytes.size());
+                case Lie::MovesWhileEmpty: {
+                    // Allocated while the old storage lives, so that its address differs.
+                    auto moved = storageFor(_size);
+                    _storage = std::move(moved);
                     return std::unexpected { Refusal::Embedder };
-                case Lie::GrowsShort: _bytes.resize(static_cast<std::size_t>(newBytes) - 1); return {};
+                }
+                case Lie::GrowsShort:
+                    _size = request.newBytes - 1;
+                    _storage = storageFor(_size);
+                    return {};
             }
             std::abort();
         }
 
       private:
-        std::vector<std::byte> _bytes;
+        [[nodiscard]] static std::vector<std::byte> storageFor(uint64_t size)
+        {
+            return std::vector<std::byte>(static_cast<std::size_t>(size + isoline::runtime::MaxAccessWidth));
+        }
+
+        std::vector<std::byte> _storage;
+        uint64_t _size;
         Lie _lie;
     };
 
@@ -714,6 +762,22 @@ class LyingAllocator final: public IMemoryAllocator
 };
 
 } // namespace
+
+TEST_CASE("Store.refusedGrowMayMoveAnEmptyMemory")
+{
+    // A view of no bytes views nothing, so an empty memory refusing a grow may leave its address anywhere.
+    auto allocator = LyingAllocator { Lie::MovesWhileEmpty };
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const memory = store.addMemory(
+        MemoryType { .limits = Limits { .min = 0, .max = 8, .addressType = AddressType::I32 } });
+    REQUIRE(memory.has_value());
+    auto const before = store.memory(*memory).view();
+    CHECK(store.growMemory(*memory, 1) == std::unexpected { Refusal::Embedder });
+    CHECK(store.memory(*memory).view().base != before.base);
+    CHECK(store.memory(*memory).view().bytes == 0);
+    CHECK(memoryViewIsCurrent(store, *memory));
+    CHECK(generationOf(store) == 0);
+}
 
 TEST_CASE("Contract.Store.refusedGrowLeavesTheMemory", "[.contract]")
 {

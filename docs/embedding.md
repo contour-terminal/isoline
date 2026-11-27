@@ -161,7 +161,7 @@ embedder places guest memory in storage of its own.
   they were: the store keeps a view of every memory for compiled code, which trusts it while
   `Store::memoryGeneration()` is unchanged, so a memory that breaks either rule is a contract violation, not a
   refusal.
-- `bytes()` may move on every grow; whoever holds a span re-fetches it after every grow and every host
+- `bytes()` may move on every granted grow; whoever holds a span re-fetches it after every grow and every host
   call. A view of size 0 is valid at any address, even past the end, and views nothing.
 - `HeapMemoryAllocator`, the default, keeps each memory in a `std::vector` without a guard, and
   `MaxAccessWidth` zeroed bytes past its end; a store that requires a guard refuses it.
