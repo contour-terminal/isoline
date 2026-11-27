@@ -1,0 +1,4 @@
+commands 7
+0 1 wasm ref_as_non_null.0.wasm
+5 32 wasm ref_as_non_null.5.wasm
+6 41 wasm ref_as_non_null.6.wasm

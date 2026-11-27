@@ -1,0 +1,5 @@
+commands 25
+0 3 wasm simd_i64x2_arith2.0.wasm
+21 59 wasm simd_i64x2_arith2.21.wasm
+22 64 wasm simd_i64x2_arith2.22.wasm
+23 73 wasm simd_i64x2_arith2.23.wasm

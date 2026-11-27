@@ -1,8 +1,0 @@
-module memory_size0.0.wasm
-assert_return invoke 73697a65 - -> i32:0
-assert_return invoke 67726f77 - i32:1 ->
-assert_return invoke 73697a65 - -> i32:1
-assert_return invoke 67726f77 - i32:4 ->
-assert_return invoke 73697a65 - -> i32:5
-assert_return invoke 67726f77 - i32:0 ->
-assert_return invoke 73697a65 - -> i32:5

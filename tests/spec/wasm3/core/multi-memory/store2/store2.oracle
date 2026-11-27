@@ -1,0 +1,3 @@
+commands 25
+0 1 wasm store2.0.wasm
+2 6 wasm store2.2.wasm

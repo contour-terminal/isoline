@@ -1,0 +1,3 @@
+commands 7
+0 1 wasm stack.0.wasm
+6 156 wasm stack.6.wasm

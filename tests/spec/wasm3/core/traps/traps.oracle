@@ -1,0 +1,5 @@
+commands 36
+0 5 wasm traps.0.wasm
+7 23 wasm traps.7.wasm
+12 39 wasm traps.12.wasm
+21 59 wasm traps.21.wasm

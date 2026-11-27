@@ -1,0 +1,7 @@
+commands 16
+0 1 wasm table_get.0.wasm
+11 41 wasm table_get.11.wasm
+12 50 wasm table_get.12.wasm
+13 60 wasm table_get.13.wasm
+14 69 wasm table_get.14.wasm
+15 79 wasm table_get.15.wasm

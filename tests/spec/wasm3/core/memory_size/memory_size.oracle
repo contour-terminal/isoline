@@ -1,0 +1,7 @@
+commands 42
+0 1 wasm memory_size.0.wasm
+8 15 wasm memory_size.8.wasm
+16 29 wasm memory_size.16.wasm
+28 47 wasm memory_size.28.wasm
+40 69 wasm memory_size.40.wasm
+41 78 wasm memory_size.41.wasm

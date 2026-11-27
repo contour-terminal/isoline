@@ -1,0 +1,5 @@
+commands 32
+0 4 wasm simd_i32x4_dot_i16x8.0.wasm
+29 99 wasm simd_i32x4_dot_i16x8.29.wasm
+30 104 wasm simd_i32x4_dot_i16x8.30.wasm
+31 112 wasm simd_i32x4_dot_i16x8.31.wasm

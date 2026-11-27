@@ -1,9 +1,0 @@
-module start0.0.wasm
-assert_return invoke 676574 - -> i32:44
-assert_return invoke 6765746e - -> i32:0
-invoke 696e63 - ->
-assert_return invoke 676574 - -> i32:45
-assert_return invoke 6765746e - -> i32:0
-invoke 696e63 - ->
-assert_return invoke 676574 - -> i32:46
-assert_return invoke 6765746e - -> i32:0

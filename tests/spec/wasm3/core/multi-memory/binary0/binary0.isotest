@@ -1,7 +1,0 @@
-module binary0.0.wasm
-module binary0.1.wasm
-module binary0.2.wasm
-module binary0.3.wasm
-module binary0.4.wasm
-assert_malformed binary0.5.wasm 696e746567657220726570726573656e746174696f6e20746f6f206c6f6e67
-assert_malformed binary0.6.wasm 756e657870656374656420656e64206f662073656374696f6e206f722066756e6374696f6e

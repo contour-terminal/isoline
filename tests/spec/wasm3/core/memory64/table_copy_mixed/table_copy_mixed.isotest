@@ -1,4 +1,0 @@
-module table_copy_mixed.0.wasm
-assert_invalid table_copy_mixed.1.wasm 74797065206d69736d61746368
-assert_invalid table_copy_mixed.2.wasm 74797065206d69736d61746368
-assert_invalid table_copy_mixed.3.wasm 74797065206d69736d61746368

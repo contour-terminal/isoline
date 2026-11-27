@@ -1,0 +1,15 @@
+commands 14
+0 1 wasm table64.0.wasm
+1 2 wasm table64.1.wasm
+2 3 wasm table64.2.wasm
+3 4 wasm table64.3.wasm
+4 5 wasm table64.4.wasm
+5 6 wasm table64.5.wasm
+6 7 wasm table64.6.wasm
+7 8 wasm table64.7.wasm
+8 9 wasm table64.8.wasm
+9 10 wasm table64.9.wasm
+10 12 wasm table64.10.wasm
+11 13 wasm table64.11.wasm
+12 16 wasm table64.12.wasm
+13 20 wasm table64.13.wasm

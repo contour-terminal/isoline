@@ -1,0 +1,10 @@
+commands 20
+0 2 wasm start.0.wasm
+1 7 wasm start.1.wasm
+2 14 wasm start.2.wasm
+3 21 wasm start.3.wasm
+9 51 wasm start.9.wasm
+15 80 wasm start.15.wasm
+16 86 wasm start.16.wasm
+17 92 wasm start.17.wasm
+18 98 wasm start.18.wasm

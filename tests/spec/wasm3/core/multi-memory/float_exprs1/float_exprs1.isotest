@@ -1,3 +1,0 @@
-module float_exprs1.0.wasm
-assert_return invoke 6633322e6b6168616e5f73756d - i32:0 i32:100 -> f32:f3880d0d
-assert_return invoke 6633322e706c61696e5f73756d - i32:0 i32:100 -> f32:f3501a1d

@@ -3,6 +3,7 @@
     "^vendor/",
     "^out/",
     "^\\.superpowers/",
+    "^tests/spec/[^/]+/[^/]+/.+\\.wast$",
     "\\.wasm$"
   ],
   "Disable": {

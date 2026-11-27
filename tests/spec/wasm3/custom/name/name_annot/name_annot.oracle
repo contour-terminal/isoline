@@ -1,0 +1,5 @@
+commands 7
+0 3 wasm name_annot.0.wasm
+1 5 wasm name_annot.1.wasm
+5 25 wasm name_annot.5.wasm
+6 34 wasm name_annot.6.wasm

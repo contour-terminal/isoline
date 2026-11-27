@@ -4,13 +4,16 @@
 
 The block between `<!-- exclusions:begin -->` and `<!-- exclusions:end -->` holds one line per
 excluded file, `<source> <path>: <reason>`, from the `exclude` rows of tests/spec/files.txt, and one
-line per assertion the GC cut skips, `<source> <path>:<wast line>: <oracle message>`, from the `gc:`
-skip lines of every imported .isotest. The block between `<!-- text-skips:begin -->` and
-`<!-- text-skips:end -->` holds every other skip line the same way, `<source> <path>:<wast line>:
-<reason>`: the commands skipped because their module is given as text. A command skipped because it
-uses a skipped module names its root, `… (root wast line N)`. The lines are sorted by source, path and
-wast line. The check fails, printing a diff, when a block differs from what the data says; --update
-rewrites the blocks.
+line per assertion the GC cut skips, `<source> <path>:<wast line>: <oracle message>`, from the `skip`
+entries of every imported .oracle, whose reasons all start `gc: `: a command skipped because it uses a
+skipped module names its root, `… (root wast line N)`. A skip that is not the cut's fails the check,
+as the importer writes no other. The block between `<!-- divergences:begin -->` and
+`<!-- divergences:end -->` holds one line per expected divergence, a `message` entry of an .oracle,
+`<source> <path>:<wast line>: <Isoline's message>`, and the block between
+`<!-- parity-divergences:begin -->` and `<!-- parity-divergences:end -->` one line per `parity` entry,
+`<source> <path>:<wast line>: 0x<offset> sha256:<digest> <reason>`. The lines are sorted by source,
+path and wast line. The check fails, printing a diff, when a block differs from what the data says;
+--update rewrites the blocks.
 
 Usage: python3 -I scripts/check-conformance.py [--root <repository>] [--update]
 """
@@ -26,14 +29,15 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 
 # The generated blocks, by name: the markers `<!-- <name>:begin -->` and `<!-- <name>:end -->`.
 EXCLUSIONS = "exclusions"
-TEXT_SKIPS = "text-skips"
-BLOCKS = (EXCLUSIONS, TEXT_SKIPS)
+DIVERGENCES = "divergences"
+PARITY_DIVERGENCES = "parity-divergences"
+BLOCKS = (EXCLUSIONS, DIVERGENCES, PARITY_DIVERGENCES)
 
 # The skip reasons the importer writes: a root, `<reason> (wast line M)`, and a command that uses a
 # skipped module, `<reason> (root wast line N; wast line M)`.
 SKIP_REASON = re.compile(r"^(?P<reason>.*) \((?:root wast line (?P<root>\d+); )?wast line (?P<line>\d+)\)$")
 
-# The reason prefix of the GC cut's skips; they belong to the exclusions.
+# The reason prefix of the GC cut's skips, the only ones the importer writes; they belong to the exclusions.
 GC_PREFIX = "gc: "
 
 
@@ -54,24 +58,37 @@ def loadImporter():
     return module
 
 
-def skips(isotest):
-    """The (block, wast line, text) of each skip line of one .isotest file."""
+def oracleEntries(oracle, kind):
+    """The (wast line, hex value) of each entry of one kind of one .oracle manifest,
+    `<ordinal> <line> <kind> <hex value>`."""
     entries = []
-    for line in isotest.read_text(encoding="utf-8").splitlines():
-        kind, _, reason = line.partition(" ")
-        if kind != "skip":
-            continue
+    for line in oracle.read_text(encoding="utf-8").splitlines():
+        fields = line.split(" ")
+        if len(fields) == 4 and fields[2] == kind:
+            entries.append((int(fields[1]), fields[3]))
+    return entries
+
+
+def skips(path, reasons):
+    """The (wast line, text) of each skip, by its hex-encoded reason, of the oracle at path."""
+    entries = []
+    for reason in reasons:
         reason = bytes.fromhex(reason).decode("utf-8")
         match = SKIP_REASON.match(reason)
         if match is None:
-            raise SystemExit(f"{isotest}: a skip without its wast line: {reason}")
+            raise SystemExit(f"{path}: a skip without its wast line: {reason}")
         text = match["reason"]
-        name = EXCLUSIONS if text.startswith(GC_PREFIX) else TEXT_SKIPS
+        if not text.startswith(GC_PREFIX):
+            raise SystemExit(f"{path}: a skip that is not the GC cut's: {reason}")
         text = text.removeprefix(GC_PREFIX)
         if match["root"]:
             text += f" (root wast line {match['root']})"
-        entries.append((name, int(match["line"]), text))
+        entries.append((int(match["line"]), text))
     return entries
+
+
+# The divergence entries of an .oracle manifest, each listed in the block of its kind.
+DIVERGENCE_BLOCKS = {"message": DIVERGENCES, "parity": PARITY_DIVERGENCES}
 
 
 def generated(spec):
@@ -81,9 +98,13 @@ def generated(spec):
         if row.exclude is not None:
             entries[EXCLUSIONS].append(((row.source, row.path, 0), f"{row.source} {row.path}: {row.exclude}"))
             continue
-        isotest = row.directory(spec) / f"{pathlib.PurePosixPath(row.path).name}.isotest"
-        for name, line, text in skips(isotest):
-            entries[name].append(((row.source, row.path, line), f"{row.source} {row.path}:{line}: {text}"))
+        oracle = (row.directory(spec) / pathlib.PurePosixPath(row.path).name).with_suffix(".oracle")
+        for kind, name in DIVERGENCE_BLOCKS.items():
+            for line, value in oracleEntries(oracle, kind):
+                entries[name].append(((row.source, row.path, line),
+                                      f"{row.source} {row.path}:{line}: {bytes.fromhex(value).decode('utf-8')}"))
+        for line, text in skips(oracle, [reason for _, reason in oracleEntries(oracle, "skip")]):
+            entries[EXCLUSIONS].append(((row.source, row.path, line), f"{row.source} {row.path}:{line}: {text}"))
     return {name: [text for _, text in sorted(lines)] for name, lines in entries.items()}
 
 

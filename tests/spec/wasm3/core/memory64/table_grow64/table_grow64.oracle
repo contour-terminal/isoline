@@ -1,0 +1,2 @@
+commands 22
+0 1 wasm table_grow64.0.wasm

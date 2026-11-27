@@ -1,6 +1,0 @@
-module_definition memory_max.0.wasm
-module_definition memory_max.1.wasm
-module_definition memory_max.2.wasm
-module_definition memory_max.3.wasm
-assert_invalid memory_max.4.wasm 6d656d6f72792073697a65206d757374206265206174206d6f7374
-assert_invalid memory_max.5.wasm 6d656d6f72792073697a65206d757374206265206174206d6f7374

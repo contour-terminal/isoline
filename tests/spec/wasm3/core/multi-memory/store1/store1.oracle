@@ -1,0 +1,4 @@
+commands 13
+0 1 wasm store1.0.wasm
+2 13 wasm store1.2.wasm
+8 30 wasm store1.8.wasm

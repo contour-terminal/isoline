@@ -1,24 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The official WebAssembly spec suite, imported by scripts/import-spec-tests.py into one directory
-# per .wast file: an .isotest script and the .wasm files it names. The import is committed, so
-# running it needs neither the network nor wasm-tools.
+# per .wast file: the verbatim .wast script with its oracle manifest and the oracle's .wasm files. The
+# import is committed, so running it needs neither the network nor wasm-tools.
 
-add_library(isoline_isotest STATIC IsotestReader.cpp SpecCheck.cpp)
-target_include_directories(isoline_isotest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(isoline_isotest PUBLIC isoline::core)
-isoline_apply_target_policy(isoline_isotest)
+add_library(isoline_spectest STATIC Hex.cpp Oracle.cpp SpecCheck.cpp WastReader.cpp)
+target_include_directories(isoline_spectest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(isoline_spectest PUBLIC isoline::core isoline::text)
+isoline_apply_target_policy(isoline_spectest)
 
 add_executable(isoline_spec_runner SpecRunner.cpp)
-target_link_libraries(isoline_spec_runner PRIVATE isoline_isotest)
+target_link_libraries(isoline_spec_runner PRIVATE isoline_spectest)
 # TEST: it is run by ctest alone, so a failing spec file must end it rather than open a dialog.
 isoline_apply_target_policy(isoline_spec_runner TEST)
 
-add_executable(isoline_isotest_test IsotestReader_test.cpp SpecCheck_test.cpp SpecFeatures_test.cpp)
-target_link_libraries(isoline_isotest_test PRIVATE isoline_isotest Catch2::Catch2WithMain)
-isoline_apply_target_policy(isoline_isotest_test TEST)
-add_test(NAME isoline_isotest_test COMMAND isoline_isotest_test)
-set_tests_properties(isoline_isotest_test PROPERTIES LABELS unit TIMEOUT 600)
+add_executable(isoline_spectest_test Oracle_test.cpp SpecCheck_test.cpp SpecFeatures_test.cpp WastReader_test.cpp)
+target_link_libraries(isoline_spectest_test PRIVATE isoline_spectest Catch2::Catch2WithMain)
+# WastReader.ordinalsMatchWasmTools reads its fixture, tests/spec/ordinals, from the source tree.
+target_compile_definitions(isoline_spectest_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+isoline_apply_target_policy(isoline_spectest_test TEST)
+add_test(NAME isoline_spectest_test COMMAND isoline_spectest_test)
+set_tests_properties(isoline_spectest_test PROPERTIES LABELS unit TIMEOUT 600)
 
 # The feature set each suite source runs with: the 3.0 release its own standard, a proposal's suite
 # every feature Isoline knows, as its tests build on 3.0.
@@ -28,8 +30,8 @@ set(specFeatures_custom-page-sizes all)
 set(specFeatures_compact-imports all)
 
 # One test per imported .wast file, in files.txt's order, named spec.<source>.<path with / as .>,
-# which fails unless the file's script skips exactly as many commands as files.txt pins. An
-# `exclude` row names a file that is deliberately not imported.
+# which fails unless the file's script skips exactly as many commands as files.txt pins. An `exclude`
+# row names a file that is deliberately not imported.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS files.txt)
 file(STRINGS files.txt specFiles REGEX "^[^#]" ENCODING UTF-8)
 foreach(entry IN LISTS specFiles)

@@ -1,3 +1,0 @@
-module table-sub.0.wasm
-assert_invalid table-sub.1.wasm 74797065206d69736d61746368
-assert_invalid table-sub.2.wasm 74797065206d69736d61746368

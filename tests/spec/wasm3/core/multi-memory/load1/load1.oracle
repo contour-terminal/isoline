@@ -1,0 +1,3 @@
+commands 18
+0 1 wasm load1.0.wasm
+2 10 wasm load1.2.wasm

@@ -1,0 +1,5 @@
+commands 242
+0 3 wasm address64.0.wasm
+86 209 wasm address64.86.wasm
+206 492 wasm address64.206.wasm
+224 539 wasm address64.224.wasm

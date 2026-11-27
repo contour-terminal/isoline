@@ -1,0 +1,6 @@
+commands 23
+0 3 wasm instance.0.wasm
+5 15 wasm instance.5.wasm
+10 62 wasm instance.10.wasm
+15 109 wasm instance.15.wasm
+18 128 wasm instance.18.wasm

@@ -1,0 +1,14 @@
+commands 13
+0 3 wasm ref.0.wasm
+1 28 wasm ref.1.wasm
+2 32 wasm ref.2.wasm
+3 37 wasm ref.3.wasm
+4 42 wasm ref.4.wasm
+5 47 wasm ref.5.wasm
+6 52 wasm ref.6.wasm
+7 56 wasm ref.7.wasm
+8 60 wasm ref.8.wasm
+9 65 wasm ref.9.wasm
+10 69 wasm ref.10.wasm
+11 73 wasm ref.11.wasm
+12 78 wasm ref.12.wasm

@@ -1,0 +1,6 @@
+commands 70
+0 2 wasm bulk64.0.wasm
+1 7 wasm bulk64.1.wasm
+14 45 wasm bulk64.14.wasm
+51 117 wasm bulk64.51.wasm
+65 161 wasm bulk64.65.wasm

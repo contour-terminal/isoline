@@ -1,0 +1,2 @@
+commands 3
+0 3 wasm i16x8_relaxed_q15mulr_s.0.wasm

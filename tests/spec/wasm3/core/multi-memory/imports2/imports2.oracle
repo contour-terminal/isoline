@@ -1,0 +1,12 @@
+commands 20
+0 1 wasm imports2.0.wasm
+2 9 wasm imports2.2.wasm
+7 22 wasm imports2.7.wasm
+12 33 wasm imports2.12.wasm
+13 39 wasm imports2.13.wasm
+14 49 wasm imports2.14.wasm
+15 53 wasm imports2.15.wasm
+16 58 wasm imports2.16.wasm
+17 62 wasm imports2.17.wasm
+18 66 wasm imports2.18.wasm
+19 70 wasm imports2.19.wasm

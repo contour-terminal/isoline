@@ -1,0 +1,9 @@
+commands 35
+0 1 wasm call_ref.0.wasm
+25 129 wasm call_ref.25.wasm
+27 138 wasm call_ref.27.wasm
+29 151 wasm call_ref.29.wasm
+31 168 wasm call_ref.31.wasm
+32 184 wasm call_ref.32.wasm
+33 201 wasm call_ref.33.wasm
+34 211 wasm call_ref.34.wasm

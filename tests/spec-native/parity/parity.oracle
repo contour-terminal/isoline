@@ -1,0 +1,4 @@
+commands 4
+0 4 wasm parity.0.wasm
+2 7 wasm parity.1.wasm
+3 8 skip 6120736b697020746865206f7261636c65206e616d6573

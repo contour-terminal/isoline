@@ -1,0 +1,10 @@
+commands 109
+0 1 wasm wide-arithmetic.0.wasm
+101 401 wasm wide-arithmetic.101.wasm
+102 411 wasm wide-arithmetic.102.wasm
+103 421 wasm wide-arithmetic.103.wasm
+104 431 wasm wide-arithmetic.104.wasm
+105 441 wasm wide-arithmetic.105.wasm
+106 449 wasm wide-arithmetic.106.wasm
+107 457 wasm wide-arithmetic.107.wasm
+108 465 wasm wide-arithmetic.108.wasm

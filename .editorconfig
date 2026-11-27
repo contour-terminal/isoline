@@ -22,3 +22,13 @@ insert_final_newline = unset
 end_of_line = unset
 charset = unset
 trim_trailing_whitespace = unset
+
+# The spec scripts a native import copies verbatim (scripts/import-spec-tests.py), at
+# tests/spec/<source>/<path>/<name>.wast, are the suites' bytes, not this repository's text.
+[tests/spec/*/*/**.wast]
+indent_style = unset
+indent_size = unset
+insert_final_newline = unset
+end_of_line = unset
+charset = unset
+trim_trailing_whitespace = unset

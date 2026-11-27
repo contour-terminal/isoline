@@ -1,0 +1,14 @@
+# The divergences from the oracle that scripts/import-spec-tests.py records in the .oracle manifests of
+# the natively imported files, one per line, each for one command:
+# - `<source> <path> <ordinal> <line> message <Isoline's message…>`: an assert_malformed or
+#   assert_malformed_custom of a module given as text, where Isoline reports another of the text's
+#   errors first than the reference interpreter does; the runner requires exactly this message.
+# - `<source> <path> <ordinal> <line> parity 0x<offset> sha256:<digest> <reason…>`: a module given as
+#   text whose oracle binary is known to be wrong, so that Isoline's canonical encoding differs from it;
+#   the runner requires the parity check to fail at exactly this offset (lower-case hex, no leading
+#   zeros) with Isoline's canonical encoding having exactly this SHA-256 (64 lower-case hex digits), and
+#   still runs the command. The runner's stale message prints the digest. A second difference already
+#   behind the offset is not seen: whoever records the row checks there is none.
+# <ordinal> is the command's index in the script, <line> the line wasm-tools gives it; the import fails
+# when the command there no longer fits, and so does the runner when the divergence no longer occurs.
+# Only a row of files.txt imported natively may be named. docs/conformance.md lists every divergence.

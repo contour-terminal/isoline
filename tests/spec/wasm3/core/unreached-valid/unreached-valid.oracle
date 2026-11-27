@@ -1,0 +1,4 @@
+commands 13
+0 1 wasm unreached-valid.0.wasm
+10 63 wasm unreached-valid.10.wasm
+12 82 wasm unreached-valid.12.wasm

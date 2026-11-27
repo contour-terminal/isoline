@@ -1,0 +1,2 @@
+commands 16
+0 2 wasm memory_fill0.0.wasm

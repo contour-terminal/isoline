@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "IsotestReader.hpp"
+#include "Script.hpp"
 #include "SpecCheck.hpp"
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -202,6 +202,38 @@ TEST_CASE("SpecCheck.newStages")
     // An exception is not a trap: assert_exception is not satisfied by an execute failure.
     auto const trap = Failure { .stage = Stage::Execute, .message = "unreachable" };
     CHECK_FALSE(checkFailure(Stage::Exception, "", trap).has_value());
+}
+
+TEST_CASE("SpecCheck.malformedCustomStage")
+{
+    // assert_malformed_custom is satisfied by a malformed custom annotation only: any other malformed
+    // text is a Decode failure, which it does not accept, whatever the message.
+    CHECK(stageName(Stage::MalformedCustom) == "malformed custom");
+    auto const decode =
+        Failure { .stage = Stage::Decode, .message = "@custom annotation: missing section name" };
+    CHECK_FALSE(checkFailure(Stage::MalformedCustom, "@custom", decode).has_value());
+    auto const custom =
+        Failure { .stage = Stage::MalformedCustom, .message = "@custom annotation: missing section name" };
+    CHECK(checkFailure(Stage::MalformedCustom, "@custom", custom).has_value());
+    CHECK_FALSE(checkFailure(Stage::Decode, "@custom", custom).has_value());
+}
+
+TEST_CASE("SpecCheck.anyReferenceOfAKind")
+{
+    // (ref.extern) and (ref.exn) match any non-null reference of their kind, and nothing else.
+    auto const extern1 = Ref { .kind = RefKind::Extern, .heap = ExternHeap, .address = 1 };
+    auto const nullExtern = Ref { .kind = RefKind::Null, .heap = ExternHeap, .address = 0 };
+    auto const exception = Ref { .kind = RefKind::Exn,
+                                 .heap = { .kind = isoline::binary::AbstractHeapType::Exn },
+                                 .address = 2 };
+    CHECK(matches(pattern(Pattern::AnyExternRef), extern1));
+    CHECK_FALSE(matches(pattern(Pattern::AnyExternRef), nullExtern));
+    CHECK_FALSE(matches(pattern(Pattern::AnyExternRef), exception));
+    CHECK(matches(pattern(Pattern::AnyExceptionRef), exception));
+    CHECK_FALSE(matches(pattern(Pattern::AnyExceptionRef), extern1));
+    CHECK_FALSE(matches(pattern(Pattern::AnyExceptionRef), I32 { 0 }));
+    CHECK(describeAll(std::vector { pattern(Pattern::AnyExternRef), pattern(Pattern::AnyExceptionRef) })
+          == "ref.extern ref.exn");
 }
 
 TEST_CASE("SpecCheck.nullOfAConcreteTypeIsANullFunc")

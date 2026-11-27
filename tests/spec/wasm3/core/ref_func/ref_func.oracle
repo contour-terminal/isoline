@@ -1,0 +1,7 @@
+commands 17
+0 1 wasm ref_func.0.wasm
+2 6 wasm ref_func.2.wasm
+13 69 wasm ref_func.13.wasm
+14 80 wasm ref_func.14.wasm
+15 109 wasm ref_func.15.wasm
+16 113 wasm ref_func.16.wasm

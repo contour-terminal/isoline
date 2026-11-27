@@ -1,0 +1,3 @@
+commands 4
+0 1 wasm branch_hint.0.wasm
+3 86 wasm branch_hint.3.wasm

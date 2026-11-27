@@ -1,0 +1,5 @@
+commands 24
+0 4 wasm simd_store32_lane.0.wasm
+21 183 wasm simd_store32_lane.21.wasm
+22 189 wasm simd_store32_lane.22.wasm
+23 196 wasm simd_store32_lane.23.wasm

@@ -1,0 +1,2 @@
+commands 6
+0 3 wasm i8x16_relaxed_swizzle.0.wasm

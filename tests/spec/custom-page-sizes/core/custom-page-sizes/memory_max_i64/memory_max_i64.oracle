@@ -1,0 +1,6 @@
+commands 6
+0 4 wasm memory_max_i64.0.wasm
+1 9 wasm memory_max_i64.1.wasm
+2 13 wasm memory_max_i64.2.wasm
+3 18 wasm memory_max_i64.3.wasm
+5 33 wasm memory_max_i64.5.wasm

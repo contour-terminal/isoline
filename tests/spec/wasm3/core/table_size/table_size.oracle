@@ -1,0 +1,4 @@
+commands 39
+0 1 wasm table_size.0.wasm
+37 70 wasm table_size.37.wasm
+38 79 wasm table_size.38.wasm
