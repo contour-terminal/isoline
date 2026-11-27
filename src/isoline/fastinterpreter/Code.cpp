@@ -27,9 +27,10 @@ namespace
                                      std::pmr::memory_resource const* arena) noexcept
     {
         auto const resources = std::array {
-            function.code.get_allocator().resource(),     function.localInit.get_allocator().resource(),
-            function.operands.get_allocator().resource(), function.sites.get_allocator().resource(),
-            function.handlers.get_allocator().resource(), function.catches.get_allocator().resource(),
+            function.code.get_allocator().resource(),      function.localInit.get_allocator().resource(),
+            function.operands.get_allocator().resource(),  function.sites.get_allocator().resource(),
+            function.handlers.get_allocator().resource(),  function.catches.get_allocator().resource(),
+            function.constants.get_allocator().resource(),
         };
         return std::ranges::count(resources, arena) == std::ssize(resources);
     }

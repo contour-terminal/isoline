@@ -1220,7 +1220,8 @@ template <OperationId Id>
 
 /// The operations of a body of their own: control without operands, moves, constants, selects, globals,
 /// the accesses of memories other than memory 0, memory.size and memory.grow, the bulk operations, the table
-/// operations, the drops, the reference operations, unconditional branches, if, br_table and return.
+/// operations, the drops, the reference operations, unconditional branches, if, br_table, return, throw and
+/// throw_ref.
 template <OperationId Id>
 [[nodiscard]] inline Flow specialOperation(State& state) noexcept
 {
@@ -1366,6 +1367,19 @@ template <OperationId Id>
     }
     else if constexpr (Id == OperationId::BrTable)
         return branchTable(state);
+    else if constexpr (Id == OperationId::Throw)
+    {
+        auto const step =
+            throwException(state, slotOperand<0>(pc), static_cast<uint32_t>(immediateOperand<Id, 0>(pc)));
+        state = step.state;
+        return step.flow;
+    }
+    else if constexpr (Id == OperationId::ThrowRef)
+    {
+        auto const step = throwReference(state, slotOperand<0>(pc));
+        state = step.state;
+        return step.flow;
+    }
     else
         static_assert(detail::NoOperation<Id>, "every operation of Operations.def has a body");
 }

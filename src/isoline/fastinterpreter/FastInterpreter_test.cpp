@@ -1648,11 +1648,12 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
     checkTableOperations(agreement);
 
     // No lowering emits nop, which lowers to nothing; the vector operations, the v128 accesses and wide
-    // arithmetic are Simd_test.cpp's, which checks that every one of them runs (isVectorOperation()).
+    // arithmetic are Simd_test.cpp's, which checks that every one of them runs (isVectorOperation()), and the
+    // exception operations Exceptions_test.cpp's (Exceptions.everyExceptionOperationRuns).
     for (auto const& row: OperationTable)
     {
         INFO(row.name);
-        if (isVectorOperation(row.id))
+        if (isVectorOperation(row.id) || row.family == isoline::fastinterpreter::OperationFamily::Exceptions)
             continue;
         CHECK(agreement.executed().contains(row.id) != (row.id == OperationId::Nop));
     }

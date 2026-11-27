@@ -977,10 +977,10 @@ TEST_CASE("Lowering.deadCodeAfterEveryTerminator")
         CHECK(listingOf(with) == listingOf(without));
         CHECK(continuationAfter(row.opcode) == Continuation::Dead);
     }
-    SECTION("the instructions whose lowering later tasks add are terminators of the same table")
+    SECTION("the tail calls and the throws are terminators of the same table")
     {
-        // return_call, return_call_indirect and return_call_ref (Task 9), throw and throw_ref (Task 13):
-        // their own lowering is not written yet, but what follows them is skipped by this one table.
+        // return_call, return_call_indirect and return_call_ref, throw and throw_ref: lowered by their own
+        // cases, and what follows them is skipped by this one table.
         for (auto const opcode: { Opcode::ReturnCall,
                                   Opcode::ReturnCallIndirect,
                                   Opcode::ReturnCallRef,

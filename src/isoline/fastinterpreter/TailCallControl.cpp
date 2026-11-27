@@ -28,6 +28,7 @@ namespace
         &numericHandlers,
         &memoryHandlers,
         &simdHandlers,
+        &exceptionHandlers,
     });
 } // namespace
 

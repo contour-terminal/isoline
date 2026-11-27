@@ -29,8 +29,9 @@ class Invocation;
 enum class Exit : uint8_t
 {
     Returned, ///< The invocation's function returned; its results are at Context::results.
-    Trapped,  ///< It ended abruptly: a trap, or a host function it called failed (Context::abrupt).
-    Thrown,   ///< An exception escaped it.
+    /// It ended abruptly (Context::abrupt): a trap, an exception no frame of the invocation caught
+    /// (runtime::Thrown), or a host function it called failed.
+    Trapped,
 };
 
 /// What an operation's body tells the dispatch: go on to the operation at the new pc, or stop.
@@ -38,7 +39,7 @@ enum class Flow : uint8_t
 {
     Continue, ///< Run the operation the pc points at now.
     Returned, ///< Stop: the invocation's function returned (Exit::Returned).
-    Trapped,  ///< Stop: it ended abruptly (Exit::Trapped).
+    Trapped,  ///< Stop: it ended abruptly, a trap or an uncaught exception (Exit::Trapped).
 };
 
 /// The Exit a body's stopping Flow ends execution with.
@@ -103,7 +104,8 @@ struct Context
     /// Where the invocation's function left its results: the first of their slots (Exit::Returned).
     Slot const* results = nullptr;
 
-    /// How execution ended abruptly (Exit::Trapped): a trap, or a host function's failure.
+    /// How execution ended abruptly (Exit::Trapped): a trap, an uncaught exception, or a host function's
+    /// failure.
     std::optional<runtime::Abrupt> abrupt;
 };
 
@@ -159,6 +161,27 @@ struct CallSite
                                        uint32_t resultSlot,
                                        uint32_t deltaSlot,
                                        uint32_t memory) noexcept;
+
+/// Runs throw, out of line: allocates an exception of tag @p tag of the current frame's instance, its payload
+/// the tag's params' values from slot @p payloadSlot on, through runtime::Store::addException() with the
+/// countdown committed before and reloaded after (a full arena sweeps, which polls), then unwinds it from the
+/// operation (throwReference()). Traps with what the allocation traps with: ExceptionLimitExceeded, or a
+/// sweep's poll's.
+/// @param state The registers, pc at the throw.
+/// @param payloadSlot The first slot of the payload.
+/// @param tag The tag's index in the module.
+/// @return The registers at the operation a catch goes on at; or how execution stops.
+[[nodiscard]] OutOfLineStep throwException(State state, uint32_t payloadSlot, uint32_t tag) noexcept;
+
+/// Runs throw_ref, out of line: traps with NullExceptionReference where the exnref in slot @p referenceSlot
+/// is null; else unwinds its exception from the operation, frame by frame, until a catch clause takes it, as
+/// the reference interpreter does: counting the labels, clauses and frames it passes and polling at
+/// runtime::PollSite::Unwind at every runtime::UnwindPollItems of them; an exception no frame of the
+/// invocation catches ends it, as runtime::Thrown.
+/// @param state The registers, pc at the throw_ref.
+/// @param referenceSlot The first slot of the exnref.
+/// @return The registers at the operation a catch goes on at; or how execution stops.
+[[nodiscard]] OutOfLineStep throwReference(State state, uint32_t referenceSlot) noexcept;
 
 /// Drops data segment @p segment of the current frame's instance, as data.drop does, out of line: the
 /// instance is the store's to change, which the registers reach only as const.

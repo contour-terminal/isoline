@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <iterator>
 #include <limits>
 #include <memory_resource>
 #include <optional>
@@ -37,6 +38,7 @@ namespace isoline::fastinterpreter
 namespace
 {
     using runtime::Abrupt;
+    using runtime::ExnAddr;
     using runtime::FuncAddr;
     using runtime::FunctionInstance;
     using runtime::ModuleInstance;
@@ -82,9 +84,10 @@ namespace
     }
 
     /// Encodes @p values, of @p types, into consecutive slots from @p slots.
-    void storeValues(std::span<binary::ValueType const> types,
-                     std::span<Value const> values,
-                     Slot* slots) noexcept
+    /// @return The slot after the last value's.
+    Slot* storeValues(std::span<binary::ValueType const> types,
+                      std::span<Value const> values,
+                      Slot* slots) noexcept
     {
         for (auto const index: std::views::iota(std::size_t { 0 }, types.size()))
         {
@@ -92,6 +95,40 @@ namespace
             storeValue(values[index], std::span { slots, width });
             slots += width;
         }
+        return slots;
+    }
+
+    /// Appends the values of @p types from consecutive slots from @p slots to @p values.
+    /// @return The slot after the last value's.
+    Slot const* appendValues(std::span<binary::ValueType const> types,
+                             Slot const* slots,
+                             std::vector<Value>& values)
+    {
+        for (auto const& type: types)
+        {
+            auto const width = slotWidth(slotClassOf(type));
+            values.push_back(loadValue(type, std::span { slots, width }));
+            slots += width;
+        }
+        return slots;
+    }
+
+    /// The site of @p function whose operation starts at code offset @p offset, which must be one (checked).
+    [[nodiscard]] SiteRecord const& siteAt(LoweredFunction const& function, std::size_t offset)
+    {
+        auto const site = std::ranges::lower_bound(function.sites, offset, {}, &SiteRecord::codeOffset);
+        Require(site != function.sites.end() && site->codeOffset == offset);
+        return *site;
+    }
+
+    /// The site of @p function a frame of it is in while a callee runs: the call whose operation ends at code
+    /// offset @p returnOffset, where the caller goes on, the last site before it (checked).
+    [[nodiscard]] SiteRecord const& siteBefore(LoweredFunction const& function, std::size_t returnOffset)
+    {
+        auto const after =
+            std::ranges::upper_bound(function.sites, returnOffset - 1, {}, &SiteRecord::codeOffset);
+        Require(after != function.sites.begin());
+        return *std::prev(after);
     }
 
     /// A run of slots from a memory resource, given back when it ends; empty until assigned one.
@@ -235,7 +272,7 @@ namespace
 ///
 /// Every frame it entered is given back when it ends, however execution stopped: the depth and the stack
 /// charge of each (~Invocation()).
-class Invocation
+class Invocation final: public runtime::IExceptionRoots
 {
   public:
     /// @param store The store to execute on.
@@ -256,7 +293,8 @@ class Invocation
         _memoryRefreshes { memoryRefreshes },
         _dispatch { dispatch },
         _slotMemory { &slotMemory },
-        _stepsLeft { _context.gate.reload() }
+        _stepsLeft { _context.gate.reload() },
+        _rootsRegistration { store, *this }
     {
     }
 
@@ -266,7 +304,7 @@ class Invocation
     Invocation& operator=(Invocation&&) = delete;
 
     /// Gives back the depth and the stack charges of the frames a trap left behind.
-    ~Invocation()
+    ~Invocation() override
     {
         _depth -= static_cast<uint32_t>(_frames.size());
         for (auto const index: std::views::iota(std::size_t { 0 }, _frames.size()))
@@ -302,19 +340,71 @@ class Invocation
                              .memory0Size = 0,
                              .stepsLeft = _stepsLeft };
         loadMemory0(state);
-        auto const exit = Runners[std::to_underlying(_dispatch)](state);
-        switch (exit)
-        {
-            case Exit::Returned: break;
-            case Exit::Trapped: return std::unexpected { *_context.abrupt };
-            // uncovered-begin(no-exceptions-yet)
-            case Exit::Thrown:
-                // No operation throws before the fast interpreter's exceptions are lowered.
-                core::unreachable();
-                // uncovered-end(no-exceptions-yet)
-        }
+        if (Runners[std::to_underlying(_dispatch)](state) == Exit::Trapped)
+            return std::unexpected { *_context.abrupt };
         loadValues(type.results, _context.results, results);
         return {};
+    }
+
+    /// Appends the values the reference interpreter's operand and locals stacks hold where a throw of this
+    /// invocation allocates its exception (Store::addException(), the only place a sweep runs while guest
+    /// code does): every local of every frame, and every operand its site's operand tree names (OperandNode),
+    /// the throwing frame's below the payload, every other frame's below its call's arguments. They are
+    /// decoded into a scratch buffer, reserved to their exact number: never more values than the frames'
+    /// stack charge.
+    /// @param ranges Receives the one range of them.
+    void appendExceptionRoots(std::vector<std::span<Value const>>& ranges) const override
+    {
+        if (_frames.empty())
+            return;
+        // A sweep runs only under no host function, so only within a throw of the innermost frame.
+        Require(_throwOffset.has_value());
+        auto count = std::size_t { 0 };
+        forEachFrameSite([&](Frame const& frame, SiteRecord const& site) {
+            count += localCountOf(frame) + operandCountOf(*frame.function, site);
+        });
+        _rootValues.clear();
+        _rootValues.reserve(count);
+        forEachFrameSite([&](Frame const& frame, SiteRecord const& site) {
+            appendLocals(frame);
+            appendOperands(frame, site);
+        });
+        ranges.emplace_back(_rootValues);
+    }
+
+    /// Runs throw from the current frame (throwException()).
+    [[nodiscard]] OutOfLineStep throwFrom(State state, uint32_t payloadSlot, uint32_t tag) noexcept
+    {
+        auto& store = _context.store;
+        auto const address = _context.instance->tags[tag];
+        auto const& params = store.type(store.tag(address).typeId).params;
+        auto payload = std::vector<Value> {};
+        payload.reserve(params.size());
+        appendValues(params, state.fp + payloadSlot, payload);
+        auto const offset = static_cast<std::size_t>(state.pc - _context.code);
+        // Committed first: a full arena sweeps, which polls through the store; its roots read this frame at
+        // the throw's site.
+        _context.gate.commit(state.stepsLeft);
+        _throwOffset = offset;
+        auto const exception = store.addException(address, std::move(payload));
+        _throwOffset.reset();
+        state.stepsLeft = _context.gate.reload();
+        if (!exception)
+            return stopping(state, leaveTrapped(_context, state.stepsLeft, exception.error()));
+        return unwind(state, *exception, siteAt(*_frames.back().function, offset));
+    }
+
+    /// Runs throw_ref from the current frame (throwReference()).
+    [[nodiscard]] OutOfLineStep throwReferenceFrom(State state, uint32_t referenceSlot) noexcept
+    {
+        if (isNullReference(state.fp[referenceSlot]))
+            return stopping(
+                state, leaveTrapped(_context, state.stepsLeft, Trap { TrapCode::NullExceptionReference }));
+        auto const reference = loadReference(std::span<Slot const, 2> { state.fp + referenceSlot, 2 });
+        // Validation typed it an exnref, and every exnref from a host is checked.
+        Require(reference.kind == runtime::RefKind::Exn);
+        auto const offset = static_cast<std::size_t>(state.pc - _context.code);
+        return unwind(state, reference.address, siteAt(*_frames.back().function, offset));
     }
 
     /// Calls what @p site names from the current frame (callFunction()).
@@ -337,7 +427,15 @@ class Invocation
             if (auto const called =
                     callHost(state.stepsLeft, *callee->host, caller.instanceAddress, arguments, arguments);
                 !called)
+            {
+                // An exception the host threw goes on in the caller, from the call's site.
+                if (auto const* thrown = std::get_if<runtime::Thrown>(&called.error()))
+                    return unwind(
+                        state,
+                        thrown->exception,
+                        siteAt(*caller.function, static_cast<std::size_t>(state.pc - _context.code)));
                 return stopping(state, leaveAbruptly(_context, state.stepsLeft, called.error()));
+            }
             // The host may have grown a memory, directly or through a guest it invoked.
             refreshMemory0(state);
             state.pc += site.words;
@@ -639,7 +737,18 @@ class Invocation
             if (auto const called = callHost(
                     state.stepsLeft, *callee.host, ending.instanceAddress, arguments, ending.results);
                 !called)
-                return stopping(state, leaveAbruptly(_context, state.stepsLeft, called.error()));
+            {
+                // The tail-calling frame is gone: an exception the host threw goes on in its caller, from the
+                // call it went on after, or ends the invocation where there is none.
+                auto const* thrown = std::get_if<runtime::Thrown>(&called.error());
+                if (thrown == nullptr || _frames.empty())
+                    return stopping(state, leaveAbruptly(_context, state.stepsLeft, called.error()));
+                auto const& caller = *_frames.back().function;
+                return unwind(
+                    state,
+                    thrown->exception,
+                    siteBefore(caller, static_cast<std::size_t>(ending.returnPc - caller.code.data())));
+            }
             if (_frames.empty())
                 return stopping(state, leaveReturning(_context, state.stepsLeft, ending.results));
             return resumeCaller(state, ending.returnPc, ending.instance);
@@ -681,16 +790,210 @@ class Invocation
             _context.store, _executor, function, caller, _hostArguments, _hostResults);
         stepsLeft = _context.gate.reload();
         if (!done)
-        {
-            if (std::holds_alternative<runtime::Thrown>(done.error()))
-                // uncovered-begin(no-exceptions-yet)
-                core::todo("a host function's exception unwinds the fast interpreter's frames with its "
-                           "exceptions (Task 13)");
-            // uncovered-end(no-exceptions-yet)
             return done;
-        }
         storeValues(type.results, _hostResults, results);
         return {};
+    }
+
+    // --- Exceptions ---
+
+    /// Unwinds @p exception from @p site of the current frame, frame by frame, as the reference interpreter
+    /// does, in a loop: the labels of a frame from its site out, the try_tables among them found through
+    /// their parent links, and the clauses of each until one catches; then the frame itself, ended, and its
+    /// caller's labels from its call's site. Every label, every clause tried and every frame left counts an
+    /// item, the count starting at this throw, and a poll at runtime::PollSite::Unwind comes at every
+    /// runtime::UnwindPollItems of them, in their order.
+    /// @return The registers where the catching clause goes on; or how execution stops: a poll's trap, or the
+    ///         exception, uncaught by every frame of the invocation (runtime::Thrown).
+    [[nodiscard]] OutOfLineStep unwind(State state, ExnAddr exception, SiteRecord const& site) noexcept
+    {
+        auto const tag = _context.store.exception(exception).tag;
+        // The instance whose memory 0 the registers hold, which the catching frame's replaces.
+        auto const* const from = _context.instance;
+        auto passed = uint64_t { 0 };
+        auto const pass = [&](uint64_t items) noexcept -> std::expected<void, Trap> {
+            auto const polls =
+                ((passed + items) / runtime::UnwindPollItems) - (passed / runtime::UnwindPollItems);
+            passed += items;
+            for ([[maybe_unused]] auto const poll: std::views::iota(uint64_t { 0 }, polls))
+            {
+                if (auto const polled = _context.gate.poll(PollSite::Unwind, state.stepsLeft); !polled)
+                    return std::unexpected { polled.error() };
+            }
+            return {};
+        };
+        auto const* current = &site;
+        while (true)
+        {
+            auto const& frame = _frames.back();
+            auto const& function = *frame.function;
+            auto depth = current->labelDepth;
+            auto handler = current->innermostHandler;
+            while (handler != NoHandler)
+            {
+                auto const& record = function.handlers[handler];
+                // The labels out to the try_table's, its own included.
+                if (auto const passing = pass(depth - record.labelDepth + 1); !passing)
+                    return stopping(state, leaveTrapped(_context, state.stepsLeft, passing.error()));
+                auto const clauses =
+                    std::span { function.catches }.subspan(record.clausesBegin, record.clausesCount);
+                for (auto const& clause: clauses)
+                {
+                    if (auto const passing = pass(1); !passing)
+                        return stopping(state, leaveTrapped(_context, state.stepsLeft, passing.error()));
+                    if (!binary::catchesByTag(clause.kind) || frame.instance->tags[clause.tag] == tag)
+                        return takeCatch(state, clause, exception, from);
+                }
+                depth = record.labelDepth - 1;
+                handler = record.parent;
+            }
+            // The rest of its labels, then the frame, which ends.
+            if (auto const passing = pass(uint64_t { depth } + 1); !passing)
+                return stopping(state, leaveTrapped(_context, state.stepsLeft, passing.error()));
+            auto const ending = _frames.back();
+            leaveFrame();
+            if (_frames.empty())
+                return stopping(state,
+                                leaveAbruptly(_context,
+                                              state.stepsLeft,
+                                              Abrupt { runtime::Thrown { .exception = exception } }));
+            auto const& caller = *_frames.back().function;
+            current = &siteBefore(caller, static_cast<std::size_t>(ending.returnPc - caller.code.data()));
+        }
+    }
+
+    /// Takes @p clause of the current frame for @p exception: hands its label the payload and the exnref the
+    /// clause's kind gives it, in the label's slots, makes the registers the frame's, memory 0 included where
+    /// the registers held @p from's, and goes on at the label (polling first for a loop's) or returns.
+    [[nodiscard]] OutOfLineStep takeCatch(State state,
+                                          CatchRecord const& clause,
+                                          ExnAddr exception,
+                                          ModuleInstance const* from) noexcept
+    {
+        auto const& frame = _frames.back();
+        auto* slots = frame.fp + clause.resultSlot;
+        if (binary::catchesByTag(clause.kind))
+        {
+            auto const& caught = _context.store.exception(exception);
+            slots = storeValues(
+                _context.store.type(_context.store.tag(caught.tag).typeId).params, caught.payload, slots);
+        }
+        if (binary::handsReference(clause.kind))
+            storeReference(runtime::Ref { .kind = runtime::RefKind::Exn,
+                                          .heap = { .kind = binary::AbstractHeapType::Exn },
+                                          .address = exception },
+                           std::span<Slot, 2> { slots, 2 });
+        state.fp = frame.fp;
+        _context.instance = frame.instance;
+        _context.code = frame.function->code.data();
+        enterMemory0(state, from);
+        if (clause.continuation == CatchContinuation::Return)
+            return returnFrom(state, clause.resultSlot);
+        if (clause.poll == LoopPoll::Yes)
+        {
+            if (auto const polled = _context.gate.poll(PollSite::LoopBackEdge, state.stepsLeft); !polled)
+                return stopping(state, leaveTrapped(_context, state.stepsLeft, polled.error()));
+        }
+        state.pc = _context.code + clause.target;
+        return { .state = state, .flow = Flow::Continue };
+    }
+
+    // --- Exception roots ---
+
+    /// Calls @p visit with every frame, the oldest first, and the site it is at: the newest at the throw
+    /// being allocated, every other at the call its callee returns after.
+    template <typename Visit>
+    void forEachFrameSite(Visit const& visit) const
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, _frames.size()))
+        {
+            auto const& frame = _frames.at(index);
+            auto const& function = *frame.function;
+            if (index + 1 == _frames.size())
+                visit(frame, siteAt(function, *_throwOffset));
+            else
+                visit(frame,
+                      siteBefore(
+                          function,
+                          static_cast<std::size_t>(_frames.at(index + 1).returnPc - function.code.data())));
+        }
+    }
+
+    /// The module function @p frame runs, as its module declares it.
+    [[nodiscard]] static binary::Function const& sourceOf(Frame const& frame)
+    {
+        return frame.instance->module->code[frame.function->codeIndex];
+    }
+
+    /// The locals of @p frame: its params and its declared locals.
+    [[nodiscard]] static std::size_t localCountOf(Frame const& frame)
+    {
+        auto const& source = sourceOf(frame);
+        auto count = std::size_t { frame.instance->module->types[source.typeIndex].params.size() };
+        for (auto const& run: source.locals)
+            count += run.count;
+        return count;
+    }
+
+    /// The values of the operand stack @p site of @p function names.
+    [[nodiscard]] static std::size_t operandCountOf(LoweredFunction const& function, SiteRecord const& site)
+    {
+        auto count = std::size_t { 0 };
+        for (auto node = site.operands; node != NoNode; node = function.operands[node].parent)
+            count += function.operands[node].count;
+        return count;
+    }
+
+    /// Appends the locals of @p frame to the roots' scratch buffer, the params first.
+    void appendLocals(Frame const& frame) const
+    {
+        auto const& source = sourceOf(frame);
+        auto const* slots =
+            appendValues(frame.instance->module->types[source.typeIndex].params, frame.fp, _rootValues);
+        for (auto const& run: source.locals)
+        {
+            auto const width = slotWidth(slotClassOf(run.type));
+            for ([[maybe_unused]] auto const local: std::views::iota(uint32_t { 0 }, run.count))
+            {
+                _rootValues.push_back(loadValue(run.type, std::span { slots, width }));
+                slots += width;
+            }
+        }
+    }
+
+    /// Appends the operands of @p frame that @p site's operand tree names to the roots' scratch buffer: a
+    /// slot's value, a forwarded local's, a constant's, or a run of a function type's results or params.
+    void appendOperands(Frame const& frame, SiteRecord const& site) const
+    {
+        auto const& function = *frame.function;
+        auto const& types = frame.instance->module->types;
+        for (auto index = site.operands; index != NoNode; index = function.operands[index].parent)
+        {
+            auto const& node = function.operands[index];
+            auto const type =
+                binary::ValueType { .kind = static_cast<binary::ValueKind>(node.typeOrSignature) };
+            switch (node.kind)
+            {
+                case OperandNodeKind::Slot:
+                case OperandNodeKind::Local:
+                    _rootValues.push_back(
+                        loadValue(type, std::span { frame.fp + node.source, slotWidth(slotClassOf(type)) }));
+                    break;
+                case OperandNodeKind::Constant:
+                    _rootValues.push_back(loadValue(type, std::span { &function.constants[node.source], 1 }));
+                    break;
+                case OperandNodeKind::Results:
+                    appendValues(std::span { types[node.typeOrSignature].results }.first(node.count),
+                                 frame.fp + node.source,
+                                 _rootValues);
+                    break;
+                case OperandNodeKind::Params:
+                    appendValues(std::span { types[node.typeOrSignature].params }.first(node.count),
+                                 frame.fp + node.source,
+                                 _rootValues);
+                    break;
+            }
+        }
     }
 
     /// Stops before any code ran: commits the countdown, as every way out does, and ends with @p trap.
@@ -717,6 +1020,11 @@ class Invocation
     FrameStack _frames;                ///< The active frames, the invocation's own function first.
     std::vector<Value> _hostArguments; ///< A host call's arguments, reused by every host call.
     std::vector<Value> _hostResults;   ///< A host call's results, reused by every host call.
+    /// While a throw allocates its exception: the code offset of the throw, the newest frame's site.
+    std::optional<std::size_t> _throwOffset;
+    /// The values a sweep reads (appendExceptionRoots()), decoded afresh by each sweep into the same buffer.
+    mutable std::vector<Value> _rootValues;
+    runtime::ExceptionRootsRegistration _rootsRegistration; ///< Last, so that it ends first.
 };
 
 OutOfLineStep callFunction(State state, CallSite const& site) noexcept
@@ -727,6 +1035,16 @@ OutOfLineStep callFunction(State state, CallSite const& site) noexcept
 OutOfLineStep returnFromFunction(State state, uint32_t resultSlot) noexcept
 {
     return state.context->invocation.returnFrom(state, resultSlot);
+}
+
+OutOfLineStep throwException(State state, uint32_t payloadSlot, uint32_t tag) noexcept
+{
+    return state.context->invocation.throwFrom(state, payloadSlot, tag);
+}
+
+OutOfLineStep throwReference(State state, uint32_t referenceSlot) noexcept
+{
+    return state.context->invocation.throwReferenceFrom(state, referenceSlot);
 }
 
 OutOfLineStep growMemory(State state, uint32_t resultSlot, uint32_t deltaSlot, uint32_t memory) noexcept

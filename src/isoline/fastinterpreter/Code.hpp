@@ -335,33 +335,52 @@ enum class OperandNodeKind : uint8_t
 {
     Slot,     ///< A value in a frame slot.
     Local,    ///< A forwarded local.get: the value is the local's, which no slot copies.
-    Constant, ///< A folded constant: the value is an immediate of the code, which no slot copies.
-    Run,      ///< The results of a call, block or try_table: a run of consecutive slots.
+    Constant, ///< A folded constant: the value is in LoweredFunction::constants, which no slot copies.
+    Results,  ///< The first results of a function type, in consecutive slots: a call's, a block's or a
+              ///< try_table's.
+    Params,   ///< The first params of a function type, in consecutive slots: an if's, again in its else.
 };
 
 /// One entry, or run of entries, of a function's operand stack at some point of its code.
 ///
-/// The nodes of a function form a persistent tree, one node per pushing instruction: a node's parent
-/// is the stack below it, so the whole stack at a site is one node index (SiteRecord::operands),
-/// whatever its height. This is how the exception roots name every operand of a frame at O(1) per
-/// instruction.
+/// The nodes of a function form a persistent tree: a node's parent is the stack below it, so the whole stack
+/// at a site is one node index (SiteRecord::operands), whatever its height. Lowering makes a node for an
+/// entry only once some site has it on its stack, and once more for a run a site finds shrunk, so a function
+/// has at most one node per entry it pushes plus one per site. This is how the exception roots name every
+/// operand of a frame at O(1) per instruction.
+///
+/// What a node reads is what its entry held when the node was made: a forwarded local's node reads the
+/// local, even at a site after the entry took a slot of its own and the local changed. Only the number of
+/// values is the reference interpreter's there, not every value; an exnref is never forwarded (lowering
+/// copies an exnref local into a slot at its local.get), so the exnrefs among them are always exact.
 struct OperandNode
 {
     OperandNodeKind kind = OperandNodeKind::Slot; ///< What the entry is.
     uint32_t parent = NoNode;                     ///< The node of the stack below it, or NoNode.
-    uint32_t source = 0;          ///< The slot base for Slot and Run, the local index for Local, the
-                                  ///< constant's index for Constant.
-    uint32_t typeOrSignature = 0; ///< The entry's value type or, for a Run, the signature whose results it
-                                  ///< holds, as an index the lowering assigns.
+    /// The first slot for Slot, Results and Params; the local's slot for Local; the index in
+    /// LoweredFunction::constants for Constant.
+    uint32_t source = 0;
+    /// The entry's binary::ValueKind for Slot, Local and Constant; for Results and Params, the module's type
+    /// index of the function type they are of.
+    uint32_t typeOrSignature = 0;
+    uint32_t count = 1; ///< The values it holds: 1, or the leading results or params a run holds.
 };
 
 /// One call or throw site of a function: what the exception roots and unwinding need there.
 struct SiteRecord
 {
-    uint32_t codeOffset = 0;    ///< The word offset of the site's operation in LoweredFunction::code.
-    uint32_t operands = NoNode; ///< The operand stack below the call's arguments or the throw's payload.
+    uint32_t codeOffset = 0; ///< The word offset of the site's operation in LoweredFunction::code.
+    /// The operand stack below the call's arguments, the throw's payload or the throw_ref's exnref.
+    uint32_t operands = NoNode;
     uint32_t innermostHandler = NoHandler; ///< The innermost try_table around the site, or NoHandler.
     uint32_t labelDepth = 0;               ///< The block, loop, if and try_table labels open at the site.
+};
+
+/// What taking a catch clause does once its values are in their slots.
+enum class CatchContinuation : uint8_t
+{
+    Branch, ///< Goes on at its label (CatchRecord::target), as a branch to it.
+    Return, ///< Returns from the function: its label is the function's body.
 };
 
 /// One try_table of a function: its catch clauses, and the try_table around it.
@@ -377,10 +396,11 @@ struct HandlerRecord
 struct CatchRecord
 {
     binary::CatchKind kind = binary::CatchKind::Catch; ///< What it catches, and what it hands its label.
-    uint32_t tag = 0;        ///< The tag it catches, as the module indexes it; Catch and CatchRef only.
-    uint32_t target = 0;     ///< The word offset in LoweredFunction::code its label continues at.
+    uint32_t tag = 0;    ///< The tag it catches, as the module indexes it; Catch and CatchRef only.
+    uint32_t target = 0; ///< The word offset in LoweredFunction::code its label continues at; Branch only.
     uint32_t resultSlot = 0; ///< The first slot of what it hands the label: the payload, then the exnref.
     LoopPoll poll = LoopPoll::No; ///< Whether its label is a loop's, so taking it polls.
+    CatchContinuation continuation = CatchContinuation::Branch; ///< Whether it branches or returns.
 };
 
 /// How a LocalInitRun initializes its slots.
@@ -475,7 +495,8 @@ struct LoweredFunction
         operands(resource),
         sites(resource),
         handlers(resource),
-        catches(resource)
+        catches(resource),
+        constants(resource)
     {
     }
 
@@ -491,9 +512,11 @@ struct LoweredFunction
     LoweringVector<Word> code;              ///< Its operations.
     LoweringVector<LocalInitRun> localInit; ///< How its declared locals start, in slot order.
     LoweringVector<OperandNode> operands;   ///< Its operand stack tree, which sites name nodes of.
-    LoweringVector<SiteRecord> sites;       ///< Its call and throw sites, in code order.
+    /// Its call and throw sites, in code order: every call that keeps its frame, every throw and throw_ref.
+    LoweringVector<SiteRecord> sites;
     LoweringVector<HandlerRecord> handlers; ///< Its try_tables.
     LoweringVector<CatchRecord> catches;    ///< Their catch clauses, one run per handler.
+    LoweringVector<Word> constants;         ///< The bits of the constants its Constant nodes name.
 };
 
 /// A module's code as the fast interpreter runs it: every defined function, lowered once, at load.

@@ -290,3 +290,70 @@ zeros, denormals, integer and saturation edges) with its operands forwarded and 
 dispatch and in both modes, and compares results bit for bit, traps, steps and memory with the reference's;
 `Simd.relaxedUsesTheDeterministicProfile` pins the profile's own values (a fused, singly rounded madd, swizzle's
 zero for every index of 16 or more, bit-wise laneselect, saturating trunc, the 16-bit wrap of the i7 dot product).
+
+## Exceptions: linear handlers, unwinding and exact roots
+
+**What lowering records.** `throw` and `throw_ref` are operations of their own family, out of line in the switch
+dispatch and in `TailCallExceptions.cpp` for the tail-call one; a `try_table` emits no operation at all. What
+unwinding and the exception roots need is data beside the code, in each `LoweredFunction`:
+
+- a `SiteRecord` per call that keeps its frame, per `throw` and per `throw_ref`, in code order: the code offset of
+  its operation, its operand stack below the call's arguments or the throw's payload (one `OperandNode` index), its
+  innermost `try_table` and its label depth (the block, loop, if and try_table labels open, the function's body not
+  counted). The executor finds the site of a frame by binary search on the code offset: the throw's own, or for a
+  caller the last site before where it goes on;
+- a `HandlerRecord` per `try_table`: its label depth, its run of catch clauses, and the `try_table` around it;
+- a `CatchRecord` per clause: what it catches, the slots its label's values go to, whether the label is a loop's
+  (so taking it polls `LoopBackEdge`), and where it goes on: the label's loop start, its end (a chain resolved when
+  the end is lowered, like the branches'), or a return for the function's label.
+
+Each is O(1) per instruction: no site copies the handlers around it, the locals or the operand stack.
+`recordBounds()` counts them from the body before the function is lowered, and `loweringReservation()` reserves
+them, so the arena keeps no byte it did not reserve: one site per call or throw, one handler per `try_table`, one
+catch per clause, and, only where a function has a site, one operand node per instruction plus one per site and
+one constant per constant instruction. `Exceptions.hostileShapesStayLinear` lowers 50'000 exnref locals around
+3'000'000 calls and 50'000 nested `try_table`s around 1'000'000 calls within those bounds.
+
+**Unwinding counts what the reference counts.** The executor unwinds in a loop over frames, never recursing: from
+the site, the labels out to the innermost `try_table` and that `try_table`'s own (label depths subtracted, O(1)),
+then its clauses one by one until one catches (by `TagAddr`, so an imported tag is the tag it imports), then the
+`try_table` around it through the parent link; then the frame's remaining labels and the frame itself, which ends,
+its depth and stack charge given back, and its caller's labels from its call's site. Every label, every clause tried
+and every frame left is an item, counted from zero at each `throw`, each `throw_ref` and each exception a host
+function returns, with a poll at `PollSite::Unwind` at every `UnwindPollItems` of them, in order, as the reference
+interpreter polls: `Exceptions.unwindPollsMatchReference` throws past three frames of 2'000 labels each, and a
+host's exception past 4'095, 4'096 and 4'097 items. A catch writes the payload and the exnref its kind hands into
+the label's slots, makes the registers the catching frame's (its instance's memory 0 included, as a return does:
+`Exceptions.catchInAnotherInstanceRestoresMemory0`), polls `LoopBackEdge` for a loop's label, and goes on there or
+returns. An exception a host function returns goes on in its caller from the call's site; after a tail call to the
+host, from the call its caller's caller went on after. One no frame of the invocation catches ends it as
+`runtime::Thrown`.
+
+**The roots are the reference's values.** P3's contract is every operand and every local of every active frame,
+and a sweep charges a step per `SweepPollItems` values it visits, so the executor registers an `IExceptionRoots`
+whose `appendExceptionRoots()` hands the store as many values as the reference interpreter's operand and locals
+stacks hold at the same instruction, with the same exnrefs among them:
+
+- the locals of every frame, decoded by the module's own parameter and local declarations;
+- the operands of every frame, decoded from its site's operand tree: the throwing frame's below the payload, every
+  other frame's below its call's arguments, which are the callee's locals in both engines. A node is a slot, a
+  forwarded local (read from the local), a constant (from `LoweredFunction::constants`), or a run of a function
+  type's results or params.
+
+Lowering makes a node for an entry only once a site has the entry on its stack, so nodes are linear: each entry gets
+one, and a run one more per site it shrank before. What a node reads is what its entry held when the node was made,
+so a forwarded local's node reads the local even at a later site where the entry has a slot of its own and the local
+changed: the number of values is still exact, and the values differ only where no sweep looks. An exnref is never
+forwarded: lowering copies an exnref local into its slot at its `local.get`, so the exnrefs a sweep reads are always
+exact (`Exceptions.slotHeldExnrefSurvivesSweep`, whose operand outlives a call that saw it while its local still
+held it). The values are decoded into one scratch buffer reserved to their exact count, at most the frames' stack
+charge. A sweep runs only within `Store::addException()` with no host function running, so only a `throw` of the
+invocation's newest frame starts one: the countdown is committed before the allocation and reloaded after, and the
+frame's site is the throw's. `Exceptions.sweepChargesLikeReference` puts 100'000 operands of mixed types below a
+throwing call at the count where the reference's sweeps start to poll once more, and one below it, so that a single
+value too many or too few shows in the polls and the steps.
+
+*Rejected:* per-site runs of exnref slots and handlers (quadratic: 1.5·10¹¹ entries for 50'000 exnref locals ×
+3'000'000 calls); exnref-only roots (a sweep would charge fewer steps than the reference); a conservative scan of the
+slots (it keeps more alive, and traps `ExceptionLimitExceeded` at a different throw); a node made eagerly at every
+push (records for entries no site ever has below it, and a reservation for them in functions with no site at all).

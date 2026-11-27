@@ -201,4 +201,45 @@ namespace isoline::fastinterpreter::testing
     return builder;
 }
 
+/// A module whose function 1, () -> (), declares @p locals exnref locals and calls function 0, () -> (), @p
+/// calls times. A lowering that copies the exnref locals, or the handlers, per call site makes @p locals × @p
+/// calls records.
+/// @param locals The exnref locals.
+/// @param calls The call sites.
+/// @return The module.
+[[nodiscard]] inline binary::testing::ModuleBuilder exnrefLocalsAroundCalls(uint32_t locals, uint32_t calls)
+{
+    auto body = binary::testing::Bytes {};
+    body.reserve(2 * std::size_t { calls });
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, calls))
+        body.insert(body.end(), { 0x10, 0x00 }); // call 0
+    auto builder = binary::testing::ModuleBuilder {};
+    builder.type(binary::FuncType {});
+    builder.function(0, {}, {});
+    builder.function(0, std::vector<binary::ValueType>(locals, binary::ExnRef), std::move(body));
+    return builder;
+}
+
+/// A module whose function 1, () -> (), calls function 0, () -> (), @p calls times inside @p depth nested
+/// try_tables, each of one catch_all to the label outside it. A lowering that copies the handlers around a
+/// site into it makes @p depth × @p calls records.
+/// @param depth The nested try_tables.
+/// @param calls The call sites.
+/// @return The module.
+[[nodiscard]] inline binary::testing::ModuleBuilder nestedTryTablesAroundCalls(uint32_t depth, uint32_t calls)
+{
+    auto body = binary::testing::Bytes {};
+    body.reserve((5 * std::size_t { depth }) + (2 * std::size_t { calls }) + depth);
+    for ([[maybe_unused]] auto const level: std::views::iota(uint32_t { 0 }, depth))
+        body.insert(body.end(), { 0x1F, 0x40, 0x01, 0x02, 0x00 }); // try_table (catch_all 0)
+    for ([[maybe_unused]] auto const index: std::views::iota(uint32_t { 0 }, calls))
+        body.insert(body.end(), { 0x10, 0x00 }); // call 0
+    body.insert(body.end(), depth, 0x0B);        // end
+    auto builder = binary::testing::ModuleBuilder {};
+    builder.type(binary::FuncType {});
+    builder.function(0, {}, {});
+    builder.function(0, {}, std::move(body));
+    return builder;
+}
+
 } // namespace isoline::fastinterpreter::testing
