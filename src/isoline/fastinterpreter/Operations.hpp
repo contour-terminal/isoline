@@ -635,16 +635,18 @@ template <OperationId Id>
     {
         auto const& global = state.context->store.global(
             state.context->instance->globals[static_cast<std::size_t>(immediateOperand<Id, 0>(pc))]);
+        // A global's cell holds the value's words in the slots' own encoding (runtime::encodeWords()).
         auto const width = slotWidth(slotClassOf(global.type.type));
-        storeValue(global.value, std::span { fp + slotOperand<0>(pc), width });
+        std::ranges::copy(std::span { global.cell.words }.first(width), fp + slotOperand<0>(pc));
         return next<Id>(state);
     }
     else if constexpr (Id == OperationId::GlobalSet)
     {
         auto& global = state.context->store.global(
             state.context->instance->globals[static_cast<std::size_t>(immediateOperand<Id, 0>(pc))]);
+        // A scalar takes one slot and leaves the cell's second word 0, as the encoding has it.
         auto const width = slotWidth(slotClassOf(global.type.type));
-        global.value = loadValue(global.type.type, std::span { fp + slotOperand<0>(pc), width });
+        global.cell.words = { fp[slotOperand<0>(pc)], width == 2 ? fp[slotOperand<0>(pc) + 1] : Slot { 0 } };
         return next<Id>(state);
     }
     else if constexpr (Id == OperationId::Select64 || Id == OperationId::Select128)
