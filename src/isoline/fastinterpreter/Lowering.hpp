@@ -137,7 +137,10 @@ struct RecordBounds
 /// @param module The validated module; the lowered module refers to nothing of it.
 /// @param config The execution mode and dispatch to lower for.
 /// @param arena The arena every container of the code allocates from; the lowered module keeps it.
-/// @return The lowered module, or why and where it was refused.
+/// @return The lowered module, or why and where it was refused. The module's own record comes from the
+///         global heap, never from @p arena or its upstream, which it keeps alive: running out of memory
+///         there throws std::bad_alloc.
+/// @throws std::bad_alloc when the global heap cannot hold the module's record.
 [[nodiscard]] std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     validate::ValidatedModule const& module,
     LoweringConfig const& config,
