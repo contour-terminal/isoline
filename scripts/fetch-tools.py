@@ -331,6 +331,8 @@ VERSION_LINES = [
     # clang, clang++, clang-scan-deps ("Ubuntu clang version 22.1.8 (++2026)") and clang-tidy
     # ("LLVM version 22.1.8").
     ("llvm", re.compile(rf"\b(?:clang|LLVM) version {VERSION}"), None),
+    # The export lint's pinned Clang, a second LLVM row of the lock file: the same version line.
+    ("llvm-lint", re.compile(rf"\b(?:clang|LLVM) version {VERSION}"), None),
     # g++ ("g++ (GCC) 15.2.0", "g++ (Ubuntu 14.2.0-4ubuntu2) 14.2.0", "g++ (GCC) 16.2.1 20260819 (Red Hat
     # 16.2.1-2)"); a snapshot says so after its date: "g++ (GCC) 16.0.0 20260101 (experimental)".
     ("gcc", re.compile(rf"^\S+ \(.*?\) {VERSION}(?:\s|$)"), re.compile(r"\((?:experimental|prerelease)\)")),
