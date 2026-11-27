@@ -42,7 +42,12 @@ struct ModuleShape
 /// algorithm: an operand stack whose entries may be Unknown in unreachable code, and a stack of
 /// control frames, each recording its operand stack height and whether its remainder is
 /// unreachable. Both stacks live on the heap and the algorithm never recurses, so the nesting depth
-/// of the input costs memory linear in it, not native stack.
+/// of the input costs memory linear in it, not native stack. Time is linear in a body's size times the
+/// widest signature it names. Branches check their label's operands in place and remember the one label
+/// type list the top was last checked against, so a run of branches through one label's types checks
+/// them once per change of type list: br_if 0 and br_if 1 alternating over two equally wide labels check
+/// each time. A br_table checks each block its labels name at most once (docs/embedding.md has the rule
+/// and the refusal order).
 ///
 /// Module-level checks run in Isoline's own order (types, imports, tags, functions, result arities,
 /// tables and memories, globals, element and data segments, bodies, start, exports, then the memory
@@ -61,5 +66,27 @@ struct ModuleShape
 /// @return The shape of each function's frame when the module is valid; otherwise the first error found.
 [[nodiscard]] std::expected<ModuleShape, ValidationError> validateModule(
     binary::Module const& module, FeatureSet const& features, binary::DecodeLimits const& limits = {});
+
+/// Watches the work validation does, for a test or a profiler to bound it: never consulted for what is
+/// valid. A seam of the validator for its tests, not part of the embedding API.
+class IValidationObserver
+{
+  public:
+    virtual ~IValidationObserver(); ///< Defined in Validator.cpp, which anchors the vtable.
+
+    /// Called for every check of one value type against another, the validator's unit of work.
+    virtual void typeCompared() noexcept = 0;
+};
+
+/// validateModule, reporting its work to @p observer.
+/// @param module The decoded module.
+/// @param features The proposals whose typing rules apply; those decodeModule accepted.
+/// @param limits The implementation limits; the validator enforces maxOperandsPerInstruction.
+/// @param observer What is told of each type comparison.
+/// @return As validateModule.
+[[nodiscard]] std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
+                                                                         FeatureSet const& features,
+                                                                         binary::DecodeLimits const& limits,
+                                                                         IValidationObserver& observer);
 
 } // namespace isoline::validate

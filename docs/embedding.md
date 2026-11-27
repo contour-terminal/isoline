@@ -234,6 +234,30 @@ the call that reached it. The default is no limit.
 `binary::DecodeLimits` (function body size, locals, operand height and the rest), so that what loading
 holds is linear in the module's size.
 
+Validating a body takes time linear in its size times the widest signature it names: an instruction that
+takes or gives a whole signature's operands (a call, a block's params, a branch) costs time in its arity,
+which `maxParams` and `maxResults` bound. Branches check their label's operands in place, never popping
+and pushing them. `br_if`, `br_on_null` and `br_on_non_null` leave the label's types in the operands'
+slots, as the spec's pop and push would, and the validator remembers one thing: which label type list the
+top was last checked against, at which height. A branch through that same type list at that height costs
+O(1) until an operand beneath the top is popped; any other type list is checked in full, and becomes the
+one remembered. So the cost is one check per change of label type list: `br_if 0` and `br_if 1`
+alternating over two equally wide labels check each time. A `br_table` checks all its labels against one
+run of operands, and checks each block its labels name at most once, however the labels alternate; a
+label whose block carries the same type list (the same block type) as the label checked before it is
+skipped as well.
+
+The refusal order, which a fuzzer comparing engines must expect: `br` and `br_if` look their label up
+first, then (`br_if`) pop the condition, then check the label's operands; `br_on_non_null` looks its
+label up, requires the label's last type to be a reference, pops the reference, then checks the rest;
+`br_on_null` peeks the reference first (only a top that is no reference fails there), then looks its
+label up, then pops. `br_table` runs in Isoline's own order: the default label's lookup, the condition,
+then each label's lookup, arity and types in turn, and the default label's types last. That differs from
+the reference interpreter's, which checks the default label's types first and pops the condition last:
+`block (result i32) i64.const 0 i32.const 0 br_table 5 0` is `unknown label` in Isoline and `type
+mismatch` there. Every way the operands themselves fail is one `type mismatch`, so which of them fails
+first is not observable.
+
 ## Interrupts and poll sites
 
 `Store::interrupter()` returns the store's `Interrupter`, shared. `interrupt()` is one release store to

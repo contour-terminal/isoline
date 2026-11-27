@@ -40,6 +40,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
+#include <isoline/validate/testing/BranchBodies.hpp>
 
 using isoline::Feature;
 using isoline::FeatureSet;
@@ -53,6 +54,8 @@ using isoline::binary::testing::ModuleBuilder;
 using isoline::testing::AllocationLimit;
 using isoline::testing::AllocationScope;
 using isoline::testing::RefusalException;
+using isoline::validate::testing::brIfsToWideLabel;
+using isoline::validate::testing::wideBrTables;
 
 namespace
 {
@@ -289,6 +292,31 @@ TEST_CASE("MemoryBounds.multiValueCallsAreRefusedEarly")
     auto const* const error = std::get_if<isoline::validate::ValidationError>(&loaded.error());
     REQUIRE(error != nullptr);
     CHECK(error->code == isoline::validate::ValidationErrorCode::OperandStackLimitExceeded);
+}
+
+// The [branch-cost] cases bound validation time, not memory: each is a body of branches whose labels carry
+// many operands, which a validator that pops and pushes a label's operands per branch, or checks each
+// br_table label on its own, types in some 10^9 type checks (about 18 s on clang-release, far longer under
+// a sanitizer or an emulator). Checked in place they take a fraction of a second. CMake runs them as a
+// test of their own, under a timeout; Validator_test's branchCostIsLinear counts the type checks of the
+// same shapes, the deterministic guard.
+
+TEST_CASE("MemoryBounds.brIfsToALabelOfOneOperand", "[branch-cost]")
+{
+    checkLinear(brIfsToWideLabel(1, 1'000'000), FeatureSet::wasm3(), Instantiation::Skip);
+}
+
+TEST_CASE("MemoryBounds.brIfsToAWideLabel", "[branch-cost]")
+{
+    // A million br_ifs to a label of a thousand operands: 10^9 type checks, popped and pushed per branch.
+    checkLinear(brIfsToWideLabel(1000, 1'000'000), FeatureSet::wasm3(), Instantiation::Skip);
+}
+
+TEST_CASE("MemoryBounds.wideBrTables", "[branch-cost]")
+{
+    // 50 br_tables of 65'520 labels, cycling through a thousand blocks of a thousand operands each: 3.3 *
+    // 10^9 type checks, label by label.
+    checkLinear(wideBrTables(1000, 1000, 65'520, 50), FeatureSet::wasm3(), Instantiation::Skip);
 }
 
 TEST_CASE("MemoryBounds.loadDescribesWithoutCopying")

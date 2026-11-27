@@ -298,10 +298,13 @@ namespace
         std::size_t importedGlobalCount = 0;     ///< How many of globals are imported.
         std::vector<uint32_t> declaredFunctions; ///< The functions ref.func may name; sorted, unique.
         std::vector<uint32_t> canonical;         ///< The canonical id of every type (canonicalTypeIds).
+        IValidationObserver* observer;           ///< Told of each type comparison, if any is watching.
 
         /// Whether @p sub matches @p super, concrete types compared by their canonical ids.
         [[nodiscard]] bool matches(ValueType const& sub, ValueType const& super) const noexcept
         {
+            if (observer != nullptr)
+                observer->typeCompared();
             return isSubtype(sub, super, canonical);
         }
 
@@ -441,6 +444,7 @@ namespace
         std::size_t height;                 ///< The operand stack height at its start.
         std::size_t setLocalsHeight;        ///< How many locals were set at its start.
         Reachability reachability;          ///< Whether its remainder is reachable.
+        uint64_t brTableStamp;              ///< The br_table that last checked a branch to it.
 
         /// The types a branch to this frame carries: a loop's are its params, any other's its results.
         [[nodiscard]] std::span<ValueType const> labelTypes() const noexcept
@@ -500,6 +504,7 @@ namespace
         {
             _operands.clear();
             _frames.clear();
+            _equalTop = {};
             _shape = FrameShape {};
             _peakOperands = 0;
             _localRunEnds.clear();
@@ -565,7 +570,7 @@ namespace
                 return fail(ValidationErrorCode::TypeMismatch);
             }
             auto const operand = _operands.back();
-            _operands.pop_back();
+            shrinkTo(_operands.size() - 1);
             return operand;
         }
 
@@ -595,13 +600,7 @@ namespace
             auto const taken = std::min(types.size(), _operands.size() - frame.height);
             auto const supplied = frame.reachability == Reachability::Unreachable ? types.size() - taken : 0;
             auto const top = std::span { _operands }.last(taken);
-            auto const matching =
-                supplied + taken == types.size()
-                && std::ranges::equal(
-                    top, types.last(taken), [this](Operand const& actual, ValueType const& required) {
-                        return !actual || _context.matches(*actual, required);
-                    });
-            if (!matching)
+            if (!matchingTop(types))
             {
                 auto mismatch = OperandMismatch { .required = { types.begin(), types.end() },
                                                   .actual = std::vector<Operand>(supplied) };
@@ -611,8 +610,78 @@ namespace
                                     .mismatch = std::move(mismatch),
                                     .disabled = std::nullopt });
             }
-            _operands.resize(_operands.size() - taken);
+            shrinkTo(_operands.size() - taken);
             return {};
+        }
+
+        /// Whether the top of the stack matches @p types in place, as popAll(types) would find it: an
+        /// operand in its slot must match its type, and on an unreachable frame the slots below the
+        /// frame's floor are Unknowns, which match any. Every way popAll fails is one TypeMismatch, so
+        /// which slot fails first is unobservable and the check needs no order.
+        /// @return How many of @p types the frame holds operands for, unless they do not match.
+        [[nodiscard]] std::optional<std::size_t> matchingTop(std::span<ValueType const> types) const
+        {
+            auto const& frame = _frames.back();
+            auto const taken = std::min(types.size(), _operands.size() - frame.height);
+            if (taken < types.size() && frame.reachability == Reachability::Reachable)
+                return std::nullopt;
+            auto const matching =
+                std::ranges::equal(std::span { _operands }.last(taken),
+                                   types.last(taken),
+                                   [this](Operand const& actual, ValueType const& required) {
+                                       return !actual || _context.matches(*actual, required);
+                                   });
+            if (!matching)
+                return std::nullopt;
+            return taken;
+        }
+
+        /// Whether the top of the stack is @p types, slot for slot, as the last branch that passed
+        /// through them left it: nothing below its top has been popped since, and the current frame
+        /// holds all of it. Such a top matches @p types, subtyping being reflexive, without a look.
+        [[nodiscard]] bool topIsRecorded(std::span<ValueType const> types) const noexcept
+        {
+            return types.data() == _equalTop.data() && types.size() == _equalTop.size()
+                   && _operands.size() == _equalTopEnd
+                   && _equalTopEnd >= _frames.back().height + types.size();
+        }
+
+        /// Checks the top of the stack against @p types in place: popAll(types) without the pops.
+        [[nodiscard]] Check matchTop(std::span<ValueType const> types) const
+        {
+            if (topIsRecorded(types) || matchingTop(types))
+                return {};
+            return fail(ValidationErrorCode::TypeMismatch);
+        }
+
+        /// Types the operands a branch that may fall through carries (br_if, br_on_null,
+        /// br_on_non_null): checks them against @p types in place and leaves @p types in their slots,
+        /// the less precise types the spec's pop and push of them would leave. An unreachable frame's
+        /// missing operands are supplied below the present ones. The top is then recorded, so that the
+        /// next branch through the same types at the same height costs nothing.
+        [[nodiscard]] Check passThrough(std::span<ValueType const> types)
+        {
+            if (topIsRecorded(types))
+                return {};
+            auto const taken = matchingTop(types);
+            if (!taken)
+                return fail(ValidationErrorCode::TypeMismatch);
+            auto const present = _operands.end() - static_cast<std::ptrdiff_t>(*taken);
+            auto const supplied = types.first(types.size() - *taken);
+            std::ranges::copy(types.last(*taken), present);
+            _operands.insert(present, supplied.begin(), supplied.end());
+            _peakOperands = std::max(_peakOperands, _operands.size());
+            _equalTop = types;
+            _equalTopEnd = _operands.size();
+            return {};
+        }
+
+        /// Pops the stack down to @p height, forgetting a recorded top it reaches into.
+        void shrinkTo(std::size_t height)
+        {
+            _operands.resize(height);
+            if (height < _equalTopEnd)
+                _equalTop = {};
         }
 
         /// The reference on top of the stack, which ref.as_non_null and br_on_null take, without popping
@@ -628,22 +697,6 @@ namespace
             return *_operands.back();
         }
 
-        /// Pops @p types and pushes back what was popped, keeping the more precise operand types.
-        [[nodiscard]] Check popAndRestore(std::span<ValueType const> types)
-        {
-            _restored.clear();
-            for (auto const& type: types | std::views::reverse)
-            {
-                auto const popped = pop(type);
-                if (!popped)
-                    return fail(popped.error());
-                _restored.push_back(*popped);
-            }
-            for (auto const& operand: _restored | std::views::reverse)
-                push(operand);
-            return {};
-        }
-
         void pushFrame(Opcode opcode, BlockSignature const& signature)
         {
             _frames.push_back(Frame { .opcode = opcode,
@@ -651,7 +704,8 @@ namespace
                                       .results = signature.results,
                                       .height = _operands.size(),
                                       .setLocalsHeight = _setLocals.size(),
-                                      .reachability = Reachability::Reachable });
+                                      .reachability = Reachability::Reachable,
+                                      .brTableStamp = 0 });
             // The body's own frame, the function's label, is not one of its labels.
             _shape.maxLabels = std::max(_shape.maxLabels, static_cast<uint32_t>(_frames.size() - 1));
             pushAll(signature.params);
@@ -671,7 +725,7 @@ namespace
         void markUnreachable()
         {
             auto& frame = _frames.back();
-            _operands.resize(frame.height);
+            shrinkTo(frame.height);
             frame.reachability = Reachability::Unreachable;
         }
 
@@ -732,6 +786,9 @@ namespace
                 return failNaming(ValidationErrorCode::UnknownLabel, depth);
             return &_frames[_frames.size() - 1 - depth];
         }
+
+        /// The frame of label @p depth, which label(depth) has found.
+        [[nodiscard]] Frame& frameAt(uint32_t depth) noexcept { return _frames[_frames.size() - 1 - depth]; }
 
         [[nodiscard]] std::expected<ValueType, Fault> local(Body const& body, uint32_t index) const
         {
@@ -939,16 +996,14 @@ namespace
 
                 case Opcode::Br:
                     return label(instruction.a).and_then([this](Frame const* frame) {
-                        return popAll(frame->labelTypes()).transform([this] { markUnreachable(); });
+                        return matchTop(frame->labelTypes()).transform([this] { markUnreachable(); });
                     });
                 case Opcode::BrIf:
                     // The label first: the reference interpreter reports an unknown label before
                     // a missing condition.
                     return label(instruction.a).and_then([this](Frame const* frame) {
                         return pop(binary::I32).and_then([this, frame](Operand const&) {
-                            return popAll(frame->labelTypes()).transform([this, frame] {
-                                pushAll(frame->labelTypes());
-                            });
+                            return passThrough(frame->labelTypes());
                         });
                     });
                 case Opcode::BrOnNull:
@@ -956,11 +1011,8 @@ namespace
                     return peekReference().and_then([&](ValueType const& reference) {
                         return label(instruction.a).and_then([&](Frame const* frame) {
                             return pop()
-                                .and_then([&](Operand const&) { return popAll(frame->labelTypes()); })
-                                .transform([&] {
-                                    pushAll(frame->labelTypes());
-                                    push(nonNullOf(reference));
-                                });
+                                .and_then([&](Operand const&) { return passThrough(frame->labelTypes()); })
+                                .transform([&] { push(nonNullOf(reference)); });
                         });
                     });
                 case Opcode::BrOnNonNull:
@@ -973,12 +1025,11 @@ namespace
                         auto const fallingThrough = types.first(types.size() - 1);
                         auto nullable = types.back();
                         nullable.nullable = binary::Nullable::Yes;
-                        return pop(nullable)
-                            .and_then([&](Operand const&) { return popAll(fallingThrough); })
-                            .transform([&] { pushAll(fallingThrough); });
+                        return pop(nullable).and_then(
+                            [&](Operand const&) { return passThrough(fallingThrough); });
                     });
                 case Opcode::BrTable: return brTable(body, instruction);
-                case Opcode::Return: return popAll(body.results).transform([this] { markUnreachable(); });
+                case Opcode::Return: return matchTop(body.results).transform([this] { markUnreachable(); });
 
                 case Opcode::Call:
                     return _context.function(instruction.a).and_then([&] {
@@ -1260,6 +1311,13 @@ namespace
             });
         }
 
+        /// Types br_table in Isoline's own order: the default label's lookup, the condition, then each
+        /// label's lookup, arity and types in turn, the default label's types last. valid.ml checks the
+        /// default label's types first and pops the condition last, so a br_table with an unknown label
+        /// and mismatching operands (block (result i32) i64.const 0 i32.const 0 br_table 5 0) is an
+        /// unknown label here and a type mismatch there. Every label's types are matched against the
+        /// same operands in place, so a label whose frame this br_table has checked, or whose types are
+        /// those the label before it was checked against, is not checked again.
         [[nodiscard]] Check brTable(Body const& body, Instruction const& instruction)
         {
             auto const labels = binary::labelsOf(body.sideTables, instruction);
@@ -1267,6 +1325,21 @@ namespace
             if (!defaultLabel)
                 return fail(defaultLabel.error());
             auto const arity = (*defaultLabel)->labelTypes().size();
+            ++_brTableStamp;
+            // Every label has the default label's arity, so the types a label carries are those of
+            // another exactly when they are the same span.
+            auto const* checked = static_cast<ValueType const*>(nullptr);
+            auto const checkTarget = [&](Frame& target) -> Check {
+                auto const types = target.labelTypes();
+                if (target.brTableStamp != _brTableStamp && types.data() != checked)
+                {
+                    if (auto const result = matchTop(types); !result)
+                        return result;
+                    checked = types.data();
+                }
+                target.brTableStamp = _brTableStamp;
+                return {};
+            };
             return pop(binary::I32)
                 .and_then([&](Operand const&) -> Check {
                     for (auto const depth: labels.first(labels.size() - 1))
@@ -1276,25 +1349,34 @@ namespace
                             return fail(target.error());
                         if ((*target)->labelTypes().size() != arity)
                             return fail(ValidationErrorCode::TypeMismatch);
-                        if (auto const result = popAndRestore((*target)->labelTypes()); !result)
+                        if (auto const result = checkTarget(frameAt(depth)); !result)
                             return result;
                     }
-                    return popAll((*defaultLabel)->labelTypes());
+                    return checkTarget(frameAt(labels.back()));
                 })
-                .transform([this] { markUnreachable(); });
+                .transform([&] {
+                    // Checking a label used to pop its operands and push them back, Unknowns supplied
+                    // by an unreachable frame included, which the frame shape counts: in place, the
+                    // high-water mark is what those pushes reached. The default label alone was popped.
+                    if (labels.size() > 1)
+                        _peakOperands = std::max(_peakOperands, _frames.back().height + arity);
+                    markUnreachable();
+                });
         }
 
         Context const& _context;
         std::vector<Operand> _operands;
         std::vector<Frame> _frames;
-        std::vector<uint64_t> _localRunEnds; ///< Per local run, the declared-local index past its end.
-        std::vector<Operand> _restored;      ///< Scratch for popAndRestore.
-        std::vector<ValueType> _handed;      ///< Scratch for catchClauses: what a clause hands its label.
-        std::vector<uint32_t> _setLocals;    ///< The non-defaultable locals set in the open blocks.
-        std::vector<uint64_t> _setStamps;    ///< Per local index, _generation while it is set.
-        uint64_t _generation = 0;            ///< The stamp of the body being validated; never 0.
-        FrameShape _shape;                   ///< The high-water marks of the body being validated.
-        std::size_t _peakOperands = 0;       ///< The operand high-water mark, before it is narrowed.
+        std::vector<uint64_t> _localRunEnds;  ///< Per local run, the declared-local index past its end.
+        std::span<ValueType const> _equalTop; ///< The types the top of the stack is, slot for slot.
+        std::size_t _equalTopEnd = 0;         ///< The stack height _equalTop ends at.
+        uint64_t _brTableStamp = 0;           ///< Counts the br_tables typed; a frame's stamp names one.
+        std::vector<ValueType> _handed;       ///< Scratch for catchClauses: what a clause hands its label.
+        std::vector<uint32_t> _setLocals;     ///< The non-defaultable locals set in the open blocks.
+        std::vector<uint64_t> _setStamps;     ///< Per local index, _generation while it is set.
+        uint64_t _generation = 0;             ///< The stamp of the body being validated; never 0.
+        FrameShape _shape;                    ///< The high-water marks of the body being validated.
+        std::size_t _peakOperands = 0;        ///< The operand high-water mark, before it is narrowed.
     };
 
     // --- The module ---------------------------------------------------------------------------
@@ -1303,7 +1385,10 @@ namespace
     class ModuleValidator
     {
       public:
-        ModuleValidator(Module const& module, FeatureSet features, binary::DecodeLimits const& limits):
+        ModuleValidator(Module const& module,
+                        FeatureSet features,
+                        binary::DecodeLimits const& limits,
+                        IValidationObserver* observer):
             _context { .module = module,
                        .features = features,
                        .limits = limits,
@@ -1314,7 +1399,8 @@ namespace
                        .tagTypes = {},
                        .importedGlobalCount = 0,
                        .declaredFunctions = declaredFunctionsOf(module),
-                       .canonical = {} },
+                       .canonical = {},
+                       .observer = observer },
             _bodies { _context }
         {
         }
@@ -1672,15 +1758,34 @@ namespace
         ModuleShape _shape;           ///< The frame shapes of the bodies validated so far.
     };
 
+    /// validateModule, telling @p observer of its work when there is one.
+    std::expected<ModuleShape, ValidationError> validateWatched(binary::Module const& module,
+                                                                FeatureSet const& features,
+                                                                binary::DecodeLimits const& limits,
+                                                                IValidationObserver* observer)
+    {
+        // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
+        Require(features.checkPrerequisites().has_value());
+        return ModuleValidator { module, features, limits, observer }.validate();
+    }
+
 } // namespace
+
+IValidationObserver::~IValidationObserver() = default;
 
 std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
                                                            FeatureSet const& features,
                                                            binary::DecodeLimits const& limits)
 {
-    // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
-    Require(features.checkPrerequisites().has_value());
-    return ModuleValidator { module, features, limits }.validate();
+    return validateWatched(module, features, limits, nullptr);
+}
+
+std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
+                                                           FeatureSet const& features,
+                                                           binary::DecodeLimits const& limits,
+                                                           IValidationObserver& observer)
+{
+    return validateWatched(module, features, limits, &observer);
 }
 
 } // namespace isoline::validate
