@@ -21,7 +21,9 @@
 # - With PKG_CONFIG, a C program is compiled and linked by the C compiler from nothing but what
 #   `pkg-config --cflags --libs isoline-c` says, and runs against the installed shared library; then,
 #   with the shared library removed from the prefix, from what `pkg-config --static --cflags --libs
-#   isoline-c` says, and runs with no shared library of Isoline anywhere on its search path. LINK_FLAGS
+#   isoline-c` says, and runs with no shared library of Isoline anywhere on its search path. The program
+#   makes and deletes a wasm_valtype_t, so the static link needs the C++ libraries behind it, which only
+#   Libs.private names: an empty Libs.private fails the static link. LINK_FLAGS
 #   are what this build's instrumentation (sanitizers, coverage) needs on any link of its code; an
 #   uninstrumented build passes none.
 
@@ -131,7 +133,12 @@ if(PKG_CONFIG)
     file(WRITE "${consumer}/consumer.c"
          "#include <stdio.h>\n#include <wasm.h>\n#include <isoline/c/isoline.h>\n"
          "int main(void)\n{\n"
+         "    wasm_valtype_t* type = NULL;\n"
          "    if (!isoline_abi_compatible(ISOLINE_ABI_VERSION))\n        return 1;\n"
+         "    /* C++ behind it: a static link needs the libraries Libs.private names. */\n"
+         "    type = wasm_valtype_new(WASM_I64);\n"
+         "    if (type == NULL || wasm_valtype_kind(type) != WASM_I64)\n        return 2;\n"
+         "    wasm_valtype_delete(type);\n"
          "    printf(\"isoline-c ABI %u\\n\", (unsigned) isoline_abi_version());\n"
          "    return 0;\n}\n")
     separate_arguments(cFlags NATIVE_COMMAND "${C_FLAGS}")

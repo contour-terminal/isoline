@@ -12,11 +12,11 @@
 #
 # The programs that ask the host for memory no vector or buffer can have, so that a lost bound asks for
 # exabytes, run under the build's memory cap and carry the label memory (cmake/IsolineCappedTest.cmake).
-set(isolineCappedCTestPrograms vectors)
+set(isolineCappedCTestPrograms types vectors)
 # The programs whose host-input bounds a hardened libc++ holds to as well (the hardened-stdlib label, which the
 # clang-libcxx-hardened preset runs): a size check that is lost reads past an array there even where it asks
 # for no memory.
-set(isolineHardenedCTestPrograms vectors)
+set(isolineHardenedCTestPrograms types vectors)
 # Everything the hardened-stdlib label runs, built by one target the clang-libcxx-hardened preset builds, so that a
 # program given the label is built there too (isoline_c_test is src/isoline/c/'s).
 add_custom_target(isoline_hardened_stdlib_tests)

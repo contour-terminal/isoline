@@ -99,3 +99,16 @@ ISOLINE_LAYOUT_FIELD(wasm_limits_t, max, 4, 4)
 
 // error.h: an error's code.
 ISOLINE_LAYOUT_SCALAR(isoline_error_code_t, 4)
+
+// val.h: a reference type's heap and nullability, and whether limits have a maximum.
+ISOLINE_LAYOUT_SCALAR(isoline_heap_t, 1)
+ISOLINE_LAYOUT_SCALAR(isoline_nullability_t, 1)
+ISOLINE_LAYOUT_SCALAR(isoline_maximum_kind_t, 1)
+
+// val.h: the 64-bit limits of a memory or table, size first; reserved pads it to its alignment.
+ISOLINE_LAYOUT_STRUCT(isoline_limits64_t, 32, 8)
+ISOLINE_LAYOUT_FIELD(isoline_limits64_t, struct_size, 0, 8)
+ISOLINE_LAYOUT_FIELD(isoline_limits64_t, minimum, 8, 8)
+ISOLINE_LAYOUT_FIELD(isoline_limits64_t, maximum, 16, 8)
+ISOLINE_LAYOUT_FIELD(isoline_limits64_t, maximum_kind, 24, 1)
+ISOLINE_LAYOUT_FIELD(isoline_limits64_t, reserved, 25, 7)

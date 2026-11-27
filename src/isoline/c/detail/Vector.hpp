@@ -15,7 +15,8 @@
 
 // Through the umbrella, never <wasm.h> alone: export.h gives WASM_API_EXTERN the C API's export annotation
 // first, which a definition after a bare <wasm.h> would lack (and be hidden).
-#include <isoline/c/detail/Handles.hpp>
+#include <isoline/c/detail/EnumRows.hpp>
+#include <isoline/c/detail/Object.hpp>
 #include <isoline/c/isoline.h>
 
 // The operations of wasm.h's vectors (WASM_DECLARE_VEC), one template per operation for every family.
@@ -50,13 +51,10 @@ enum class ElementOwnership : uint8_t
            ///< deep-copied with it.
 };
 
-/// The kinds of wasm_val_t whose of.ref is a reference the value owns. A kind that is no row (a number, or
-/// one no task knows) owns nothing, so its bits are never taken for a pointer.
-inline constexpr auto ReferenceValueKinds = std::to_array<wasm_valkind_t>({ WASM_EXTERNREF, WASM_FUNCREF });
-
-/// Whether a value of kind @p kind owns the reference of.ref holds.
+/// Whether a value of kind @p kind owns the reference of.ref holds. A kind of no reference row (a number,
+/// v128, or a kind no row has) owns nothing, so its bits are never taken for a pointer.
 /// @param kind The value's kind.
-/// @return Whether @p kind is one of ReferenceValueKinds.
+/// @return Whether @p kind is one of ReferenceValueKinds (detail/EnumRows.hpp).
 [[nodiscard]] constexpr auto holdsReference(wasm_valkind_t kind) noexcept -> bool
 {
     return std::ranges::find(ReferenceValueKinds, kind) != ReferenceValueKinds.end();
@@ -312,5 +310,52 @@ void deleteVector(Vector* vector) noexcept
     }
     emptyVector(vector);
 }
+
+/// Whether @p vector is one a vector of its family can be: no larger than MaxVectorSize, and with data
+/// whenever it has elements. What a function given a vector to take checks first, so that a size no vector
+/// has is never walked.
+/// @param vector The vector.
+/// @return Whether it is well formed.
+template <typename Vector>
+[[nodiscard]] constexpr auto isWellFormed(Vector const& vector) noexcept -> bool
+{
+    return vector.size <= MaxVectorSize<ElementOf<Vector>> && (vector.size == 0 || vector.data != nullptr);
+}
+
+/// A vector an object owns, as a wasm.h function hands it out (wasm_functype_params(),
+/// wasm_importtype_name()): deleted with the object, and deep-copied with it.
+template <ElementOwnership Ownership, typename Vector>
+class OwnedVector
+{
+  public:
+    /// The empty vector.
+    OwnedVector() noexcept: _vector {} {}
+
+    /// Takes the elements of @p from, a well-formed vector (isWellFormed()), and leaves it the empty vector.
+    /// @param from The vector taken.
+    explicit OwnedVector(Vector& from) noexcept: _vector { from } { emptyVector(&from); }
+
+    /// A copy of @p other, each element copied as its ownership says. Throws std::bad_alloc when the host
+    /// has no memory for it, having made nothing.
+    OwnedVector(OwnedVector const& other): _vector {}
+    {
+        copyVector<Ownership>(&_vector, &other._vector);
+        // copyVector() gives the empty vector when the array cannot be allocated: no copy a caller may take.
+        if (_vector.size != other._vector.size)
+            throw std::bad_alloc {};
+    }
+
+    /// Takes the elements of @p other, and leaves it the empty vector.
+    OwnedVector(OwnedVector&& other) noexcept: _vector { other._vector } { emptyVector(&other._vector); }
+    OwnedVector& operator=(OwnedVector const&) = delete;
+    OwnedVector& operator=(OwnedVector&&) = delete;
+    ~OwnedVector() { deleteVector<Ownership>(&_vector); }
+
+    /// The vector, owned by this one.
+    [[nodiscard]] auto get() const noexcept -> Vector const& { return _vector; }
+
+  private:
+    Vector _vector; ///< The vector.
+};
 
 } // namespace isoline::c::detail

@@ -10,10 +10,12 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <string_view>
+#include <type_traits>
 
 #include "AllocationCounter.hpp"
-#include <isoline/c/detail/Handles.hpp>
 #include <isoline/c/isoline.h>
+#include <isoline/c/testing/TypeElements.hpp>
 
 using isoline::testing::AllocationLimit;
 using isoline::testing::AllocationScope;
@@ -21,22 +23,34 @@ using isoline::testing::AllocationScope;
 namespace
 {
 
-/// A value type that copies itself, as Task 9's will.
-class TestValtype final: public wasm_valtype_t
+/// The copy of a vector of two elements of the family @p Vector, given memory for its array and not for the
+/// first element's copy: the empty vector, with nothing retained, and the original as it was.
+template <typename Vector, auto New, auto Copy, auto Delete>
+void checkCopyOutOfMemory(std::string_view family)
 {
-  public:
-    TestValtype() = default;
-    TestValtype(TestValtype const&) = default;
-    TestValtype(TestValtype&&) = delete;
-    TestValtype& operator=(TestValtype const&) = delete;
-    TestValtype& operator=(TestValtype&&) = delete;
-    ~TestValtype() override = default;
-
-    [[nodiscard]] auto clone() const -> std::unique_ptr<isoline::c::detail::Object> override
+    INFO("wasm_" << family << "_vec_t");
+    using Element = std::remove_pointer_t<decltype(Vector::data)>;
+    auto const elements = std::array { isoline::c::testing::makeElement<Element>(),
+                                       isoline::c::testing::makeElement<Element>() };
+    auto original = Vector {};
+    New(&original, elements.size(), elements.data());
+    REQUIRE(original.size == 2);
+    auto copy = Vector { .size = 7, .data = nullptr };
+    auto retained = std::size_t { 1 };
     {
-        return std::make_unique<TestValtype>(*this);
+        auto const scope = AllocationScope {};
+        {
+            auto const arrayOnly = AllocationLimit { 2 * sizeof(Element) };
+            Copy(&copy, &original);
+        }
+        retained = scope.retainedBytes();
     }
-};
+    CHECK(retained == 0);
+    CHECK(copy.size == 0);
+    CHECK(copy.data == nullptr);
+    CHECK(original.size == 2);
+    Delete(&original);
+}
 
 } // namespace
 
@@ -81,7 +95,7 @@ TEST_CASE("Vectors.elementCopyOutOfMemoryIsEmpty", "[c-api][host-memory][vectors
     wasm_valtype_vec_new_uninitialized(&original, 3);
     REQUIRE(original.size == 3);
     for (auto*& element: std::span { original.data, original.size })
-        element = new TestValtype {};
+        element = wasm_valtype_new(WASM_I32);
 
     auto copy = wasm_valtype_vec_t { .size = 7, .data = nullptr };
     auto retained = std::size_t { 1 };
@@ -98,4 +112,69 @@ TEST_CASE("Vectors.elementCopyOutOfMemoryIsEmpty", "[c-api][host-memory][vectors
     CHECK(copy.data == nullptr);
     CHECK(original.size == 3);
     wasm_valtype_vec_delete(&original);
+}
+
+TEST_CASE("Vectors.copyFailingMidwayLeavesNothing", "[c-api][host-memory][vectors]")
+{
+    auto original = wasm_valtype_vec_t {};
+    wasm_valtype_vec_new_uninitialized(&original, 3);
+    REQUIRE(original.size == 3);
+    for (auto*& element: std::span { original.data, original.size })
+        element = wasm_valtype_new(WASM_F32);
+
+    // What the copy's array and one element's copy take, measured rather than derived from sizeof: the copy
+    // of a vector of one element allocates both.
+    auto one = wasm_valtype_vec_t {};
+    wasm_valtype_vec_new(&one, 1, std::array { wasm_valtype_new(WASM_F32) }.data());
+    auto measured = wasm_valtype_vec_t {};
+    auto oneCopyBytes = std::size_t { 0 };
+    {
+        auto const scope = AllocationScope {};
+        wasm_valtype_vec_copy(&measured, &one);
+        oneCopyBytes = scope.retainedBytes();
+    }
+    REQUIRE(measured.size == 1);
+    wasm_valtype_vec_delete(&measured);
+    wasm_valtype_vec_delete(&one);
+    auto const elementBytes = oneCopyBytes - sizeof(wasm_valtype_t*);
+
+    // Enough for the array of three and the first element's copy, not the second's: the first is deleted
+    // again, the copy is the empty vector, and the original is as it was.
+    auto copy = wasm_valtype_vec_t { .size = 7, .data = nullptr };
+    auto retained = std::size_t { 1 };
+    {
+        auto const scope = AllocationScope {};
+        {
+            auto const arrayAndOne = AllocationLimit { (3 * sizeof(wasm_valtype_t*)) + elementBytes };
+            wasm_valtype_vec_copy(&copy, &original);
+        }
+        retained = scope.retainedBytes();
+    }
+    CHECK(retained == 0);
+    CHECK(copy.size == 0);
+    CHECK(copy.data == nullptr);
+    REQUIRE(original.size == 3);
+    CHECK(wasm_valtype_kind(original.data[2]) == WASM_F32);
+    wasm_valtype_vec_delete(&original);
+}
+
+TEST_CASE("Vectors.everyTypeFamilyCopyOutOfMemoryIsEmpty", "[c-api][host-memory][vectors]")
+{
+    // Each type family's copy, whose element's copy runs out of memory: the boundary() of every family's
+    // wasm_<name>_vec_copy() makes the copy the empty vector.
+#define ISOLINE_CHECK_FAMILY(name)                \
+    checkCopyOutOfMemory<wasm_##name##_vec_t,     \
+                         &wasm_##name##_vec_new,  \
+                         &wasm_##name##_vec_copy, \
+                         &wasm_##name##_vec_delete>(#name)
+    ISOLINE_CHECK_FAMILY(valtype);
+    ISOLINE_CHECK_FAMILY(functype);
+    ISOLINE_CHECK_FAMILY(globaltype);
+    ISOLINE_CHECK_FAMILY(tabletype);
+    ISOLINE_CHECK_FAMILY(memorytype);
+    ISOLINE_CHECK_FAMILY(tagtype);
+    ISOLINE_CHECK_FAMILY(externtype);
+    ISOLINE_CHECK_FAMILY(importtype);
+    ISOLINE_CHECK_FAMILY(exporttype);
+#undef ISOLINE_CHECK_FAMILY
 }

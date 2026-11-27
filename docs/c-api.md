@@ -8,6 +8,122 @@ its functions the library's export annotation, and links `isoline_c` (the shared
 
 This page grows with the C API; it describes what is implemented so far.
 
+## What this release provides
+
+The C API arrives in two steps. This release is its foundation; the next adds engines, stores, modules,
+instances and calls.
+
+- **The library.** `isoline_c` (shared) and `isoline_c_static`, installed by the install component
+  `isoline-c`: the headers beneath `include/isoline/`, the static library and the archives it links beneath
+  `<libdir>/isoline/`, a pkg-config file (`isoline-c`), and the component `c` of the CMake package
+  (`find_package(isoline COMPONENTS c)`, target `isoline::c`). The shared library's file name carries the
+  ABI version.
+- **Vectors.** Every `wasm_<name>_vec_*` function of `wasm.h`'s vector families: `new_empty`,
+  `new_uninitialized`, `new`, `copy` and `delete`.
+- **Types.** Every `wasm.h` type function: value, function, global, table, memory, tag, extern, import and
+  export types, with v128, exnref and 64-bit limits through `val.h`.
+- **Errors.** `isoline_error_t`, its codes and its stable detail numbers (below).
+- **Twenty `isoline_` functions:** `isoline_abi_version`, `isoline_abi_compatible`; `isoline_error_new`,
+  `_delete`, `_code`, `_code_name`, `_detail`, `_message`, `_message_length`, `_cause`;
+  `isoline_valtype_nullability`, `_heap`, `_concrete_index`; `isoline_memorytype_new`, `_limits64`,
+  `_page_size_log2`, `_address_bits`; `isoline_tabletype_new`, `_limits64`, `_address_bits`.
+
+The rest of `wasm.h` (configs, engines, stores, modules, instances, functions, globals, tables, memories,
+values, references, traps and frames) is declared by the header and not yet defined by this release: a
+program that calls one of those functions does not link against it.
+
+## Where Isoline departs from wasm.h
+
+- **A wasm_ function takes its `own` arguments, also when it refuses.** `wasm.h` marks an argument the
+  callee takes with `own`, and Isoline's `wasm_` functions take it whatever they return: a constructor that
+  returns NULL deletes what it was given, so `wasm.h`'s inline helpers, which pass temporaries
+  (`wasm_functype_new_1_1(wasm_valtype_new(WASM_I32), wasm_valtype_new(77))`), leak nothing. This holds for
+  `wasm_functype_new()` (both vectors and their elements), `wasm_globaltype_new()` (the content),
+  `wasm_tabletype_new()` (the element type), `wasm_tagtype_new()` (the function type),
+  `wasm_importtype_new()` and `wasm_exporttype_new()` (the names and the extern type), and
+  `wasm_<name>_vec_new()` (the elements). The one exception is input the function cannot walk: a vector
+  whose size no vector can have, or that has a size and no data, is left untouched, and stays the caller's.
+- **An isoline_ function that returns an error leaves its arguments untouched.** They stay the caller's,
+  `isoline_tabletype_new()`'s element type included.
+- **NULL is an argument like any other.** A type function given NULL where a type is due returns NULL,
+  or a value `val.h` names for the case (`ISOLINE_VALKIND_INVALID`, `ISOLINE_EXTERNKIND_INVALID`,
+  `ISOLINE_MUTABILITY_INVALID`), never aborts; deleting or copying NULL does nothing.
+- **A type no module could declare is refused.** `wasm.h` leaves validation open; Isoline's constructors
+  return NULL for an unknown kind (`wasm_valtype_new()`) or mutability (`wasm_globaltype_new()`), a table
+  whose elements are no reference type (`wasm_tabletype_new()`), limits whose minimum is above their maximum
+  or whose sizes pass what the address type reaches (`wasm_tabletype_new()`, `wasm_memorytype_new()`), a tag
+  whose function type has results (`wasm_tagtype_new()`), a function type of a vector holding NULL
+  (`wasm_functype_new()`), and an import or export of a NULL or unwalkable name or a NULL type
+  (`wasm_importtype_new()`, `wasm_exporttype_new()`). A C value without a row in the library's tables is
+  refused, never cast to an enumeration it may not name.
+
+## Names
+
+`isoline_` names are spelled out (`isoline_interrupt_handle_t`, never `isoline_intr_t`), with one exception:
+an `isoline_` function that extends a `wasm.h` family keeps that family's spelling, so that it sits beside
+the `wasm_` functions it extends. The spellings so taken from `wasm.h`:
+
+| Spelling | `wasm.h` family | Isoline's functions so far |
+|---|---|---|
+| `valtype` | `wasm_valtype_*` | `isoline_valtype_nullability`, `_heap`, `_concrete_index` |
+| `memorytype` | `wasm_memorytype_*` | `isoline_memorytype_new`, `_limits64`, `_page_size_log2`, `_address_bits` |
+| `tabletype` | `wasm_tabletype_*` | `isoline_tabletype_new`, `_limits64`, `_address_bits` |
+| `externtype` | `wasm_externtype_*` | none yet |
+| `func` | `wasm_func_*` | none yet |
+| `val` | `wasm_val_*` | none yet |
+
+## Value kinds
+
+`wasm_valkind_t` names i32, i64, f32 and f64 (0–3), externref and funcref (128, 129), and nothing for
+v128 or exnref. `wasm.h` reads a kind below 128 as a number (`wasm_valkind_is_num()`) and every other as a
+reference (`wasm_valkind_is_ref()`). Isoline numbers the two it adds on the side of 128 those tests read
+right, until upstream numbers them:
+
+| Kind | Value | Origin |
+|---|---|---|
+| `WASM_I32` … `WASM_F64` | 0–3 | wasm.h |
+| `WASM_EXTERNREF`, `WASM_FUNCREF` | 128, 129 | wasm.h |
+| `ISOLINE_VALKIND_V128` | `0x7B` | Isoline: v128's byte in the binary format, a number to `wasm_valkind_is_num()` |
+| `ISOLINE_VALKIND_EXNREF` | `0xF1` | Isoline: from the range `0xF0`–`0xFF` it keeps for itself, a reference |
+| `ISOLINE_VALKIND_INVALID` | `0xFF` | Isoline: what `wasm_valtype_kind(NULL)` gives; no type has it |
+
+`ISOLINE_VALKIND_INVALID` is `0xFF`, which `wasm_valkind_is_ref()` reports as a reference: test a kind for
+it before asking `wasm.h`. `isoline_valtype_heap()` is the reliable test of a type
+(`ISOLINE_HEAP_NOT_REFERENCE` for numbers and vectors).
+
+No `wasm_` function makes a `wasm_val_t` of kind `ISOLINE_VALKIND_V128`: `wasm_val_t` has no 16-byte member
+to hold one.
+
+The numbering is to be coordinated upstream (an issue on WebAssembly/wasm-c-api proposing kinds for v128
+and exnref, drafted and not yet filed); until a number is agreed there, Isoline's stay where they are.
+
+A reference type's kind names its hierarchy: `(ref func)`, `nullfuncref` and a module's `(ref $t)` all
+report `WASM_FUNCREF`. `isoline_valtype_heap()`, `isoline_valtype_nullability()` and
+`isoline_valtype_concrete_index()` tell them apart. `wasm_valtype_new()` makes the nullable abstract
+references only.
+
+## Limits
+
+`wasm_limits_t` holds 32-bit sizes. For a memory or table whose sizes need more (memory64, table64),
+`wasm_memorytype_limits()` and `wasm_tabletype_limits()` report each size past `UINT32_MAX` as
+`wasm_limits_max_default`, which `wasm.h` also uses for "no maximum"; the clamp goes one way only.
+`isoline_memorytype_limits64()` and `isoline_tabletype_limits64()` give the sizes exactly, in an
+`isoline_limits64_t`, and `isoline_memorytype_new()` and `isoline_tabletype_new()` make types of any
+address width and, for memories, either page size custom-page-sizes admits (64 KiB or 1 byte).
+
+`isoline_limits64_t` is size first: the caller sets `struct_size = sizeof(isoline_limits64_t)` of the
+header it was built with. The library accepts any `struct_size` from 32, the size the struct was first
+published with, up to 4096, and refuses every other with `ISOLINE_ERROR_INVALID_ARGUMENT`. It reads and
+writes only the fields that fit in `struct_size`: a caller built against an older, smaller struct gets the
+prefix it knows, and nothing past `struct_size` is written. Read as input, a nonzero `reserved` byte, a
+nonzero `maximum` without `ISOLINE_MAXIMUM_GIVEN`, and, in a struct larger than the library's, a nonzero
+byte past its fields (a later minor's field it does not know) are `ISOLINE_ERROR_INVALID_ARGUMENT`. Written
+as output, every byte past the library's fields, up to `struct_size`, is zeroed.
+
+A size-first struct is otherwise an output's shape. `isoline_memorytype_new()` and `isoline_tabletype_new()`
+take one as input, because `wasm.h`'s `wasm_limits_t` cannot hold 64-bit limits; the same prefix rule holds
+for them.
+
 ## Errors
 
 A fallible `isoline_` function returns an `isoline_error_t*`, NULL on success. An error has a code, which

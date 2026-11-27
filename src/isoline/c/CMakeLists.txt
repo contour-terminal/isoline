@@ -38,12 +38,15 @@ endif()
 set(isolineCSources
     Abi.cpp
     Error.cpp
-    WasmVectors.cpp)
+    WasmTypes.cpp
+    WasmVectors.cpp
+    detail/Convert.cpp)
 set(isolineCHeaders
     abi.h
     error.h
     export.h
-    isoline.h)
+    isoline.h
+    val.h)
 set(isolineWasmHeader "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include/wasm.h")
 
 ## @brief Creates the C API library @p target of @p type (SHARED or STATIC) from the C API's sources, over
@@ -235,6 +238,7 @@ if(ISOLINE_TESTING)
     # The cases out of host memory replace the global operator new, which is the whole program's: their
     # binary is isoline_c_memory_test, below.
     set(isolineCHostMemoryTestSources "${CMAKE_CURRENT_SOURCE_DIR}/ErrorHostMemory_test.cpp"
+                                       "${CMAKE_CURRENT_SOURCE_DIR}/TypesHostMemory_test.cpp"
                                        "${CMAKE_CURRENT_SOURCE_DIR}/VectorHostMemory_test.cpp")
     list(REMOVE_ITEM isolineCTestSources ${isolineCHostMemoryTestSources})
     # The C test support compiled as C, a callback the C++ tests call through the C API's trampoline.

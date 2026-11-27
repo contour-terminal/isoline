@@ -17,7 +17,7 @@
 /* The cases in groups that each fit a line. */
 #define C_TEST_SIZE_CASES(X)   X(overflowingSizeIsEmpty) X(allocationFailureIsEmpty) X(newEmptyIsEmpty)
 #define C_TEST_MAKE_CASES(X)   X(uninitializedIsZeroed) X(newCopiesTheElements) X(newWithNullDataIsEmpty)
-#define C_TEST_COPY_CASES(X)   X(copyIsElementwise) X(copyOfNullDataIsEmpty)
+#define C_TEST_COPY_CASES(X)   X(copyIsElementwise) X(copyIsDeep) X(copyOfNullDataIsEmpty)
 #define C_TEST_DELETE_CASES(X) X(deleteNullDataIsSafe) X(deleteTwiceIsSafe) X(nullVectorIsSafe)
 #define C_TEST_CASES(X)  \
     C_TEST_SIZE_CASES(X) \
@@ -156,6 +156,28 @@ ISOLINE_TEST_CASE(copyIsElementwise)
     wasm_byte_vec_new_empty(&original);
     wasm_byte_vec_copy(&copy, &original);
     CHECK(copy.size == 0 && copy.data == NULL);
+}
+
+ISOLINE_TEST_CASE(copyIsDeep)
+{
+    /* A vector of own pointers copies its elements too: the copy's are its own, and outlive the original's. A
+     * shallow copy would leave the copy's pointers dangling, which the sanitizers report. */
+    wasm_valtype_vec_t original;
+    wasm_valtype_vec_t copy;
+    wasm_valtype_vec_new_uninitialized(&original, 3);
+    REQUIRE(original.size == 3);
+    original.data[0] = wasm_valtype_new(WASM_F64);
+    original.data[1] = NULL;
+    original.data[2] = wasm_valtype_new(ISOLINE_VALKIND_EXNREF);
+    wasm_valtype_vec_copy(&copy, &original);
+    REQUIRE(copy.size == 3 && copy.data != NULL);
+    CHECK(copy.data[0] != original.data[0] && copy.data[2] != original.data[2]);
+    /* A slot not yet filled is copied as one. */
+    CHECK(copy.data[1] == NULL);
+    wasm_valtype_vec_delete(&original);
+    CHECK(wasm_valtype_kind(copy.data[0]) == WASM_F64);
+    CHECK(wasm_valtype_kind(copy.data[2]) == ISOLINE_VALKIND_EXNREF);
+    wasm_valtype_vec_delete(&copy);
 }
 
 ISOLINE_TEST_CASE(copyOfNullDataIsEmpty)

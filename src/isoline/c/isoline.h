@@ -24,3 +24,5 @@
 
 /* After export.h, which gives wasm.h's WASM_API_EXTERN the C API's annotation. */
 #include <wasm.h>
+
+#include <isoline/c/val.h>
