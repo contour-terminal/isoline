@@ -112,6 +112,106 @@ The check is built with the tests (`ISOLINE_TESTING`). It fails when an installe
 syntax, such as an annotation, `pre` or `contract_assert`, even where the library itself compiles as
 C++26. It also fails when a header does not include what it uses.
 
+## What reflection checks
+
+Reflection only verifies. The tables, `src/isoline/meta/EnumTables.def` and `Opcodes.def` stay the
+source on every compiler, and no shipped value is computed by reflection, so the object code is the
+same on both paths. Where reflection is native, two targets exist that the fallback does not have
+(`isoline_add_reflection_check()`, built with the tests):
+
+- `isoline_meta_reflection_test` (label `unit`) tests the checks on fixtures of its own.
+- `isoline_enum_tables_check` is compile-only: its `static_assert`s are the check, and the build fails
+  when one does.
+
+### The registry
+
+`EnumTables.def` has one row per table that an enum indexes, sizes or keys, and one for each `Last` constant that none of those checks:
+
+| Row | Means | Reflection adds |
+|---|---|---|
+| `ISOLINE_ENUM_TABLE(Table, Last, key)` | one row per enumerator, at its index | `Last` is the final enumerator; the enumerators are 0, 1, 2 and on |
+| `ISOLINE_SIZED_TABLE(Table, Last)` | one entry per enumerator 0 through `Last`, no row struct | the same |
+| `ISOLINE_PREFIX_TABLE(Table, Last, "reason")` | one entry per enumerator 0 through `Last`, which is not final | the enumerators are dense through `Last` |
+| `ISOLINE_KEYED_TABLE(Table, "reason")` | rows that start with an enum but are keyed by it, not indexed | the row is registered |
+| `ISOLINE_LAST_ENUMERATOR(Last, "reason")` | a `Last` constant no reachable table checks | `Last` is the final enumerator |
+| `ISOLINE_SOURCE_LOCAL_TABLE("file", Table, "reason")` | a table in a source file, out of reflection's reach | nothing: the lint checks the row (below) |
+
+Each `ENUM` and `SIZED` row restates its table's own C++23 check, which every compiler runs. C++23 can
+check that a table has one row per enumerator 0 through `Last`, at its index, but not that `Last` is
+the final enumerator: an enumerator appended after `Last`, with no row, builds on every C++23 compiler.
+Reflection names it. With `Extra` appended to `TrapCode`, `isoline_core` still builds on
+`gcc-fallback`, and `gcc-cxx26` fails:
+
+```text
+error: static assertion failed: EnumTables.def: runtime::TrapTable: TrapCode::Extra follows LastTrapCode (TrapCode::StepLimitExceeded), which must be TrapCode's final enumerator
+```
+
+A misplaced row is the one `meta::firstMisplacedRow()` finds, the C++23 search every table's check
+uses. Reflection only names its row and enumerator ("row 0 names WriteError::PageSizeNotWritable,
+where WriteError::TextTooLarge belongs").
+
+### Discovery
+
+The check compiles one generated umbrella header, which includes every `.hpp` of the header sets of
+`isoline_core`, `isoline_text` and `isoline_cli` (an X-macro `.def` is left out), and every other
+`.hpp` under their sources: the private headers, but not `testing/` or `meta/reflection/`. A table in a
+new header is therefore reached without a row. Over those headers it asserts:
+
+- every namespace-scope `std::array` whose row's first member is a scoped enum, anywhere under
+  `isoline`, is a row of `EnumTables.def`. Discovery walks every namespace but a `testing` one, at any
+  depth, and `isoline::meta`, which holds the checks;
+- every `KEYED` row, and every `ENUM` row keyed by its row's first member, is such a table, so a stale
+  row fails. `cli::FeatureChoices` and `text::KnownAnnotations` are indexed by a later member, which
+  discovery does not look for;
+- every namespace-scope `Last` constant (a variable named `Last…` of a scoped enum type) is the `Last`
+  of a row. Where no reachable table names one, an `ISOLINE_LAST_ENUMERATOR` row checks only that it is
+  its enum's final enumerator: appending an enumerator to `NameShape` without moving `LastNameShape`
+  fails;
+- every namespace that discovery walks, at any depth, is listed in `DiscoveredNamespaces`, or is
+  anonymous or named `detail` (its parent's). A new namespace, such as `isoline::probe` or
+  `isoline::runtime::probe`, fails until it has its row.
+
+`DiscoveredNamespaces` is `isoline` and `isoline::api`, `binary`, `c`, `cli`, `config`, `interpreter`,
+`runtime`, `text` and `validate`. The C API's private headers reach the check through its static library,
+where the C API is built (`ISOLINE_C_API`), and are left out where it is not.
+
+### What reflection cannot reach
+
+A table in a source file, in its anonymous namespace or a function, is out of reflection's reach. Each
+enum-first one is an `ISOLINE_SOURCE_LOCAL_TABLE("file", Table, "reason")` row, which keeps the table's
+own C++23 check and says why it stays in its file. The lint test `enum-tables-current`
+(`scripts/check-enum-tables.py`, on every compiler) scans every source file but the tests for table
+declarations (`std::to_array<Row>` and `std::array<Row, N>`), and fails on an enum-first one that has no
+row, on a row whose file declares no such table, and when this list differs from the rows:
+
+<!-- source-local-tables:begin -->
+- `c/detail/Convert.cpp`: `TypeRefusalRows`, indexed by TypeRefusal (c/detail/Convert.hpp); its rows hold the messages only the file's typeRefusalError() reads
+- `binary/Encoder.cpp`: `SectionWriters`, keyed by SectionAnchor; its rows name ModuleEncoder's member functions
+- `binary/NameSection.cpp`: `ShapeCodecs`, indexed by NameShape; its rows name the file's codec functions
+- `interpreter/Numerics.cpp`: `NumericTable`, keyed by Opcode, a subset; its rows name the file's evaluators
+- `interpreter/Simd.cpp`: `SimdTable`, keyed by Opcode, a subset; its rows hold the file's evaluators
+- `runtime/Store.cpp`: `Usages`, indexed by Limit; local to Store::used(), whose accessors its rows name
+- `text/Annotations.cpp`: `AnnotationReaders`, one reader per AnnotationKind, no row struct; it names the file's readers
+- `text/Annotations.cpp`: `MultipleNameErrors`, one TextErrorCode per NameShape, no row struct; read by the file's name reader alone
+- `text/InstructionReader.cpp`: `ConstantRows`, keyed by ImmediateKind, a subset; its rows name the file's literal parsers
+- `validate/Validator.cpp`: `ConstantTable`, keyed by Opcode, a subset: the constant instructions, read by the validator alone
+- `validate/Validator.cpp`: `LaneTable`, keyed by Opcode, a subset: the lane instructions, read by the validator alone
+<!-- source-local-tables:end -->
+
+`interpreter/Simd.cpp`'s `Evaluator` is a variant with one alternative per `SimdShape`, not a table;
+`LastSimdShape` has an `ISOLINE_LAST_ENUMERATOR` row instead, as do the other `Last` constants no
+reachable table checks.
+
+The tables of `runtime/ValueCheck.cpp` and `cli/Verbs.cpp` are plain data, so they moved into the
+private headers `runtime/ValueCheckTables.hpp` and `cli/VerbsTables.hpp`, where discovery reaches them.
+
+### What stays a review question
+
+- **`SIZED` and `PREFIX` tables have no row struct,** so discovery cannot find one: a sized table that
+  is missing its row goes unnoticed. Its own C++23 size check still holds.
+- **A `KEYED` table's relation is not checked.** Reflection checks that the table is registered and that
+  its row still starts with a scoped enum, not that its rows hold the relation the reason names.
+
 ## The consumer floor
 
 Consumers move to C++26 only once GCC, Clang, Apple Clang and MSVC all ship reflection and contracts in
@@ -150,6 +250,9 @@ Each has a build and a test preset. `gcc-debug` keeps `AUTO`, so on GCC 16.2 it 
 - `-fcontracts` needs `-std=c++26`. Without `-fcontracts` on the link line, or without `-lstdc++exp`,
   the link fails with an undefined `handle_contract_violation`. The probe passes the flags to the
   compile only, as a target does, so it fails the same way when the library is missing.
+- `isoline_enum_tables_check` compiles in 2.7 s and 547 MB on GCC 16.2.1, against 1.4 s and 364 MB to
+  parse its umbrella header (70 headers) as C++23: reflection about doubles the cost of one translation
+  unit, which only native lanes compile.
 - Clang 22.1.8 accepts neither `-freflection` nor `-fcontracts`.
 - CMake 4.3 knows no C++26 mode of MSVC 19.51, and `try_compile` refuses to generate a project that
   requires one. A probe whose standard is missing from `CMAKE_CXX_COMPILE_FEATURES` therefore fails

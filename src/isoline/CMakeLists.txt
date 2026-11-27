@@ -136,10 +136,11 @@ endif()
 
 if(ISOLINE_TESTING)
     # Every *_test.cpp under src/isoline/ is one translation unit of the single unit-test binary,
-    # except in the directories whose tests link a target of their own and build their own binary.
+    # except in the directories whose tests link a target of their own and build their own binary
+    # (meta/reflection's only where reflection is native, below).
     # Those under a posix/ directory test what only POSIX systems have (signal dispositions), and are
     # added on those alone, so that no test source checks for the platform.
-    set(isolineSeparateTestDirectories text cli)
+    set(isolineSeparateTestDirectories text cli meta/reflection)
     file(GLOB_RECURSE isolineTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
     foreach(directory IN LISTS isolineSeparateTestDirectories)
         list(FILTER isolineTestSources EXCLUDE REGEX "/${directory}/[^/]*_test\\.cpp$")
@@ -177,4 +178,26 @@ if(ISOLINE_TESTING)
         add_test(NAME isoline_interrupt_latency COMMAND isoline_test "[perf]")
         set_tests_properties(isoline_interrupt_latency PROPERTIES LABELS perf TIMEOUT 300)
     endif()
+
+    # The reflection checks (docs/language-features.md), only where reflection is native: their test,
+    # and the exhaustive check of meta/EnumTables.def over every header of the libraries, installed or
+    # private, but the test helpers' and the checks' own.
+    isoline_add_reflection_check(isoline_meta_reflection_test TEST LABELS unit
+        SOURCES meta/reflection/EnumReflection_test.cpp
+        LINK_LIBRARIES isoline::core)
+    # The C API's private headers include its C headers (wasm.h among them): reached through its static
+    # library where the C API is built, and left out where it is not.
+    set(isolineEnumTablesLinks isoline::cli)
+    set(isolineEnumTablesExcludes "/testing/" "^isoline/meta/reflection/")
+    if(TARGET isoline::c_static)
+        list(APPEND isolineEnumTablesLinks isoline::c_static)
+    else()
+        list(APPEND isolineEnumTablesExcludes "^isoline/c/")
+    endif()
+    isoline_add_reflection_check(isoline_enum_tables_check
+        SOURCES meta/reflection/EnumTablesCheck.cpp
+        LINK_LIBRARIES ${isolineEnumTablesLinks}
+        UMBRELLA isoline/meta/reflection/EnumTablesUmbrella.hpp
+        HEADER_TARGETS isoline_core isoline_text isoline_cli
+        EXCLUDE ${isolineEnumTablesExcludes})
 endif()

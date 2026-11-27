@@ -272,6 +272,9 @@ enum class Mutability : uint8_t
     Var,
 };
 
+/// The last Mutability enumerator, which sizes the tables indexed by it (meta/EnumTables.def).
+inline constexpr auto LastMutability = Mutability::Var;
+
 /// A global's type: its value type and whether it is mutable.
 struct GlobalType
 {

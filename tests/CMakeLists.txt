@@ -197,6 +197,14 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME fetch-tools-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/fetch-tools_test.py")
     set_tests_properties(fetch-tools-selftest PROPERTIES LABELS lint)
+    # Every enum-first table in a source file, which reflection cannot reach, is a source-local row of
+    # src/isoline/meta/EnumTables.def, and docs/language-features.md lists those rows.
+    add_test(NAME enum-tables-current
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-enum-tables.py")
+    set_tests_properties(enum-tables-current PROPERTIES LABELS lint)
+    add_test(NAME check-enum-tables-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-enum-tables_test.py")
+    set_tests_properties(check-enum-tables-selftest PROPERTIES LABELS lint)
 endif()
 
 # The language-feature decisions (cmake/IsolineLanguageFeatures.cmake), one row per case, in script

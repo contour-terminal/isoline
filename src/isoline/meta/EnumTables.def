@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The registry of Isoline's enum tables: every table an enum indexes, sizes or keys, and every Last
+// constant, one row each. Names are relative to isoline::.
+//
+//     ISOLINE_ENUM_TABLE(Table, Last, key)         indexed by an enum: one row per enumerator, at its
+//                                                  index; Last is the final enumerator; key is the
+//                                                  row member naming it (Row::member, no &)
+//     ISOLINE_SIZED_TABLE(Table, Last)             one entry per enumerator 0..Last, no row struct;
+//                                                  Last is the final enumerator
+//     ISOLINE_PREFIX_TABLE(Table, Last, "reason")  one entry per enumerator 0..Last, where Last is not
+//                                                  the final enumerator, and why
+//     ISOLINE_KEYED_TABLE(Table, "reason")         rows that start with a scoped enum but are keyed by
+//                                                  it, not indexed; the reason is the relation
+//     ISOLINE_LAST_ENUMERATOR(Last, "reason")      a Last constant no table row above checks, and why:
+//                                                  Last is its enum's final enumerator
+//     ISOLINE_SOURCE_LOCAL_TABLE("file", Table, "reason")
+//                                                  a table in a source file (under src/isoline/), which
+//                                                  reflection cannot reach, and why it stays there
+//
+// Each ENUM and SIZED row restates the table's own C++23 check (rubric R8: spelled twice, accepted).
+// Where reflection is native, meta/reflection/EnumTablesCheck.cpp extends it: Last is the final
+// enumerator and the enumerators are dense from 0; every namespace-scope enum-first table of a header
+// is an ENUM or KEYED row, and every KEYED row (and ENUM row keyed by its first member) is such a
+// table; every Last constant is the Last of a row. SIZED and PREFIX tables have no row struct, so
+// discovery cannot find one whose row is missing, and that a KEYED table's relation holds is a review
+// question: reflection checks only that it is registered. SOURCE_LOCAL rows are checked by
+// scripts/check-enum-tables.py (the lint test enum-tables-current), on every compiler: every enum-first
+// table in a source file is one, each names a table its file declares, and docs/language-features.md
+// lists them. Adding a table is adding its row here. The file has no include guard; each includer
+// defines all six macros.
+
+// isoline
+ISOLINE_ENUM_TABLE(FeatureTable, LastFeature, FeatureRow::feature)
+
+// isoline::binary
+ISOLINE_ENUM_TABLE(binary::CustomErrorTable, binary::LastCustomErrorCode, binary::CustomErrorRow::code)
+ISOLINE_ENUM_TABLE(binary::DecodeErrorTable, binary::LastDecodeErrorCode, binary::DecodeErrorRow::code)
+ISOLINE_ENUM_TABLE(binary::ExternKinds, binary::LastExternKind, binary::ExternKindRow::kind)
+ISOLINE_ENUM_TABLE(binary::NameSubsections, binary::LastNameKind, binary::NameSubsection::kind)
+ISOLINE_ENUM_TABLE(binary::OpcodeTable, binary::LastOpcode, binary::OpcodeInfo::opcode)
+ISOLINE_ENUM_TABLE(binary::SignatureTable, binary::LastOpcodeSignature, binary::SignatureRow::signature)
+ISOLINE_SIZED_TABLE(binary::detail::MemoryLaneWidthByShape, binary::LastVectorShape)
+ISOLINE_KEYED_TABLE(binary::OpcodeCrossRequirements, "one row per (instruction, second proposal) pair")
+ISOLINE_KEYED_TABLE(binary::MemoryAccessTable, "one row per load or store instruction, a subset of Opcode")
+ISOLINE_KEYED_TABLE(binary::ElementForms, "indexed by the element segment's flag byte; a mode repeats")
+ISOLINE_KEYED_TABLE(binary::DataForms, "indexed by the data segment's flag byte; a mode repeats")
+ISOLINE_LAST_ENUMERATOR(binary::LastSectionAnchor, "SectionEncodings' anchors start past BeforeFirst, not at 0")
+ISOLINE_LAST_ENUMERATOR(binary::LastNameShape, "its tables are source-local: ShapeCodecs and MultipleNameErrors")
+
+// isoline::interpreter
+ISOLINE_LAST_ENUMERATOR(interpreter::LastSimdShape, "its table is interpreter/Simd.cpp's Evaluator variant")
+
+// isoline::runtime
+ISOLINE_ENUM_TABLE(runtime::LimitTable, runtime::LastLimit, runtime::LimitRow::limit)
+ISOLINE_ENUM_TABLE(runtime::LinkErrorTable, runtime::LastLinkErrorCode, runtime::LinkErrorRow::code)
+ISOLINE_ENUM_TABLE(runtime::PollSiteTable, runtime::LastPollSite, runtime::PollSiteRow::site)
+ISOLINE_ENUM_TABLE(runtime::RankTable, validate::LastHeapRank, runtime::RankRow::rank)
+ISOLINE_ENUM_TABLE(runtime::ReferenceTable, runtime::LastRefKind, runtime::ReferenceRow::kind)
+ISOLINE_ENUM_TABLE(runtime::RefusalTable, runtime::LastRefusal, runtime::RefusalRow::refusal)
+ISOLINE_ENUM_TABLE(runtime::TrapTable, runtime::LastTrapCode, runtime::TrapRow::code)
+
+// isoline::validate
+ISOLINE_ENUM_TABLE(validate::AddressBoundTable, binary::LastAddressType, validate::AddressBoundRow::addressType)
+ISOLINE_ENUM_TABLE(validate::HeapTable, binary::LastAbstractHeapType, validate::HeapRow::kind)
+ISOLINE_ENUM_TABLE(validate::ValidationErrorTable,
+                   validate::LastValidationErrorCode,
+                   validate::ValidationErrorRow::code)
+ISOLINE_SIZED_TABLE(validate::AbstractHeapTypeNames, binary::LastAbstractHeapType)
+ISOLINE_PREFIX_TABLE(validate::NumberNames, binary::ValueKind::V128, "Ref is spelled apart, from its heap type")
+ISOLINE_KEYED_TABLE(validate::MemoryBoundTable, "one row per (address type, page size) pair")
+
+// isoline::text
+ISOLINE_ENUM_TABLE(text::KnownAnnotations, text::LastAnnotationKind, text::KnownAnnotation::kind)
+ISOLINE_ENUM_TABLE(text::SpaceRows, text::LastIndexSpace, text::SpaceRow::space)
+ISOLINE_ENUM_TABLE(text::TextErrorTable, text::LastTextErrorCode, text::TextErrorRow::code)
+ISOLINE_SIZED_TABLE(text::LiteralErrorCodes, text::LastLiteralError)
+ISOLINE_KEYED_TABLE(text::InternalTextNames, "the instructions the text format spells apart, a subset of Opcode")
+ISOLINE_KEYED_TABLE(text::IndexImmediates, "the immediate kinds that take indices, a subset of ImmediateKind")
+
+// isoline::api: the errors the C API reports. Each Last sizes c::detail::EnumErrorRows<Enum>::Rows, a class
+// template member discovery does not reach; c/detail/ErrorRows.hpp checks those rows (rowsAreComplete()).
+ISOLINE_LAST_ENUMERATOR(api::LastCallFailure, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(api::LastInvalidTypeReason, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(api::LastMemoryAccessError, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(api::LastFunctionRefError, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(api::LastGlobalAccessError, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(api::LastTableAccessError, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(api::LastExportAccessError, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(api::LastPrepareError, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
+ISOLINE_LAST_ENUMERATOR(runtime::LastMismatchKind, "no table is indexed by it: the C API reports each enumerator as an error detail")
+
+// isoline::c: the C boundary's conversions between its constants and the C++ API's.
+ISOLINE_ENUM_TABLE(c::detail::ExternKindRows, binary::LastExternKind, c::detail::ExternKindRow::kind)
+ISOLINE_ENUM_TABLE(c::detail::MutabilityRows, binary::LastMutability, c::detail::MutabilityRow::mutability)
+ISOLINE_ENUM_TABLE(c::detail::AddressTypeRows, binary::LastAddressType, c::detail::AddressTypeRow::addressType)
+ISOLINE_KEYED_TABLE(c::detail::HeapRows, "one row per heap a module may declare: every AbstractHeapType but Bot")
+
+// isoline::cli: cli::LastRefusal is the tool's exit refusals, not runtime::LastRefusal.
+ISOLINE_ENUM_TABLE(cli::FeatureChoices, cli::LastFeatureChoice, cli::FeatureChoiceRow::choice)
+ISOLINE_ENUM_TABLE(cli::Refusals, cli::LastRefusal, cli::RefusalRow::refusal)
+ISOLINE_ENUM_TABLE(cli::VerbOptions, cli::LastVerbOption, cli::VerbOptionRow::option)
+ISOLINE_ENUM_TABLE(cli::WriteRefusals, text::LastWriteError, cli::WriteRefusal::error)
+
+// Source files: tables reflection cannot reach (scripts/check-enum-tables.py checks them).
+ISOLINE_SOURCE_LOCAL_TABLE("c/detail/Convert.cpp", TypeRefusalRows, "indexed by TypeRefusal (c/detail/Convert.hpp); its rows hold the messages only the file's typeRefusalError() reads")
+ISOLINE_SOURCE_LOCAL_TABLE("binary/Encoder.cpp", SectionWriters, "keyed by SectionAnchor; its rows name ModuleEncoder's member functions")
+ISOLINE_SOURCE_LOCAL_TABLE("binary/NameSection.cpp", ShapeCodecs, "indexed by NameShape; its rows name the file's codec functions")
+ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Numerics.cpp", NumericTable, "keyed by Opcode, a subset; its rows name the file's evaluators")
+ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Simd.cpp", SimdTable, "keyed by Opcode, a subset; its rows hold the file's evaluators")
+ISOLINE_SOURCE_LOCAL_TABLE("runtime/Store.cpp", Usages, "indexed by Limit; local to Store::used(), whose accessors its rows name")
+ISOLINE_SOURCE_LOCAL_TABLE("text/Annotations.cpp", AnnotationReaders, "one reader per AnnotationKind, no row struct; it names the file's readers")
+ISOLINE_SOURCE_LOCAL_TABLE("text/Annotations.cpp", MultipleNameErrors, "one TextErrorCode per NameShape, no row struct; read by the file's name reader alone")
+ISOLINE_SOURCE_LOCAL_TABLE("text/InstructionReader.cpp", ConstantRows, "keyed by ImmediateKind, a subset; its rows name the file's literal parsers")
+ISOLINE_SOURCE_LOCAL_TABLE("validate/Validator.cpp", ConstantTable, "keyed by Opcode, a subset: the constant instructions, read by the validator alone")
+ISOLINE_SOURCE_LOCAL_TABLE("validate/Validator.cpp", LaneTable, "keyed by Opcode, a subset: the lane instructions, read by the validator alone")
