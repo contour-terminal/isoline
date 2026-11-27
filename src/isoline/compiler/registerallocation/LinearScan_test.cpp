@@ -64,6 +64,7 @@ using isoline::compiler::machine::testing::terminate;
 using isoline::compiler::machine::testing::use;
 using isoline::compiler::machine::testing::useDef;
 using isoline::compiler::registerallocation::LinearScanAllocator;
+using isoline::compiler::registerallocation::ScanWork;
 using isoline::compiler::registerallocation::testing::AssignmentFaultKind;
 using isoline::compiler::registerallocation::testing::checkAssignment;
 
@@ -586,6 +587,70 @@ TEST_CASE("LinearScan.manySpillsAreNLogN", "[.perf]")
     INFO("12'500: " << quarter.count() << " ns, 50'000: " << full.count() << " ns");
     CHECK(full < std::chrono::milliseconds { 500 });
     CHECK(full < quarter * 8);
+}
+
+namespace
+{
+
+/// @p locals values live across a body of @p temporaries short ones, and one used early and then only past
+/// them all: its rest is placed far from its next use, against registers whose holders need them sooner.
+Build localsOverTemporaries(uint32_t locals, uint32_t temporaries)
+{
+    return [=](Builder& b) {
+        auto& f = b.function();
+        auto const block = f.createBlock(Hotness::Normal);
+        auto values = std::vector<VirtualRegister> {};
+        for ([[maybe_unused]] auto const index: std::views::iota(0U, locals))
+        {
+            values.push_back(b.general());
+            b.constant(block, values.back());
+        }
+        auto const far = b.general();
+        b.constant(block, far);
+        b.store(block, far);
+        for ([[maybe_unused]] auto const index: std::views::iota(0U, temporaries))
+        {
+            auto const temporary = b.general();
+            b.constant(block, temporary);
+            b.store(block, temporary);
+        }
+        for (auto const value: values)
+            b.store(block, value);
+        b.store(block, far);
+        auto const result = b.general();
+        b.constant(block, result);
+        b.ret(block, result);
+    };
+}
+
+/// The scan's work on @p build, which it allocates.
+uint64_t scanWorkOf(Build const& build, uint64_t frameCost)
+{
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    auto function = MachineFunction { memory };
+    auto builder = Builder { function };
+    build(builder);
+    auto work = ScanWork {};
+    auto const frame = LinearScanAllocator { CompileLimits {}, work }.allocate(
+        function, FakeTarget {}, frameCost, CompileCancellation {}, memory);
+    REQUIRE(frame.has_value());
+    return work.steps;
+}
+
+} // namespace
+
+TEST_CASE("LinearScan.rankingIsLinearInTheHolders")
+{
+    // Counted rather than timed: K locals live across N short temporaries, K growing with N, and a rest far
+    // from its next use. Each register's ranking stops at the first holder that needs it by the use, so four
+    // times the function is about four times the work, not sixteen.
+    auto const workOf = [](uint32_t temporaries) {
+        return scanWorkOf(localsOverTemporaries(temporaries / 8, temporaries), temporaries);
+    };
+    auto const quarter = workOf(1'000);
+    auto const full = workOf(4'000);
+    INFO("1'000: " << quarter << " steps, 4'000: " << full << " steps");
+    CHECK(full < quarter * 5);
 }
 
 TEST_CASE("LinearScan.validatesAssignment")

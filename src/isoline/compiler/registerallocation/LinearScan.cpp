@@ -575,6 +575,7 @@ namespace
             {
                 if (taken++ % PollInterval == 0 && _cancellation.state() == CancellationState::Cancelled)
                     return std::unexpected { CompileError { .code = CompileErrorCode::Cancelled } };
+                ++_steps;
                 std::ranges::pop_heap(_queue, std::greater {});
                 auto const [position, child] = _queue.back();
                 _queue.pop_back();
@@ -592,6 +593,9 @@ namespace
         }
 
         [[nodiscard]] std::span<Child const> children() const noexcept { return _children; }
+
+        /// The work done: children taken, ranges visited and holders ranked.
+        [[nodiscard]] uint64_t steps() const noexcept { return _steps; }
 
       private:
         [[nodiscard]] uint32_t newChild(Child child)
@@ -611,6 +615,7 @@ namespace
                 std::ranges::partition_point(ranges, [&](LiveRange range) { return range.end <= part.from; });
             for (auto const& range: std::span { first, ranges.end() })
             {
+                ++_steps;
                 if (range.start >= part.to)
                     return;
                 if (!visit(LiveRange { .start = std::max(range.start, part.from),
@@ -860,9 +865,15 @@ namespace
         }
 
         /// When the holders of @p reg that @p child meets before @p reach next need it: the soonest of them,
-        /// a window's never (it is never evicted), None if no holder is met.
-        [[nodiscard]] uint32_t holdersNeed(
-            uint32_t child, PhysicalRegister reg, uint32_t position, uint32_t use, uint32_t reach) const
+        /// a window's never (it is never evicted), None if no holder is met. The walk stops at the first
+        /// holder needing it no later than @p bound, where the register can no longer win: it then returns
+        /// that need.
+        [[nodiscard]] uint32_t holdersNeed(uint32_t child,
+                                           PhysicalRegister reg,
+                                           uint32_t position,
+                                           uint32_t use,
+                                           uint32_t reach,
+                                           uint32_t bound) const
         {
             auto const& holding = _holdings[registerIndex(reg)];
             auto soonest = None;
@@ -874,12 +885,15 @@ namespace
                     --entry;
                 while (entry != holding.end() && entry->first < std::min(range.end, reach))
                 {
+                    ++_steps;
                     auto const holder = entry->second.child;
                     ++entry;
                     auto next = nextUseOf(holder, position);
                     if (leavesAtTheRead(holder, position, use))
                         next = firstUse(_children[holder].reg, position + 1, _children[holder].to);
                     soonest = std::min(soonest, next);
+                    if (soonest <= bound)
+                        return false;
                 }
                 return true;
             });
@@ -929,8 +943,10 @@ namespace
                     continue;
                 // Ranked by the soonest need of every holder met up to the reach (Wimmer and Franz's next-use
                 // position); free up to it (the first conflict a fixed range past it), the register ranks
-                // above all.
-                auto const next = holdersNeed(child, candidate, position, use, reach);
+                // above all. A register whose holders need it by the use, or by the best one's need, loses
+                // whatever else it holds: its ranking stops there.
+                auto const next =
+                    holdersNeed(child, candidate, position, use, reach, std::max(use, bestNext));
                 if (!best || next > bestNext)
                 {
                     best = candidate;
@@ -996,6 +1012,7 @@ namespace
         std::pmr::vector<Holding> _holdings;                    ///< Per register index.
         std::pmr::vector<uint32_t> _hints; ///< Per virtual register, the register index it last took.
         std::size_t _childBound = 0;
+        mutable uint64_t _steps = 0; ///< The work counter, bumped by the const walks too.
     };
 
     /// The scan's result as locations: per virtual register its children in order, and their places.
@@ -1433,7 +1450,10 @@ std::expected<FrameLayout, CompileError> LinearScanAllocator::allocate(
         return std::unexpected { facts.error() };
 
     auto scan = Scan { function, target, *facts, layout, cancellation, memory };
-    if (auto ran = scan.run(); !ran)
+    auto ran = scan.run();
+    if (_work != nullptr)
+        _work->steps += scan.steps();
+    if (!ran)
         return std::unexpected { ran.error() };
 
     auto const tooLarge = [&](uint64_t requested) {

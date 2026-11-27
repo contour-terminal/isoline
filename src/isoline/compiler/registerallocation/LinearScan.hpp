@@ -12,7 +12,9 @@
 // need latest, when that is after its own use, or waits in its stack slot up to its next use. An evicted
 // remainder stays in its slot, with a window child around each use that is never evicted itself, so no range
 // enters a register twice after an eviction; the number of children is bounded by the values and uses before
-// the scan starts (a scan past the bound is a bug, refused), and each step costs O(log n).
+// the scan starts (a scan past the bound is a bug, refused). Placing a child costs O(log n) for each live
+// range it walks and each holder it meets up to its next use, and ranking a register for an eviction stops at
+// the first holder that needs it by then, or by the best register's need: the register can no longer win.
 //
 // Positions are liveness's: even for block entries and instructions, odd for the gaps between, where every
 // move goes (MachineFunction::movesBefore()). An instruction reads a use at p from the location its value has
@@ -80,13 +82,29 @@ class IRegisterAllocator
     IRegisterAllocator& operator=(IRegisterAllocator&&) = default;
 };
 
+/// The work the scans of an allocator did, counted so that a test can hold the scan to its bound instead of
+/// timing it.
+struct ScanWork
+{
+    uint64_t steps = 0; ///< Children taken off the queue, live ranges visited, and holders ranked.
+};
+
 /// The linear-scan allocator. Stateless once constructed: it holds only the compile's caps, which its
-/// liveness is bounded by.
+/// liveness is bounded by, and where it counts its work.
 class LinearScanAllocator final: public IRegisterAllocator
 {
   public:
     /// An allocator under @p limits (maxLiveSetBits).
     explicit LinearScanAllocator(CompileLimits const& limits) noexcept: _limits { limits } {}
+
+    /// An allocator under @p limits that adds the work of each scan to @p work.
+    /// @param limits The compile's caps (maxLiveSetBits).
+    /// @param work Where the work is counted; it outlives the allocator, and allocations into it do not run
+    ///             concurrently.
+    LinearScanAllocator(CompileLimits const& limits, ScanWork& work) noexcept:
+        _limits { limits }, _work { &work }
+    {
+    }
 
     [[nodiscard]] std::expected<machine::FrameLayout, CompileError> allocate(
         machine::MachineFunction& function,
@@ -97,6 +115,7 @@ class LinearScanAllocator final: public IRegisterAllocator
 
   private:
     CompileLimits _limits;
+    ScanWork* _work = nullptr; ///< Not owned; null when the work is not counted.
 };
 
 } // namespace isoline::compiler::registerallocation

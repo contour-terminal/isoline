@@ -187,19 +187,18 @@ namespace fake
         OperandConstraint {
             .role = OperandRole::Use, .registerClass = RegisterClass::General, .memory = AllowsMemory::Yes },
     });
-    /// How many of FakeTarget's registers a call under @p row clobbers: those it does not preserve.
+    /// How many of FakeTarget's registers a call under @p row clobbers: those it does not preserve, walked as
+    /// callerSavedRegisters() walks them.
     constexpr std::size_t clobberCount(ConventionRow const& row) noexcept
     {
         auto count = std::size_t { 0 };
-        for (auto const& files: { std::span { FakeGeneralRegisters }, std::span { FakeFloatRegisters } })
-            for (auto const reg: files)
-                if (!row.calleeSaved.contains(reg))
-                    ++count;
+        forEachCallerSaved(row, FakeGeneralRegisters, FakeFloatRegisters, [&](PhysicalRegister) { ++count; });
         return count;
     }
 
     /// The rows of a call under @p row: one Def fixed to each register it clobbers, General then Float, after
-    /// @p Lead leading rows of @p lead. Derived from the convention row, never listed by hand.
+    /// @p Lead leading rows of @p lead. Derived from the convention row by callerSavedRegisters()'s own walk
+    /// (forEachCallerSaved()), over the files allocatable() returns, so the two never drift apart.
     template <std::size_t Count, std::size_t Lead = 0>
     constexpr std::array<OperandConstraint, Count + Lead> clobberRows(
         ConventionRow const& row, std::array<OperandConstraint, Lead> const& lead = {}) noexcept
@@ -208,12 +207,11 @@ namespace fake
         auto next = std::size_t { 0 };
         for (auto const& constraint: lead)
             rows[next++] = constraint;
-        for (auto const& files: { std::span { FakeGeneralRegisters }, std::span { FakeFloatRegisters } })
-            for (auto const reg: files)
-                if (!row.calleeSaved.contains(reg))
-                    rows[next++] = OperandConstraint { .role = OperandRole::Def,
-                                                       .registerClass = reg.registerClass,
-                                                       .fixed = reg.number };
+        forEachCallerSaved(row, FakeGeneralRegisters, FakeFloatRegisters, [&](PhysicalRegister reg) {
+            rows[next++] = OperandConstraint { .role = OperandRole::Def,
+                                               .registerClass = reg.registerClass,
+                                               .fixed = reg.number };
+        });
         return rows;
     }
 

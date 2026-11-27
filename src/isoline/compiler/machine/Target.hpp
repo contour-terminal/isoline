@@ -115,6 +115,26 @@ class ITarget
     ITarget& operator=(ITarget&&) = default;
 };
 
+/// Visits the registers a call under @p row clobbers out of the allocatable @p general then @p floats: each
+/// the row does not preserve, in their order. The one derivation of a clobber list: callerSavedRegisters()
+/// runs it on a target, and a target's constexpr operand rows run it on the register files the target
+/// allocates.
+/// @param row The convention row.
+/// @param general The allocatable General registers.
+/// @param floats The allocatable Float registers.
+/// @param visit Called with each clobbered register.
+template <typename Visit>
+constexpr void forEachCallerSaved(ConventionRow const& row,
+                                  std::span<PhysicalRegister const> general,
+                                  std::span<PhysicalRegister const> floats,
+                                  Visit const& visit)
+{
+    for (auto const files: { general, floats })
+        for (auto const reg: files)
+            if (!row.calleeSaved.contains(reg))
+                visit(reg);
+}
+
 /// The registers a call under @p convention clobbers on @p target: every allocatable register its row does
 /// not preserve, General then Float, in the target's order. What a call's, a poll's, a stub's and CallHost's
 /// physical definitions are, derived from the convention row and never listed by hand. (Registers the
@@ -125,12 +145,11 @@ class ITarget
 [[nodiscard]] inline std::pmr::vector<PhysicalRegister> callerSavedRegisters(
     ITarget const& target, Convention convention, std::pmr::memory_resource& memory)
 {
-    auto const& row = target.conventionRow(convention);
     auto clobbered = std::pmr::vector<PhysicalRegister> { &memory };
-    for (auto const registerClass: { RegisterClass::General, RegisterClass::Float })
-        for (auto const reg: target.allocatable(registerClass))
-            if (!row.calleeSaved.contains(reg))
-                clobbered.push_back(reg);
+    forEachCallerSaved(target.conventionRow(convention),
+                       target.allocatable(RegisterClass::General),
+                       target.allocatable(RegisterClass::Float),
+                       [&](PhysicalRegister reg) { clobbered.push_back(reg); });
     return clobbered;
 }
 
