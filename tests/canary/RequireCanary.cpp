@@ -1,15 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// An api precondition, checked as a process of its own: a Require() that fails ends the process, so no
-// Catch2 case can observe it in-process. CTest judges it by the check's own text on stderr
-// (tests/CMakeLists.txt), which only that Require() prints; the line below it, printed only when the
-// check let the call through, fails it.
+// The api preconditions, each checked as a process of its own: a Require() that fails ends the process,
+// so no Catch2 case can observe it in-process. The case to run is the first argument, one row of
+// CanaryCases each. CTest judges a case by the check's own text on stderr (tests/CMakeLists.txt), which
+// only that Require() prints; the line below it, printed only when the check let the call through,
+// fails it.
+#include <algorithm>
+#include <array>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <expected>
+#include <memory>
+#include <optional>
+#include <print>
+#include <span>
+#include <string_view>
 
 #include <isoline/api/Engine.hpp>
+#include <isoline/api/Imports.hpp>
+#include <isoline/api/Store.hpp>
 #include <isoline/api/Types.hpp>
+#include <isoline/api/testing/EngineRows.hpp>
+#include <isoline/binary/testing/Code.hpp>
+#include <isoline/binary/testing/ModuleBuilder.hpp>
 
 namespace
 {
@@ -21,17 +35,258 @@ extern "C" void exitOnAbort(int /*signal*/)
     std::_Exit(EXIT_FAILURE);
 }
 
+using namespace isoline::api;
+using isoline::api::testing::engineRows;
+using isoline::api::testing::contract::configOf;
+using isoline::api::testing::contract::ContractLimits;
+
+/// Relaxed SIMD without SIMD: a feature set not closed over its prerequisites, which Engine's
+/// constructor refuses (Engine.cpp).
+void engineOfOpenFeatureSet()
+{
+    auto const open = FeatureSet::wasm2().without(Feature::Simd).with(Feature::RelaxedSimd);
+    [[maybe_unused]] auto const engine = Engine { EngineConfig { .features = open } };
+}
+
+/// The handles of a store that is gone: one of every kind, taken from an instance of a module that
+/// exports one of each, before its store was destroyed.
+struct DeletedStoreHandles
+{
+    Instance instance; ///< The instance.
+    Function function; ///< Its function "f".
+    Memory memory;     ///< Its memory "m".
+    Global global;     ///< Its global "g".
+    Table table;       ///< Its table "t".
+    Tag tag;           ///< Its tag "e".
+};
+
+/// Ends the case as a failure when what @p step sets up did not happen: a case that cannot reach its
+/// check prints no check text, so CTest fails it, and dereferences nothing it did not get.
+/// @param done Whether the step succeeded.
+/// @param step What it set up.
+void setUp(bool done, std::string_view step)
+{
+    if (done)
+        return;
+    std::println("require-canary: set-up failed: {}", step);
+    std::fflush(stdout);
+    std::_Exit(EXIT_FAILURE);
+}
+
+/// One handle of every kind, of a store destroyed before this returns.
+/// @return The handles.
+[[nodiscard]] DeletedStoreHandles deletedStoreHandles()
+{
+    using namespace isoline::binary::testing;
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .table(TableType {
+            .element = isoline::binary::FuncRef,
+            .limits = { .min = 1, .max = std::nullopt, .addressType = isoline::binary::AddressType::I32 } })
+        .memory(Limits { .min = 1, .max = std::nullopt, .addressType = isoline::binary::AddressType::I32 })
+        .tag(0)
+        .global(GlobalType { .type = isoline::binary::I32, .mutability = isoline::binary::Mutability::Var },
+                i32Const(5))
+        .function(0, {}, {})
+        .exportFunction("f", 0)
+        .exportEntity("m", ExternKind::Memory, 0)
+        .exportEntity("g", ExternKind::Global, 0)
+        .exportEntity("t", ExternKind::Table, 0)
+        .exportEntity("e", ExternKind::Tag, 0);
+    auto const engine = Engine { configOf(ContractLimits {}, engineRows().front()) };
+    auto const module = engine.load(builder.build());
+    setUp(module.has_value(), "the module loads");
+    auto allocator = HeapMemoryAllocator {};
+    auto store = std::make_unique<Store>(engine, allocator);
+    auto const instance = store->instantiate(*module, Imports {});
+    setUp(instance.has_value(), "the module instantiates");
+    auto const function = instance->function("f");
+    auto const memory = instance->memory("m");
+    auto const global = instance->global("g");
+    auto const table = instance->table("t");
+    auto const tag = instance->tag("e");
+    setUp(function && memory && global && table && tag, "the instance exports one entity of each kind");
+    auto handles = DeletedStoreHandles { .instance = *instance,
+                                         .function = *function,
+                                         .memory = *memory,
+                                         .global = *global,
+                                         .table = *table,
+                                         .tag = *tag };
+    store.reset();
+    return handles;
+}
+
+/// Reports that a call on a handle of a deleted store went through.
+/// @param what What was called.
+/// @param serial What the call read, so that it is not optimized away.
+void wentThrough(std::string_view what, uint64_t serial)
+{
+    std::println("{} of a deleted store returned ({})", what, serial);
+}
+
+void functionStoreAfterDelete()
+{
+    wentThrough("Function::store()", deletedStoreHandles().function.store().serial());
+}
+
+void functionTypeAfterDelete()
+{
+    wentThrough("Function::type()", deletedStoreHandles().function.type().params.size());
+}
+
+void memoryStoreAfterDelete()
+{
+    wentThrough("Memory::store()", deletedStoreHandles().memory.store().serial());
+}
+
+void globalStoreAfterDelete()
+{
+    wentThrough("Global::store()", deletedStoreHandles().global.store().serial());
+}
+
+void tableStoreAfterDelete()
+{
+    wentThrough("Table::store()", deletedStoreHandles().table.store().serial());
+}
+
+void tagStoreAfterDelete()
+{
+    wentThrough("Tag::store()", deletedStoreHandles().tag.store().serial());
+}
+
+void tagTypeAfterDelete()
+{
+    wentThrough("Tag::type()", deletedStoreHandles().tag.type().params.size());
+}
+
+void importsInstanceAfterDelete()
+{
+    auto imports = Imports {};
+    imports.define("m", "f", deletedStoreHandles().instance, "f");
+    wentThrough("Imports::define(instance)", 0);
+}
+
+void importsFunctionAfterDelete()
+{
+    auto imports = Imports {};
+    imports.define("m", "f", deletedStoreHandles().function);
+    wentThrough("Imports::define(function)", 0);
+}
+
+void importsMemoryAfterDelete()
+{
+    auto imports = Imports {};
+    imports.define("m", "m", deletedStoreHandles().memory);
+    wentThrough("Imports::define(memory)", 0);
+}
+
+/// A host function that does nothing, which the host-function type cases define.
+[[nodiscard]] std::shared_ptr<IHostFunction> doingNothing()
+{
+    return makeHostFunction([](HostContext&, std::span<Value const>, std::span<Value>) noexcept {
+        return std::expected<void, Abrupt> {};
+    });
+}
+
+/// A nullable reference to a heap of @p kind, of type index 0 where it names one.
+[[nodiscard]] ValueType referenceTo(isoline::binary::AbstractHeapType kind)
+{
+    return ValueType { .kind = ValueKind::Ref,
+                       .nullable = isoline::binary::Nullable::Yes,
+                       .heap = { .kind = kind, .typeIndex = 0 } };
+}
+
+void importsHostTypeConcrete()
+{
+    auto imports = Imports {};
+    auto const concrete = referenceTo(isoline::binary::AbstractHeapType::Concrete);
+    imports.define("m", "f", FuncType { .params = { concrete }, .results = {} }, doingNothing());
+    wentThrough("Imports::define() of a concrete type index", 0);
+}
+
+void importsHostTypeBottom()
+{
+    auto imports = Imports {};
+    auto const bottom = referenceTo(isoline::binary::AbstractHeapType::Bot);
+    imports.define("m", "f", FuncType { .params = {}, .results = { bottom } }, doingNothing());
+    wentThrough("Imports::define() of the bot heap", 0);
+}
+
+/// The handles a store made without an instance (Store::defineMemory(), defineTable(), defineGlobal()),
+/// of a store that is gone.
+struct DeletedHostHandles
+{
+    Memory memory; ///< A memory of one page.
+    Table table;   ///< A funcref table of one element.
+    Global global; ///< A mutable i32 global.
+};
+
+/// One host-made handle of every kind defineMemory(), defineTable() and defineGlobal() make, of a store
+/// destroyed before this returns.
+/// @return The handles.
+[[nodiscard]] DeletedHostHandles deletedHostHandles()
+{
+    auto const engine = Engine { configOf(ContractLimits {}, engineRows().front()) };
+    auto allocator = HeapMemoryAllocator {};
+    auto store = std::make_unique<Store>(engine, allocator);
+    auto const unbounded =
+        Limits { .min = 1, .max = std::nullopt, .addressType = isoline::binary::AddressType::I32 };
+    auto const memory = store->defineMemory(MemoryType { .limits = unbounded });
+    auto const table =
+        store->defineTable(TableType { .element = isoline::binary::FuncRef, .limits = unbounded },
+                           Ref { .kind = RefKind::Null, .heap = {}, .address = 0 });
+    auto const global = store->defineGlobal(
+        GlobalType { .type = isoline::binary::I32, .mutability = isoline::binary::Mutability::Var },
+        I32 { 1 });
+    setUp(memory && table && global, "the store defines one entity of each kind");
+    auto handles = DeletedHostHandles { .memory = *memory, .table = *table, .global = *global };
+    store.reset();
+    return handles;
+}
+
+void hostMemoryStoreAfterDelete()
+{
+    wentThrough("a defined Memory::store()", deletedHostHandles().memory.store().serial());
+}
+
+void hostTableStoreAfterDelete()
+{
+    wentThrough("a defined Table::store()", deletedHostHandles().table.store().serial());
+}
+
+void hostGlobalStoreAfterDelete()
+{
+    wentThrough("a defined Global::store()", deletedHostHandles().global.store().serial());
+}
+
+/// A case: its name on the command line, and what it calls.
+struct CanaryCase
+{
+    std::string_view name; ///< The first argument that runs it.
+    void (*run)();         ///< Calls what must fail its Require().
+};
+
+/// Every case, from RequireCanaryCases.def, which tests/CMakeLists.txt reads for the tests.
+constexpr auto CanaryCases = std::to_array<CanaryCase>({
+#define ISOLINE_REQUIRE_CANARY_CASE(function, name, check) { name, function },
+#include "RequireCanaryCases.def"
+#undef ISOLINE_REQUIRE_CANARY_CASE
+});
+
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     std::signal(SIGABRT, exitOnAbort);
-    using isoline::api::Feature;
-    using isoline::api::FeatureSet;
-    // Relaxed SIMD without SIMD: a feature set not closed over its prerequisites, which Engine's
-    // constructor refuses (Engine.cpp).
-    auto const open = FeatureSet::wasm2().without(Feature::Simd).with(Feature::RelaxedSimd);
-    auto const engine = isoline::api::Engine { isoline::api::EngineConfig { .features = open } };
-    std::puts("require-canary: an engine of an open feature set was constructed");
-    return engine.config().features == open ? 0 : 1;
+    auto const arguments = std::span { argv, static_cast<std::size_t>(argc) };
+    auto const name = arguments.size() > 1 ? std::string_view { arguments[1] } : std::string_view {};
+    auto const found = std::ranges::find(CanaryCases, name, &CanaryCase::name);
+    if (found == CanaryCases.end())
+    {
+        std::puts("require-canary: usage: isoline_require_canary <case>");
+        return EXIT_FAILURE;
+    }
+    found->run();
+    std::println("require-canary: {}: the check let the call through", name);
+    return EXIT_SUCCESS;
 }

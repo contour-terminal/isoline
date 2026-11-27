@@ -34,6 +34,7 @@ target_sources(isoline_core
     PRIVATE
         Version.cpp
         api/Engine.cpp
+        api/Extern.cpp
         api/Imports.cpp
         api/Module.cpp
         api/Store.cpp
@@ -62,6 +63,7 @@ target_sources(isoline_core
             api/CallError.hpp
             api/Engine.hpp
             api/EngineIdentity.hpp
+            api/Extern.hpp
             api/Imports.hpp
             api/Module.hpp
             api/Store.hpp
@@ -118,9 +120,12 @@ if(ISOLINE_TESTING)
     # Where docs/embedding.md is, whose generated blocks PublishedLimits_test checks against the tables.
     target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     isoline_apply_target_policy(isoline_test TEST)
-    add_test(NAME isoline_test COMMAND isoline_test)
+    # The [memory] cases (growth past a store's budgets, hostile deltas) run apart, under a hard memory
+    # cap, so that a broken bound fails small instead of starving a shared machine.
+    add_test(NAME isoline_test COMMAND isoline_test "~[memory]")
     # A bound, so a test that would hang (an interrupt test whose poll went missing) fails instead.
     set_tests_properties(isoline_test PROPERTIES LABELS unit TIMEOUT 600)
+    isoline_add_capped_test(NAME isoline_test_memory TARGET isoline_test LABELS unit ARGS "[memory]")
     # The interrupt latency the specification publishes (p99 interrupt-to-return within 10 ms) is a
     # property of optimized code: measured in release builds only, by the hidden [perf] cases, which
     # the unit run above skips. It asserts wall-clock time, so every test preset but clang-release-perf

@@ -512,7 +512,7 @@ TEST_CASE("Instantiate.memoryAllocationRefused")
     CHECK(store.memoryCount() == 0);
 }
 
-TEST_CASE("Instantiate.tableAllocationRefused")
+TEST_CASE("Instantiate.tableAllocationRefused", "[memory]")
 {
     // A table of 64-bit addresses at the most slots a byte count can express, more than a vector can
     // hold (at most 2^63 bytes), in a store whose budget does not stop it first: the host has no
@@ -536,7 +536,7 @@ TEST_CASE("Instantiate.tableAllocationRefused")
     CHECK(*next == 0);
 }
 
-TEST_CASE("Instantiate.memoryGrowToFourGiB")
+TEST_CASE("Instantiate.memoryGrowToFourGiB", "[memory]")
 {
     // The embedder holds a single page, and records each size it is asked about.
     auto asked = std::vector<uint64_t> {};
@@ -558,7 +558,7 @@ TEST_CASE("Instantiate.memoryGrowToFourGiB")
     CHECK(asked.size() == 1);
 }
 
-TEST_CASE("Instantiate.memoryGrowFailureReturnsMinusOne")
+TEST_CASE("Instantiate.memoryGrowFailureReturnsMinusOne", "[memory]")
 {
     auto allocator = ProvidedMemoryAllocator { 2 * PageSize, 0, grantAll };
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
@@ -834,7 +834,7 @@ TEST_CASE("Instantiate.pageSizeMustMatch")
     CHECK(instantiate(store, executor, importing(large), provided(large)).has_value());
 }
 
-TEST_CASE("Instantiate.memory64")
+TEST_CASE("Instantiate.memory64", "[memory]")
 {
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };

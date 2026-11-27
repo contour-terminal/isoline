@@ -14,16 +14,15 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/api/Extern.hpp>
 #include <isoline/api/Types.hpp>
 
 namespace isoline::api
 {
 
-class Function;
 class Instance;
 class Module;
 class Store;
-class StoreId;
 
 /// Whether an import of a module has a definition that fits it (Imports::resolve()).
 enum class Linkage : uint8_t
@@ -51,8 +50,9 @@ class Imports
     /// is a function of its own type.
     /// @param module The import module name.
     /// @param name The import field name.
-    /// @param type Its type. It names no concrete type index (checked): a host function's type is the
-    ///             same in every store, so it can name no type a module defines.
+    /// @param type Its type (checked, aborting: one Store::define() admits, naming no concrete type index
+    ///             and not the bot heap). A host function's type is the same in every store, so it can
+    ///             name no type a module defines.
     /// @param function Its implementation (checked: not null).
     /// @return This definition set. A later definition of the same names replaces an earlier one.
     Imports& define(std::string module,
@@ -68,7 +68,7 @@ class Imports
     /// identity, never the store.
     /// @param module The import module name.
     /// @param name The import field name.
-    /// @param instance The instance (its store must be alive now).
+    /// @param instance The instance (checked, aborting: its store is alive).
     /// @param exportName The name of one of its exports (checked: it exists).
     /// @return This definition set. A later definition of the same names replaces an earlier one.
     Imports& define(std::string module,
@@ -76,16 +76,18 @@ class Imports
                     Instance const& instance,
                     std::string_view exportName);
 
-    /// Defines a function of a store under @p module and @p name: a host function Store::define() added,
-    /// or a function an instance exports.
+    /// Defines an entity of a store under @p module and @p name: a function, table, memory, global or tag
+    /// an instance exports, or one the store made itself (Store::define(), defineMemory(), defineTable(),
+    /// defineGlobal()).
     ///
     /// Only that store may link it (Store::instantiate() refuses it into any other with ForeignImport).
-    /// The definition keeps the store's identity, never the store.
+    /// The definition keeps the store's identity, never the store, and the entity's type as the store
+    /// holds it now, which resolve() compares.
     /// @param module The import module name.
     /// @param name The import field name.
-    /// @param function The function (its store must be alive now).
+    /// @param value The entity (checked, aborting: its store is alive).
     /// @return This definition set. A later definition of the same names replaces an earlier one.
-    Imports& define(std::string module, std::string name, Function const& function);
+    Imports& define(std::string module, std::string name, Extern const& value);
 
     /// Whether each of @p module's imports has a fitting definition: of its name and kind, and, where it
     /// can be told without a store, of its type.

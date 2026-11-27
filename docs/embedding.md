@@ -9,8 +9,10 @@ with the decoder and validator, and re-exported there. The names the API re-expo
 layers (`api/Types.hpp`) are the public subset of those layers; everything else under `runtime/`,
 `binary/` and `validate/` is internal.
 
-Fallible calls return `std::expected`; a violated precondition (a handle of another store, a null
-implementation) is a programming error of the embedder and aborts. Four functions allocate while the
+Fallible calls return `std::expected`, and a handle of another store, or of a store that is gone, is
+one of their error values wherever it is given. A violated precondition (a null implementation, a host
+function type `Imports` cannot hold, a reference read from a handle whose store is gone) is a
+programming error of the embedder and aborts. Four functions allocate while the
 embedder sets up, and may throw `std::bad_alloc` (or `std::length_error` for a container asked past its
 `max_size()`), leaving nothing half-built: the `Store` constructor, `makeHostFunction()` (which also
 throws what moving the callable throws), and `Imports::define()` and `Imports::resolve()`, of which a
@@ -33,30 +35,46 @@ auto const called = instance->call(*instance->function("run"), args, results);
 ```
 
 1. **`Engine`** holds an `EngineConfig` and nothing else: the features modules are decoded and
-   validated with, the execution engine and mode, the `LoadLimits` and the `StoreLimits` of every store
-   made for it. The feature set must be closed over its prerequisites (checked);
-   `FeatureSet::withPrerequisites()` closes one.
+   validated with, the execution engine and mode, the `LoadLimits`, and the `StoreLimits` every store
+   made for it keeps to unless it overrides them (`StoreOptions`). The feature set must be closed over
+   its prerequisites (checked); `FeatureSet::withPrerequisites()` closes one.
 2. **`Module`** is what `Engine::load()` makes of a module's bytes: decoded, validated and described
    (`imports()`, `exports()`), never linked. A module loads whatever it imports. It carries the
    engine's `EngineIdentity` (engine, mode, features), and only a store of an engine of the same
    identity instantiates it (`EngineMismatch` otherwise).
 3. **`Store`** is where instances live, with their memories, tables, globals, tags and host functions,
-   under one `StoreLimits`. Every limit caps the whole store, all its instances together.
-4. **`Instance`** is a handle to one module instance of a store; `Function` and `Memory` are handles to
-   its exports. All three are cheap to copy and valid as long as their store.
+   under one `StoreLimits`: its engine's, or its own (`StoreOptions`, under *Limits*). Every limit caps
+   the whole store, all its instances together.
+4. **`Instance`** is a handle to one module instance of a store; `Function`, `Table`, `Memory`,
+   `Global` and `Tag` (`api/Extern.hpp`) are handles to its exports, and `Extern` is any one of them, a
+   `std::variant` with one alternative per `ExternKind`, in that order. All are cheap to copy; what they
+   do once their store is gone is under *Lifetimes*.
 
 `Imports` is a plain value holding definitions by module and field name: host functions
 (`define(module, name, type, implementation)`), another instance's export (`define(module, name,
-instance, exportName)`) and a function of a store (`define(module, name, function)`, for a host function
-`Store::define()` added or an exported function). `Imports::resolve()` answers, without a store, whether
-each import of a module has a definition of its name, kind and type.
+instance, exportName)`) and an entity of a store (`define(module, name, extern)`, for any `Extern`: an
+exported one, or one the store made with `define()`, `defineMemory()`, `defineTable()` or
+`defineGlobal()`). `Imports::resolve()` answers, without a store, whether each import of a module has a
+definition of its name, kind and type.
+
+`Store::instantiateByPosition(module, externs)` binds the imports by position instead, as `wasm.h`'s
+`wasm_instance_new()` does: one `Extern` of the store per import, in import order. Names play no part,
+so a module importing `("m", "x")` twice, as a function and as a global, links both, which one `Imports`
+definition of `("m", "x")` cannot. The module's engine is checked first (`EngineMismatch`), then the count
+(`ImportCountMismatch { expected, given }`), then each extern's store (`ForeignImport { index }`, its
+position as index), and linking checks kinds and types as it does for named definitions. Both forms
+share one linking path, so the limits, the nested-instantiation budget and the errors after the lookup
+are the same.
 
 ## Threads
 
 - `Engine` and `Module` are immutable: share them, load and instantiate on any number of threads at
   once.
-- A `Store` and all its instances are one unit, used by one thread at a time. The unit may move to
-  another thread between calls.
+- A `Store` and every handle of it (its `Instance`s, and every `Function`, `Memory`, `Global`, `Table`
+  and `Tag`) are one unit, used by one thread at a time. The unit may move to another thread between
+  calls. Destroying the store on one thread while another thread holds or uses one of its handles is a
+  contract violation: a handle's alive-token check (see *Lifetimes*) catches a store destroyed before
+  the use, on the unit's thread, and synchronizes nothing.
 - The store's `Interrupter` (`Store::interrupter()`) is the one thing another thread may use while the
   store runs.
 - A host function implementation defined in an `Imports` that several stores use is called on each of
@@ -71,21 +89,39 @@ each import of a module has a definition of its name, kind and type.
 ## Lifetimes
 
 - A `Store` copies its engine's configuration: the `Engine` may be destroyed first.
-- The `IMemoryAllocator` and the `IPollObserver` given to a `Store` must outlive it.
+- The `IMemoryAllocator` and the `IPollObserver` (`StoreOptions::observer`) given to a `Store` must
+  outlive it.
 - A `Module` keeps its validated module alive; its descriptions (`ImportDescription`,
   `ExportDescription`, `EngineIdentity`) point into it and are valid while any copy of the module lives.
   The `const&&` overloads are deleted, so a temporary module's descriptions do not compile.
 - `Imports::define(module, name, instance, exportName)` copies the export's address, and
-  `define(module, name, function)` the function's: the instance's store must be alive when the
-  definition is made, and only that store links it (`ForeignImport` from any other). The definition
-  keeps the store's identity (`StoreId`), never the store, so it may outlive the store safely.
-- Handles are valid as long as their store. A `Function` or `Memory` that outlives its store is never
-  taken for one of a later store: every `StoreId` has a serial number unique within the process, which
-  they copy and `Function::isOf()`/`Memory::isOf()` compare, so passing one to a later store's `Instance`
-  is a checked precondition violation. An `Instance` is different: it refers to its store directly, and
-  using one after its store is destroyed is undefined behaviour, which nothing checks.
-- A memory view (`Instance::memoryRange()`) is valid until the next call into the store, which may grow,
-  and so move, the memory.
+  `define(module, name, extern)` the extern's, each with the entity's type as the store holds it then:
+  the store must be alive when the definition is made, and only that store links it (`ForeignImport`
+  from any other). The definition keeps the store's identity (`StoreId`), never the store, so it may
+  outlive the store safely.
+- Handles name their store's entities for as long as the store lives, and are safe to keep after it is
+  destroyed between calls (destroying it from inside one of its own host functions, while a call into it
+  runs, is a contract violation nothing catches: the call still uses the store):
+  each one holds the store's *alive-token*, a `std::weak_ptr` to a token the store owns and destroys
+  first, and checks it before it reads the store. Nothing dereferences a store that is gone:
+  - An `Instance` whose store is gone reports it: `call()` fails with a `CallError` whose `detail` is
+    `StoreDeleted` (`CallFailure::StoreDeleted`), `memoryRange()`, `memorySize()` and `exportAt()` fail
+    with `StoreDeleted`, and the by-name lookups (`function()`, `memory()`, `global()`, `table()`,
+    `tag()`) find nothing: a deleted store names no export.
+  - `Function::type()`, `Tag::type()` and every handle's `store()` return a reference into the store, so
+    they check that it is alive and abort when it is not (a checked precondition violation, never
+    undefined behaviour); `Imports::define()` of an instance or an extern reads the store and checks it
+    the same way. `address()` and `isOf()` read nothing of the store and answer at any time.
+  - A handle is never taken for one of a later store: every `StoreId` has a serial number unique within
+    the process, which handles copy and `isOf()` compares. Every operation given a handle of another
+    store, a deleted one included, refuses it with `ForeignHandle` and reads nothing: the `Store`
+    accessors (`call()`, `globalValue()`, `tableGet()`, `memoryRange()`, `growMemory()`, …) and the
+    `Instance` ones (`call()`, `memoryRange()`, `memorySize()`) alike; `instantiateByPosition()`
+    refuses it as `ForeignImport`. The only checks that abort on a handle's store are those above: the
+    accessors returning a reference into it (`Function::type()`, `Tag::type()`, `store()`), and
+    `Imports::define()` of an instance or an extern, a builder the C API does not reach.
+- A memory view (`Store::memoryRange()`, `Instance::memoryRange()`) is valid until the next call into the
+  store or grow of the memory, either of which may move it.
 
 ## Memory provision
 
@@ -112,10 +148,87 @@ embedder places guest memory in storage of its own.
   `AllocationFailure { Memory, Embedder }`. Such an embedder gives each store its own allocator, or one
   that can provide several memories.
 
+## Globals, tables, memories and exports
+
+An instance's exports are reached by name, of one kind (`Instance::function()`, `memory()`, `global()`,
+`table()`, `tag()`), or by index, of any kind: `Instance::exportAt(index)` returns the export at
+`index` in the module's export order (`Module::exports()`) as an `Extern`, or `OutOfRange`.
+
+The store reads and writes a global, table or memory of any of its instances, or one it defined itself,
+without an instance:
+
+| Call | Returns | Refusals |
+|---|---|---|
+| `globalValue(global)` | its value | `ForeignHandle` |
+| `setGlobal(global, value)` | nothing | `ForeignHandle`, `Immutable` (a const global), `ValueMismatch` |
+| `globalType(global)` | its `GlobalType` | `ForeignHandle` |
+| `tableSize(table)` | its size in elements | `ForeignHandle` |
+| `tableGet(table, index)` | the `Ref` at `index` | `ForeignHandle`, `OutOfBounds` |
+| `tableSet(table, index, ref)` | nothing | `ForeignHandle`, `OutOfBounds`, `ValueMismatch` |
+| `growTable(table, delta, init)` | the old size | `TableGrowthError`: `ForeignHandle`, `InitValueMismatch`, or a `Refusal` |
+| `tableType(table)` | its `TableType`, its minimum the current size | `ForeignHandle` |
+| `memorySize(memory)` | its `MemorySize`, in pages and bytes | `ForeignHandle` |
+| `memoryType(memory)` | its `MemoryType`, its minimum the current size in pages | `ForeignHandle` |
+| `memoryRange(memory, offset, length)` | a view of its bytes | `ForeignHandle`, `OutOfBounds` |
+| `growMemory(memory, deltaPages)` | the old size in pages | `MemoryGrowthError`: `ForeignHandle`, or a `Refusal` |
+
+A refused call changes nothing. A value is checked as a call's arguments are: of the global's type, or
+of the table's element type, a reference of another heap or one naming what the store does not hold
+included (`ValueMismatch`; `InitValueMismatch` for `growTable()`'s `init`). `growTable()` goes through
+the guest's own path: it is charged against `maxTableElements` and refused as `table.grow` would be
+(`TypeMaximum`, `Limit`, `HostMemory`). A refusal while a call into the store runs (a host function
+growing a table) belongs to that call: it is recorded in the call's `refusedGrowth.table`, as a refused
+`table.grow` of the guest's is, and a `CallError` the call ends with reports it. Types are in their
+store's form, as `Function::type()` is: a concrete heap names a type of the store. An `exnref` that
+`globalValue()` or `tableGet()` returns is escaped (see *Exceptions*).
+
+`growMemory()` is `memory.grow`'s path, as `growTable()` is `table.grow`'s: charged against
+`maxMemoryBytes`, refused alike (`TypeMaximum` past the memory's maximum or its address type's reach,
+`Limit`, or the memory's own `Embedder` or `HostMemory`), and a refusal during a call is recorded in its
+`refusedGrowth.memory`. Each growth error is a variant of what its call can produce, so a `Refusal`
+alternative always means the guest's own refusal: `MemoryGrowthError` is `ForeignHandle` or a `Refusal`,
+`TableGrowthError` adds `InitValueMismatch`. A view of a memory (`memoryRange()`, or
+`Instance::memoryRange()`) is valid until the next call into the store or grow of that memory; a view
+of length 0 is valid at any offset.
+
+`Store::function(ref)` names the function a funcref refers to, one read from a table or a global,
+returned by a call or passed to a host function, as a `Function` to call or to ask the type of, an
+element-segment function no instance exports included. It refuses a null reference
+(`FunctionRefError::Null`), a reference to a host object or an exception (`NotFunction`), and an
+address at which the store holds no function (`UnknownAddress`). A reference names no store, only an
+address, so one of another store at an address this store holds a function at names this store's
+function: pass a reference of this store.
+
+The store also defines entities without an instance, to bind to an import or share between instances:
+
+| Call | Returns | Refusals (`DefineError`) |
+|---|---|---|
+| `define(type, function)` | a `Function` | `InvalidType`, `LimitExceeded` (`Types`), `HostMemoryExhausted` |
+| `defineMemory(type)` | a `Memory` of `type.limits.min` zeroed pages | `InvalidType`, `LimitExceeded` (`Memories`, `MemoryBytes`), `AllocationFailure`, `HostMemoryExhausted` |
+| `defineTable(type, init)` | a `Table` of `type.limits.min` elements, each `init` | `InvalidType` (`NonReferenceElement` too), `ValueMismatch`, `LimitExceeded` (`Tables`, `TableElements`), `AllocationFailure`, `HostMemoryExhausted` |
+| `defineGlobal(type, value)` | a `Global` of `value` | `InvalidType`, `ValueMismatch`, `HostMemoryExhausted` |
+
+A defined memory or table takes a module's own path: the same charges against the store's limits and
+the same refusals, every size checked before a byte or element is allocated. A minimum above its
+maximum, or past what its type reaches, is `AllocationFailure { …, TypeMaximum }`; a maximum
+past that reach is clamped to it, and to the store's limit, not allocated. An initial value is checked
+as `setGlobal()`'s and `tableSet()`'s are, before anything is charged. A global charges no limit, as a
+module's does not: its globals are bounded only by the decoder's limits, so an embedder that defines
+globals on a guest's behalf bounds them itself. Types are in store form. A type the host may not
+define is refused, with nothing added, as `InvalidType`: `ConcreteTypeIndex` when it names a concrete
+type index (only a module's own types may), `BottomHeap` when it names the bot heap (the validator's
+own type, which no module may declare), `PageSize` for a memory whose page size custom-page-sizes
+does not admit (1 byte and 64 KiB are the two it does). Each define adds its entity in one step that
+leaves the store unchanged when the host runs out of memory, which is then `HostMemoryExhausted`; a
+memory's bytes and a table's elements are allocated before that step, and their exhaustion is
+`AllocationFailure { …, HostMemory }`.
+
 ## Calls and re-entrancy
 
-`Instance::call()` is the one checked entry into the guest, which a host function's
-`HostContext::invoke()` shares. Arguments are checked against the function's params, and the result
+`Store::call(function, args, results)` is the one checked entry into the guest, which
+`Instance::call()` (once it found its store alive) and a host function's `HostContext::invoke()`
+share. It needs no instance: it calls a host function `Store::define()` added as readily as an exported
+one. Arguments are checked against the function's params, and the result
 slots against its results, before any guest code runs (`ArgumentMismatch` otherwise). Calls are
 re-entrant: a host function may call back into this or another instance of the store, within the call
 that called it. A failure in a nested call stays nested unless the host function returns it, and an
@@ -145,8 +258,9 @@ read-only (`store()`); a host writes only through its checked members: `invoke()
 `callerMemory()` (valid until the next grow or invoke) and `markEscaped()`.
 
 **Out of memory.** Where the host runs out of memory before anything is added to the store
-(`Engine::load()`, `Store::instantiate()` while it prepares, `Store::define()` while it reserves), the
-call is refused with `HostMemoryExhausted`. Once the store is being changed (an instantiation
+(`Engine::load()`, `Store::instantiate()` while it prepares, `Store::define()` while it reserves, and
+`defineMemory()`, `defineTable()` and `defineGlobal()` wholly, as each adds its entity in one step that
+leaves the store unchanged when it fails), the call is refused with `HostMemoryExhausted`. Once the store is being changed (an instantiation
 committing, a host function being added, a call running) the calls are `noexcept`, and running out of
 memory terminates the process: the store is not exception-safe midway through a change.
 
@@ -177,8 +291,11 @@ A failed call is a `CallError`: its `detail` says how it ended, `failure()` redu
 | `HostFailure` | a `HostFailure` a host function the guest called returned |
 | `UncaughtException` | an `UncaughtException`: the exception's tag and payload, copied out of the store |
 | `ArgumentMismatch` | a `ValueMismatch`: the call was refused before it entered the guest |
+| `ForeignHandle` | a `ForeignHandle`: the function is another store's, or a store's that is gone; nothing ran |
+| `StoreDeleted` | a `StoreDeleted`: the instance's store is gone; nothing ran |
 
-`Store::instantiate()` fails with an `InstantiateError`: `EngineMismatch`, `ForeignImport { index }`,
+`Store::instantiate()` fails with an `InstantiateError`: `EngineMismatch`, `ImportCountMismatch
+{ expected, given }` (`instantiateByPosition()` only), `ForeignImport { index }`,
 `LinkError` (`UnknownImport` for an import with no definition, `IncompatibleImportType` for one of
 another kind or type), `LimitExceeded { limit }` (the instance would exceed one of the store's limits,
 checked before anything is allocated), `AllocationFailure { kind, reason }`, `HostMemoryExhausted`, or a
@@ -197,12 +314,34 @@ Contour's `IWasmBackend` contract maps onto these as follows:
 
 ## Limits
 
-A store keeps to the `StoreLimits` of its engine's configuration, fixed at construction. Each count or
-size caps the whole store; each refusal names its `Limit`. `Store::used(limit)` reads what the store
-holds of one: the counts and sizes of its entities; the frames' stack values and the invocations in
-progress (0 between calls); and for `Steps`, the steps the latest outermost call or instantiation took,
-the invocations nested in it included, kept after it ended. `CallDepth` reads 0, as the executor counts
-it while it runs. A limit the guest reaches at run time traps (`CallStackExhausted`,
+A store keeps to the `StoreLimits` of its engine's configuration, or to those its `StoreOptions`
+override them with, fixed at construction:
+
+```cpp
+auto limits = engine.config().store;                   // start from the engine's, change what differs
+limits.maxMemoryBytes = uint64_t { 16 } << 20;
+auto store = Store { engine, allocator, StoreOptions { .limits = limits, .observer = nullptr } };
+```
+
+`StoreOptions::limits` replaces the engine's limits whole; `std::nullopt` (the default) keeps them.
+An override binds that store alone, and may raise a limit above the engine's as well as lower it.
+Limits are no part of `EngineIdentity`, so every store of an engine, whatever its overrides,
+instantiates the engine's modules.
+
+No limit is checked against the host's capacity yet, and the constructor refuses none. A limit set past
+what the host can hold turns the guest's trap at the limit into the process's termination
+(`std::bad_alloc` midway through a call, or a stack overflow). Above all, `maxNestedInvocations` bounds
+recursion on the calling thread's stack in every engine, the interpreters included: each
+Wasm → host → Wasm nesting takes host stack, so its value must fit that thread's stack. A fallible
+factory (`Store::create`) is to check it for every engine, against the store's effective limits rather
+than only its engine's, and to report a refusal as a value; so must any engine code that relies on a
+limit (a guard region sized for `maxMemoryBytes`).
+
+Each count or size caps the whole store; each refusal names its `Limit`. `Store::used(limit)` reads
+what the store holds of one: the counts and sizes of its entities; the frames' stack values and the
+invocations in progress (0 between calls); and for `Steps`, the steps the latest outermost call or
+instantiation took, the invocations nested in it included, kept after it ended. `CallDepth` reads 0, as
+the executor counts it while it runs. A limit the guest reaches at run time traps (`CallStackExhausted`,
 `ExceptionLimitExceeded`, `StepLimitExceeded`) or makes a `grow` return -1 (`Refusal::Limit`); one an
 instantiation would exceed refuses it with `LimitExceeded`. The defaults:
 
@@ -285,8 +424,8 @@ At one poll the interrupt is checked before the step charge, so `Interrupted` be
 <!-- poll-sites:end -->
 
 The block is generated from `runtime::PollSiteTable`, as the limits are. An `IPollObserver` given to the
-store sees every poll, on the executing thread, before the interrupt is checked; poll-counting tests
-and profilers use it.
+store (`StoreOptions::observer`) sees every poll, on the executing thread, before the interrupt is
+checked; poll-counting tests and profilers use it.
 
 **Unpolled host operations.** A few operations are the host's work, bounded by a limit or by the
 module's size but not interruptible midway:
@@ -320,8 +459,8 @@ it by address alone keeps the visible partial writes after an interrupt the same
 ## Exceptions
 
 An exception the guest throws and nothing catches ends the call as `UncaughtException`, a copy of its
-tag and payload. `UncaughtException::tag` compares with `Instance::tag(name)`, the address of an
-exported tag.
+tag and payload. `UncaughtException::tag` compares with the `address()` of the `Tag` an instance
+exports (`Instance::tag(name)`), whose `type()` lists the payload's types.
 
 A store holds its exceptions in an arena capped by `maxExceptions` and `maxExceptionValues`; when it is
 full, an allocation sweeps it and reclaims what no root reaches. An `exnref` handed to the embedder (in

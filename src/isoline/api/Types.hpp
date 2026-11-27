@@ -45,7 +45,9 @@ using runtime::Value;
 // --- Addresses ---
 using runtime::ExnAddr;
 using runtime::FuncAddr;
+using runtime::GlobalAddr;
 using runtime::MemAddr;
+using runtime::TableAddr;
 using runtime::TagAddr;
 
 // --- How execution ends abruptly ---

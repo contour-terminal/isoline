@@ -104,7 +104,7 @@ Imports& Imports::define(std::string module,
                          std::shared_ptr<IHostFunction> function)
 {
     Require(function != nullptr);
-    Require(!namesConcreteType(type));
+    Require(Store::checkHostFunctionType(type).has_value());
     put(std::move(module),
         std::move(name),
         HostDefinition { .type = std::move(type), .function = std::move(function) });
@@ -116,36 +116,27 @@ Imports& Imports::define(std::string module,
                          Instance const& instance,
                          std::string_view exportName)
 {
+    Require(instance.isAlive());
     auto const& runtime = instance._store->_runtime;
     auto const& exports = runtime.moduleInstance(instance._address).exports;
     auto const found = std::ranges::find(
         exports, exportName, [](auto const& entry) -> std::string_view { return entry.first; });
     Require(found != exports.end());
     auto const value = found->second;
-    auto type = [&]() -> EntityType {
-        switch (value.kind)
-        {
-            case ExternKind::Func: return runtime.functionType(value.address);
-            case ExternKind::Table: return runtime.table(value.address).type;
-            case ExternKind::Memory: return runtime.memory(value.address).type;
-            case ExternKind::Global: return runtime.global(value.address).type;
-            case ExternKind::Tag: break; // below the switch, so that every kind is a case
-        }
-        return runtime.type(runtime.tag(value.address).typeId);
-    }();
     put(std::move(module),
         std::move(name),
-        StoreDefinition { .store = instance._store->_id, .value = value, .type = std::move(type) });
+        StoreDefinition {
+            .store = instance._store->_id, .value = value, .type = instance._store->entityTypeOf(value) });
     return *this;
 }
 
-Imports& Imports::define(std::string module, std::string name, Function const& function)
+Imports& Imports::define(std::string module, std::string name, Extern const& value)
 {
+    auto const& store = Store::ownerOf(value);
+    auto const entity = Store::externValueOf(value);
     put(std::move(module),
         std::move(name),
-        StoreDefinition { .store = function.store().shared_from_this(),
-                          .value = { .kind = ExternKind::Func, .address = function.address() },
-                          .type = function.type() });
+        StoreDefinition { .store = store._id, .value = entity, .type = store.entityTypeOf(entity) });
     return *this;
 }
 

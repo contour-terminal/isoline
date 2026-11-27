@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -10,7 +13,10 @@
 #include <iostream>
 #include <optional>
 #include <ranges>
+#include <span>
+#include <string_view>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <isoline/api/CallError.hpp>
@@ -20,6 +26,7 @@
 #include <isoline/api/Store.hpp>
 #include <isoline/api/Types.hpp>
 #include <isoline/api/testing/Contract.hpp>
+#include <isoline/api/testing/EngineRows.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 
@@ -28,10 +35,17 @@ using isoline::api::Engine;
 using isoline::api::EngineConfig;
 using isoline::api::FuncType;
 using isoline::api::HeapMemoryAllocator;
+using isoline::api::I32;
 using isoline::api::Imports;
 using isoline::api::IPollObserver;
 using isoline::api::PollSite;
 using isoline::api::Store;
+using isoline::api::StoreOptions;
+using isoline::api::Value;
+using isoline::api::testing::engineRows;
+using isoline::api::testing::contract::addModule;
+using isoline::api::testing::contract::configOf;
+using isoline::api::testing::contract::ContractLimits;
 using isoline::api::testing::contract::JoiningThread;
 using isoline::api::testing::contract::ThreadDeadline;
 using isoline::binary::testing::br;
@@ -108,6 +122,92 @@ double microseconds(Clock::duration duration)
     return std::chrono::duration<double, std::micro> { duration }.count();
 }
 
+/// The calls one batch of the call-latency benchmark times together: enough that the clock's
+/// resolution and the loop around them vanish in the batch's duration.
+constexpr auto CallsPerBatch = std::size_t { 100'000 };
+
+/// The batches the call-latency benchmark times, of which it reports the median and the fastest.
+constexpr auto CallBatches = std::size_t { 31 };
+
+/// What the call-latency benchmark measured of one entry: the duration of a call, per batch.
+struct CallTimes
+{
+    double medianNanoseconds = 0;  ///< The median batch's duration, per call.
+    double fastestNanoseconds = 0; ///< The fastest batch's duration, per call.
+    std::size_t failures = 0;      ///< The calls that failed or returned a wrong sum: 0 in a valid run.
+};
+
+/// Times one batch of CallsPerBatch calls of @p call, which adds its two arguments.
+/// @param call Calls the guest's add with the arguments and the result slot; returns whether it did.
+/// @param failures Counts the calls that failed or returned a wrong sum.
+/// @return The batch's duration.
+template <typename Call>
+Clock::duration timeBatch(Call const& call, std::size_t& failures)
+{
+    auto const startedAt = Clock::now();
+    for (auto const index: std::views::iota(std::size_t { 0 }, CallsPerBatch))
+    {
+        auto const args = std::array<Value, 2> { I32 { static_cast<uint32_t>(index) }, I32 { 1 } };
+        auto results = std::array<Value, 1> {};
+        if (!call(std::span<Value const> { args }, std::span<Value> { results })
+            || std::get<I32>(results[0]).bits != static_cast<uint32_t>(index) + 1)
+            ++failures;
+    }
+    return Clock::now() - startedAt;
+}
+
+/// What the batches of one entry measured.
+/// @param perBatch The batches' durations (not empty).
+/// @param failures The calls among them that failed.
+CallTimes callTimesOf(std::vector<Clock::duration> const& perBatch, std::size_t failures)
+{
+    auto const perCall = [](Clock::duration batch) {
+        return std::chrono::duration<double, std::nano> { batch }.count() / double { CallsPerBatch };
+    };
+    return CallTimes { .medianNanoseconds = perCall(percentile(perBatch, 50)),
+                       .fastestNanoseconds = perCall(percentile(perBatch, 1)),
+                       .failures = failures };
+}
+
+/// Times CallBatches batches of each of @p first and @p second, alternating which of the two runs first
+/// from batch to batch, so that neither is always timed on the cache and clock state the other left.
+/// @return What each measured, @p first's first.
+template <typename First, typename Second>
+std::array<CallTimes, 2> timeAlternating(First const& first, Second const& second)
+{
+    auto firstBatches = std::vector<Clock::duration> {};
+    auto secondBatches = std::vector<Clock::duration> {};
+    firstBatches.reserve(CallBatches);
+    secondBatches.reserve(CallBatches);
+    auto firstFailures = std::size_t { 0 };
+    auto secondFailures = std::size_t { 0 };
+    for (auto const batch: std::views::iota(std::size_t { 0 }, CallBatches))
+    {
+        if (batch % 2 == 0)
+        {
+            firstBatches.push_back(timeBatch(first, firstFailures));
+            secondBatches.push_back(timeBatch(second, secondFailures));
+        }
+        else
+        {
+            secondBatches.push_back(timeBatch(second, secondFailures));
+            firstBatches.push_back(timeBatch(first, firstFailures));
+        }
+    }
+    return { callTimesOf(firstBatches, firstFailures), callTimesOf(secondBatches, secondFailures) };
+}
+
+/// Reports what @p times measured of the entry @p entry.
+void report(std::string_view entry, CallTimes const& times)
+{
+    std::cout << std::format("{} over {} batches of {} calls: median {:.1f} ns, fastest {:.1f} ns\n",
+                             entry,
+                             CallBatches,
+                             CallsPerBatch,
+                             times.medianNanoseconds,
+                             times.fastestNanoseconds);
+}
+
 } // namespace
 
 TEST_CASE("Latency.interruptToReturnP99", "[.perf]")
@@ -130,7 +230,8 @@ TEST_CASE("Latency.interruptToReturnP99", "[.perf]")
     for ([[maybe_unused]] auto const trial: std::views::iota(std::size_t { 0 }, Trials))
     {
         auto observer = FirstPoll {};
-        auto store = Store { engine, allocator, &observer };
+        auto store =
+            Store { engine, allocator, StoreOptions { .limits = std::nullopt, .observer = &observer } };
         auto const instance = store.instantiate(*module, imports);
         REQUIRE(instance.has_value());
         auto const spin = instance->function("spin");
@@ -162,4 +263,36 @@ TEST_CASE("Latency.interruptToReturnP99", "[.perf]")
         microseconds(p99),
         microseconds(percentile(samples, 100)));
     CHECK(p99 <= LatencyBound);
+}
+
+TEST_CASE("Latency.callRoundTrip", "[.perf]")
+{
+    // The cost of one call into the guest and back, the checks of every call (the alive-token, the
+    // handle's store, the arguments) included: the guest's add of two i32s, so that the entry, not the
+    // guest, is what is timed. Instance::call() checks the alive-token, then enters as Store::call()
+    // does; the two are timed batch for batch, alternating which goes first.
+    auto const row = GENERATE(from_range(engineRows()));
+    CAPTURE(row);
+    auto const engine = Engine { configOf(ContractLimits {}, row) };
+    auto const module = engine.load(addModule().build());
+    REQUIRE(module.has_value());
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const instance = store.instantiate(*module, Imports {});
+    REQUIRE(instance.has_value());
+    auto const add = instance->function("add");
+    REQUIRE(add.has_value());
+
+    auto const [viaInstance, viaStore] = timeAlternating(
+        [&](std::span<Value const> args, std::span<Value> results) {
+            return instance->call(*add, args, results).has_value();
+        },
+        [&](std::span<Value const> args, std::span<Value> results) {
+            return store.call(*add, args, results).has_value();
+        });
+    std::cout << std::format("engine {}:\n", row.name);
+    report("Instance::call", viaInstance);
+    report("Store::call", viaStore);
+    CHECK(viaInstance.failures == 0);
+    CHECK(viaStore.failures == 0);
 }

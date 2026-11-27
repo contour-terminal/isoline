@@ -257,15 +257,22 @@ std::expected<TableAddr, AllocationError> Store::addTable(binary::TableType type
     if (_tables.size() >= _limits.maxTables)
         return std::unexpected { LimitExceeded { .limit = Limit::Tables } };
     auto elements = std::vector<Ref> {};
+    // Charged to a copy of the total, committed once the table is recorded, so that an append that
+    // throws leaves no charge behind.
+    auto total = _tableElements;
     return growElements(elements,
                         type.limits.min,
                         slotLimit(type),
                         init,
-                        Budget { .total = _tableElements, .limit = _limits.maxTableElements, .unitCost = 1 })
+                        Budget { .total = total, .limit = _limits.maxTableElements, .unitCost = 1 })
         .transform_error(
             [](Refusal refusal) { return allocationError(refusal, ExternKind::Table, Limit::TableElements); })
-        .transform(
-            [&] { return append(_tables, TableInstance { .type = type, .elements = std::move(elements) }); });
+        .transform([&] {
+            auto const address =
+                append(_tables, TableInstance { .type = type, .elements = std::move(elements) });
+            _tableElements = total;
+            return address;
+        });
 }
 
 std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type)
@@ -304,8 +311,10 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
         .transform_error(
             [](Refusal refusal) { return allocationError(refusal, ExternKind::Memory, Limit::MemoryBytes); })
         .transform([&](std::unique_ptr<ILinearMemory> memory) {
+            // Recorded first and charged after, so that an append that throws leaves no charge behind.
+            auto const address = append(_memories, MemoryInstance { type, std::move(memory) });
             _memoryBytes += request.initialBytes;
-            return append(_memories, MemoryInstance { type, std::move(memory) });
+            return address;
         });
 }
 

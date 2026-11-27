@@ -8,6 +8,8 @@
 // magnitude over the bound, and a constant cost per item is well under it.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
 #include <array>
@@ -25,9 +27,11 @@
 #include "AllocationCounter.hpp"
 #include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
+#include <isoline/api/Extern.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Store.hpp>
+#include <isoline/api/testing/EngineRows.hpp>
 #include <isoline/api/testing/RuntimeAccess.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
@@ -444,6 +448,41 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryBeforeTheStoreChanges", "[ho
     CHECK(runtime.functionCount() == 2);
 }
 
+TEST_CASE("MemoryBounds.positionalInstantiateRefusesHostMemoryBeforeTheStoreChanges", "[host-memory]")
+{
+    // Positional externs name entities of the store already: their copy is the one allocation before the
+    // store changes. Refused, the instantiation is HostMemoryExhausted, and the store is as it was.
+    using isoline::api::HostMemoryExhausted;
+    using isoline::api::InstantiateError;
+    auto const constI32 =
+        isoline::binary::GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const };
+    auto builder = ModuleBuilder {};
+    builder.importGlobal("env", "g", constI32);
+    auto const row = GENERATE(from_range(isoline::api::testing::engineRows()));
+    auto const engine =
+        isoline::api::Engine { isoline::api::testing::contract::configOf(isoline::api::StoreLimits {}, row) };
+    auto allocator = isoline::runtime::HeapMemoryAllocator {};
+    auto store = isoline::api::Store { engine, allocator };
+    auto const module = engine.load(builder.build());
+    REQUIRE(module.has_value());
+    auto const global = store.defineGlobal(constI32, isoline::runtime::I32 { 1 });
+    REQUIRE(global.has_value());
+    auto const externs = std::array<isoline::api::Extern, 1> { *global };
+    auto& runtime = isoline::api::testing::runtimeOf(store);
+    for (auto const refusal: { RefusalException::BadAlloc, RefusalException::LengthError })
+    {
+        auto const result = [&] {
+            auto const limit = AllocationLimit { 0, refusal };
+            return store.instantiateByPosition(*module, externs);
+        }();
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error() == InstantiateError { HostMemoryExhausted {} });
+        CHECK(runtime.moduleInstanceCount() == 0);
+    }
+    CHECK(store.instantiateByPosition(*module, externs).has_value());
+    CHECK(runtime.moduleInstanceCount() == 1);
+}
+
 TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing", "[host-memory]")
 {
     // A module of no imports and 300 distinct types: its first allocations are runtime::instantiate()'s
@@ -488,6 +527,129 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing", "[host-memo
     CHECK(runtime.typeCount() == typesBefore);
     CHECK(store.instantiate(*module, imports).has_value());
     CHECK(runtime.typeCount() == typesBefore + TypeCount);
+}
+
+namespace
+{
+
+/// The bytes of one page of the default page size.
+constexpr auto PageBytes = uint64_t { 65'536 };
+
+/// An allocator that hands out memories of one page made beforehand, so that handing one out allocates
+/// nothing: what a store does after it is the only allocation a define is left to refuse.
+class PremadeMemoryAllocator final: public isoline::runtime::IMemoryAllocator
+{
+  public:
+    /// Makes @p count memories of one page.
+    explicit PremadeMemoryAllocator(std::size_t count)
+    {
+        auto heap = isoline::runtime::HeapMemoryAllocator {};
+        auto const request = isoline::runtime::MemoryRequest {
+            .type = {}, .initialBytes = PageBytes, .maximumBytes = PageBytes, .requiredGuardBytes = 0
+        };
+        for ([[maybe_unused]] auto const index: std::views::iota(std::size_t { 0 }, count))
+        {
+            auto memory = heap.allocate(request);
+            REQUIRE(memory.has_value());
+            _memories.push_back(std::move(*memory));
+        }
+    }
+
+    /// The next memory made beforehand; Embedder once none is left, or for a size other than one page.
+    [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, isoline::runtime::Refusal>
+    allocate(isoline::runtime::MemoryRequest const& request) noexcept override
+    {
+        if (_memories.empty() || request.initialBytes != PageBytes)
+            return std::unexpected { isoline::runtime::Refusal::Embedder };
+        auto memory = std::move(_memories.back());
+        _memories.pop_back();
+        return memory;
+    }
+
+  private:
+    std::vector<std::unique_ptr<isoline::runtime::ILinearMemory>> _memories; ///< What is left to hand out.
+};
+
+/// The most defines a host-memory case tries: more than a store's container records per allocation, on
+/// every standard library, so that one of them must allocate.
+constexpr auto DefineAttempts = std::size_t { 256 };
+
+/// Defines entities with @p define under an allocation budget of @p budget bytes each, until one is
+/// refused, which must be as HostMemoryExhausted.
+/// @return How many were defined before the refusal.
+template <typename Define>
+std::size_t defineUntilRefused(Define const& define, std::size_t budget, RefusalException refusal)
+{
+    for (auto const attempt: std::views::iota(std::size_t { 0 }, DefineAttempts))
+    {
+        auto const defined = [&] {
+            auto const limit = AllocationLimit { budget, refusal };
+            return define();
+        }();
+        if (!defined)
+        {
+            CHECK(defined.error() == isoline::api::DefineError { isoline::api::HostMemoryExhausted {} });
+            return attempt;
+        }
+    }
+    FAIL("no define was refused");
+    return DefineAttempts;
+}
+
+} // namespace
+
+TEST_CASE("MemoryBounds.defineRefusesHostMemoryLeavingTheStoreUnchanged", "[host-memory]")
+{
+    // The host runs out of memory where a define records its entity in the store, after the entity's own
+    // storage is made: each define is refused as HostMemoryExhausted, and the store is as it was, nothing
+    // recorded and nothing charged, so the next define takes the address the refused one would have.
+    using isoline::api::MemoryType;
+    auto const row = GENERATE(from_range(isoline::api::testing::engineRows()));
+    for (auto const refusal: { RefusalException::BadAlloc, RefusalException::LengthError })
+    {
+        CAPTURE(refusal);
+        auto const engine = isoline::api::Engine { isoline::api::testing::contract::configOf(
+            isoline::api::StoreLimits {}, row) };
+        auto allocator = PremadeMemoryAllocator { DefineAttempts + 1 };
+        auto store = isoline::api::Store { engine, allocator };
+        auto& runtime = isoline::api::testing::runtimeOf(store);
+        auto const onePage = isoline::binary::Limits { .min = 1, .max = std::nullopt, .addressType = {} };
+
+        auto const defineMemory = [&] {
+            return store.defineMemory(MemoryType { .limits = onePage });
+        };
+        auto const memories = defineUntilRefused(defineMemory, 0, refusal);
+        CHECK(runtime.memoryCount() == memories);
+        CHECK(store.used(isoline::api::Limit::MemoryBytes) == memories * PageBytes);
+        auto const memory = defineMemory();
+        REQUIRE(memory.has_value());
+        CHECK(memory->address() == memories);
+
+        // A table of one element: its elements are allocated within the budget, its record past it.
+        auto const funcRef = isoline::binary::FuncRef;
+        auto const null =
+            isoline::runtime::Ref { .kind = isoline::runtime::RefKind::Null, .heap = {}, .address = 0 };
+        auto const defineTable = [&] {
+            return store.defineTable(isoline::binary::TableType { .element = funcRef, .limits = onePage },
+                                     null);
+        };
+        auto const tables = defineUntilRefused(defineTable, sizeof(isoline::runtime::Ref), refusal);
+        CHECK(runtime.tableCount() == tables);
+        CHECK(store.used(isoline::api::Limit::TableElements) == tables);
+        auto const table = defineTable();
+        REQUIRE(table.has_value());
+        CHECK(table->address() == tables);
+
+        auto const defineGlobal = [&] {
+            return store.defineGlobal(
+                isoline::binary::GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const },
+                isoline::runtime::I32 { 1 });
+        };
+        auto const globals = defineUntilRefused(defineGlobal, 0, refusal);
+        auto const global = defineGlobal();
+        REQUIRE(global.has_value());
+        CHECK(global->address() == globals);
+    }
 }
 
 TEST_CASE("MemoryBounds.throwLoopReclaimsItsPayloads")

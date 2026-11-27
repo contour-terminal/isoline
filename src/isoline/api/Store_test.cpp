@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <array>
 #include <bit>
@@ -22,6 +24,7 @@
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Store.hpp>
 #include <isoline/api/Types.hpp>
+#include <isoline/api/testing/EngineRows.hpp>
 #include <isoline/api/testing/RuntimeAccess.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
@@ -62,13 +65,17 @@ using isoline::api::Ref;
 using isoline::api::RefKind;
 using isoline::api::Refusal;
 using isoline::api::Store;
+using isoline::api::StoreLimits;
+using isoline::api::StoreOptions;
 using isoline::api::Trap;
 using isoline::api::TrapCode;
 using isoline::api::UncaughtException;
 using isoline::api::V128;
 using isoline::api::Value;
 using isoline::api::ValueMismatch;
+using isoline::api::testing::engineRows;
 using isoline::api::testing::runtimeOf;
+using isoline::api::testing::contract::configOf;
 using isoline::binary::GlobalType;
 using isoline::binary::Limits;
 using isoline::binary::Mutability;
@@ -298,7 +305,7 @@ TEST_CASE("Store.nestedFailureStaysNested")
     CHECK(errorOf(failed).detail == CallError::Detail { embedderFailure(1) });
 }
 
-TEST_CASE("Store.outerGrowthRecordSurvivesNestedCall")
+TEST_CASE("Store.outerGrowthRecordSurvivesNestedCall", "[memory]")
 {
     auto reentry = Reentry { reentryPath() };
     auto const failed = reentry.instance().call(reentry.function("grow-absorb-then-trap"), {}, {});
@@ -306,7 +313,7 @@ TEST_CASE("Store.outerGrowthRecordSurvivesNestedCall")
     CHECK(errorOf(failed).refusedGrowth == GrowthRecord { .memory = Refusal::Limit, .table = {} });
 }
 
-TEST_CASE("Store.instantiationReportsItsRefusedGrowth")
+TEST_CASE("Store.instantiationReportsItsRefusedGrowth", "[memory]")
 {
     // A start function refused a memory.grow by the store's limit, and then trapping: the error says
     // why the guest gave up, as a call's does.
@@ -326,7 +333,7 @@ TEST_CASE("Store.instantiationReportsItsRefusedGrowth")
     CHECK(error.refusedGrowth == GrowthRecord { .memory = Refusal::Limit, .table = {} });
 }
 
-TEST_CASE("Store.nestedRefusalDoesNotLeak")
+TEST_CASE("Store.nestedRefusalDoesNotLeak", "[memory]")
 {
     auto reentry = Reentry { reentryPath() };
     auto const failed = reentry.instance().call(reentry.function("reenter-then-trap"), {}, {});
@@ -460,11 +467,10 @@ TEST_CASE("Store.hostFunctionUnderTwoTypesIsTwoFunctions")
     CHECK(exportedFunction(second, "wide").address() == wide.address());
     CHECK(runtimeOf(fixture.store).functionCount() == 2);
 
-    auto instance = first;
     auto const narrowArgs = std::array<Value, 1> { I32 { 1 } };
     auto const wideArgs = std::array<Value, 1> { I64 { 1 } };
-    CHECK(instance.call(narrow, narrowArgs, {}).has_value());
-    CHECK(instance.call(wide, wideArgs, {}).has_value());
+    CHECK(first.call(narrow, narrowArgs, {}).has_value());
+    CHECK(first.call(wide, wideArgs, {}).has_value());
     CHECK(calls == 2);
 }
 
@@ -680,7 +686,7 @@ TEST_CASE("Store.uncaughtExceptionIsCopiedOut")
         auto const failed = instance.call(thrower, {}, {});
         CHECK(errorOf(failed).failure() == CallFailure::UncaughtException);
         CHECK(errorOf(failed).detail
-              == CallError::Detail { UncaughtException { .tag = *tag, .payload = { I32 { 5 } } } });
+              == CallError::Detail { UncaughtException { .tag = tag->address(), .payload = { I32 { 5 } } } });
     }
     CHECK(runtimeOf(fixture.store).liveExceptions() == 1); // the latest, unswept
     CHECK_FALSE(instance.tag("throw").has_value());
@@ -862,7 +868,7 @@ TEST_CASE("Store.crossInstanceLinksOfEveryKind")
     auto const tag = exporter.tag("e");
     REQUIRE(tag.has_value());
     CHECK(errorOf(thrown).detail
-          == CallError::Detail { UncaughtException { .tag = *tag, .payload = { I32 { 9 } } } });
+          == CallError::Detail { UncaughtException { .tag = tag->address(), .payload = { I32 { 9 } } } });
 }
 
 TEST_CASE("Store.definedHostFunctionLinksThroughImports")
@@ -963,4 +969,171 @@ TEST_CASE("Store.newHostTypeOverTheTypeBudgetIsRefused")
     CHECK(errorOf(fixture.store.instantiate(fixture.load(builder), imports)) == InstantiateError { types });
     CHECK(errorOf(fixture.store.define(wide, host)) == isoline::api::DefineError { types });
     CHECK(runtimeOf(fixture.store).functionCount() == 0);
+}
+
+namespace
+{
+
+/// A module of one page of memory, whose "outer" calls "inner": two steps per call.
+ModuleBuilder memoryAndCallModule()
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .memory(pages(1))
+        .function(0, {}, {})
+        .function(0, {}, code({ call(0) }))
+        .exportFunction("outer", 1);
+    return builder;
+}
+
+/// Store options of @p limits and no observer.
+StoreOptions optionsOf(StoreLimits const& limits)
+{
+    return StoreOptions { .limits = limits, .observer = nullptr };
+}
+
+} // namespace
+
+TEST_CASE("Store.limitOverridesAreLocal", "[api]")
+{
+    // A store's overrides bind that store alone: another store of the same engine keeps the engine's
+    // limits, at instantiation (maxMemories) and at run time (maxSteps) alike.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto const engine = Engine { configOf(StoreLimits {}, row) };
+    auto allocator = HeapMemoryAllocator {};
+    auto const module = engine.load(memoryAndCallModule().build());
+    REQUIRE(module.has_value());
+    auto plain = Store { engine, allocator };
+
+    SECTION("maxMemories")
+    {
+        auto limits = engine.config().store;
+        limits.maxMemories = 0;
+        auto capped = Store { engine, allocator, optionsOf(limits) };
+        CHECK(errorOf(capped.instantiate(*module, Imports {}))
+              == InstantiateError { isoline::api::LimitExceeded { Limit::Memories } });
+        CHECK(plain.instantiate(*module, Imports {}).has_value());
+    }
+
+    SECTION("maxSteps")
+    {
+        // One step instantiates; a call of "outer" takes two, one per function entered.
+        auto limits = engine.config().store;
+        limits.maxSteps = 1;
+        auto capped = Store { engine, allocator, optionsOf(limits) };
+        auto const cappedInstance = capped.instantiate(*module, Imports {});
+        REQUIRE(cappedInstance.has_value());
+        auto const refused = cappedInstance->call(exportedFunction(*cappedInstance, "outer"), {}, {});
+        CHECK(errorOf(refused).detail == CallError::Detail { Trap { TrapCode::StepLimitExceeded } });
+
+        auto const plainInstance = plain.instantiate(*module, Imports {});
+        REQUIRE(plainInstance.has_value());
+        CHECK(plainInstance->call(exportedFunction(*plainInstance, "outer"), {}, {}).has_value());
+    }
+}
+
+TEST_CASE("Store.withoutOverridesKeepsItsEnginesLimits", "[api]")
+{
+    // No override is the engine's limits, not the library's defaults; an override replaces them whole,
+    // and may raise one above the engine's.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto engineLimits = StoreLimits {};
+    engineLimits.maxMemories = 0;
+    auto const engine = Engine { configOf(engineLimits, row) };
+    auto allocator = HeapMemoryAllocator {};
+    auto const module = engine.load(memoryAndCallModule().build());
+    REQUIRE(module.has_value());
+    auto const refused = InstantiateError { isoline::api::LimitExceeded { Limit::Memories } };
+
+    auto defaulted = Store { engine, allocator };
+    CHECK(errorOf(defaulted.instantiate(*module, Imports {})) == refused);
+    auto none = Store { engine, allocator, StoreOptions { .limits = std::nullopt, .observer = nullptr } };
+    CHECK(errorOf(none.instantiate(*module, Imports {})) == refused);
+
+    auto raised = engineLimits;
+    raised.maxMemories = 1;
+    auto overriding = Store { engine, allocator, optionsOf(raised) };
+    CHECK(overriding.instantiate(*module, Imports {}).has_value());
+    CHECK(overriding.used(Limit::Memories) == 1);
+    CHECK(errorOf(overriding.instantiate(*module, Imports {})) == refused);
+}
+
+TEST_CASE("Store.overridesKeepModulesCompatible", "[api]")
+{
+    // Limits are no part of EngineIdentity: a module instantiates into a store of other limits, whether
+    // they are a store's overrides or another engine's configuration of the same identity.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto otherLimits = StoreLimits {};
+    otherLimits.maxMemories = 1;
+    otherLimits.maxCallDepth = 7;
+    otherLimits.maxSteps = 1'000;
+    auto const engine = Engine { configOf(StoreLimits {}, row) };
+    auto const otherEngine = Engine { configOf(otherLimits, row) };
+    REQUIRE(engine.config().identity() == otherEngine.config().identity());
+    auto allocator = HeapMemoryAllocator {};
+    auto const module = engine.load(memoryAndCallModule().build());
+    auto const otherModule = otherEngine.load(memoryAndCallModule().build());
+    REQUIRE(module.has_value());
+    REQUIRE(otherModule.has_value());
+
+    auto overriding = Store { engine, allocator, optionsOf(otherLimits) };
+    CHECK(overriding.instantiate(*module, Imports {}).has_value());
+    auto otherOverriding = Store { otherEngine, allocator, optionsOf(StoreLimits {}) };
+    CHECK(otherOverriding.instantiate(*module, Imports {}).has_value());
+    auto plain = Store { engine, allocator };
+    CHECK(plain.instantiate(*otherModule, Imports {}).has_value());
+}
+
+TEST_CASE("Store.nestingOverrideIsHonoured", "[api]")
+{
+    // maxNestedInvocations bounds Wasm → host → Wasm recursion on the host stack, so a store's override
+    // of it must bind: past N nested invocations the next traps, while a store of the engine's limit
+    // nests deeper. N is small, far from any real stack.
+    constexpr auto Nesting = uint32_t { 4 };
+    constexpr auto Ceiling = Nesting + 2; // where the host stops recursing on its own
+    auto const row = GENERATE(from_range(engineRows()));
+    auto const engine = Engine { configOf(StoreLimits {}, row) };
+    REQUIRE(engine.config().store.maxNestedInvocations > Ceiling);
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType {})
+        .importFunction("env", "reenter", 0)
+        .function(0, {}, call(0))
+        .exportFunction("nest", 1);
+    auto const module = engine.load(builder.build());
+    REQUIRE(module.has_value());
+
+    // Each entry re-enters "nest", one invocation deeper, until Ceiling; a nested failure propagates.
+    auto entries = uint32_t { 0 };
+    auto nest = std::optional<Function> {};
+    auto imports = Imports {};
+    imports.define(
+        "env",
+        "reenter",
+        FuncType {},
+        makeHostFunction(
+            [&](HostContext& context, std::span<Value const>, std::span<Value>) noexcept -> Outcome {
+                ++entries;
+                if (entries >= Ceiling)
+                    return {};
+                return context.invoke(nest->address(), {}, {});
+            }));
+    auto allocator = HeapMemoryAllocator {};
+    auto const run = [&](Store& store) {
+        entries = 0;
+        auto const instance = store.instantiate(*module, imports);
+        REQUIRE(instance.has_value());
+        nest = exportedFunction(*instance, "nest");
+        return instance->call(*nest, {}, {});
+    };
+
+    auto limits = engine.config().store;
+    limits.maxNestedInvocations = Nesting;
+    auto capped = Store { engine, allocator, optionsOf(limits) };
+    auto const refused = run(capped);
+    CHECK(errorOf(refused).detail == CallError::Detail { Trap { TrapCode::CallStackExhausted } });
+    CHECK(entries == Nesting); // invocations 1..N each entered the host; N + 1 was refused
+
+    auto plain = Store { engine, allocator };
+    CHECK(run(plain).has_value());
+    CHECK(entries == Ceiling);
 }

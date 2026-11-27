@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <array>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -187,6 +188,10 @@ struct TableType
 
 /// The base-2 logarithm of a memory's page size when it declares none: 65536 bytes.
 inline constexpr auto DefaultPageSizeLog2 = uint8_t { 16 };
+
+/// The page sizes custom-page-sizes admits, as base-2 logarithms: 1 byte and 64 KiB. The validator
+/// refuses a module's memory of any other, and api::Store::defineMemory() a host's.
+inline constexpr auto ValidPageSizesLog2 = std::to_array<uint8_t>({ 0, DefaultPageSizeLog2 });
 
 /// A page size's base-2 logarithm must be below this, so that the page size is a u64: the decoder
 /// refuses a larger exponent as malformed, and runtime::Store::addMemory requires it of a host's memory.

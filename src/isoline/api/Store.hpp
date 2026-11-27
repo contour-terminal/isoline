@@ -16,6 +16,7 @@
 #include <isoline/api/CallError.hpp>
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/EngineIdentity.hpp>
+#include <isoline/api/Extern.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Types.hpp>
@@ -30,99 +31,7 @@ namespace testing
     struct RuntimeAccess;
 } // namespace testing
 
-/// The identity of a store: what its handles (Instance, Function, Memory) carry, and what an
-/// Imports definition of one of its entities keeps, so that a handle of another store is told apart.
-///
-/// It is opaque. Each one has a serial number no other identity of the process has had, which the
-/// handles copy: a handle outliving its store is never taken for one of a later store, even one whose
-/// identity the allocator places at the same address. An Imports definition keeps the identity
-/// alive.
-class StoreId: public std::enable_shared_from_this<StoreId>
-{
-  public:
-    /// A new identity, of the next serial number of the process.
-    StoreId() noexcept;
-
-    /// Its serial number, unique within the process.
-    /// @return The serial number.
-    [[nodiscard]] uint64_t serial() const noexcept { return _serial; }
-
-  private:
-    uint64_t _serial; ///< Unique within the process; never reused.
-};
-
-/// A function of a store: a handle valid as long as the store, which only the store makes
-/// (Instance::function(), Store::define()), so that it always names a function the store holds.
-class Function
-{
-  public:
-    /// The identity of the store that holds it.
-    /// @return The identity.
-    [[nodiscard]] StoreId const& store() const noexcept { return *_store; }
-
-    /// Its address in that store, which HostContext::invoke() takes.
-    /// @return The address.
-    [[nodiscard]] FuncAddr address() const noexcept { return _address; }
-
-    /// Its type, in its store's form.
-    /// @return The type, valid as long as the store.
-    [[nodiscard]] FuncType const& type() const noexcept { return *_type; }
-
-    /// Whether it is a function of the store @p store names. Unlike store(), it may be asked of a
-    /// handle whose store is gone: it compares serial numbers, never reading the handle's store.
-    /// @param store A live store's identity.
-    /// @return Whether that store made it.
-    [[nodiscard]] bool isOf(StoreId const& store) const noexcept { return _storeSerial == store.serial(); }
-
-  private:
-    friend class Store;
-    friend class Instance;
-
-    /// The function at @p address of the store @p store names, of @p type.
-    Function(StoreId const& store, FuncAddr address, FuncType const& type) noexcept:
-        _store { &store }, _storeSerial { store.serial() }, _address { address }, _type { &type }
-    {
-    }
-
-    StoreId const* _store; ///< The identity of the store that holds it; never null.
-    uint64_t _storeSerial; ///< That identity's serial number, which isOf() compares.
-    FuncAddr _address;     ///< Its address in that store.
-    FuncType const* _type; ///< Its type, held by that store; never null.
-};
-
-/// A linear memory of a store: a handle valid as long as the store, which only the store makes
-/// (Instance::memory()), so that it always names a memory the store holds.
-class Memory
-{
-  public:
-    /// The identity of the store that holds it.
-    /// @return The identity.
-    [[nodiscard]] StoreId const& store() const noexcept { return *_store; }
-
-    /// Its address in that store.
-    /// @return The address.
-    [[nodiscard]] MemAddr address() const noexcept { return _address; }
-
-    /// Whether it is a memory of the store @p store names, as Function::isOf() asks it.
-    /// @param store A live store's identity.
-    /// @return Whether that store holds it.
-    [[nodiscard]] bool isOf(StoreId const& store) const noexcept { return _storeSerial == store.serial(); }
-
-  private:
-    friend class Instance;
-
-    /// The memory at @p address of the store @p store names.
-    Memory(StoreId const& store, MemAddr address) noexcept:
-        _store { &store }, _storeSerial { store.serial() }, _address { address }
-    {
-    }
-
-    StoreId const* _store; ///< The identity of the store that holds it; never null.
-    uint64_t _storeSerial; ///< That identity's serial number, which isOf() compares.
-    MemAddr _address;      ///< Its address in that store.
-};
-
-/// The current size of a linear memory (Instance::memorySize()).
+/// The current size of a linear memory (Store::memorySize(), Instance::memorySize()).
 struct MemorySize
 {
     uint64_t pages = 0; ///< In pages of the memory's own page size.
@@ -140,7 +49,8 @@ struct EngineMismatch
     bool operator==(EngineMismatch const&) const = default;
 };
 
-/// An import bound to an Instance of another store (Imports::define()): entities do not cross stores.
+/// An import bound to an entity of another store, by an Imports definition (Store::instantiate()) or a
+/// positional extern (Store::instantiateByPosition()): entities do not cross stores.
 struct ForeignImport
 {
     uint32_t index = 0; ///< The import's index in the module's import section.
@@ -149,12 +59,23 @@ struct ForeignImport
     bool operator==(ForeignImport const&) const = default;
 };
 
-/// Why Store::instantiate() failed: the module is of another engine; an import is bound to another
-/// store's entity; an import did not link (no definition, or one of another kind or type); the
-/// instance would exceed one of the store's limits; a memory or table could not be allocated; the host
-/// ran out of memory before anything was added to the store; or initializing it (a segment, the start
-/// function) failed as a call does.
+/// Positional externs (Store::instantiateByPosition()) not one per import of the module: nothing was linked.
+struct ImportCountMismatch
+{
+    uint32_t expected = 0; ///< The module's imports.
+    uint32_t given = 0;    ///< The externs given.
+
+    /// Equal when both counts are.
+    bool operator==(ImportCountMismatch const&) const = default;
+};
+
+/// Why Store::instantiate() or instantiateByPosition() failed: the module is of another engine;
+/// positional externs are not one per import; an import is bound to another store's entity; an import
+/// did not link (no definition, or one of another kind or type); the instance would exceed one of the
+/// store's limits; a memory or table could not be allocated; the host ran out of memory before anything
+/// was added to the store; or initializing it (a segment, the start function) failed as a call does.
 using InstantiateError = std::variant<EngineMismatch,
+                                      ImportCountMismatch,
                                       ForeignImport,
                                       LinkError,
                                       LimitExceeded,
@@ -162,42 +83,144 @@ using InstantiateError = std::variant<EngineMismatch,
                                       HostMemoryExhausted,
                                       CallError>;
 
-/// Why Store::define() could not add a host function: its type is new and over the store's type
-/// budget, or the host ran out of memory before anything was added to the store.
-using DefineError = std::variant<LimitExceeded, HostMemoryExhausted>;
+/// What is wrong with a type the host gave the store to define an entity of (InvalidType).
+enum class InvalidTypeReason : uint8_t
+{
+    ConcreteTypeIndex,   ///< It names a concrete type index, which only a module's own types may name.
+    PageSize,            ///< A memory's page size is not one custom-page-sizes admits (1 byte, 64 KiB).
+    BottomHeap,          ///< It names the bot heap: the validator's own type, which no module may declare.
+    NonReferenceElement, ///< A table's element type is not a reference type.
+};
 
-/// Why Instance::memoryRange() could not view a range.
+/// A type no entity the host defines may have (Store::define(), defineMemory(), defineTable(),
+/// defineGlobal()): nothing was added to the store.
+struct InvalidType
+{
+    InvalidTypeReason reason; ///< What is wrong with it.
+
+    /// Equal when both name the same reason.
+    bool operator==(InvalidType const&) const = default;
+};
+
+/// Why the store could not add an entity outside any instantiation (Store::define(), defineMemory(),
+/// defineTable(), defineGlobal()): it would exceed one of the store's limits; the host ran out of memory
+/// before anything was added to the store; a memory or table could not be allocated (its size past its
+/// type's reach, or the allocator's refusal); its initial value is not of its type; or its type is one
+/// the host may not define.
+using DefineError =
+    std::variant<LimitExceeded, HostMemoryExhausted, AllocationFailure, ValueMismatch, InvalidType>;
+
+/// Why a memory could not be reached (Store::memoryRange(), Store::memorySize(),
+/// Instance::memoryRange(), Instance::memorySize()).
 enum class MemoryAccessError : uint8_t
 {
-    OutOfBounds, ///< A byte of the range lies outside the memory.
+    ForeignHandle, ///< The memory is another store's (or a store's that is gone).
+    OutOfBounds,   ///< A byte of the range lies outside the memory.
+    StoreDeleted,  ///< The instance's store is gone: Instance's accessors.
+};
+
+/// Why Store::function(Ref const&) could not name the function a reference refers to.
+enum class FunctionRefError : uint8_t
+{
+    Null,           ///< The reference is null.
+    NotFunction,    ///< It refers to something else: a host object (externref) or an exception (exnref).
+    UnknownAddress, ///< The store holds no function at its address (another store's reference, say).
+};
+
+/// Why the store could not read or write a global (Store::globalValue(), Store::setGlobal()).
+enum class GlobalAccessError : uint8_t
+{
+    ForeignHandle, ///< The global is another store's (or a store's that is gone).
+    Immutable,     ///< Only a mutable global is set: the global is const.
+    ValueMismatch, ///< The value is not of the global's type.
+};
+
+/// Why the store could not read or write a table (Store::tableSize(), Store::tableGet(),
+/// Store::tableSet()).
+enum class TableAccessError : uint8_t
+{
+    ForeignHandle, ///< The table is another store's (or a store's that is gone).
+    OutOfBounds,   ///< The index is not below the table's current size.
+    ValueMismatch, ///< The reference is not of the table's element type.
+};
+
+/// Why Instance::exportAt() could not name an export.
+enum class ExportAccessError : uint8_t
+{
+    OutOfRange,   ///< The index is not below the number of the instance's exports.
+    StoreDeleted, ///< The instance's store is gone.
+};
+
+/// What one store changes about the engine it is made for, fixed at its construction: its limits, and
+/// who observes its polls.
+///
+/// None of it is part of EngineIdentity, so a store of any options instantiates every module its
+/// engine loads, and a module of an engine of other limits but the same identity.
+struct StoreOptions
+{
+    /// The limits the store keeps to in place of its engine's (EngineConfig::store); none keeps the
+    /// engine's. They replace the engine's whole, so a store that changes one limit copies
+    /// engine.config().store and sets that field.
+    ///
+    /// They bind this store alone, and may raise a limit above the engine's as well as lower it. Every
+    /// value of every field is a limit a store keeps to, the engine's limits being no bound on them, and
+    /// no limit is checked against the host's capacity: a limit set past what the host can hold turns
+    /// the guest's trap at the limit into the process's termination (std::bad_alloc midway through a
+    /// call, or a stack overflow).
+    ///
+    /// maxNestedInvocations bounds recursion on the calling thread's stack, in every engine, the
+    /// interpreters included: each Wasm → host → Wasm nesting takes host stack. Its value must fit that
+    /// thread's stack (StoreLimits::maxNestedInvocations has the measurements), which the library does
+    /// not check yet; a fallible factory (Store::create) is to check it for every engine. Code of an
+    /// engine that relies on a limit (a guard region sized for maxMemoryBytes, a native stack sized for
+    /// the call limits) must likewise check the store's effective limits, not its engine's.
+    std::optional<StoreLimits> limits;
+
+    /// Observes every poll of the store's executions; none when null. Must outlive the store.
+    IPollObserver* observer = nullptr;
 };
 
 /// A store: where instances live, with their memories, tables, globals and the host functions bound
-/// to them, under the limits of the engine it was made for.
+/// to them, under the limits of the engine it was made for, or those its StoreOptions override them
+/// with.
 ///
-/// It copies the engine's configuration, so the Engine may go before it.
+/// It copies what it needs of the engine's configuration, so the Engine may go before it.
 ///
-/// Threads: the store and all its instances are one unit, used by one thread at a time; the unit may
-/// move between threads between calls. Its interrupter (interrupter()) is the one thing another thread
-/// may use while it runs. A host function implementation shared by several stores (one Imports used by
-/// stores on several threads) is called on each of their threads at once, so it must be thread-safe.
+/// Threads: the store and every handle of it (its instances, and every Function, Memory, Global, Table
+/// and Tag) are one unit, used by one thread at a time; the unit may move between threads between calls.
+/// Destroying the store on one thread while another thread holds or uses one of its handles is a
+/// contract violation: the alive-token a handle checks guards against a store destroyed before the use,
+/// on the same thread, and synchronizes nothing. Destroying the store from inside one of its own host
+/// functions, while a call into it runs, is a contract violation the token cannot catch either: the call
+/// in progress still uses the store when the host function returns. Its interrupter (interrupter()) is
+/// the one thing another thread may use while it runs. A host function implementation shared by several
+/// stores (one Imports used by stores on several threads) is called on each of their threads at once, so
+/// it must be thread-safe.
 ///
 /// Nothing but the constructor throws. Where the host runs out of memory before anything is added to the
-/// store, the call is refused (HostMemoryExhausted). Once the store is being changed (an instance allocated,
-/// a host function added, a call running) running out of memory terminates the process, as it does in
-/// runtime::invokeChecked(): the store is not exception-safe midway through a change.
+/// store, the call is refused (HostMemoryExhausted): instantiate() while it prepares, define() while it
+/// reserves, and defineMemory(), defineTable() and defineGlobal() wholly, as each adds its entity in one
+/// step that leaves the store unchanged when it fails. Once the store is being changed (an instance
+/// allocated, a host function added, a call running) running out of memory terminates the process, as
+/// it does in runtime::invokeChecked(): the store is not exception-safe midway through a change.
 ///
 /// A store is neither copied nor moved: its instances point at it.
 class Store
 {
   public:
-    /// An empty store for modules of @p engine.
+    /// An empty store for modules of @p engine, under @p options.
+    ///
+    /// The constructor refuses no limits. Those that must fit the host are not checked yet, above all
+    /// maxNestedInvocations, which bounds recursion on the calling thread's stack in every engine (see
+    /// StoreOptions::limits). The checks are to come with a factory (Store::create) that checks the
+    /// store's effective limits (StoreOptions::limits, else its engine's) and reports a refusal as a
+    /// value.
     /// @param engine The engine: its configuration (limits, identity, guard size) is copied, so it may
     ///               be destroyed before the store.
     /// @param allocator Allocates every linear memory of the store; must outlive it.
-    /// @param observer Observes every poll of the store's executions; none when null. Must outlive it.
+    /// @param options The store's own limits, if it overrides its engine's, and its poll observer.
     /// @throws std::bad_alloc When the host has no memory for the empty store.
-    Store(Engine const& engine, IMemoryAllocator& allocator, IPollObserver* observer = nullptr);
+    Store(Engine const& engine, IMemoryAllocator& allocator, StoreOptions const& options = {});
 
     Store(Store const&) = delete;
     Store(Store&&) = delete;
@@ -239,8 +262,8 @@ class Store
     /// define()d ones do, and the next instantiation binding them reuses them.
     /// @param module A module of an engine of this store's identity.
     /// @param imports The definitions its imports are bound to.
-    /// @return The instance, valid as long as the store; or EngineMismatch for a module of another
-    ///         engine, ForeignImport for an import bound to another store's instance, LinkError
+    /// @return The instance (see Instance for a store that is gone); or EngineMismatch for a module of
+    ///         another engine, ForeignImport for an import bound to another store's entity, LinkError
     ///         (UnknownImport for an import with no definition, IncompatibleImportType for one of another
     ///         kind or type), LimitExceeded, AllocationFailure, HostMemoryExhausted when the host ran
     ///         out of memory before the instance was begun (runtime::instantiate()'s first step), or a
@@ -250,15 +273,199 @@ class Store
     [[nodiscard]] std::expected<Instance, InstantiateError> instantiate(Module const& module,
                                                                         Imports const& imports) noexcept;
 
+    /// Instantiates @p module, binding its imports to @p imports by position: one extern per import, in
+    /// import order, as wasm.h's wasm_instance_new() binds them. Names play no part, so two imports of one
+    /// name bind two externs.
+    ///
+    /// Every extern is checked as an Imports definition of a store's entity is: its store first, then,
+    /// while linking, its kind and type against its import's.
+    /// @param module A module of an engine of this store's identity.
+    /// @param imports One extern of this store per import of @p module, in import order.
+    /// @return The instance; or EngineMismatch for a module of another engine, ImportCountMismatch when
+    ///         @p imports is not one extern per import, ForeignImport (its position as index) for an extern
+    ///         of another store, a deleted one included, and every other error the named form reports
+    ///         once its imports are found.
+    [[nodiscard]] std::expected<Instance, InstantiateError> instantiateByPosition(
+        Module const& module, std::span<Extern const> imports) noexcept;
+
+    /// The function @p reference refers to: what a funcref read from a table or a global, returned by a
+    /// call or passed to a host function names, as a handle to call or to ask the type of.
+    ///
+    /// A reference names no store, only an address: one of another store at an address this store
+    /// holds a function at names this store's function. Pass a reference of this store.
+    /// @param reference A reference value.
+    /// @return The function; Null for a null reference, NotFunction for one to a host object or an
+    ///         exception, UnknownAddress for an address at which the store holds no function.
+    [[nodiscard]] std::expected<Function, FunctionRefError> function(Ref const& reference) const noexcept;
+
+    /// Calls @p function, with no instance: a host function define() added, or a function an instance of
+    /// the store exports. It is the one checked entry into the guest (runtime::invokeChecked()), which
+    /// Instance::call() and a host function's HostContext::invoke() share.
+    ///
+    /// Exnrefs among the results are escaped, valid for the store's life. noexcept: the call changes the
+    /// store, so running out of memory midway terminates.
+    /// @param function A function of this store.
+    /// @param args Its arguments, of its params' types.
+    /// @param results Receives its results; one slot per result.
+    /// @return Nothing, or how it failed: ForeignHandle, without entering the guest, for a function of
+    ///         another store (a deleted one included); ArgumentMismatch, without entering the guest, when
+    ///         @p args are not of its params' types or @p results has the wrong size; or how the call
+    ///         ended (CallError).
+    [[nodiscard]] std::expected<void, CallError> call(Function const& function,
+                                                      std::span<Value const> args,
+                                                      std::span<Value> results) noexcept;
+
     /// Adds a host function to the store, outside any instantiation: to define it as an import
     /// (Imports::define()), or to hand it to the guest in a table. The same implementation and type,
     /// defined again or bound by an instantiation, is the same function.
-    /// @param type Its type. It names no concrete type index (checked), as an Imports host definition's.
+    /// @param type Its type.
     /// @param function Its implementation (checked: not null).
-    /// @return The function; LimitExceeded of Types when its type is new and over the store's budget;
-    ///         HostMemoryExhausted when the host ran out of memory before it was added.
+    /// @return The function; InvalidType (ConcreteTypeIndex, BottomHeap) when a param or result names a
+    ///         concrete type index or the bot heap; LimitExceeded of Types when its type is new and over the
+    ///         store's budget; HostMemoryExhausted when the host ran out of memory before it was added.
     [[nodiscard]] std::expected<Function, DefineError> define(
         FuncType const& type, std::shared_ptr<IHostFunction> const& function) noexcept;
+
+    /// Adds a zeroed memory of type.limits.min pages to the store, outside any instantiation: to bind it
+    /// to an import, or to share it between instances. It is charged and refused as a module's own
+    /// memory is: against StoreLimits::maxMemories and maxMemoryBytes, allocated by the store's
+    /// IMemoryAllocator, every size checked before a byte is allocated.
+    /// @param type Its type.
+    /// @return The memory; InvalidType (PageSize) for a page size custom-page-sizes does not admit;
+    ///         LimitExceeded of Memories or MemoryBytes; AllocationFailure of Memory with TypeMaximum for a
+    ///         minimum above its maximum or past its type's reach, or with the allocator's refusal
+    ///         (Embedder, HostMemory, Guard); HostMemoryExhausted when the host ran out of memory
+    ///         recording it, the store unchanged.
+    [[nodiscard]] std::expected<Memory, DefineError> defineMemory(MemoryType const& type) noexcept;
+
+    /// Adds a table of type.limits.min elements, each holding @p init, to the store, outside any
+    /// instantiation. It is charged and refused as a module's own table is: against
+    /// StoreLimits::maxTables and maxTableElements, every size checked before an element is allocated.
+    /// @param type Its type, in store form.
+    /// @param init What every element starts with, of the element type.
+    /// @return The table; InvalidType when its element type is not a reference type
+    ///         (NonReferenceElement) or names a concrete type index or the bot heap (ConcreteTypeIndex,
+    ///         BottomHeap); ValueMismatch for an @p init not of the element type (a
+    ///         reference of another heap, or naming what the store does not hold, included), before anything
+    ///         is charged; LimitExceeded of Tables or TableElements; AllocationFailure of Table with
+    ///         TypeMaximum for a minimum above its maximum or past its type's reach, or HostMemory for its
+    ///         elements; HostMemoryExhausted when the host ran out of memory recording it, the store
+    ///         unchanged.
+    [[nodiscard]] std::expected<Table, DefineError> defineTable(TableType const& type, Ref init) noexcept;
+
+    /// Adds a global of @p value to the store, outside any instantiation. A global charges no store
+    /// limit, as a module's own does not: module globals are bounded by the decoder's limits only, and an
+    /// embedder bounds the globals it defines itself.
+    /// @param type Its type, in store form.
+    /// @param value Its initial value, of type.type.
+    /// @return The global; InvalidType (ConcreteTypeIndex, BottomHeap) when its type names a concrete type
+    ///         index or the bot heap; ValueMismatch for a @p value not of its type (a reference of another
+    ///         heap, or naming what the store does not hold, included); HostMemoryExhausted when the host ran
+    ///         out of memory recording it, the store unchanged.
+    [[nodiscard]] std::expected<Global, DefineError> defineGlobal(GlobalType const& type,
+                                                                  Value value) noexcept;
+
+    /// The current size of @p memory, which a call into the store may grow.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
+    /// @return Its size in pages and in bytes; ForeignHandle for a memory of another store.
+    [[nodiscard]] std::expected<MemorySize, MemoryAccessError> memorySize(
+        Memory const& memory) const noexcept;
+
+    /// The type of @p memory as it is now: its minimum the current size in pages, which a call into the
+    /// store may grow; its maximum, address type and page size those it was made with.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
+    /// @return Its type; ForeignHandle for a memory of another store.
+    [[nodiscard]] std::expected<MemoryType, MemoryAccessError> memoryType(
+        Memory const& memory) const noexcept;
+
+    /// A view of @p length bytes of @p memory from @p offset, valid until the next call into the store or
+    /// grow of the memory, either of which may move it.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
+    /// @param offset The first byte's offset.
+    /// @param length The number of bytes; 0 views nothing, at any offset.
+    /// @return The view; ForeignHandle for a memory of another store, OutOfBounds when a byte of it lies
+    ///         outside the memory.
+    [[nodiscard]] std::expected<std::span<std::byte>, MemoryAccessError> memoryRange(
+        Memory const& memory, uint64_t offset, uint64_t length) noexcept;
+
+    /// Grows @p memory by @p deltaPages zeroed pages, as memory.grow does: through the guest's own path,
+    /// charged against StoreLimits::maxMemoryBytes alike, so that its limits and refusals are the guest's.
+    /// @param memory A memory of this store: an instance's export, or one defineMemory() added.
+    /// @param deltaPages The number of pages to add.
+    /// @return The old size in pages; or, the memory unchanged: ForeignHandle for a memory of another
+    ///         store, or the Refusal memory.grow would have met (TypeMaximum, Limit, Embedder,
+    ///         HostMemory), every size checked before a byte is allocated. A refusal while a call into the
+    ///         store runs (from a host function) is that call's: it is recorded in the call's
+    ///         refusedGrowth.memory, as a refused memory.grow of the guest's is.
+    [[nodiscard]] std::expected<uint64_t, MemoryGrowthError> growMemory(Memory const& memory,
+                                                                        uint64_t deltaPages) noexcept;
+
+    /// The current value of @p global, which any instance of the store may have changed.
+    ///
+    /// An exnref value is escaped (runtime::Store::markEscaped()): the embedder holds it now, so it stays
+    /// valid for the store's life.
+    /// @param global A global of this store: an instance's export, or one defineGlobal() added.
+    /// @return Its value; ForeignHandle for a global of another store.
+    [[nodiscard]] std::expected<Value, GlobalAccessError> globalValue(Global const& global) noexcept;
+
+    /// Assigns @p value to @p global, as global.set does.
+    /// @param global A global of this store: an instance's export, or one defineGlobal() added.
+    /// @param value Its new value, of its type.
+    /// @return Nothing, or, the global unchanged: ForeignHandle for a global of another store, Immutable
+    ///         for a const one, ValueMismatch for a value not of its type (a reference of another heap,
+    ///         or naming what the store does not hold, included).
+    [[nodiscard]] std::expected<void, GlobalAccessError> setGlobal(Global const& global,
+                                                                   Value value) noexcept;
+
+    /// The type of @p global, in its store's form (a concrete heap names a TypeId of the store).
+    /// @param global A global of this store: an instance's export, or one defineGlobal() added.
+    /// @return Its type; ForeignHandle for a global of another store.
+    [[nodiscard]] std::expected<GlobalType, GlobalAccessError> globalType(
+        Global const& global) const noexcept;
+
+    /// The current size of @p table, in elements, which a call into the store may grow.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
+    /// @return Its size; ForeignHandle for a table of another store.
+    [[nodiscard]] std::expected<uint64_t, TableAccessError> tableSize(Table const& table) const noexcept;
+
+    /// The element at @p index of @p table, as table.get reads it.
+    ///
+    /// An exnref element is escaped, as globalValue()'s is.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
+    /// @param index The element's index.
+    /// @return The element; ForeignHandle for a table of another store, OutOfBounds for an index not
+    ///         below its size.
+    [[nodiscard]] std::expected<Ref, TableAccessError> tableGet(Table const& table, uint64_t index) noexcept;
+
+    /// Assigns @p value to the element at @p index of @p table, as table.set does.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
+    /// @param index The element's index.
+    /// @param value The element's new value, of the table's element type.
+    /// @return Nothing, or, the table unchanged: ForeignHandle for a table of another store, OutOfBounds
+    ///         for an index not below its size, ValueMismatch for a reference not of its element type.
+    [[nodiscard]] std::expected<void, TableAccessError> tableSet(Table const& table,
+                                                                 uint64_t index,
+                                                                 Ref value) noexcept;
+
+    /// Grows @p table by @p delta elements holding @p init, as table.grow does: through the guest's
+    /// own path, charged against StoreLimits::maxTableElements alike, so that its limits and refusals
+    /// are the guest's.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
+    /// @param delta The number of elements to add.
+    /// @param init What the new elements hold, of the table's element type.
+    /// @return The old size; or, the table unchanged: ForeignHandle for a table of another store,
+    ///         InitValueMismatch for an @p init not of its element type, or the Refusal table.grow would
+    ///         have met (TypeMaximum, Limit, HostMemory). A refusal while a call into the store runs (from
+    ///         a host function) is that call's: it is recorded in the call's refusedGrowth.table, as a
+    ///         refused table.grow of the guest's is.
+    [[nodiscard]] std::expected<uint64_t, TableGrowthError> growTable(Table const& table,
+                                                                      uint64_t delta,
+                                                                      Ref init) noexcept;
+
+    /// The type of @p table, in its store's form, its minimum the table's current size.
+    /// @param table A table of this store: an instance's export, or one defineTable() added.
+    /// @return Its type; ForeignHandle for a table of another store.
+    [[nodiscard]] std::expected<TableType, TableAccessError> tableType(Table const& table) const noexcept;
 
   private:
     friend class Instance;
@@ -298,6 +505,37 @@ class Store
         std::vector<runtime::ExternValue> externs,
         std::vector<std::pair<std::size_t, PendingHost>> pending) noexcept;
 
+    /// What every handle of the store keeps of it: the store and its alive-token.
+    [[nodiscard]] detail::StoreLink handleLink() const noexcept
+    {
+        return detail::StoreLink { *this, _alive };
+    }
+
+    /// The store that made @p value. Precondition (checked, aborting): it is alive.
+    [[nodiscard]] static Store const& ownerOf(Extern const& value) noexcept;
+
+    /// The kind and address of the entity @p value names, in its store.
+    [[nodiscard]] static runtime::ExternValue externValueOf(Extern const& value) noexcept;
+
+    /// The type of the entity @p value names, as the store holds it now: what an Imports definition of
+    /// it snapshots. May throw std::bad_alloc.
+    [[nodiscard]] Imports::EntityType entityTypeOf(runtime::ExternValue value) const;
+
+    /// Whether the host may define a function of @p type: the check define() reports as InvalidType,
+    /// which Imports::define() of a host function requires.
+    /// @return Nothing, or InvalidType of the first param or result type it may not define.
+    [[nodiscard]] static std::expected<void, DefineError> checkHostFunctionType(
+        FuncType const& type) noexcept;
+
+    /// The handle of the entity @p value names.
+    [[nodiscard]] Extern externOf(runtime::ExternValue value) const noexcept;
+
+    /// Whether @p value is of @p type in this store, as runtime::checkValues() checks a value crossing
+    /// the host boundary.
+    /// @return Nothing, or the mismatch.
+    [[nodiscard]] std::expected<void, ValueMismatch> checkValue(Value const& value,
+                                                                ValueType const& type) const noexcept;
+
     /// What a call ended with, as the embedder is told: an exception copied out of the store, the
     /// exnrefs in its payload escaped.
     /// @param abrupt How the call ended.
@@ -311,9 +549,17 @@ class Store
     std::unique_ptr<runtime::ICodeExecutor> _executor; ///< Runs its code: one per store.
 
     HostFunctions _hostFunctions; ///< The host functions added so far, by implementation and type.
+
+    /// The alive-token its handles and instances keep a weak reference to: declared last, so that it
+    /// is destroyed first, and anything torn down after it already sees the store as gone.
+    std::shared_ptr<void> _alive;
 };
 
-/// An instance of a module in a store: a handle, valid as long as the store, and cheap to copy.
+/// An instance of a module in a store: a handle, cheap to copy.
+///
+/// It keeps its store's alive-token: once the store is destroyed, every operation of the instance
+/// reports it (StoreDeleted) and reads nothing, and its by-name lookups find nothing. A deleted store
+/// names no export.
 ///
 /// Calls into it are re-entrant: a host function may call() back into this or another instance of the
 /// store, from within the call that called it.
@@ -322,47 +568,68 @@ class Instance
   public:
     /// Its exported function @p name.
     /// @param name The export's name.
-    /// @return The function; nothing when it exports no function of that name.
+    /// @return The function; nothing when it exports no function of that name, or its store is gone.
     [[nodiscard]] std::optional<Function> function(std::string_view name) const noexcept;
 
     /// Its exported memory @p name.
     /// @param name The export's name.
-    /// @return The memory; nothing when it exports no memory of that name.
+    /// @return The memory; nothing when it exports no memory of that name, or its store is gone.
     [[nodiscard]] std::optional<Memory> memory(std::string_view name) const noexcept;
 
-    /// Its exported tag @p name, which an UncaughtException's tag compares with.
+    /// Its exported global @p name.
     /// @param name The export's name.
-    /// @return The tag's address; nothing when it exports no tag of that name.
-    [[nodiscard]] std::optional<TagAddr> tag(std::string_view name) const noexcept;
+    /// @return The global; nothing when it exports no global of that name, or its store is gone.
+    [[nodiscard]] std::optional<Global> global(std::string_view name) const noexcept;
 
-    /// Calls @p function: the one checked entry into the guest (runtime::invokeChecked()), as a host
-    /// function's HostContext::invoke() is.
+    /// Its exported table @p name.
+    /// @param name The export's name.
+    /// @return The table; nothing when it exports no table of that name, or its store is gone.
+    [[nodiscard]] std::optional<Table> table(std::string_view name) const noexcept;
+
+    /// Its exported tag @p name, whose address() an UncaughtException's tag compares with.
+    /// @param name The export's name.
+    /// @return The tag; nothing when it exports no tag of that name, or its store is gone.
+    [[nodiscard]] std::optional<Tag> tag(std::string_view name) const noexcept;
+
+    /// Its export at @p index, in the module's export order (Module::exports()), whatever its kind.
+    /// @param index The export's index.
+    /// @return The entity, as the alternative of its kind; OutOfRange for an index not below the number
+    ///         of exports, StoreDeleted when its store is gone.
+    [[nodiscard]] std::expected<Extern, ExportAccessError> exportAt(uint32_t index) const noexcept;
+
+    /// Calls @p function, as Store::call() does once the instance's store is found alive.
     ///
     /// Exnrefs among the results are escaped, valid for the store's life. noexcept: the call changes
     /// the store, so running out of memory midway terminates (see Store).
-    /// @param function A function of this instance's store (checked: calling another store's function
-    ///                 is a programming error of the embedder).
+    /// @param function A function of this instance's store.
     /// @param args Its arguments, of its params' types.
     /// @param results Receives its results; one slot per result.
-    /// @return Nothing, or how it failed: ArgumentMismatch, without entering the guest, when @p args
-    ///         are not of its params' types or @p results has the wrong size.
-    [[nodiscard]] std::expected<void, CallError> call(Function function,
+    /// @return Nothing, or how it failed: StoreDeleted, reading nothing, when the instance's store is
+    ///         gone; ForeignHandle, without entering the guest, for a function of another store;
+    ///         ArgumentMismatch, without entering the guest, when @p args are not of its params' types or
+    ///         @p results has the wrong size; or how the call ended (CallError).
+    [[nodiscard]] std::expected<void, CallError> call(Function const& function,
                                                       std::span<Value const> args,
                                                       std::span<Value> results) const noexcept;
 
-    /// A view of @p size bytes of @p memory from @p address, valid until the next call into the store,
-    /// which may grow (and so move) the memory.
-    /// @param memory A memory of this instance's store (checked).
+    /// A view of @p size bytes of @p memory from @p address, valid until the memory grows or the next call
+    /// into the store, either of which may move it.
+    /// @param memory A memory of this instance's store; Store::memoryRange() reaches one without an
+    ///               instance.
     /// @param address The first byte's address.
     /// @param size The number of bytes; 0 views nothing, at any address.
-    /// @return The view; OutOfBounds when a byte of it lies outside the memory.
+    /// @return The view; OutOfBounds when a byte of it lies outside the memory, ForeignHandle for a
+    ///         memory of another store, StoreDeleted when the instance's store is gone.
     [[nodiscard]] std::expected<std::span<std::byte>, MemoryAccessError> memoryRange(
-        Memory memory, uint64_t address, uint64_t size) const noexcept;
+        Memory const& memory, uint64_t address, uint64_t size) const noexcept;
 
     /// The current size of @p memory, which a call into the store may grow.
-    /// @param memory A memory of this instance's store (checked).
-    /// @return Its size in pages and in bytes.
-    [[nodiscard]] MemorySize memorySize(Memory memory) const noexcept;
+    /// @param memory A memory of this instance's store; Store::memorySize() reaches one without an
+    ///               instance.
+    /// @return Its size in pages and in bytes; ForeignHandle for a memory of another store, StoreDeleted
+    ///         when the instance's store is gone.
+    [[nodiscard]] std::expected<MemorySize, MemoryAccessError> memorySize(
+        Memory const& memory) const noexcept;
 
   private:
     friend class Store;
@@ -372,12 +639,16 @@ class Instance
     /// The instance at @p address of @p store.
     Instance(Store& store, uint32_t address) noexcept;
 
-    /// Its export @p name, when it is of @p kind.
+    /// Whether its store is still alive: whether the store's alive-token has not expired.
+    [[nodiscard]] bool isAlive() const noexcept { return !_alive.expired(); }
+
+    /// Its export @p name, when it is of @p kind and its store is alive.
     [[nodiscard]] std::optional<runtime::ExternValue> exported(std::string_view name,
                                                                ExternKind kind) const noexcept;
 
-    Store* _store;     ///< The store it lives in; never null.
-    uint32_t _address; ///< Its module instance's address in that store.
+    Store* _store;              ///< The store it lives in; never null, valid while it is alive.
+    uint32_t _address;          ///< Its module instance's address in that store.
+    std::weak_ptr<void> _alive; ///< The store's alive-token; expired once the store is destroyed.
 };
 
 } // namespace isoline::api
