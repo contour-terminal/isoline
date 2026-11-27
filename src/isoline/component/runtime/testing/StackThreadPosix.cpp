@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include <pthread.h>
+#include <unistd.h>
 
 #include <isoline/component/runtime/testing/StackThread.hpp>
 
@@ -26,7 +27,12 @@ void runOnStackThread(std::size_t bytes, void (*entry)(void*) noexcept, void* ar
 {
     auto attributes = pthread_attr_t {};
     Require(pthread_attr_init(&attributes) == 0);
-    Require(pthread_attr_setstacksize(&attributes, std::max<std::size_t>(bytes, PTHREAD_STACK_MIN)) == 0);
+    // macOS refuses a stack size that is not a multiple of the page size (16 KiB on Apple silicon).
+    auto const pageSize = sysconf(_SC_PAGESIZE);
+    Require(pageSize > 0);
+    auto const page = static_cast<std::size_t>(pageSize);
+    auto const wanted = std::max<std::size_t>(bytes, PTHREAD_STACK_MIN);
+    Require(pthread_attr_setstacksize(&attributes, (wanted + page - 1) / page * page) == 0);
     auto start = Start { .entry = entry, .argument = argument };
     auto thread = pthread_t {};
     Require(pthread_create(
