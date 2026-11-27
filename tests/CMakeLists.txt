@@ -111,6 +111,10 @@ foreach(usage IN ITEMS "1" "1;--features" "1;--features;wasm4" "x;--features;was
     set_tests_properties(spec-usage-${usageName} PROPERTIES LABELS unit PASS_REGULAR_EXPRESSION "usage: ")
 endforeach()
 
+# Every test that builds a target of this tree (a compile-fail test, the refused lambda) runs ninja in
+# it, and two ninja runs in one tree under ctest -j race on its log and its outputs: they share a lock.
+set(isolineMainBuildTreeLock isoline-main-build-tree)
+
 # The api's preconditions, which end the process, one case of the canary each: Engine's constructor
 # refuses a feature set not closed over its prerequisites, the accessors of a handle whose store is gone
 # that return a reference into the store refuse to read it, and Imports refuses a host function of a type
@@ -156,6 +160,7 @@ if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
     add_test(NAME contract-lambda-may-throw-refused
              COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}" --target isoline_canary_lambda_may_throw)
     set_tests_properties(contract-lambda-may-throw-refused PROPERTIES LABELS unit TIMEOUT 300
+        RESOURCE_LOCK "${isolineMainBuildTreeLock}"
         PASS_REGULAR_EXPRESSION "ISOLINE_PRECONDITION/ISOLINE_INVARIANT need a noexcept function")
 endif()
 # Sources that must not compile, each built by its test alone, which passes on the message naming why.
@@ -188,6 +193,7 @@ foreach(row IN LISTS isolineCompileFailRows)
     add_test(NAME compile-fail-${failName}
              COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}" --target ${failTarget})
     set_tests_properties(compile-fail-${failName} PROPERTIES LABELS unit TIMEOUT 300
+                         RESOURCE_LOCK "${isolineMainBuildTreeLock}"
                          PASS_REGULAR_EXPRESSION "${failMessage}")
 endforeach()
 
