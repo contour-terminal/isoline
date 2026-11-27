@@ -3,19 +3,24 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <utility>
 
 namespace isoline::testing
 {
 
 /// The bytes the replaced global operator new (AllocationCounter.cpp) has handed out and not taken
-/// back, and the most it has held at once: the counts every allocation through new and delete
-/// keeps, in the one binary that links that translation unit.
+/// back, the most it has held at once, and all it has handed out: the counts every allocation through
+/// new and delete keeps, in the one binary that links that translation unit.
 ///
 /// The counts are plain, unsynchronized integers: the suite that links them allocates on one thread.
 struct AllocationCounts
 {
     std::size_t liveBytes = 0; ///< The bytes allocated and not yet freed.
     std::size_t peakBytes = 0; ///< The most liveBytes has been since the last resetPeak().
+    /// The bytes allocated in all, freed or not: what a stretch of code allocated whatever it freed in
+    /// between, so work that holds little at once still counts.
+    std::size_t allocatedBytes = 0;
 };
 
 /// The current counts.
@@ -56,10 +61,30 @@ class AllocationLimit
 };
 
 /// What one stretch of code allocated: construct it just before the code, read it just after.
+///
+/// A scope given a budget also refuses every allocation that would take the code past it (an
+/// AllocationLimit), so code that would hold far more fails at once, small, instead of exhausting the
+/// host first.
 class AllocationScope
 {
   public:
-    AllocationScope() noexcept: _baseline { allocationCounts().liveBytes } { resetAllocationPeak(); }
+    AllocationScope() noexcept:
+        _baseline { allocationCounts().liveBytes },
+        _allocatedBaseline { allocationCounts().allocatedBytes },
+        _limit { std::nullopt }
+    {
+        resetAllocationPeak();
+    }
+
+    /// A scope whose code may hold at most @p budgetBytes beyond what is live now; more is refused.
+    /// @param budgetBytes The bytes the code may hold at once.
+    explicit AllocationScope(std::size_t budgetBytes) noexcept:
+        _baseline { allocationCounts().liveBytes },
+        _allocatedBaseline { allocationCounts().allocatedBytes },
+        _limit { std::in_place, budgetBytes }
+    {
+        resetAllocationPeak();
+    }
 
     /// The most the code held at once beyond what was live when the scope began.
     /// @return The peak's growth, in bytes.
@@ -73,8 +98,17 @@ class AllocationScope
         return live > _baseline ? live - _baseline : 0;
     }
 
+    /// What the code allocated in all, whatever it freed in between.
+    /// @return The bytes allocated since the scope began.
+    [[nodiscard]] std::size_t allocatedBytes() const noexcept
+    {
+        return allocationCounts().allocatedBytes - _allocatedBaseline;
+    }
+
   private:
     std::size_t _baseline;
+    std::size_t _allocatedBaseline;        ///< The bytes allocated in all when the scope began.
+    std::optional<AllocationLimit> _limit; ///< The budget, lifted when the scope ends; none refuses nothing.
 };
 
 } // namespace isoline::testing

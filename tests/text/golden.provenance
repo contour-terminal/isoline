@@ -1,0 +1,12 @@
+# Where tests/text/golden.wasm comes from: the pinned wasm-tools (scripts/tools.lock) encoding
+# golden-source.wat, so that ModuleWriter.golden checks the writer against an encoder other than
+# Isoline's own. One `key = value` per line; '#' starts a comment. To make it again:
+#
+#     python3 -I scripts/fetch-tools.py
+#     wasm-tools parse tests/text/golden-source.wat -o tests/text/golden.wasm
+#
+# then update golden.wasm.sha256 below, and review golden.wat (what ModuleWriter writes) by eye.
+
+tool = wasm-tools 1.263.0
+tool.sha256.x86_64-linux = 21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431
+golden.wasm.sha256 = 2172203a227139bc67580b38f54e17c995a24b8a6b8549bc7cc4536de16e4e8f
