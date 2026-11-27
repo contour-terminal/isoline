@@ -153,6 +153,10 @@ namespace
         Export,
     };
 
+    /// The attributes in the order wasm-tools checks them (validate_extern, component.rs:4721-4790),
+    /// whatever their encoded order: by their Attribute alternative.
+    constexpr auto AttributeCheckOrder = std::to_array<std::size_t>({ 1, 0, 2 });
+
     /// The kinds a map key may be: Binary.md's `keytype`, the primitives but floats and error-context.
     [[nodiscard]] constexpr bool isKeyKind(ValueKind kind) noexcept
     {
@@ -919,10 +923,14 @@ namespace
     Result<void> ComponentValidator::attributes(binary::NameAttributes const& name,
                                                 DefinitionPosition position) const
     {
-        // validate_extern (component.rs:4709-4770) gates each attribute.
-        for (auto const& attribute: name.attributes)
+        // validate_extern (component.rs:4709-4790) gates each attribute, in its own order.
+        for (auto const alternative: AttributeCheckOrder)
         {
-            if (auto admitted = admit(AttributeGates[attribute.index()], position); !admitted)
+            if (std::ranges::none_of(name.attributes, [&](binary::Attribute const& attribute) {
+                    return attribute.index() == alternative;
+                }))
+                continue;
+            if (auto admitted = admit(AttributeGates[alternative], position); !admitted)
                 return admitted;
         }
         return {};

@@ -911,6 +911,35 @@ TEST_CASE("Validator.externNamesDeferred")
     CHECK(specMessage(refusal(exported.pool())) == "not yet validated: extern names not strongly unique");
 }
 
+TEST_CASE("Validator.attributeGateOrder")
+{
+    // wasm-tools gates a name's attributes in its own order, the version suffix before implements before
+    // the external id (validate_extern, component.rs:4721-4790), whatever their encoded order: with
+    // neither feature, a name encoding implements first reports the suffix's gate.
+    auto const attributes = std::vector<isoline::component::binary::Attribute> {
+        Implements { .interfaceName = "a:b/c" }, isoline::component::binary::VersionSuffix { .suffix = ".1" }
+    };
+    auto importing = ComponentBuilder {};
+    auto const instance = importing.instanceType(TypeScopeBuilder {});
+    std::ignore = importing.definition(isoline::component::binary::ImportDefinition {
+        .name = NameAttributes { .name = "a", .attributes = attributes },
+        .type = ExternDesc { .sort = Sort::Instance, .index = instance } });
+    auto const imported = refusal(importing.pool());
+    CHECK(imported.disabled == ComponentFeature::CanonicalInterfaceNames);
+    CHECK(specMessage(imported) == "the `cm-canon-names` feature is not active");
+
+    // So for an export definition, whose gates are checked before Task 7 validates it.
+    auto exporting = ComponentBuilder {};
+    auto const exportedType = exporting.instanceType(TypeScopeBuilder {});
+    auto const exportedInstance =
+        exporting.import("i", ExternDesc { .sort = Sort::Instance, .index = exportedType });
+    std::ignore = exporting.definition(isoline::component::binary::ExportDefinition {
+        .name = NameAttributes { .name = "a", .attributes = attributes },
+        .item = SortIndex { .sort = Sort::Instance, .index = exportedInstance },
+        .type = std::nullopt });
+    CHECK(refusal(exporting.pool()).disabled == ComponentFeature::CanonicalInterfaceNames);
+}
+
 TEST_CASE("Validator.outerAliasesIntoComponentsDeferred")
 {
     // A type crossing into a component may not refer to a resource defined outside it; until Task 7
