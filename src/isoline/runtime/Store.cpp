@@ -24,6 +24,7 @@
 #include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/MemoryLayout.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/runtime/ValueCheck.hpp>
@@ -54,6 +55,20 @@ namespace
     [[nodiscard]] constexpr uint64_t pageLimit(binary::MemoryType const& type) noexcept
     {
         return unitLimit(type.limits, binary::maxPages(type), binary::pageSize(type));
+    }
+
+    /// Whether @p memory provides what its code relies on: at least @p requirements' guard, and a reach
+    /// (its bytes plus its guard) of at least theirs. The reach is compared without the sum, so that an
+    /// allocator declaring a guard near 2^64 cannot wrap it below the requirement.
+    /// @param memory The memory, as its allocator handed it out.
+    /// @param requirements What its type requires under the store's layout.
+    /// @return Whether it does.
+    [[nodiscard]] bool provides(ILinearMemory const& memory, MemoryRequirements const& requirements) noexcept
+    {
+        auto const size = static_cast<uint64_t>(memory.bytes().size());
+        auto const guard = memory.guardBytes();
+        return guard >= requirements.guardBytes
+               && guard >= requirements.reachBytes - std::min(size, requirements.reachBytes);
     }
 
     /// The most slots a table may reach.
@@ -179,7 +194,7 @@ MemoryInstance::MemoryInstance(binary::MemoryType type, std::unique_ptr<ILinearM
 
 Store::Store(StoreLimits limits, StoreServices services):
     _allocator { &services.allocator },
-    _requiredGuardBytes { services.requiredGuardBytes },
+    _guardPageLayout { services.guardPageLayout },
     _pollObserver { services.pollObserver },
     _roundingMode { services.roundingMode },
     _interrupter { std::make_shared<Interrupter>() },
@@ -187,6 +202,7 @@ Store::Store(StoreLimits limits, StoreServices services):
     _growthRecord {}
 {
     Require(_roundingMode != nullptr);
+    Require(!services.guardPageLayout.has_value() || isWellFormed(*services.guardPageLayout));
 }
 
 TypeId Store::internType(binary::FuncType type)
@@ -291,11 +307,13 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
         return std::unexpected { allocationError(
             initialBytes.error(), ExternKind::Memory, Limit::MemoryBytes) };
     // pages * pageBytes fits a u64 (pageLimit), and the store's limit caps every memory together.
+    auto const requirements = memoryRequirementsFor(_guardPageLayout, type);
     auto const request = MemoryRequest {
         .type = type,
         .initialBytes = *initialBytes,
         .maximumBytes = std::min(pages, _limits.maxMemoryBytes / pageBytes) * pageBytes,
-        .requiredGuardBytes = _requiredGuardBytes,
+        .requiredGuardBytes = requirements.guardBytes,
+        .requiredReachBytes = requirements.reachBytes,
     };
     return _allocator->allocate(request)
         .transform_error([](Refusal refusal) { return embedderRefusal(refusal, AllocationRefusals); })
@@ -304,7 +322,7 @@ std::expected<MemAddr, AllocationError> Store::addMemory(binary::MemoryType type
             // The allocator's contract, not the guest's: a memory, of the size asked for.
             Require(memory != nullptr);
             Require(std::as_const(*memory).bytes().size() == request.initialBytes);
-            if (memory->guardBytes() < request.requiredGuardBytes)
+            if (!provides(*memory, requirements))
                 return std::unexpected { Refusal::Guard };
             return memory;
         })
@@ -724,6 +742,10 @@ std::expected<uint64_t, Refusal> Store::growMemory(MemAddr address, uint64_t del
             });
     if (!grown)
         recordFirst(_growthRecord.memory, grown.error());
+    else
+        // The memory's contract, not the guest's (ILinearMemory::guardBytes()): what the code relies on
+        // must hold after every grow. Checked after the fact, since a grown memory cannot shrink back.
+        Require(provides(*instance._memory, memoryRequirementsFor(_guardPageLayout, instance.type)));
     return grown;
 }
 

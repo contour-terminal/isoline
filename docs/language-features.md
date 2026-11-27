@@ -165,7 +165,7 @@ throwing interface (not declared `noexcept`, a lambda or a virtual override amon
 calls may not throw). The rows were made by spelling every check as a contract and building the native
 lane, whose `static_assert` names each site in a function that may throw.
 
-Twenty-six checks, in twenty-two functions, are contracts. The entry checks: `Engine::Engine` and `ThreadPreparation`'s constructor
+Thirty-five checks, in twenty-seven functions, are contracts. The entry checks: `Engine::Engine` and `ThreadPreparation`'s constructor
 (`api/Engine.cpp`), `StoreLink::owner()`, `Function::type()` and `Tag::type()` (`api/Extern.cpp`),
 `Store::define()` (`api/Store.cpp`), `sectionWriterOf()`'s two, that its anchor is neither
 `BeforeFirst` nor past `LastSectionAnchor` (`binary/Encoder.cpp`),
@@ -174,10 +174,13 @@ Twenty-six checks, in twenty-two functions, are contracts. The entry checks: `En
 `requireWholeReservation()` (`platform/VirtualMemory.cpp`), `SystemVirtualMemory`'s constructor of a decommit row
 (`platform/VirtualMemoryPosix.cpp`, `platform/VirtualMemoryWindows.cpp`, one per build), `requireJitMapping()` and
 `requireJitThreadToggle()` (`platform/JitMemory.cpp`), and the instruction cache's constructor, that it has its cache
-maintenance (`platform/InstructionCache.cpp`). The others: `Store::call()`'s refusal naming a mismatch
+maintenance (`platform/InstructionCache.cpp`), and `storeFaultAtomicityOf()`'s architecture, `strategyRuleFor()`,
+`boundsStrategyFor()` and `memoryRequirementsFor()`, that a guard-page layout is well-formed, the first two's that an
+access's size is a power of two of at most 16 bytes, and `layoutOf()`'s three
+(`runtime/MemoryLayout.cpp`). The others: `Store::call()`'s refusal naming a mismatch
 (`api/Store.cpp`), `shuffle()`'s lane (`interpreter/Simd.cpp`) and `addressOf()`'s value
 (`runtime/Instantiate.cpp`), and `JitWriteScope`'s destructor, that it ends on the thread that opened it
-(`platform/JitMemory.cpp`). 84 checks in 68 functions keep `Require()`, as do the 21 of the installed
+(`platform/JitMemory.cpp`). 87 checks in 70 functions keep `Require()`, as do the 21 of the installed
 headers. The first to become `pre` when installed declarations may carry one (P19 Task 16) are the
 `noexcept` accessors behind installed declarations: `Engine::Engine`, `StoreLink::owner()`,
 `Function::type()` and `Tag::type()`.

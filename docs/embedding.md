@@ -129,10 +129,16 @@ The store allocates every linear memory through the `IMemoryAllocator` it was gi
 embedder places guest memory in storage of its own.
 
 - `MemoryRequest` names the memory's type, its `initialBytes`, the `maximumBytes` it may grow to (its
-  maximum, capped by its address type's reach and by `StoreLimits::maxMemoryBytes`, in whole pages) and
-  the `requiredGuardBytes` the engine's code needs past the end (`Engine::requiredGuardBytes()`, 0 for
-  the interpreters, which check every access). A memory whose `guardBytes()` is smaller is refused with
-  `Refusal::Guard`; the guard must hold after every grow, as long as the memory lives.
+  maximum, capped by its address type's reach and by `StoreLimits::maxMemoryBytes`, in whole pages), and
+  what the memory's code relies on: the `requiredGuardBytes` of inaccessible guard past the end, and the
+  `requiredReachBytes` from the memory's base that `bytes().size() + guardBytes()` must reach. Both are
+  `runtime::memoryRequirementsFor()` of the memory's type under the store's guard-page layout
+  (`StoreServices::guardPageLayout`; none in explicit mode, which every engine uses today and which needs
+  neither): `{0, 0}` for memory64 and custom page sizes, which stay explicitly checked; the layout's guard
+  where the index is checked and the offset folded; and the guard plus a reach of the reservation and the
+  guard where every check is elided (the Wasmtime-parity layout of a 4 GiB reservation). A memory that
+  provides less is refused with `Refusal::Guard`; the guard must hold after every grow, as long as the
+  memory lives.
 - Growth is the embedder's decision. The store calls `ILinearMemory::grow()` only within the request's
   maximum and the store's budget, and charges the budget only when it succeeds. A memory that declines
   returns `Refusal::Embedder` (`HostMemory` when the host has none), and `memory.grow` returns -1. Any

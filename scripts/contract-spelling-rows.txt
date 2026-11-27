@@ -10,6 +10,7 @@
 # building the native lane: its static_assert named each function below.
 api/Imports.cpp | Imports::define | 4 | allocates (std::bad_alloc reaches the P17 boundary)
 api/Module.cpp | Module::describe | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+api/Store.cpp | Store::Store | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 binary/Encoder.cpp | writeHeapType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 binary/Encoder.cpp | writeValueType | 2 | allocates (std::bad_alloc reaches the P17 boundary)
 binary/Encoder.cpp | writeLimits | 1 | allocates (std::bad_alloc reaches the P17 boundary)
@@ -45,12 +46,13 @@ runtime/Instantiate.cpp | Instantiation::resolveExports | 1 | allocates (std::ba
 runtime/Store.cpp | at | 1 | a throwing interface
 runtime/Store.cpp | append | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | MemoryInstance::MemoryInstance | 1 | a throwing interface
-runtime/Store.cpp | Store::Store | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::Store | 2 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | Store::internType | 3 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | Store::type | 1 | a throwing interface
 runtime/Store.cpp | Store::addHostFunction | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | Store::addModuleFunction | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | Store::addMemory | 3 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Store.cpp | Store::growMemory | 1 | a throwing interface
 runtime/Store.cpp | Store::addTag | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | Store::addException | 2 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | Store::sweepExceptions | 1 | allocates (std::bad_alloc reaches the P17 boundary)

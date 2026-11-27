@@ -82,13 +82,21 @@ ISOLINE_LAST_ENUMERATOR(platform::LastJitAccess, "no table is indexed by it: the
 ISOLINE_LAST_ENUMERATOR(platform::LastVirtualMemoryError, "no table is indexed by it: each enumerator is a refusal VirtualMemoryFailure reports")
 
 // isoline::runtime
+ISOLINE_ENUM_TABLE(runtime::BoundsStrategyTable, runtime::LastBoundsStrategy, runtime::BoundsStrategyRow::strategy)
 ISOLINE_ENUM_TABLE(runtime::LimitTable, runtime::LastLimit, runtime::LimitRow::limit)
 ISOLINE_ENUM_TABLE(runtime::LinkErrorTable, runtime::LastLinkErrorCode, runtime::LinkErrorRow::code)
+ISOLINE_ENUM_TABLE(runtime::MemoryLayoutTable, runtime::LastLayoutRow, runtime::MemoryLayoutRow::row)
 ISOLINE_ENUM_TABLE(runtime::PollSiteTable, runtime::LastPollSite, runtime::PollSiteRow::site)
 ISOLINE_ENUM_TABLE(runtime::RankTable, validate::LastHeapRank, runtime::RankRow::rank)
 ISOLINE_ENUM_TABLE(runtime::ReferenceTable, runtime::LastRefKind, runtime::ReferenceRow::kind)
 ISOLINE_ENUM_TABLE(runtime::RefusalTable, runtime::LastRefusal, runtime::RefusalRow::refusal)
+ISOLINE_ENUM_TABLE(runtime::StoreFaultAtomicityTable, platform::LastArchitecture, runtime::StoreFaultAtomicityRow::architecture)
+ISOLINE_ENUM_TABLE(runtime::StrategyTable, runtime::LastStrategyRule, runtime::StrategyRow::rule)
 ISOLINE_ENUM_TABLE(runtime::TrapTable, runtime::LastTrapCode, runtime::TrapRow::code)
+ISOLINE_LAST_ENUMERATOR(runtime::LastAccessKind, "a column of runtime::MemoryAccess; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(runtime::LastStoreFaultAtomicity, "a column of StoreFaultAtomicityTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(runtime::LastMemoryReliance, "a column of BoundsStrategyTable; no table is indexed by it")
+ISOLINE_LAST_ENUMERATOR(runtime::LastReservationSize, "a column of MemoryLayoutTable; no table is indexed by it")
 
 // isoline::validate
 ISOLINE_ENUM_TABLE(validate::AddressBoundTable, binary::LastAddressType, validate::AddressBoundRow::addressType)

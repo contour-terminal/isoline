@@ -29,6 +29,7 @@
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/MemoryLayout.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -924,6 +925,90 @@ isoline::binary::ValueType refNullTo(uint32_t index)
 }
 
 } // namespace
+
+TEST_CASE("Store.memory64NeedsNoGuardUnderGuardMode", "[memory]")
+{
+    /// Allocates on the heap, declares a guard behind every memory of i32 addresses and none behind
+    /// the others, and records every request.
+    class GuardedMemory32Allocator final: public isoline::runtime::IMemoryAllocator
+    {
+      public:
+        explicit GuardedMemory32Allocator(uint64_t guardBytes): _guardBytes { guardBytes } {}
+
+        [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, Refusal> allocate(
+            isoline::runtime::MemoryRequest const& request) noexcept override
+        {
+            requests.push_back(request);
+            auto const guard = request.type.limits.addressType == AddressType::I32 ? _guardBytes : 0;
+            return _heap.allocate(request).transform(
+                [&](std::unique_ptr<isoline::runtime::ILinearMemory> memory)
+                    -> std::unique_ptr<isoline::runtime::ILinearMemory> {
+                    return std::make_unique<Guarded>(std::move(memory), guard);
+                });
+        }
+
+        std::vector<isoline::runtime::MemoryRequest> requests {}; ///< Every request, in order.
+
+      private:
+        /// A heap memory that declares @p guard.
+        class Guarded final: public isoline::runtime::ILinearMemory
+        {
+          public:
+            Guarded(std::unique_ptr<isoline::runtime::ILinearMemory> memory, uint64_t guard):
+                _memory { std::move(memory) }, _guard { guard }
+            {
+            }
+
+            [[nodiscard]] std::span<std::byte> bytes() noexcept override { return _memory->bytes(); }
+
+            [[nodiscard]] std::span<std::byte const> bytes() const noexcept override
+            {
+                return std::as_const(*_memory).bytes();
+            }
+
+            [[nodiscard]] uint64_t guardBytes() const noexcept override { return _guard; }
+
+            [[nodiscard]] std::expected<void, Refusal> grow(uint64_t newBytes) noexcept override
+            {
+                return _memory->grow(newBytes);
+            }
+
+          private:
+            std::unique_ptr<isoline::runtime::ILinearMemory> _memory;
+            uint64_t _guard;
+        };
+
+        HeapMemoryAllocator _heap;
+        uint64_t _guardBytes;
+    };
+
+    // Contour's layout: the memory32 needs its guard; the memory64 is checked explicitly, so it needs
+    // none, and its memory has none.
+    auto const capped = isoline::runtime::MemoryLayout { .reservationBytes = uint64_t { 32 } << 20,
+                                                         .guardBytes = uint64_t { 32 } << 20 };
+    auto allocator = GuardedMemory32Allocator { capped.guardBytes };
+    auto store =
+        Store { StoreLimits {}, StoreServices { .allocator = allocator, .guardPageLayout = capped } };
+    auto executor = StubExecutor {};
+    auto builder = ModuleBuilder {};
+    builder.memory(between(1, 2)).memory(Limits { .min = 1, .max = 2, .addressType = AddressType::I64 });
+    auto const result = instantiate(store, executor, moduleOf(builder, FeatureSet::wasm3()), {});
+    REQUIRE(result.has_value());
+    CHECK(store.moduleInstance(*result).memories.size() == 2);
+    REQUIRE(allocator.requests.size() == 2);
+    CHECK(allocator.requests[0].requiredGuardBytes == capped.guardBytes);
+    CHECK(allocator.requests[0].requiredReachBytes == 0);
+    CHECK(allocator.requests[1].requiredGuardBytes == 0);
+    CHECK(allocator.requests[1].requiredReachBytes == 0);
+
+    // A memory32 without its guard is still refused in the same module.
+    auto unguarded = GuardedMemory32Allocator { capped.guardBytes - 1 };
+    auto strict =
+        Store { StoreLimits {}, StoreServices { .allocator = unguarded, .guardPageLayout = capped } };
+    CHECK(
+        errorOf(instantiate(strict, executor, moduleOf(builder, FeatureSet::wasm3()), {}))
+        == InstantiationError { AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } });
+}
 
 TEST_CASE("Instantiate.typeIdentityAcrossModules")
 {

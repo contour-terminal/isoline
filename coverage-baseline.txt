@@ -168,6 +168,23 @@
 # check of its Usages table moved onto meta::firstMisplacedRow: the hand-written loop's nine lines, covered because the
 # static_assert sits in a function the tests run, became two. Its two uncovered lines are the ones they were, the bad-alloc
 # exclusion's; no line lost its coverage.
+#
+# src/isoline/runtime/Store.cpp's branch entry was lowered from 84.34 to 83.96 (178 of 212) when the store began to take a
+# guard-page layout (P7 Task 8): its constructor's Require that the layout is well-formed, and growMemory()'s Require that a
+# grown memory still provides what its code relies on, add the branches of an ill-formed layout and of a memory breaking its
+# contract, which no valid caller or memory takes, as every Require's failing side is (the canary's store-of-ill-formed-layout
+# and store-grow-below-the-guard cases take them, each in a process of its own). provides() has both sides of both
+# comparisons covered; no branch lost its coverage.
+#
+# src/isoline/api/Store.cpp's branch entry was lowered from 96.38 to 95.85 (162 of 169) by the store constructor's Require
+# that the engine needs no guard (P7 Task 8): no engine has a guard-page layout before GuardPageMode (Task 15), so
+# Engine::requiredGuardBytes() is 0 for every engine and the failing side is unreachable until then. No branch lost its
+# coverage.
+#
+# src/isoline/runtime/MemoryLayout.cpp entered at 69.09 % of branches (38 of 55, P7 Task 8): its uncovered branches are its
+# preconditions' failing sides (the canary's memory-layout-*, memory-requirements-*, memory-access-*, layout-of-* and
+# store-fault-atomicity-* cases take them, each in a process of its own) and strategyRuleFor()'s fallback after
+# StrategyTable, whose last row always holds.
 
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
@@ -199,7 +216,7 @@ src/isoline/api/Imports.cpp                       100.00 82.35
 src/isoline/api/Imports.hpp                       100.00 -
 src/isoline/api/Module.cpp                        100.00 91.42
 src/isoline/api/Module.hpp                        100.00 -
-src/isoline/api/Store.cpp                         99.50 96.38
+src/isoline/api/Store.cpp                         99.50 95.85
 src/isoline/api/Store.hpp                         100.00 -
 src/isoline/binary/BranchHints.cpp                100.00 100.00
 src/isoline/binary/BranchHints.hpp                100.00 -
@@ -277,8 +294,10 @@ src/isoline/runtime/Interrupt.hpp                 100.00 -
 src/isoline/runtime/Limits.hpp                    100.00 -
 src/isoline/runtime/LinearMemory.cpp              88.57 100.00
 src/isoline/runtime/LinearMemory.hpp              100.00 -
+src/isoline/runtime/MemoryLayout.cpp              100.00 69.09
+src/isoline/runtime/MemoryLayout.hpp              100.00 100.00
 src/isoline/runtime/Segment.hpp                   100.00 100.00
-src/isoline/runtime/Store.cpp                     99.69 84.34
+src/isoline/runtime/Store.cpp                     99.69 83.96
 src/isoline/runtime/Store.hpp                     100.00 94.11
 src/isoline/runtime/Trap.hpp                      100.00 75.00
 src/isoline/runtime/Value.hpp                     100.00 94.44

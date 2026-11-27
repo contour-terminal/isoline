@@ -40,6 +40,10 @@
 #include <isoline/platform/VirtualMemory.hpp>
 #include <isoline/platform/testing/JitWriteScopeKeys.hpp>
 #include <isoline/platform/testing/RecordingVirtualMemory.hpp>
+#include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/MemoryLayout.hpp>
+#include <isoline/runtime/Store.hpp>
+#include <isoline/runtime/testing/ProvidedMemory.hpp>
 
 namespace
 {
@@ -607,6 +611,128 @@ void instructionCacheWithoutMaintenance()
     virtualMemoryWentThrough("makeInstructionCache() without maintenance",
                              resultOf(isoline::platform::makeInstructionCache(
                                  isoline::platform::InstructionCacheKind::Coherent, nullptr, *membarrier)));
+}
+
+/// Reports a memory-layout call a precondition should have stopped.
+/// @param what The call.
+void memoryLayoutWentThrough(std::string_view what)
+{
+    std::println("{} returned", what);
+}
+
+/// A memory of i32 addresses and 64 KiB pages, of one page.
+[[nodiscard]] isoline::binary::MemoryType onePageMemory32()
+{
+    return isoline::binary::MemoryType {
+        .limits = { .min = 1, .max = 1, .addressType = isoline::binary::AddressType::I32 }
+    };
+}
+
+void memoryLayoutGuardAboveMaximum()
+{
+    auto const layout = isoline::runtime::MemoryLayout { .reservationBytes = uint64_t { 32 } << 20,
+                                                         .guardBytes = (uint64_t { 2 } << 30) + (64 << 10) };
+    [[maybe_unused]] auto const strategy = isoline::runtime::boundsStrategyFor(
+        layout,
+        onePageMemory32(),
+        { .offset = 0, .size = 4, .kind = isoline::runtime::AccessKind::Load },
+        isoline::runtime::StoreFaultAtomicity::AllOrNothing);
+    memoryLayoutWentThrough("boundsStrategyFor() under a guard above 2 GiB");
+}
+
+void memoryRequirementsReachOverflows()
+{
+    auto const layout =
+        isoline::runtime::MemoryLayout { .reservationBytes = ~uint64_t { 0 }, .guardBytes = 1 };
+    [[maybe_unused]] auto const requirements =
+        isoline::runtime::memoryRequirementsFor(layout, onePageMemory32());
+    memoryLayoutWentThrough("memoryRequirementsFor() of a reach past 2^64");
+}
+
+void layoutOfPageSizeNotAPower()
+{
+    [[maybe_unused]] auto const layout =
+        isoline::runtime::layoutOf(isoline::runtime::LayoutRow::Capped, 0, 3'000);
+    memoryLayoutWentThrough("layoutOf() of a 3000-byte page");
+}
+
+void layoutOfCapPastTheReach()
+{
+    [[maybe_unused]] auto const layout =
+        isoline::runtime::layoutOf(isoline::runtime::LayoutRow::Capped, ~uint64_t { 0 }, 4'096);
+    memoryLayoutWentThrough("layoutOf() of a cap of 2^64 - 1");
+}
+
+void layoutOfRowOutOfRange()
+{
+    [[maybe_unused]] auto const layout =
+        isoline::runtime::layoutOf(static_cast<isoline::runtime::LayoutRow>(200), 0, 4'096);
+    memoryLayoutWentThrough("layoutOf(200)");
+}
+
+void storeFaultAtomicityOutOfRange()
+{
+    [[maybe_unused]] auto const atomicity =
+        isoline::runtime::storeFaultAtomicityOf(static_cast<isoline::platform::Architecture>(200));
+    memoryLayoutWentThrough("storeFaultAtomicityOf(200)");
+}
+
+/// boundsStrategyFor() of a load of @p size bytes into a one-page memory32 under Contour's layout.
+/// @param size The access's size, which its precondition refuses.
+void strategyOfAccessSize(uint8_t size)
+{
+    auto const layout = isoline::runtime::MemoryLayout { .reservationBytes = uint64_t { 32 } << 20,
+                                                         .guardBytes = uint64_t { 32 } << 20 };
+    [[maybe_unused]] auto const strategy = isoline::runtime::boundsStrategyFor(
+        layout,
+        onePageMemory32(),
+        { .offset = 0, .size = size, .kind = isoline::runtime::AccessKind::Load },
+        isoline::runtime::StoreFaultAtomicity::AllOrNothing);
+    memoryLayoutWentThrough("boundsStrategyFor() of an access no instruction makes");
+}
+
+void memoryAccessSizeNotAPower()
+{
+    strategyOfAccessSize(3);
+}
+
+void memoryAccessTooWide()
+{
+    strategyOfAccessSize(32);
+}
+
+void storeGrowBelowTheGuard()
+{
+    // Contour's layout needs 32 MiB of guard behind a memory32. A provided mapping of 64 MiB has it at one
+    // page, but a grow to 48 MiB leaves only 16 MiB behind the bytes.
+    auto const layout = isoline::runtime::MemoryLayout { .reservationBytes = uint64_t { 32 } << 20,
+                                                         .guardBytes = uint64_t { 32 } << 20 };
+    auto allocator = isoline::runtime::testing::ProvidedMemoryAllocator {
+        uint64_t { 64 } << 20,
+        isoline::runtime::testing::ProvidedReach { uint64_t { 64 } << 20 },
+        [](uint64_t /*newBytes*/) { return isoline::runtime::testing::GrowDecision::Grant; }
+    };
+    auto store = isoline::runtime::Store { isoline::runtime::StoreLimits {},
+                                           isoline::runtime::StoreServices { .allocator = allocator,
+                                                                             .guardPageLayout = layout } };
+    auto const memory = store.addMemory(isoline::binary::MemoryType {
+        .limits = { .min = 1, .max = 1'024, .addressType = isoline::binary::AddressType::I32 } });
+    setUp(memory.has_value(), "add a memory of 64 MiB reach");
+    [[maybe_unused]] auto const grown = store.growMemory(*memory, 767);
+    memoryLayoutWentThrough("growMemory() to 48 MiB of a 64 MiB reach");
+}
+
+void storeOfIllFormedLayout()
+{
+    auto allocator = isoline::runtime::HeapMemoryAllocator {};
+    [[maybe_unused]] auto const store = isoline::runtime::Store {
+        isoline::runtime::StoreLimits {},
+        isoline::runtime::StoreServices {
+            .allocator = allocator,
+            .guardPageLayout = isoline::runtime::MemoryLayout { .reservationBytes = 0,
+                                                                .guardBytes = (uint64_t { 2 } << 30) + 1 } }
+    };
+    memoryLayoutWentThrough("Store() under a guard above 2 GiB");
 }
 
 /// A case: its name on the command line, and what it calls.

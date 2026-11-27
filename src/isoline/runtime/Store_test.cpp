@@ -26,6 +26,7 @@
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/MemoryLayout.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -54,6 +55,7 @@ using isoline::runtime::InstantiationError;
 using isoline::runtime::InvocationScope;
 using isoline::runtime::Limit;
 using isoline::runtime::LimitExceeded;
+using isoline::runtime::MemoryLayout;
 using isoline::runtime::PollSite;
 using isoline::runtime::Ref;
 using isoline::runtime::RefKind;
@@ -67,6 +69,7 @@ using isoline::runtime::TrapCode;
 using isoline::runtime::Value;
 using isoline::runtime::testing::GrowDecision;
 using isoline::runtime::testing::ProvidedMemoryAllocator;
+using isoline::runtime::testing::ProvidedReach;
 
 namespace
 {
@@ -888,30 +891,113 @@ GrowDecision grantAll(uint64_t /*newBytes*/)
     return GrowDecision::Grant;
 }
 
+constexpr auto KiB = uint64_t { 1 } << 10;
+constexpr auto MiB = uint64_t { 1 } << 20;
+constexpr auto GiB = uint64_t { 1 } << 30;
+
+/// Allocates on the heap, and keeps the last request.
+class RecordingAllocator final: public IMemoryAllocator
+{
+  public:
+    [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, Refusal> allocate(
+        isoline::runtime::MemoryRequest const& request) noexcept override
+    {
+        last = request;
+        return _heap.allocate(request);
+    }
+
+    std::optional<isoline::runtime::MemoryRequest> last; ///< The last request.
+
+  private:
+    HeapMemoryAllocator _heap;
+};
+
 } // namespace
 
-TEST_CASE("Store.providedMemoryGuardTooSmallIsRefused")
+TEST_CASE("Store.refusesAShortGuard")
 {
-    auto allocator = ProvidedMemoryAllocator { 4 * PageSize, /*guardBytes=*/4'096, grantAll };
+    // Contour's layout: every memory32 of 64 KiB pages needs the 32 MiB guard, and no reach.
+    auto const capped = MemoryLayout { .reservationBytes = 32 * MiB, .guardBytes = 32 * MiB };
+    auto const refusedForItsGuard = std::unexpected { AllocationError {
+        AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } } };
+
+    auto shortGuard = ProvidedMemoryAllocator { 4 * PageSize, (32 * MiB) - (4 * KiB), grantAll };
     auto store =
-        Store { StoreLimits {}, StoreServices { .allocator = allocator, .requiredGuardBytes = PageSize } };
-    CHECK(store.addMemory(oneToFourPages())
-          == std::unexpected { AllocationError {
-              AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } } });
+        Store { StoreLimits {}, StoreServices { .allocator = shortGuard, .guardPageLayout = capped } };
+    CHECK(store.addMemory(oneToFourPages()) == refusedForItsGuard);
     CHECK(store.memoryCount() == 0);
 
     // The heap's memories have no guard at all.
     auto heap = HeapMemoryAllocator {};
-    auto guarded = Store { StoreLimits {}, StoreServices { .allocator = heap, .requiredGuardBytes = 1 } };
-    CHECK(guarded.addMemory(oneToFourPages())
-          == std::unexpected { AllocationError {
-              AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } } });
+    auto guarded = Store { StoreLimits {}, StoreServices { .allocator = heap, .guardPageLayout = capped } };
+    CHECK(guarded.addMemory(oneToFourPages()) == refusedForItsGuard);
 
     // A guard as large as required is enough.
-    auto exact = ProvidedMemoryAllocator { 4 * PageSize, PageSize, grantAll };
-    auto store2 =
-        Store { StoreLimits {}, StoreServices { .allocator = exact, .requiredGuardBytes = PageSize } };
+    auto exact = ProvidedMemoryAllocator { 4 * PageSize, 32 * MiB, grantAll };
+    auto store2 = Store { StoreLimits {}, StoreServices { .allocator = exact, .guardPageLayout = capped } };
     CHECK(store2.addMemory(oneToFourPages()).has_value());
+
+    // In explicit mode no memory needs one.
+    auto unguarded = Store { StoreLimits {}, StoreServices { .allocator = heap } };
+    CHECK(unguarded.addMemory(oneToFourPages()).has_value());
+}
+
+TEST_CASE("Store.growKeepsTheGuard")
+{
+    // A provided mapping of 64 MiB under Contour's layout: its guard is what the mapping leaves behind the
+    // bytes, and must stay 32 MiB. A grow to 32 MiB keeps it exactly; one past it is the memory breaking its
+    // contract, which the store checks (the canary's store-grow-below-the-guard case).
+    auto const capped = MemoryLayout { .reservationBytes = 32 * MiB, .guardBytes = 32 * MiB };
+    auto allocator = ProvidedMemoryAllocator { 64 * MiB, ProvidedReach { 64 * MiB }, grantAll };
+    auto store =
+        Store { StoreLimits {}, StoreServices { .allocator = allocator, .guardPageLayout = capped } };
+    auto const memory = store.addMemory(MemoryType { .limits = between(1, 1'024) });
+    REQUIRE(memory.has_value());
+    CHECK(store.growMemory(*memory, 511) == 1);
+    CHECK(store.memory(*memory).bytes().size() == 32 * MiB);
+}
+
+TEST_CASE("Store.refusesAShortReach")
+{
+    // The parity layout elides every check of a memory32, so the memory must stay inaccessible up to
+    // the reservation and its guard: 4 GiB + 32 MiB from its first byte.
+    auto const parity = MemoryLayout { .reservationBytes = 4 * GiB, .guardBytes = 32 * MiB };
+    auto const refusedForItsGuard = std::unexpected { AllocationError {
+        AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Guard } } };
+    auto const requiredReach = (4 * GiB) + (32 * MiB);
+
+    // A guard of 32 MiB behind the bytes holds the guard, but not the reach.
+    auto guardOnly = ProvidedMemoryAllocator { 4 * PageSize, 32 * MiB, grantAll };
+    auto store =
+        Store { StoreLimits {}, StoreServices { .allocator = guardOnly, .guardPageLayout = parity } };
+    CHECK(store.addMemory(oneToFourPages()) == refusedForItsGuard);
+
+    // A provided memory reaching 4 GiB only is one guard short.
+    auto fourGiB = ProvidedMemoryAllocator { 4 * PageSize, ProvidedReach { 4 * GiB }, grantAll };
+    auto store2 = Store { StoreLimits {}, StoreServices { .allocator = fourGiB, .guardPageLayout = parity } };
+    CHECK(store2.addMemory(oneToFourPages()) == refusedForItsGuard);
+
+    // One byte short is refused, the reach itself accepted.
+    auto oneShort = ProvidedMemoryAllocator { 4 * PageSize, ProvidedReach { requiredReach - 1 }, grantAll };
+    auto store3 =
+        Store { StoreLimits {}, StoreServices { .allocator = oneShort, .guardPageLayout = parity } };
+    CHECK(store3.addMemory(oneToFourPages()) == refusedForItsGuard);
+    auto exact = ProvidedMemoryAllocator { 4 * PageSize, ProvidedReach { requiredReach }, grantAll };
+    auto store4 = Store { StoreLimits {}, StoreServices { .allocator = exact, .guardPageLayout = parity } };
+    CHECK(store4.addMemory(oneToFourPages()).has_value());
+
+    // A guard of 2^64 - 1 covers any reach: the check never wraps bytes + guard.
+    auto endless = ProvidedMemoryAllocator { 4 * PageSize, std::numeric_limits<uint64_t>::max(), grantAll };
+    auto store5 = Store { StoreLimits {}, StoreServices { .allocator = endless, .guardPageLayout = parity } };
+    CHECK(store5.addMemory(oneToFourPages()).has_value());
+
+    // The request names both, for an allocator that sizes its reservation from them.
+    auto heap = RecordingAllocator {};
+    auto recorded = Store { StoreLimits {}, StoreServices { .allocator = heap, .guardPageLayout = parity } };
+    CHECK(recorded.addMemory(oneToFourPages()) == refusedForItsGuard);
+    REQUIRE(heap.last.has_value());
+    CHECK(heap.last->requiredGuardBytes == 32 * MiB);
+    CHECK(heap.last->requiredReachBytes == requiredReach);
 }
 
 TEST_CASE("Store.providedMemoryGrowthIsTheEmbeddersCall")
@@ -1132,32 +1218,18 @@ TEST_CASE("Store.releaseTrailingReturnsTheBudgets")
 
 TEST_CASE("Store.memoryRequestNamesItsBounds")
 {
-    /// Allocates on the heap, and keeps the last request.
-    class RecordingAllocator final: public IMemoryAllocator
-    {
-      public:
-        [[nodiscard]] std::expected<std::unique_ptr<isoline::runtime::ILinearMemory>, Refusal> allocate(
-            isoline::runtime::MemoryRequest const& request) noexcept override
-        {
-            last = request;
-            return _heap.allocate(request);
-        }
-
-        std::optional<isoline::runtime::MemoryRequest> last; ///< The last request.
-
-      private:
-        HeapMemoryAllocator _heap;
-    };
     auto allocator = RecordingAllocator {};
     auto store = Store { StoreLimits { .maxMemoryBytes = (3 * PageSize) + 100 },
-                         StoreServices { .allocator = allocator, .requiredGuardBytes = 0 } };
+                         StoreServices { .allocator = allocator } };
 
     // Bounded by its type's maximum.
     REQUIRE(store.addMemory(MemoryType { .limits = between(1, 2) }).has_value());
     REQUIRE(allocator.last.has_value());
     CHECK(allocator.last->initialBytes == PageSize);
     CHECK(allocator.last->maximumBytes == 2 * PageSize);
+    // Explicit mode requires neither a guard nor a reach.
     CHECK(allocator.last->requiredGuardBytes == 0);
+    CHECK(allocator.last->requiredReachBytes == 0);
 
     // Bounded by the store's limit, rounded down to whole pages.
     REQUIRE(store.addMemory(MemoryType { .limits = atLeast(0) }).has_value());

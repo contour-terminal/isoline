@@ -23,6 +23,7 @@
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
+#include <isoline/runtime/MemoryLayout.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
@@ -226,9 +227,11 @@ struct StoreServices
     /// Allocates every linear memory of the store; referenced, so it must outlive the store.
     IMemoryAllocator& allocator;
 
-    /// The guard region every memory must declare after its bytes (ILinearMemory::guardBytes()): a
-    /// memory with a smaller one is refused with Guard. 0 requires none, as HeapMemoryAllocator has.
-    uint64_t requiredGuardBytes = 0;
+    /// The layout guard-page code relies on (std::nullopt: explicit bounds checks, which rely on
+    /// nothing). Each memory must then provide what memoryRequirementsFor() derives from it for the
+    /// memory's type, or is refused with Guard: none for memory64 and custom page sizes, which stay
+    /// explicitly checked. Precondition (checked): well-formed (isWellFormed()).
+    std::optional<MemoryLayout> guardPageLayout = std::nullopt;
 
     /// Observes every poll (Store::poll()); none when null. Referenced, so it must outlive the store.
     IPollObserver* pollObserver = nullptr;
@@ -340,7 +343,8 @@ class Store
     /// @return Its address; LimitExceeded when the store holds StoreLimits::maxMemories memories
     ///         already or its bytes exceed those left; otherwise an AllocationFailure: TypeMaximum when
     ///         its size is past its type's reach, the allocator's refusal (Embedder, HostMemory), or
-    ///         Guard when the memory's guard is smaller than StoreServices::requiredGuardBytes.
+    ///         Guard when the memory provides less guard or reach than its type requires under
+    ///         StoreServices::guardPageLayout (memoryRequirementsFor()).
     [[nodiscard]] std::expected<MemAddr, AllocationError> addMemory(binary::MemoryType type);
 
     /// Adds a global.
@@ -630,7 +634,7 @@ class Store
     [[nodiscard]] std::expected<void, Trap> sweepExceptions(std::span<Value const> pending);
 
     IMemoryAllocator* _allocator;
-    uint64_t _requiredGuardBytes;
+    std::optional<MemoryLayout> _guardPageLayout; ///< StoreServices::guardPageLayout.
     IPollObserver* _pollObserver;
     IRoundingMode* _roundingMode; ///< How the floating-point scopes switch the rounding mode; never null.
     std::shared_ptr<Interrupter> _interrupter;

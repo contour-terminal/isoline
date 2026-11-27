@@ -125,13 +125,18 @@ Store::Store(Engine const& engine, IMemoryAllocator& allocator, StoreOptions con
     _id { std::make_shared<StoreId>() },
     _runtime { options.limits.value_or(engine.config().store),
                runtime::StoreServices { .allocator = allocator,
-                                        // The engine's guard, never sized from an override (P8: a guard
-                                        // derived from maxMemoryBytes must check the effective limits).
-                                        .requiredGuardBytes = engine.requiredGuardBytes(),
+                                        // Explicit bounds checks: no engine has a guard-page layout yet
+                                        // (GuardPageMode, P7 Task 15). It will be the engine's, never sized
+                                        // from an override (P8: a layout derived from maxMemoryBytes must
+                                        // check the effective limits).
+                                        .guardPageLayout = std::nullopt,
                                         .pollObserver = options.observer } },
     _executor { makeExecutor(engine.config().engine) },
     _alive { std::make_shared<std::monostate>() }
 {
+    // Until GuardPageMode (P7 Task 15) gives the engine a layout to pass above, an engine requiring a guard
+    // would get a store that checks none: refused here rather than left to the code that relies on it.
+    Require(engine.requiredGuardBytes() == 0);
 }
 
 Store::~Store() = default;

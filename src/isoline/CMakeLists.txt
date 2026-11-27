@@ -90,6 +90,7 @@ target_sources(isoline_core
         runtime/HostFunction.cpp
         runtime/Instantiate.cpp
         runtime/LinearMemory.cpp
+        runtime/MemoryLayout.cpp
         runtime/Store.cpp
         runtime/ValueCheck.cpp
         validate/Subtyping.cpp
@@ -135,6 +136,7 @@ target_sources(isoline_core
             runtime/Interrupt.hpp
             runtime/Limits.hpp
             runtime/LinearMemory.hpp
+            runtime/MemoryLayout.hpp
             runtime/Segment.hpp
             runtime/Store.hpp
             runtime/Trap.hpp
