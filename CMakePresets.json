@@ -57,6 +57,7 @@
                 "not-windows"
             ],
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
                 "CMAKE_CXX_COMPILER": "clang++",
                 "ISOLINE_CLANG_TIDY": "ON"
             }
@@ -112,6 +113,7 @@
                 "debug"
             ],
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
                 "CMAKE_CXX_COMPILER": "g++"
             }
         },
@@ -140,6 +142,7 @@
                 "rhs": "Darwin"
             },
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "cc",
                 "CMAKE_CXX_COMPILER": "c++",
                 "ISOLINE_FETCH_DEPS": "ON"
             }
@@ -158,6 +161,7 @@
                 "rhs": "Windows"
             },
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl",
                 "CMAKE_CXX_COMPILER": "cl",
                 "ISOLINE_FETCH_DEPS": "ON"
             }

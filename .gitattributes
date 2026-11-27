@@ -4,3 +4,6 @@
 
 # WebAssembly modules are binary.
 *.wasm binary
+
+# The vendored wasm-c-api copy is checked byte for byte against its MANIFEST: never converted.
+vendor/wasm-c-api/** -text

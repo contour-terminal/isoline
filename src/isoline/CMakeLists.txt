@@ -125,6 +125,11 @@ isoline_add_module(
     NAMESPACES isoline isoline::api isoline::config
     INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter)
 
+# The C API, a library of its own over isoline_core, with its own C++ tests (src/isoline/c/).
+if(ISOLINE_C_API)
+    add_subdirectory(c)
+endif()
+
 if(ISOLINE_TESTING)
     # Every *_test.cpp under src/isoline/ is one translation unit of the single unit-test binary,
     # except in the directories whose tests link a target of their own and build their own binary.
@@ -136,6 +141,8 @@ if(ISOLINE_TESTING)
         list(FILTER isolineTestSources EXCLUDE REGEX "/${directory}/[^/]*_test\\.cpp$")
     endforeach()
     list(FILTER isolineTestSources EXCLUDE REGEX "/posix/[^/]*_test\\.cpp$")
+    # The C API's C++ tests link the C library, so they are a binary of their own (src/isoline/c/).
+    list(FILTER isolineTestSources EXCLUDE REGEX "^${CMAKE_CURRENT_SOURCE_DIR}/c/")
     if(UNIX)
         file(GLOB_RECURSE isolinePosixTestSources CONFIGURE_DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/*/posix/*_test.cpp")

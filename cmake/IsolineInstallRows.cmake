@@ -19,6 +19,12 @@ include(GNUInstallDirs)
 set(ISOLINE_INSTALL_LIBRARIES
     "isoline_core"   "core"   "isolineCoreTargets"   "isoline"   OFF
     "isoline_text"   "text"   "isolineTextTargets"   "isoline"   OFF)
+# The C API (src/isoline/c/): its shared library, in a component of its own, which installs its static
+# closure and pkg-config file too.
+if(ISOLINE_C_API)
+    list(APPEND ISOLINE_INSTALL_LIBRARIES
+        "isoline_c_shared" "c" "isolineCTargets" "isoline-c" OFF)
+endif()
 # The recipe's fixture (tests/modules/recipe), a library of a testing build with modules only: installed by
 # its component alone, which install-import-fixture-consumer installs to prove the recipe's install row.
 if(ISOLINE_TESTING AND ISOLINE_MODULES)

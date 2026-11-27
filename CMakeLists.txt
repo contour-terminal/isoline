@@ -6,13 +6,17 @@ project(isoline
     VERSION 0.1.0
     DESCRIPTION "A C++23 WebAssembly runtime"
     HOMEPAGE_URL "https://github.com/contour-terminal/isoline"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 
 # Directory-scoped rather than per target, so that a dependency fetched with ISOLINE_FETCH_DEPS
 # (Catch2) is compiled against the same standard library surface as the code that links it.
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# C is the language of the C API's tests and of every header it installs (src/isoline/c/*.h).
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
@@ -41,6 +45,7 @@ include(IsolineDependencies)
 include(IsolinePedantic)
 include(IsolineCappedTest)
 include(IsolineModules)
+include(IsolineCExports)
 
 if(ISOLINE_TESTING)
     enable_testing()

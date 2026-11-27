@@ -23,7 +23,9 @@ set(ISOLINE_CONSUMER_MODES
     "import-std"     "install-import-std-consumer"     "4.3"  "ImportConsumer.cpp"  "std|isoline"
         "isoline"
     "import-fixture" "install-import-fixture-consumer" "4.3"  "FixtureConsumer.cpp" "isoline.recipe_fixture"
-        "isoline|isoline-test-fixture")
+        "isoline|isoline-test-fixture"
+    "c"              "install-c-consumer"              "3.25" "CConsumer.cpp"       "c"
+        "isoline|isoline-c")
 
 # What a mode may use: (name, how: include or import, the package component that holds it, the target the
 # consumer links). The consumer asks find_package() for the components of what it uses, alone: the package
@@ -32,7 +34,8 @@ set(ISOLINE_CONSUMER_USES
     "core"                   "include" "core"           "isoline::core"
     "text"                   "include" "text"           "isoline::text"
     "isoline"                "import"  "core"           "isoline::core_module"
-    "isoline.recipe_fixture" "import"  "recipe_fixture" "isoline::recipe_fixture_module")
+    "isoline.recipe_fixture" "import"  "recipe_fixture" "isoline::recipe_fixture_module"
+    "c"                      "include" "c"              "isoline::c")
 
 ## @brief Looks up the row of ISOLINE_CONSUMER_MODES for @p mode.
 ##

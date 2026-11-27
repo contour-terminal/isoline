@@ -6,6 +6,10 @@ add_subdirectory(spec)
 if(ISOLINE_MODULES)
     add_subdirectory(modules)
 endif()
+# The C API's C tests and its lints.
+if(ISOLINE_C_API)
+    add_subdirectory(c)
+endif()
 
 # The spec runner's self-test: a script with wrong assertions the runner must report and fail on.
 # Two are wrong in their values (1 + 2 is not 4, and dividing by zero is no overflow). The rest pin

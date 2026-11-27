@@ -34,6 +34,7 @@ jobs:
       - name: Configure
         run: >
           cmake --preset clang-asan
+          -DCMAKE_C_COMPILER="clang-$LLVM_VERSION"
           -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
           -DISOLINE_CLANG_TIDY_EXE="/usr/bin/clang-tidy-$LLVM_VERSION"
           -DISOLINE_FETCH_DEPS=ON
@@ -57,6 +58,7 @@ jobs:
         # clang-tidy runs in the ASan job already.
         run: >
           cmake --preset clang-tsan
+          -DCMAKE_C_COMPILER="clang-$LLVM_VERSION"
           -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
           -DISOLINE_CLANG_TIDY=OFF
           -DISOLINE_FETCH_DEPS=ON
@@ -86,7 +88,9 @@ jobs:
       - name: Configure
         run: >
           cmake --preset ${{ matrix.preset }}
-          -DCMAKE_CXX_COMPILER="g++-$GCC_VERSION" -DISOLINE_FETCH_DEPS=ON
+          -DCMAKE_C_COMPILER="gcc-$GCC_VERSION"
+          -DCMAKE_CXX_COMPILER="g++-$GCC_VERSION"
+          -DISOLINE_FETCH_DEPS=ON
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
@@ -106,6 +110,7 @@ jobs:
       - name: Configure
         run: >
           cmake --preset clang-coverage
+          -DCMAKE_C_COMPILER="clang-$LLVM_VERSION"
           -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
           -DISOLINE_CLANG_TIDY_EXE="/usr/bin/clang-tidy-$LLVM_VERSION"
           -DISOLINE_FETCH_DEPS=ON
@@ -520,14 +525,17 @@ jobs:
           for dir in src tests; do
             if [ -d "$dir" ]; then dirs+=("$dir"); fi
           done
-          find "${dirs[@]}" \( -name '*.cpp' -o -name '*.hpp' \) -print0 \
+          # C++ and C sources alike: the C API's headers (*.h) and its C tests (*.c) included.
+          find "${dirs[@]}" \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.c' \) -print0 \
             | xargs -0 "clang-format-$LLVM_VERSION" --dry-run --Werror
 
   vendor-check:
-    name: Vendored core-cpp matches its MANIFEST
+    name: Vendored core-cpp and wasm-c-api match their MANIFESTs
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check vendor/core-cpp
         run: cmake -DMODE=check -DDEST=vendor/core-cpp -P vendor/core-cpp/cmake/CoreCppVendor.cmake
+      - name: Check vendor/wasm-c-api
+        run: cmake -DMODE=check -DDEST=vendor/wasm-c-api -P cmake/WasmCApiVendor.cmake

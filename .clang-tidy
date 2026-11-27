@@ -191,7 +191,11 @@ HeaderFilterRegex: 'src[/\\]isoline[/\\]|tests[/\\]'
 # Qt's AUTOMOC/AUTOUIC output lands under out/<preset>/src/<module>/..._autogen/, whose
 # path matches HeaderFilterRegex; it is generated code and not ours to lint. So are the qtwaylandscanner
 # headers (qwayland-<protocol>.h) generated from protocols/*.xml.
-ExcludeHeaderFilterRegex: 'wayland-.*-protocol\.h|qwayland-.*\.h|.*_autogen[/\\].*|.*\.moc$'
+#
+# The C API's headers (src/isoline/c/*.h) are C, written in C's conventions and the names wasm.h
+# mandates, and C++ includes them; they are linted as C by the C compilers' strict warning set instead
+# (plan P17a, I4; the clang-tidy-c-headers test holds this line to it).
+ExcludeHeaderFilterRegex: 'wayland-.*-protocol\.h|qwayland-.*\.h|.*_autogen[/\\].*|.*\.moc$|src[/\\]isoline[/\\]c[/\\][^/\\]+\.h$'
 FormatStyle: none
 
 CheckOptions:
@@ -248,3 +252,14 @@ CheckOptions:
   readability-identifier-naming.VariableCase: camelBack
   readability-identifier-naming.GlobalVariableCase: camelBack
   # No Hungarian notation: no g/s_/k prefixes. Globals are plain camelBack.
+  # The C API (src/isoline/c/): the C++ that defines its functions and opaque structs spells them as
+  # wasm.h and the C ABI mandate, wasm_* and isoline_* in C's snake_case. Configuration, not NOLINT
+  # (plan P17a, I4). clang-tidy anchors an IgnoredRegexp at both ends, so each pattern spells out the
+  # whole name; and a member is checked under its access's style, so a struct's public member is
+  # PublicMember's, not Member's.
+  readability-identifier-naming.FunctionIgnoredRegexp: '(wasm|isoline)_.*'
+  readability-identifier-naming.TypedefIgnoredRegexp: '(wasm|isoline)_.*'
+  readability-identifier-naming.StructIgnoredRegexp: '(wasm|isoline)_.*'
+  readability-identifier-naming.MemberIgnoredRegexp: '(wasm|isoline)_.*'
+  readability-identifier-naming.PublicMemberIgnoredRegexp: '(wasm|isoline)_.*'
+  readability-identifier-naming.ParameterIgnoredRegexp: '(wasm|isoline)_.*'

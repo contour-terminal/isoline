@@ -42,7 +42,9 @@ function(isoline_install_core_cpp_version outVar)
 endfunction()
 
 ## @brief Installs one row of ISOLINE_INSTALL_LIBRARIES into its export set: the library with its HEADERS
-## file set. Its module target, where it has one, is already in the export set
+## file set, beneath <includedir> or, where the library sets ISOLINE_INSTALL_HEADER_SUBDIRECTORY, beneath
+## <includedir>/<that subdirectory> (the C API's, so that its wasm.h never lands in <includedir> beside
+## another runtime's). Its module target, where it has one, is already in the export set
 ## (isoline_install_module_target()). The export set itself is installed once, by isoline_install().
 function(isoline_install_library library exportName exportSet component isExcludedFromAll)
     isoline_component_name_refusal("${exportName}" refusal)
@@ -61,12 +63,17 @@ function(isoline_install_library library exportName exportSet component isExclud
     endif()
     set_target_properties(${library} PROPERTIES EXPORT_NAME "${exportName}"
         MSVC_DEBUG_INFORMATION_FORMAT "${ISOLINE_INSTALL_MSVC_DEBUG_INFORMATION_FORMAT}")
+    set(headerDirectory "${CMAKE_INSTALL_INCLUDEDIR}")
+    get_target_property(headerSubdirectory ${library} ISOLINE_INSTALL_HEADER_SUBDIRECTORY)
+    if(headerSubdirectory)
+        string(APPEND headerDirectory "/${headerSubdirectory}")
+    endif()
     install(TARGETS ${library}
         EXPORT ${exportSet}
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT ${component} ${exclusion}
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT ${component} ${exclusion}
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT ${component} ${exclusion}
-        FILE_SET HEADERS DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" COMPONENT ${component} ${exclusion})
+        FILE_SET HEADERS DESTINATION "${headerDirectory}" COMPONENT ${component} ${exclusion})
 endfunction()
 
 ## @brief Sets @p outVar to the export names of the rows of ISOLINE_INSTALL_LIBRARIES, other than
@@ -282,6 +289,27 @@ function(isoline_add_install_tests)
     isoline_consumer_mode("" every)
     foreach(mode IN LISTS everyKnownModes)
         isoline_consumer_mode("${mode}" consumer)
+        # A mode that uses a component this build installs no library for (the C API's, without
+        # ISOLINE_C_API) has nothing to consume.
+        set(missingComponent "")
+        foreach(packageComponent IN LISTS consumerPackageComponents)
+            set(isInstalled OFF)
+            set(rows ${ISOLINE_INSTALL_LIBRARIES})
+            while(rows)
+                list(POP_FRONT rows rowLibrary rowExportName rowExportSet rowComponent rowIsExcludedFromAll)
+                if(rowExportName STREQUAL packageComponent)
+                    set(isInstalled ON)
+                endif()
+            endwhile()
+            if(NOT isInstalled AND NOT missingComponent)
+                set(missingComponent "${packageComponent}")
+            endif()
+        endforeach()
+        if(missingComponent)
+            message(STATUS "[isoline] install tests: ${consumerTest} not registered: this build installs no "
+                           "component ${missingComponent}")
+            continue()
+        endif()
         set(labels install)
         if(consumerImportsIsoline OR consumerImportsStd)
             if(moduleRefusal)
