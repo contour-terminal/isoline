@@ -219,6 +219,35 @@ inline constexpr auto BranchTargetMask = Word { 0xFFFF'FFFF };
 /// values in the high 32 bits, then the LoopPoll.
 inline constexpr auto BranchTableEntryWords = uint32_t { 2 };
 
+/// What names the access of a load or store of a memory other than memory 0 (LoadIndexed, StoreIndexed): the
+/// memory's index in the module, and the memory 0 operation of the same access and address type, whose body
+/// the access runs over the other memory's bytes.
+struct IndexedAccess
+{
+    uint32_t memory = 0;                   ///< The memory's index in the module's memory index space.
+    OperationId access = OperationId::Nop; ///< The memory 0 operation of the same access.
+
+    /// Whether both name the same access of the same memory.
+    [[nodiscard]] constexpr bool operator==(IndexedAccess const&) const = default;
+};
+
+/// The immediate word of @p access: the memory in the low 32 bits, the operation in the high ones.
+/// @param access The access.
+/// @return Its word.
+[[nodiscard]] constexpr Word indexedAccessWord(IndexedAccess access) noexcept
+{
+    return Word { access.memory } | (Word { std::to_underlying(access.access) } << 32U);
+}
+
+/// The access an immediate word of indexedAccessWord() names.
+/// @param word The word.
+/// @return The access.
+[[nodiscard]] constexpr IndexedAccess indexedAccessOf(Word word) noexcept
+{
+    return IndexedAccess { .memory = static_cast<uint32_t>(word),
+                           .access = static_cast<OperationId>(word >> 32U) };
+}
+
 /// The header word of @p operation in code lowered for @p dispatch: its OperationId under Switch, the address
 /// of its handler under TailCall.
 ///

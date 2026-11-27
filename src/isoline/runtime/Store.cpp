@@ -723,12 +723,18 @@ std::expected<uint64_t, Refusal> Store::growMemory(MemAddr address, uint64_t del
                     .transform_error([](Refusal refusal) { return embedderRefusal(refusal, GrowRefusals); })
                     .transform([&] {
                         _memoryBytes += added;
+                        ++_memoryGeneration;
                         return oldPages;
                     });
             });
     if (!grown)
         recordFirst(_growthRecord.memory, grown.error());
     return grown;
+}
+
+uint64_t Store::memoryGeneration() const noexcept
+{
+    return _memoryGeneration;
 }
 
 std::expected<uint64_t, Refusal> Store::growTable(TableAddr address, uint64_t delta, Ref init)

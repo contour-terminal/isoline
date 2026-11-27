@@ -15,6 +15,7 @@
 
 #include <isoline/Features.hpp>
 #include <isoline/binary/DecodeLimits.hpp>
+#include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
@@ -107,6 +108,21 @@ inline constexpr auto DefaultBudget = uint64_t { 256 } * 1024 * 1024;
     if (info.prefix == binary::NoPrefix)
         return { static_cast<uint8_t>(info.code) };
     return binary::testing::code({ { info.prefix }, binary::testing::encodeU32(info.code) });
+}
+
+/// A load or store of @p opcode at natural alignment, of @p offset, naming @p memory where it is not memory 0
+/// (the multi-memory flag, 0x40, in the alignment field).
+/// Precondition (checked): @p opcode is a load or store (binary::memoryAccessOf()).
+[[nodiscard]] inline Bytes memoryInstruction(binary::Opcode opcode, uint64_t offset, uint32_t memory = 0)
+{
+    auto const* row = binary::memoryAccessOf(opcode);
+    REQUIRE(row != nullptr);
+    constexpr auto NamesMemory = uint32_t { 0x40 };
+    auto const flags = row->naturalAlignment() | (memory != 0 ? NamesMemory : 0U);
+    auto bytes = binary::testing::code({ encodingOf(opcode), binary::testing::encodeU32(flags) });
+    if (memory != 0)
+        bytes = binary::testing::code({ bytes, binary::testing::encodeU32(memory) });
+    return binary::testing::code({ bytes, binary::testing::encodeU64(offset) });
 }
 
 /// @p builder's module lowered under the default budget, checked against every published bound: its

@@ -80,6 +80,12 @@ class FastInterpreter final: public runtime::ICodeExecutor
     /// @return The dispatch.
     [[nodiscard]] Dispatch dispatch() const noexcept;
 
+    /// How many times it read a memory 0 again because some memory of its store grew while code it ran was
+    /// out of its sight (Store::memoryGeneration()): after a call or a host function returned, and after a
+    /// memory.grow. Reading memory 0 when a call enters, or returns to, another instance is not counted.
+    /// @return The count, over every invocation it ran.
+    [[nodiscard]] uint64_t memoryRefreshes() const noexcept;
+
     /// Invokes a function, as the spec's invocation does (4.5.5).
     ///
     /// A host function runs through runtime::callHostFunction() after the FunctionEntry poll, the embedder
@@ -106,6 +112,9 @@ class FastInterpreter final: public runtime::ICodeExecutor
     /// The Wasm frames live across every invocation in progress: a host function that invokes Wasm again
     /// nests within the depth of the call that reached it.
     uint32_t _depth = 0;
+
+    /// What memoryRefreshes() reports.
+    uint64_t _memoryRefreshes = 0;
 };
 
 } // namespace isoline::fastinterpreter

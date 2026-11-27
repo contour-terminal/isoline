@@ -175,6 +175,8 @@ namespace
         std::span<uint32_t const>
             importedFunctions;                ///< The type indices of its imported functions, in order.
         std::span<TypeSlots const> typeSlots; ///< The slots of each type's params and results.
+        std::span<binary::AddressType const>
+            memoryAddressTypes; ///< The address type of each memory, the imported ones first.
 
         /// The value type of a global.
         /// @param index The global's index, the imported ones first.
@@ -218,6 +220,21 @@ namespace
         for (auto const& type: module.types)
             slots.push_back(TypeSlots { .params = slotsOf(type.params), .results = slotsOf(type.results) });
         return slots;
+    }
+
+    /// The address type of each of @p module's memories, the imported ones first, allocated from @p resource:
+    /// which operation a load or store of it lowers to.
+    [[nodiscard]] LoweringVector<binary::AddressType> memoryAddressTypesOf(
+        binary::Module const& module, std::pmr::memory_resource* resource)
+    {
+        auto types = LoweringVector<binary::AddressType>(resource);
+        types.reserve(module.importedCount(binary::ExternKind::Memory) + module.memories.size());
+        for (auto const& import: module.imports)
+            if (import.kind == binary::ExternKind::Memory)
+                types.push_back(import.memory.limits.addressType);
+        for (auto const& memory: module.memories)
+            types.push_back(memory.limits.addressType);
+        return types;
     }
 
     /// The value types of @p module's imported globals, in order, allocated from @p resource.
@@ -412,6 +429,8 @@ namespace
                     if (!lowerFused(row, instruction))
                         lowerBinary(row);
                     return;
+                case OperationForm::Load: lowerLoad(row, instruction); return;
+                case OperationForm::Store: lowerStore(row, instruction); return;
                 default: lowerSpecial(instruction); return;
             }
         }
@@ -454,6 +473,8 @@ namespace
                 case Opcode::ReturnCallRef: lowerCall(instruction); return;
                 case Opcode::GlobalGet: lowerGlobalGet(instruction.a); return;
                 case Opcode::GlobalSet: lowerGlobalSet(instruction.a); return;
+                case Opcode::MemorySize: lowerMemorySize(instruction.a); return;
+                case Opcode::MemoryGrow: lowerMemoryGrow(instruction.a); return;
                 case Opcode::I32Const:
                 case Opcode::I64Const:
                 case Opcode::F32Const:
@@ -554,6 +575,72 @@ namespace
                  { first.slot, firstSource, secondSource, readable(condition) },
                  {});
             push(Entry { .type = first.type });
+        }
+
+        /// The address type of memory @p memory, as a value type: memory.size's and memory.grow's.
+        [[nodiscard]] ValueType addressValueType(uint32_t memory) const
+        {
+            auto const type = _context.memoryAddressTypes[memory];
+            return ValueType { .kind = type == binary::AddressType::I64 ? binary::ValueKind::I64
+                                                                        : binary::ValueKind::I32 };
+        }
+
+        /// Emits the load or store of @p row over @p slots, for @p instruction's memory and offset: to memory
+        /// 0, the row's own operation of the memory's address type; to any other memory, @p indexed naming
+        /// the memory and that operation.
+        void emitAccess(LoweringRow const& row,
+                        binary::Instruction const& instruction,
+                        OperationId indexed,
+                        std::initializer_list<uint32_t> slots)
+        {
+            auto const memory = instruction.b;
+            auto const access = _context.memoryAddressTypes[memory] == binary::AddressType::I64
+                                    ? row.memory64
+                                    : row.operation;
+            if (memory == 0)
+                emit(access, slots, { instruction.c });
+            else
+                emit(indexed,
+                     slots,
+                     { instruction.c,
+                       indexedAccessWord(IndexedAccess { .memory = memory, .access = access }) });
+        }
+
+        /// Lowers a Load row: the address's slot to the value, in the address's home slot.
+        void lowerLoad(LoweringRow const& row, binary::Instruction const& instruction)
+        {
+            auto address = pop();
+            auto const source = readable(address);
+            emitAccess(row, instruction, OperationId::LoadIndexed, { address.slot, source });
+            // Its signature is its address type's (Special); the value's type is the access's.
+            push(Entry { .type = ValueType { .kind = binary::memoryAccessOf(row.opcode)->value } });
+        }
+
+        /// Lowers a Store row: the value's slot to memory at the address's.
+        void lowerStore(LoweringRow const& row, binary::Instruction const& instruction)
+        {
+            auto value = pop();
+            auto address = pop();
+            auto const addressSource = readable(address);
+            auto const valueSource = readable(value);
+            emitAccess(row, instruction, OperationId::StoreIndexed, { addressSource, valueSource });
+        }
+
+        /// Lowers memory.size of @p memory into a fresh slot.
+        void lowerMemorySize(uint32_t memory)
+        {
+            auto const slot = _top;
+            push(Entry { .type = addressValueType(memory) });
+            emit(OperationId::MemorySize, { slot }, { memory });
+        }
+
+        /// Lowers memory.grow of @p memory: the delta's slot to the result, in the delta's home slot.
+        void lowerMemoryGrow(uint32_t memory)
+        {
+            auto delta = pop();
+            auto const source = readable(delta);
+            emit(OperationId::MemoryGrow, { delta.slot, source }, { memory });
+            push(Entry { .type = addressValueType(memory) });
         }
 
         /// Lowers global.get of @p global into a fresh slot.
@@ -1212,10 +1299,12 @@ namespace
         auto const importedGlobals = importedGlobalTypes(module, &arena);
         auto const importedFunctions = importedFunctionTypes(module, &arena);
         auto const typeSlots = typeSlotsOf(module, &arena);
+        auto const memoryAddressTypes = memoryAddressTypesOf(module, &arena);
         auto const context = ModuleContext { .module = module,
                                              .importedGlobals = importedGlobals,
                                              .importedFunctions = importedFunctions,
-                                             .typeSlots = typeSlots };
+                                             .typeSlots = typeSlots,
+                                             .memoryAddressTypes = memoryAddressTypes };
         auto stats = LoweringStats {};
         for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(module.code.size())))
         {

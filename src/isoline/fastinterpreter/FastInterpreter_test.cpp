@@ -21,6 +21,7 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
@@ -56,6 +57,7 @@ using isoline::binary::testing::brIf;
 using isoline::binary::testing::Bytes;
 using isoline::binary::testing::code;
 using isoline::binary::testing::drop;
+using isoline::binary::testing::encodeU32;
 using isoline::binary::testing::i32Const;
 using isoline::binary::testing::i64Const;
 using isoline::binary::testing::localGet;
@@ -67,6 +69,7 @@ using isoline::fastinterpreter::describe;
 using isoline::fastinterpreter::FusionTable;
 using isoline::fastinterpreter::LoweredFunction;
 using isoline::fastinterpreter::LoweredModule;
+using isoline::fastinterpreter::LoweringRow;
 using isoline::fastinterpreter::LoweringRows;
 using isoline::fastinterpreter::MaximumGrownChunkSlots;
 using isoline::fastinterpreter::OperationForm;
@@ -77,6 +80,7 @@ using isoline::fastinterpreter::testing::EngineUnderTest;
 using isoline::fastinterpreter::testing::fast;
 using isoline::fastinterpreter::testing::functionOf;
 using isoline::fastinterpreter::testing::Harness;
+using isoline::fastinterpreter::testing::memoryInstruction;
 using isoline::fastinterpreter::testing::op;
 using isoline::fastinterpreter::testing::operationsOf;
 using isoline::fastinterpreter::testing::Reference;
@@ -954,6 +958,113 @@ class Agreement
     return module;
 }
 
+/// The address @p value of a memory of @p addressType addresses.
+[[nodiscard]] Value addressValue(binary::AddressType addressType, uint64_t value)
+{
+    if (addressType == binary::AddressType::I64)
+        return I64 { value };
+    return I32 { static_cast<uint32_t>(value) };
+}
+
+/// The value a store of @p kind writes: every byte distinct, a float a NaN with a payload.
+[[nodiscard]] Value storedValue(ValueKind kind)
+{
+    switch (kind)
+    {
+        case ValueKind::I32: return I32 { 0x89AB'CDEF };
+        case ValueKind::I64: return I64 { 0x0123'4567'89AB'CDEF };
+        case ValueKind::F32: return F32 { 0x7FA0'0001 };
+        default: return F64 { 0xFFF4'0000'0000'0001 };
+    }
+}
+
+/// @p module with its memories added: memory @p memory of @p addressType addresses, of one page of up to two,
+/// starting with 0x80, 0x81, … so that narrow loads show their extension, after a memory 0 of one page where
+/// @p memory is 1.
+[[nodiscard]] ModuleBuilder withMemories(ModuleBuilder module,
+                                         binary::AddressType addressType,
+                                         uint32_t memory)
+{
+    if (memory != 0)
+        module.memory(
+            binary::Limits { .min = 1, .max = std::nullopt, .addressType = binary::AddressType::I32 });
+    module.memory(binary::Limits { .min = 1, .max = 2, .addressType = addressType });
+    auto const prefix = memory == 0 ? Bytes { 0x00 } : code({ { 0x02 }, encodeU32(memory) });
+    auto const offset = addressType == binary::AddressType::I64 ? i64Const(0) : i32Const(0);
+    module.data(code({ prefix, offset, { 0x0B, 0x08, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0xF7 } }));
+    return module;
+}
+
+/// Runs the Load or Store row @p row on both engines, to memory @p memory of @p addressType addresses, in
+/// bounds and past the end; a store's function loads its bytes back, so that what it wrote is a result.
+void checkMemoryAccess(Agreement& agreement,
+                       LoweringRow const& row,
+                       binary::AddressType addressType,
+                       uint32_t memory)
+{
+    INFO(binary::opcodeInfo(row.opcode).text);
+    auto const* access = binary::memoryAccessOf(row.opcode);
+    REQUIRE(access != nullptr);
+    auto const load = row.form == OperationForm::Load;
+    auto const value = ValueType { .kind = access->value };
+    auto params =
+        std::vector<ValueType> { addressType == binary::AddressType::I64 ? binary::I64 : binary::I32 };
+    if (!load)
+        params.push_back(value);
+    auto const results = load ? std::vector { value } : std::vector<ValueType> {};
+    auto const loadBack =
+        load ? Bytes {} : code({ localGet(0), memoryInstruction(Opcode::I64Load, 3, memory), op(0x1A) });
+    auto const operands = load ? localGet(0) : code({ localGet(0), localGet(1) });
+    auto const module = withMemories(
+        functionOf(
+            params, results, {}, code({ operands, memoryInstruction(row.opcode, 3, memory), loadBack })),
+        addressType,
+        memory);
+    auto argumentSets = std::vector<std::vector<Value>> {};
+    for (auto const at: { uint64_t { 0 },
+                          uint64_t { 1 },
+                          uint64_t { 65'533 },
+                          uint64_t { 65'536 },
+                          std::numeric_limits<uint64_t>::max() })
+    {
+        auto arguments = std::vector { addressValue(addressType, at) };
+        if (!load)
+            arguments.push_back(storedValue(access->value));
+        argumentSets.push_back(std::move(arguments));
+    }
+    agreement.check(module, argumentSets);
+}
+
+/// Runs every Load and Store row on both engines, to memory 0 of i32 and of i64 addresses and to memory 1
+/// (the indexed operations); and memory.size and memory.grow of each, granted and refused.
+void checkMemoryOperations(Agreement& agreement)
+{
+    for (auto const addressType: { binary::AddressType::I32, binary::AddressType::I64 })
+    {
+        for (auto const memory: { 0U, 1U })
+        {
+            INFO((addressType == binary::AddressType::I64 ? "i64" : "i32")
+                 << " addresses, memory " << memory);
+            for (auto const& row: LoweringRows)
+                if (row.form == OperationForm::Load || row.form == OperationForm::Store)
+                    checkMemoryAccess(agreement, row, addressType, memory);
+            auto const kind = addressType == binary::AddressType::I64 ? binary::I64 : binary::I32;
+            auto const size = code({ { 0x3F }, encodeU32(memory) });
+            auto const grow = code({ { 0x40 }, encodeU32(memory) });
+            auto argumentSets = std::vector<std::vector<Value>> {};
+            for (auto const delta:
+                 { uint64_t { 0 }, uint64_t { 1 }, uint64_t { 2 }, std::numeric_limits<uint64_t>::max() })
+                argumentSets.push_back({ addressValue(addressType, delta) });
+            agreement.check(
+                withMemories(
+                    functionOf({ kind }, { kind, kind, kind }, {}, code({ size, localGet(0), grow, size })),
+                    addressType,
+                    memory),
+                argumentSets);
+        }
+    }
+}
+
 } // namespace
 
 TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
@@ -966,7 +1077,8 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
     // with constants for its right operand.
     for (auto const& row: LoweringRows)
     {
-        if (row.form == OperationForm::Special)
+        if (row.form == OperationForm::Special || row.form == OperationForm::Load
+            || row.form == OperationForm::Store)
             continue;
         auto const& info = binary::opcodeInfo(row.opcode);
         INFO(info.text);
@@ -1267,6 +1379,8 @@ TEST_CASE("FastInterpreter.everyOperationAgreesWithTheReference")
             return std::vector<std::vector<Value>> { { function, i32(4) }, { nullFunc(), i32(4) } };
         });
     }
+
+    checkMemoryOperations(agreement);
 
     // No lowering emits these yet: nop lowers to nothing, and v128.const is lowered with the vector
     // operations.

@@ -148,3 +148,39 @@ The reference interpreter takes `interpreter::ValueBytes` (one `runtime::Value`)
 as needed: it writes no fixed frame, so it has no such overflow to guard against, and its own results take the
 same uncharged room. Running out of host memory for a chunk or a block of
 frame records terminates, as running out of it does anywhere in `runtime::invokeChecked()`.
+
+## Linear memory and the cached memory 0
+
+**Memory 0 lives in the registers.** Its base and size are two of the handler arguments (`State::memory0`,
+`State::memory0Size`), so a load or store of memory 0 reads no memory before it reaches the bytes. Each scalar
+row of `binary::MemoryAccessTable` lowers to two operations of its own, one for a memory of i32 addresses and a
+`.memory64` twin for i64 addresses; an access to any other memory is `load.indexed` or `store.indexed`, which
+names the memory and the memory 0 operation whose body it runs over that memory's bytes, read from the store
+each time. `memory.size` and `memory.grow` go through the store too. The vector accesses are Task 12's.
+
+**Bounds checks are explicit and never overflow.** For i32 addresses the address and the offset are below
+2^32, so `address + offset + width ≤ size` is exact in 64 bits. For memory64 the sum is checked for its carry
+and the width compared against what is left. Custom page sizes need nothing of their own: the check is in
+bytes. Every access traps exactly where the reference interpreter does, with the same `Trap`
+(`Memory.boundsMatchReferenceAtTheEdges`: every scalar row at both edges of both address types in memory 0 and
+memory 1, the sums that reach or pass 2^64, pages of one byte, a memory of no pages).
+
+**Spectre.** On the checked path the effective address is masked by a data-dependent select: all ones where
+the access fits, zero where it does not, so code running ahead of a mispredicted check reads memory's first
+bytes and nothing past them. The mask is the sign of the bytes left after the access, derived from the same
+bound as the check but not from its outcome, which the compiler would know on the predicted path and fold
+away. Task 19 checks in the optimized handlers' disassembly that the select survived.
+
+**The cache is invalidated by `Store::memoryGeneration()`.** Its contract, which P5's compiled code relies on
+too: it starts at 0 and increases by one with every `Store::growMemory()` that adds at least one page, to any
+memory of the store, whoever asked and whether or not the storage moved; refused grows, grows by zero, and
+adding or dropping memories leave it unchanged. While it is unchanged, every memory's `bytes()` are the data
+and size last read. The executor records the generation whenever it reads memory 0, and compares it after
+each point where code it does not see may have grown a memory: after a host function returns, after a Wasm
+callee returns to the same instance, and after `memory.grow` of any index (two imports may be one memory). It
+reads memory 0 again only when the generation moved (`FastInterpreter::memoryRefreshes()` counts those,
+`Memory.generationSkipsUnchangedRefresh`). A call into another instance, a tail call into one, and a return
+from one read the frame's memory 0 afresh, whatever the generation: the registers held the other instance's
+(`Memory.crossInstanceCallSwitchesMemory0`). `Memory.cacheRefreshedAfterEveryGrowPath` grows memory 0 in the
+function, in a callee, in a host function and in a host function's re-entry, on the heap and on an embedder's
+memory that moves on every grow.

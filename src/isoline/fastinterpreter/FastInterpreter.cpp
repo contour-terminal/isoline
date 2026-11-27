@@ -142,6 +142,9 @@ namespace
     /// which come from the embedder, not from a slot.
     inline constexpr auto NoChunk = std::numeric_limits<std::size_t>::max();
 
+    /// What memory.grow returns where the grow was refused: -1, of the memory's address type once narrowed.
+    inline constexpr auto RefusedGrowth = std::numeric_limits<uint64_t>::max();
+
     /// The function a call resolved to: a host function, or a module function with its code.
     struct Callee
     {
@@ -237,16 +240,19 @@ class Invocation
     /// @param store The store to execute on.
     /// @param executor What a host function it calls re-enters the guest through: the interpreter.
     /// @param depth The frames active over every invocation in progress; kept up to date.
+    /// @param memoryRefreshes The times memory 0 was read again because a memory grew; counted on.
     /// @param dispatch The dispatch the code was lowered for.
     /// @param slotMemory What the slot chunks come from.
     Invocation(Store& store,
                runtime::ICodeExecutor& executor,
                uint32_t& depth,
+               uint64_t& memoryRefreshes,
                Dispatch dispatch,
                std::pmr::memory_resource& slotMemory):
         _context { store, *this },
         _executor { executor },
         _depth { depth },
+        _memoryRefreshes { memoryRefreshes },
         _dispatch { dispatch },
         _slotMemory { &slotMemory },
         _stepsLeft { _context.gate.reload() }
@@ -288,12 +294,14 @@ class Invocation
         if (!entered)
             return stop(entered.error());
         storeValues(type.params, args, *entered);
-        auto const exit = Runners[std::to_underlying(_dispatch)](State { .pc = callee.function->code.data(),
-                                                                         .fp = *entered,
-                                                                         .context = &_context,
-                                                                         .memory0 = nullptr,
-                                                                         .memory0Size = 0,
-                                                                         .stepsLeft = _stepsLeft });
+        auto state = State { .pc = callee.function->code.data(),
+                             .fp = *entered,
+                             .context = &_context,
+                             .memory0 = nullptr,
+                             .memory0Size = 0,
+                             .stepsLeft = _stepsLeft };
+        loadMemory0(state);
+        auto const exit = Runners[std::to_underlying(_dispatch)](state);
         switch (exit)
         {
             case Exit::Returned: break;
@@ -329,6 +337,8 @@ class Invocation
                     callHost(state.stepsLeft, *callee->host, caller.instanceAddress, arguments, arguments);
                 !called)
                 return stopping(state, leaveAbruptly(_context, state.stepsLeft, called.error()));
+            // The host may have grown a memory, directly or through a guest it invoked.
+            refreshMemory0(state);
             state.pc += site.words;
             return { .state = state, .flow = Flow::Continue };
         }
@@ -338,6 +348,7 @@ class Invocation
             return stopping(state, leaveTrapped(_context, state.stepsLeft, entered.error()));
         state.pc = callee->function->code.data();
         state.fp = *entered;
+        enterMemory0(state, caller.instance);
         return { .state = state, .flow = Flow::Continue };
     }
 
@@ -350,7 +361,25 @@ class Invocation
         auto const ending = _frames.back();
         std::memmove(ending.results, results, std::size_t { ending.function->resultSlots } * sizeof(Slot));
         leaveFrame();
-        return resumeCaller(state, ending.returnPc);
+        return resumeCaller(state, ending.returnPc, ending.instance);
+    }
+
+    /// Runs memory.grow from the current frame (growMemory()).
+    [[nodiscard]] OutOfLineStep grow(State state,
+                                     uint32_t resultSlot,
+                                     uint32_t deltaSlot,
+                                     uint32_t memory) noexcept
+    {
+        auto const address = _context.instance->memories[memory];
+        auto const addressType = _context.store.memory(address).type.limits.addressType;
+        // An i32 delta is held zero-extended already; the result must be too, as an access that takes it for
+        // its address relies on (accessMemory()): memory.grow's -1 is all ones of the address type.
+        auto const grown = _context.store.growMemory(address, state.fp[deltaSlot]).value_or(RefusedGrowth);
+        state.fp[resultSlot] =
+            addressType == binary::AddressType::I64 ? grown : uint64_t { static_cast<uint32_t>(grown) };
+        // Whatever grew, memory 0 may be the memory that did, under another index too.
+        refreshMemory0(state);
+        return { .state = state, .flow = Flow::Continue };
     }
 
   private:
@@ -533,15 +562,58 @@ class Invocation
         --_depth;
     }
 
-    /// Goes on in the frame now current at @p returnPc, after the call that left it.
-    [[nodiscard]] OutOfLineStep resumeCaller(State state, Word const* returnPc) noexcept
+    /// Goes on in the frame now current at @p returnPc, after the call that left it, whose registers held
+    /// the memory 0 of @p from: memory 0 is the caller's again.
+    [[nodiscard]] OutOfLineStep resumeCaller(State state,
+                                             Word const* returnPc,
+                                             ModuleInstance const* from) noexcept
     {
         auto const& caller = _frames.back();
         state.pc = returnPc;
         state.fp = caller.fp;
         _context.instance = caller.instance;
         _context.code = caller.function->code.data();
+        enterMemory0(state, from);
         return { .state = state, .flow = Flow::Continue };
+    }
+
+    /// Reads memory 0 of the current frame's instance into the registers @p state: its bytes and size, or
+    /// none where it has no memory; and records the generation they are of.
+    void loadMemory0(State& state) noexcept
+    {
+        _context.memoryGeneration = _context.store.memoryGeneration();
+        auto const& memories = _context.instance->memories;
+        if (memories.empty())
+        {
+            state.memory0 = nullptr;
+            state.memory0Size = 0;
+            return;
+        }
+        auto const bytes = _context.store.memory(memories.front()).bytes();
+        state.memory0 = bytes.data();
+        state.memory0Size = bytes.size();
+    }
+
+    /// Reads memory 0 into the registers @p state again where a memory grew since they were read
+    /// (Store::memoryGeneration()), as code the executor does not see may have grown it: a host function, or
+    /// a memory.grow of another index. Counted (FastInterpreter::memoryRefreshes()).
+    void refreshMemory0(State& state) noexcept
+    {
+        if (_context.store.memoryGeneration() == _context.memoryGeneration)
+            return;
+        ++_memoryRefreshes;
+        loadMemory0(state);
+    }
+
+    /// Makes the registers @p state hold the current frame's memory 0, where they held @p from's: read
+    /// afresh where the frame is another instance's (a call into, or a return from, another instance),
+    /// refreshed where it is the same instance's.
+    void enterMemory0(State& state, ModuleInstance const* from) noexcept
+    {
+        if (_context.instance != from)
+            loadMemory0(state);
+        else
+            refreshMemory0(state);
     }
 
     /// Tail-calls @p callee, whose arguments are at @p arguments: the current frame ends first, its charge
@@ -564,7 +636,7 @@ class Invocation
                 return stopping(state, leaveAbruptly(_context, state.stepsLeft, called.error()));
             if (_frames.empty())
                 return stopping(state, leaveReturning(_context, state.stepsLeft, ending.results));
-            return resumeCaller(state, ending.returnPc);
+            return resumeCaller(state, ending.returnPc, ending.instance);
         }
         // Where no other frame is left in the ending frame's chunk, the callee takes that chunk, replacing it
         // where it is too small: a chain of ever larger tail-called frames holds one chunk, not one each.
@@ -579,6 +651,7 @@ class Invocation
             return stopping(state, leaveTrapped(_context, state.stepsLeft, entered.error()));
         state.pc = callee.function->code.data();
         state.fp = *entered;
+        enterMemory0(state, ending.instance);
         return { .state = state, .flow = Flow::Continue };
     }
 
@@ -630,6 +703,7 @@ class Invocation
     Context _context;
     runtime::ICodeExecutor& _executor;
     uint32_t& _depth;
+    uint64_t& _memoryRefreshes;
     Dispatch _dispatch;
     std::pmr::memory_resource* _slotMemory;
     uint64_t _stepsLeft;
@@ -647,6 +721,11 @@ OutOfLineStep callFunction(State state, CallSite const& site) noexcept
 OutOfLineStep returnFromFunction(State state, uint32_t resultSlot) noexcept
 {
     return state.context->invocation.returnFrom(state, resultSlot);
+}
+
+OutOfLineStep growMemory(State state, uint32_t resultSlot, uint32_t deltaSlot, uint32_t memory) noexcept
+{
+    return state.context->invocation.grow(state, resultSlot, deltaSlot, memory);
 }
 
 Flow leaveTrapped(Context& context, uint64_t stepsLeft, Trap trap) noexcept
@@ -689,6 +768,11 @@ Dispatch FastInterpreter::dispatch() const noexcept
     return _dispatch;
 }
 
+uint64_t FastInterpreter::memoryRefreshes() const noexcept
+{
+    return _memoryRefreshes;
+}
+
 std::expected<void, Abrupt> FastInterpreter::invoke(Store& store,
                                                     FuncAddr function,
                                                     std::span<Value const> args,
@@ -703,7 +787,8 @@ std::expected<void, Abrupt> FastInterpreter::invoke(Store& store,
     // The caller's to check: arguments of the function's types, references in this store.
     Require(runtime::checkValues(store, args, type.params).has_value());
     Require(results.size() == type.results.size());
-    return Invocation { store, *this, _depth, _dispatch, *_slotMemory }.run(function, type, args, results);
+    return Invocation { store, *this, _depth, _memoryRefreshes, _dispatch, *_slotMemory }.run(
+        function, type, args, results);
 }
 
 } // namespace isoline::fastinterpreter
