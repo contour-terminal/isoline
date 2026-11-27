@@ -4,6 +4,7 @@
 #include <core/Assert.hpp>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -90,10 +91,14 @@ static_assert(std::is_standard_layout_v<FunctionDispatch> && std::is_trivially_c
 static_assert(offsetof(FunctionDispatch, code) == 0);
 static_assert(offsetof(FunctionDispatch, context) == sizeof(void const*));
 static_assert(offsetof(FunctionDispatch, typeId) == 2 * sizeof(void const*));
+// A row is three pointers wide, typeId padded to the pointer alignment: generated code strides by it.
+static_assert(sizeof(FunctionDispatch) == 3 * sizeof(void const*));
 
 /// How many dispatch rows a chunk holds: rows live in chunks of this many, so that adding functions
 /// never moves a row. Function address a is row a % DispatchChunkRows of chunk a / DispatchChunkRows.
 inline constexpr auto DispatchChunkRows = uint32_t { 4'096 };
+// Generated code splits a function address into chunk and row by a shift and a mask.
+static_assert(std::has_single_bit(DispatchChunkRows));
 
 /// Every function's dispatch row (FunctionDispatch), by function address, as generated code reads
 /// them: through the chunk of a row, then the row in it. The store keeps it at a fixed address
@@ -107,6 +112,16 @@ struct DispatchView
 static_assert(std::is_standard_layout_v<DispatchView> && std::is_trivially_copyable_v<DispatchView>);
 static_assert(offsetof(DispatchView, chunks) == 0);
 static_assert(offsetof(DispatchView, rows) == sizeof(FunctionDispatch* const*));
+// rows is padded to the pointer alignment.
+static_assert(sizeof(DispatchView) == 2 * sizeof(void const*));
+
+/// Whether a store keeps a dispatch row per function (DispatchView): what only an executor whose code
+/// calls through the rows needs, so that every other store spends nothing on them.
+enum class DispatchRows : uint8_t
+{
+    Omitted, ///< No rows: the view stays empty and nothing may bind one (Store::bindDispatch()).
+    Kept,    ///< A row per function, in chunks of DispatchChunkRows allocated as functions are added.
+};
 
 /// Who holds a store's execution budget: the steps and stack values left (PollGate::lend()).
 enum class BudgetState : uint8_t
@@ -339,6 +354,10 @@ struct StoreServices
     /// How the invocations' floating-point scopes read and set the rounding mode: the C library's,
     /// unless a test stands in another (FloatEnvironmentScope). Referenced, so it must outlive the store.
     IRoundingMode* roundingMode = &libraryRoundingMode();
+
+    /// Whether the store keeps dispatch rows (Store::dispatchView()): Kept for an executor whose code
+    /// calls through them; omitted otherwise, so that the interpreters' stores allocate none.
+    DispatchRows dispatchRows = DispatchRows::Omitted;
 };
 
 /// The store: every function, table, memory, global and module instance, addressed by index.
@@ -561,19 +580,26 @@ class Store
 
     /// Every function's dispatch row, at an address that stays fixed as long as the store: what
     /// generated code reads to call through a function address.
-    /// @return The view; its rows are functionCount().
+    /// @return The view; its rows are functionCount() when the store keeps them
+    ///         (StoreServices::dispatchRows), and none otherwise.
     [[nodiscard]] DispatchView const& dispatchView() const noexcept { return _dispatchView; }
 
     /// Binds a module function's dispatch row to its executor's code and context: what an executor
     /// does for its instance's functions when it prepares the instance
     /// (ICodeExecutor::prepareInstance()). The row's typeId stays as the store wrote it.
     ///
-    /// Precondition (checked): @p address is a function of the store, and a module function: a host
-    /// function's row keeps null code, which generated code takes for the host-call path.
+    /// Precondition (checked): the store keeps dispatch rows (StoreServices::dispatchRows); @p address
+    /// is a function of the store, and a module function: a host function's row keeps null code, which
+    /// generated code takes for the host-call path; and @p moduleInstance defines it, so that an
+    /// instance's executor binds its own functions only, never those it imports with its own context.
     /// @param address The function's address.
+    /// @param moduleInstance The instance being prepared, which must define the function.
     /// @param code Its entry, as its executor defines it.
     /// @param context What its code runs against, as its executor defines it.
-    void bindDispatch(FuncAddr address, void const* code, void const* context) noexcept;
+    void bindDispatch(FuncAddr address,
+                      uint32_t moduleInstance,
+                      void const* code,
+                      void const* context) noexcept;
 
     /// How many invocations are in progress (InvocationScope): the outermost and those nested in it.
     /// @return Their count; 0 when none is.
@@ -817,6 +843,7 @@ class Store
     uint64_t _steps = 0;              ///< The steps the latest outermost invocation took.
     uint64_t _chargedStackValues = 0; ///< The static costs of the frames in progress.
     BudgetState _budgetState = BudgetState::Settled; ///< Who holds the steps and stack values left.
+    DispatchRows _dispatchRows;                      ///< Whether the dispatch rows are kept.
     std::deque<FunctionInstance> _functions;
     /// The dispatch rows' chunks, DispatchChunkRows rows each, owned; rows never move.
     std::vector<std::unique_ptr<std::array<FunctionDispatch, DispatchChunkRows>>> _dispatchChunks;

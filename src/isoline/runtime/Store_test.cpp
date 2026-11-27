@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <array>
 #include <cstddef>
@@ -48,6 +49,7 @@ using isoline::runtime::AllocationError;
 using isoline::runtime::AllocationFailure;
 using isoline::runtime::BudgetState;
 using isoline::runtime::DispatchChunkRows;
+using isoline::runtime::DispatchRows;
 using isoline::runtime::DispatchView;
 using isoline::runtime::FuncAddr;
 using isoline::runtime::FunctionDispatch;
@@ -1477,7 +1479,8 @@ TEST_CASE("Store.dispatchRowsAreStable")
     // Every function added gets a dispatch row with its TypeId and no code; adding more, across
     // chunk boundaries, moves no row, and the view at its fixed address counts every one.
     auto allocator = HeapMemoryAllocator {};
-    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto store = Store { StoreLimits {},
+                         StoreServices { .allocator = allocator, .dispatchRows = DispatchRows::Kept } };
     auto const& view = store.dispatchView();
     CHECK(view.rows == 0);
     auto const nullary = store.internType(FuncType {});
@@ -1512,19 +1515,36 @@ TEST_CASE("Store.bindDispatchWritesTheModuleFunctionsRow")
 {
     // An executor binds a module function's code and context; no other row changes.
     auto allocator = HeapMemoryAllocator {};
-    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto store = Store { StoreLimits {},
+                         StoreServices { .allocator = allocator, .dispatchRows = DispatchRows::Kept } };
     auto const typeId = store.internType(FuncType {});
     auto const first = store.addModuleFunction(typeId, 0, 0);
     auto const second = store.addModuleFunction(typeId, 0, 1);
     auto const code = std::array<std::byte, 2> {};
     auto const context = 7;
-    store.bindDispatch(second, &code, &context);
+    store.bindDispatch(second, 0, &code, &context);
     auto const& view = store.dispatchView();
     CHECK(dispatchRowOf(view, second).code == &code);
     CHECK(dispatchRowOf(view, second).context == &context);
     CHECK(dispatchRowOf(view, second).typeId == typeId);
     CHECK(dispatchRowOf(view, first).code == nullptr);
     CHECK(dispatchRowOf(view, first).context == nullptr);
+}
+
+TEST_CASE("Store.dispatchRowsOnlyWhenKept")
+{
+    // A store that omits the rows, as the interpreters' do, allocates none as functions are added: its
+    // view stays empty. One that keeps them has a row per function.
+    auto allocator = HeapMemoryAllocator {};
+    auto const rows = GENERATE(DispatchRows::Omitted, DispatchRows::Kept);
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator, .dispatchRows = rows } };
+    auto const typeId = store.internType(FuncType {});
+    for (auto const index: std::views::iota(uint32_t { 0 }, DispatchChunkRows + 1))
+        std::ignore = store.addModuleFunction(typeId, 0, index);
+    auto const& view = store.dispatchView();
+    INFO("rows kept: " << (rows == DispatchRows::Kept));
+    CHECK(view.rows == (rows == DispatchRows::Kept ? DispatchChunkRows + 1 : 0));
+    CHECK((view.chunks == nullptr) == (rows == DispatchRows::Omitted));
 }
 
 // The contract checks: each ends the process on purpose, so the unit run skips them and CTest runs
@@ -1633,11 +1653,12 @@ TEST_CASE("Contract.Store.bindOnlyModuleFunctions", "[.contract]")
     // A host function's row keeps null code: compiled call_indirect takes that for CallHost.
     isoline::runtime::testing::endAtContractViolation();
     auto allocator = HeapMemoryAllocator {};
-    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto store = Store { StoreLimits {},
+                         StoreServices { .allocator = allocator, .dispatchRows = DispatchRows::Kept } };
     auto const host = store.addHostFunction(FuncType {}, isoline::runtime::makeHostFunction(NoHost));
     REQUIRE(host.has_value());
     auto const code = 1;
-    store.bindDispatch(*host, &code, nullptr);
+    store.bindDispatch(*host, 0, &code, nullptr);
     FAIL("SURVIVED: a host function's dispatch row bound to code");
 }
 
@@ -1645,8 +1666,35 @@ TEST_CASE("Contract.Store.bindOnlyExistingFunctions", "[.contract]")
 {
     isoline::runtime::testing::endAtContractViolation();
     auto allocator = HeapMemoryAllocator {};
-    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto store = Store { StoreLimits {},
+                         StoreServices { .allocator = allocator, .dispatchRows = DispatchRows::Kept } };
     auto const code = 1;
-    store.bindDispatch(0, &code, nullptr);
+    store.bindDispatch(0, 0, &code, nullptr);
     FAIL("SURVIVED: a dispatch row bound past the last function");
+}
+
+TEST_CASE("Contract.Store.bindOnlyTheInstancesOwnFunctions", "[.contract]")
+{
+    // An instance's executor binds the functions its instance defines; one it imports keeps the row its
+    // own instance's executor bound, with that instance's context.
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {},
+                         StoreServices { .allocator = allocator, .dispatchRows = DispatchRows::Kept } };
+    auto const imported = store.addModuleFunction(store.internType(FuncType {}), 0, 0);
+    auto const code = 1;
+    store.bindDispatch(imported, 1, &code, nullptr);
+    FAIL("SURVIVED: an instance bound a function another instance defines");
+}
+
+TEST_CASE("Contract.Store.bindOnlyWhereRowsAreKept", "[.contract]")
+{
+    // A store that omits the rows has none to bind.
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto const function = store.addModuleFunction(store.internType(FuncType {}), 0, 0);
+    auto const code = 1;
+    store.bindDispatch(function, 0, &code, nullptr);
+    FAIL("SURVIVED: a dispatch row bound on a store that omits them");
 }

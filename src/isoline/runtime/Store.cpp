@@ -185,7 +185,8 @@ Store::Store(StoreLimits limits, StoreServices services):
     _interrupter { std::make_shared<Interrupter>() },
     _interrupt { _interrupter.get() },
     _limits { limits },
-    _growthRecord {}
+    _growthRecord {},
+    _dispatchRows { services.dispatchRows }
 {
     Require(_roundingMode != nullptr);
 }
@@ -252,6 +253,8 @@ FuncAddr Store::addModuleFunction(TypeId typeId, uint32_t moduleInstance, uint32
 
 FuncAddr Store::addFunction(FunctionInstance function)
 {
+    if (_dispatchRows == DispatchRows::Omitted)
+        return append(_functions, std::move(function));
     // The chunk comes first, so that running out of memory for it adds no function without a row.
     auto const rows = _dispatchView.rows;
     if (rows / DispatchChunkRows == _dispatchChunks.size())
@@ -269,10 +272,15 @@ FuncAddr Store::addFunction(FunctionInstance function)
     return address;
 }
 
-void Store::bindDispatch(FuncAddr address, void const* code, void const* context) noexcept
+void Store::bindDispatch(FuncAddr address,
+                         uint32_t moduleInstance,
+                         void const* code,
+                         void const* context) noexcept
 {
+    Require(_dispatchRows == DispatchRows::Kept);
     Require(address < _dispatchView.rows);
     Require(!_functions[address].isHost());
+    Require(_functions[address].moduleInstance == moduleInstance);
     auto& row = _dispatchChunkRows[address / DispatchChunkRows][address % DispatchChunkRows];
     row.code = code;
     row.context = context;

@@ -45,7 +45,8 @@ struct Lease
 class PollGate
 {
   public:
-    /// Caches @p store's interrupt, step limit and whether an observer is attached.
+    /// Caches @p store's interrupt, step limit, stack-value limit (StoreLimits::maxStackValues) and
+    /// whether an observer is attached.
     /// @param store The store; must outlive the gate.
     explicit PollGate(Store& store) noexcept:
         _store { &store },

@@ -168,6 +168,16 @@ class PreparingExecutor final: public isoline::runtime::ICodeExecutor
     void prepareInstance(Store& store, uint32_t moduleInstance) noexcept override
     {
         events.push_back(Event::Prepared);
+        // An executor asked to prepare an instance the store does not hold records just that.
+        if (moduleInstance >= store.moduleInstanceCount())
+        {
+            preparations.push_back(Preparation { .moduleInstance = moduleInstance,
+                                                 .instances = store.moduleInstanceCount(),
+                                                 .functions = {},
+                                                 .globals = 0,
+                                                 .tables = {} });
+            return;
+        }
         auto const& instance = store.moduleInstance(moduleInstance);
         auto tables = std::vector<std::vector<Ref>> {};
         for (auto const table: instance.tables)
@@ -373,6 +383,29 @@ TEST_CASE("Instantiate.preparesBeforeAnyElementIsWritten")
               == std::vector { PreparingExecutor::Event::Prepared, PreparingExecutor::Event::Invoked });
         REQUIRE(executor.preparations.size() == 1);
         CHECK(executor.preparations.front().moduleInstance == *result);
+    }
+
+    SECTION("not when allocation is refused before the instance exists")
+    {
+        // The embedder refuses the module's memory, which is allocated before the instance is added: no
+        // instance is added, and none is prepared.
+        builder.memory(atLeast(3));
+        auto refusing = ProvidedMemoryAllocator { 2 * PageSize, 0, grantAll };
+        auto refused = Store { StoreLimits {}, StoreServices { .allocator = refusing } };
+        auto const table = refused.addTable(TableType { .element = FuncRef, .limits = atLeast(2) }, nullFunc);
+        REQUIRE(table.has_value());
+        auto executor = PreparingExecutor {};
+        auto const result =
+            instantiate(refused,
+                        executor,
+                        moduleOf(builder, FeatureSet::wasm3()),
+                        std::vector { ExternValue { .kind = ExternKind::Table, .address = *table } });
+        CHECK(errorOf(result)
+              == InstantiationError {
+                  AllocationFailure { .kind = ExternKind::Memory, .reason = Refusal::Embedder } });
+        CHECK(refused.moduleInstanceCount() == 0);
+        CHECK(executor.preparations.empty());
+        CHECK(executor.events.empty());
     }
 }
 
