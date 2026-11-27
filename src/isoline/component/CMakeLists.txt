@@ -10,7 +10,10 @@ target_sources(isoline_component
         binary/Encoder.cpp
         binary/Grammar.hpp
         types/TypeArena.cpp
+        canonical/GuestMemory.cpp
         canonical/Layout.cpp
+        canonical/LiftLower.cpp
+        canonical/Trap.cpp
         canonical/Values.cpp
         validate/CoreTypes.cpp
         validate/Names.cpp
@@ -25,7 +28,10 @@ target_sources(isoline_component
             binary/Decoder.hpp
             binary/Encoder.hpp
             types/TypeArena.hpp
+            canonical/GuestMemory.hpp
             canonical/Layout.hpp
+            canonical/LiftLower.hpp
+            canonical/Trap.hpp
             canonical/Values.hpp
             validate/CoreTypes.hpp
             validate/Names.hpp

@@ -55,6 +55,7 @@ using runtime::Abrupt;
 using runtime::HostFailure;
 using runtime::HostFailureKind;
 using runtime::MismatchKind;
+using runtime::specMessage;
 using runtime::Thrown;
 using runtime::Trap;
 using runtime::TrapCode;
