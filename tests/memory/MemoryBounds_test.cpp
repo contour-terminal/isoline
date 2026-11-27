@@ -45,6 +45,7 @@
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
 #include <isoline/runtime/Store.hpp>
+#include <isoline/validate/TypeMatching.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
 #include <isoline/validate/testing/BranchBodies.hpp>
@@ -53,6 +54,7 @@ using isoline::Feature;
 using isoline::FeatureSet;
 using isoline::binary::FuncType;
 using isoline::binary::I32;
+using isoline::binary::Nullable;
 using isoline::binary::ValueType;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::testing::AllocationLimit;
@@ -712,4 +714,56 @@ TEST_CASE("MemoryBounds.nameCountsAreNotTrusted")
     auto const refused = isoline::binary::decodeNameSection(overclaimed);
     REQUIRE(!refused.has_value());
     CHECK(refused.error().code == isoline::binary::DecodeErrorCode::LengthOutOfBounds);
+}
+
+namespace
+{
+
+/// A chain of @p length types: @p bottom, then each (func (param (ref null $previous))).
+std::vector<FuncType> typeChain(std::size_t length, FuncType bottom)
+{
+    auto types = std::vector<FuncType> {};
+    types.reserve(length);
+    types.push_back(std::move(bottom));
+    for ([[maybe_unused]] auto const level: std::views::iota(std::size_t { 1 }, length))
+        types.push_back(FuncType { .params = { isoline::binary::concreteRef(
+                                       static_cast<uint32_t>(types.size() - 1), Nullable::Yes) },
+                                   .results = {} });
+    return types;
+}
+
+/// The bytes of a module whose type section is @p types.
+std::size_t moduleBytesOf(std::vector<FuncType> const& types)
+{
+    auto builder = ModuleBuilder {};
+    for (auto const& type: types)
+        builder.type(type);
+    return builder.build().size();
+}
+
+} // namespace
+
+TEST_CASE("TypeMatching.diagonalChainsLinearMemory")
+{
+    // The top of one chain queried against every level of another, which differs at its bottom: each
+    // query a new pair, the shape that drove a per-pair memo to n^2 / 2 pairs. Building the two
+    // sections' joint space and answering every query holds what loading the two modules may
+    // (BytesPerModuleByte), and grows with n alone: the peak at 2n within 2.2 x the peak at n.
+    auto const peakOf = [](std::size_t length) {
+        auto const sub = typeChain(length, FuncType {});
+        auto const super = typeChain(length, FuncType { .params = { I32 }, .results = {} });
+        auto const budget = FixedBytes + (BytesPerModuleByte * (moduleBytesOf(sub) + moduleBytesOf(super)));
+        auto const scope = AllocationScope {};
+        {
+            auto const limit = AllocationLimit { budget };
+            auto const matcher = isoline::validate::TypeMatcher { sub, super };
+            for (auto const level: std::views::iota(std::size_t { 0 }, length))
+                REQUIRE_FALSE(
+                    matcher.matches(static_cast<uint32_t>(length - 1), static_cast<uint32_t>(level)));
+        }
+        return scope.peakBytes();
+    };
+    auto const single = peakOf(10'000);
+    auto const twice = peakOf(20'000);
+    CHECK(twice * 10 <= single * 22);
 }

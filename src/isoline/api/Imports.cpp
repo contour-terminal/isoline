@@ -19,6 +19,7 @@
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Store.hpp>
 #include <isoline/validate/Subtyping.hpp>
+#include <isoline/validate/TypeMatching.hpp>
 
 namespace isoline::api
 {
@@ -62,9 +63,9 @@ namespace
     /// instantiation: the same address type, and no maximum beyond a required one.
     [[nodiscard]] bool limitsFitButSize(Limits const& actual, Limits const& required) noexcept
     {
-        if (actual.addressType != required.addressType)
-            return false;
-        return !required.max || (actual.max && *actual.max <= *required.max);
+        // Linking's rule (validate::limitsMatch()), the size taken as the required one.
+        return validate::limitsMatch(
+            Limits { .min = required.min, .max = actual.max, .addressType = actual.addressType }, required);
     }
 
     /// Whether a table of @p actual type fits an import requiring @p required, its size aside: its

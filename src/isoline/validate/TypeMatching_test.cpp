@@ -13,6 +13,11 @@
 #include <vector>
 
 #include <isoline/Features.hpp>
+#include <isoline/api/Engine.hpp>
+#include <isoline/api/Imports.hpp>
+#include <isoline/api/Module.hpp>
+#include <isoline/api/Store.hpp>
+#include <isoline/api/Types.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Module.hpp>
@@ -26,6 +31,7 @@
 #include <isoline/validate/ValidatedModule.hpp>
 
 using isoline::FeatureSet;
+using isoline::api::Linkage;
 using isoline::binary::AddressType;
 using isoline::binary::concreteRef;
 using isoline::binary::ExternKind;
@@ -44,7 +50,6 @@ using isoline::binary::TableType;
 using isoline::binary::ValueKind;
 using isoline::binary::ValueType;
 using isoline::binary::testing::ModuleBuilder;
-using isoline::validate::CanonicalTypes;
 using isoline::validate::CoreExternType;
 using isoline::validate::matches;
 using isoline::validate::matchesExtern;
@@ -171,8 +176,10 @@ std::vector<MatchRow> canonicalRows()
     };
 }
 
-/// core-type-out-of-group-deps.wast's shapes without GC: a function type naming types defined before
-/// it, through a chain of them, as Wasmtime accepts them; and the same chain differing at its end.
+/// core-type-out-of-group-deps.wast's dependency shapes, transcribed without GC: a function type naming
+/// types defined before it, through a chain of them, and the same chain differing at its end. The file
+/// itself needs gc (struct types, declared subtypes), so Wasmtime's verdicts on it are not reproduced
+/// here; its GC forms are pinned as decode refusals instead.
 std::vector<MatchRow> outOfGroupRows()
 {
     return {
@@ -197,9 +204,10 @@ std::vector<MatchRow> outOfGroupRows()
     };
 }
 
-/// core-import-func-subtype.wast's shapes without GC: no function type declares a supertype, so a
-/// function or tag matches only an equivalent type, typed references included; a global's value
-/// type, when immutable, matches by subtyping.
+/// core-import-func-subtype.wast's shapes, transcribed without GC: no function type declares a supertype,
+/// so a function or tag matches only an equivalent type, typed references included; a global's value
+/// type, when immutable, matches by subtyping. The file's own case (a declared subtype satisfying an
+/// import of its supertype, which Wasmtime links) needs gc and is pinned as a decode refusal instead.
 std::vector<MatchRow> typedReferenceRows()
 {
     return {
@@ -419,8 +427,6 @@ TEST_CASE("TypeMatching.emptyRecGroups")
 
     // A module that defines no types matches what names none.
     auto const none = std::span<FuncType const> {};
-    auto const canonical = CanonicalTypes { none };
-    CHECK(canonical.types().empty());
     CHECK(matchesExtern(none, memoryOf(limits(1)), none, memoryOf(limits(0))));
     CHECK(matchesExtern(
         none, globalOf(FuncRef, Mutability::Const), none, globalOf(FuncRef, Mutability::Const)));
@@ -554,6 +560,42 @@ bool linkerLinks(MatchRow const& row)
     return false;
 }
 
+/// What the embedding API makes of a row.
+struct ApiOutcome
+{
+    Linkage resolved; ///< What Imports::resolve()'s store-free check says of the import.
+    Expected linked;  ///< Whether Store::instantiate() links it.
+};
+
+/// What the embedding API makes of @p row: the providing module's instance defined as the import through
+/// Imports::define(…, Instance, export), checked by Imports::resolve(), then instantiated.
+ApiOutcome apiLinks(MatchRow const& row)
+{
+    auto const engine = isoline::api::Engine { isoline::api::EngineConfig {
+        .features = FeatureSet::wasm3().with(isoline::Feature::CustomPageSizes).withPrerequisites() } };
+    auto allocator = isoline::api::HeapMemoryAllocator {};
+    auto store = isoline::api::Store { engine, allocator };
+    auto const provider = engine.load(providing(row.subTypes, row.sub).build());
+    REQUIRE(provider.has_value());
+    auto const instance = store.instantiate(*provider, isoline::api::Imports {});
+    REQUIRE(instance.has_value());
+    auto imports = isoline::api::Imports {};
+    imports.define("a", "e", *instance, "e");
+    auto const requirer = engine.load(requiring(row.superTypes, row.super).build());
+    REQUIRE(requirer.has_value());
+    auto const resolved = imports.resolve(*requirer);
+    REQUIRE(resolved.size() == 1);
+    auto const linked = store.instantiate(*requirer, imports);
+    if (!linked.has_value())
+    {
+        auto const* link = std::get_if<isoline::api::LinkError>(&linked.error());
+        REQUIRE(link != nullptr);
+        CHECK(link->code == isoline::runtime::LinkErrorCode::IncompatibleImportType);
+    }
+    return ApiOutcome { .resolved = resolved.front(),
+                        .linked = linked.has_value() ? Expected::Match : Expected::Mismatch };
+}
+
 } // namespace
 
 TEST_CASE("TypeMatching.agreesWithLinker")
@@ -564,6 +606,11 @@ TEST_CASE("TypeMatching.agreesWithLinker")
         auto const verdict = matchesExtern(row.subTypes, row.sub, row.superTypes, row.super);
         CHECK(verdict == (row.expected == Expected::Match));
         CHECK(linkerLinks(row) == verdict);
+        // The embedding API links where the runtime does, and its store-free check never refuses what
+        // links (it may pass what only a store can refuse: concrete types on both sides).
+        auto const api = apiLinks(row);
+        CHECK(api.linked == row.expected);
+        CHECK((api.resolved == Linkage::Satisfied || row.expected == Expected::Mismatch));
     }
 }
 
@@ -591,31 +638,40 @@ TEST_CASE("TypeMatching.deepChainsUseNoRecursion")
     auto const sub = chain({}, Length);
     auto const super = chain({ func({ I64 }) }, Length);
     auto const differentBottom = chain({ func({ I64 }) }, Length, func({ I32 }));
-    auto const subTypes = CanonicalTypes { sub };
-    auto const superTypes = CanonicalTypes { super };
-    auto const otherTypes = CanonicalTypes { differentBottom };
 
-    auto matcher = TypeMatcher { subTypes, superTypes };
-    CHECK(matcher.matches(static_cast<uint32_t>(Length - 1), static_cast<uint32_t>(Length)));
-    CHECK(matcher.comparisons() == Length);
-    // Every other pair of the chain is known now: no further comparison.
+    auto const matcher = TypeMatcher { sub, super };
     for (auto const level: std::views::iota(std::size_t { 0 }, Length))
         REQUIRE(matcher.matches(static_cast<uint32_t>(level), static_cast<uint32_t>(level + 1)));
-    CHECK(matcher.comparisons() == Length);
+    CHECK_FALSE(matcher.matches(0, 0));
 
-    auto mismatching = TypeMatcher { subTypes, otherTypes };
-    CHECK_FALSE(mismatching.matches(static_cast<uint32_t>(Length - 1), static_cast<uint32_t>(Length)));
-    CHECK(mismatching.comparisons() == Length);
-    // The pairs on the failed path are remembered as different.
+    auto const mismatching = TypeMatcher { sub, differentBottom };
     for (auto const level: std::views::iota(std::size_t { 0 }, Length))
         REQUIRE_FALSE(mismatching.matches(static_cast<uint32_t>(level), static_cast<uint32_t>(level + 1)));
-    CHECK(mismatching.comparisons() == Length);
 }
 
-TEST_CASE("TypeMatching.duplicatesCompareOnce")
+TEST_CASE("TypeMatching.diagonalChains")
+{
+    // The query of the top of one chain against every level of another: each a new pair of a chain
+    // that differs at its bottom, the shape that drove the earlier pair memo to n^2 / 2 comparisons.
+    // tests/memory's TypeMatching.diagonalChainsLinearMemory bounds what it holds.
+    constexpr auto Length = std::size_t { 2'000 };
+    auto const sub = chain({}, Length);
+    auto const super = chain({}, Length, func({ I32 }));
+    auto const same = chain({}, Length);
+    auto const mismatching = TypeMatcher { sub, super };
+    auto const matching = TypeMatcher { sub, same };
+    for (auto const level: std::views::iota(std::size_t { 0 }, Length))
+    {
+        auto const index = static_cast<uint32_t>(level);
+        REQUIRE_FALSE(mismatching.matches(static_cast<uint32_t>(Length - 1), index));
+        REQUIRE(matching.matches(static_cast<uint32_t>(Length - 1), index) == (level == Length - 1));
+    }
+}
+
+TEST_CASE("TypeMatching.duplicatesAreOneType")
 {
     // P copies of one type on the sub side, Q on the super side, and a root naming every pairing of
-    // them: compared by index that is P * Q pairs; by canonical id, one.
+    // them: the copies of each side share one joint id, so the roots are equivalent.
     constexpr auto Copies = uint32_t { 200 };
     auto sub = std::vector { func({}) };
     auto super = std::vector { func({}) };
@@ -635,57 +691,23 @@ TEST_CASE("TypeMatching.duplicatesCompareOnce")
     sub.push_back(std::move(subRoot));
     super.push_back(std::move(superRoot));
 
-    auto const subTypes = CanonicalTypes { sub };
-    auto const superTypes = CanonicalTypes { super };
-    auto matcher = TypeMatcher { subTypes, superTypes };
+    auto const matcher = TypeMatcher { sub, super };
     CHECK(matcher.matches(Copies + 1, Copies + 1));
-    CHECK(matcher.comparisons() == 3); // the roots, one copy each, the (func) each copy names
+    CHECK(matcher.matches(1, Copies));
+    CHECK_FALSE(matcher.matches(0, Copies + 1));
 }
 
-TEST_CASE("TypeMatching.manyQueriesShareOneMemo")
+TEST_CASE("TypeMatching.matcherKeepsNoSection")
 {
-    // Each import of a module naming one deep type: the chain is compared once for all of them.
-    constexpr auto Length = std::size_t { 1'000 };
-    constexpr auto Imports = std::size_t { 1'000 };
-    auto const sub = chain({}, Length);
-    auto const super = chain({}, Length, func({ I32 }));
-    auto const subTypes = CanonicalTypes { sub };
-    auto const superTypes = CanonicalTypes { super };
-    auto matcher = TypeMatcher { subTypes, superTypes };
-    for ([[maybe_unused]] auto const import: std::views::iota(std::size_t { 0 }, Imports))
-        REQUIRE_FALSE(matcher.matchesExtern(funcOf(static_cast<uint32_t>(Length - 1)),
-                                            funcOf(static_cast<uint32_t>(Length - 1))));
-    CHECK(matcher.comparisons() == Length);
-}
-
-TEST_CASE("TypeMatching.onePartnerEach")
-{
-    // A module's canonical types are pairwise inequivalent, so a type equivalent to one of the other
-    // module's is equivalent to no other of them: known without a comparison.
-    auto const sub = std::vector { func({ I32 }), func({ I64 }) };
-    auto const super = std::vector { func({ I32 }), func({ I64 }) };
-    auto const subTypes = CanonicalTypes { sub };
-    auto const superTypes = CanonicalTypes { super };
-    auto matcher = TypeMatcher { subTypes, superTypes };
-    CHECK(matcher.matches(0, 0));
-    CHECK(matcher.comparisons() == 1);
-    CHECK_FALSE(matcher.matches(1, 0)); // 0 of the super side has its partner
-    CHECK_FALSE(matcher.matches(0, 1)); // 0 of the sub side has its partner
-    CHECK(matcher.comparisons() == 1);
-    CHECK(matcher.matches(1, 1));
-    CHECK(matcher.comparisons() == 2);
-}
-
-TEST_CASE("TypeMatching.knownDifferenceEndsAComparison")
-{
-    // A pair found different ends every later comparison that reaches it, without comparing it again.
-    auto const sub = std::vector { func({ I32 }), func({ refNull(0) }), func({ refNull(0), I64 }) };
-    auto const super = std::vector { func({ I64 }), func({ refNull(0) }), func({ refNull(0), I64 }) };
-    auto const subTypes = CanonicalTypes { sub };
-    auto const superTypes = CanonicalTypes { super };
-    auto matcher = TypeMatcher { subTypes, superTypes };
-    CHECK_FALSE(matcher.matches(1, 1)); // (1, 1), then (0, 0), which differs
-    CHECK(matcher.comparisons() == 2);
-    CHECK_FALSE(matcher.matches(2, 2)); // (2, 2) alone: its child (0, 0) is known to differ
-    CHECK(matcher.comparisons() == 3);
+    // The joint space is all a matcher holds: the sections may go once it is built.
+    auto matcher = std::optional<TypeMatcher> {};
+    {
+        auto const sub = std::vector { func({ I32 }), func({ refNull(0) }) };
+        auto const super = std::vector { func({}), func({ I32 }), func({ refNull(1) }) };
+        matcher.emplace(sub, super);
+    }
+    CHECK(matcher->matches(1, 2));
+    CHECK(matcher->matchesExtern(globalOf(refNull(1), Mutability::Const),
+                                 globalOf(refNull(2), Mutability::Const)));
+    CHECK_FALSE(matcher->matches(0, 0));
 }

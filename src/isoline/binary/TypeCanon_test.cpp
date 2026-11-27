@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ranges>
+#include <span>
 #include <vector>
 
 #include <isoline/binary/TypeCanon.hpp>
@@ -15,6 +16,7 @@ using isoline::binary::concreteRef;
 using isoline::binary::FuncRef;
 using isoline::binary::FuncType;
 using isoline::binary::I32;
+using isoline::binary::jointCanonicalTypeIds;
 using isoline::binary::Nullable;
 
 TEST_CASE("TypeCanon.structuralEquality")
@@ -71,4 +73,22 @@ TEST_CASE("TypeCanon.canonicalizeDeepTypeChain")
     auto const doubledIds = canonicalTypeIds(doubled);
     REQUIRE(doubledIds.size() == std::size_t { 2 } * Count);
     CHECK(std::ranges::equal(doubledIds | std::views::drop(Count), expected));
+}
+
+TEST_CASE("TypeCanon.jointSections")
+{
+    // Two sections in one space: the second's indices count from its own start, and its types share
+    // the first's ids when equal.
+    auto const first = std::vector<FuncType> {
+        FuncType { .params = { I32 }, .results = {} },
+        FuncType { .params = { concreteRef(0, Nullable::Yes) }, .results = {} },
+    };
+    auto const second = std::vector<FuncType> {
+        FuncType {},
+        FuncType { .params = { I32 }, .results = {} },
+        FuncType { .params = { concreteRef(1, Nullable::Yes) }, .results = {} },
+        FuncType { .params = { concreteRef(0, Nullable::Yes) }, .results = {} },
+    };
+    auto const sections = std::vector<std::span<FuncType const>> { first, second };
+    CHECK(jointCanonicalTypeIds(sections) == std::vector<uint32_t> { 0, 1, 2, 0, 1, 5 });
 }

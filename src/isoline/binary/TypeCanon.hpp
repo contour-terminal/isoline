@@ -24,4 +24,18 @@ namespace isoline::binary
 /// @return One id per type, in type order; ids[i] <= i.
 [[nodiscard]] std::vector<uint32_t> canonicalTypeIds(std::span<FuncType const> types);
 
+/// The canonical ids of the types of several type sections in one space, as canonicalTypeIds() finds
+/// them for one: the sections are read as one section of their types in order, each concrete type
+/// index of a section shifted by the number of types before that section. Types of two modules are
+/// thus equivalent exactly when their ids are equal, which is how core import matching compares
+/// types across modules without GC (validate::TypeMatcher). It costs what canonicalTypeIds() costs for
+/// the sections' types together, O(n log n) comparisons and memory linear in them, and copies no section.
+///
+/// Precondition (checked): every concrete type index in type i of a section is below i.
+/// @param sections The type sections, in the order their ids are counted.
+/// @return One id per type, the sections' types in order; an id is the position of the first type,
+///         counted across the sections, that is equivalent to it.
+[[nodiscard]] std::vector<uint32_t> jointCanonicalTypeIds(
+    std::span<std::span<FuncType const> const> sections);
+
 } // namespace isoline::binary

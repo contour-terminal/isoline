@@ -231,8 +231,12 @@ TEST_CASE("Imports.tablesMemoriesAndTagsResolveByTypeButSize")
         .importMemory("other", "memory", Limits { .min = 1, .max = 1, .addressType = AddressType::I32 })
         .importMemory(
             "other", "memory", Limits { .min = 1, .max = std::nullopt, .addressType = AddressType::I64 })
-        .importTag("other", "e", 0)  // fits
-        .importTag("other", "e", 1); // another type
+        .importTag("other", "e", 0) // fits
+        .importTag("other", "e", 1) // another type
+        .importMemory(
+            "other",
+            "memory",
+            Limits { .min = 2, .max = 2, .addressType = AddressType::I32 }); // fits: its size is not compared
     auto const importer = engine.load(builder.build());
     REQUIRE(importer.has_value());
     CHECK(imports.resolve(*importer)
@@ -244,7 +248,8 @@ TEST_CASE("Imports.tablesMemoriesAndTagsResolveByTypeButSize")
                            Linkage::Unsatisfied,
                            Linkage::Unsatisfied,
                            Linkage::Satisfied,
-                           Linkage::Unsatisfied });
+                           Linkage::Unsatisfied,
+                           Linkage::Satisfied });
 }
 
 TEST_CASE("Imports.storeFunctionsResolveByType")
