@@ -90,6 +90,7 @@ target_sources(isoline_core
             interpreter/ReferenceInterpreter.hpp
             interpreter/Simd.hpp
             meta/EnumRows.hpp
+            meta/FixedText.hpp
             runtime/Abrupt.hpp
             runtime/FloatEnvironment.hpp
             runtime/HostFunction.hpp
@@ -185,6 +186,11 @@ if(ISOLINE_TESTING)
     # private, but the test helpers' and the checks' own.
     isoline_add_reflection_check(isoline_meta_reflection_test TEST LABELS unit
         SOURCES meta/reflection/EnumReflection_test.cpp
+        LINK_LIBRARIES isoline::core)
+    # The annotations rehearsal (P19 Task 7): rows derived from enumerator annotations, only where
+    # annotations are native.
+    isoline_add_reflection_check(isoline_meta_annotations_test TEST LABELS unit FEATURE annotations
+        SOURCES meta/reflection/AnnotatedRows_test.cpp
         LINK_LIBRARIES isoline::core)
     # The C API's private headers include its C headers (wasm.h among them): reached through its static
     # library where the C API is built, and left out where it is not.

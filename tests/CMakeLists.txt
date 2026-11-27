@@ -158,6 +158,39 @@ if(ISOLINE_CONTRACTS_PATH STREQUAL "native")
     set_tests_properties(contract-lambda-may-throw-refused PROPERTIES LABELS unit TIMEOUT 300
         PASS_REGULAR_EXPRESSION "ISOLINE_PRECONDITION/ISOLINE_INVARIANT need a noexcept function")
 endif()
+# Sources that must not compile, each built by its test alone, which passes on the message naming why.
+# Rows: name|source|feature (empty: on every compiler; else only where that feature is native)|message.
+set(isolineCompileFailRows
+    "fixed-text-unterminated|compile-fail/FixedTextUnterminated.cpp||fixedTextNeedsANulTerminatedLiteral"
+    "annotation-missing|compile-fail/AnnotationMissing.cpp|annotations|Unannotated::Bare has no FixedText annotation"
+    "annotation-twice|compile-fail/AnnotationTwice.cpp|annotations|Doubled::Twice has 2 FixedText annotations")
+foreach(row IN LISTS isolineCompileFailRows)
+    string(REPLACE "|" ";" columns "${row}")
+    list(GET columns 0 failName)
+    list(GET columns 1 failSource)
+    list(GET columns 2 failFeature)
+    list(GET columns 3 failMessage)
+    set(failTarget isoline_compile_fail_${failName})
+    string(REPLACE "-" "_" failTarget "${failTarget}")
+    if(failFeature STREQUAL "")
+        add_library(${failTarget} OBJECT ${failSource})
+        target_link_libraries(${failTarget} PRIVATE isoline::core)
+        isoline_apply_target_policy(${failTarget})
+        set_target_properties(${failTarget} PROPERTIES CXX_CLANG_TIDY "")
+    else()
+        isoline_add_reflection_check(${failTarget} FEATURE ${failFeature} SOURCES ${failSource}
+                                     LINK_LIBRARIES isoline::core)
+        if(NOT TARGET ${failTarget})
+            continue()
+        endif()
+    endif()
+    set_target_properties(${failTarget} PROPERTIES EXCLUDE_FROM_ALL ON)
+    add_test(NAME compile-fail-${failName}
+             COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}" --target ${failTarget})
+    set_tests_properties(compile-fail-${failName} PROPERTIES LABELS unit TIMEOUT 300
+                         PASS_REGULAR_EXPRESSION "${failMessage}")
+endforeach()
+
 # The cases, read from the table the canary itself includes, one ISOLINE_REQUIRE_CANARY_CASE line each.
 set(isolineRequireCanaryTable "${CMAKE_CURRENT_SOURCE_DIR}/canary/RequireCanaryCases.def")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${isolineRequireCanaryTable}")
@@ -312,6 +345,17 @@ if(NOT CMAKE_CROSSCOMPILING)
                          PASS_REGULAR_EXPRESSION "${isolineSealMessage}")
     set_tests_properties(language-features-header-check-sealed-early PROPERTIES LABELS lint
                          FAIL_REGULAR_EXPRESSION "${isolineSealMessage}")
+    # isoline_add_reflection_check()'s FEATURE names a feature row, or the configure fails naming it.
+    add_test(NAME language-features-reflection-check-feature
+             COMMAND "${CMAKE_COMMAND}"
+                     -S "${CMAKE_CURRENT_SOURCE_DIR}/cmake/reflection-check-feature"
+                     -B "${CMAKE_CURRENT_BINARY_DIR}/reflection-check-feature"
+                     -G "${CMAKE_GENERATOR}"
+                     "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                     "-DISOLINE_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                     -DISOLINE_REFLECTION=OFF -DISOLINE_ANNOTATIONS=OFF -DISOLINE_CONTRACTS=OFF)
+    set_tests_properties(language-features-reflection-check-feature PROPERTIES LABELS lint
+                         PASS_REGULAR_EXPRESSION "no feature row[ \n]+\"annotation\"") # CMake wraps at spaces
 endif()
 
 # The contracts' two refusals, on a parent project with its own core-cpp that adds Isoline with contracts

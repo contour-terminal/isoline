@@ -881,17 +881,19 @@ function(isoline_add_public_header_check checkTarget)
     endif()
 endfunction()
 
-## @brief Adds a reflection check where reflection takes the native path, and nothing elsewhere: the
-## CMake-selected half of the seam, so that no source tests for the feature.
+## @brief Adds a reflection check where reflection (or the FEATURE it names) takes the native path, and
+## nothing elsewhere: the CMake-selected half of the seam, so that no source tests for the feature.
 ##
-## isoline_add_reflection_check(<target> SOURCES <source>... [LINK_LIBRARIES <library>...]
+## isoline_add_reflection_check(<target> SOURCES <source>... [FEATURE <feature>] [LINK_LIBRARIES <library>...]
 ##                              [UMBRELLA <include name> HEADER_TARGETS <target>... [EXCLUDE <regex>...]]
 ##                              [TEST LABELS <label>...])
 ##
 ## Without TEST, <target> is a compile-only OBJECT library in ALL, whose static_asserts are the check;
 ## with TEST, a Catch2 executable registered as the test <target> with LABELS. Either compiles with the
-## reflection row's standard and flags, under Isoline's warning set; clang-tidy never sees it, since
-## only a compiler with native reflection compiles it. LINK_LIBRARIES are linked PRIVATE.
+## feature row's standard and flags, under Isoline's warning set; clang-tidy never sees it, since only a
+## compiler with the feature native compiles it. FEATURE is a row of ISOLINE_LANGUAGE_FEATURE_ROWS,
+## `reflection` when omitted; `annotations` adds a check whose sources annotate. LINK_LIBRARIES are
+## linked PRIVATE.
 ##
 ## UMBRELLA generates the header <include name>, on the target's private include path, that includes
 ## every header a table may live in: the `.hpp` files of each HEADER_TARGETS' HEADER_SET (an X-macro
@@ -899,8 +901,26 @@ endfunction()
 ## whose path matches none of EXCLUDE. A table in a new header is therefore checked without a row. An
 ## EXCLUDE pattern that matches no header is a FATAL_ERROR.
 function(isoline_add_reflection_check target)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "TEST" "UMBRELLA" "SOURCES;LINK_LIBRARIES;HEADER_TARGETS;EXCLUDE;LABELS")
-    if(NOT ISOLINE_REFLECTION_PATH STREQUAL "native")
+    cmake_parse_arguments(PARSE_ARGV 1 arg "TEST" "UMBRELLA;FEATURE" "SOURCES;LINK_LIBRARIES;HEADER_TARGETS;EXCLUDE;LABELS")
+    if(NOT arg_FEATURE)
+        set(arg_FEATURE reflection)
+    endif()
+    # Looked up in the rows, not by whether ISOLINE_<FEATURE>_PATH is defined: a stale cache entry would
+    # pass that.
+    set(known OFF)
+    foreach(row IN LISTS ISOLINE_LANGUAGE_FEATURE_ROWS)
+        string(REPLACE "|" ";" columns "${row}")
+        list(GET columns 0 rowFeature)
+        if(rowFeature STREQUAL arg_FEATURE)
+            set(known ON)
+            break()
+        endif()
+    endforeach()
+    if(NOT known)
+        message(FATAL_ERROR "[isoline] isoline_add_reflection_check(${target}): no feature row \"${arg_FEATURE}\"")
+    endif()
+    string(TOUPPER "${arg_FEATURE}" feature)
+    if(NOT ISOLINE_${feature}_PATH STREQUAL "native")
         return()
     endif()
     if(arg_TEST)
@@ -913,10 +933,10 @@ function(isoline_add_reflection_check target)
         add_library(${target} OBJECT ${arg_SOURCES})
         isoline_apply_target_policy(${target})
     endif()
-    target_link_libraries(${target} PRIVATE ${arg_LINK_LIBRARIES} ${ISOLINE_REFLECTION_LINK_LIBRARIES})
-    target_compile_options(${target} PRIVATE ${ISOLINE_REFLECTION_FLAGS})
+    target_link_libraries(${target} PRIVATE ${arg_LINK_LIBRARIES} ${ISOLINE_${feature}_LINK_LIBRARIES})
+    target_compile_options(${target} PRIVATE ${ISOLINE_${feature}_FLAGS})
     set_target_properties(${target} PROPERTIES
-        CXX_STANDARD ${ISOLINE_REFLECTION_STANDARD} CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF CXX_CLANG_TIDY "")
+        CXX_STANDARD ${ISOLINE_${feature}_STANDARD} CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF CXX_CLANG_TIDY "")
 
     if(arg_UMBRELLA)
         set(includeNames "")

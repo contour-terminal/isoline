@@ -465,8 +465,11 @@ declaration form with the tree's Clang.
 `LastSimdShape` has an `ISOLINE_LAST_ENUMERATOR` row instead, as do the other `Last` constants no
 reachable table checks.
 
-The tables of `runtime/ValueCheck.cpp` and `cli/Verbs.cpp` are plain data, so they moved into the
-private headers `runtime/ValueCheckTables.hpp` and `cli/VerbsTables.hpp`, where discovery reaches them.
+The tables of `runtime/ValueCheck.cpp` and `cli/Verbs.cpp` are plain data, so they moved into headers
+of their own, `runtime/ValueCheckTables.hpp` and `cli/VerbsTables.hpp`, where discovery reaches them. The
+first is installed with `isoline_core`'s headers, C++23 like each of them, as `binary/OpcodeNames.hpp` and
+`meta/FixedText.hpp` are: module isoline's surface is its header set, and `isoline::meta` is one of its
+internal namespaces. Nothing under `meta/contracts/`, `meta/fallback/` or `meta/reflection/` is installed.
 
 ### What stays a review question
 
@@ -509,6 +512,92 @@ wrapped in `$<BUILD_INTERFACE:…>` and recorded, so `install-forbidden-options`
 check prove that no exported file holds `-freflection`, `-fcontracts` or the semantic. A package built on
 the fallback asks nothing of its consumer beyond C++23.
 
+## Annotations, rehearsed
+
+Annotations let an enumerator carry its own table row:
+
+```cpp
+enum class RehearsalCode : uint8_t
+{
+    BadToken[[= FixedText { "bad token" }]],
+    Unterminated[[= FixedText { "unterminated string" }]],
+};
+```
+
+That is the source every enum table moves to once every compiler has annotations (P19 Task 15). Until
+then the hand tables stay the source, and the derivation is rehearsed on fixtures only:
+`isoline_meta_annotations_test` (label `unit`, `meta/reflection/AnnotatedRows_test.cpp`) exists where
+annotations are native, added by `isoline_add_reflection_check(… FEATURE annotations)`; a fallback build
+does not have it and compiles the hand tables unchanged.
+
+`meta/reflection/AnnotatedRows.hpp` holds the derivation. An annotation is found by a key, a
+reflection: a type's (`^^Weight`, `^^int`) finds the annotations of exactly that type, a class
+template's (`^^FixedText`, `^^TextRow`) those of any of its specializations. That is what a real row needs:
+Task 15's `TrapText { FixedText<N>, … }` is a class template over the text's length, so every enumerator's
+annotation has a type of its own.
+
+- `annotatedRows<Enum, Row, Annotation = ^^FixedText, Project = AnnotationAsRow {}>`: each enumerator's
+  one annotation the key finds, projected onto the hand table's row type `Row` by
+  `Project(enumerator, annotation)`, in declaration order. The default projection gives a `FixedText`'s
+  text and any other annotation as it is.
+- `annotatedTexts<Enum>`: `annotatedRows<Enum, std::string_view>`, each enumerator's one `FixedText<N>`
+  (any `N`) as text.
+- `annotationProblem<Enum, Annotation = ^^FixedText>()`: why some enumerator lacks exactly one annotation
+  the key finds, naming it and its count (`Doubled::Twice has 2 FixedText annotations, where each
+  enumerator needs exactly one`); empty when none does. Both derivations refuse to compile with that
+  message (`tests/compile-fail/`).
+- `derivedTableProblem<Enum, Annotation, Project>(table)`: why a hand table (a `std::array`) differs from
+  the derived rows: the row counts when they differ, else the first differing row by index and
+  enumerator, and for a row struct its first differing column with both values where they can be spelled
+  (a text, an enumerator, an unsigned number). A table derived from annotations states its check as
+  `static_assert(derivedTableProblem<…>(Table).empty(), derivedTableProblem<…>(Table))`, so the build names
+  the row and column.
+
+The rehearsed shape of a real row, which Task 15 follows:
+
+```cpp
+template <std::size_t N>
+struct TextRow
+{
+    FixedText<N> text;
+    Detail detail;
+};
+
+enum class RehearsalTrap : uint8_t
+{
+    OutOfBounds[[= TextRow { FixedText { "out of bounds memory access" }, Detail::Fatal }]],
+    Unreachable[[= TextRow { FixedText { "unreachable" }, Detail::None }]],
+};
+
+constexpr auto ToTrapRow = [](RehearsalTrap code, auto const& row) {
+    return TrapRow { .code = code, .text = row.text.view(), .detail = row.detail };
+};
+
+static_assert(derivedTableProblem<RehearsalTrap, ^^TextRow, ToTrapRow>(TrapRows).empty(),
+              derivedTableProblem<RehearsalTrap, ^^TextRow, ToTrapRow>(TrapRows));
+// A wrong Detail: "row 1 (RehearsalTrap::Unreachable), column detail: the table has Detail::Fatal,
+// its annotation Detail::None"
+```
+
+clang-format 22 breaks a long line inside a splice (`[:column:` and `]` on two lines), which no longer
+parses; a splice is therefore bound to a short local before a long call.
+
+An annotation's value, like a class-type template argument, must be **structural**: a literal type
+whose every base and non-static data member is public, not `mutable`, and itself structural.
+`std::string_view` is not (its members are private): GCC 16.2.1 rejects `[[=Text { "a" }]]` with
+`annotation does not have structural type` when `Text` holds a `std::string_view`, and refuses `Text` as
+a template parameter type with `is not a valid type for a template non-type parameter because it is not
+structural` (measured). `isoline::meta::FixedText<N>` (`meta/FixedText.hpp`, C++23, private) is the
+structural text: it holds the literal's characters by value in `char data[N]`, its constructor from a
+literal is implicit so that `Tag<"x">` converts (and, in constant evaluation, refuses an array without a
+terminating NUL, `tests/compile-fail/FixedTextUnterminated.cpp`), and `view()` returns the text without
+its terminating NUL. It is plain C++23, tested on every compiler (`FixedText_test.cpp`), since a template
+argument needs no annotations.
+
+`isoline_add_reflection_check()`'s `FEATURE` names a row of `ISOLINE_LANGUAGE_FEATURE_ROWS`, looked up
+in the rows (a stale cache entry for a misspelt name does not pass); any other name fails the configure
+(`language-features-reflection-check-feature`).
+
 ## The consumer floor
 
 Consumers move to C++26 only once GCC, Clang, Apple Clang and MSVC all ship reflection and contracts in
@@ -540,8 +629,8 @@ Each has a build and a test preset. `gcc-debug` keeps `AUTO`, so on GCC 16.2 it 
 - `-std=c++26 -freflection` provides everything the reflection probe uses. `#include <meta>` compiles
   without `-freflection`, and `__cpp_annotations` is undefined although annotations work. The probes
   therefore compile an expression, and never test a macro or a header.
-- An annotation value must be structural. A `std::string_view` member is rejected; a character array
-  works.
+- An annotation value must be structural. A `std::string_view` member is rejected ("annotation does
+  not have structural type"); a character array works (`FixedText`, see "Annotations, rehearsed").
 - Under `-std=c++23`, GCC rejects `[[=x]]` with `-Werror=c++26-extensions` and Clang rejects it as a
   syntax error. The header check relies on both.
 - `-fcontracts` needs `-std=c++26`. Without `-fcontracts` on the link line, or without `-lstdc++exp`,
