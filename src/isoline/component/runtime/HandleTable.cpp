@@ -28,9 +28,12 @@ namespace
 
     [[nodiscard]] constexpr ChunkPosition chunkPositionOf(uint32_t index) noexcept
     {
-        auto const chunk =
-            static_cast<std::size_t>(std::bit_width((index / HandleTableFirstChunkLength) + 1U)) - 1;
-        auto const start = std::size_t { HandleTableFirstChunkLength } * ((std::size_t { 1 } << chunk) - 1);
+        // Chunk k holds the indices whose quotient q by the first chunk's length has 2^k <= q + 1 < 2^(k+1):
+        // its first index is the first chunk's length times 2^k - 1, and 2^k is q + 1's highest bit.
+        auto const quotient = std::size_t { index / HandleTableFirstChunkLength } + 1;
+        auto const highest = std::bit_floor(quotient);
+        auto const chunk = static_cast<std::size_t>(std::countr_zero(highest));
+        auto const start = std::size_t { HandleTableFirstChunkLength } * (highest - 1);
         return ChunkPosition { .chunk = chunk, .offset = index - start };
     }
 
