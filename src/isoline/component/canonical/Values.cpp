@@ -24,6 +24,7 @@
 
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/canonical/Layout.hpp>
+#include <isoline/component/canonical/Unicode.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 
 namespace isoline::component::canonical
@@ -48,185 +49,28 @@ namespace
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Text: decoding a string's code points in each encoding, and encoding UTF-8.
+    // Text: a string's code points (Unicode.hpp), and UTF-8.
 
-    /// One row of the RFC 3629 table: a range of lead bytes, the sequence length they start, the
-    /// range the second byte must fall in (which excludes overlongs, surrogates and code points
-    /// above U+10FFFF), and the payload bits of the lead. Every later byte is a plain continuation.
-    struct Utf8LeadRow
+    /// A reader of @p value's code points.
+    [[nodiscard]] CodePointReader readerOf(StringValue const& value) noexcept
     {
-        uint8_t leadFirst;
-        uint8_t leadLast;
-        uint8_t length;
-        uint8_t secondFirst;
-        uint8_t secondLast;
-        uint8_t leadPayload;
-    };
-
-    constexpr auto Utf8LeadTable = std::to_array<Utf8LeadRow>({
-        // clang-format off
-        { .leadFirst = 0x00, .leadLast = 0x7F, .length = 1, .secondFirst = 0x80, .secondLast = 0xBF, .leadPayload = 0x7F },
-        { .leadFirst = 0xC2, .leadLast = 0xDF, .length = 2, .secondFirst = 0x80, .secondLast = 0xBF, .leadPayload = 0x1F },
-        { .leadFirst = 0xE0, .leadLast = 0xE0, .length = 3, .secondFirst = 0xA0, .secondLast = 0xBF, .leadPayload = 0x0F },
-        { .leadFirst = 0xE1, .leadLast = 0xEC, .length = 3, .secondFirst = 0x80, .secondLast = 0xBF, .leadPayload = 0x0F },
-        { .leadFirst = 0xED, .leadLast = 0xED, .length = 3, .secondFirst = 0x80, .secondLast = 0x9F, .leadPayload = 0x0F },
-        { .leadFirst = 0xEE, .leadLast = 0xEF, .length = 3, .secondFirst = 0x80, .secondLast = 0xBF, .leadPayload = 0x0F },
-        { .leadFirst = 0xF0, .leadLast = 0xF0, .length = 4, .secondFirst = 0x90, .secondLast = 0xBF, .leadPayload = 0x07 },
-        { .leadFirst = 0xF1, .leadLast = 0xF3, .length = 4, .secondFirst = 0x80, .secondLast = 0xBF, .leadPayload = 0x07 },
-        { .leadFirst = 0xF4, .leadLast = 0xF4, .length = 4, .secondFirst = 0x80, .secondLast = 0x8F, .leadPayload = 0x07 },
-        // clang-format on
-    });
-
-    constexpr auto Utf8ContinuationFirst = uint8_t { 0x80 };
-    constexpr auto Utf8ContinuationLast = uint8_t { 0xBF };
-    constexpr auto Utf8ContinuationPayload = uint8_t { 0x3F };
-    constexpr auto Utf8ContinuationBits = 6U;
-
-    constexpr auto HighSurrogateFirst = char32_t { 0xD800 };
-    constexpr auto LowSurrogateFirst = char32_t { 0xDC00 };
-    constexpr auto SurrogateLast = char32_t { 0xDFFF };
-    constexpr auto SurrogateBits = 10U;
-    constexpr auto SupplementaryFirst = char32_t { 0x1'0000 };
-    constexpr auto MaxCodePoint = char32_t { 0x10'FFFF };
-
-    /// Reads a string's code points one at a time, in its encoding: no copy, no allocation.
-    class CodePointReader
-    {
-      public:
-        explicit CodePointReader(StringValue const& value) noexcept:
-            _bytes { value.bytes }, _form { formOf(value) }
-        {
-        }
-
-        /// The next code point.
-        /// @return It, empty at the end, or why the bytes are not text.
-        [[nodiscard]] std::expected<std::optional<char32_t>, StringError> next() noexcept
-        {
-            if (_position == _bytes.size())
-                return std::nullopt;
-            switch (_form)
-            {
-                case Form::Utf8: return nextUtf8();
-                case Form::Utf16: return nextUtf16();
-                case Form::Latin1: return char32_t { byteAt(_position++) };
-            }
-            return std::nullopt; // uncovered(exhaustive-switch)
-        }
-
-      private:
-        enum class Form : uint8_t
-        {
-            Utf8,
-            Utf16,
-            Latin1,
-        };
-
-        [[nodiscard]] static Form formOf(StringValue const& value) noexcept
-        {
-            switch (value.encoding)
-            {
-                case StringEncoding::Utf8: return Form::Utf8;
-                case StringEncoding::Utf16: return Form::Utf16;
-                case StringEncoding::Latin1Utf16:
-                    return (value.taggedCodeUnits & Utf16Tag) != 0 ? Form::Utf16 : Form::Latin1;
-            }
-            return Form::Utf8; // uncovered(exhaustive-switch)
-        }
-
-        [[nodiscard]] uint8_t byteAt(std::size_t index) const noexcept
-        {
-            return std::to_integer<uint8_t>(_bytes[index]);
-        }
-
-        [[nodiscard]] std::expected<std::optional<char32_t>, StringError> nextUtf8() noexcept
-        {
-            auto const lead = byteAt(_position);
-            auto const row = std::ranges::find_if(Utf8LeadTable, [lead](Utf8LeadRow const& candidate) {
-                return candidate.leadFirst <= lead && lead <= candidate.leadLast;
-            });
-            if (row == Utf8LeadTable.end() || _bytes.size() - _position < row->length)
-                return std::unexpected { StringError::InvalidUtf8 };
-            auto codePoint = static_cast<char32_t>(lead & row->leadPayload);
-            auto first = row->secondFirst;
-            auto last = row->secondLast;
-            for (auto const offset: std::views::iota(std::size_t { 1 }, std::size_t { row->length }))
-            {
-                auto const byte = byteAt(_position + offset);
-                if (byte < first || last < byte)
-                    return std::unexpected { StringError::InvalidUtf8 };
-                codePoint = (codePoint << Utf8ContinuationBits) | (byte & Utf8ContinuationPayload);
-                first = Utf8ContinuationFirst;
-                last = Utf8ContinuationLast;
-            }
-            _position += row->length;
-            return codePoint;
-        }
-
-        [[nodiscard]] std::optional<char32_t> unitAt(std::size_t index) const noexcept
-        {
-            if (_bytes.size() - index < 2)
-                return std::nullopt;
-            return static_cast<char32_t>(byteAt(index) | (byteAt(index + 1) << 8U));
-        }
-
-        [[nodiscard]] std::expected<std::optional<char32_t>, StringError> nextUtf16() noexcept
-        {
-            auto const unit = unitAt(_position);
-            if (!unit || (*unit >= LowSurrogateFirst && *unit <= SurrogateLast))
-                return std::unexpected { StringError::InvalidUtf16 };
-            if (*unit < HighSurrogateFirst || *unit > SurrogateLast)
-            {
-                _position += 2;
-                return *unit;
-            }
-            auto const low = unitAt(_position + 2);
-            if (!low || *low < LowSurrogateFirst || *low > SurrogateLast)
-                return std::unexpected { StringError::InvalidUtf16 };
-            _position += 4;
-            return SupplementaryFirst + ((*unit - HighSurrogateFirst) << SurrogateBits)
-                   + (*low - LowSurrogateFirst);
-        }
-
-        std::span<std::byte const> _bytes;
-        std::size_t _position = 0;
-        Form _form;
-    };
+        return CodePointReader { value.bytes, value.simpleEncoding() };
+    }
 
     /// Appends @p codePoint (a Unicode scalar value) to @p text in UTF-8.
     void appendUtf8(std::string& text, char32_t codePoint)
     {
-        auto const unit = [](uint32_t bits) {
-            return static_cast<char>(bits);
-        };
-        constexpr auto Payload = 0x3FU;
-        if (codePoint < 0x80)
-            text.push_back(unit(codePoint));
-        else if (codePoint < 0x800)
-        {
-            text.push_back(unit(0xC0U | (codePoint >> 6U)));
-            text.push_back(unit(0x80U | (codePoint & Payload)));
-        }
-        else if (codePoint < SupplementaryFirst)
-        {
-            text.push_back(unit(0xE0U | (codePoint >> 12U)));
-            text.push_back(unit(0x80U | ((codePoint >> 6U) & Payload)));
-            text.push_back(unit(0x80U | (codePoint & Payload)));
-        }
-        else
-        {
-            text.push_back(unit(0xF0U | (codePoint >> 18U)));
-            text.push_back(unit(0x80U | ((codePoint >> 12U) & Payload)));
-            text.push_back(unit(0x80U | ((codePoint >> 6U) & Payload)));
-            text.push_back(unit(0x80U | (codePoint & Payload)));
-        }
+        for (auto const byte: encodeUtf8(codePoint).view())
+            text.push_back(static_cast<char>(byte));
     }
 
     /// Whether two strings hold the same text, whatever their encodings. Strings whose bytes are not
-    /// text (which no ValueBuilder makes) compare by their text up to the fault and the fault.
+    /// text (which only a caller of encodedString() that breaks its contract makes) compare by their
+    /// text up to the fault and the fault.
     [[nodiscard]] bool sameText(StringValue const& lhs, StringValue const& rhs) noexcept
     {
-        auto left = CodePointReader { lhs };
-        auto right = CodePointReader { rhs };
+        auto left = readerOf(lhs);
+        auto right = readerOf(rhs);
         while (true)
         {
             auto const leftPoint = left.next();
@@ -335,7 +179,7 @@ namespace
     void appendQuoted(std::string& text, StringValue const& value)
     {
         text.push_back('"');
-        auto reader = CodePointReader { value };
+        auto reader = readerOf(value);
         for (auto codePoint = reader.next(); codePoint && *codePoint; codePoint = reader.next())
             appendEscaped(text, **codePoint);
         text.push_back('"');
@@ -627,7 +471,7 @@ std::expected<std::string, StringError> StringValue::utf8() const
 {
     auto text = std::string {};
     text.reserve(bytes.size());
-    auto reader = CodePointReader { *this };
+    auto reader = readerOf(*this);
     while (true)
     {
         auto const codePoint = reader.next();
@@ -834,6 +678,29 @@ ValueBuilder& ValueBuilder::string(std::string_view utf8)
     return step([&] { return buildString(utf8); });
 }
 
+std::span<std::byte> ValueBuilder::encodedString(StringEncoding encoding, uint32_t taggedCodeUnits)
+{
+    auto bytes = std::span<std::byte> {};
+    step([&]() -> std::expected<void, ValueError> {
+        auto const slot = slotFor(BuildStep::String);
+        if (!slot)
+            return std::unexpected { slot.error() };
+        return appendString(*slot, encoding, taggedCodeUnits).transform([&](std::span<std::byte> stored) {
+            bytes = stored;
+        });
+    });
+    return bytes;
+}
+
+std::span<std::byte> ValueBuilder::packedElements()
+{
+    auto bytes = std::span<std::byte> {};
+    step([&] {
+        return buildPackedElements().transform([&](std::span<std::byte> stored) { bytes = stored; });
+    });
+    return bytes;
+}
+
 ValueBuilder& ValueBuilder::begin(uint32_t caseIndexOrCount)
 {
     return step([&] { return buildBegin(caseIndexOrCount); });
@@ -1007,8 +874,7 @@ std::expected<void, ValueError> ValueBuilder::buildString(std::string_view utf8)
     if (!slot)
         return std::unexpected { slot.error() };
     auto const bytes = std::as_bytes(std::span { utf8.data(), utf8.size() });
-    auto const text = StringValue { .bytes = bytes, .encoding = StringEncoding::Utf8 };
-    auto reader = CodePointReader { text };
+    auto reader = CodePointReader { bytes, SimpleEncoding::Utf8 };
     for (auto codePoint = reader.next(); !codePoint || *codePoint; codePoint = reader.next())
     {
         if (!codePoint)
@@ -1019,21 +885,53 @@ std::expected<void, ValueError> ValueBuilder::buildString(std::string_view utf8)
         return std::unexpected { errorHere(ValueErrorCode::TooLarge,
                                            std::format("a string of {} bytes", bytes.size())) };
     // uncovered-end(string-bytes)
-    auto const range = ValueRange { .offset = _pool.size(),
-                                    .count = static_cast<uint32_t>(bytes.size()),
-                                    .taggedCodeUnits = static_cast<uint32_t>(bytes.size()),
-                                    .encoding = StringEncoding::Utf8 };
-    auto const node = ValueNode { .type = slot->type, .kind = slot->kind, .payload = _ranges.size() };
-    auto const stored =
-        reserve(_pool, bytes.size()).and_then([&] { return reserve(_ranges, 1); }).and_then([&] {
-            return pushNode(node, 0);
-        });
+    auto const stored = appendString(*slot, StringEncoding::Utf8, static_cast<uint32_t>(bytes.size()));
     if (!stored)
-        return stored;
-    _pool.append(bytes);
+        return std::unexpected { stored.error() };
+    std::ranges::copy(bytes, stored->begin());
+    return {};
+}
+
+std::expected<std::span<std::byte>, ValueError> ValueBuilder::appendString(Slot const& slot,
+                                                                           StringEncoding encoding,
+                                                                           uint32_t taggedCodeUnits)
+{
+    auto const byteLength = stringByteLength(encoding, taggedCodeUnits);
+    if (byteLength > MaxStringBytes)
+        return std::unexpected { errorHere(ValueErrorCode::TooLarge,
+                                           std::format("a string of {} bytes", byteLength)) };
+    auto const range = ValueRange { .offset = _pool.size(),
+                                    .count = static_cast<uint32_t>(byteLength),
+                                    .taggedCodeUnits = taggedCodeUnits,
+                                    .encoding = encoding };
+    auto const node = ValueNode { .type = slot.type, .kind = slot.kind, .payload = _ranges.size() };
+    // Charged before anything grows: a length that lies is refused before the host allocates.
+    auto const stored = reserve(_pool, static_cast<std::size_t>(byteLength))
+                            .and_then([&] { return reserve(_ranges, 1); })
+                            .and_then([&] { return pushNode(node, 0); });
+    if (!stored)
+        return std::unexpected { stored.error() };
     _ranges.append(range);
     completed();
-    return {};
+    return _pool.grow(static_cast<std::size_t>(byteLength));
+}
+
+std::expected<std::span<std::byte>, ValueError> ValueBuilder::buildPackedElements()
+{
+    if (_frames.empty())
+        return std::unexpected { errorHere(ValueErrorCode::Unbalanced, "packed elements without begin()") };
+    auto& frame = _frames.back();
+    if (frame.storage != ElementStorage::Pool || frame.given != 0)
+        return std::unexpected { errorHere(
+            ValueErrorCode::Unbalanced,
+            std::format("packed elements for a {} with {} of its {} children given",
+                        kindText(frame.kind),
+                        frame.given,
+                        frame.expected)) };
+    auto const& element = valueShapeRow((*_arena)[*(*_arena)[frame.type].children[0]].kind);
+    auto const bytes = frame.expected * element.bytes;
+    frame.given = frame.expected;
+    return _pool.grow(static_cast<std::size_t>(bytes));
 }
 
 std::expected<void, ValueError> ValueBuilder::buildBegin(uint32_t caseIndexOrCount)

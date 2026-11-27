@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <ranges>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <isoline/component/canonical/GuestMemory.hpp>
@@ -49,17 +51,32 @@ struct FakeGuestMemoryOptions
     uint32_t heapStart = 1024;
     /// The poll() that returns Interrupted, counting from 1; never when empty.
     std::optional<uint32_t> interruptAtPoll {};
+    /// What the first reallocate() calls return, in order, instead of a block: a misbehaving `realloc`.
+    std::vector<uint32_t> forcedResults {};
+    /// The reallocate() that returns 0xffff'fff0, past every end, counting from 1; never when empty.
+    std::optional<uint32_t> misbehaveAtReallocation {};
+    /// The read() that fails OutOfBounds, counting from 1: a memory that errs; never when empty.
+    std::optional<uint32_t> failAtRead {};
+    /// The write() that fails OutOfBounds, counting from 1; never when empty.
+    std::optional<uint32_t> failAtWrite {};
 };
 
 /// An IGuestMemoryAccess over a std::vector<std::byte>, recording every access. Its reallocate() is a
 /// bump allocator that grows the memory when a block passes its end, by moving it into a new, larger
 /// vector: a view of the old memory kept past a reallocate() reads freed storage, which ASan reports.
+/// Every block is new, and a resized block's bytes are copied into it, as a `realloc` keeps them.
 class FakeGuestMemory final: public IGuestMemoryAccess
 {
   public:
     /// A memory as @p options describe it, zero-filled.
     explicit FakeGuestMemory(FakeGuestMemoryOptions options = {}):
-        _bytes(options.size), _next { options.heapStart }, _interruptAtPoll { options.interruptAtPoll }
+        _bytes(options.size),
+        _next { options.heapStart },
+        _interruptAtPoll { options.interruptAtPoll },
+        _forcedResults { std::move(options.forcedResults) },
+        _misbehaveAtReallocation { options.misbehaveAtReallocation },
+        _failAtRead { options.failAtRead },
+        _failAtWrite { options.failAtWrite }
     {
     }
 
@@ -67,6 +84,8 @@ class FakeGuestMemory final: public IGuestMemoryAccess
     {
         if (auto inRange = checkRange(address, out.size(), 1, _bytes.size()); !inRange)
             return inRange;
+        if (++_readCalls == _failAtRead)
+            return std::unexpected { outOfBounds(address, out.size(), _bytes.size()) };
         _reads.push_back(MemoryAccess { .address = address, .length = out.size() });
         std::ranges::copy(std::span { _bytes }.subspan(address, out.size()), out.begin());
         return {};
@@ -76,6 +95,8 @@ class FakeGuestMemory final: public IGuestMemoryAccess
     {
         if (auto inRange = checkRange(address, bytes.size(), 1, _bytes.size()); !inRange)
             return inRange;
+        if (++_writeCalls == _failAtWrite)
+            return std::unexpected { outOfBounds(address, bytes.size(), _bytes.size()) };
         _writes.push_back(MemoryAccess { .address = address, .length = bytes.size() });
         std::ranges::copy(bytes, std::span { _bytes }.subspan(address).begin());
         return {};
@@ -86,6 +107,17 @@ class FakeGuestMemory final: public IGuestMemoryAccess
                                                            uint32_t alignment,
                                                            uint32_t newSize) override
     {
+        auto const misbehaves = _misbehaveAtReallocation == _reallocations.size() + 1;
+        if (_reallocations.size() < _forcedResults.size() || misbehaves)
+        {
+            auto const forced = misbehaves ? 0xffff'fff0 : _forcedResults[_reallocations.size()];
+            _reallocations.push_back(Reallocation { .old = old,
+                                                    .oldSize = oldSize,
+                                                    .alignment = alignment,
+                                                    .newSize = newSize,
+                                                    .result = forced });
+            return forced;
+        }
         auto const result = (uint64_t { _next } + alignment - 1) / alignment * alignment;
         auto const end = result + newSize;
         if (end > _bytes.size())
@@ -94,6 +126,12 @@ class FakeGuestMemory final: public IGuestMemoryAccess
             auto grown = std::vector<std::byte>(end);
             std::ranges::copy(_bytes, grown.begin());
             _bytes = std::move(grown);
+        }
+        if (old != 0)
+        {
+            auto const kept = std::min(oldSize, newSize);
+            std::ranges::copy(std::span { _bytes }.subspan(old, kept),
+                              _bytes.begin() + static_cast<std::ptrdiff_t>(result));
         }
         _next = static_cast<uint32_t>(end);
         _reallocations.push_back(Reallocation { .old = old,
@@ -139,9 +177,83 @@ class FakeGuestMemory final: public IGuestMemoryAccess
     std::vector<std::byte> _bytes;
     uint32_t _next;
     std::optional<uint32_t> _interruptAtPoll;
+    std::vector<uint32_t> _forcedResults;
+    std::optional<uint32_t> _misbehaveAtReallocation;
+    std::optional<uint32_t> _failAtRead;
+    std::optional<uint32_t> _failAtWrite;
+    uint32_t _readCalls = 0;
+    uint32_t _writeCalls = 0;
     std::vector<MemoryAccess> _reads {};
     std::vector<MemoryAccess> _writes {};
     std::vector<Reallocation> _reallocations {};
+    uint32_t _polls = 0;
+};
+
+/// A large IGuestMemoryAccess that holds only its first bytes: every byte past them reads as zero and
+/// takes no host memory, so a test can lie about lengths in a memory of a gibibyte and see what the host
+/// allocates for them. Its reallocate() hands out blocks past the bytes held and writes there are
+/// dropped.
+class ZeroGuestMemory final: public IGuestMemoryAccess
+{
+  public:
+    /// A memory of @p size bytes whose first @p held bytes are kept, zero-filled.
+    ZeroGuestMemory(uint64_t size, std::size_t held): _size { size }, _held(held), _next { held } {}
+
+    [[nodiscard]] std::expected<void, Trap> read(uint32_t address, std::span<std::byte> out) override
+    {
+        if (auto inRange = checkRange(address, out.size(), 1, _size); !inRange)
+            return inRange;
+        _readBytes += out.size();
+        for (auto const index: std::views::iota(std::size_t { 0 }, out.size()))
+            out[index] = uint64_t { address } + index < _held.size() ? _held[address + index] : std::byte {};
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, Trap> write(uint32_t address, std::span<std::byte const> bytes) override
+    {
+        if (auto inRange = checkRange(address, bytes.size(), 1, _size); !inRange)
+            return inRange;
+        for (auto const index: std::views::iota(std::size_t { 0 }, bytes.size()))
+            if (uint64_t { address } + index < _held.size())
+                _held[address + index] = bytes[index];
+        return {};
+    }
+
+    [[nodiscard]] std::expected<uint32_t, Trap> reallocate(uint32_t /*old*/,
+                                                           uint32_t /*oldSize*/,
+                                                           uint32_t alignment,
+                                                           uint32_t newSize) override
+    {
+        auto const result = (_next + alignment - 1) / alignment * alignment;
+        _next = result + newSize;
+        return static_cast<uint32_t>(result);
+    }
+
+    [[nodiscard]] std::expected<void, Trap> poll() override
+    {
+        ++_polls;
+        return {};
+    }
+
+    [[nodiscard]] uint64_t size() override { return _size; }
+
+    /// Copies @p bytes to @p address, inside the bytes held: a test's setup.
+    void put(uint32_t address, std::span<std::byte const> bytes)
+    {
+        std::ranges::copy(bytes, std::span { _held }.subspan(address).begin());
+    }
+
+    /// The bytes read so far.
+    [[nodiscard]] uint64_t readBytes() const noexcept { return _readBytes; }
+
+    /// The polls so far.
+    [[nodiscard]] uint32_t polls() const noexcept { return _polls; }
+
+  private:
+    uint64_t _size;
+    std::vector<std::byte> _held;
+    uint64_t _next;
+    uint64_t _readBytes = 0;
     uint32_t _polls = 0;
 };
 
@@ -171,6 +283,8 @@ class FakeHandleOps final: public HandleOps
     [[nodiscard]] std::expected<uint32_t, Trap> lowerOwn(types::ResourceTypeId type,
                                                          ResourceValue value) override
     {
+        if (_lowerTrap)
+            return std::unexpected { *_lowerTrap };
         return add(type, value, Ownership::Own);
     }
 
@@ -179,6 +293,9 @@ class FakeHandleOps final: public HandleOps
     {
         return add(type, value, Ownership::Borrow);
     }
+
+    /// Makes every later lowerOwn() fail with @p trap, as a table with no room left does.
+    void refuseLowering(Trap trap) { _lowerTrap = std::move(trap); }
 
     /// Adds a handle: a test's setup.
     /// @return Its index.
@@ -216,6 +333,7 @@ class FakeHandleOps final: public HandleOps
 
     /// The handles by index; slot 0 is never one.
     std::vector<std::optional<ResourceValue>> _handles = std::vector<std::optional<ResourceValue>>(1);
+    std::optional<Trap> _lowerTrap {};
 };
 
 } // namespace isoline::component::canonical::testing

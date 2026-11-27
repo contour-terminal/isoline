@@ -79,4 +79,17 @@ class IGuestMemoryAccess
                                                    uint32_t alignment,
                                                    uint64_t memorySize);
 
+/// definitions.py's LiftLowerContext.reallocate: calls @p memory's `realloc`, then traps on a result not
+/// aligned to @p alignment or whose @p newSize bytes pass the memory's end, its size asked after the
+/// call, which may have grown it; in 64-bit arithmetic, so no result wraps.
+/// @param memory The memory and its `realloc`.
+/// @param old The block to resize, or 0 for a new one.
+/// @param oldSize Its size, or 0.
+/// @param alignment The alignment the result must have, a power of two (checked).
+/// @param newSize The size wanted.
+/// @return The block's address; or the trap of the call, UnalignedPointer, or OutOfBounds.
+/// @throws std::bad_alloc When a trap's message cannot be stored.
+[[nodiscard]] std::expected<uint32_t, Trap> reallocate(
+    IGuestMemoryAccess& memory, uint32_t old, uint32_t oldSize, uint32_t alignment, uint32_t newSize);
+
 } // namespace isoline::component::canonical

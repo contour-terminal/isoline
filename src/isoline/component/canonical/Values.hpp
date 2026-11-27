@@ -210,6 +210,17 @@ class ChargedVector
         _items.insert(_items.end(), items.begin(), items.end());
     }
 
+    /// Appends @p count value-initialized elements into room reserveFor() made (checked), for the
+    /// caller to fill in place.
+    /// @param count The elements.
+    /// @return They, valid until the next growth.
+    [[nodiscard]] std::span<T> grow(std::size_t count)
+    {
+        Require(count <= _capacity - _items.size());
+        _items.resize(_items.size() + count);
+        return std::span { _items }.last(count);
+    }
+
     /// The number of elements.
     /// @return The size.
     [[nodiscard]] std::size_t size() const noexcept { return _items.size(); }
@@ -265,6 +276,88 @@ enum class StringEncoding : uint8_t
 /// UTF16_TAG).
 inline constexpr auto Utf16Tag = uint32_t { 1 } << 31U;
 
+/// The encoding a string's bytes are in once a latin1+utf16 string's tag is read (definitions.py's
+/// src_simple_encoding).
+enum class SimpleEncoding : uint8_t
+{
+    Utf8,   ///< UTF-8.
+    Utf16,  ///< UTF-16, little-endian.
+    Latin1, ///< Latin-1: one byte per code point, U+0000 to U+00FF.
+};
+
+/// One row of SimpleEncodingTable: an encoding, its code unit, and its name.
+struct SimpleEncodingRow
+{
+    SimpleEncoding encoding; ///< The encoding; equal to the row's index.
+    uint8_t codeUnitBytes;   ///< The bytes of one code unit.
+    std::string_view name;   ///< Its name, as traps spell it.
+};
+
+/// Every simple encoding, one row per SimpleEncoding enumerator, in enumerator order.
+inline constexpr auto SimpleEncodingTable = std::to_array<SimpleEncodingRow>({
+    { .encoding = SimpleEncoding::Utf8, .codeUnitBytes = 1, .name = "utf-8" },
+    { .encoding = SimpleEncoding::Utf16, .codeUnitBytes = 2, .name = "utf-16" },
+    { .encoding = SimpleEncoding::Latin1, .codeUnitBytes = 1, .name = "latin-1" },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: SimpleEncodingTable)
+        {
+            if (static_cast<std::size_t>(row.encoding) != index)
+                return false;
+            ++index;
+        }
+        return true;
+    }(),
+    "SimpleEncodingTable must hold one row per SimpleEncoding, at the index of its enumerator");
+
+/// The row of @p encoding.
+/// @param encoding A simple encoding.
+/// @return Its SimpleEncodingTable row.
+[[nodiscard]] constexpr SimpleEncodingRow const& simpleEncodingRow(SimpleEncoding encoding) noexcept
+{
+    return SimpleEncodingTable[static_cast<std::size_t>(encoding)];
+}
+
+/// The simple encoding of a string in @p encoding whose tagged code units are @p taggedCodeUnits.
+/// @param encoding The string's encoding.
+/// @param taggedCodeUnits Its tagged code units: Utf16Tag selects UTF-16 for latin1+utf16.
+/// @return Its simple encoding.
+[[nodiscard]] constexpr SimpleEncoding simpleEncodingOf(StringEncoding encoding,
+                                                        uint32_t taggedCodeUnits) noexcept
+{
+    switch (encoding)
+    {
+        case StringEncoding::Utf8: return SimpleEncoding::Utf8;
+        case StringEncoding::Utf16: return SimpleEncoding::Utf16;
+        case StringEncoding::Latin1Utf16: break;
+    }
+    return (taggedCodeUnits & Utf16Tag) != 0 ? SimpleEncoding::Utf16 : SimpleEncoding::Latin1;
+}
+
+/// The code units of a string in @p encoding whose tagged code units are @p taggedCodeUnits: without
+/// the tag, for latin1+utf16.
+/// @param encoding The string's encoding.
+/// @param taggedCodeUnits Its tagged code units.
+/// @return Its code units.
+[[nodiscard]] constexpr uint32_t codeUnitsOf(StringEncoding encoding, uint32_t taggedCodeUnits) noexcept
+{
+    return encoding == StringEncoding::Latin1Utf16 ? taggedCodeUnits & ~Utf16Tag : taggedCodeUnits;
+}
+
+/// The bytes of a string in @p encoding whose tagged code units are @p taggedCodeUnits (definitions.py's
+/// byte_length in load_string_from_range), in 64-bit arithmetic: up to 2^33 - 2.
+/// @param encoding The string's encoding.
+/// @param taggedCodeUnits Its tagged code units.
+/// @return Its byte length.
+[[nodiscard]] constexpr uint64_t stringByteLength(StringEncoding encoding, uint32_t taggedCodeUnits) noexcept
+{
+    auto const& row = simpleEncodingRow(simpleEncodingOf(encoding, taggedCodeUnits));
+    return uint64_t { codeUnitsOf(encoding, taggedCodeUnits) } * row.codeUnitBytes;
+}
+
 /// Why a string's bytes are not text in their encoding.
 enum class StringError : uint8_t
 {
@@ -285,6 +378,13 @@ struct StringValue
     /// @return Its text, or why the bytes are not text in their encoding.
     /// @throws std::bad_alloc When the text cannot be stored.
     [[nodiscard]] std::expected<std::string, StringError> utf8() const;
+
+    /// The encoding its bytes are in, the tag read.
+    /// @return Its simple encoding.
+    [[nodiscard]] SimpleEncoding simpleEncoding() const noexcept
+    {
+        return simpleEncodingOf(encoding, taggedCodeUnits);
+    }
 };
 
 /// Whether a handle value owns its resource or borrows it.
@@ -733,10 +833,11 @@ enum class BuildStep : uint8_t
 /// Builds Values, one step per value in pre-order, checked against the root types as it goes (R9):
 /// the type of each step is the one its position expects, so steps name no type.
 ///
-/// A scalar, an enum and a flags value are scalar(); a string is string(); a handle is resource();
-/// a record, tuple, list, fixed list, variant, option, result or map is begin(), its children, then
-/// end(). Every storage growth is charged to the budget first, and begin() of a list or a map charges
-/// for its count before anything grows, so a count that lies is refused before the host allocates.
+/// A scalar, an enum and a flags value are scalar(); a string is string(), or encodedString() written in
+/// place; a handle is resource(); a record, tuple, list, fixed list, variant, option, result or map is
+/// begin(), its children (a list of scalars' all at once through packedElements()), then end(). Every storage
+/// growth is charged to the budget first, and begin() of a list or a map charges for its count before
+/// anything grows, so a count that lies is refused before the host allocates.
 ///
 /// The first refused step is the builder's error, readable through error(): later steps do nothing,
 /// and finish() returns it. A refused or abandoned build releases its whole charge when the builder is
@@ -780,6 +881,29 @@ class ValueBuilder
     /// @return The builder.
     /// @throws std::bad_alloc When the host cannot allocate what the budget allowed.
     ValueBuilder& begin(uint32_t caseIndexOrCount);
+
+    /// A string whose bytes the caller writes in place, in their encoding (D4): a lift copies guest
+    /// memory straight into the values' storage, which is charged before it is allocated.
+    ///
+    /// The caller writes text in @p encoding into the bytes returned before the builder's next step;
+    /// the builder does not read them. A lift validates them as it copies, and abandons the builder when
+    /// they are not text.
+    /// @param encoding The string's encoding.
+    /// @param taggedCodeUnits Its tagged code units, which give its byte length (stringByteLength()).
+    /// @return Its bytes, zero-filled; empty when the step is refused (error() then says why) or the
+    ///         string is empty.
+    /// @throws std::bad_alloc When the host cannot allocate what the budget allowed.
+    [[nodiscard]] std::span<std::byte> encodedString(StringEncoding encoding, uint32_t taggedCodeUnits);
+
+    /// Gives the list of scalars begin() opened last all its elements at once, for the caller to write in
+    /// place: a lift copies them from guest memory in one read, not one per element.
+    ///
+    /// The caller writes each element's bits, at its width and in host byte order, a value of the element
+    /// type (a bool 0 or 1, a char a Unicode scalar value), before the builder's next step.
+    /// @return The elements' bytes, zero-filled, count times the element's width (begin() charged for
+    ///         them); empty when the step is refused (error() then says why: the open compound is not a
+    ///         list of scalars, or has elements given) or the list is empty.
+    [[nodiscard]] std::span<std::byte> packedElements();
 
     /// Closes the compound begin() opened last, once all its children are given.
     /// @return The builder.
@@ -832,6 +956,10 @@ class ValueBuilder
     [[nodiscard]] std::expected<Slot, ValueError> slotFor(BuildStep step) const;
     [[nodiscard]] std::expected<void, ValueError> buildScalar(uint64_t bits);
     [[nodiscard]] std::expected<void, ValueError> buildString(std::string_view utf8);
+    [[nodiscard]] std::expected<std::span<std::byte>, ValueError> appendString(Slot const& slot,
+                                                                               StringEncoding encoding,
+                                                                               uint32_t taggedCodeUnits);
+    [[nodiscard]] std::expected<std::span<std::byte>, ValueError> buildPackedElements();
     [[nodiscard]] std::expected<void, ValueError> buildBegin(uint32_t caseIndexOrCount);
     [[nodiscard]] std::expected<void, ValueError> buildEnd();
     [[nodiscard]] std::expected<void, ValueError> buildResource(ResourceValue value);

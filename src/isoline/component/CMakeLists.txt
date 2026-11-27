@@ -13,7 +13,9 @@ target_sources(isoline_component
         canonical/GuestMemory.cpp
         canonical/Layout.cpp
         canonical/LiftLower.cpp
+        canonical/Strings.cpp
         canonical/Trap.cpp
+        canonical/Unicode.hpp
         canonical/Values.cpp
         validate/CoreTypes.cpp
         validate/Names.cpp
@@ -31,6 +33,7 @@ target_sources(isoline_component
             canonical/GuestMemory.hpp
             canonical/Layout.hpp
             canonical/LiftLower.hpp
+            canonical/Strings.hpp
             canonical/Trap.hpp
             canonical/Values.hpp
             validate/CoreTypes.hpp

@@ -32,4 +32,12 @@ std::expected<void, Trap> checkRange(uint32_t address,
     return {};
 }
 
+std::expected<uint32_t, Trap> reallocate(
+    IGuestMemoryAccess& memory, uint32_t old, uint32_t oldSize, uint32_t alignment, uint32_t newSize)
+{
+    return memory.reallocate(old, oldSize, alignment, newSize).and_then([&](uint32_t block) {
+        return checkRange(block, newSize, alignment, memory.size()).transform([block] { return block; });
+    });
+}
+
 } // namespace isoline::component::canonical

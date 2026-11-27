@@ -7,6 +7,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <functional>
 #include <limits>
@@ -37,6 +38,7 @@ using isoline::component::canonical::LiveBytesBudget;
 using isoline::component::canonical::Ownership;
 using isoline::component::canonical::ResourceTypeIndex;
 using isoline::component::canonical::ResourceValue;
+using isoline::component::canonical::SimpleEncoding;
 using isoline::component::canonical::StringEncoding;
 using isoline::component::canonical::StringError;
 using isoline::component::canonical::StringValue;
@@ -1518,4 +1520,64 @@ TEMPLATE_TEST_CASE("ChargedVector.everyPathOfEveryElementType",
     CHECK(outcome != "accepted");
     CHECK(unlimited->live() == 0);
     CHECK(vector.chargedBytes() == 0);
+}
+
+TEST_CASE("Values.inPlaceSteps")
+{
+    auto types = Types {};
+    auto const string = types.primitive(ValueKind::String);
+    auto const u16 = types.primitive(ValueKind::U16);
+    auto const shorts = types.list(u16);
+    auto const strings = types.list(string);
+
+    // encodedString(): the bytes stringByteLength() gives, in place, in their encoding.
+    auto builder = ValueBuilder { types.arena(), std::vector { string, shorts }, budgetOf() };
+    auto const bytes = builder.encodedString(StringEncoding::Latin1Utf16, 2 | Utf16Tag);
+    REQUIRE(bytes.size() == 4);
+    std::ranges::copy(std::array { std::byte { 'h' }, std::byte {}, std::byte { 'i' }, std::byte {} },
+                      bytes.begin());
+    // packedElements(): every element of the open list of scalars, in host byte order.
+    builder.begin(2);
+    auto const elements = builder.packedElements();
+    REQUIRE(elements.size() == 4);
+    auto const words = std::array { uint16_t { 7 }, uint16_t { 0xbeef } };
+    std::memcpy(elements.data(), words.data(), elements.size());
+    builder.end();
+    auto values = builder.finish();
+    REQUIRE(values.has_value());
+    CHECK(values->root(0).string().utf8() == "hi");
+    CHECK(values->root(0).string().simpleEncoding() == SimpleEncoding::Utf16);
+    CHECK(values->root(1).child(1).scalar<uint16_t>() == 0xbeef);
+
+    // Refusals: a string past 2^32 - 1 bytes; a string where another value goes; packed elements with no
+    // list open, for a list of strings, or after an element was given.
+    auto const refused = [&](std::vector<TypeId> const& roots, auto const& steps) {
+        auto refusing = ValueBuilder { types.arena(), roots, budgetOf() };
+        steps(refusing);
+        REQUIRE(refusing.error().has_value());
+        return refusing.error()->code;
+    };
+    CHECK(refused({ string },
+                  [](ValueBuilder& builder) {
+                      CHECK(builder.encodedString(StringEncoding::Utf16, ~uint32_t { 0 }).empty());
+                  })
+          == ValueErrorCode::TooLarge);
+    CHECK(
+        refused({ u16 },
+                [](ValueBuilder& builder) { CHECK(builder.encodedString(StringEncoding::Utf8, 1).empty()); })
+        == ValueErrorCode::TypeMismatch);
+    CHECK(refused({ shorts }, [](ValueBuilder& builder) { CHECK(builder.packedElements().empty()); })
+          == ValueErrorCode::Unbalanced);
+    CHECK(refused({ strings },
+                  [](ValueBuilder& builder) {
+                      builder.begin(1);
+                      CHECK(builder.packedElements().empty());
+                  })
+          == ValueErrorCode::Unbalanced);
+    CHECK(refused({ shorts },
+                  [](ValueBuilder& builder) {
+                      builder.begin(2).scalar(1);
+                      CHECK(builder.packedElements().empty());
+                  })
+          == ValueErrorCode::Unbalanced);
 }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -21,6 +22,7 @@
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/canonical/GuestMemory.hpp>
 #include <isoline/component/canonical/Layout.hpp>
+#include <isoline/component/canonical/Strings.hpp>
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/types/TypeArena.hpp>
@@ -138,10 +140,12 @@ namespace
                 if constexpr (requires { number.bits; })
                     return number.bits;
                 else
+                // uncovered-begin(unreachable)
                 {
                     Require(false);
-                    return 0; // uncovered(unreachable)
+                    return 0;
                 }
+                // uncovered-end(unreachable)
             },
             value);
     }
@@ -225,34 +229,16 @@ namespace
         return length;
     }
 
-    /// Counts the bytes copied to or from guest memory, and polls the store for every
-    /// api::BulkPollBytes of them (Global Constraints, interrupt latency).
-    class BulkPolls
-    {
-      public:
-        explicit BulkPolls(IGuestMemoryAccess& memory) noexcept: _memory { &memory } {}
-
-        /// Counts @p bytes copied, polling for each whole granule they complete.
-        [[nodiscard]] std::expected<void, Trap> copied(uint64_t bytes)
-        {
-            _sincePoll += bytes;
-            while (_sincePoll >= isoline::api::BulkPollBytes)
-            {
-                _sincePoll -= isoline::api::BulkPollBytes;
-                if (auto polled = _memory->poll(); !polled)
-                    return polled;
-            }
-            return {};
-        }
-
-      private:
-        IGuestMemoryAccess* _memory;
-        uint64_t _sincePoll = 0;
-    };
-
     // -------------------------------------------------------------------------------------------------
     // Sources and sinks: where a lifted value's bits come from, and where a lowered value's go. A lift or
     // a lower is one loop over the types; only these differ between core values and memory.
+
+    /// Where a value's bits are read from or written to.
+    enum class Placement : uint8_t
+    {
+        Primary, ///< The lift's source or the lower's sink: core values, or memory.
+        Memory,  ///< Guest memory: a list's elements, wherever the list's pointer pair is.
+    };
 
     /// Reads a flat lift's core values in order (definitions.py's CoreValueIter). Inside a variant, a
     /// slot holds the joined type of every case, wider than what the case reads from it
@@ -303,11 +289,29 @@ namespace
         std::size_t _windowDepth = 0;              ///< The variants entered and not left.
     };
 
+    /// The little-endian value of @p bytes.
+    [[nodiscard]] uint64_t littleEndianBits(std::span<std::byte const> bytes) noexcept
+    {
+        auto value = uint64_t { 0 };
+        for (auto const index: std::views::iota(std::size_t { 0 }, bytes.size()))
+            value |= uint64_t { std::to_integer<uint8_t>(bytes[index]) } << (8U * index);
+        return value;
+    }
+
+    /// The @p bytes low bytes of @p bits, little-endian.
+    [[nodiscard]] std::array<std::byte, 8> littleEndianBytes(uint64_t bits) noexcept
+    {
+        auto buffer = std::array<std::byte, 8> {};
+        for (auto const index: std::views::iota(std::size_t { 0 }, buffer.size()))
+            buffer[index] = static_cast<std::byte>((bits >> (8U * index)) & 0xFFU);
+        return buffer;
+    }
+
     /// Reads a lift's scalars from guest memory, each by one copy, little-endian.
     class MemorySource
     {
       public:
-        explicit MemorySource(IGuestMemoryAccess& memory) noexcept: _memory { &memory }, _polls { memory } {}
+        explicit MemorySource(LiftContext& context) noexcept: _context { &context } {}
 
         /// The @p bytes bytes at @p address.
         [[nodiscard]] std::expected<uint64_t, Trap> bits(uint32_t address,
@@ -315,20 +319,18 @@ namespace
                                                          CoreValueKind /*want*/)
         {
             auto buffer = std::array<std::byte, 8> {};
-            if (auto read = _memory->read(address, std::span { buffer }.first(bytes)); !read)
-                return std::unexpected { std::move(read.error()) };
-            auto value = uint64_t { 0 };
-            for (auto const index: std::views::iota(std::size_t { 0 }, bytes))
-                value |= uint64_t { std::to_integer<uint8_t>(buffer[index]) } << (8U * index);
-            return _polls.copied(bytes).transform([value] { return value; });
+            auto const read = std::span { buffer }.first(bytes);
+            if (auto copied = _context->memory->read(address, read); !copied)
+                return std::unexpected { std::move(copied.error()) };
+            auto const value = littleEndianBits(read);
+            return _context->polls.copied(*_context->memory, bytes).transform([value] { return value; });
         }
 
         [[nodiscard]] static std::size_t enterCases(Layout const& /*layout*/) noexcept { return 0; }
         static void leaveCases(std::size_t /*start*/, Layout const& /*layout*/) noexcept {}
 
       private:
-        IGuestMemoryAccess* _memory;
-        BulkPolls _polls;
+        LiftContext* _context;
     };
 
     /// Appends a flat lower's core values. A variant's payload is lowered in its own types, then widened
@@ -373,27 +375,24 @@ namespace
     class MemorySink
     {
       public:
-        explicit MemorySink(IGuestMemoryAccess& memory) noexcept: _memory { &memory }, _polls { memory } {}
+        explicit MemorySink(LiftContext& context) noexcept: _context { &context } {}
 
         [[nodiscard]] std::expected<void, Trap> put(uint32_t address,
                                                     std::size_t bytes,
                                                     CoreValueKind /*flat*/,
                                                     uint64_t bits)
         {
-            auto buffer = std::array<std::byte, 8> {};
-            for (auto const index: std::views::iota(std::size_t { 0 }, bytes))
-                buffer[index] = static_cast<std::byte>((bits >> (8U * index)) & 0xFFU);
-            if (auto written = _memory->write(address, std::span { buffer }.first(bytes)); !written)
+            auto const buffer = littleEndianBytes(bits);
+            if (auto written = _context->memory->write(address, std::span { buffer }.first(bytes)); !written)
                 return written;
-            return _polls.copied(bytes);
+            return _context->polls.copied(*_context->memory, bytes);
         }
 
         [[nodiscard]] static std::size_t enterCases(Layout const& /*layout*/) noexcept { return 0; }
         static void leaveCases(std::size_t /*start*/, Layout const& /*layout*/) noexcept {}
 
       private:
-        IGuestMemoryAccess* _memory;
-        BulkPolls _polls;
+        LiftContext* _context;
     };
 
     // -------------------------------------------------------------------------------------------------
@@ -411,12 +410,49 @@ namespace
     struct Compound
     {
         TypeId type {};                   ///< Its type.
-        uint32_t address = 0;             ///< In memory, its address; else 0.
+        uint32_t address = 0;             ///< In memory, its address (a list's, its block's); else 0.
         uint32_t count = 0;               ///< Its children to walk.
         uint32_t next = 0;                ///< The next of them.
         std::size_t cases = 0;            ///< For a variant, the source's or sink's enterCases() token.
         std::optional<TypeId> payload {}; ///< For a variant, the case's payload type.
+        Placement placement = Placement::Primary; ///< Where its children are; a variant's, where it is.
+        uint32_t stride = 0;                      ///< For a list or a map, an element's or an entry's size.
+        uint32_t valueOffset = 0;                 ///< For a map, an entry's value's offset.
     };
+
+    /// How a list's elements or a map's entries lie in memory (definitions.py's elem_size and alignment
+    /// of the element type; a map's is its despecialized tuple's).
+    struct ElementFootprint
+    {
+        uint32_t size = 0;        ///< One element's bytes.
+        uint32_t alignment = 1;   ///< Its alignment.
+        uint32_t valueOffset = 0; ///< For a map, an entry's value's offset; else 0.
+    };
+
+    /// The footprint of the elements of the list or map type @p type.
+    [[nodiscard]] ElementFootprint elementFootprint(LiftContext const& context, DefinedType const& type)
+    {
+        if (type.kind == ValueKind::Map)
+        {
+            auto const entry = footprintOf(context, std::array { *type.children[0], *type.children[1] });
+            return ElementFootprint { .size = static_cast<uint32_t>(entry.size),
+                                      .alignment = entry.alignment,
+                                      .valueOffset = static_cast<uint32_t>(entry.offsets[1]) };
+        }
+        auto const& layout = context.layouts[type.children[0]->value];
+        return ElementFootprint { .size = layout.size, .alignment = layout.alignment };
+    }
+
+    /// The element type of a list whose elements are scalars, which lift and lower as one copy.
+    [[nodiscard]] std::optional<TypeId> scalarElement(LiftContext const& context, DefinedType const& type)
+    {
+        if (type.kind != ValueKind::List)
+            return std::nullopt;
+        auto const element = *type.children[0];
+        if (valueShapeRow(context.arena[element].kind).shape != ValueShape::Scalar)
+            return std::nullopt;
+        return element;
+    }
 
     /// The @p index-th child of @p compound.
     [[nodiscard]] Child childOf(LiftContext const& context, Compound const& compound, uint32_t index)
@@ -428,15 +464,25 @@ namespace
             case ValueShape::Fields:
                 return Child { .type = *type.children[index],
                                .address = compound.address + layout.fieldOffsets[index] };
-            case ValueShape::FixedList: {
-                auto const element = *type.children.front();
-                return Child { .type = element,
-                               .address = compound.address + (index * context.layouts[element.value].size) };
-            }
+            case ValueShape::FixedList:
+                return Child { .type = *type.children.front(),
+                               .address = compound.address
+                                          + (index * context.layouts[type.children.front()->value].size) };
             case ValueShape::Cases:
                 return Child { .type = *compound.payload,
                                .address = compound.address + layout.payloadOffset };
-            default: break;
+            case ValueShape::List:
+                // The block was checked to lie in memory: no element's address wraps.
+                return Child { .type = *type.children.front(),
+                               .address = static_cast<uint32_t>(compound.address
+                                                                + (uint64_t { index } * compound.stride)) };
+            case ValueShape::Map:
+                // A key at its entry's start, a value at the entry's value offset.
+                return Child { .type = *type.children[index % 2],
+                               .address = static_cast<uint32_t>(
+                                   compound.address + (uint64_t { index / 2 } * compound.stride)
+                                   + (uint64_t { index % 2 } * compound.valueOffset)) };
+            default: break; // uncovered(exhaustive-switch)
         }
         Require(false);
         return {}; // uncovered(exhaustive-switch)
@@ -450,20 +496,112 @@ namespace
                                                                        : layout.size;
     }
 
+    /// A scalar's value from its bits (lift_flat_unsigned/signed, convert_int_to_bool,
+    /// canonicalize_nan32/64, convert_i32_to_char).
+    [[nodiscard]] std::expected<uint64_t, Trap> liftedScalar(ScalarRule rule,
+                                                             uint64_t bits,
+                                                             CoreValueKind flat)
+    {
+        switch (rule)
+        {
+            case ScalarRule::Bool: return bits != 0 ? 1 : 0;
+            case ScalarRule::Float: return canonicalFloat(bits, flat);
+            case ScalarRule::Char:
+                if (bits >= 0x11'0000 || (bits >= 0xd800 && bits <= 0xdfff))
+                    return std::unexpected { trapOf(TrapCode::InvalidChar, std::format("{:#x}", bits)) };
+                return bits;
+            case ScalarRule::Unsigned:
+            case ScalarRule::Signed: return bits; // at its width, as the builder takes a two's complement
+            case ScalarRule::None: break;         // uncovered(exhaustive-switch)
+        }
+        Require(false);
+        return 0; // uncovered(exhaustive-switch)
+    }
+
+    /// A scalar's bits as they are written (lower_flat_signed, maybe_scramble_nan32/64 in the
+    /// DETERMINISTIC_PROFILE, a bool as 0 or 1): a signed integer sign-extended to 64 bits, which its
+    /// core value or its bytes then take the low bits of.
+    [[nodiscard]] uint64_t loweredScalar(ValueShapeRow const& row, uint64_t bits, CoreValueKind flat) noexcept
+    {
+        switch (row.rule)
+        {
+            case ScalarRule::Bool: return bits != 0 ? 1 : 0;
+            case ScalarRule::Float: return canonicalFloat(bits, flat);
+            case ScalarRule::Signed:
+                return static_cast<uint64_t>(static_cast<int64_t>(bits << (64U - (8U * row.bytes)))
+                                             >> (64U - (8U * row.bytes)));
+            case ScalarRule::Char:
+            case ScalarRule::Unsigned:
+            case ScalarRule::None: break;
+        }
+        return bits;
+    }
+
+    /// Writes @p bits, the @p bytes.size() low bytes of them, into @p bytes in host byte order: how a
+    /// Values packs a list's scalars.
+    void storeHostOrder(std::span<std::byte> bytes, uint64_t bits) noexcept
+    {
+        // The low bytes of a 64-bit integer are its first on a little-endian host, its last on a big one.
+        auto const raw = std::bit_cast<std::array<std::byte, sizeof(uint64_t)>>(bits);
+        auto const first = std::endian::native == std::endian::little ? 0 : raw.size() - bytes.size();
+        std::ranges::copy(std::span { raw }.subspan(first, bytes.size()), bytes.begin());
+    }
+
+    /// Lifts in place the @p elements a list of scalars of @p row copied from guest memory: each read
+    /// little-endian, lifted by its rule, stored in host byte order. An integer list on a little-endian
+    /// host is already what it must be.
+    [[nodiscard]] std::expected<void, Trap> liftInPlace(ValueShapeRow const& row,
+                                                        CoreValueKind flat,
+                                                        std::span<std::byte> elements)
+    {
+        auto const integer = row.rule == ScalarRule::Unsigned || row.rule == ScalarRule::Signed;
+        if (integer && std::endian::native == std::endian::little)
+            return {};
+        for (auto const offset: std::views::iota(std::size_t { 0 }, elements.size() / row.bytes))
+        {
+            auto const element = elements.subspan(offset * row.bytes, row.bytes);
+            auto const value = liftedScalar(row.rule, littleEndianBits(element), flat);
+            if (!value)
+                return std::unexpected { value.error() };
+            storeHostOrder(element, *value);
+        }
+        return {};
+    }
+
+    /// definitions.py's load_list_from_range's checks, in order and in 64-bit arithmetic: the list's
+    /// bytes at most MaxListByteLength, its block aligned and in memory.
+    [[nodiscard]] std::expected<void, Trap> checkList(LiftContext& context,
+                                                      uint32_t address,
+                                                      uint32_t length,
+                                                      ElementFootprint const& element)
+    {
+        auto const bytes = uint64_t { length } * element.size;
+        if (bytes > MaxListByteLength)
+            return std::unexpected { trapOf(
+                TrapCode::OutOfBounds,
+                std::format("a list of {} elements of {} bytes, more than the {} a "
+                            "list spans",
+                            length,
+                            element.size,
+                            MaxListByteLength)) };
+        return checkRange(address, bytes, element.alignment, context.memory->size());
+    }
+
     /// The values a lift builds as it walks the types: a scalar per leaf, begin() and end() per compound.
+    /// A list's elements are read from memory, wherever its pointer pair is read from.
     template <typename Source>
     class Lifter
     {
       public:
         Lifter(LiftContext& context, Source& source, ValueBuilder& builder) noexcept:
-            _context { &context }, _source { &source }, _builder { &builder }
+            _context { &context }, _source { &source }, _memory { context }, _builder { &builder }
         {
         }
 
         /// Lifts one value of @p type, at @p address in memory.
         [[nodiscard]] std::expected<void, Trap> lift(TypeId type, uint32_t address)
         {
-            if (auto entered = enter(type, address); !entered)
+            if (auto entered = enter(type, address, Placement::Primary); !entered)
                 return entered;
             while (!_stack.empty())
             {
@@ -472,15 +610,17 @@ namespace
                 {
                     auto const done = top;
                     _stack.pop_back();
+                    // end() allocates nothing, so the budget cannot refuse it: no step to check.
                     _builder->end();
                     if (valueShapeRow(context().arena[done.type].kind).shape == ValueShape::Cases)
-                        _source->leaveCases(done.cases, context().layouts[done.type.value]);
-                    if (auto built = checked(); !built)
-                        return built;
+                        onSource(done.placement, [&](auto& source) {
+                            source.leaveCases(done.cases, context().layouts[done.type.value]);
+                        });
                     continue;
                 }
+                auto const placement = top.placement;
                 auto const child = childOf(context(), top, top.next++);
-                if (auto entered = enter(child.type, child.address); !entered)
+                if (auto entered = enter(child.type, child.address, placement); !entered)
                     return entered;
             }
             return {};
@@ -489,19 +629,36 @@ namespace
       private:
         [[nodiscard]] LiftContext& context() const noexcept { return *_context; }
 
-        /// The builder's refusal as a trap: the budget's is LiveValueBytes; any other means the walk
-        /// built a value its type does not admit.
+        /// Calls @p body with the source of @p placement.
+        template <typename F>
+        decltype(auto) onSource(Placement placement, F const& body)
+        {
+            if (placement == Placement::Memory)
+            {
+                Require(context().memory != nullptr);
+                return body(_memory);
+            }
+            return body(*_source);
+        }
+
+        [[nodiscard]] std::expected<uint64_t, Trap> readBits(Placement placement,
+                                                             uint32_t address,
+                                                             std::size_t bytes,
+                                                             CoreValueKind want)
+        {
+            return onSource(placement, [&](auto& source) { return source.bits(address, bytes, want); });
+        }
+
+        /// The builder's refusal as a trap.
         [[nodiscard]] std::expected<void, Trap> checked() const
         {
-            auto const& error = _builder->error();
-            if (!error)
-                return {};
-            Guarantee(error->code == ValueErrorCode::Budget);
-            return std::unexpected { trapOf(TrapCode::LiveValueBytes, context().budget->limit()) };
+            if (auto const& error = _builder->error(); error)
+                return std::unexpected { builderTrap(context(), *error) };
+            return {};
         }
 
         /// Builds a leaf of @p type, or opens a compound.
-        [[nodiscard]] std::expected<void, Trap> enter(TypeId id, uint32_t address)
+        [[nodiscard]] std::expected<void, Trap> enter(TypeId id, uint32_t address, Placement placement)
         {
             Require(id.value < context().layouts.size());
             auto const& type = context().arena[id];
@@ -511,14 +668,14 @@ namespace
             switch (row.shape)
             {
                 case ValueShape::Scalar: {
-                    auto bits = _source->bits(address, bytes, layout.flat.front());
+                    auto bits = readBits(placement, address, bytes, layout.flat.front());
                     if (!bits)
                         return std::unexpected { std::move(bits.error()) };
                     // A bool is any nonzero core value (convert_int_to_bool), not only its low byte; every
                     // other scalar wraps to its width (lift_flat_unsigned/signed).
                     auto const width =
                         row.rule == ScalarRule::Bool ? std::size_t { 8 } : std::size_t { row.bytes };
-                    auto const value = scalar(row.rule, *bits & widthMask(width), layout.flat.front());
+                    auto const value = liftedScalar(row.rule, *bits & widthMask(width), layout.flat.front());
                     if (!value)
                         return std::unexpected { value.error() };
                     _builder->scalar(*value);
@@ -526,7 +683,7 @@ namespace
                 }
                 case ValueShape::Enum:
                 case ValueShape::Flags: {
-                    auto const bits = _source->bits(address, bytes, CoreValueKind::I32);
+                    auto const bits = readBits(placement, address, bytes, CoreValueKind::I32);
                     if (!bits)
                         return std::unexpected { bits.error() };
                     if (row.shape == ValueShape::Flags)
@@ -540,7 +697,7 @@ namespace
                     break;
                 }
                 case ValueShape::Handle: {
-                    auto const index = _source->bits(address, bytes, CoreValueKind::I32);
+                    auto const index = readBits(placement, address, bytes, CoreValueKind::I32);
                     if (!index)
                         return std::unexpected { index.error() };
                     Require(type.resource.has_value());
@@ -559,12 +716,14 @@ namespace
                                            ? static_cast<uint32_t>(type.children.size())
                                            : type.length;
                     _builder->begin(count);
-                    _stack.push_back(Compound { .type = id, .address = address, .count = count });
+                    _stack.push_back(
+                        Compound { .type = id, .address = address, .count = count, .placement = placement });
                     break;
                 }
                 case ValueShape::Cases: {
-                    auto const start = _source->enterCases(layout);
-                    auto const discriminant = _source->bits(address, bytes, CoreValueKind::I32);
+                    auto const start =
+                        onSource(placement, [&](auto& source) { return source.enterCases(layout); });
+                    auto const discriminant = readBits(placement, address, bytes, CoreValueKind::I32);
                     if (!discriminant)
                         return std::unexpected { discriminant.error() };
                     auto const cases = caseCount(type);
@@ -577,102 +736,219 @@ namespace
                                                 .address = address,
                                                 .count = payload ? 1U : 0U,
                                                 .cases = start,
-                                                .payload = payload });
+                                                .payload = payload,
+                                                .placement = placement });
                     break;
                 }
-                case ValueShape::String:
+                case ValueShape::String: {
+                    auto const pair = pointerPair(placement, address);
+                    if (!pair)
+                        return std::unexpected { pair.error() };
+                    if (auto lifted = liftString(context(), *_builder, pair->first, pair->second); !lifted)
+                        return lifted;
+                    break;
+                }
                 case ValueShape::List:
-                case ValueShape::Map:
-                    // Task 12 lifts strings, lists and maps.
-                case ValueShape::Unsupported:
-                    // Validation refuses streams, futures and error contexts until P12.
-                    Require(false);
-                    break; // uncovered(task-12)
+                case ValueShape::Map: return enterList(id, type, address, placement);
+                case ValueShape::Unsupported: {
+                    // Validation refuses streams, futures and error contexts until P12, so no table holds
+                    // one: any index a guest passes names none (definitions.py's handles.get traps).
+                    auto const index = readBits(placement, address, bytes, CoreValueKind::I32);
+                    if (!index)
+                        return std::unexpected { index.error() };
+                    return std::unexpected { trapOf(TrapCode::UnknownHandle, *index) };
+                }
             }
             return checked();
         }
 
-        /// A scalar's value from its bits (lift_flat_unsigned/signed, convert_int_to_bool,
-        /// canonicalize_nan32/64, convert_i32_to_char).
-        [[nodiscard]] static std::expected<uint64_t, Trap> scalar(ScalarRule rule,
-                                                                  uint64_t bits,
-                                                                  CoreValueKind flat)
+        /// A string's or a list's pointer and length (definitions.py's lift_flat_string and
+        /// lift_flat_list; load_string and load_list).
+        [[nodiscard]] std::expected<std::pair<uint32_t, uint32_t>, Trap> pointerPair(Placement placement,
+                                                                                     uint32_t address)
         {
-            switch (rule)
+            auto const pointer = readBits(placement, address, 4, CoreValueKind::I32);
+            if (!pointer)
+                return std::unexpected { pointer.error() };
+            return readBits(placement, address + 4, 4, CoreValueKind::I32).transform([&](uint64_t length) {
+                return std::pair { static_cast<uint32_t>(*pointer), static_cast<uint32_t>(length) };
+            });
+        }
+
+        /// Lifts a list or a map (load_list_from_range): checked whole before the builder charges for its
+        /// elements; a list of scalars copied at once, any other walked element by element.
+        [[nodiscard]] std::expected<void, Trap> enterList(TypeId id,
+                                                          DefinedType const& type,
+                                                          uint32_t address,
+                                                          Placement placement)
+        {
+            auto const pair = pointerPair(placement, address);
+            if (!pair)
+                return std::unexpected { pair.error() };
+            auto const [block, length] = *pair;
+            auto const element = elementFootprint(context(), type);
+            if (auto inList = checkList(context(), block, length, element); !inList)
+                return inList;
+            _builder->begin(length);
+            if (auto begun = checked(); !begun)
+                return begun;
+            if (auto const scalar = scalarElement(context(), type); scalar)
             {
-                case ScalarRule::Bool: return bits != 0 ? 1 : 0;
-                case ScalarRule::Float: return canonicalFloat(bits, flat);
-                case ScalarRule::Char:
-                    if (bits >= 0x11'0000 || (bits >= 0xd800 && bits <= 0xdfff))
-                        return std::unexpected { trapOf(TrapCode::InvalidChar, std::format("{:#x}", bits)) };
-                    return bits;
-                case ScalarRule::Unsigned:
-                case ScalarRule::Signed: return bits; // at its width, as the builder takes a two's complement
-                case ScalarRule::None: break;
+                if (auto copied = liftPacked(*scalar, block); !copied)
+                    return copied;
+                _builder->end();
+                return checked();
             }
-            Require(false);
-            return 0; // uncovered(exhaustive-switch)
+            auto const children = type.kind == ValueKind::Map ? 2 * length : length;
+            _stack.push_back(Compound { .type = id,
+                                        .address = block,
+                                        .count = children,
+                                        .placement = Placement::Memory,
+                                        .stride = element.size,
+                                        .valueOffset = element.valueOffset });
+            return {};
+        }
+
+        /// Copies the elements of the list of scalars begin() opened from @p block, in api::BulkPollBytes
+        /// granules straight into the values, polling after each.
+        [[nodiscard]] std::expected<void, Trap> liftPacked(TypeId element, uint32_t block)
+        {
+            auto const& row = valueShapeRow(context().arena[element].kind);
+            auto const flat = context().layouts[element.value].flat.front();
+            // begin() charged for the elements: the builder refuses nothing here, and an error would be
+            // the end()'s to report.
+            auto const elements = _builder->packedElements();
+            auto& memory = *context().memory;
+            auto copied = std::size_t { 0 };
+            while (copied < elements.size())
+            {
+                // A granule is a multiple of every scalar's width: no element straddles two.
+                auto const count =
+                    std::min<std::size_t>(elements.size() - copied, isoline::api::BulkPollBytes);
+                auto const granule = elements.subspan(copied, count);
+                if (auto read = memory.read(static_cast<uint32_t>(block + copied), granule); !read)
+                    return read;
+                if (auto lifted = liftInPlace(row, flat, granule); !lifted)
+                    return lifted;
+                if (auto polled = context().polls.copied(memory, count); !polled)
+                    return polled;
+                copied += count;
+            }
+            return {};
         }
 
         LiftContext* _context;
         Source* _source;
+        MemorySource _memory;
         ValueBuilder* _builder;
         std::vector<Compound> _stack {};
     };
 
+    /// A pointer pair a lower writes once the block it points at is filled: definitions.py's store_list
+    /// and lower_flat_list write it after store_list_into_range, so a `realloc` that hands out
+    /// overlapping blocks sees the reference's order of writes.
+    struct PendingPair
+    {
+        Placement placement = Placement::Primary; ///< Where it goes.
+        uint32_t address = 0;                     ///< In memory, its address; else 0.
+        uint32_t pointer = 0;                     ///< The block's address.
+        uint32_t length = 0;                      ///< Its elements, or a string's tagged code units.
+    };
+
     /// Writes values as it walks the destination types and the source values side by side (D9): the
     /// source's types may be another arena's, and are never looked up; its structure must be the
-    /// destination's (checked).
+    /// destination's (checked). A list's elements go to memory, wherever its pointer pair goes.
     template <typename Sink>
     class Lowerer
     {
       public:
-        Lowerer(LiftContext& context, Sink& sink) noexcept: _context { &context }, _sink { &sink } {}
+        Lowerer(LiftContext& context, Sink& sink) noexcept:
+            _context { &context }, _sink { &sink }, _memory { context }
+        {
+        }
 
         /// Lowers @p value as @p type, at @p address in memory.
         [[nodiscard]] std::expected<void, Trap> lower(TypeId type, ValueView value, uint32_t address)
         {
-            if (auto entered = enter(type, value, address); !entered)
+            if (auto entered = enter(type, value, address, Placement::Primary); !entered)
                 return entered;
             while (!_stack.empty())
             {
                 auto& top = _stack.back();
                 if (top.compound.next == top.compound.count)
                 {
-                    auto const done = top.compound;
+                    auto const done = top;
                     _stack.pop_back();
-                    if (valueShapeRow(context().arena[done.type].kind).shape == ValueShape::Cases)
-                        _sink->leaveCases(done.cases, context().layouts[done.type.value]);
+                    if (valueShapeRow(context().arena[done.compound.type].kind).shape == ValueShape::Cases)
+                        onSink(done.compound.placement, [&](auto& sink) {
+                            sink.leaveCases(done.compound.cases, context().layouts[done.compound.type.value]);
+                        });
+                    if (done.pair)
+                    {
+                        if (auto put = putPair(*done.pair); !put)
+                            return put;
+                    }
                     continue;
                 }
+                auto const placement = top.compound.placement;
                 auto const child = childOf(context(), top.compound, top.compound.next++);
                 Require(top.source != top.end);
                 auto const source = *top.source;
                 ++top.source;
-                if (auto entered = enter(child.type, source, child.address); !entered)
+                if (auto entered = enter(child.type, source, child.address, placement); !entered)
                     return entered;
             }
             return {};
         }
 
       private:
-        /// A compound being lowered: the destination's walk, and the source's children beside it.
+        /// A compound being lowered: the destination's walk, the source's children beside it, and for a
+        /// list its pointer pair.
         struct Frame
         {
-            Frame(Compound walk, ChildRange children) noexcept:
-                compound { walk }, source { children.begin() }, end { children.end() }
+            Frame(Compound walk, ChildRange children, std::optional<PendingPair> pending = {}) noexcept:
+                compound { walk }, source { children.begin() }, end { children.end() }, pair { pending }
             {
             }
 
-            Compound compound;    ///< The destination.
-            ChildIterator source; ///< The source's next child.
-            ChildIterator end;    ///< Past its last.
+            Compound compound;               ///< The destination.
+            ChildIterator source;            ///< The source's next child.
+            ChildIterator end;               ///< Past its last.
+            std::optional<PendingPair> pair; ///< For a list or a map, its pointer pair.
         };
 
         [[nodiscard]] LiftContext& context() const noexcept { return *_context; }
 
+        /// Calls @p body with the sink of @p placement.
+        template <typename F>
+        decltype(auto) onSink(Placement placement, F const& body)
+        {
+            if (placement == Placement::Memory)
+            {
+                Require(context().memory != nullptr);
+                return body(_memory);
+            }
+            return body(*_sink);
+        }
+
+        [[nodiscard]] std::expected<void, Trap> write(
+            Placement placement, uint32_t address, std::size_t bytes, CoreValueKind flat, uint64_t bits)
+        {
+            return onSink(placement, [&](auto& sink) { return sink.put(address, bytes, flat, bits); });
+        }
+
+        [[nodiscard]] std::expected<void, Trap> putPair(PendingPair const& pair)
+        {
+            return write(pair.placement, pair.address, 4, CoreValueKind::I32, pair.pointer).and_then([&] {
+                return write(pair.placement, pair.address + 4, 4, CoreValueKind::I32, pair.length);
+            });
+        }
+
         /// Writes a leaf of @p type, or opens a compound.
-        [[nodiscard]] std::expected<void, Trap> enter(TypeId id, ValueView value, uint32_t address)
+        [[nodiscard]] std::expected<void, Trap> enter(TypeId id,
+                                                      ValueView value,
+                                                      uint32_t address,
+                                                      Placement placement)
         {
             Require(id.value < context().layouts.size());
             auto const& type = context().arena[id];
@@ -683,18 +959,19 @@ namespace
             switch (row.shape)
             {
                 case ValueShape::Scalar:
-                    return _sink->put(address,
-                                      bytes,
-                                      layout.flat.front(),
-                                      scalar(row, value.scalarBits(), layout.flat.front()));
+                    return write(placement,
+                                 address,
+                                 bytes,
+                                 layout.flat.front(),
+                                 loweredScalar(row, value.scalarBits(), layout.flat.front()));
                 case ValueShape::Enum:
                     Require(value.caseIndex() < type.labels.size());
-                    return _sink->put(address, bytes, CoreValueKind::I32, value.caseIndex());
+                    return write(placement, address, bytes, CoreValueKind::I32, value.caseIndex());
                 case ValueShape::Flags:
                     // definitions.py's pack_flags_into_int: a bit per label of the type, which the source
                     // value's labels must match.
                     Require(uint64_t { value.flagBits() } >> type.labels.size() == 0);
-                    return _sink->put(address, bytes, CoreValueKind::I32, value.flagBits());
+                    return write(placement, address, bytes, CoreValueKind::I32, value.flagBits());
                 case ValueShape::Handle: {
                     Require(type.resource.has_value());
                     auto const index = type.kind == ValueKind::Own
@@ -702,7 +979,7 @@ namespace
                                            : context().handles.lowerBorrow(*type.resource, value.resource());
                     if (!index)
                         return std::unexpected { index.error() };
-                    return _sink->put(address, bytes, CoreValueKind::I32, *index);
+                    return write(placement, address, bytes, CoreValueKind::I32, *index);
                 }
                 case ValueShape::Fields:
                 case ValueShape::FixedList: {
@@ -710,8 +987,9 @@ namespace
                                            ? static_cast<uint32_t>(type.children.size())
                                            : type.length;
                     Require(value.childCount() == count);
-                    _stack.emplace_back(Compound { .type = id, .address = address, .count = count },
-                                        value.children());
+                    _stack.emplace_back(
+                        Compound { .type = id, .address = address, .count = count, .placement = placement },
+                        value.children());
                     return {};
                 }
                 case ValueShape::Cases: {
@@ -719,65 +997,104 @@ namespace
                     Require(caseIndex < caseCount(type));
                     auto const payload = casePayload(type, caseIndex);
                     Require(payload.has_value() == value.payload().has_value());
-                    auto const start = _sink->enterCases(layout);
-                    if (auto put = _sink->put(address, bytes, CoreValueKind::I32, caseIndex); !put)
+                    auto const start = onSink(placement, [&](auto& sink) { return sink.enterCases(layout); });
+                    if (auto put = write(placement, address, bytes, CoreValueKind::I32, caseIndex); !put)
                         return put;
                     _stack.emplace_back(Compound { .type = id,
                                                    .address = address,
                                                    .count = payload ? 1U : 0U,
                                                    .cases = start,
-                                                   .payload = payload },
+                                                   .payload = payload,
+                                                   .placement = placement },
                                         value.children());
                     return {};
                 }
-                case ValueShape::String:
+                case ValueShape::String: {
+                    Require(context().memory != nullptr);
+                    auto const stored = storeString(context(), value.string());
+                    if (!stored)
+                        return std::unexpected { stored.error() };
+                    return putPair(PendingPair { .placement = placement,
+                                                 .address = address,
+                                                 .pointer = stored->first,
+                                                 .length = stored->second });
+                }
                 case ValueShape::List:
-                case ValueShape::Map:
-                    // Task 12 lowers strings, lists and maps.
-                case ValueShape::Unsupported:
-                    // Validation refuses streams, futures and error contexts until P12.
-                    break;
+                case ValueShape::Map: return enterList(id, type, value, address, placement);
+                // No Values holds a stream, a future or an error context (ValueBuilder refuses them), so
+                // the kind check above refused this value already.
+                case ValueShape::Unsupported: // uncovered(unsupported-value)
+                    break;                    // uncovered(unsupported-value)
             }
             Require(false);
-            return {}; // uncovered(task-12)
+            return {}; // uncovered(unsupported-value)
         }
 
-        /// A scalar's bits as they are written (lower_flat_signed, maybe_scramble_nan32/64 in the
-        /// DETERMINISTIC_PROFILE, a bool as 0 or 1): a signed integer sign-extended to 64 bits, which its
-        /// core value or its bytes then take the low bits of.
-        [[nodiscard]] static uint64_t scalar(ValueShapeRow const& row,
-                                             uint64_t bits,
-                                             CoreValueKind flat) noexcept
+        /// Lowers a list or a map (store_list_into_range): its block allocated and checked, a list of
+        /// scalars written at once, any other's elements walked into it, then its pointer pair written.
+        [[nodiscard]] std::expected<void, Trap> enterList(
+            TypeId id, DefinedType const& type, ValueView value, uint32_t address, Placement placement)
         {
-            switch (row.rule)
+            Require(context().memory != nullptr);
+            auto const element = elementFootprint(context(), type);
+            auto const children = static_cast<uint32_t>(value.childCount());
+            auto const length = type.kind == ValueKind::Map ? children / 2 : children;
+            auto const bytes = uint64_t { length } * element.size;
+            // Each element is below MaxValueByteSize, but a host list may hold more than any 32-bit memory.
+            if (bytes > std::numeric_limits<uint32_t>::max())
+                return std::unexpected { trapOf(
+                    TrapCode::OutOfBounds,
+                    std::format("a list of {} bytes, more than any 32-bit memory holds", bytes)) };
+            auto const block =
+                reallocate(*context().memory, 0, 0, element.alignment, static_cast<uint32_t>(bytes));
+            if (!block)
+                return std::unexpected { block.error() };
+            auto const pair = PendingPair {
+                .placement = placement, .address = address, .pointer = *block, .length = length
+            };
+            if (auto const scalar = scalarElement(context(), type); scalar)
             {
-                case ScalarRule::Bool: return bits != 0 ? 1 : 0;
-                case ScalarRule::Float: return canonicalFloat(bits, flat);
-                case ScalarRule::Signed: {
-                    auto const shift = 64U - (8U * row.bytes);
-                    return static_cast<uint64_t>(static_cast<int64_t>(bits << shift) >> shift);
-                }
-                case ScalarRule::Char:
-                case ScalarRule::Unsigned:
-                case ScalarRule::None: break;
+                if (auto written = lowerPacked(*scalar, value, *block, static_cast<uint32_t>(bytes));
+                    !written)
+                    return written;
+                return putPair(pair);
             }
-            return bits;
+            _stack.emplace_back(Compound { .type = id,
+                                           .address = *block,
+                                           .count = children,
+                                           .placement = Placement::Memory,
+                                           .stride = element.size,
+                                           .valueOffset = element.valueOffset },
+                                value.children(),
+                                pair);
+            return {};
+        }
+
+        /// Writes the elements of a list of scalars into @p block, through one BlockWriter: one write per
+        /// BlockWriter::BufferBytes, not one per element.
+        [[nodiscard]] std::expected<void, Trap> lowerPacked(TypeId element,
+                                                            ValueView value,
+                                                            uint32_t block,
+                                                            uint32_t size)
+        {
+            auto const& row = valueShapeRow(context().arena[element].kind);
+            auto const flat = context().layouts[element.value].flat.front();
+            auto writer = BlockWriter { context(), block, size };
+            for (auto const item: value.children())
+            {
+                Require(item.kind() == context().arena[element].kind);
+                auto const bytes = littleEndianBytes(loweredScalar(row, item.scalarBits(), flat));
+                if (auto put = writer.put(std::span { bytes }.first(row.bytes)); !put)
+                    return put;
+            }
+            return writer.flush();
         }
 
         LiftContext* _context;
         Sink* _sink;
+        MemorySink _memory;
         std::vector<Frame> _stack {};
     };
-
-    /// The values a ValueBuilder made, or the trap the walk or the builder ended in.
-    [[nodiscard]] std::expected<Values, Trap> finished(LiftContext const& context, ValueBuilder& builder)
-    {
-        auto values = builder.finish();
-        if (values)
-            return std::move(*values);
-        Guarantee(values.error().code == ValueErrorCode::Budget);
-        return std::unexpected { trapOf(TrapCode::LiveValueBytes, context.budget->limit()) };
-    }
 
     /// Lifts one value per type through @p source, at @p addresses in memory (zeros when flat).
     template <typename Source>
@@ -787,8 +1104,6 @@ namespace
                                                       std::span<uint64_t const> addresses)
     {
         auto builder = ValueBuilder { context.arena, types, context.budget };
-        if (builder.error())
-            return finished(context, builder);
         auto lifter = Lifter<Source> { context, source, builder };
         for (auto const index: std::views::iota(std::size_t { 0 }, types.size()))
         {
@@ -796,7 +1111,11 @@ namespace
             if (auto lifted = lifter.lift(types[index], address); !lifted)
                 return std::unexpected { std::move(lifted.error()) };
         }
-        return finished(context, builder);
+        // Every refusal of a step ended the lift as it happened (Lifter::checked()); the constructor's
+        // charge for the roots, at the first step.
+        auto values = builder.finish();
+        Guarantee(values.has_value());
+        return std::move(*values);
     }
 
     /// Lowers one value per type into guest memory, as a tuple at @p address that checkRange() admitted.
@@ -806,7 +1125,7 @@ namespace
                                                      TupleFootprint const& footprint,
                                                      uint32_t address)
     {
-        auto sink = MemorySink { *context.memory };
+        auto sink = MemorySink { context };
         auto lowerer = Lowerer<MemorySink> { context, sink };
         for (auto const index: std::views::iota(std::size_t { 0 }, types.size()))
         {
@@ -817,6 +1136,80 @@ namespace
         return {};
     }
 } // namespace
+
+// -------------------------------------------------------------------------------------------------
+// BulkPolls, BlockWriter, builderTrap
+
+std::expected<void, Trap> BulkPolls::copied(IGuestMemoryAccess& memory, uint64_t bytes)
+{
+    _sincePoll += bytes;
+    while (_sincePoll >= isoline::api::BulkPollBytes)
+    {
+        _sincePoll -= isoline::api::BulkPollBytes;
+        if (auto polled = memory.poll(); !polled)
+            return polled;
+    }
+    return {};
+}
+
+Trap builderTrap(LiftContext const& context, ValueError const& error)
+{
+    Guarantee(error.code == ValueErrorCode::Budget);
+    return trapOf(TrapCode::LiveValueBytes, context.budget->limit());
+}
+
+BlockWriter::BlockWriter(LiftContext& context, uint32_t block, uint32_t size) noexcept:
+    _context { &context }, _block { block }, _size { size }
+{
+    Require(context.memory != nullptr);
+}
+
+std::expected<void, Trap> BlockWriter::put(std::span<std::byte const> bytes)
+{
+    Require(bytes.size() <= _size - offset());
+    while (!bytes.empty())
+    {
+        auto const count = std::min(bytes.size(), BufferBytes - _filled);
+        std::ranges::copy(bytes.first(count), _buffer.begin() + static_cast<std::ptrdiff_t>(_filled));
+        _filled += count;
+        bytes = bytes.subspan(count);
+        if (_filled == BufferBytes)
+        {
+            if (auto flushed = flush(); !flushed)
+                return flushed;
+        }
+    }
+    return {};
+}
+
+std::expected<void, Trap> BlockWriter::flush()
+{
+    if (_filled == 0)
+        return {};
+    auto& memory = *_context->memory;
+    auto const count = std::exchange(_filled, 0);
+    auto const address = static_cast<uint32_t>(_block + _flushed);
+    _flushed += count;
+    if (auto written = memory.write(address, std::span { _buffer }.first(count)); !written)
+        return written;
+    return _context->polls.copied(memory, count);
+}
+
+void BlockWriter::moveTo(uint32_t block, uint32_t size) noexcept
+{
+    Require(_filled == 0 && _flushed <= size);
+    _block = block;
+    _size = size;
+}
+
+void BlockWriter::seek(uint64_t offset) noexcept
+{
+    Require(_filled == 0 && offset <= _size);
+    _flushed = offset;
+}
+
+// -------------------------------------------------------------------------------------------------
+// liftFlat, load, lowerFlat, store
 
 std::expected<Values, Trap> liftFlat(LiftContext& context,
                                      std::span<types::TypeId const> types,
@@ -845,7 +1238,7 @@ std::expected<Values, Trap> load(LiftContext& context, std::span<types::TypeId c
     auto addresses = footprint.offsets;
     for (auto& offset: addresses)
         offset += address;
-    auto source = MemorySource { *context.memory };
+    auto source = MemorySource { context };
     return liftAll(context, types, source, addresses);
 }
 
@@ -883,15 +1276,14 @@ std::expected<std::vector<isoline::api::Value>, Trap> lowerFlat(LiftContext& con
                 TrapCode::OutOfBounds,
                 std::format("a tuple of {} bytes, more than any 32-bit memory holds", footprint.size)) };
         auto allocated =
-            context.memory->reallocate(0, 0, footprint.alignment, static_cast<uint32_t>(footprint.size));
+            reallocate(*context.memory, 0, 0, footprint.alignment, static_cast<uint32_t>(footprint.size));
         if (!allocated)
             return std::unexpected { std::move(allocated.error()) };
         address = *allocated;
         out.emplace_back(isoline::api::I32 { *allocated });
     }
-    // The memory's size is asked after the realloc, which may have grown it.
-    if (auto inRange = checkRange(*address, footprint.size, footprint.alignment, context.memory->size());
-        !inRange)
+    else if (auto inRange = checkRange(*address, footprint.size, footprint.alignment, context.memory->size());
+             !inRange)
         return std::unexpected { std::move(inRange.error()) };
     if (auto stored = storeAll(context, types, values, footprint, *address); !stored)
         return std::unexpected { std::move(stored.error()) };

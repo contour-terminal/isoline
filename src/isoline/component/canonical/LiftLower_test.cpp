@@ -29,6 +29,7 @@
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/canonical/testing/GuestDoubles.hpp>
+#include <isoline/component/canonical/testing/Sides.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 
 using isoline::api::F32;
@@ -36,13 +37,9 @@ using isoline::api::F64;
 using isoline::api::I32;
 using isoline::api::I64;
 using isoline::api::Value;
-using isoline::component::ComponentLimits;
-using isoline::component::canonical::computeLayouts;
 using isoline::component::canonical::equal;
-using isoline::component::canonical::LayoutTable;
 using isoline::component::canonical::LiftContext;
 using isoline::component::canonical::liftFlat;
-using isoline::component::canonical::LiveBytesBudget;
 using isoline::component::canonical::load;
 using isoline::component::canonical::lowerFlat;
 using isoline::component::canonical::MaxFlatParams;
@@ -59,212 +56,28 @@ using isoline::component::canonical::trapOf;
 using isoline::component::canonical::ValueBuilder;
 using isoline::component::canonical::Values;
 using isoline::component::canonical::ValueView;
-using isoline::component::canonical::testing::FakeGuestMemory;
+using isoline::component::canonical::testing::bytesOf;
+using isoline::component::canonical::testing::equalValues;
 using isoline::component::canonical::testing::FakeGuestMemoryOptions;
-using isoline::component::canonical::testing::FakeHandleOps;
+using isoline::component::canonical::testing::lifted;
+using isoline::component::canonical::testing::littleEndian;
+using isoline::component::canonical::testing::lowered;
 using isoline::component::canonical::testing::MemoryAccess;
+using isoline::component::canonical::testing::rootsOf;
+using isoline::component::canonical::testing::Side;
+using isoline::component::canonical::testing::trapIn;
+using isoline::component::canonical::testing::ZeroGuestMemory;
 using isoline::component::types::DefinedType;
-using isoline::component::types::ResourceTypeId;
-using isoline::component::types::ResourceTypeInfo;
-using isoline::component::types::SharedName;
-using isoline::component::types::TypeArena;
 using isoline::component::types::TypeId;
 using isoline::component::types::ValueKind;
 
 namespace
 {
-
-/// Ample for every test that is not about the budget.
-constexpr auto AmpleBudget = uint64_t { 1 } << 30U;
-
 /// The bits of @p value.
 [[nodiscard]] uint32_t bitsOf(float value)
 {
     return std::bit_cast<uint32_t>(value);
 }
-
-/// The labels @p names.
-[[nodiscard]] std::vector<SharedName> labelsOf(std::initializer_list<char const*> names)
-{
-    auto labels = std::vector<SharedName> {};
-    for (auto const* name: names)
-        labels.emplace_back(name);
-    return labels;
-}
-
-/// @p values as bytes.
-[[nodiscard]] std::vector<std::byte> bytesOf(std::initializer_list<unsigned> values)
-{
-    auto bytes = std::vector<std::byte> {};
-    for (auto const value: values)
-        bytes.push_back(static_cast<std::byte>(value));
-    return bytes;
-}
-
-/// The little-endian bytes of @p value, @p width of them.
-[[nodiscard]] std::vector<std::byte> littleEndian(uint64_t value, std::size_t width)
-{
-    auto bytes = std::vector<std::byte> {};
-    for (auto const index: std::views::iota(std::size_t { 0 }, width))
-        bytes.push_back(static_cast<std::byte>((value >> (8U * index)) & 0xFFU));
-    return bytes;
-}
-
-/// The trap @p result failed with.
-template <typename T>
-[[nodiscard]] Trap trapIn(std::expected<T, Trap> const& result)
-{
-    REQUIRE_FALSE(result.has_value());
-    return result.error();
-}
-
-/// Types of one arena, a memory, a handle table and a budget: one side of a call.
-class Side
-{
-  public:
-    explicit Side(FakeGuestMemoryOptions memory = {}, uint64_t budget = AmpleBudget):
-        _arena { ComponentLimits {} },
-        _memory { memory },
-        _budget { std::make_shared<LiveBytesBudget>(budget) }
-    {
-    }
-
-    [[nodiscard]] TypeId primitive(ValueKind kind) const { return _arena.primitive(kind); }
-
-    [[nodiscard]] TypeId intern(DefinedType type)
-    {
-        auto const id = _arena.intern(std::move(type));
-        REQUIRE(id.has_value());
-        return *id;
-    }
-
-    [[nodiscard]] TypeId compound(ValueKind kind, std::vector<std::optional<TypeId>> children)
-    {
-        return intern(DefinedType { .kind = kind, .children = std::move(children) });
-    }
-
-    [[nodiscard]] TypeId record(std::initializer_list<char const*> labels,
-                                std::vector<std::optional<TypeId>> fields)
-    {
-        return intern(DefinedType {
-            .kind = ValueKind::Record, .children = std::move(fields), .labels = labelsOf(labels) });
-    }
-
-    [[nodiscard]] TypeId variant(std::initializer_list<char const*> labels,
-                                 std::vector<std::optional<TypeId>> payloads)
-    {
-        return intern(DefinedType {
-            .kind = ValueKind::Variant, .children = std::move(payloads), .labels = labelsOf(labels) });
-    }
-
-    [[nodiscard]] TypeId labelled(ValueKind kind, std::initializer_list<char const*> labels)
-    {
-        return intern(DefinedType { .kind = kind, .labels = labelsOf(labels) });
-    }
-
-    [[nodiscard]] TypeId handle(ValueKind kind)
-    {
-        if (!_resource)
-        {
-            auto const resource = _arena.newResource(ResourceTypeInfo {});
-            REQUIRE(resource.has_value());
-            _resource = *resource;
-        }
-        return intern(DefinedType { .kind = kind, .resource = _resource });
-    }
-
-    [[nodiscard]] ResourceTypeId resource() const
-    {
-        REQUIRE(_resource.has_value());
-        return *_resource;
-    }
-
-    /// A context lifting and lowering on this side, its layouts computed for every type so far.
-    [[nodiscard]] LiftContext context()
-    {
-        auto layouts = computeLayouts(_arena);
-        REQUIRE(layouts.has_value());
-        // Every context keeps its table: a later one, laid out after more types, leaves it valid.
-        auto const& table = *_layouts.emplace_back(std::make_unique<LayoutTable>(std::move(*layouts)));
-        return LiftContext { .arena = _arena,
-                             .layouts = table.all(),
-                             .memory = &_memory,
-                             .encoding = StringEncoding::Utf8,
-                             .budget = _budget,
-                             .handles = _handles };
-    }
-
-    /// The values @p steps build for @p roots; they must build.
-    [[nodiscard]] Values build(std::vector<TypeId> const& roots,
-                               std::function<void(ValueBuilder&)> const& steps)
-    {
-        auto builder = ValueBuilder { _arena, roots, _budget };
-        steps(builder);
-        auto values = builder.finish();
-        if (!values)
-            FAIL(values.error().message());
-        REQUIRE(values.has_value());
-        return std::move(*values);
-    }
-
-    [[nodiscard]] FakeGuestMemory& memory() noexcept { return _memory; }
-    [[nodiscard]] FakeHandleOps& handles() noexcept { return _handles; }
-    [[nodiscard]] LiveBytesBudget const& budget() const noexcept { return *_budget; }
-
-  private:
-    TypeArena _arena;
-    FakeGuestMemory _memory;
-    FakeHandleOps _handles {};
-    std::shared_ptr<LiveBytesBudget> _budget;
-    std::vector<std::unique_ptr<LayoutTable>> _layouts {};
-    std::optional<ResourceTypeId> _resource {};
-};
-
-/// Every root of @p values.
-[[nodiscard]] std::vector<ValueView> rootsOf(Values const& values)
-{
-    auto roots = std::vector<ValueView> {};
-    for (auto const index: std::views::iota(std::size_t { 0 }, values.rootCount()))
-        roots.push_back(values.root(index));
-    return roots;
-}
-
-/// The values @p flat lifts to as @p types; they must lift.
-[[nodiscard]] Values lifted(LiftContext& context,
-                            std::vector<TypeId> const& types,
-                            std::vector<Value> const& flat,
-                            uint32_t maxFlat = MaxFlatParams)
-{
-    auto values = liftFlat(context, types, flat, maxFlat);
-    if (!values)
-        FAIL(values.error().message());
-    REQUIRE(values.has_value());
-    return std::move(*values);
-}
-
-/// The core values @p values lower to as @p types; they must lower.
-[[nodiscard]] std::vector<Value> lowered(LiftContext& context,
-                                         std::vector<TypeId> const& types,
-                                         Values const& values,
-                                         uint32_t maxFlat = MaxFlatParams,
-                                         std::optional<uint32_t> resultPointer = {})
-{
-    auto flat = lowerFlat(context, types, rootsOf(values), maxFlat, resultPointer);
-    if (!flat)
-        FAIL(flat.error().message());
-    REQUIRE(flat.has_value());
-    return std::move(*flat);
-}
-
-/// Whether @p lhs and @p rhs hold equal roots.
-[[nodiscard]] bool equalValues(Values const& lhs, Values const& rhs)
-{
-    if (lhs.rootCount() != rhs.rootCount())
-        return false;
-    return std::ranges::all_of(std::views::iota(std::size_t { 0 }, lhs.rootCount()),
-                               [&](std::size_t index) { return equal(lhs.root(index), rhs.root(index)); });
-}
-
 } // namespace
 
 TEST_CASE("LiftLower.scalarsFlat")
@@ -758,4 +571,499 @@ TEST_CASE("LiftLower.bulkCopiesPoll")
     CHECK(side.memory().polls() == 1);
     REQUIRE(store(context, tuple, values->root(0), Count * 8).has_value());
     CHECK(side.memory().polls() == 2);
+}
+
+TEST_CASE("Lists.roundTrip")
+{
+    // list<record{a: u8, b: string}>, flat and in memory: realloc'd blocks in order, read back equal.
+    auto side = Side {};
+    auto const u8 = side.primitive(ValueKind::U8);
+    auto const string = side.primitive(ValueKind::String);
+    auto const record = side.record({ "a", "b" }, { u8, string });
+    auto const list = side.compound(ValueKind::List, { record });
+    auto const values = side.build({ list }, [](ValueBuilder& builder) {
+        builder.begin(2).begin(2).scalar(1).string("hi").end().begin(2).scalar(2).string("").end().end();
+    });
+    auto context = side.context();
+    auto const flat = lowered(context, { list }, values);
+    REQUIRE(flat.size() == 2);
+    // The list's block first, then each element's string, as store_list_into_range allocates them.
+    auto const& reallocations = side.memory().reallocations();
+    REQUIRE(reallocations.size() == 3);
+    CHECK(reallocations[0].newSize == 24);
+    CHECK(reallocations[0].alignment == 4);
+    CHECK(reallocations[1].newSize == 2);
+    CHECK(reallocations[2].newSize == 0);
+    CHECK(flat == std::vector<Value> { I32 { reallocations[0].result }, I32 { 2 } });
+    CHECK(equalValues(lifted(context, { list }, flat), values));
+
+    // In memory: the pointer pair at its address, the elements in the block.
+    REQUIRE(store(context, list, values.root(0), 8).has_value());
+    auto const reloaded = load(context, std::vector { list }, 8);
+    REQUIRE(reloaded.has_value());
+    CHECK(equalValues(*reloaded, values));
+
+    // An empty list still calls realloc, with (0, 0, alignment, 0) (test/values/realloc.wast).
+    auto const empty = side.build({ list }, [](ValueBuilder& builder) { builder.begin(0).end(); });
+    auto const before = side.memory().reallocations().size();
+    auto const none = lowered(context, { list }, empty);
+    REQUIRE(side.memory().reallocations().size() == before + 1);
+    CHECK(side.memory().reallocations().back()
+          == isoline::component::canonical::testing::Reallocation {
+              .old = 0,
+              .oldSize = 0,
+              .alignment = 4,
+              .newSize = 0,
+              .result = side.memory().reallocations().back().result });
+    CHECK(equalValues(lifted(context, { list }, none), empty));
+}
+
+TEST_CASE("Lists.inVariantFlat")
+{
+    // A list in a flat variant: its pointer pair travels in the variant's joined slots, which the other
+    // case's payload (an i64) widens.
+    auto side = Side {};
+    auto const u64 = side.primitive(ValueKind::U64);
+    auto const u16 = side.primitive(ValueKind::U16);
+    auto const list = side.compound(ValueKind::List, { u16 });
+    auto const variant = side.variant({ "l", "n" }, { list, u64 });
+    auto const values = side.build({ variant }, [](ValueBuilder& builder) {
+        builder.begin(0).begin(3).scalar(7).scalar(8).scalar(9).end().end();
+    });
+    auto context = side.context();
+    auto const flat = lowered(context, { variant }, values);
+    REQUIRE(flat.size() == 3);
+    CHECK(std::holds_alternative<I64>(flat[1]));
+    CHECK(std::get<I32>(flat[2]).bits == 3);
+    CHECK(equalValues(lifted(context, { variant }, flat), values));
+}
+
+TEST_CASE("Lists.scalarsInOneCopy")
+{
+    // A list of scalars is one read when lifted and one write when lowered (up to BlockWriter::BufferBytes),
+    // not one per element; each element still lifts by its rule: a bool is any nonzero byte, a NaN is
+    // canonicalized, a char traps on a surrogate.
+    auto side = Side {};
+    auto const u32 = side.primitive(ValueKind::U32);
+    auto const list = side.compound(ValueKind::List, { u32 });
+    auto words = std::vector<std::byte> {};
+    for (auto const index: std::views::iota(uint32_t { 0 }, uint32_t { 1000 }))
+    {
+        auto const bytes = littleEndian(uint64_t { index } * 3, 4);
+        words.insert(words.end(), bytes.begin(), bytes.end());
+    }
+    side.memory().put(0, words);
+    auto context = side.context();
+    auto const values = lifted(context, { list }, { I32 { 0 }, I32 { 1000 } });
+    CHECK(side.memory().reads() == std::vector { MemoryAccess { .address = 0, .length = 4000 } });
+    CHECK(values.root(0).childCount() == 1000);
+    CHECK(values.root(0).child(999).scalar<uint32_t>() == 2997);
+    auto const flat = lowered(context, { list }, values);
+    REQUIRE(side.memory().writes().size() == 1);
+    CHECK(side.memory().writes().front().length == 4000);
+    CHECK(std::ranges::equal(side.memory().bytes().subspan(std::get<I32>(flat[0]).bits, 4000), words));
+
+    auto const boolList = side.compound(ValueKind::List, { side.primitive(ValueKind::Bool) });
+    auto const f32List = side.compound(ValueKind::List, { side.primitive(ValueKind::F32) });
+    auto const s16List = side.compound(ValueKind::List, { side.primitive(ValueKind::S16) });
+    auto const charList = side.compound(ValueKind::List, { side.primitive(ValueKind::Char) });
+    auto scalars = side.context();
+    side.memory().put(0, bytesOf({ 0, 1, 2, 0xff }));
+    auto const bools = lifted(scalars, { boolList }, { I32 { 0 }, I32 { 4 } });
+    CHECK(bools.root(0).child(2).scalar<bool>());
+    CHECK(bools.root(0).child(2).scalarBits() == 1);
+    CHECK_FALSE(bools.root(0).child(0).scalar<bool>());
+    side.memory().put(0, littleEndian(0x7fc0'0001'7f80'0001, 8));
+    auto const floats = lifted(scalars, { f32List }, { I32 { 0 }, I32 { 2 } });
+    CHECK(floats.root(0).child(0).scalarBits() == 0x7fc0'0000);
+    CHECK(floats.root(0).child(1).scalarBits() == 0x7fc0'0000);
+    side.memory().put(0, littleEndian(0x8000'ffff, 4));
+    auto const shorts = lifted(scalars, { s16List }, { I32 { 0 }, I32 { 2 } });
+    CHECK(shorts.root(0).child(0).scalar<int16_t>() == -1);
+    CHECK(shorts.root(0).child(1).scalar<int16_t>() == -32768);
+    auto const loweredShorts = lowered(scalars, { s16List }, shorts);
+    CHECK(std::ranges::equal(side.memory().bytes().subspan(std::get<I32>(loweredShorts[0]).bits, 4),
+                             littleEndian(0x8000'ffff, 4)));
+    side.memory().put(0, littleEndian(0x0000'd800'0000'0041, 8));
+    CHECK(trapIn(liftFlat(scalars, std::vector { charList }, std::vector<Value> { I32 { 0 }, I32 { 2 } }, 16))
+          == trapOf(TrapCode::InvalidChar, "0xd800"));
+    CHECK(side.budget().live()
+          == bools.hostBytes() + floats.hostBytes() + shorts.hostBytes() + values.hostBytes());
+}
+
+TEST_CASE("Lists.lyingLengthTrapsBeforeAllocation")
+{
+    // Lengths that lie, in a budget of 4 KiB: refused before anything is read or charged.
+    auto side = Side { FakeGuestMemoryOptions { .size = std::size_t { 64 } * 1024 }, 4096 };
+    auto const string = side.primitive(ValueKind::String);
+    auto const u8 = side.primitive(ValueKind::U8);
+    auto const strings = side.compound(ValueKind::List, { string });
+    auto const bytes = side.compound(ValueKind::List, { u8 });
+    auto context = side.context();
+
+    // list<string> of 2^28 - 1: 8 bytes each, past MaxListByteLength (in 64-bit, no wrap).
+    auto const tooLong =
+        trapIn(liftFlat(context,
+                        std::vector { strings },
+                        std::vector<Value> { I32 { 0 }, I32 { (uint32_t { 1 } << 28U) - 1 } },
+                        16));
+    CHECK(tooLong.code == TrapCode::OutOfBounds);
+    // 2^29 elements of 8 bytes is 2^32 bytes: 0 in 32-bit arithmetic, refused all the same.
+    CHECK(trapIn(liftFlat(context,
+                          std::vector { strings },
+                          std::vector<Value> { I32 { 0 }, I32 { uint32_t { 1 } << 29U } },
+                          16))
+              .code
+          == TrapCode::OutOfBounds);
+    // list<u8> of 2^28 - 1: within MaxListByteLength, past the memory's end.
+    CHECK(trapIn(liftFlat(context,
+                          std::vector { bytes },
+                          std::vector<Value> { I32 { 0 }, I32 { (uint32_t { 1 } << 28U) - 1 } },
+                          16))
+          == trapOf(TrapCode::OutOfBounds,
+                    std::format("{} bytes at 0 pass its end at 65536", (1U << 28U) - 1)));
+    // Misaligned: a list<string> is 4-aligned.
+    CHECK(trapIn(liftFlat(context, std::vector { strings }, std::vector<Value> { I32 { 2 }, I32 { 1 } }, 16))
+          == trapOf(TrapCode::UnalignedPointer, 2, 4));
+    CHECK(side.memory().reads().empty());
+
+    // In a gibibyte of memory, 2^28 - 1 bytes pass the bounds: the budget refuses them before the host
+    // allocates or reads them.
+    auto memory = ZeroGuestMemory { uint64_t { 1 } << 30U, 0 };
+    auto big = side.contextOver(memory);
+    CHECK(trapIn(liftFlat(big,
+                          std::vector { bytes },
+                          std::vector<Value> { I32 { 0 }, I32 { (uint32_t { 1 } << 28U) - 1 } },
+                          16))
+          == trapOf(TrapCode::LiveValueBytes, 4096));
+    CHECK(trapIn(liftFlat(big,
+                          std::vector { strings },
+                          std::vector<Value> { I32 { 0 }, I32 { (uint32_t { 1 } << 25U) - 1 } },
+                          16))
+          == trapOf(TrapCode::LiveValueBytes, 4096));
+    // 2^28 bytes lie in it too, but pass MaxListByteLength: refused for their length, not the budget.
+    CHECK(trapIn(liftFlat(big,
+                          std::vector { bytes },
+                          std::vector<Value> { I32 { 0 }, I32 { uint32_t { 1 } << 28U } },
+                          16))
+              .code
+          == TrapCode::OutOfBounds);
+    CHECK(memory.readBytes() == 0);
+    CHECK(side.budget().live() == 0);
+}
+
+TEST_CASE("Lists.hostListPastAnyMemoryTraps")
+{
+    // A host list of 33 values of a 2^27-byte variant, each its payload-less case: a few nodes, but 2^32
+    // bytes and more in memory, which no `realloc` can return. Refused before realloc is called.
+    auto side = Side {};
+    auto const huge = side.intern(DefinedType { .kind = ValueKind::FixedList,
+                                                .children = { side.primitive(ValueKind::U8) },
+                                                .length = uint32_t { 1 } << 27U });
+    auto const variant = side.variant({ "none", "huge" }, { std::nullopt, huge });
+    auto const list = side.compound(ValueKind::List, { variant });
+    auto const values = side.build({ list }, [](ValueBuilder& builder) {
+        builder.begin(33);
+        for ([[maybe_unused]] auto const element: std::views::iota(0, 33))
+            builder.begin(0).end();
+        builder.end();
+    });
+    auto context = side.context();
+    CHECK(trapIn(lowerFlat(context, std::vector { list }, rootsOf(values), 16, std::nullopt)).code
+          == TrapCode::OutOfBounds);
+    CHECK(side.memory().reallocations().empty());
+}
+
+TEST_CASE("Lists.nestedAmplificationIsCharged")
+{
+    // list<list<u8>>: 1000 inner lists, each the same 200 MiB of a 256 MiB memory. Each fits the budget
+    // alone; together they would take 200 GB. The store-wide budget refuses the second, and the lift
+    // traps LiveValueBytes instead of exhausting the host. Run scaled down, and at full size.
+    struct Scale
+    {
+        uint32_t inner;
+        uint64_t budget;
+    };
+    auto const scale = GENERATE(values<Scale>({
+        { 200 * 1024, uint64_t { 256 } * 1024 },
+        { 200U << 20U, uint64_t { 256 } << 20U },
+    }));
+    constexpr auto Count = uint32_t { 1000 };
+    auto memory = ZeroGuestMemory { uint64_t { 256 } << 20U, std::size_t { 8 } * Count };
+    auto side = Side { FakeGuestMemoryOptions {}, scale.budget };
+    auto const inner = side.compound(ValueKind::List, { side.primitive(ValueKind::U8) });
+    auto const outer = side.compound(ValueKind::List, { inner });
+    for (auto const index: std::views::iota(uint32_t { 0 }, Count))
+    {
+        memory.put(8 * index, littleEndian(uint64_t { 8 } * Count, 4));
+        memory.put((8 * index) + 4, littleEndian(scale.inner, 4));
+    }
+    auto context = side.contextOver(memory);
+    auto const trap =
+        trapIn(liftFlat(context, std::vector { outer }, std::vector<Value> { I32 { 0 }, I32 { Count } }, 16));
+    CHECK(trap == trapOf(TrapCode::LiveValueBytes, scale.budget));
+    // Two pointer pairs and one inner list were read: the second inner list was refused before its read.
+    CHECK(memory.readBytes() == 16 + scale.inner);
+    CHECK(side.budget().live() == 0);
+}
+
+TEST_CASE("Lists.mapIsListOfTuples")
+{
+    // map<string, u32> {"a": 1} is stored as list<tuple<string, u32>> [("a", 1)] is: the same bytes and
+    // the same `realloc` calls; and it lifts back as the map.
+    auto mapSide = Side {};
+    auto const mapType = mapSide.compound(
+        ValueKind::Map, { mapSide.primitive(ValueKind::String), mapSide.primitive(ValueKind::U32) });
+    auto const map = mapSide.build(
+        { mapType }, [](ValueBuilder& builder) { builder.begin(1).string("a").scalar(1).end(); });
+    auto listSide = Side {};
+    auto const tuple = listSide.compound(
+        ValueKind::Tuple, { listSide.primitive(ValueKind::String), listSide.primitive(ValueKind::U32) });
+    auto const listType = listSide.compound(ValueKind::List, { tuple });
+    auto const list = listSide.build({ listType }, [](ValueBuilder& builder) {
+        builder.begin(1).begin(2).string("a").scalar(1).end().end();
+    });
+    auto mapContext = mapSide.context();
+    auto listContext = listSide.context();
+    REQUIRE(store(mapContext, mapType, map.root(0), 0).has_value());
+    REQUIRE(store(listContext, listType, list.root(0), 0).has_value());
+    CHECK(mapSide.memory().reallocations() == listSide.memory().reallocations());
+    CHECK(std::ranges::equal(mapSide.memory().bytes(), listSide.memory().bytes()));
+    auto const back = load(mapContext, std::vector { mapType }, 0);
+    REQUIRE(back.has_value());
+    CHECK(equalValues(*back, map));
+    CHECK(lowered(mapContext, { mapType }, map).size() == 2);
+}
+
+TEST_CASE("LiftLower.pollsAcrossCalls")
+{
+    // One BulkPolls per canonical call: two loads of 40 KiB each poll once together, where a counter per
+    // load would never reach a granule.
+    constexpr auto Bytes = uint32_t { 40 * 1024 };
+    auto side = Side { FakeGuestMemoryOptions { .size = std::size_t { 2 } * Bytes } };
+    auto const list = side.compound(ValueKind::List, { side.primitive(ValueKind::U8) });
+    side.memory().put(0, littleEndian(16, 4));
+    side.memory().put(4, littleEndian(Bytes, 4));
+    auto context = side.context();
+    REQUIRE(load(context, std::vector { list }, 0).has_value());
+    CHECK(side.memory().polls() == 0);
+    REQUIRE(load(context, std::vector { list }, 0).has_value());
+    CHECK(side.memory().polls() == 1);
+    // A string counts towards the same granule.
+    auto const string = side.primitive(ValueKind::String);
+    auto fresh = side.context();
+    REQUIRE(load(fresh, std::vector { list }, 0).has_value());
+    REQUIRE(load(fresh, std::vector { string }, 0).has_value());
+    CHECK(side.memory().polls() == 2);
+}
+
+TEST_CASE("LiftLower.neverAborts")
+{
+    // Whatever core values a guest passes, a lift of a string, list, map, stream, future or error
+    // context returns values or a trap: no input reaches an abort. Streams, futures and error contexts
+    // have no handle before P12 (validation refuses their types), so any index is unknown.
+    auto side = Side { FakeGuestMemoryOptions { .size = 4096 } };
+    auto const string = side.primitive(ValueKind::String);
+    auto const u8 = side.primitive(ValueKind::U8);
+    auto const types = std::vector<TypeId> {
+        string,
+        side.compound(ValueKind::List, { u8 }),
+        side.compound(ValueKind::List, { string }),
+        side.compound(ValueKind::List, { side.primitive(ValueKind::Char) }),
+        side.compound(ValueKind::Map, { string, u8 }),
+        side.primitive(ValueKind::ErrorContext),
+        side.compound(ValueKind::Stream, { u8 }),
+        side.compound(ValueKind::Future, {}),
+    };
+    auto const words =
+        std::vector<uint32_t> { 0,    1,           2,           3,           4095,        4096,
+                                4097, 0x7fff'ffff, 0x8000'0000, 0x8000'0001, 0xffff'fff0, 0xffff'ffff };
+    // Memory that reads as pointer pairs into itself, at every offset.
+    for (auto const index: std::views::iota(uint32_t { 0 }, uint32_t { 1024 }))
+        side.memory().put(4 * index, littleEndian(words[index % words.size()], 4));
+    auto const encoding = GENERATE(StringEncoding::Utf8, StringEncoding::Utf16, StringEncoding::Latin1Utf16);
+    auto context = side.context(encoding);
+    auto outcomes = std::size_t { 0 };
+    for (auto const type: types)
+    {
+        auto const& layout = context.layouts[type.value];
+        for (auto const first: words)
+            for (auto const second: words)
+            {
+                auto flat = std::vector<Value> { I32 { first } };
+                if (layout.flat.size() == 2)
+                    flat.emplace_back(I32 { second });
+                auto const values = liftFlat(context, std::vector { type }, flat, 16);
+                outcomes += values.has_value() ? 1 : 0;
+            }
+    }
+    CHECK(outcomes > 0);
+    for (auto const index: std::views::iota(std::size_t { 5 }, types.size()))
+        CHECK(trapIn(liftFlat(context, std::vector { types[index] }, std::vector<Value> { I32 { 5 } }, 16))
+              == trapOf(TrapCode::UnknownHandle, 5));
+}
+
+TEST_CASE("Lists.reallocMisbehaviour")
+{
+    // test/values/realloc.wast: a list's block is checked like a string's, even an empty one.
+    struct Case
+    {
+        uint32_t forced;
+        uint32_t count;
+        TrapCode code;
+    };
+    auto const misbehaving = GENERATE(values<Case>({
+        { 0xffff'ffff, 2, TrapCode::UnalignedPointer },
+        { 0xffff'fffc, 2, TrapCode::OutOfBounds },
+        { 0xffff'fffc, 0, TrapCode::OutOfBounds },
+        { 4094, 1, TrapCode::UnalignedPointer },
+        { 4096, 1, TrapCode::OutOfBounds },
+    }));
+    auto side = Side { FakeGuestMemoryOptions { .forcedResults = { misbehaving.forced } } };
+    auto const list = side.compound(ValueKind::List, { side.primitive(ValueKind::U32) });
+    auto const values = side.build({ list }, [&](ValueBuilder& builder) {
+        builder.begin(misbehaving.count);
+        for ([[maybe_unused]] auto const element: std::views::iota(uint32_t { 0 }, misbehaving.count))
+            builder.scalar(1);
+        builder.end();
+    });
+    auto context = side.context();
+    CHECK(trapIn(lowerFlat(context, std::vector { list }, rootsOf(values), 16, std::nullopt)).code
+          == misbehaving.code);
+    CHECK(side.memory().writes().empty());
+}
+
+TEST_CASE("Lists.pairWrittenAfterElements")
+{
+    // definitions.py's store_list writes a list's pointer pair after its elements. A `realloc` that hands
+    // out the pair's own bytes as an element's string block sees that order: the pair wins.
+    auto side = Side { FakeGuestMemoryOptions { .forcedResults = { 256, 64 } } };
+    auto const strings = side.compound(ValueKind::List, { side.primitive(ValueKind::String) });
+    auto const record = side.record({ "l" }, { strings });
+    auto const values = side.build(
+        { record }, [](ValueBuilder& builder) { builder.begin(1).begin(1).string("abcdefgh").end().end(); });
+    auto context = side.context();
+    REQUIRE(store(context, record, values.root(0), 64).has_value());
+    CHECK(std::ranges::equal(side.memory().bytes().subspan(64, 8), bytesOf({ 0, 1, 0, 0, 1, 0, 0, 0 })));
+    CHECK(std::ranges::equal(side.memory().bytes().subspan(256, 8), bytesOf({ 64, 0, 0, 0, 8, 0, 0, 0 })));
+}
+
+TEST_CASE("LiftLower.everyFailurePointTraps")
+{
+    // A record of every kind that reaches memory, spilled through a realloc'd tuple: lowered, then lifted
+    // back. A trap at any poll, a failing read or write, a misbehaving `realloc`, or a full handle table
+    // ends the call in that trap, at every point it can happen.
+    auto build = [](Side& side) {
+        auto const u8 = side.primitive(ValueKind::U8);
+        auto const u16 = side.primitive(ValueKind::U16);
+        auto const string = side.primitive(ValueKind::String);
+        auto const fields = std::vector<std::optional<TypeId>> {
+            u8,
+            string,
+            side.compound(ValueKind::List, { u16 }),
+            side.compound(ValueKind::List, { string }),
+            side.compound(ValueKind::Map, { string, u8 }),
+            side.variant({ "x", "y" },
+                         { side.compound(ValueKind::List, { u8 }), side.primitive(ValueKind::U32) }),
+            side.compound(ValueKind::Option, { string }),
+            side.handle(ValueKind::Own),
+            side.labelled(ValueKind::Enum, { "p", "q" }),
+            side.labelled(ValueKind::Flags, { "f", "g" }),
+            side.compound(ValueKind::List, { side.primitive(ValueKind::Char) }),
+        };
+        return side.record({ "a", "s", "l", "ls", "m", "v", "o", "h", "e", "f", "c" }, fields);
+    };
+    static constexpr auto Shorts = uint32_t { 100'000 };
+    auto const steps = [](ValueBuilder& builder, ResourceValue resource) {
+        builder.begin(11).scalar(7).string("hello");
+        builder.begin(Shorts);
+        for (auto const index: std::views::iota(uint32_t { 0 }, Shorts))
+            builder.scalar(index & 0xFFFFU);
+        builder.end();
+        builder.begin(2).string("a").string("bc").end();
+        builder.begin(1).string("k").scalar(3).end();
+        builder.begin(0).begin(3).scalar(1).scalar(2).scalar(3).end().end();
+        builder.begin(1).string("some").end();
+        builder.resource(resource).scalar(1).scalar(0b11);
+        builder.begin(2).scalar('x').scalar(0x1f600).end();
+        builder.end();
+    };
+
+    // The clean run: how many polls, reads, writes and `realloc` calls each half makes.
+    auto clean = Side {};
+    auto const record = build(clean);
+    auto const resource = ResourceValue { .type = ResourceTypeIndex { clean.resource().value }, .rep = 9 };
+    auto const values = clean.build({ record }, [&](ValueBuilder& builder) { steps(builder, resource); });
+    auto lowering = clean.context();
+    auto const spilled =
+        lowerFlat(lowering, std::vector { record }, rootsOf(values), MaxFlatParams, std::nullopt);
+    REQUIRE(spilled.has_value());
+    REQUIRE(spilled->size() == 1);
+    auto const lowerPolls = clean.memory().polls();
+    auto const lowerWrites = static_cast<uint32_t>(clean.memory().writes().size());
+    auto const reallocations = static_cast<uint32_t>(clean.memory().reallocations().size());
+    auto const image = std::vector<std::byte>(clean.memory().bytes().begin(), clean.memory().bytes().end());
+    auto lifting = clean.context();
+    auto const lifted = liftFlat(lifting, std::vector { record }, *spilled, MaxFlatParams);
+    REQUIRE(lifted.has_value());
+    CHECK(equalValues(*lifted, values));
+    auto const liftPolls = clean.memory().polls() - lowerPolls;
+    auto const liftReads = static_cast<uint32_t>(clean.memory().reads().size());
+    REQUIRE(lowerPolls >= 2);
+    REQUIRE(liftPolls >= 2);
+
+    auto const lowersTrap = [&](FakeGuestMemoryOptions options) {
+        auto side = Side { std::move(options) };
+        auto const type = build(side);
+        auto const own = side.build({ type }, [&](ValueBuilder& builder) { steps(builder, resource); });
+        auto context = side.context();
+        return trapIn(lowerFlat(context, std::vector { type }, rootsOf(own), MaxFlatParams, std::nullopt));
+    };
+    for (auto const poll: std::views::iota(uint32_t { 1 }, lowerPolls + 1))
+        CHECK(lowersTrap(FakeGuestMemoryOptions { .interruptAtPoll = poll })
+              == trapOf(TrapCode::Interrupted));
+    for (auto const write: std::views::iota(uint32_t { 1 }, lowerWrites + 1))
+        CHECK(lowersTrap(FakeGuestMemoryOptions { .failAtWrite = write }).code == TrapCode::OutOfBounds);
+    for (auto const call: std::views::iota(uint32_t { 1 }, reallocations + 1))
+        CHECK(lowersTrap(FakeGuestMemoryOptions { .misbehaveAtReallocation = call }).code
+              == TrapCode::OutOfBounds);
+    {
+        auto full = Side {};
+        auto const type = build(full);
+        auto const own = full.build({ type }, [&](ValueBuilder& builder) { steps(builder, resource); });
+        full.handles().refuseLowering(trapOf(TrapCode::Handles, 1));
+        auto context = full.context();
+        CHECK(trapIn(lowerFlat(context, std::vector { type }, rootsOf(own), MaxFlatParams, std::nullopt))
+              == trapOf(TrapCode::Handles, 1));
+    }
+
+    auto const liftsTrap = [&](FakeGuestMemoryOptions options) {
+        options.size = image.size();
+        auto side = Side { std::move(options) };
+        auto const type = build(side);
+        side.memory().put(0, image);
+        std::ignore = side.handles().put(resource);
+        auto context = side.context();
+        return trapIn(liftFlat(context, std::vector { type }, *spilled, MaxFlatParams));
+    };
+    for (auto const poll: std::views::iota(uint32_t { 1 }, liftPolls + 1))
+        CHECK(liftsTrap(FakeGuestMemoryOptions { .interruptAtPoll = poll }) == trapOf(TrapCode::Interrupted));
+    for (auto const read: std::views::iota(uint32_t { 1 }, liftReads + 1))
+        CHECK(liftsTrap(FakeGuestMemoryOptions { .failAtRead = read }).code == TrapCode::OutOfBounds);
+
+    // A stream, future or error context read from memory: a failing read ends it before the handle.
+    auto side = Side { FakeGuestMemoryOptions { .failAtRead = 1 } };
+    auto const errorContext = side.primitive(ValueKind::ErrorContext);
+    auto context = side.context();
+    CHECK(trapIn(load(context, std::vector { errorContext }, 0)).code == TrapCode::OutOfBounds);
+}
+
+TEST_CASE("LiftLower.budgetRefusesTheRoots")
+{
+    // A budget that cannot hold the roots' index refuses the lift at its first step.
+    auto side = Side { FakeGuestMemoryOptions {}, 0 };
+    auto const u8 = side.primitive(ValueKind::U8);
+    auto context = side.context();
+    CHECK(trapIn(liftFlat(context, std::vector { u8 }, std::vector<Value> { I32 { 1 } }, 16))
+          == trapOf(TrapCode::LiveValueBytes, 0));
 }
