@@ -5,12 +5,15 @@
 // destructors a test scripts, a recording host destructor, and a core store that makes the
 // api::Function a guest destructor names. Uses Catch2's assertions.
 
+#include <core/Assert.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -44,6 +47,54 @@ template <typename T>
         FAIL("trapped: " << result.error().message());
     return *result;
 }
+
+/// A task of a store's TaskStack, held for a test's scope: begun when constructed, ended when the scope
+/// exits, the unwinding of a failed REQUIRE included. A failed assertion mid-call then reports instead of
+/// aborting the binary through ~ResourceStore's "no task in progress" check, which stays checked. Scopes
+/// nest as calls do: C++ destroys them innermost-first, the order TaskStack::end() requires.
+class TaskScope
+{
+  public:
+    /// Begins a task of @p tasks.
+    /// @param tasks The store's tasks; outlives the scope.
+    /// @throws std::bad_alloc When the task cannot be stored.
+    explicit TaskScope(TaskStack& tasks): _tasks { &tasks }, _id { tasks.begin() } {}
+
+    TaskScope(TaskScope const&) = delete;
+    TaskScope& operator=(TaskScope const&) = delete;
+    TaskScope(TaskScope&&) = delete;
+    TaskScope& operator=(TaskScope&&) = delete;
+    ~TaskScope() { end(); }
+
+    /// @return The task in progress (checked: not ended).
+    [[nodiscard]] TaskId id() const noexcept
+    {
+        Require(_id.has_value());
+        return *_id;
+    }
+
+    /// Ends the task now, as a call returning or trapping does; the scope's exit then ends nothing.
+    /// Precondition (checked by TaskStack::end()): it is the innermost task.
+    void end() noexcept
+    {
+        if (_id)
+            _tasks->end(*std::exchange(_id, std::nullopt));
+    }
+
+    /// Ends the task and begins the next one: a store's following call.
+    /// @return The new task.
+    /// @throws std::bad_alloc When the task cannot be stored.
+    TaskId renew()
+    {
+        end();
+        _id = _tasks->begin();
+        return *_id;
+    }
+
+  private:
+    TaskStack* _tasks;
+    std::optional<TaskId> _id; ///< The task in progress; empty once ended.
+};
 
 /// A host destructor that records every representation it destroys.
 class RecordingDestructor final: public IHostResourceDestructor

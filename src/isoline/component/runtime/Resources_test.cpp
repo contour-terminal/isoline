@@ -51,6 +51,7 @@ using isoline::component::runtime::testing::FakeBuiltinHost;
 using isoline::component::runtime::testing::guestImplementor;
 using isoline::component::runtime::testing::hostImplementor;
 using isoline::component::runtime::testing::RecordingDestructor;
+using isoline::component::runtime::testing::TaskScope;
 using isoline::component::runtime::testing::trapIn;
 using isoline::component::runtime::testing::valueIn;
 using isoline::component::types::ResourceTypeId;
@@ -190,7 +191,8 @@ TEST_CASE("Handles.everyMisuseTraps")
 
     SECTION("a borrow handle: dropped twice, held at return, lifted as an own")
     {
-        auto const task = resources.tasks().begin();
+        auto taskScope = TaskScope { resources.tasks() };
+        auto const task = taskScope.id();
         auto callee = ResourceOperations { resources, b, bindB, BorrowScope { task } };
         auto const lent = ResourceValue { .type = r1, .rep = 7, .ownership = Ownership::Borrow };
         auto const index = valueIn(callee.lowerBorrow(ArenaR, lent));
@@ -212,7 +214,7 @@ TEST_CASE("Handles.everyMisuseTraps")
         CHECK(resources.tasks().find(task)->borrowCount == 0);
         CHECK(trapIn(resourceDrop(host, b, r1, index)).message() == "unknown handle index 1");
         CHECK(resources.tasks().resolve(task).has_value());
-        resources.tasks().end(task);
+        taskScope.end();
         // Dropping a borrow runs no destructor.
         CHECK(host.destructorCalls.empty());
     }
@@ -231,7 +233,8 @@ TEST_CASE("Handles.everyMisuseTraps")
 
     SECTION("a resource lowered as another type")
     {
-        auto const task = resources.tasks().begin();
+        auto taskScope = TaskScope { resources.tasks() };
+        auto const task = taskScope.id();
         auto lowering = ResourceOperations { resources, b, bindB, BorrowScope { task } };
         auto const foreign = ResourceValue { .type = r2, .rep = 9, .ownership = Ownership::Own };
         auto const trap = trapIn(lowering.lowerOwn(ArenaR, foreign));
@@ -242,7 +245,7 @@ TEST_CASE("Handles.everyMisuseTraps")
         auto const unknown = ResourceValue { .type = ResourceTypeIndex { 99 }, .rep = 9 };
         CHECK(trapIn(lowering.lowerOwn(ArenaR, unknown)) == trap);
         CHECK(resources.instances()[b].handles.length() == 1);
-        resources.tasks().end(task);
+        taskScope.end();
     }
 }
 
@@ -257,19 +260,21 @@ TEST_CASE("Handles.borrowOutlivingItsCall")
     auto const callee = resources.instances().add();
     auto const bindings = bindingsOf(r);
 
-    auto const task = resources.tasks().begin();
+    auto taskScope = TaskScope { resources.tasks() };
+    auto const task = taskScope.id();
     auto ops = ResourceOperations { resources, callee, bindings, BorrowScope { task } };
     auto const index = valueIn(ops.lowerBorrow(ArenaR, ResourceValue { .type = r, .rep = 3 }));
     CHECK(trapIn(resources.tasks().resolve(task)).code == TrapCode::BorrowOutstanding);
-    resources.tasks().end(task);
+    taskScope.end();
     CHECK(resources.tasks().find(task) == nullptr);
 
     // A later task never takes the ended one's id.
-    auto const next = resources.tasks().begin();
+    auto nextScope = TaskScope { resources.tasks() };
+    auto const next = nextScope.id();
     CHECK(next != task);
     CHECK(trapIn(resourceDrop(host, callee, r, index)) == trapOf(TrapCode::BorrowOutstanding));
     CHECK(holds(host, callee, index));
-    resources.tasks().end(next);
+    nextScope.end();
 }
 
 TEST_CASE("Handles.lenderSurvivesTableGrowth")
@@ -295,7 +300,8 @@ TEST_CASE("Handles.lenderSurvivesTableGrowth")
     auto const self = valueIn(callerSide.liftBorrow(ArenaR, lentIndex));
     subtask.state = Subtask::State::Started;
 
-    auto const task = resources.tasks().begin();
+    auto taskScope = TaskScope { resources.tasks() };
+    auto const task = taskScope.id();
     auto calleeSide = ResourceOperations { resources, callee, calleeBindings, BorrowScope { task } };
     // Into the implementor, the borrow is the representation.
     CHECK(valueIn(calleeSide.lowerBorrow(ArenaR, self)) == 1000);
@@ -309,7 +315,7 @@ TEST_CASE("Handles.lenderSurvivesTableGrowth")
     auto resultSide = ResourceOperations { resources, callee, calleeBindings, BorrowScope {} };
     auto const result = valueIn(resultSide.liftOwn(ArenaR, clone));
     REQUIRE(resources.tasks().resolve(task).has_value());
-    resources.tasks().end(task);
+    taskScope.end();
     auto const resultIndex = valueIn(callerSide.lowerOwn(ArenaR, result));
     CHECK(resultIndex == 10'003);
 
@@ -355,11 +361,12 @@ TEST_CASE("Handles.twoInstancesOfOneChildDiffer")
              "guest-defined resource");
     CHECK(holds(host, parent, held));
     // Lowered into the second instance as its R.
-    auto const task = resources.tasks().begin();
+    auto taskScope = TaskScope { resources.tasks() };
+    auto const task = taskScope.id();
     auto child2Side = ResourceOperations { resources, child2, child2Bindings, BorrowScope { task } };
     CHECK(trapIn(child2Side.lowerOwn(ArenaR, own)).code == TrapCode::WrongResource);
     CHECK(trapIn(child2Side.lowerBorrow(ArenaR, own)).code == TrapCode::WrongResource);
-    resources.tasks().end(task);
+    taskScope.end();
 
     // Dropped as what it is: the first instance's destructor runs, never the second's.
     CHECK(trapIn(resourceDrop(host, parent, r2, held)).code == TrapCode::WrongHandleType);
@@ -387,7 +394,8 @@ TEST_CASE("Handles.ownTransferMovesHandle")
     CHECK_FALSE(holds(host, caller, moved));
     CHECK(subtask.lenders.empty());
 
-    auto const task = resources.tasks().begin();
+    auto taskScope = TaskScope { resources.tasks() };
+    auto const task = taskScope.id();
     auto calleeSide = ResourceOperations { resources, callee, bindings, BorrowScope { task } };
     auto const index = valueIn(calleeSide.lowerOwn(ArenaR, value));
     CHECK(index == 1);
@@ -396,7 +404,7 @@ TEST_CASE("Handles.ownTransferMovesHandle")
               .type = r, .rep = 20, .ownership = Ownership::Own, .borrowScope = {}, .lendCount = 0 });
     // An own lowered counts no borrow.
     CHECK(resources.tasks().find(task)->borrowCount == 0);
-    resources.tasks().end(task);
+    taskScope.end();
     // The caller's freed slot is the next one it hands out.
     CHECK(valueIn(resourceNew(host, caller, r, 30)) == moved);
 }
@@ -411,7 +419,8 @@ TEST_CASE("Handles.borrowIntoImplementorIsRep")
     auto const bindings = bindingsOf(r);
     auto const borrowed = ResourceValue { .type = r, .rep = 4242, .ownership = Ownership::Borrow };
 
-    auto const task = resources.tasks().begin();
+    auto taskScope = TaskScope { resources.tasks() };
+    auto const task = taskScope.id();
     auto intoImplementor = ResourceOperations { resources, implementor, bindings, BorrowScope { task } };
     CHECK(valueIn(intoImplementor.lowerBorrow(ArenaR, borrowed)) == 4242);
     CHECK(resources.instances()[implementor].handles.length() == 1);
@@ -429,7 +438,7 @@ TEST_CASE("Handles.borrowIntoImplementorIsRep")
     CHECK(trapIn(resourceRep(host, other, r, 4242)).message() == "unknown handle index 4242");
     REQUIRE(resourceDrop(host, other, r, index).has_value());
     CHECK(resources.tasks().resolve(task).has_value());
-    resources.tasks().end(task);
+    taskScope.end();
 }
 
 TEST_CASE("Handles.hostDestructorRunsOnDrop")
@@ -443,7 +452,8 @@ TEST_CASE("Handles.hostDestructorRunsOnDrop")
         auto const guestType = createType(host, guestImplementor(guest));
         auto const bindings = bindingsOf(hosted, guestType);
 
-        auto const task = resources.tasks().begin();
+        auto taskScope = TaskScope { resources.tasks() };
+        auto const task = taskScope.id();
         auto side = ResourceOperations { resources, guest, bindings, BorrowScope { task } };
         auto const dropped = valueIn(side.lowerOwn(ArenaR, ResourceValue { .type = hosted, .rep = 5 }));
         REQUIRE(resourceDrop(host, guest, hosted, dropped).has_value());
@@ -454,10 +464,11 @@ TEST_CASE("Handles.hostDestructorRunsOnDrop")
         REQUIRE(resourceDrop(host, guest, hosted, borrow).has_value());
         CHECK(recorder->destroyed == std::vector<uint32_t> { 5 });
         REQUIRE(resources.tasks().resolve(task).has_value());
-        resources.tasks().end(task);
+        taskScope.end();
 
         // Held at teardown: an own of the host type, a borrow of it, and a guest type's own.
-        auto const kept = resources.tasks().begin();
+        auto keptScope = TaskScope { resources.tasks() };
+        auto const kept = keptScope.id();
         auto keeper = ResourceOperations { resources, guest, bindings, BorrowScope { kept } };
         REQUIRE(keeper.lowerOwn(ArenaR, ResourceValue { .type = hosted, .rep = 9 }).has_value());
         REQUIRE(keeper
@@ -466,7 +477,7 @@ TEST_CASE("Handles.hostDestructorRunsOnDrop")
                     .has_value());
         REQUIRE(resourceNew(host, guest, guestType, 11).has_value());
         // A teardown runs no call: the task the borrow was lent to has ended (trapped).
-        resources.tasks().end(kept);
+        keptScope.end();
         resources.destroyHostResources();
         CHECK(recorder->destroyed == std::vector<uint32_t> { 5, 9 });
         // Destroying the store destroys nothing twice, and runs no guest destructor.
@@ -622,7 +633,8 @@ TEST_CASE("Handles.matchDefinitions")
     auto const itself = createType(host, guestImplementor(instance, core.destructor()));
     auto const bindings = bindingsOf(elsewhere, itself);
     auto subtask = Subtask {};
-    auto task = resources.tasks().begin();
+    auto taskScope = TaskScope { resources.tasks() };
+    auto task = taskScope.id();
 
     for (auto const [step, vector]: core::views::enumerate(HandleVectors))
     {
@@ -662,8 +674,7 @@ TEST_CASE("Handles.matchDefinitions")
                 outcome = resources.tasks().resolve(task).transform([] { return 0U; });
                 if (outcome)
                 {
-                    resources.tasks().end(task);
-                    task = resources.tasks().begin();
+                    task = taskScope.renew();
                 }
                 break;
         }
@@ -682,5 +693,5 @@ TEST_CASE("Handles.matchDefinitions")
               == (vector.destroyed == NoRep ? std::vector<int64_t> {}
                                             : std::vector<int64_t> { vector.destroyed }));
     }
-    resources.tasks().end(task);
+    taskScope.end();
 }
