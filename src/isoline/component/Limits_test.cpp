@@ -53,6 +53,15 @@ TEST_CASE("Limits.valuesReadTheirField")
     limits.maxLiveValueBytes = 14;
     limits.maxSubtypingSteps = 15;
     limits.maxSubstitutedTypes = 16;
+    limits.maxModules = 17;
+    limits.maxComponents = 18;
+    limits.maxInstances = 19;
+    limits.maxFunctions = 20;
+    limits.maxExports = 21;
+    limits.maxCoreTables = 22;
+    limits.maxCoreMemories = 23;
+    limits.maxCoreGlobals = 24;
+    limits.maxCoreTags = 25;
     for (auto const& row: LimitTable)
         CHECK(limitValue(limits, row.limit) == static_cast<uint64_t>(row.limit) + 1);
 

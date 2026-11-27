@@ -52,6 +52,24 @@ struct ComponentLimits
     /// type it names (each instantiation, and each import or export of an instance type that defines
     /// resources, rewrites the types that name them; names are shared, never copied).
     uint32_t maxSubstitutedTypes = 1'000'000;
+    /// Per component, its core module index space (wasm-tools' MAX_WASM_MODULES).
+    uint32_t maxModules = 1'000;
+    /// Per component, its component index space (MAX_WASM_COMPONENTS).
+    uint32_t maxComponents = 1'000;
+    /// Per component, its core and component instance index spaces together (MAX_WASM_INSTANCES).
+    uint32_t maxInstances = 4'096;
+    /// Per component, its core and component function index spaces together (MAX_WASM_FUNCTIONS).
+    uint32_t maxFunctions = 1'000'000;
+    /// Per component, its exports (MAX_WASM_EXPORTS).
+    uint32_t maxExports = 1'000'000;
+    /// Per component, its core table index space (MAX_CORE_INDEX_SPACE_ITEMS).
+    uint32_t maxCoreTables = 1'000'000;
+    /// Per component, its core memory index space (MAX_CORE_INDEX_SPACE_ITEMS).
+    uint32_t maxCoreMemories = 1'000'000;
+    /// Per component, its core global index space (MAX_CORE_INDEX_SPACE_ITEMS).
+    uint32_t maxCoreGlobals = 1'000'000;
+    /// Per component, its core tag index space (MAX_CORE_INDEX_SPACE_ITEMS).
+    uint32_t maxCoreTags = 1'000'000;
 
     /// Two sets of limits are equal when every limit is.
     bool operator==(ComponentLimits const&) const = default;
@@ -77,10 +95,19 @@ enum class ComponentLimit : uint8_t
     LiveValueBytes,
     SubtypingSteps,
     SubstitutedTypes,
+    Modules,
+    Components,
+    Instances,
+    Functions,
+    Exports,
+    CoreTables,
+    CoreMemories,
+    CoreGlobals,
+    CoreTags,
 };
 
 /// The last ComponentLimit enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastComponentLimit = ComponentLimit::SubstitutedTypes;
+inline constexpr auto LastComponentLimit = ComponentLimit::CoreTags;
 
 /// The number of ComponentLimit enumerators, as LastComponentLimit counts them.
 inline constexpr auto ComponentLimitCount = static_cast<std::size_t>(LastComponentLimit) + 1;
@@ -200,6 +227,55 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t {
           return limits.maxSubstitutedTypes;
       } },
+    // wasm-tools' index space caps (wasmparser 0.263.0 src/limits.rs:22-95), in its wording (check_max,
+    // src/validator.rs:72-86).
+    { .limit = ComponentLimit::Modules,
+      .name = "maxModules",
+      .rule = "entries of one component's core module index space: embedded, imported, aliased and exported "
+              "modules",
+      .message = "modules count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxModules; } },
+    { .limit = ComponentLimit::Components,
+      .name = "maxComponents",
+      .rule = "entries of one component's component index space: nested, imported, aliased and exported "
+              "components",
+      .message = "components count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxComponents; } },
+    { .limit = ComponentLimit::Instances,
+      .name = "maxInstances",
+      .rule = "entries of one component's core and component instance index spaces together",
+      .message = "instances count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxInstances; } },
+    { .limit = ComponentLimit::Functions,
+      .name = "maxFunctions",
+      .rule = "entries of one component's core and component function index spaces together",
+      .message = "functions count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxFunctions; } },
+    { .limit = ComponentLimit::Exports,
+      .name = "maxExports",
+      .rule = "exports of one component",
+      .message = "exports count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxExports; } },
+    { .limit = ComponentLimit::CoreTables,
+      .name = "maxCoreTables",
+      .rule = "entries of one component's core table index space, each an alias of a core instance's export",
+      .message = "tables count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxCoreTables; } },
+    { .limit = ComponentLimit::CoreMemories,
+      .name = "maxCoreMemories",
+      .rule = "entries of one component's core memory index space, each an alias of a core instance's export",
+      .message = "memories count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxCoreMemories; } },
+    { .limit = ComponentLimit::CoreGlobals,
+      .name = "maxCoreGlobals",
+      .rule = "entries of one component's core global index space, each an alias of a core instance's export",
+      .message = "globals count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxCoreGlobals; } },
+    { .limit = ComponentLimit::CoreTags,
+      .name = "maxCoreTags",
+      .rule = "entries of one component's core tag index space, each an alias of a core instance's export",
+      .message = "tags count exceeds limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxCoreTags; } },
 });
 
 static_assert(

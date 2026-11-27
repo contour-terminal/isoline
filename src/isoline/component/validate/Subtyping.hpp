@@ -55,6 +55,8 @@ enum class RelationErrorCode : uint8_t
     ResultPresent,
     MissingExport,
     MissingExtern,
+    MissingImport,
+    CoreMismatch,
     StepLimit,
 };
 
@@ -90,6 +92,9 @@ inline constexpr auto RelationErrorMessages = std::to_array<RelationErrorRow>({
     { .code = RelationErrorCode::ResultPresent, .text = "expected no result, found one" },
     { .code = RelationErrorCode::MissingExport, .text = "missing expected export `{0}`" },
     { .code = RelationErrorCode::MissingExtern, .text = "missing {0} named `{1}`" },
+    { .code = RelationErrorCode::MissingImport, .text = "missing expected import `{0}::{1}`" },
+    // A core entity's mismatch: its context and CoreMismatchMessages' row, formatted where it is found.
+    { .code = RelationErrorCode::CoreMismatch, .text = "{0}" },
     { .code = RelationErrorCode::StepLimit, .text = "{0}" },
 });
 
@@ -124,6 +129,8 @@ enum class RelationContext : uint8_t
     FunctionResult,
     InstanceExport,
     Extern,
+    CoreImport,
+    CoreExport,
 };
 
 /// One row of RelationContextMessages: a context and its text, a std::format string as above.
@@ -148,6 +155,8 @@ inline constexpr auto RelationContextMessages = std::to_array<RelationContextRow
     { .context = RelationContext::FunctionResult, .text = "type mismatch with result type" },
     { .context = RelationContext::InstanceExport, .text = "type mismatch in instance export `{0}`" },
     { .context = RelationContext::Extern, .text = "type mismatch for {0} `{1}`" },
+    { .context = RelationContext::CoreImport, .text = "type mismatch in import `{0}::{1}`" },
+    { .context = RelationContext::CoreExport, .text = "type mismatch in export `{0}`" },
 });
 
 static_assert(
@@ -159,7 +168,7 @@ static_assert(
                 return false;
             ++index;
         }
-        return index == static_cast<std::size_t>(RelationContext::Extern) + 1;
+        return index == static_cast<std::size_t>(RelationContext::CoreExport) + 1;
     }(),
     "RelationContextMessages must hold one row per RelationContext, at the index of its enumerator");
 
@@ -384,10 +393,39 @@ class TypeRelation
     [[nodiscard]] Outcome<Progress> startComponent(Side actualSide,
                                                    types::ComponentTypeId actual,
                                                    types::ComponentTypeId expected);
+    [[nodiscard]] Outcome<void> startModule(Side actualSide,
+                                            types::CoreModuleTypeId actual,
+                                            types::CoreModuleTypeId expected);
+    [[nodiscard]] Outcome<void> matchCore(Side subSide,
+                                          types::CoreEntityType const& sub,
+                                          types::CoreEntityType const& required,
+                                          std::string const& context);
+    [[nodiscard]] bool coreEquivalent(Side subSide, uint32_t sub, uint32_t super);
+    /// Which list of an arena a name index orders.
+    enum class IndexedList : uint8_t
+    {
+        InstanceExports,
+        ComponentImports,
+        ComponentExports,
+    };
+
+    /// The list of one side's arena a cached name index orders.
+    struct IndexKey
+    {
+        Side side = Side::Sub;
+        IndexedList list = IndexedList::InstanceExports;
+        uint32_t id = 0;
+
+        auto operator<=>(IndexKey const&) const = default;
+    };
+
     [[nodiscard]] Outcome<Progress> startOpen(Side actualSide,
                                               std::span<types::NamedExtern const> arguments,
                                               types::ComponentTypeId expected,
-                                              ExternKind kind);
+                                              ExternKind kind,
+                                              std::optional<IndexKey> argumentsKey);
+    [[nodiscard]] Outcome<std::vector<uint32_t> const*> cachedNameIndex(
+        IndexKey key, std::span<types::NamedExtern const> externs);
     [[nodiscard]] Outcome<std::optional<uint32_t>> scan(std::span<types::NamedExtern const> externs,
                                                         std::string const& name);
     [[nodiscard]] Outcome<std::vector<uint32_t>> nameIndex(std::span<types::NamedExtern const> externs);
@@ -410,6 +448,10 @@ class TypeRelation
     uint32_t _nextEpoch = 2;
     std::set<MemoKey> _memo {};
     std::vector<Frame> _frames {};
+    /// The name index of every list compared so far, built and charged once (cachedNameIndex()).
+    std::map<IndexKey, std::vector<uint32_t>> _nameIndices {};
+    /// The step limit a cross-arena core type comparison reached, which its bool result cannot carry.
+    std::optional<Failure> _coreFailure {};
 };
 
 /// Mints a fresh resource type for every resource a component type defines, as each instantiation of

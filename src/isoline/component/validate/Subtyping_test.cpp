@@ -866,3 +866,24 @@ TEST_CASE("Subtyping.instancePairComparedOnce")
     INFO(std::format("{} steps for the pair, {} for one instance", twice, single.steps()));
     CHECK(twice <= single.steps() + 6);
 }
+
+TEST_CASE("Subtyping.nameIndexChargedOnce")
+{
+    // One relation serves a whole validation (Task 7), so an instance's exports are indexed by name and
+    // charged once, however many queries read them: comparing it with a second expected instance costs
+    // the lookups, not the 1'000 names again.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const nothing = function(arena, {});
+    auto exports = std::vector<NamedExtern> {};
+    for (auto const index: std::views::iota(0, 1'000))
+        exports.push_back(NamedExtern { .name = "f" + std::to_string(index), .type = nothing });
+    auto const provided = instance(arena, std::move(exports));
+    auto const first = instance(arena, { NamedExtern { .name = "f1", .type = nothing } });
+    auto const second = instance(arena, { NamedExtern { .name = "f2", .type = nothing } });
+    auto relation = TypeRelation { arena, arena, ResourceMapping {}, ComponentLimits {} };
+    REQUIRE(relation.isSubtype(provided, first).has_value());
+    auto const afterFirst = relation.steps();
+    CHECK(afterFirst > 1'000);
+    REQUIRE(relation.isSubtype(provided, second).has_value());
+    CHECK(relation.steps() - afterFirst < 50);
+}

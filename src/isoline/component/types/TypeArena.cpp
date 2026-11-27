@@ -13,7 +13,9 @@
 #include <map>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -37,8 +39,20 @@ namespace
     /// follow from these.
     [[nodiscard]] std::strong_ordering compareStructure(DefinedType const& lhs, DefinedType const& rhs)
     {
-        return std::tie(lhs.kind, lhs.length, lhs.resource, lhs.children, lhs.labels)
-               <=> std::tie(rhs.kind, rhs.length, rhs.resource, rhs.children, rhs.labels);
+        return std::tie(lhs.kind,
+                        lhs.nominal,
+                        lhs.resourceAlias,
+                        lhs.length,
+                        lhs.resource,
+                        lhs.children,
+                        lhs.labels)
+               <=> std::tie(rhs.kind,
+                            rhs.nominal,
+                            rhs.resourceAlias,
+                            rhs.length,
+                            rhs.resource,
+                            rhs.children,
+                            rhs.labels);
     }
 
     /// The handles a type of @p kind holds itself, before its children's.
@@ -254,6 +268,8 @@ namespace
                         return arena.namesResource(alternative.type);
                     else if constexpr (std::is_same_v<Alternative, TypeExtern>)
                         return arena.namesResource(alternative.type);
+                    else if constexpr (std::is_same_v<Alternative, CoreModuleTypeId>)
+                        return false; // core types name no component resource
                     else
                         return arena.namesResource(alternative);
                 },
@@ -301,6 +317,124 @@ std::expected<ResourceTypeId, TypeLimitError> TypeArena::newResource(ResourceTyp
                                                   .value = _maxResourceTypes } };
     _resources.push_back(definition);
     return ResourceTypeId { .value = static_cast<uint32_t>(_resources.size() - 1) };
+}
+
+CoreFunctionTypeId TypeArena::intern(isoline::binary::FuncType type)
+{
+    auto const next = static_cast<uint32_t>(_coreFunctions.size());
+    std::ignore = isoline::binary::mapTypeIndices(type, [next](uint32_t referenced) {
+        Require(referenced < next);
+        return referenced;
+    });
+    auto const [entry, inserted] = _coreFunctionIndex.try_emplace(type, next);
+    if (inserted)
+        _coreFunctions.push_back(std::move(type));
+    return CoreFunctionTypeId { .value = entry->second };
+}
+
+isoline::binary::FuncType const& TypeArena::operator[](CoreFunctionTypeId id) const
+{
+    Require(id.value < _coreFunctions.size());
+    return _coreFunctions[id.value];
+}
+
+namespace
+{
+    /// The positions of @p entries ordered by @p key, for lookups by binary search.
+    template <typename Entry, typename Key>
+    [[nodiscard]] std::vector<uint32_t> orderedBy(std::vector<Entry> const& entries, Key const& key)
+    {
+        auto order = std::vector<uint32_t> {};
+        order.reserve(entries.size());
+        for (auto const position: std::views::iota(std::size_t { 0 }, entries.size()))
+            order.push_back(static_cast<uint32_t>(position));
+        std::ranges::stable_sort(
+            order, std::less<> {}, [&](uint32_t position) { return key(entries[position]); });
+        return order;
+    }
+
+    /// The entry of @p entries keyed @p wanted through @p order, or nothing.
+    template <typename Entry, typename Key, typename Wanted>
+    [[nodiscard]] Entry const* findOrdered(std::vector<Entry> const& entries,
+                                           std::vector<uint32_t> const& order,
+                                           Key const& key,
+                                           Wanted const& wanted)
+    {
+        auto const found = std::ranges::lower_bound(
+            order, wanted, std::less<> {}, [&](uint32_t position) { return key(entries[position]); });
+        if (found == order.end() || key(entries[*found]) != wanted)
+            return nullptr;
+        return &entries[*found];
+    }
+
+    [[nodiscard]] std::string_view exportKey(CoreExportType const& entry) noexcept
+    {
+        return entry.name.str();
+    }
+
+    [[nodiscard]] std::pair<std::string_view, std::string_view> importKey(
+        CoreImportType const& entry) noexcept
+    {
+        return { entry.module.str(), entry.name.str() };
+    }
+} // namespace
+
+CoreModuleTypeId TypeArena::add(CoreModuleTypeInfo type)
+{
+    type.importsByName = orderedBy(type.imports, importKey);
+    type.exportsByName = orderedBy(type.exports, exportKey);
+    _coreModules.push_back(std::move(type));
+    return CoreModuleTypeId { .value = static_cast<uint32_t>(_coreModules.size() - 1) };
+}
+
+CoreInstanceTypeId TypeArena::add(CoreInstanceTypeInfo type)
+{
+    Require(!type.instantiated || (type.instantiated->value < _coreModules.size() && type.exports.empty()));
+    type.exportsByName = orderedBy(type.exports, exportKey);
+    _coreInstances.push_back(std::move(type));
+    return CoreInstanceTypeId { .value = static_cast<uint32_t>(_coreInstances.size() - 1) };
+}
+
+CoreModuleTypeInfo const& TypeArena::operator[](CoreModuleTypeId id) const
+{
+    Require(id.value < _coreModules.size());
+    return _coreModules[id.value];
+}
+
+CoreInstanceTypeInfo const& TypeArena::operator[](CoreInstanceTypeId id) const
+{
+    Require(id.value < _coreInstances.size());
+    return _coreInstances[id.value];
+}
+
+std::span<CoreExportType const> TypeArena::exportsOf(CoreInstanceTypeId id) const
+{
+    auto const& instance = (*this)[id];
+    if (instance.instantiated)
+        return (*this)[*instance.instantiated].exports;
+    return instance.exports;
+}
+
+CoreExportType const* TypeArena::findExport(CoreInstanceTypeId id, std::string_view name) const
+{
+    auto const& instance = (*this)[id];
+    if (instance.instantiated)
+        return findExport(*instance.instantiated, name);
+    return findOrdered(instance.exports, instance.exportsByName, exportKey, name);
+}
+
+CoreExportType const* TypeArena::findExport(CoreModuleTypeId id, std::string_view name) const
+{
+    auto const& module = (*this)[id];
+    return findOrdered(module.exports, module.exportsByName, exportKey, name);
+}
+
+CoreImportType const* TypeArena::findImport(CoreModuleTypeId id,
+                                            std::string_view module,
+                                            std::string_view name) const
+{
+    auto const& type = (*this)[id];
+    return findOrdered(type.imports, type.importsByName, importKey, std::pair { module, name });
 }
 
 FunctionTypeInfo const& TypeArena::operator[](FunctionTypeId id) const
@@ -357,6 +491,8 @@ TypeMeasure TypeArena::measure(ExternType const& type) const
                 return measure(AnyTypeId { entry.type });
             else if constexpr (std::is_same_v<Entry, TypeExtern>)
                 return measure(entry.type);
+            else if constexpr (std::is_same_v<Entry, CoreModuleTypeId>)
+                return (*this)[entry].measure;
             else
                 return measure(AnyTypeId { entry });
         },
@@ -383,34 +519,58 @@ bool TypeArena::namesResource(AnyTypeId type) const
 
 namespace
 {
-    /// The type an extern type names, by which it is rewritten.
-    [[nodiscard]] AnyTypeId namedType(ExternType const& type)
+    /// The types an extern type names, by which it is rewritten: none for a core module, whose types
+    /// name no resource; a type extern's referenced entry too, when it is another.
+    void namedTypes(ExternType const& type, std::vector<AnyTypeId>& named)
     {
-        return std::visit(
-            [](auto const& alternative) -> AnyTypeId {
+        std::visit(
+            [&](auto const& alternative) {
                 using Alternative = std::remove_cvref_t<decltype(alternative)>;
                 if constexpr (std::is_same_v<Alternative, ValueExtern>)
-                    return alternative.type;
+                    named.emplace_back(alternative.type);
                 else if constexpr (std::is_same_v<Alternative, TypeExtern>)
-                    return alternative.type;
-                else
-                    return alternative;
+                {
+                    named.push_back(alternative.type);
+                    if (alternative.referenced)
+                        named.push_back(alternative.referenced->type);
+                }
+                else if constexpr (!std::is_same_v<Alternative, CoreModuleTypeId>)
+                    named.emplace_back(alternative);
             },
             type);
     }
 
-    /// @p type naming @p replacement in place of the type it named.
-    [[nodiscard]] ExternType renamed(ExternType const& type, AnyTypeId replacement)
+    /// The first type an extern type names, by which it is rewritten: none for a core module.
+    [[nodiscard]] std::optional<AnyTypeId> namedType(ExternType const& type)
+    {
+        auto named = std::vector<AnyTypeId> {};
+        namedTypes(type, named);
+        if (named.empty())
+            return std::nullopt;
+        return named.front();
+    }
+
+    /// @p type with every type it names replaced by its image under @p image.
+    template <typename Image>
+    [[nodiscard]] ExternType renamed(ExternType const& type, Image const& image)
     {
         return std::visit(
             [&](auto const& alternative) -> ExternType {
                 using Alternative = std::remove_cvref_t<decltype(alternative)>;
                 if constexpr (std::is_same_v<Alternative, ValueExtern>)
-                    return ValueExtern { .type = std::get<TypeId>(replacement) };
+                    return ValueExtern { .type = std::get<TypeId>(image(AnyTypeId { alternative.type })) };
                 else if constexpr (std::is_same_v<Alternative, TypeExtern>)
-                    return TypeExtern { .type = replacement };
+                {
+                    auto copy = alternative;
+                    copy.type = image(alternative.type);
+                    if (copy.referenced)
+                        copy.referenced->type = image(copy.referenced->type);
+                    return copy;
+                }
+                else if constexpr (std::is_same_v<Alternative, CoreModuleTypeId>)
+                    return alternative;
                 else
-                    return std::get<Alternative>(replacement);
+                    return std::get<Alternative>(image(AnyTypeId { alternative }));
             },
             type);
     }
@@ -420,7 +580,7 @@ namespace
     {
         auto const externs = [&](std::vector<NamedExtern> const& list) {
             for (auto const& entry: list)
-                children.push_back(namedType(entry.type));
+                namedTypes(entry.type, children);
         };
         std::visit(
             [&](auto const id) {
@@ -465,6 +625,26 @@ namespace
 std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const& type,
                                                                 ResourceSubstitution const& substitution)
 {
+    // A type extern that copied the entry it named names two types: each is rewritten, the copy (a
+    // value type of the same children, which the arena shares) and the entry named.
+    auto const* bound = std::get_if<TypeExtern>(&type);
+    if (bound == nullptr || !bound->referenced || bound->referenced->type == bound->type)
+        return substituteNamed(type, substitution);
+    auto created = substituteNamed(TypeExtern { .type = bound->type }, substitution);
+    if (!created)
+        return created;
+    auto referenced = substituteNamed(TypeExtern { .type = bound->referenced->type }, substitution);
+    if (!referenced)
+        return referenced;
+    auto result = *bound;
+    result.type = std::get<TypeExtern>(*created).type;
+    result.referenced->type = std::get<TypeExtern>(*referenced).type;
+    return ExternType { result };
+}
+
+std::expected<ExternType, TypeLimitError> TypeArena::substituteNamed(ExternType const& type,
+                                                                     ResourceSubstitution const& substitution)
+{
     // Post-order over an explicit stack: a type is rebuilt once every type it names has its image in
     // `images`. A type naming no resource is its own image and is never visited, nor is anything
     // beneath it; a shared type is visited once.
@@ -482,7 +662,7 @@ std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const
         return entry->second;
     };
     auto const imageExtern = [&](ExternType const& entry) {
-        return renamed(entry, *imageOf(namedType(entry)));
+        return renamed(entry, [&](AnyTypeId id) { return *imageOf(id); });
     };
     auto const imageExterns = [&](std::vector<NamedExtern> list) {
         for (auto& entry: list)
@@ -569,8 +749,8 @@ std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const
         return entry;
     };
     auto stack = std::vector<Pending> {};
-    if (auto const root = namedType(type); !imageOf(root))
-        stack.push_back(pending(root));
+    if (auto const root = namedType(type); root && !imageOf(*root))
+        stack.push_back(pending(*root));
     while (!stack.empty())
     {
         auto& top = stack.back();

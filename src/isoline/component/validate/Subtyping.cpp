@@ -23,6 +23,8 @@
 
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/types/TypeArena.hpp>
+#include <isoline/component/validate/CoreTypes.hpp>
+#include <isoline/validate/Subtyping.hpp>
 
 namespace isoline::component::validate
 {
@@ -140,6 +142,8 @@ namespace
                     return "type";
                 else if constexpr (std::is_same_v<Alternative, types::InstanceTypeId>)
                     return "instance";
+                else if constexpr (std::is_same_v<Alternative, types::CoreModuleTypeId>)
+                    return "module";
                 else
                     return "component";
             },
@@ -310,7 +314,7 @@ std::expected<types::ResourceSubstitution, RelationError> TypeRelation::satisfyI
 {
     auto const mark = _undo.size();
     auto const epoch = _epoch;
-    auto const outcome = run(startOpen(Side::Sub, arguments, component, ExternKind::Import));
+    auto const outcome = run(startOpen(Side::Sub, arguments, component, ExternKind::Import, std::nullopt));
     auto bound = types::ResourceSubstitution {};
     if (outcome)
     {
@@ -422,11 +426,19 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::advance(Frame& frame
                     return inChild(startOpen(opposite(actualSide),
                                              arena(opposite(actualSide))[expected].imports,
                                              actual,
-                                             ExternKind::Import));
+                                             ExternKind::Import,
+                                             IndexKey { .side = opposite(actualSide),
+                                                        .list = IndexedList::ComponentImports,
+                                                        .id = expected.value }));
                 case ComponentPhase::Exports:
                     frame.phase = ComponentPhase::Finished;
-                    return inChild(startOpen(
-                        actualSide, arena(actualSide)[actual].exports, expected, ExternKind::Export));
+                    return inChild(startOpen(actualSide,
+                                             arena(actualSide)[actual].exports,
+                                             expected,
+                                             ExternKind::Export,
+                                             IndexKey { .side = actualSide,
+                                                        .list = IndexedList::ComponentExports,
+                                                        .id = actual.value }));
                 case ComponentPhase::Finished: return Progress::Done;
             }
             break; // uncovered(exhaustive-switch)
@@ -612,10 +624,124 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startEntity(Side act
                 return startAny(actualSide, provided.type, required.type);
             else if constexpr (std::is_same_v<Alternative, types::InstanceTypeId>)
                 return startInstance(actualSide, provided, required);
+            else if constexpr (std::is_same_v<Alternative, types::CoreModuleTypeId>)
+                return startModule(actualSide, provided, required).transform([] { return Progress::Done; });
             else
                 return startComponent(actualSide, provided, required);
         },
         actual);
+}
+
+bool TypeRelation::coreEquivalent(Side subSide, uint32_t sub, uint32_t super)
+{
+    // Within one arena core function types are canonical: equal ids are equivalent types. Across two,
+    // their structures are compared, a concrete reference by the pair of types it names, each pair a
+    // step; a pair met again is compared again, which the steps bound.
+    if (_isSameArena)
+        return sub == super;
+    auto const& subArena = arena(subSide);
+    auto const& superArena = arena(opposite(subSide));
+    auto pending = std::vector<std::pair<uint32_t, uint32_t>> { { sub, super } };
+    while (!pending.empty())
+    {
+        auto const [subId, superId] = pending.back();
+        pending.pop_back();
+        if (auto stepped = step(); !stepped)
+        {
+            _coreFailure = stepped.error();
+            return false;
+        }
+        auto const& provided = subArena[types::CoreFunctionTypeId { .value = subId }];
+        auto const& required = superArena[types::CoreFunctionTypeId { .value = superId }];
+        if (provided.params.size() != required.params.size()
+            || provided.results.size() != required.results.size())
+            return false;
+        auto const compare = [&](isoline::binary::ValueType const& first,
+                                 isoline::binary::ValueType const& second) {
+            return isoline::validate::isEquivalentWith(
+                first, second, [&](uint32_t subType, uint32_t superType) {
+                    pending.emplace_back(subType, superType);
+                    return true;
+                });
+        };
+        for (auto const index: std::views::iota(std::size_t { 0 }, provided.params.size()))
+        {
+            if (!compare(provided.params[index], required.params[index]))
+                return false;
+        }
+        for (auto const index: std::views::iota(std::size_t { 0 }, provided.results.size()))
+        {
+            if (!compare(provided.results[index], required.results[index]))
+                return false;
+        }
+    }
+    return true;
+}
+
+TypeRelation::Outcome<void> TypeRelation::matchCore(Side subSide,
+                                                    types::CoreEntityType const& sub,
+                                                    types::CoreEntityType const& required,
+                                                    std::string const& context)
+{
+    _coreFailure.reset();
+    auto const matched = matchCoreEntity(
+        arena(subSide), sub, arena(opposite(subSide)), required, [&](uint32_t subType, uint32_t superType) {
+            return coreEquivalent(subSide, subType, superType);
+        });
+    if (_coreFailure)
+        return std::unexpected { *_coreFailure };
+    if (matched)
+        return {};
+    return std::unexpected { Failure {
+        .error = RelationError { .code = RelationErrorCode::CoreMismatch,
+                                 .message = context + "\n" + matched.error().message } } };
+}
+
+TypeRelation::Outcome<void> TypeRelation::startModule(Side actualSide,
+                                                      types::CoreModuleTypeId actualId,
+                                                      types::CoreModuleTypeId expectedId)
+{
+    // module_type (component_types.rs:3796-3831): the provided module may import less than the
+    // expected one, each import it has required there, and contravariantly typed; it must export
+    // everything expected, covariantly typed.
+    if (auto stepped = step(); !stepped)
+        return std::unexpected { stepped.error() };
+    auto const expectedSide = opposite(actualSide);
+    auto const& actual = arena(actualSide)[actualId];
+    for (auto const& import: actual.imports)
+    {
+        if (auto compared = compareNames(1, import.module.str().size() + import.name.str().size()); !compared)
+            return std::unexpected { compared.error() };
+        auto const* required =
+            arena(expectedSide).findImport(expectedId, import.module.str(), import.name.str());
+        if (required == nullptr)
+            return std::unexpected { Failure { .error = relationError(RelationErrorCode::MissingImport,
+                                                                      import.module.str(),
+                                                                      import.name.str()) } };
+        if (auto matched =
+                matchCore(expectedSide,
+                          required->type,
+                          import.type,
+                          contextLine(RelationContext::CoreImport, import.module.str(), import.name.str()));
+            !matched)
+            return matched;
+    }
+    for (auto const& required: arena(expectedSide)[expectedId].exports)
+    {
+        if (auto compared = compareNames(1, required.name.str().size()); !compared)
+            return std::unexpected { compared.error() };
+        auto const* provided = arena(actualSide).findExport(actualId, required.name.str());
+        if (provided == nullptr)
+            return std::unexpected { Failure {
+                .error = relationError(RelationErrorCode::MissingExport, required.name.str()) } };
+        if (auto matched = matchCore(actualSide,
+                                     provided->type,
+                                     required.type,
+                                     contextLine(RelationContext::CoreExport, required.name.str()));
+            !matched)
+            return matched;
+    }
+    return {};
 }
 
 TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startAny(Side actualSide,
@@ -829,6 +955,20 @@ TypeRelation::Outcome<std::vector<uint32_t>> TypeRelation::nameIndex(
     return index;
 }
 
+TypeRelation::Outcome<std::vector<uint32_t> const*> TypeRelation::cachedNameIndex(
+    IndexKey key, std::span<types::NamedExtern const> externs)
+{
+    // An instance's exports, or a component's imports or exports, are indexed and charged once per
+    // relation, however often they are compared: the cache holds at most one index per list of the two
+    // arenas, so it is linear in them, and is keyed by the arenas' own ids, never by names.
+    if (auto const found = _nameIndices.find(key); found != _nameIndices.end())
+        return &found->second;
+    auto built = nameIndex(externs);
+    if (!built)
+        return std::unexpected { built.error() };
+    return &_nameIndices.emplace(key, std::move(*built)).first->second;
+}
+
 TypeRelation::Outcome<std::optional<uint32_t>> TypeRelation::lookup(
     std::span<types::NamedExtern const> externs, std::vector<uint32_t> const& index, std::string const& name)
 {
@@ -866,13 +1006,15 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startInstance(Side a
                          .actual = actualId.value,
                          .expected = expectedId.value,
                          .memoEpoch = key.epoch };
-    auto const names = nameIndex(actual.exports);
+    auto const names = cachedNameIndex(
+        IndexKey { .side = actualSide, .list = IndexedList::InstanceExports, .id = actualId.value },
+        actual.exports);
     if (!names)
         return std::unexpected { names.error() };
     frame.matched.reserve(expected.exports.size());
     for (auto const& required: expected.exports)
     {
-        auto const found = lookup(actual.exports, *names, required.name.str());
+        auto const found = lookup(actual.exports, **names, required.name.str());
         if (!found)
             return std::unexpected { found.error() };
         if (!*found)
@@ -911,7 +1053,8 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startOpen(
     Side actualSide,
     std::span<types::NamedExtern const> arguments,
     types::ComponentTypeId expectedId,
-    ExternKind kind)
+    ExternKind kind,
+    std::optional<IndexKey> argumentsKey)
 {
     // open_instance_type (component_types.rs:3911-4033): bind each resource the component quantifies
     // over on this side to what the resource its argument supplies stands for, following its path by
@@ -923,9 +1066,24 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startOpen(
     auto const& entities = kind == ExternKind::Import ? component.imports : component.exports;
     auto const& resources =
         kind == ExternKind::Import ? component.importedResources : component.definedResources;
-    auto const names = nameIndex(arguments);
-    if (!names)
-        return std::unexpected { names.error() };
+    // The arguments of an instantiation are indexed for this query; a component's own imports or
+    // exports once per relation.
+    auto uncached = std::vector<uint32_t> {};
+    auto const* names = &uncached;
+    if (argumentsKey)
+    {
+        auto const cached = cachedNameIndex(*argumentsKey, arguments);
+        if (!cached)
+            return std::unexpected { cached.error() };
+        names = *cached;
+    }
+    else
+    {
+        auto built = nameIndex(arguments);
+        if (!built)
+            return std::unexpected { built.error() };
+        uncached = std::move(*built);
+    }
     for (auto const& [resource, path]: resources)
     {
         Require(!path.empty() && path.front() < entities.size());

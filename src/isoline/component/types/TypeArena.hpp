@@ -10,14 +10,17 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include <isoline/binary/Types.hpp>
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Component.hpp>
+#include <isoline/validate/TypeMatching.hpp>
 
 namespace isoline::component::types
 {
@@ -349,6 +352,13 @@ struct TypeMeasure
 /// - labels: a record's fields, a variant's cases, a flags' or an enum's labels, as encoded.
 /// - resource: an own's or a borrow's resource type.
 /// - length: a fixed-length list's length.
+/// - nominal: the definition the type is, for the rule that an exported or imported type names only
+///   exported or imported types (wasm-tools' type ids, which are distinct per definition and per
+///   export or import of a type): 0 for a type no definition made, such as an inline primitive, else a
+///   number the validator gives each definition. Two definitions of one structure thus stay two types;
+///   subtyping and equality ignore it.
+/// - resourceAlias: for Own and Borrow, which entry of the type index space named the resource (the
+///   `alias` of its TypeIdentity), for the same rule; subtyping and equality ignore it too.
 /// depth, effectiveSize and handles are computed by TypeArena::intern(), which replaces any value given.
 struct DefinedType
 {
@@ -357,6 +367,8 @@ struct DefinedType
     std::vector<SharedName> labels {};              ///< Its labels, in order (see above).
     std::optional<ResourceTypeId> resource {};      ///< For Own and Borrow: the resource type.
     uint32_t length = 0;                            ///< For FixedList: the number of elements.
+    uint32_t nominal = 0;                           ///< The definition it is (see above).
+    uint32_t resourceAlias = 0;                     ///< For Own and Borrow: the resource's entry.
     uint32_t depth = 1;                             ///< Its nesting depth (TypeMeasure::depth).
     uint32_t effectiveSize = 1;                     ///< Its effective size (TypeMeasure::effectiveSize).
     HandleContent handles = HandleContent::None;    ///< The handles it holds, itself included.
@@ -378,18 +390,136 @@ struct ValueExtern
     bool operator==(ValueExtern const&) const = default;
 };
 
+/// The identity of one entry of a type index space, as the rule that exported and imported types name
+/// only exported or imported types compares entries (wasm-tools' ComponentAnyTypeId, whose ids are
+/// fresh for every export or import of a type: TypeAlloc::with_unique): the type, and which copy of
+/// it the entry is. A value type's copies are distinct TypeIds (DefinedType::nominal), so its alias is
+/// always 0; a resource's, a function's, a component's and an instance's copies share their id and are
+/// told apart by alias, 0 for the type as defined, imported as `(sub resource)` or minted.
+struct TypeIdentity
+{
+    AnyTypeId type {};  ///< The type.
+    uint32_t alias = 0; ///< Which copy of it.
+
+    /// Identities compare by their type, then their copy.
+    auto operator<=>(TypeIdentity const&) const = default;
+};
+
 /// An import or export of sort type: the type it binds, which for `(sub resource)` is a fresh resource.
+///
+/// As wasm-tools' ComponentEntityType::Type, it records both the entry it adds to the type index space
+/// (its own copy of the type: `created`) and the entry it named (`referenced`), which the visibility
+/// rule reads; they are the same entry for `(sub resource)` and for the exports of an instance made of
+/// inline exports.
 struct TypeExtern
 {
-    AnyTypeId type; ///< The type bound.
+    AnyTypeId type;     ///< The type bound: the entry the extern adds (`created`).
+    uint32_t alias = 0; ///< Which copy of @ref type the entry is (TypeIdentity::alias).
+    /// The entry the declaration named (`referenced`); empty when it is the one the extern adds.
+    std::optional<TypeIdentity> referenced {};
 
-    /// Two externs are equal when they bind the same type.
+    /// The identity of the entry the extern adds.
+    /// @return Its type and copy.
+    [[nodiscard]] TypeIdentity created() const noexcept
+    {
+        return TypeIdentity { .type = type, .alias = alias };
+    }
+
+    /// The identity of the entry the declaration named.
+    /// @return It, which is created() unless the extern made a copy.
+    [[nodiscard]] TypeIdentity referencedIdentity() const noexcept { return referenced.value_or(created()); }
+
+    /// Two externs are equal when they bind the same entries.
     bool operator==(TypeExtern const&) const = default;
 };
 
+/// A core function type held by a TypeArena, canonical within it: two ids are equal exactly when their
+/// types are equivalent (the core spec's type equivalence, which without GC is structural, concrete
+/// references compared by the types they name).
+struct CoreFunctionTypeId
+{
+    uint32_t value = 0; ///< The index.
+
+    /// Ids compare by their index.
+    auto operator<=>(CoreFunctionTypeId const&) const = default;
+};
+
+/// A core module type held by a TypeArena: an embedded module's, or one a `core:moduletype` declares.
+struct CoreModuleTypeId
+{
+    uint32_t value = 0; ///< The index.
+
+    /// Ids compare by their index.
+    auto operator<=>(CoreModuleTypeId const&) const = default;
+};
+
+/// A core instance type held by a TypeArena.
+struct CoreInstanceTypeId
+{
+    uint32_t value = 0; ///< The index.
+
+    /// Ids compare by their index.
+    auto operator<=>(CoreInstanceTypeId const&) const = default;
+};
+
+/// A core import's or export's type in an arena's canonical ids: isoline::validate::CoreExternType,
+/// whose function or tag type index, and the type index of every concrete reference of its table or
+/// global type, is the value of a CoreFunctionTypeId of the arena.
+using CoreEntityType = isoline::validate::CoreExternType;
+
+/// One import of a core module type.
+struct CoreImportType
+{
+    SharedName module;   ///< Its module name.
+    SharedName name;     ///< Its field name.
+    CoreEntityType type; ///< What it imports.
+
+    /// Two imports are equal when their names and types are.
+    bool operator==(CoreImportType const&) const = default;
+};
+
+/// One export of a core module or instance type.
+struct CoreExportType
+{
+    SharedName name;     ///< Its name.
+    CoreEntityType type; ///< What it exports.
+
+    /// Two exports are equal when their names and types are.
+    bool operator==(CoreExportType const&) const = default;
+};
+
+/// A core module type: its imports, each (module, name) once as the component model requires, and its
+/// exports, each name once.
+struct CoreModuleTypeInfo
+{
+    std::vector<CoreImportType> imports {}; ///< The imports, in order.
+    std::vector<CoreExportType> exports {}; ///< The exports, in order.
+    /// Its measure: depth 1 and the module's type size (wasm-tools' TypeInfo::core(type_size)).
+    TypeMeasure measure {};
+    std::vector<uint32_t> importsByName {}; ///< Computed by TypeArena::add(): imports ordered by name.
+    std::vector<uint32_t> exportsByName {}; ///< Computed by TypeArena::add(): exports ordered by name.
+
+    /// Two module types are equal when every field is.
+    bool operator==(CoreModuleTypeInfo const&) const = default;
+};
+
+/// A core instance type: an instantiation of a core module type, whose exports are that type's, or a
+/// core instance of inline exports.
+struct CoreInstanceTypeInfo
+{
+    std::optional<CoreModuleTypeId> instantiated {}; ///< The module instantiated, if it is an instantiation.
+    std::vector<CoreExportType> exports {};          ///< The inline exports, for an instance of them.
+    TypeMeasure measure {};                          ///< Its measure: its exports' combined.
+    std::vector<uint32_t> exportsByName {}; ///< Computed by TypeArena::add(): inline exports by name.
+
+    /// Two instance types are equal when every field is.
+    bool operator==(CoreInstanceTypeInfo const&) const = default;
+};
+
 /// What an import or an export is, interned: types::ExternType of R4, the counterpart of the AST's
-/// binary::ExternDesc. Core module types join it with the core type validation of Task 7.
-using ExternType = std::variant<FunctionTypeId, ValueExtern, TypeExtern, ComponentTypeId, InstanceTypeId>;
+/// binary::ExternDesc.
+using ExternType =
+    std::variant<FunctionTypeId, ValueExtern, TypeExtern, ComponentTypeId, InstanceTypeId, CoreModuleTypeId>;
 
 /// A named import or export of a component or instance type.
 struct NamedExtern
@@ -629,6 +759,66 @@ class TypeArena
     [[nodiscard]] std::expected<InstanceTypeId, TypeLimitError> substitutedInstance(
         std::vector<NamedExtern> exports, ResourceSubstitution const& substitution);
 
+    /// Interns a core function type of the arena's canonical space: a structurally equal one already
+    /// held is returned instead of a new one, so equal ids are exactly equivalent types.
+    ///
+    /// Precondition (checked): every concrete type index in @p type is a CoreFunctionTypeId value the
+    /// arena returned, as a section's types rewritten in order are.
+    /// @param type The function type, its concrete references in the arena's ids.
+    /// @return Its id.
+    /// @throws std::bad_alloc When the type cannot be stored.
+    [[nodiscard]] CoreFunctionTypeId intern(isoline::binary::FuncType type);
+
+    /// A core function type of the arena.
+    /// @param id An id the arena returned (checked).
+    /// @return Its type, concrete references in the arena's ids.
+    [[nodiscard]] isoline::binary::FuncType const& operator[](CoreFunctionTypeId id) const;
+
+    /// The number of core function types the arena holds.
+    /// @return The count.
+    [[nodiscard]] std::size_t coreFunctionTypeCount() const noexcept { return _coreFunctions.size(); }
+
+    /// Adds a core module type; its name indices are computed.
+    /// @param type The type, its imports unique by (module, name) and its exports by name.
+    /// @return Its id.
+    [[nodiscard]] CoreModuleTypeId add(CoreModuleTypeInfo type);
+
+    /// Adds a core instance type; its name index is computed.
+    /// @param type The type, its inline exports unique by name.
+    /// @return Its id.
+    [[nodiscard]] CoreInstanceTypeId add(CoreInstanceTypeInfo type);
+
+    /// A core module type of the arena. @param id An id the arena returned (checked). @return Its type.
+    [[nodiscard]] CoreModuleTypeInfo const& operator[](CoreModuleTypeId id) const;
+    /// A core instance type of the arena. @param id An id the arena returned (checked). @return Its type.
+    [[nodiscard]] CoreInstanceTypeInfo const& operator[](CoreInstanceTypeId id) const;
+
+    /// The exports of a core instance type: its module's for an instantiation.
+    /// @param id A core instance type of the arena (checked).
+    /// @return Its exports, in order.
+    [[nodiscard]] std::span<CoreExportType const> exportsOf(CoreInstanceTypeId id) const;
+
+    /// The export of a core instance type of a name, found in O(log n) comparisons.
+    /// @param id A core instance type of the arena (checked).
+    /// @param name The export's name.
+    /// @return The export, or nothing when it has none of that name.
+    [[nodiscard]] CoreExportType const* findExport(CoreInstanceTypeId id, std::string_view name) const;
+
+    /// The export of a core module type of a name, found in O(log n) comparisons.
+    /// @param id A core module type of the arena (checked).
+    /// @param name The export's name.
+    /// @return The export, or nothing when it has none of that name.
+    [[nodiscard]] CoreExportType const* findExport(CoreModuleTypeId id, std::string_view name) const;
+
+    /// The import of a core module type of a module and field name, found in O(log n) comparisons.
+    /// @param id A core module type of the arena (checked).
+    /// @param module The import's module name.
+    /// @param name The import's field name.
+    /// @return The import, or nothing when it has none of those names.
+    [[nodiscard]] CoreImportType const* findImport(CoreModuleTypeId id,
+                                                   std::string_view module,
+                                                   std::string_view name) const;
+
     /// Mints a fresh resource type, distinct from every other.
     /// @param definition Its representation and destructor.
     /// @return Its id, or ResourceTypes once maxResourceTypes are held.
@@ -684,6 +874,8 @@ class TypeArena
     [[nodiscard]] std::size_t substitutedTypes() const noexcept { return _substitutedTypes; }
 
   private:
+    [[nodiscard]] std::expected<ExternType, TypeLimitError> substituteNamed(
+        ExternType const& type, ResourceSubstitution const& substitution);
     [[nodiscard]] std::expected<void, TypeLimitError> chargeSubstitution(std::size_t units);
     [[nodiscard]] std::expected<TypeMeasure, TypeLimitError> measureChildren(
         std::vector<std::optional<TypeId>> const& children) const;
@@ -715,6 +907,10 @@ class TypeArena
     std::vector<ComponentTypeInfo> _components;
     std::vector<InstanceTypeInfo> _instances;
     std::vector<ResourceTypeInfo> _resources;
+    std::vector<isoline::binary::FuncType> _coreFunctions;            ///< By CoreFunctionTypeId.
+    std::map<isoline::binary::FuncType, uint32_t> _coreFunctionIndex; ///< Each core function type's id.
+    std::vector<CoreModuleTypeInfo> _coreModules;
+    std::vector<CoreInstanceTypeInfo> _coreInstances;
 };
 
 } // namespace isoline::component::types

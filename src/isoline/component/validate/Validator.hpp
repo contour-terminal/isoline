@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -30,7 +31,6 @@ enum class ValidationErrorCode : uint8_t
 {
     LimitExceeded,
     FeatureDisabled,
-    NotYetValidated,
     CoreModuleRefused,
     TypeIndexOutOfBounds,
     NotDefinedType,
@@ -64,22 +64,74 @@ enum class ValidationErrorCode : uint8_t
     InvalidImplementsName,
     ImplementsNotInterface,
     InvalidImplementsVersion,
+    FunctionIndexOutOfBounds,
+    ComponentIndexOutOfBounds,
+    InstanceIndexOutOfBounds,
+    CoreFunctionIndexOutOfBounds,
+    ModuleIndexOutOfBounds,
+    CoreInstanceIndexOutOfBounds,
+    TableIndexOutOfBounds,
+    MemoryIndexOutOfBounds,
+    GlobalIndexOutOfBounds,
+    TagIndexOutOfBounds,
+    NotModuleType,
+    ModuleTypeNotSubType,
+    CoreAliasOfModuleType,
+    DuplicateCoreExport,
+    DuplicateCoreImport,
+    CoreLimitsOrder,
+    CoreTableTooLarge,
+    CoreMemoryTooLarge,
+    InvalidPageSize,
+    CoreTagResults,
+    DuplicateModuleArgument,
+    MissingModuleArgument,
+    ArgumentMissingExport,
+    CoreArgumentMismatch,
+    DuplicateCoreInstanceExport,
+    CoreInstanceNoExport,
+    CoreExportNotOfSort,
+    InstanceNoExport,
+    ExportNotOfSort,
+    AliasInTypeScope,
+    OuterAliasResource,
+    ArgumentConflict,
+    InstantiationMismatch,
+    AscriptionMismatch,
+    NotValidAs,
+    LocalResourceInImports,
+    LocalResourceNotExported,
+    NotLocalResource,
+    DestructorSignature,
+    EncodingConflict,
+    RepeatedOption,
+    CallbackWithoutAsync,
+    ReallocWithoutMemory,
+    ReallocSignature,
+    MemoryRequired,
+    ReallocRequired,
+    PostReturnInLower,
+    PostReturnSignature,
+    LiftParamsMismatch,
+    LiftResultsMismatch,
 };
 
 /// The last ValidationErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastValidationErrorCode = ValidationErrorCode::InvalidImplementsVersion;
+inline constexpr auto LastValidationErrorCode = ValidationErrorCode::LiftResultsMismatch;
 
 /// How a validation error's message is built from its row's text and the error's fields.
 enum class ValidationErrorDetail : uint8_t
 {
-    None,     ///< The row's text, as it is.
-    Index,    ///< The text formatted with the subject, an index.
-    Label,    ///< The text formatted with the LabelKind in subject, its name and the previous name.
-    Deferred, ///< The text formatted with the DeferredForm in subject's DeferredFormTable text.
-    Limit,    ///< The exceeded limit's message (limitMessage()), the subject from binary::limitSubject().
-    Refusal,  ///< The error's name: a gated form's refusal, wasm-tools' text for that site.
-    Extern,   ///< The text formatted with the ExternKind in subject's word, the name and previous.
-    Named,    ///< The text formatted with the name and previous.
+    None,       ///< The row's text, as it is.
+    Index,      ///< The text formatted with the subject, an index.
+    Label,      ///< The text formatted with the LabelKind in subject, its name and the previous name.
+    Limit,      ///< The exceeded limit's message (limitMessage()), the subject from binary::limitSubject().
+    Refusal,    ///< The error's name: a gated form's refusal, wasm-tools' text for that site.
+    Extern,     ///< The text formatted with the ExternKind in subject's word, the name and previous.
+    Named,      ///< The text formatted with the name and previous.
+    IndexNamed, ///< The text formatted with the subject, an index, then the name and previous.
+    Mismatch,   ///< As Named, then a line of the error's detail: the mismatch found inside.
+    Verbatim,   ///< The error's detail, as it is: a type relation's message, its contexts included.
 };
 
 /// One row of ValidationErrorMessages: an error and how its message reads.
@@ -103,11 +155,6 @@ inline constexpr auto ValidationErrorMessages = std::to_array<ValidationErrorRow
     { .code = ValidationErrorCode::FeatureDisabled,
       .text = "feature not enabled",
       .detail = ValidationErrorDetail::Refusal },
-    // Isoline's own, for a definition whose validation lands with Task 7: refused, never accepted
-    // unchecked.
-    { .code = ValidationErrorCode::NotYetValidated,
-      .text = "not yet validated: {0}",
-      .detail = ValidationErrorDetail::Deferred },
     // Isoline's own: the ICoreModuleValidator refused the embedded core module of this ordinal.
     { .code = ValidationErrorCode::CoreModuleRefused,
       .text = "invalid core module {0}",
@@ -190,6 +237,138 @@ inline constexpr auto ValidationErrorMessages = std::to_array<ValidationErrorRow
     { .code = ValidationErrorCode::InvalidImplementsVersion,
       .text = "{1}",
       .detail = ValidationErrorDetail::Named },
+    // The index spaces of a component and the core definitions in it (component.rs:4378-4530 and
+    // core.rs:719-930); an IndexNamed row's {0} is the index, {1} the name, {2} previous.
+    { .code = ValidationErrorCode::FunctionIndexOutOfBounds,
+      .text = "unknown function {0}: function index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::ComponentIndexOutOfBounds,
+      .text = "unknown component {0}: component index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::InstanceIndexOutOfBounds,
+      .text = "unknown instance {0}: instance index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::CoreFunctionIndexOutOfBounds,
+      .text = "unknown core function {0}: function index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::ModuleIndexOutOfBounds,
+      .text = "unknown module {0}: module index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::CoreInstanceIndexOutOfBounds,
+      .text = "unknown core instance {0}: instance index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::TableIndexOutOfBounds,
+      .text = "unknown table {0}: table index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::MemoryIndexOutOfBounds,
+      .text = "unknown memory {0}: memory index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::GlobalIndexOutOfBounds,
+      .text = "unknown global {0}: global index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::TagIndexOutOfBounds,
+      .text = "unknown tag {0}: tag index out of bounds",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::NotModuleType,
+      .text = "core type index {0} is not a module type",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::ModuleTypeNotSubType,
+      .text = "type index {0} is a module type, not a sub type",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::CoreAliasOfModuleType,
+      .text = "not implemented: aliasing core module types into a core module's types index space" },
+    { .code = ValidationErrorCode::DuplicateCoreExport,
+      .text = "duplicate export name `{0}` already defined",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::DuplicateCoreImport,
+      .text = "module has a duplicate import name `{0}:{1}` that is not allowed in components",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::CoreLimitsOrder, .text = "size minimum must not be greater than maximum" },
+    { .code = ValidationErrorCode::CoreTableTooLarge,
+      .text = "table size must be at most {0} entries",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::CoreMemoryTooLarge,
+      .text = "memory size must be at most {0} {1}-byte pages",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::InvalidPageSize, .text = "invalid custom page size" },
+    { .code = ValidationErrorCode::CoreTagResults,
+      .text = "invalid exception type: non-empty tag result type" },
+    { .code = ValidationErrorCode::DuplicateModuleArgument,
+      .text = "duplicate module instantiation argument named `{0}`",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::MissingModuleArgument,
+      .text = "missing module instantiation argument named `{0}`",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::ArgumentMissingExport,
+      .text = "module instantiation argument `{0}` does not export an item named `{1}`",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::CoreArgumentMismatch,
+      .text = "type mismatch for export `{1}` of module instantiation argument `{0}`",
+      .detail = ValidationErrorDetail::Mismatch },
+    { .code = ValidationErrorCode::DuplicateCoreInstanceExport,
+      .text = "duplicate instantiation export name `{0}` already defined",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::CoreInstanceNoExport,
+      .text = "core instance {0} has no export named `{1}`",
+      .detail = ValidationErrorDetail::IndexNamed },
+    { .code = ValidationErrorCode::CoreExportNotOfSort,
+      .text = "export `{1}` for core instance {0} is not a {2}",
+      .detail = ValidationErrorDetail::IndexNamed },
+    { .code = ValidationErrorCode::InstanceNoExport,
+      .text = "instance {0} has no export named `{1}`",
+      .detail = ValidationErrorDetail::IndexNamed },
+    { .code = ValidationErrorCode::ExportNotOfSort,
+      .text = "export `{1}` for instance {0} is not a {2}",
+      .detail = ValidationErrorDetail::IndexNamed },
+    { .code = ValidationErrorCode::AliasInTypeScope,
+      .text = "aliases in a component or instance type may only refer to types or instances" },
+    { .code = ValidationErrorCode::OuterAliasResource,
+      .text = "cannot alias outer type which transitively refers to resources not defined in the current "
+              "component" },
+    { .code = ValidationErrorCode::ArgumentConflict,
+      .text = "instantiation argument `{0}` conflicts with previous argument `{1}`",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::InstantiationMismatch,
+      .text = "{0}",
+      .detail = ValidationErrorDetail::Verbatim },
+    { .code = ValidationErrorCode::AscriptionMismatch,
+      .text = "ascribed type of export is not compatible with item's type",
+      .detail = ValidationErrorDetail::Mismatch },
+    { .code = ValidationErrorCode::NotValidAs,
+      .text = "{0} not valid to be used as {1}",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::LocalResourceInImports, .text = "local resource type found in imports" },
+    { .code = ValidationErrorCode::LocalResourceNotExported,
+      .text = "local resource type found in export but not exported itself" },
+    { .code = ValidationErrorCode::NotLocalResource,
+      .text = "type {0} is not a local resource",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::DestructorSignature,
+      .text = "core function {0} has wrong signature for a destructor",
+      .detail = ValidationErrorDetail::Index },
+    { .code = ValidationErrorCode::EncodingConflict,
+      .text = "canonical encoding option `{0}` conflicts with option `{1}`",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::RepeatedOption,
+      .text = "canonical option `{0}` is specified more than once",
+      .detail = ValidationErrorDetail::Named },
+    { .code = ValidationErrorCode::CallbackWithoutAsync, .text = "cannot specify callback without async" },
+    { .code = ValidationErrorCode::ReallocWithoutMemory,
+      .text = "canonical option `realloc` requires `memory` to also be specified" },
+    { .code = ValidationErrorCode::ReallocSignature,
+      .text = "canonical option `realloc` uses a core function with an incorrect signature" },
+    { .code = ValidationErrorCode::MemoryRequired, .text = "canonical option `memory` is required" },
+    { .code = ValidationErrorCode::ReallocRequired, .text = "canonical option `realloc` is required" },
+    { .code = ValidationErrorCode::PostReturnInLower,
+      .text = "canonical option `post-return` cannot be specified for lowerings" },
+    { .code = ValidationErrorCode::PostReturnSignature,
+      .text = "canonical option `post-return` uses a core function with an incorrect signature" },
+    { .code = ValidationErrorCode::LiftParamsMismatch,
+      .text = "lowered parameter types `{1}` do not match parameter types `{2}` of core function {0}",
+      .detail = ValidationErrorDetail::IndexNamed },
+    { .code = ValidationErrorCode::LiftResultsMismatch,
+      .text = "lowered result types `{1}` do not match result types `{2}` of core function {0}",
+      .detail = ValidationErrorDetail::IndexNamed },
 });
 
 static_assert(
@@ -205,66 +384,6 @@ static_assert(
     }(),
     "ValidationErrorMessages must hold one row per ValidationErrorCode, at the index of its enumerator");
 
-/// A form validateComponent() does not validate yet, and so refuses as NotYetValidated: never accepted
-/// unchecked. Task 7 removes a row as it validates the form, and the compiler then names each place
-/// that refuses it.
-enum class DeferredForm : uint8_t
-{
-    CanonicalFunctions,
-    CoreInstances,
-    ComponentInstances,
-    ExportDefinitions,
-    InstanceExportAliases,
-    CoreInstanceExportAliases,
-    OuterAliasesOfOtherSorts,
-    OuterAliasesIntoComponents,
-    CoreTypeDefinitions,
-    ResourceDestructors,
-    CoreModuleTypes,
-    ResourceFunctionNames,
-};
-
-/// One row of DeferredFormTable: a deferred form and how its refusal names it.
-struct DeferredFormRow
-{
-    DeferredForm form;     ///< The form; equal to the row's index.
-    std::string_view text; ///< What "not yet validated: …" names.
-};
-
-/// Every deferred form, one row per DeferredForm enumerator, in enumerator order.
-inline constexpr auto DeferredFormTable = std::to_array<DeferredFormRow>({
-    { .form = DeferredForm::CanonicalFunctions, .text = "canonical function definitions" },
-    { .form = DeferredForm::CoreInstances, .text = "core instances" },
-    { .form = DeferredForm::ComponentInstances, .text = "component instances" },
-    { .form = DeferredForm::ExportDefinitions, .text = "export definitions" },
-    { .form = DeferredForm::InstanceExportAliases, .text = "aliases of instance exports" },
-    { .form = DeferredForm::CoreInstanceExportAliases, .text = "aliases of core instance exports" },
-    { .form = DeferredForm::OuterAliasesOfOtherSorts, .text = "outer aliases of this sort" },
-    // The rule that a type crossing into a component refers to no resource defined outside it.
-    { .form = DeferredForm::OuterAliasesIntoComponents,
-      .text = "outer aliases into a component of a type that may refer to a resource" },
-    { .form = DeferredForm::CoreTypeDefinitions, .text = "core type definitions" },
-    { .form = DeferredForm::ResourceDestructors, .text = "resource destructors" },
-    { .form = DeferredForm::CoreModuleTypes, .text = "core module types" },
-    // The rules of a `[constructor]`, `[method]` or `[static]` name: a function, whose signature names
-    // a resource of the scope (validate, component.rs:4884-4990), checked with Task 7's index spaces.
-    { .form = DeferredForm::ResourceFunctionNames,
-      .text = "extern names of `[constructor]`, `[method]` or `[static]` functions" },
-});
-
-static_assert(
-    [] {
-        auto index = std::size_t { 0 };
-        for (auto const& row: DeferredFormTable)
-        {
-            if (static_cast<std::size_t>(row.form) != index)
-                return false;
-            ++index;
-        }
-        return index == static_cast<std::size_t>(DeferredForm::ResourceFunctionNames) + 1;
-    }(),
-    "DeferredFormTable must hold one row per DeferredForm, at the index of its enumerator");
-
 /// A gated form the validator refuses, at one site: a FeatureDisabled refusal reads its row's text.
 enum class GatedForm : uint8_t
 {
@@ -279,7 +398,7 @@ enum class GatedForm : uint8_t
     VersionSuffix,
     ExternalId,
     AsyncOption,
-    CallbackOption,
+    Memory64CanonicalMemory,
 };
 
 /// One row of GatedFormTable: a gated form, its feature, and wasm-tools' refusal of it at that site.
@@ -326,11 +445,9 @@ inline constexpr auto GatedFormTable = std::to_array<GatedFormRow>({
     { .form = GatedForm::AsyncOption, // 2749
       .feature = ComponentFeature::Async,
       .text = "canonical option `async` requires the component model async feature" },
-    // Isoline's own: wasm-tools refuses a callback without `async` as "cannot specify callback
-    // without async", which Task 7's option rules check; the gate words it as its `async` sibling.
-    { .form = GatedForm::CallbackOption,
-      .feature = ComponentFeature::Async,
-      .text = "canonical option `callback` requires the component model async feature" },
+    { .form = GatedForm::Memory64CanonicalMemory, // 4542
+      .feature = ComponentFeature::Memory64,
+      .text = "64-bit memories require the `cm64` feature to be enabled" },
 });
 
 static_assert(
@@ -342,7 +459,7 @@ static_assert(
                 return false;
             ++index;
         }
-        return index == static_cast<std::size_t>(GatedForm::CallbackOption) + 1;
+        return index == static_cast<std::size_t>(GatedForm::Memory64CanonicalMemory) + 1;
     }(),
     "GatedFormTable must hold one row per GatedForm, at the index of its enumerator");
 
@@ -405,17 +522,24 @@ static_assert(
     }(),
     "AttributeGates names a gated form of each attribute's feature, in Attribute's order");
 
-/// The gated form of each canonical option, by CanonOptionKind: empty for an ungated one.
+/// The gated form of each canonical option, by CanonOptionKind: empty for one validation admits
+/// ungated. `callback` is decoded under 🔀's gate, but wasm-tools' option check gates only `async`: a
+/// callback is refused by the rule that it needs `async` ("cannot specify callback without async",
+/// component.rs:2829-2831), never as a disabled feature, so its entry is empty.
 inline constexpr auto CanonOptionGates = std::to_array<std::optional<GatedForm>>({
-    std::nullopt,              // string-encoding=utf8
-    std::nullopt,              // string-encoding=utf16
-    std::nullopt,              // string-encoding=latin1+utf16
-    std::nullopt,              // memory
-    std::nullopt,              // realloc
-    std::nullopt,              // post-return
-    GatedForm::AsyncOption,    // async
-    GatedForm::CallbackOption, // callback
+    std::nullopt,           // string-encoding=utf8
+    std::nullopt,           // string-encoding=utf16
+    std::nullopt,           // string-encoding=latin1+utf16
+    std::nullopt,           // memory
+    std::nullopt,           // realloc
+    std::nullopt,           // post-return
+    GatedForm::AsyncOption, // async
+    std::nullopt,           // callback
 });
+
+/// The canonical options decoded under a gate that validation checks by a rule of its own instead.
+inline constexpr auto RuleCheckedOptions =
+    std::to_array<binary::CanonOptionKind>({ binary::CanonOptionKind::Callback });
 
 static_assert(
     [] {
@@ -425,12 +549,79 @@ static_assert(
         {
             auto const& gate = binary::CanonOptionTable[index].gate;
             auto const& form = CanonOptionGates[index];
-            if (gate.has_value() != form.has_value() || (form && gatedFormRow(*form).feature != *gate))
+            auto const isRuleChecked =
+                std::ranges::find(RuleCheckedOptions, binary::CanonOptionTable[index].kind)
+                != RuleCheckedOptions.end();
+            if (gate.has_value() != (form.has_value() || isRuleChecked)
+                || (form && gatedFormRow(*form).feature != *gate))
                 return false;
         }
         return true;
     }(),
-    "CanonOptionGates names a gated form, of the same feature, exactly for each gated option");
+    "CanonOptionGates names a gated form, of the same feature, for each gated option not checked by a rule");
+
+/// How wasm-tools names each string encoding option, by CanonOptionKind (check_options' display,
+/// component.rs:2658-2670): Utf8, Utf16 and Latin1Utf16 only.
+inline constexpr auto StringEncodingWords =
+    std::to_array<std::string_view>({ "utf8", "utf16", "latin1-utf16" });
+
+/// One rule of a `[constructor]`, `[method]` or `[static]` name, which the function it names breaks.
+///
+/// The enumerators are the rows of ResourceNameRuleMessages, in the same order.
+enum class ResourceNameRule : uint8_t
+{
+    NotAFunction,
+    ConstructorWithoutResult,
+    ConstructorResultNotOwn,
+    MethodWithoutParameters,
+    MethodFirstNotSelf,
+    MethodSelfNotBorrow,
+    StaticResourceUnknown,
+    ResourceUnnamed,
+    ResourceNameMismatch,
+};
+
+/// One row of ResourceNameRuleMessages: a rule and wasm-tools' text when it is broken.
+struct ResourceNameRuleRow
+{
+    ResourceNameRule rule; ///< The rule; equal to the row's index.
+    std::string_view text; ///< Its text; {0} names the expected resource name where it has one.
+};
+
+/// Every resource name rule, in ResourceNameRule's order: wasm-tools 1.263.0's texts
+/// (ComponentNameContext::validate and validate_resource_name, component.rs:4885-5090). A broken rule is
+/// reported as InvalidExternNameUse, its text after the name's.
+inline constexpr auto ResourceNameRuleMessages = std::to_array<ResourceNameRuleRow>({
+    { .rule = ResourceNameRule::NotAFunction, .text = "item is not a func" },
+    { .rule = ResourceNameRule::ConstructorWithoutResult, .text = "function should return one value" },
+    { .rule = ResourceNameRule::ConstructorResultNotOwn,
+      .text = "function should return `(own $T)` or `(result (own $T))`" },
+    { .rule = ResourceNameRule::MethodWithoutParameters,
+      .text = "function should have at least one argument" },
+    { .rule = ResourceNameRule::MethodFirstNotSelf,
+      .text = "function should have a first argument called `self`" },
+    { .rule = ResourceNameRule::MethodSelfNotBorrow,
+      .text = "function should take a first argument of `(borrow $T)`" },
+    { .rule = ResourceNameRule::StaticResourceUnknown,
+      .text = "static resource name is not known in this context" },
+    { .rule = ResourceNameRule::ResourceUnnamed,
+      .text = "resource used in function does not have a name in this context" },
+    { .rule = ResourceNameRule::ResourceNameMismatch,
+      .text = "function does not match expected resource name `{0}`" },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: ResourceNameRuleMessages)
+        {
+            if (static_cast<std::size_t>(row.rule) != index)
+                return false;
+            ++index;
+        }
+        return index == static_cast<std::size_t>(ResourceNameRule::ResourceNameMismatch) + 1;
+    }(),
+    "ResourceNameRuleMessages must hold one row per ResourceNameRule, at the index of its enumerator");
 
 /// One row of CanonRefusalTable: a gated canonical built-in and wasm-tools' refusal of it.
 struct CanonRefusalRow
@@ -608,6 +799,8 @@ struct ValidationError
     std::string previous {};
     std::optional<ComponentFeature> disabled {};  ///< For FeatureDisabled: the feature not admitted.
     std::optional<CoreModuleError> coreModule {}; ///< For CoreModuleRefused: the module and its refusal.
+    /// For a Mismatch row, the mismatch found inside, its own lines; for a Verbatim row, the message.
+    std::string detail {};
 };
 
 /// The limit a LimitExceeded error reports.
@@ -641,34 +834,37 @@ class ICoreModuleValidator
     ICoreModuleValidator& operator=(ICoreModuleValidator&&) = default;
 };
 
-/// Validates a decoded component.
+/// Validates a decoded component, as wasm-tools 1.263.0 validates one (wasmparser 0.263.0
+/// src/validator/component.rs), refusing at the stage and in the words it does.
 ///
 /// Scopes are walked in definition order on an explicit stack of frames, never by recursion: nested
-/// components, and component and instance types, each with its own type index space. Every type is
-/// interned into one TypeArena and measured as wasm-tools measures it, so a type deeper than
-/// maxTypeDepth or of an effective size of maxTypeSize is refused where it is defined; an outer alias
-/// of a type into a component charges its effective size to that component's budget of maxTypeSize
-/// (component.rs:3930-3960). A form gated by a feature the validator does not admit
-/// (validationAdmits()) is refused as FeatureDisabled where wasm-tools refuses it, in validation.
+/// components, and component and instance types. Each scope's index spaces (ScopeInfo) are built
+/// incrementally, an export, import or alias adding an entry to its sort's space, and every lookup is
+/// checked against them and against the caps of ComponentLimits. Every type is interned into one
+/// TypeArena and measured as wasm-tools measures it; each definition is a type of its own and each
+/// export or import of a type a fresh copy of it, as wasm-tools' type ids are, which the rule that an
+/// export or import names only exported or imported types (validate_and_register_named_types) reads.
+/// A form gated by a feature the validator does not admit (validationAdmits()) is refused as
+/// FeatureDisabled where wasm-tools refuses it.
 ///
-/// What this validates fully: the type section's definitions in every scope (defined value types with
-/// their label, count and key rules; function types; resource types bar their destructors; component
-/// and instance types), outer aliases of sort type, the imports and export declarations of type scopes
-/// and the imports of components with their names (the externname grammar, an interface's version,
-/// `implements`, strong uniqueness), and the embedded core modules, through @p coreModules. Resources
-/// are generative: an import or export declaration of an instance type that defines resources mints
-/// them afresh (wasm-tools' prepare_instance_import and prepare_instance_export), and every component
-/// and instance type records where it binds its resources. Everything else is refused as
-/// NotYetValidated, naming its DeferredForm, after its gated forms are checked: every other definition;
-/// a `[constructor]`, `[method]` or `[static]` name; and an outer type alias into a component of a type
-/// that may refer to a resource (a resource, a value or function type holding a handle, a component or
-/// instance type). Nothing is accepted unchecked.
+/// What it validates: the type definitions of every scope; core module types, and every embedded core
+/// module through @p coreModules, all their types interned into the arena's one canonical core type
+/// space, so that core instantiation matches an import by an equality of ids; core instances made by
+/// instantiation (each import supplied by an export of the right type) or of inline exports; aliases
+/// of instance and core instance exports, and outer aliases, a type crossing into a component naming
+/// no resource defined outside it; component instances, their arguments subtypes of the imports
+/// (TypeRelation, one for the whole validation), their resources bound or made fresh; imports and
+/// exports, with their names (the grammar, `implements`, a resource function's signature, strong
+/// uniqueness) and ascribed types; canonical lifts and lowers, their options and core signatures, and
+/// the resource built-ins; and, as each component finishes, that its resources stay inside it but for
+/// those it exports.
 ///
 /// Precondition: @p pool is well formed, as decodeComponent() and testing::ComponentBuilder lay pools
 /// out (entry 0 a component; each nested component and type scope a later entry of its kind).
 /// @param pool The decoded component; the result keeps it.
 /// @param features The gated features to admit (validationAdmits()).
-/// @param limits The caps to enforce: maxTypeDepth, maxTypeSize, maxTypes and maxResourceTypes.
+/// @param limits The caps to enforce: the type caps (maxTypeDepth, maxTypeSize, maxTypes,
+///               maxResourceTypes, maxSubstitutedTypes, maxSubtypingSteps) and the index space caps.
 /// @param coreModules Validates each embedded core module, in ordinal order.
 /// @return The validated component, or the first error.
 [[nodiscard]] std::expected<std::shared_ptr<ValidatedComponent const>, ValidationError> validateComponent(

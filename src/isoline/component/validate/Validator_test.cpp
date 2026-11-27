@@ -224,8 +224,9 @@ TEST_CASE("Validator.wellFormedDefinedTypes")
     REQUIRE(result.has_value());
     auto const& component = **result;
     CHECK(component.type.imports.empty());
-    // The primitives defined above are the arena's own: no type beyond the compounds was added.
-    CHECK(component.types.valueTypeCount() == 14 + 11);
+    // Each definition is a type of its own, as wasm-tools' type ids are: the 13 defined primitives are
+    // not the arena's inline ones, and nothing else was added.
+    CHECK(component.types.valueTypeCount() == 14 + 13 + 11);
 }
 
 TEST_CASE("Validator.countRulesSuiteVectors")
@@ -468,10 +469,10 @@ TEST_CASE("Validator.resources")
     CHECK(wide.disabled == ComponentFeature::Memory64);
     CHECK(specMessage(wide) == "resources with `i64` require the `cm64` feature to be enabled");
 
-    // The destructor's core function type is Task 7's: refused, not accepted unchecked.
+    // A destructor names a core function of the component, of core type [rep] -> [].
     auto destroyed = ComponentBuilder {};
     std::ignore = destroyed.resource(0);
-    CHECK(refusal(destroyed.pool()).code == ValidationErrorCode::NotYetValidated);
+    CHECK(refusalText(destroyed.pool()) == "unknown core function 0: function index out of bounds");
 
     // `(sub resource)` exports of an instance type mint fresh resources, usable by own.
     auto exported = TypeScopeBuilder {};
@@ -534,22 +535,16 @@ TEST_CASE("Validator.externDeclarations")
     CHECK(specMessage(refused) == "the `cm-implements` feature is not active");
 }
 
-TEST_CASE("Validator.deferredDefinitions")
+TEST_CASE("Validator.gatesOfDefinitions")
 {
-    // What Task 7 validates is refused, never accepted unchecked; its gated forms first.
-    auto lift = ComponentBuilder {};
-    auto const function = lift.type(TypeDefinition { .type = functionOf({}) });
-    std::ignore = lift.canonLift(0, {}, function);
-    auto const refused = refusal(lift.pool());
-    CHECK(refused.code == ValidationErrorCode::NotYetValidated);
-    CHECK(specMessage(refused) == "not yet validated: canonical function definitions");
-    CHECK(refused.position == DefinitionPosition { .scope = 0, .definition = 1 });
-
+    // A definition's gated forms are refused where wasm-tools refuses them, before its other rules.
     auto gated = ComponentBuilder {};
     std::ignore = gated.canon(CanonDefinition {
         .builtin = CanonBuiltin::TaskReturn, .immediates = {}, .options = {}, .result = std::nullopt });
     CHECK(specMessage(refusal(gated.pool())) == "`task.return` requires the component model async feature");
     auto asyncOption = ComponentBuilder {};
+    auto const function = asyncOption.type(TypeDefinition { .type = functionOf({}) });
+    std::ignore = asyncOption.import("f", ExternDesc { .sort = Sort::Func, .index = function });
     std::ignore = asyncOption.canonLower(0, { CanonOption { .kind = CanonOptionKind::Async, .index = 0 } });
     CHECK(specMessage(refusal(asyncOption.pool()))
           == "canonical option `async` requires the component model async feature");
@@ -566,11 +561,9 @@ TEST_CASE("Validator.deferredDefinitions")
     std::ignore = instance.inlineInstance({ { "v", SortIndex { .sort = Sort::Value, .index = 0 } } });
     CHECK(refusal(instance.pool()).disabled == ComponentFeature::Values);
     auto argument = ComponentBuilder {};
+    std::ignore = argument.nested(ComponentBuilder {});
     std::ignore = argument.instantiate(0, { { "v", SortIndex { .sort = Sort::Value, .index = 0 } } });
     CHECK(refusal(argument.pool()).disabled == ComponentFeature::Values);
-    auto ungated = ComponentBuilder {};
-    std::ignore = ungated.instantiate(0, { { "f", SortIndex { .sort = Sort::Func, .index = 0 } } });
-    CHECK(specMessage(refusal(ungated.pool())) == "not yet validated: component instances");
 }
 
 TEST_CASE("Validator.coreModules")
@@ -762,10 +755,24 @@ TEST_CASE("Validator.outerAliases")
     std::ignore = far.instanceType(std::move(tooFar));
     CHECK(refusalText(far.pool()) == "invalid outer alias count of 2");
 
-    // Outer aliases of other sorts are Task 7's.
+    // A component, core module and core type are aliased from an enclosing scope's spaces too.
     auto component = ComponentBuilder {};
     std::ignore = component.aliasOuter(Sort::Component, 0, 0);
-    CHECK(specMessage(refusal(component.pool())) == "not yet validated: outer aliases of this sort");
+    CHECK(specMessage(refusal(component.pool())) == "unknown component 0: component index out of bounds");
+    auto outerItems = ComponentBuilder {};
+    std::ignore = outerItems.coreModule(modulePreamble());
+    std::ignore = outerItems.coreType(
+        isoline::component::binary::CoreTypeDefinition { .type = isoline::binary::FuncType {} });
+    std::ignore = outerItems.nested(ComponentBuilder {});
+    auto inside = ComponentBuilder {};
+    std::ignore = inside.aliasOuter(Sort::CoreModule, 1, 0);
+    std::ignore = inside.aliasOuter(Sort::CoreType, 1, 0);
+    std::ignore = inside.aliasOuter(Sort::Component, 1, 0);
+    std::ignore = outerItems.nested(std::move(inside));
+    CHECK(accepted(outerItems.pool()));
+    auto missingModule = ComponentBuilder {};
+    std::ignore = missingModule.aliasOuter(Sort::CoreModule, 0, 3);
+    CHECK(refusalText(missingModule.pool()) == "unknown module 3: module index out of bounds");
 }
 
 TEST_CASE("Validator.gatesRefusedAtValidation")
@@ -805,9 +812,6 @@ TEST_CASE("Validator.gatesRefusedAtValidation")
         { .text = "`error-context` requires the component model error-context feature",
           .bytes = oneOf(7, { 0x70, 0x64 }),
           .disabled = ComponentFeature::ErrorContext },
-        { .text = "canonical option `async` requires the component model async feature",
-          .bytes = oneOf(8, { 0x01, 0x00, 0x00, 0x01, 0x06 }),
-          .disabled = ComponentFeature::Async },
         { .text = "`backpressure.inc` requires the component model async feature",
           .bytes = oneOf(8, { 0x24 }),
           .disabled = ComponentFeature::Async },
@@ -864,10 +868,16 @@ TEST_CASE("Validator.canonRefusalsAreWasmToolsTexts")
           == "`stream.forward` requires the component model forward feature");
     CHECK(textOf(CanonBuiltin::ThreadAvailableParallelism)
           == "`thread.available_parallelism` requires the shared-everything-threads proposal");
+    // A callback is no gated form (check_options gates `async` only): without `async` it is refused by
+    // its own rule, after the options are read (component.rs:2829-2831).
     auto callback = ComponentBuilder {};
+    auto const function = callback.type(TypeDefinition { .type = functionOf({}) });
+    std::ignore = callback.import("f", ExternDesc { .sort = Sort::Func, .index = function });
     std::ignore = callback.canonLower(0, { CanonOption { .kind = CanonOptionKind::Callback, .index = 0 } });
-    CHECK(refusalText(callback.pool())
-          == "canonical option `callback` requires the component model async feature");
+    auto const refusedCallback = refusal(callback.pool());
+    CHECK(refusedCallback.code == ValidationErrorCode::CallbackWithoutAsync);
+    CHECK_FALSE(refusedCallback.disabled.has_value());
+    CHECK(specMessage(refusedCallback) == "cannot specify callback without async");
 }
 
 TEST_CASE("Validator.externNames")
@@ -905,7 +915,10 @@ TEST_CASE("Validator.externNames")
                    "invalid interface version: unexpected end of input while parsing minor version number" },
              { .name = "[method]r.f",
                .message =
-                   "not yet validated: extern names of `[constructor]`, `[method]` or `[static]` functions" },
+                   "import name `[method]r.f` is not valid\nfunction should have at least one argument" },
+             { .name = "[static]r.f",
+               .message = "import name `[static]r.f` is not valid\nstatic resource name is not known in this "
+                          "context" },
              { .name = "[get]a",
                .message = "import name `[get]a` is not a valid extern name\n"
                           "`[get]` and `[set]` names require the component model accessors feature" },
@@ -1045,58 +1058,6 @@ TEST_CASE("Validator.attributeGateOrder")
     CHECK(unread.error().disabled == ComponentFeature::Implements);
 }
 
-TEST_CASE("Validator.outerAliasesIntoComponentsDeferred")
-{
-    // A type crossing into a component may not refer to a resource defined outside it; until Task 7
-    // checks that, a type that may is refused, and one that cannot (a tuple of u32, as $t16) is not.
-    auto const crossing = [](auto define) {
-        auto builder = ComponentBuilder {};
-        auto const type = define(builder);
-        auto nested = ComponentBuilder {};
-        std::ignore = nested.aliasOuter(Sort::Type, 1, type);
-        std::ignore = builder.nested(std::move(nested));
-        return builder.pool();
-    };
-    auto const deferred =
-        "not yet validated: outer aliases into a component of a type that may refer to a resource";
-    // (component (type $r (resource (rep i32))) (component (alias outer 1 $r (type))))
-    CHECK(refusalText(crossing([](ComponentBuilder& builder) { return builder.resource(); })) == deferred);
-    CHECK(refusalText(crossing([](ComponentBuilder& builder) {
-              auto const resource = builder.resource();
-              auto const own = builder.type(defined(OwnType { .resource = resource }));
-              return builder.type(defined(ListType { .element = at(own) }));
-          }))
-          == deferred);
-    CHECK(refusalText(crossing([](ComponentBuilder& builder) {
-              auto const resource = builder.resource();
-              auto const own = builder.type(defined(OwnType { .resource = resource }));
-              return builder.type(
-                  TypeDefinition { .type = functionOf({ LabeledType { .label = "r", .type = at(own) } }) });
-          }))
-          == deferred);
-    // A function type holding no handle refers to no resource: its flag says so, computed when added.
-    CHECK(accepted(crossing(
-        [](ComponentBuilder& builder) { return builder.type(TypeDefinition { .type = functionOf({}) }); })));
-    CHECK(refusalText(
-              crossing([](ComponentBuilder& builder) { return builder.instanceType(TypeScopeBuilder {}); }))
-          == deferred);
-    CHECK(refusalText(
-              crossing([](ComponentBuilder& builder) { return builder.componentType(TypeScopeBuilder {}); }))
-          == deferred);
-    CHECK(accepted(crossing([](ComponentBuilder& builder) {
-        return builder.type(
-            defined(TupleType { .elements = { PrimitiveValueType::U32, PrimitiveValueType::U32 } }));
-    })));
-    // Within the same component, or into a type scope, nothing crosses a component boundary.
-    auto declarations = TypeScopeBuilder {};
-    std::ignore = declarations.aliasOuter(Sort::Type, 1, 0);
-    auto local = ComponentBuilder {};
-    std::ignore = local.resource();
-    std::ignore = local.instanceType(std::move(declarations));
-    std::ignore = local.aliasOuter(Sort::Type, 0, 0);
-    CHECK(accepted(local.pool()));
-}
-
 namespace
 {
 
@@ -1132,6 +1093,74 @@ TypeScopeBuilder definingAResource()
 }
 
 } // namespace
+
+TEST_CASE("Validator.outerAliasResource")
+{
+    // alias_type (component.rs:3909-3971): a type crossing into a component may not refer to a resource
+    // defined outside it, transitively; wasm-tools' resources.wast and very-nested.wast's shapes.
+    auto const crossing = [](auto define) {
+        auto builder = ComponentBuilder {};
+        auto const type = define(builder);
+        auto nested = ComponentBuilder {};
+        std::ignore = nested.aliasOuter(Sort::Type, 1, type);
+        std::ignore = builder.nested(std::move(nested));
+        return builder.pool();
+    };
+    auto const refused =
+        "cannot alias outer type which transitively refers to resources not defined in the current "
+        "component";
+    // (component (type $r (resource (rep i32))) (component (alias outer 1 $r (type))))
+    CHECK(refusalText(crossing([](ComponentBuilder& builder) { return builder.resource(); })) == refused);
+    CHECK(refusalText(crossing([](ComponentBuilder& builder) {
+              auto const resource = builder.resource();
+              auto const own = builder.type(defined(OwnType { .resource = resource }));
+              return builder.type(defined(ListType { .element = at(own) }));
+          }))
+          == refused);
+    CHECK(refusalText(crossing([](ComponentBuilder& builder) {
+              auto const resource = builder.resource();
+              auto const own = builder.type(defined(OwnType { .resource = resource }));
+              return builder.type(
+                  TypeDefinition { .type = functionOf({ LabeledType { .label = "r", .type = at(own) } }) });
+          }))
+          == refused);
+    // Through an instance type that names an outer resource, which it does not bind.
+    CHECK(refusalText(crossing([](ComponentBuilder& builder) {
+              auto const resource = builder.resource();
+              auto declarations = TypeScopeBuilder {};
+              auto const inner = declarations.aliasOuter(Sort::Type, 1, resource);
+              std::ignore = declarations.exportItem("r", ExternDesc { .sort = Sort::Type, .index = inner });
+              return builder.instanceType(std::move(declarations));
+          }))
+          == refused);
+    // A resource an instance or component type binds itself is no free resource.
+    CHECK(accepted(
+        crossing([](ComponentBuilder& builder) { return builder.instanceType(definingAResource()); })));
+    CHECK(accepted(crossing([](ComponentBuilder& builder) {
+        auto declarations = TypeScopeBuilder {};
+        auto const resource = declarations.import(
+            "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+        auto const own = declarations.type(defined(OwnType { .resource = resource }));
+        auto const take = declarations.type(
+            TypeDefinition { .type = functionOf({ LabeledType { .label = "r", .type = at(own) } }) });
+        std::ignore = declarations.import("f", ExternDesc { .sort = Sort::Func, .index = take });
+        return builder.componentType(std::move(declarations));
+    })));
+    CHECK(accepted(crossing(
+        [](ComponentBuilder& builder) { return builder.type(TypeDefinition { .type = functionOf({}) }); })));
+    CHECK(accepted(crossing([](ComponentBuilder& builder) {
+        return builder.type(
+            defined(TupleType { .elements = { PrimitiveValueType::U32, PrimitiveValueType::U32 } }));
+    })));
+    // Within the same component, or into a type scope, nothing crosses a component boundary.
+    auto declarations = TypeScopeBuilder {};
+    std::ignore = declarations.aliasOuter(Sort::Type, 1, 0);
+    auto local = ComponentBuilder {};
+    std::ignore = local.resource();
+    std::ignore = local.instanceType(std::move(declarations));
+    std::ignore = local.aliasOuter(Sort::Type, 0, 0);
+    CHECK(accepted(local.pool()));
+}
 
 TEST_CASE("Validator.limitsAtEachDeclaration")
 {
@@ -1237,46 +1266,20 @@ TEST_CASE("Validator.referencedTypesChecked")
     CHECK(refusal(value.pool()).disabled == ComponentFeature::Values);
     auto coreModule = ComponentBuilder {};
     std::ignore = coreModule.import("m", ExternDesc { .sort = Sort::CoreModule, .index = 0 });
-    CHECK(specMessage(refusal(coreModule.pool())) == "not yet validated: core module types");
+    CHECK(specMessage(refusal(coreModule.pool())) == "unknown type 0: type index out of bounds");
 }
 
-TEST_CASE("Validator.deferredFormsNamed")
+TEST_CASE("Validator.customDefinitionsAccepted")
 {
-    // A custom definition is accepted; everything Task 7 validates is named as it is refused.
+    // A custom definition adds no index and is accepted; a refusal that is no limit names none.
     auto custom = ComponentBuilder {};
     auto const payload = std::vector<std::byte> { std::byte { 1 } };
     custom.custom("note", payload);
     CHECK(accepted(custom.pool()));
-
-    auto const deferredText = [](ComponentBuilder const& builder) {
-        return specMessage(refusal(builder.pool()));
-    };
-    auto lift = ComponentBuilder {};
-    auto const function = lift.type(TypeDefinition { .type = functionOf({}) });
-    std::ignore = lift.canonLift(0, { CanonOption { .kind = CanonOptionKind::Utf8, .index = 0 } }, function);
-    CHECK(deferredText(lift) == "not yet validated: canonical function definitions");
-    auto exportAlias = ComponentBuilder {};
-    std::ignore = exportAlias.aliasExport(0, "f", Sort::Func);
-    CHECK(deferredText(exportAlias) == "not yet validated: aliases of instance exports");
     auto coreAlias = ComponentBuilder {};
     std::ignore = coreAlias.aliasCoreExport(0, "f", isoline::component::binary::CoreSort::Func);
-    CHECK(deferredText(coreAlias) == "not yet validated: aliases of core instance exports");
-    auto inlineInstance = ComponentBuilder {};
-    std::ignore = inlineInstance.inlineInstance({ { "f", SortIndex { .sort = Sort::Func, .index = 0 } } });
-    CHECK(deferredText(inlineInstance) == "not yet validated: component instances");
-    auto ascribed = ComponentBuilder {};
-    std::ignore = ascribed.exportItem("f", Sort::Func, 0, ExternDesc { .sort = Sort::Func, .index = 0 });
-    CHECK(deferredText(ascribed) == "not yet validated: export definitions");
-    auto coreInstance = ComponentBuilder {};
-    std::ignore = coreInstance.coreInstantiate(0, {});
-    CHECK(deferredText(coreInstance) == "not yet validated: core instances");
-    auto coreType = ComponentBuilder {};
-    std::ignore = coreType.coreType(
-        isoline::component::binary::CoreTypeDefinition { .type = isoline::binary::FuncType {} });
-    CHECK(deferredText(coreType) == "not yet validated: core type definitions");
-
-    // A refusal that is no limit names none.
-    CHECK_FALSE(exceededLimit(refusal(coreType.pool())).has_value());
+    CHECK(specMessage(refusal(coreAlias.pool())) == "unknown core instance 0: instance index out of bounds");
+    CHECK_FALSE(exceededLimit(refusal(coreAlias.pool())).has_value());
 }
 
 TEST_CASE("Validator.coreModuleValidatorIsAnInterface")

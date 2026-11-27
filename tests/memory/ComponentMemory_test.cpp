@@ -413,3 +413,89 @@ TEST_CASE("Validator.freshInstancesShareTheirNames")
     CHECK(outcome.budget == Budget::Kept);
     CHECK_FALSE(outcome.error.has_value());
 }
+
+TEST_CASE("Validator.manyAliasesLinear")
+{
+    // 100'000 outer aliases of one type into a nested component, each walked for resources and charged
+    // to the component's budget of maxTypeSize: validation holds no more than its budget per byte of
+    // the component, at n and at 2n. The bound is the budget, not a ratio of the two peaks: the index
+    // space is one vector, whose capacity at 2n is up to 3 x its capacity at n with the MSVC STL's
+    // growth of 1.5 (measured 2.24 x there), so a 2.2 x ratio would assert the STL, not the validator.
+    auto const validateWith = [](uint32_t aliases) {
+        auto builder = ComponentBuilder {};
+        auto const tuple = builder.type(
+            TypeDefinition { .type = isoline::component::binary::TupleType {
+                                 .elements = { PrimitiveValueType::U32, PrimitiveValueType::U32 } } });
+        auto nested = ComponentBuilder {};
+        for ([[maybe_unused]] auto const alias: std::views::iota(uint32_t { 0 }, aliases))
+            std::ignore = nested.aliasOuter(Sort::Type, 1, tuple);
+        std::ignore = builder.nested(std::move(nested));
+        auto const budget = componentBudget(builder.build().size());
+        auto const outcome = validateUnderBudget(builder.pool(), budget);
+        INFO(std::format("{} aliases, budget {} bytes", aliases, budget));
+        CHECK(outcome.budget == Budget::Kept);
+        CHECK_FALSE(outcome.error.has_value());
+    };
+    validateWith(50'000);
+    validateWith(100'000);
+}
+
+TEST_CASE("Validator.manyExportAliasesLinear")
+{
+    // An instance of 50'000 exports, each aliased once: the instance's exports are indexed by name
+    // once, so each alias costs O(log n) and the validation holds within its budget at n and 2n (a
+    // budget, not a ratio, for the reason Validator.manyAliasesLinear gives).
+    auto const validateWith = [](uint32_t exports) {
+        auto declarations = TypeScopeBuilder {};
+        auto const function = declarations.type(
+            TypeDefinition { .type = FunctionTypeDefinition { .params = {}, .result = std::nullopt } });
+        for (auto const index: std::views::iota(uint32_t { 0 }, exports))
+            std::ignore = declarations.exportItem(std::format("f{}", index),
+                                                  ExternDesc { .sort = Sort::Func, .index = function });
+        auto builder = ComponentBuilder {};
+        auto const instance = builder.instanceType(std::move(declarations));
+        std::ignore = builder.import("i", ExternDesc { .sort = Sort::Instance, .index = instance });
+        for (auto const index: std::views::iota(uint32_t { 0 }, exports))
+            std::ignore = builder.aliasExport(0, std::format("f{}", index), Sort::Func);
+        auto const budget = componentBudget(builder.build().size());
+        auto const outcome = validateUnderBudget(builder.pool(), budget);
+        INFO(std::format("{} exports, budget {} bytes", exports, budget));
+        CHECK(outcome.budget == Budget::Kept);
+        CHECK_FALSE(outcome.error.has_value());
+    };
+    validateWith(25'000);
+    validateWith(50'000);
+}
+
+TEST_CASE("Validator.sharedClosedTypeWalkedOnce")
+{
+    // A closed component type (it binds the resource its functions name) of 2'000 functions, aliased
+    // into 1'000 nested components (maxComponents): each alias must check it names no outer resource,
+    // which wasm-tools walks every time (1'000 x 2'000 types). Found closed once, it is skipped after:
+    // the validation stays within its budget, and finishes in the suite's time.
+    auto declarations = TypeScopeBuilder {};
+    auto const resource = declarations.import(
+        "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto const own = declarations.type(TypeDefinition { .type = OwnType { .resource = resource } });
+    for (auto const index: std::views::iota(0, 2'000))
+    {
+        auto const function = declarations.type(TypeDefinition {
+            .type = FunctionTypeDefinition { .params = { LabeledType { .label = std::format("p{}", index),
+                                                                       .type = TypeIndex { .index = own } } },
+                                             .result = std::nullopt } });
+        std::ignore = declarations.import(std::format("f{}", index),
+                                          ExternDesc { .sort = Sort::Func, .index = function });
+    }
+    auto builder = ComponentBuilder {};
+    auto const closed = builder.componentType(std::move(declarations));
+    for ([[maybe_unused]] auto const component: std::views::iota(0, 1'000))
+    {
+        auto nested = ComponentBuilder {};
+        std::ignore = nested.aliasOuter(Sort::Type, 1, closed);
+        std::ignore = builder.nested(std::move(nested));
+    }
+    auto const outcome = validateUnderBudget(builder.pool(), componentBudget(builder.build().size()));
+    CHECK(outcome.budget == Budget::Kept);
+    if (outcome.error)
+        FAIL(isoline::component::validate::specMessage(*outcome.error));
+}
