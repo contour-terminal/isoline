@@ -517,3 +517,95 @@ TEST_CASE("Function.tableLookupsAtRunTime")
         CHECK_FALSE(fixedTypeOf(rule).has_value());
     CHECK(fixedTypeOf(ResultRule::Pointer) == Type::Pointer);
 }
+
+TEST_CASE("Function.removeBlocksRenumbersTheRest")
+{
+    // b0 -> b2 -> b4, with b1 and b3 removed: the kept blocks become b0, b1, b2 in their order, every target
+    // follows, and the removed blocks' instructions are Removed until compact() drops them.
+    auto arena = Arena {};
+    auto function = Function { arena.memory };
+    auto builder = Builder { function };
+    auto blocks = std::vector<BlockId> {};
+    for ([[maybe_unused]] auto const block: std::views::iota(0, 5))
+        blocks.push_back(builder.createBlock());
+    auto const carried = builder.addParameter(blocks[4], Type::I32);
+    builder.switchTo(blocks[0]);
+    builder.jump(blocks[2], {});
+    builder.switchTo(blocks[1]);
+    builder.jump(blocks[3], {});
+    builder.switchTo(blocks[2]);
+    auto const value =
+        builder.emit(Operation::I32Const, std::array { Type::I32 }, {}, std::array { uint64_t { 7 } })[0];
+    builder.jump(blocks[4], std::array { value });
+    builder.switchTo(blocks[3]);
+    builder.jump(blocks[4], std::array { value });
+    builder.switchTo(blocks[4]);
+    builder.ret(std::array { carried });
+    auto const removedJump = *function.terminator(blocks[1]);
+    function.removeBlocks(std::array { blocks[1], blocks[3] });
+    REQUIRE(function.blockCount() == 3);
+    CHECK(function.successors(BlockId { 0 }) == std::pmr::vector<BlockId> { BlockId { 1 } });
+    CHECK(function.successors(BlockId { 1 }) == std::pmr::vector<BlockId> { BlockId { 2 } });
+    CHECK(function.block(BlockId { 2 }).parameters.count == 1);
+    CHECK(function.instruction(removedJump).operation == Operation::Removed);
+    CHECK(verify(function).has_value());
+    function.compact();
+    CHECK(verify(function).has_value());
+    CHECK(function.instructionCount() == 4);
+    // Removing nothing changes nothing.
+    function.removeBlocks({});
+    CHECK(function.blockCount() == 3);
+}
+
+TEST_CASE("Function.replaceImmediatesRewritesAnInstruction")
+{
+    auto arena = Arena {};
+    auto function = Function { arena.memory };
+    auto builder = Builder { function };
+    builder.switchTo(builder.createBlock());
+    auto const value =
+        builder.emit(Operation::I32Const, std::array { Type::I32 }, {}, std::array { uint64_t { 1 } })[0];
+    builder.ret(std::array { value });
+    builder.replaceImmediates(0, std::array { uint64_t { 99 } });
+    CHECK(function.immediates(function.instruction(0).immediates)[0] == 99);
+    CHECK(verify(function).has_value());
+}
+
+namespace
+{
+
+/// Two blocks, the entry jumping to the other.
+struct TwoBlocks
+{
+    Arena arena {};
+    Function function { arena.memory };
+    Builder builder { function };
+    BlockId entry = builder.createBlock();
+    BlockId other = builder.createBlock();
+
+    TwoBlocks()
+    {
+        builder.switchTo(entry);
+        builder.jump(other, {});
+        builder.switchTo(other);
+        builder.ret({});
+    }
+};
+
+} // namespace
+
+TEST_CASE("Contract.Function.removeBlocksKeepsTheEntry", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    auto blocks = TwoBlocks {};
+    blocks.function.removeBlocks(std::array { blocks.entry });
+    FAIL("SURVIVED: the entry block removed");
+}
+
+TEST_CASE("Contract.Function.removeBlocksLeavesNoEdgeIntoThem", "[.contract]")
+{
+    isoline::runtime::testing::endAtContractViolation();
+    auto blocks = TwoBlocks {};
+    blocks.function.removeBlocks(std::array { blocks.other });
+    FAIL("SURVIVED: a removed block a kept one branches to");
+}

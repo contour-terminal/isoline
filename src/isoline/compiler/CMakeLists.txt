@@ -2,8 +2,8 @@
 
 # isoline::compiler: the optimizing compiler from validated modules to native code, and what describes
 # it: its configuration, limits and errors, the features it compiles, the target it generates for, the
-# layout through which generated code reaches the runtime, (intermediate/) its SSA representation and
-# (translation/) the translation of WebAssembly into it.
+# layout through which generated code reaches the runtime, (intermediate/) its SSA representation,
+# (translation/) the translation of WebAssembly into it and (optimization/) the passes over it.
 # Its sources take the target policy's floating-point contraction row (cmake/IsolinePedantic.cmake), so
 # that constant folding is exact.
 target_sources(isoline_core
@@ -14,6 +14,13 @@ target_sources(isoline_core
         intermediate/Function.cpp
         intermediate/Printer.cpp
         intermediate/Verifier.cpp
+        optimization/BoundsChecks.cpp
+        optimization/ConstantFolding.cpp
+        optimization/ControlFlow.cpp
+        optimization/DeadCode.cpp
+        optimization/PassTable.cpp
+        optimization/Rewrite.cpp
+        optimization/TrivialParameters.cpp
         translation/LoopAssignments.cpp
         translation/MemoryTranslation.cpp
         translation/Translator.cpp
@@ -33,6 +40,9 @@ target_sources(isoline_core
             intermediate/Printer.hpp
             intermediate/Verifier.hpp
             machine/Target.hpp
+            optimization/FoldingTable.hpp
+            optimization/PassTable.hpp
+            optimization/Rewrite.hpp
             machine/TargetDescription.hpp
             translation/LoopAssignments.hpp
             translation/MemoryTranslation.hpp

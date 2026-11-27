@@ -301,6 +301,12 @@ set(isolineContractRows
     "Contract.Engine.fastDispatchMustBeAvailable|engines::rowOf\\(_config\\.engine\\)->dispatch == engines::DispatchUse::None \\|\\| fastinterpreter::isAvailable\\(_config\\.dispatch\\)"
     "Contract.Engine.knownEngine|engines::rowOf\\(_config\\.engine\\) != nullptr"
     "Contract.Function.moveAssignmentStaysInItsArena|_memory == other\\._memory"
+    "Contract.Optimization.brokenPassIsCaught|verified\\.has_value\\(\\)"
+    "Contract.Function.removeBlocksKeepsTheEntry|index != 0 && index < _blocks\\.size\\(\\) && \\(!previous \\|\\| \\*previous < index\\)"
+    "Contract.Function.removeBlocksLeavesNoEdgeIntoThem|target != Unnumbered"
+    "Contract.Rewrite.substitutionRefusesACycle|resolve\\(to\\) != from"
+    "Contract.Rewrite.substitutionReplacesOnce|index < _next\\.size\\(\\) && _next\\[index\\] == from"
+    "Contract.Rewrite.dropsNoParameterOfTheEntry|!isDropped\\(value\\)"
     # Removed in P5 Task 16, which gives the compiled engine its row of api/ExecutionEngines.cpp.
     "Contract.Engine.refusesTheCompiledEngine|engines::rowOf\\(_config\\.engine\\) != nullptr")
 set(isolineContractCases)

@@ -160,6 +160,63 @@ void Function::remove(uint32_t index) noexcept
     instruction(index).operation = Operation::Removed;
 }
 
+void Function::removeBlocks(std::span<BlockId const> removed)
+{
+    if (removed.empty())
+        return;
+    auto renumbered = std::pmr::vector<uint32_t>(_blocks.size(), 0, _memory);
+    auto previous = std::optional<uint32_t> {};
+    for (auto const block: removed)
+    {
+        auto const index = std::to_underlying(block);
+        Require(index != 0 && index < _blocks.size() && (!previous || *previous < index));
+        previous = index;
+        renumbered[index] = Unnumbered;
+        for (auto const listed: _blocks[index].instructions)
+            remove(listed);
+    }
+    auto next = uint32_t { 0 };
+    for (auto& entry: renumbered)
+        if (entry != Unnumbered)
+            entry = next++;
+
+    // Retarget the kept blocks' terminators, then close the gaps in place.
+    for (auto const index: std::views::iota(std::size_t { 0 }, _blocks.size()))
+    {
+        if (renumbered[index] == Unnumbered)
+            continue;
+        auto const listed = terminator(BlockId { poolIndex(index) });
+        if (!listed)
+            continue;
+        auto const& kept = instruction(*listed);
+        auto const& schema = immediateSchemaRow(operationRow(kept.operation).immediates);
+        auto const values = immediates(kept.immediates);
+        for (auto const position: std::views::iota(std::size_t { 0 }, values.size()))
+        {
+            if (immediateFieldAt(schema, position) != ImmediateField::Target)
+                continue;
+            Require(values[position] < renumbered.size());
+            auto const target = renumbered[values[position]];
+            Require(target != Unnumbered); // a kept block branches to a removed one
+            values[position] = target;
+        }
+    }
+    auto kept = std::size_t { 0 };
+    for (auto const index: std::views::iota(std::size_t { 0 }, _blocks.size()))
+    {
+        if (renumbered[index] == Unnumbered)
+            continue;
+        if (kept != index)
+        {
+            _blocks[kept] = std::move(_blocks[index]);
+            _parameterCapacity[kept] = _parameterCapacity[index];
+        }
+        ++kept;
+    }
+    _blocks.erase(_blocks.begin() + static_cast<std::ptrdiff_t>(kept), _blocks.end());
+    _parameterCapacity.resize(kept);
+}
+
 void Function::compact()
 {
     // Number the values that stay in block order: each block's parameters, then each kept instruction's
@@ -330,6 +387,14 @@ void Builder::replaceOperands(uint32_t index, std::span<ValueId const> operands)
     Require(index < function._instructions.size());
     auto const run = appendRun(function._operands, operands);
     function._instructions[index].operands = run;
+}
+
+void Builder::replaceImmediates(uint32_t index, std::span<uint64_t const> immediates)
+{
+    auto& function = *_function;
+    Require(index < function._instructions.size());
+    auto const run = appendRun(function._immediates, immediates);
+    function._instructions[index].immediates = ImmediateRange { .begin = run.begin, .count = run.count };
 }
 
 void Builder::ret(std::span<ValueId const> values)

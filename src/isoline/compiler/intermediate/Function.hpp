@@ -213,6 +213,14 @@ class Function
     /// @param index An index below instructionCount().
     void remove(uint32_t index) noexcept;
 
+    /// Removes the blocks @p removed, their instructions marked Removed, and renumbers the others densely
+    /// in their order, every target updated. For a pass that dropped blocks no kept block branches to: the
+    /// unreachable ones, or one merged into its predecessor. A value a removed block defined must have no
+    /// use left in a kept one (compact() Requires it).
+    /// @param removed The blocks, in ascending order, each once; never the entry (Require), and no kept
+    ///                block's terminator may target one (Require).
+    void removeBlocks(std::span<BlockId const> removed);
+
     /// Drops removed instructions and those no block lists, and renumbers what is left densely: values
     /// in block order (parameters, then each instruction's results), instructions in block order, every
     /// pool repacked. No instruction left may use a value whose definition was removed (Require).
@@ -286,6 +294,13 @@ class Builder
     /// @param index An instruction of the function.
     /// @param operands Its new operands.
     void replaceOperands(uint32_t index, std::span<ValueId const> operands);
+
+    /// Replaces the immediates of the instruction at @p index by @p immediates, appended to the immediate
+    /// pool as a new run; the old run stays unused until compact(). For a pass that rewrites an
+    /// instruction into another operation, such as a folded one into its constant.
+    /// @param index An instruction of the function.
+    /// @param immediates Its new immediates.
+    void replaceImmediates(uint32_t index, std::span<uint64_t const> immediates);
 
     /// Ends the current block by returning @p values.
     void ret(std::span<ValueId const> values);
