@@ -149,6 +149,28 @@
             }
         },
         {
+            "name": "gcc-cxx26",
+            "displayName": "GCC Debug, C++26 reflection, annotations and contracts required",
+            "description": "gcc-debug with every C++26 language feature ON: configure fails unless each takes the native path",
+            "inherits": "gcc-debug",
+            "cacheVariables": {
+                "ISOLINE_REFLECTION": "ON",
+                "ISOLINE_ANNOTATIONS": "ON",
+                "ISOLINE_CONTRACTS": "ON"
+            }
+        },
+        {
+            "name": "gcc-fallback",
+            "displayName": "GCC Debug, C++23 fallback",
+            "description": "gcc-debug with every C++26 language feature OFF: the path a compiler without them takes",
+            "inherits": "gcc-debug",
+            "cacheVariables": {
+                "ISOLINE_REFLECTION": "OFF",
+                "ISOLINE_ANNOTATIONS": "OFF",
+                "ISOLINE_CONTRACTS": "OFF"
+            }
+        },
+        {
             "name": "macos-clang",
             "displayName": "Apple Clang Debug",
             "inherits": [
@@ -336,6 +358,8 @@
         },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "configurePreset": "gcc-release" },
+        { "name": "gcc-cxx26", "configurePreset": "gcc-cxx26" },
+        { "name": "gcc-fallback", "configurePreset": "gcc-fallback" },
         { "name": "macos-clang", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "configurePreset": "clangcl-cross-debug" },
@@ -408,6 +432,8 @@
         },
         { "name": "gcc-debug", "inherits": "isoline-test-common", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "inherits": "isoline-test-common", "configurePreset": "gcc-release" },
+        { "name": "gcc-cxx26", "inherits": "isoline-test-common", "configurePreset": "gcc-cxx26" },
+        { "name": "gcc-fallback", "inherits": "isoline-test-common", "configurePreset": "gcc-fallback" },
         { "name": "macos-clang", "inherits": "isoline-test-common", "configurePreset": "macos-clang" },
         { "name": "msvc-debug", "inherits": "isoline-test-common", "configurePreset": "msvc-debug" },
         { "name": "clangcl-cross-debug", "inherits": "isoline-test-common", "configurePreset": "clangcl-cross-debug" },

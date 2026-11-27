@@ -114,6 +114,8 @@ target_compile_features(isoline_core PUBLIC cxx_std_23)
 set_target_properties(isoline_core PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 target_link_libraries(isoline_core PUBLIC core::base)
 isoline_apply_target_policy(isoline_core)
+# After the policy: the native features' flags follow the warning set (cmake/IsolineLanguageFeatures.cmake).
+isoline_apply_language_features(isoline_core)
 
 add_subdirectory(text)
 add_subdirectory(cli)

@@ -44,6 +44,7 @@ include(IsolineOptions)
 include(IsolineDependencies)
 include(IsolineCoverage)
 include(IsolinePedantic)
+include(IsolineLanguageFeatures)
 include(IsolineCappedTest)
 include(IsolineModules)
 include(IsolineCExports)
@@ -53,6 +54,12 @@ if(ISOLINE_TESTING)
 endif()
 
 add_subdirectory(src/isoline)
+
+# Every installed header of every target isoline_apply_language_features() saw parses as C++23 on its
+# own, whatever the library compiles as: one check, after all of them are defined.
+if(ISOLINE_TESTING)
+    isoline_add_public_header_check(isoline_public_headers_cxx23)
+endif()
 
 if(ISOLINE_TESTING)
     add_subdirectory(tests)

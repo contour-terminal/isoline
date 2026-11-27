@@ -1,0 +1,498 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# C++26 reflection, annotations and contracts: where a compiler has them, Isoline uses them; everywhere
+# else it builds the same library through a C++23 fallback. See docs/language-features.md.
+#
+# Which path a feature takes is decided by data: one feature row per (feature, compiler), each with a
+# measured minimum version and a probe that compiles, and links, what Isoline uses. A compiler without a
+# row, or below its row, takes the fallback even where its probe passes: every flag, library and report
+# format is that compiler's data, measured before it is trusted. ISOLINE_<FEATURE> (AUTO, ON or OFF)
+# decides what happens when the native path is out of reach. A feature is its rows: the feature list
+# and the options are derived from them.
+#
+# Included at configure time, the module defines the options, selects each feature's path and sets
+# ISOLINE_<FEATURE>_PATH (native or fallback). Included in script mode
+# (tests/cmake/language-features_test.cmake), it only defines the functions, and the selection runs
+# there with rows and a probe the test supplies.
+
+include_guard(GLOBAL)
+
+# An empty keyword value (no row's minimum, no diagnostic) is an empty string, not an unset variable.
+# CMake before 3.31 has no such policy and unsets it: every comparison below quotes its expansion, so
+# both read the same.
+if(POLICY CMP0174)
+    cmake_policy(SET CMP0174 NEW)
+endif()
+
+## Feature rows: feature|compilerId|minimumVersion|standard|flags|linkLibraries|requires|probe|purpose
+## flags and linkLibraries are separated by spaces; probe is relative to the project's source tree;
+## purpose says what Isoline uses the feature for, in the option's help text (a feature's first row
+## gives it). Features are decided in the order they first appear, so a requirement's rows come before
+## its users'. The contracts row's flags pin the semantic, so its probe tests the one Isoline uses.
+set(ISOLINE_LANGUAGE_FEATURE_ROWS
+    "reflection|GNU|16.2|26|-freflection|||cmake/probes/reflection.cpp|for Isoline's table checks"
+    "annotations|GNU|16.2|26|-freflection||reflection|cmake/probes/annotations.cpp|for table rows derived from enumerator annotations"
+    "contracts|GNU|16.2|26|-freflection -fcontracts -fcontract-evaluation-semantic=enforce|stdc++exp|reflection|cmake/probes/contracts.cpp|for preconditions in noexcept functions")
+
+## The values an ISOLINE_<FEATURE> option takes: spelling|value, the spelling compared case-insensitively.
+## CMake's boolean constants count as ON and OFF; any other spelling, the empty one included, is refused.
+set(ISOLINE_LANGUAGE_FEATURE_OPTION_SPELLINGS
+    "AUTO|AUTO"
+    "ON|ON" "YES|ON" "TRUE|ON" "Y|ON" "1|ON"
+    "OFF|OFF" "NO|OFF" "FALSE|OFF" "N|OFF" "0|OFF")
+
+## Consumer-floor rows (owner, Q2): compilerId|firstReleaseWithReflectionAndContracts. Consumers move to
+## C++26, and the fallback is deleted, once no release is empty: every compiler has shipped both.
+set(ISOLINE_CONSUMER_FLOOR_ROWS
+    "GNU|16.2"
+    "Clang|"
+    "AppleClang|"
+    "MSVC|")
+
+## The features whose native path changes how Isoline's libraries compile (isoline_apply_language_features).
+## Reflection and annotations only add check translation units of their own.
+set(ISOLINE_TARGET_LANGUAGE_FEATURES contracts)
+
+## @brief Sets @p outVar to the features of @p rows, in the order they first appear.
+function(isoline_language_features_of outVar)
+    set(features "")
+    foreach(row IN LISTS ARGN)
+        string(REGEX MATCH "^[^|]+" feature "${row}")
+        if(NOT feature IN_LIST features)
+            list(APPEND features "${feature}")
+        endif()
+    endforeach()
+    set(${outVar} "${features}" PARENT_SCOPE)
+endfunction()
+
+## @brief Normalizes an ISOLINE_<FEATURE> value into @p outVar by ISOLINE_LANGUAGE_FEATURE_OPTION_SPELLINGS:
+## AUTO, ON or OFF, or empty for a spelling no row names.
+function(_isoline_language_feature_option value outVar)
+    string(TOUPPER "${value}" upper)
+    set(normal "")
+    foreach(row IN LISTS ISOLINE_LANGUAGE_FEATURE_OPTION_SPELLINGS)
+        string(REGEX MATCH "^([^|]+)[|](.+)$" matched "${row}")
+        if(upper STREQUAL CMAKE_MATCH_1)
+            set(normal "${CMAKE_MATCH_2}")
+            break()
+        endif()
+    endforeach()
+    set(${outVar} "${normal}" PARENT_SCOPE)
+endfunction()
+
+## @brief Decides one feature's path from its option, its row, its probe and its requirement.
+##
+## isoline_language_feature_decision(
+##     FEATURE <feature> OPTION <AUTO|ON|OFF, or a CMake boolean> COMPILER <compilerId>
+##     VERSION <compilerVersion> MINIMUM <row's minimum, empty without a row> PROBE <passed|failed>
+##     PROBE_SOURCE <probe path> DIAGNOSTIC <the probe's first diagnostic> REQUIRES <feature or empty>
+##     REQUIRED_PATH <the requirement's path, or empty> OUT_PATH <var> OUT_REASON <var>)
+##
+## The precedence is OFF > no row > below the minimum > probe > requirement: the first that applies
+## gives the reason. Under AUTO it is a fallback; under ON it refuses, and OUT_PATH is `refused`, which
+## the configure turns into a FATAL_ERROR with OUT_REASON as its message. Pure: it compiles nothing.
+function(isoline_language_feature_decision)
+    cmake_parse_arguments(PARSE_ARGV 0 arg ""
+        "FEATURE;OPTION;COMPILER;VERSION;MINIMUM;PROBE;PROBE_SOURCE;DIAGNOSTIC;REQUIRES;REQUIRED_PATH;OUT_PATH;OUT_REASON"
+        "")
+    string(TOUPPER "ISOLINE_${arg_FEATURE}" option)
+    string(REGEX MATCH "^[0-9]+([.][0-9]+)?" shortVersion "${arg_VERSION}")
+    set(compiler "${arg_COMPILER} ${shortVersion}")
+    _isoline_language_feature_option("${arg_OPTION}" value)
+
+    set(blocker "")
+    if(value STREQUAL "")
+        set(${arg_OUT_PATH} refused PARENT_SCOPE)
+        set(${arg_OUT_REASON} "${option} must be AUTO, ON or OFF, not '${arg_OPTION}'" PARENT_SCOPE)
+        return()
+    elseif(value STREQUAL "OFF")
+        set(${arg_OUT_PATH} fallback PARENT_SCOPE)
+        set(${arg_OUT_REASON} "${option}=OFF" PARENT_SCOPE)
+        return()
+    elseif("${arg_MINIMUM}" STREQUAL "" AND "${arg_PROBE}" STREQUAL "passed")
+        set(blocker "the probe passes: measure ${compiler} and add its row")
+        set(refusal "there is no measured row for ${compiler} (${blocker})")
+    elseif("${arg_MINIMUM}" STREQUAL "")
+        set(blocker "no measured row for ${compiler}")
+        set(refusal "there is ${blocker}")
+    elseif("${arg_VERSION}" VERSION_LESS "${arg_MINIMUM}")
+        set(blocker "${compiler} is below ${arg_COMPILER} ${arg_MINIMUM}")
+        set(refusal "${blocker}")
+    elseif(NOT "${arg_PROBE}" STREQUAL "passed")
+        set(diagnostic "${arg_DIAGNOSTIC}")
+        if(diagnostic STREQUAL "")
+            set(diagnostic "no diagnostic")
+        endif()
+        set(blocker "probe failed: ${diagnostic}")
+        set(refusal "${arg_PROBE_SOURCE} failed: ${diagnostic}")
+    elseif(NOT "${arg_REQUIRES}" STREQUAL "" AND NOT "${arg_REQUIRED_PATH}" STREQUAL "native")
+        set(blocker "needs ${arg_REQUIRES}, which is ${arg_REQUIRED_PATH}")
+        set(refusal "it ${blocker}")
+    endif()
+
+    if(blocker STREQUAL "")
+        set(${arg_OUT_PATH} native PARENT_SCOPE)
+        set(${arg_OUT_REASON}
+            "${compiler} meets ${arg_COMPILER} ${arg_MINIMUM}, and ${arg_PROBE_SOURCE} compiles" PARENT_SCOPE)
+    elseif(value STREQUAL "ON")
+        set(${arg_OUT_PATH} refused PARENT_SCOPE)
+        set(${arg_OUT_REASON} "${option}=ON, but ${refusal}" PARENT_SCOPE)
+    else()
+        set(${arg_OUT_PATH} fallback PARENT_SCOPE)
+        set(${arg_OUT_REASON} "${blocker}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+## @brief Reports the consumer floor: which compilers still lack a release with reflection and contracts.
+##
+## isoline_consumer_floor(ROWS <compilerId|release>... OUT_LINE <var> OUT_REACHED <var>)
+## OUT_LINE is "pending <compilers>" while a release is empty, else "reached: <compiler release>...";
+## OUT_REACHED is ON once no release is empty (the trigger of the reflection and contracts switches).
+function(isoline_consumer_floor)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "OUT_LINE;OUT_REACHED" "ROWS")
+    set(pending "")
+    set(reached "")
+    foreach(row IN LISTS arg_ROWS)
+        string(REGEX MATCH "^([^|]+)[|](.*)$" matched "${row}")
+        if(CMAKE_MATCH_2 STREQUAL "")
+            list(APPEND pending "${CMAKE_MATCH_1}")
+        else()
+            list(APPEND reached "${CMAKE_MATCH_1} ${CMAKE_MATCH_2}")
+        endif()
+    endforeach()
+    if(pending)
+        list(JOIN pending ", " line)
+        set(${arg_OUT_LINE} "pending ${line}" PARENT_SCOPE)
+        set(${arg_OUT_REACHED} OFF PARENT_SCOPE)
+    else()
+        list(JOIN reached ", " line)
+        set(${arg_OUT_LINE} "reached: ${line}" PARENT_SCOPE)
+        set(${arg_OUT_REACHED} ON PARENT_SCOPE)
+    endif()
+endfunction()
+
+## @brief Finds @p feature's row for @p compilerId among the remaining arguments (the rows): sets
+## <prefix>_FOUND, _MINIMUM, _STANDARD, _FLAGS, _LINK_LIBRARIES, _REQUIRES, _PROBE and _PURPOSE (always
+## the feature's first row's) in the caller. A row of other than nine columns is a FATAL_ERROR.
+## Without a row for the compiler, everything but the minimum is the feature's first row's: the probe
+## still runs, with that row's flags, so that a compiler which accepts them is told to measure itself
+## rather than told the feature is not there. Only a row's own data is ever applied to a target.
+function(_isoline_language_feature_row feature compilerId prefix)
+    set(found OFF)
+    set(fields "")
+    set(purpose "")
+    foreach(row IN LISTS ARGN)
+        string(REPLACE "|" ";" columns "${row}")
+        list(LENGTH columns columnCount)
+        if(NOT columnCount EQUAL 9)
+            message(FATAL_ERROR "[isoline] a feature row has nine columns, not ${columnCount}: ${row}")
+        endif()
+        list(GET columns 0 rowFeature)
+        list(GET columns 1 rowCompiler)
+        if(NOT rowFeature STREQUAL feature)
+            continue()
+        endif()
+        if(fields STREQUAL "")
+            set(fields "${columns}")
+            list(GET columns 8 purpose)
+        endif()
+        if(rowCompiler STREQUAL compilerId)
+            set(found ON)
+            set(fields "${columns}")
+            break()
+        endif()
+    endforeach()
+    if(fields STREQUAL "")
+        message(FATAL_ERROR "[isoline] no feature row names '${feature}'")
+    endif()
+    set(minimum "")
+    list(GET fields 3 standard)
+    list(GET fields 4 flags)
+    list(GET fields 5 libraries)
+    list(GET fields 6 requires)
+    list(GET fields 7 probe)
+    if(found)
+        list(GET fields 2 minimum)
+    endif()
+    separate_arguments(flags UNIX_COMMAND "${flags}")
+    separate_arguments(libraries UNIX_COMMAND "${libraries}")
+    set(${prefix}_FOUND ${found} PARENT_SCOPE)
+    set(${prefix}_MINIMUM "${minimum}" PARENT_SCOPE)
+    set(${prefix}_STANDARD "${standard}" PARENT_SCOPE)
+    set(${prefix}_FLAGS "${flags}" PARENT_SCOPE)
+    set(${prefix}_LINK_LIBRARIES "${libraries}" PARENT_SCOPE)
+    set(${prefix}_REQUIRES "${requires}" PARENT_SCOPE)
+    set(${prefix}_PROBE "${probe}" PARENT_SCOPE)
+    set(${prefix}_PURPOSE "${purpose}" PARENT_SCOPE)
+endfunction()
+
+## @brief Resolves every feature of @p ROWS for one compiler, in row order, each against the path its
+## requirement resolved to. Pure apart from what @p PROBE_COMMAND does: the configure passes the real
+## probe, the self-test a stub.
+##
+## isoline_resolve_language_features(ROWS <row>... COMPILER <compilerId> VERSION <compilerVersion>
+##                                   PROBE_COMMAND <function> OUT_PREFIX <prefix>)
+## Reads each option from the variable ISOLINE_<FEATURE>. PROBE_COMMAND is called as
+## `<function>(<probe> <standard> <flags> <libraries> <prefix>)` and sets <prefix>_RESULT (passed or
+## failed) and <prefix>_DIAGNOSTIC. Sets in the caller: <OUT_PREFIX>_FEATURES; per feature
+## <OUT_PREFIX>_<FEATURE>_PATH, _REASON, _STANDARD, _FLAGS and _LINK_LIBRARIES; and <OUT_PREFIX>_ERROR,
+## empty, or the message of the first refusal (an option, or a requirement no earlier feature defines),
+## after which nothing more is resolved.
+function(isoline_resolve_language_features)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "COMPILER;VERSION;PROBE_COMMAND;OUT_PREFIX" "ROWS")
+    set(out "${arg_OUT_PREFIX}")
+    isoline_language_features_of(features ${arg_ROWS})
+    set(${out}_FEATURES "${features}" PARENT_SCOPE)
+    set(${out}_ERROR "" PARENT_SCOPE)
+    set(decided "")
+    foreach(feature IN LISTS features)
+        string(TOUPPER "${feature}" upper)
+        _isoline_language_feature_row(${feature} "${arg_COMPILER}" row ${arg_ROWS})
+        set(requiredPath "")
+        if(NOT "${row_REQUIRES}" STREQUAL "")
+            if(NOT row_REQUIRES IN_LIST decided)
+                set(${out}_ERROR
+                    "[isoline] C++26 ${feature}: its rows require '${row_REQUIRES}', which no earlier feature row defines"
+                    PARENT_SCOPE)
+                return()
+            endif()
+            set(requiredPath "${path_${row_REQUIRES}}")
+        endif()
+        # The probe of a feature switched OFF cannot change its outcome, so it is not compiled.
+        _isoline_language_feature_option("${ISOLINE_${upper}}" option)
+        set(probe_RESULT failed)
+        set(probe_DIAGNOSTIC "")
+        if(NOT option STREQUAL "OFF")
+            cmake_language(CALL ${arg_PROBE_COMMAND} "${row_PROBE}" "${row_STANDARD}" "${row_FLAGS}"
+                           "${row_LINK_LIBRARIES}" probe)
+        endif()
+        isoline_language_feature_decision(
+            FEATURE ${feature}
+            OPTION "${ISOLINE_${upper}}"
+            COMPILER "${arg_COMPILER}"
+            VERSION "${arg_VERSION}"
+            MINIMUM "${row_MINIMUM}"
+            PROBE ${probe_RESULT}
+            PROBE_SOURCE "${row_PROBE}"
+            DIAGNOSTIC "${probe_DIAGNOSTIC}"
+            REQUIRES "${row_REQUIRES}"
+            REQUIRED_PATH "${requiredPath}"
+            OUT_PATH path
+            OUT_REASON reason)
+        if(path STREQUAL "refused")
+            set(${out}_ERROR "[isoline] C++26 ${feature}: ${reason}" PARENT_SCOPE)
+            return()
+        endif()
+        set(path_${feature} ${path})
+        list(APPEND decided ${feature})
+        set(${out}_${upper}_PATH ${path} PARENT_SCOPE)
+        set(${out}_${upper}_REASON "${reason}" PARENT_SCOPE)
+        set(${out}_${upper}_STANDARD "${row_STANDARD}" PARENT_SCOPE)
+        set(${out}_${upper}_FLAGS "${row_FLAGS}" PARENT_SCOPE)
+        set(${out}_${upper}_LINK_LIBRARIES "${row_LINK_LIBRARIES}" PARENT_SCOPE)
+    endforeach()
+endfunction()
+
+## @brief The configure's probe: compiles and links @p probe (relative to the source tree) with the
+## standard, flags and libraries given, and sets <prefix>_RESULT (passed or failed) and
+## <prefix>_DIAGNOSTIC (the first compiler or linker error, the source tree's prefix stripped) in the
+## caller. The flags reach the compile only, as a target's do, so a missing library fails the link as it
+## would in the build. A standard CMake knows no flag for on this compiler fails the probe without
+## compiling it: try_compile would refuse to generate its project, which is a configure error, not a
+## failed probe. An edit of the probe reconfigures.
+function(_isoline_run_language_feature_probe probe standard flags libraries prefix)
+    set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 "${PROJECT_SOURCE_DIR}/${probe}")
+    if(NOT "cxx_std_${standard}" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+        set(${prefix}_RESULT failed PARENT_SCOPE)
+        set(${prefix}_DIAGNOSTIC
+            "CMake ${CMAKE_VERSION} knows no C++${standard} mode of ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+            PARENT_SCOPE)
+        return()
+    endif()
+    try_compile(probeCompiles
+        SOURCES "${PROJECT_SOURCE_DIR}/${probe}"
+        COMPILE_DEFINITIONS ${flags}
+        LINK_LIBRARIES ${libraries}
+        CXX_STANDARD ${standard}
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        NO_CACHE
+        OUTPUT_VARIABLE output)
+    set(diagnostic "")
+    if(probeCompiles)
+        set(result passed)
+    else()
+        set(result failed)
+        # GCC and Clang (`error:`), MSVC (`error C2065:`, `error LNK2019:`), and an undefined symbol.
+        string(REPLACE "\r" "" output "${output}")
+        string(REGEX MATCH "[^\n]*(error( [A-Z]+[0-9]+)?:|undefined reference)[^\n]*" diagnostic "${output}")
+        string(REPLACE "${PROJECT_SOURCE_DIR}/" "" diagnostic "${diagnostic}")
+        string(STRIP "${diagnostic}" diagnostic)
+    endif()
+    set(${prefix}_RESULT ${result} PARENT_SCOPE)
+    set(${prefix}_DIAGNOSTIC "${diagnostic}" PARENT_SCOPE)
+endfunction()
+
+## @brief Sets @p outVar to the help text of @p feature's option, from its first row among the
+## remaining arguments (the rows): the purpose, the requirement, and the values.
+function(isoline_language_feature_help feature outVar)
+    _isoline_language_feature_row(${feature} "" row ${ARGN})
+    set(help "C++26 ${feature} ${row_PURPOSE}")
+    if(NOT row_REQUIRES STREQUAL "")
+        string(APPEND help " (needs ${row_REQUIRES} native)")
+    endif()
+    string(APPEND help ": AUTO, ON or OFF (docs/language-features.md)")
+    set(${outVar} "${help}" PARENT_SCOPE)
+endfunction()
+
+## @brief Defines ISOLINE_<FEATURE> (a STRING, default AUTO) for each feature of the rows.
+function(_isoline_define_language_feature_options)
+    isoline_language_features_of(features ${ISOLINE_LANGUAGE_FEATURE_ROWS})
+    foreach(feature IN LISTS features)
+        string(TOUPPER "ISOLINE_${feature}" option)
+        isoline_language_feature_help(${feature} help ${ISOLINE_LANGUAGE_FEATURE_ROWS})
+        set(${option} AUTO CACHE STRING "${help}")
+        # An existing entry keeps its old help text otherwise; the rows are its source.
+        set_property(CACHE ${option} PROPERTY HELPSTRING "${help}")
+        set_property(CACHE ${option} PROPERTY STRINGS AUTO ON OFF)
+    endforeach()
+endfunction()
+
+## @brief Selects every feature's path for the C++ compiler of this build, and reports one status line
+## per feature and one for the consumer floor.
+##
+## Sets ISOLINE_<FEATURE>_PATH (native or fallback) and ISOLINE_CONSUMER_FLOOR_REACHED (the switches'
+## trigger) as INTERNAL cache entries, and, for isoline_apply_language_features(),
+## ISOLINE_<FEATURE>_STANDARD, _FLAGS and _LINK_LIBRARIES in the including directory. An option the
+## compiler cannot honour (ON without the native path, or a value that is not AUTO, ON or OFF) is a
+## FATAL_ERROR.
+function(isoline_select_language_features)
+    isoline_resolve_language_features(
+        ROWS ${ISOLINE_LANGUAGE_FEATURE_ROWS}
+        COMPILER "${CMAKE_CXX_COMPILER_ID}"
+        VERSION "${CMAKE_CXX_COMPILER_VERSION}"
+        PROBE_COMMAND _isoline_run_language_feature_probe
+        OUT_PREFIX selected)
+    if(NOT selected_ERROR STREQUAL "")
+        message(FATAL_ERROR "${selected_ERROR}")
+    endif()
+    foreach(feature IN LISTS selected_FEATURES)
+        string(TOUPPER "${feature}" upper)
+        message(STATUS "[isoline] C++26 ${feature}: ${selected_${upper}_PATH} (${selected_${upper}_REASON})")
+        set(ISOLINE_${upper}_PATH ${selected_${upper}_PATH} CACHE INTERNAL
+            "The path ISOLINE_${upper} selected: native or fallback")
+        set(ISOLINE_${upper}_STANDARD "${selected_${upper}_STANDARD}" PARENT_SCOPE)
+        set(ISOLINE_${upper}_FLAGS "${selected_${upper}_FLAGS}" PARENT_SCOPE)
+        set(ISOLINE_${upper}_LINK_LIBRARIES "${selected_${upper}_LINK_LIBRARIES}" PARENT_SCOPE)
+    endforeach()
+
+    isoline_consumer_floor(ROWS ${ISOLINE_CONSUMER_FLOOR_ROWS} OUT_LINE floorLine OUT_REACHED floorReached)
+    message(STATUS "[isoline] C++26 consumer floor: ${floorLine}")
+    set(ISOLINE_CONSUMER_FLOOR_REACHED ${floorReached} CACHE INTERNAL
+        "ON once every compiler of ISOLINE_CONSUMER_FLOOR_ROWS has shipped reflection and contracts")
+endfunction()
+
+## @brief Compiles @p target with each native feature of ISOLINE_TARGET_LANGUAGE_FEATURES: its row's
+## standard (the highest wins), its flags PRIVATE, and its libraries PRIVATE, which reach consumers of a
+## static library as $<LINK_ONLY:…>, so an installed package links them without compiling with them.
+## The target's compile features are left as they are: consumers still compile as C++23.
+##
+## Every target passed here, on either path, is recorded in the GLOBAL property
+## ISOLINE_LANGUAGE_FEATURE_TARGETS, whose installed headers isoline_add_public_header_check() checks.
+## Once that check has run, the registry is sealed: a target arriving later would compile with the
+## native features and its headers unchecked, so it is a FATAL_ERROR.
+function(isoline_apply_language_features target)
+    get_property(sealedBy GLOBAL PROPERTY ISOLINE_HEADER_CHECK_SEALED)
+    if(sealedBy)
+        message(FATAL_ERROR
+            "[isoline] isoline_apply_language_features(${target}) runs after isoline_add_public_header_check(${sealedBy}),"
+            " so ${target}'s headers would go unchecked: register ${target} before the check, or move the check after it")
+    endif()
+    set_property(GLOBAL APPEND PROPERTY ISOLINE_LANGUAGE_FEATURE_TARGETS ${target})
+    set(standard "")
+    foreach(feature IN LISTS ISOLINE_TARGET_LANGUAGE_FEATURES)
+        string(TOUPPER "${feature}" upper)
+        if(NOT ISOLINE_${upper}_PATH STREQUAL "native")
+            continue()
+        endif()
+        if(standard STREQUAL "" OR ISOLINE_${upper}_STANDARD GREATER standard)
+            set(standard "${ISOLINE_${upper}_STANDARD}")
+        endif()
+        # Build options (isoline_apply_build_options()): never exported with an installed target, and recorded,
+        # so check-install proves it. The library stays a PRIVATE link: a static consumer links it through the
+        # exported $<LINK_ONLY:...>, which the package's config checks it can (cmake/isolineConfig.cmake.in).
+        isoline_apply_build_options(${target} COMPILE ${ISOLINE_${upper}_FLAGS})
+        target_link_libraries(${target} PRIVATE ${ISOLINE_${upper}_LINK_LIBRARIES})
+    endforeach()
+    if(NOT standard STREQUAL "")
+        set_target_properties(${target} PROPERTIES CXX_STANDARD ${standard} CXX_STANDARD_REQUIRED ON)
+    endif()
+endfunction()
+
+## @brief Adds @p checkTarget, an OBJECT library with one generated translation unit per `.hpp` in the
+## HEADER_SET of each target of ISOLINE_LANGUAGE_FEATURE_TARGETS, each including its header alone,
+## compiled as C++23 without extensions, whatever the libraries themselves compile as. Called once, after
+## every such target is defined; it seals the registry (ISOLINE_HEADER_CHECK_SEALED).
+##
+## It proves that an installed header parses as C++23 (no reflection, annotation or contract syntax
+## leaks into one) and includes what it uses. Isoline's warning set applies, and a C++26 extension is an
+## error on the target itself, with or without ISOLINE_WERROR. clang-tidy does not run on the generated
+## stubs: each holds one #include, and the header's code is tidied with its library. The libraries are
+## linked for their usage requirements only; an OBJECT library is never linked.
+function(isoline_add_public_header_check checkTarget)
+    # Sealed first: every registration after this point is refused (isoline_apply_language_features).
+    set_property(GLOBAL PROPERTY ISOLINE_HEADER_CHECK_SEALED ${checkTarget})
+    get_property(targets GLOBAL PROPERTY ISOLINE_LANGUAGE_FEATURE_TARGETS)
+    set(sources "")
+    foreach(target IN LISTS targets)
+        get_target_property(headers ${target} HEADER_SET)
+        if(NOT headers)
+            continue()
+        endif()
+        get_target_property(baseDirectories ${target} HEADER_DIRS)
+        get_target_property(targetSourceDirectory ${target} SOURCE_DIR)
+        foreach(header IN LISTS headers)
+            if(NOT header MATCHES "[.]hpp$")
+                continue()
+            endif()
+            cmake_path(ABSOLUTE_PATH header BASE_DIRECTORY "${targetSourceDirectory}" NORMALIZE)
+            set(includeName "")
+            foreach(baseDirectory IN LISTS baseDirectories)
+                cmake_path(IS_PREFIX baseDirectory "${header}" NORMALIZE underBase)
+                if(underBase)
+                    file(RELATIVE_PATH includeName "${baseDirectory}" "${header}")
+                    break()
+                endif()
+            endforeach()
+            if(includeName STREQUAL "")
+                message(FATAL_ERROR "[isoline] ${header} is under none of ${target}'s header base directories")
+            endif()
+            set(source "${CMAKE_CURRENT_BINARY_DIR}/${checkTarget}/${includeName}.cpp")
+            file(CONFIGURE OUTPUT "${source}"
+                 CONTENT "// Generated by isoline_add_public_header_check(): ${includeName} compiles alone as C++23.\n#include <${includeName}>\n"
+                 @ONLY)
+            list(APPEND sources "${source}")
+        endforeach()
+    endforeach()
+    if(sources STREQUAL "")
+        message(FATAL_ERROR "[isoline] isoline_add_public_header_check: no recorded target has a header set")
+    endif()
+    add_library(${checkTarget} OBJECT ${sources})
+    set_target_properties(${checkTarget} PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_link_libraries(${checkTarget} PRIVATE ${targets})
+    isoline_apply_target_policy(${checkTarget})
+    set_target_properties(${checkTarget} PROPERTIES CXX_CLANG_TIDY "")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+        # GCC spells the group c++26-extensions; Clang has both spellings. A flag the compiler lacks is
+        # dropped. Clang rejects an annotation as a syntax error regardless.
+        set(extensionErrors "")
+        _isoline_supported_flags(extensionErrors -Werror=c++26-extensions -Werror=c++2c-extensions)
+        target_compile_options(${checkTarget} PRIVATE ${extensionErrors})
+    endif()
+endfunction()
+
+if(NOT CMAKE_SCRIPT_MODE_FILE)
+    _isoline_define_language_feature_options()
+    isoline_select_language_features()
+endif()

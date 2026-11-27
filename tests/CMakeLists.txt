@@ -199,6 +199,37 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(fetch-tools-selftest PROPERTIES LABELS lint)
 endif()
 
+# The language-feature decisions (cmake/IsolineLanguageFeatures.cmake), one row per case, in script
+# mode: the host's cmake runs it, so it needs no compiler and runs in every tree.
+add_test(NAME language-features-selftest
+         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/language-features_test.cmake")
+set_tests_properties(language-features-selftest PROPERTIES LABELS lint)
+
+# The header check's seal, on a fixture project configured with this build's compiler and generator: a
+# target registered after the check fails the configure, naming it; registered before, it configures.
+# Natively only: a cross build's compiler needs its toolchain file, and the seal is the same CMake code.
+if(NOT CMAKE_CROSSCOMPILING)
+    foreach(isolineFixtureOrder IN ITEMS late early)
+        add_test(NAME language-features-header-check-sealed-${isolineFixtureOrder}
+                 COMMAND "${CMAKE_COMMAND}"
+                         -S "${CMAKE_CURRENT_SOURCE_DIR}/cmake/header-check-sealed"
+                         -B "${CMAKE_CURRENT_BINARY_DIR}/header-check-sealed-${isolineFixtureOrder}"
+                         -G "${CMAKE_GENERATOR}"
+                         "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"
+                         "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                         "-DISOLINE_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                         -DISOLINE_FIXTURE_ORDER=${isolineFixtureOrder}
+                         -DISOLINE_REFLECTION=OFF -DISOLINE_ANNOTATIONS=OFF -DISOLINE_CONTRACTS=OFF)
+    endforeach()
+    set(isolineSealMessage "isoline_apply_language_features[(]fixture_late[)] runs after isoline_add_public_header_check[(]fixture_headers_cxx23[)]")
+    # CMake wraps a FATAL_ERROR's text at spaces.
+    string(REPLACE " " "[ \n]+" isolineSealMessage "${isolineSealMessage}")
+    set_tests_properties(language-features-header-check-sealed-late PROPERTIES LABELS lint
+                         PASS_REGULAR_EXPRESSION "${isolineSealMessage}")
+    set_tests_properties(language-features-header-check-sealed-early PROPERTIES LABELS lint
+                         FAIL_REGULAR_EXPRESSION "${isolineSealMessage}")
+endif()
+
 # How long the text memory suite may run before its timeout stops it: five minutes natively. Under ASan
 # it takes 66 seconds on a workstation and 92 to more than 120 on a CI runner, whose speed varies by
 # 1.7 times between runs; its reader cases are a third of that, 200,000 items each. An emulator (qemu,
