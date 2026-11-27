@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Checks that the [.contract] cases of a Catch2 binary are exactly the expected ones.
-# Usage: cmake -DTEST_BINARY=<isoline_test> -DEXPECTED=<case,case,...> -P CheckContractRows.cmake
+# Usage: cmake -DTEST_BINARY=<isoline_test> [-DTEST_EMULATOR=<command|argument|...>] -DEXPECTED=<case,case,...>
+#        -P CheckContractRows.cmake
+# TEST_EMULATOR is a cross build's emulator (qemu, wine), its items separated by |; empty for a native build.
 
-execute_process(COMMAND "${TEST_BINARY}" "[.contract]" --list-tests --verbosity quiet
+string(REPLACE "|" ";" emulator "${TEST_EMULATOR}")
+execute_process(COMMAND ${emulator} "${TEST_BINARY}" "[.contract]" --list-tests --verbosity quiet
                 OUTPUT_VARIABLE listing
                 RESULT_VARIABLE status)
 if(NOT status EQUAL 0)

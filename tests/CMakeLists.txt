@@ -706,7 +706,9 @@ foreach(contract IN LISTS isolineContractRows)
     math(EXPR textBegin "${separator} + 1")
     string(SUBSTRING "${contract}" ${textBegin} -1 contractText)
     list(APPEND isolineContractCases "${contractCase}")
-    add_test(NAME ${contractCase} COMMAND $<TARGET_FILE:isoline_test> "${contractCase}")
+    # The target's name, not its file: only then does CMake run it through CMAKE_CROSSCOMPILING_EMULATOR
+    # (qemu, wine) where the tests are cross-compiled.
+    add_test(NAME ${contractCase} COMMAND isoline_test "${contractCase}")
     set_tests_properties(${contractCase} PROPERTIES
                          LABELS unit
                          PASS_REGULAR_EXPRESSION "Precondition failed\\. ${contractText}"
@@ -715,7 +717,9 @@ endforeach()
 # Every [.contract] case of isoline_test has a row above, and every row a case: a case without a row
 # would never run.
 string(REPLACE ";" "," isolineContractCaseList "${isolineContractCases}")
+# A cross build's emulator runs the binary there too; a list, passed with | between its items.
+string(REPLACE ";" "|" isolineTestEmulator "${CMAKE_CROSSCOMPILING_EMULATOR}")
 add_test(NAME contract-rows-complete
-         COMMAND ${CMAKE_COMMAND} -DTEST_BINARY=$<TARGET_FILE:isoline_test> "-DEXPECTED=${isolineContractCaseList}"
-                 -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckContractRows.cmake")
+         COMMAND ${CMAKE_COMMAND} -DTEST_BINARY=$<TARGET_FILE:isoline_test> "-DTEST_EMULATOR=${isolineTestEmulator}"
+                 "-DEXPECTED=${isolineContractCaseList}" -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckContractRows.cmake")
 set_tests_properties(contract-rows-complete PROPERTIES LABELS unit)
