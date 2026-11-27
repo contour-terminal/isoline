@@ -58,7 +58,7 @@ namespace
         TextErrorCode::NameMultipleLocalNames,
     });
 
-    static_assert(MultipleNameErrors.size() == std::to_underlying(NameShape::Indirect) + std::size_t { 1 },
+    static_assert(MultipleNameErrors.size() == std::to_underlying(binary::LastNameShape) + std::size_t { 1 },
                   "MultipleNameErrors holds one error per NameShape");
 
     /// What reading a module's annotations works on.

@@ -45,6 +45,9 @@ enum class AbstractHeapType : uint8_t
     Concrete, ///< A defined type, named by HeapType::typeIndex.
 };
 
+/// The last AbstractHeapType enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastAbstractHeapType = AbstractHeapType::Concrete;
+
 /// A heap type: an abstract heap, or a type index when the kind is Concrete.
 ///
 /// In a module, a concrete type index indexes its type section; in the store (runtime::Store), it is

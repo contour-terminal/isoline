@@ -50,6 +50,9 @@ enum class WriteError : uint8_t
     PageSizeNotWritable, ///< A memory's page size is 2^32 or more, which the text format cannot say.
 };
 
+/// The last WriteError enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastWriteError = WriteError::PageSizeNotWritable;
+
 /// Writes core modules in the text format.
 ///
 /// The text is the flat form: one field per line, one instruction per line, `block`/`end` indented.

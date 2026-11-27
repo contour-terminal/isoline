@@ -91,6 +91,9 @@ enum class RefKind : uint8_t
     Exn,    ///< An exception instance, by its store address (exception handling's exnref).
 };
 
+/// The last RefKind enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastRefKind = RefKind::Exn;
+
 /// A reference value.
 struct Ref
 {

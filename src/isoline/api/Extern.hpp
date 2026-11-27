@@ -269,7 +269,7 @@ static_assert(std::is_same_v<ExternAlternative<ExternKind::Table>, Table>, "Exte
 static_assert(std::is_same_v<ExternAlternative<ExternKind::Memory>, Memory>, "Extern follows ExternKind");
 static_assert(std::is_same_v<ExternAlternative<ExternKind::Global>, Global>, "Extern follows ExternKind");
 static_assert(std::is_same_v<ExternAlternative<ExternKind::Tag>, Tag>, "Extern follows ExternKind");
-static_assert(std::variant_size_v<Extern> == std::to_underlying(ExternKind::Tag) + 1,
+static_assert(std::variant_size_v<Extern> == std::to_underlying(binary::LastExternKind) + 1,
               "one Extern alternative per ExternKind");
 
 } // namespace isoline::api

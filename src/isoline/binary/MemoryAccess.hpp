@@ -39,6 +39,9 @@ enum class VectorShape : uint8_t
     Lane,       ///< width bytes to or from the lane the lane index names; the others pass through.
 };
 
+/// The last VectorShape enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastVectorShape = VectorShape::Lane;
+
 /// One load or store: its direction, value type, width, extension and vector shape.
 ///
 /// The width is the one fact both the validator and the interpreter need: the validator's largest
@@ -70,7 +73,7 @@ namespace detail
     /// widening load, or 0 where a lane is as wide as the access.
     inline constexpr auto MemoryLaneWidthByShape = std::to_array<uint8_t>({ 0, 1, 2, 4, 0, 0, 0 });
 
-    static_assert(MemoryLaneWidthByShape.size() == static_cast<std::size_t>(VectorShape::Lane) + 1,
+    static_assert(MemoryLaneWidthByShape.size() == static_cast<std::size_t>(LastVectorShape) + 1,
                   "MemoryLaneWidthByShape holds one entry per VectorShape");
 } // namespace detail
 

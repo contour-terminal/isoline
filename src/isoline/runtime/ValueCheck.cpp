@@ -59,7 +59,7 @@ namespace
             for (auto const& row: ReferenceTable)
                 if (static_cast<std::size_t>(row.kind) != index++)
                     return false;
-            return index == static_cast<std::size_t>(RefKind::Exn) + 1;
+            return index == static_cast<std::size_t>(LastRefKind) + 1;
         }(),
         "ReferenceTable must hold one row per RefKind, at the index of its enumerator");
 
@@ -93,7 +93,7 @@ namespace
             for (auto const& row: RankTable)
                 if (static_cast<std::size_t>(row.rank) != index++)
                     return false;
-            return index == static_cast<std::size_t>(HeapRank::BelowAll) + 1;
+            return index == static_cast<std::size_t>(validate::LastHeapRank) + 1;
         }(),
         "RankTable must hold one row per HeapRank, at the index of its enumerator");
 

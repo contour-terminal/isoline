@@ -278,8 +278,7 @@ inline constexpr auto AbstractHeapTypeNames = std::to_array<std::string_view>({
     "",
 });
 
-static_assert(AbstractHeapTypeNames.size()
-                  == static_cast<std::size_t>(binary::AbstractHeapType::Concrete) + 1,
+static_assert(AbstractHeapTypeNames.size() == static_cast<std::size_t>(binary::LastAbstractHeapType) + 1,
               "AbstractHeapTypeNames holds one name per AbstractHeapType");
 
 /// The text format's spelling of a number or vector type, by ValueKind: I32 through V128, every kind

@@ -227,7 +227,7 @@ namespace
                     return false;
                 ++index;
             }
-            return index == std::to_underlying(NameShape::Indirect) + 1U;
+            return index == std::to_underlying(LastNameShape) + 1U;
         }(),
         "ShapeCodecs must hold one row per NameShape, at the index of its enumerator");
 

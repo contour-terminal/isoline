@@ -22,6 +22,9 @@ enum class HeapRank : uint8_t
     BelowAll, ///< Below every hierarchy (bot): a subtype of every heap of every hierarchy.
 };
 
+/// The last HeapRank enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastHeapRank = HeapRank::BelowAll;
+
 /// One row of HeapTable: an abstract heap type, the top of its hierarchy, and its rank there.
 struct HeapRow
 {
@@ -64,7 +67,7 @@ static_assert(
         for (auto const& row: HeapTable)
             if (static_cast<std::size_t>(row.kind) != index++)
                 return false;
-        return index == static_cast<std::size_t>(binary::AbstractHeapType::Concrete) + 1;
+        return index == static_cast<std::size_t>(binary::LastAbstractHeapType) + 1;
     }(),
     "HeapTable must hold one row per AbstractHeapType, at the index of its enumerator");
 

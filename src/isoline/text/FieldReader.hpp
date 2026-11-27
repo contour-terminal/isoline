@@ -71,7 +71,7 @@ static_assert(
                 return false;
             ++index;
         }
-        return index == std::to_underlying(IndexSpace::Label) + std::size_t { 1 };
+        return index == std::to_underlying(LastIndexSpace) + std::size_t { 1 };
     }(),
     "SpaceRows must hold one row per IndexSpace, at the index of its enumerator");
 

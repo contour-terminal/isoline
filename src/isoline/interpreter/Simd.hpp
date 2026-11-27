@@ -59,6 +59,9 @@ enum class SimdShape : uint8_t
     ReplaceLane, ///< A v128, a lane index immediate and a scalar, one v128 result: replaceLane.
 };
 
+/// The last SimdShape enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastSimdShape = SimdShape::ReplaceLane;
+
 /// How @p opcode takes its operands.
 /// @param opcode Any instruction.
 /// @return Its shape, or None when it has no row in the SIMD operator table.

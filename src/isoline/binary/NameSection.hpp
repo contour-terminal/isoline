@@ -43,8 +43,11 @@ enum class NameKind : uint8_t
     TagParameter, ///< Each tag's parameters, as wasm-tools names them (subsection 13).
 };
 
+/// The last NameKind enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastNameKind = NameKind::TagParameter;
+
 /// The number of NameKind enumerators: the size of NameSection's per-kind arrays.
-inline constexpr auto NameKindCount = std::size_t { std::to_underlying(NameKind::TagParameter) + 1U };
+inline constexpr auto NameKindCount = std::size_t { std::to_underlying(LastNameKind) + 1U };
 
 /// How a name subsection lays out its names.
 enum class NameShape : uint8_t
@@ -53,6 +56,9 @@ enum class NameShape : uint8_t
     Direct,   ///< A name map: an index and a name per entry.
     Indirect, ///< An indirect name map: an index and a name map per entry.
 };
+
+/// The last NameShape enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastNameShape = NameShape::Indirect;
 
 /// One subsection of the name section: what it names, its id, and its layout.
 struct NameSubsection

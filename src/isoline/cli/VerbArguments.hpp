@@ -22,6 +22,9 @@ enum class VerbOption : uint8_t
     Features, ///< `--features`: the proposals the input may use.
 };
 
+/// The last VerbOption enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastVerbOption = VerbOption::Features;
+
 /// One option of every verb.
 struct VerbOptionRow
 {
@@ -52,7 +55,7 @@ static_assert(
         for (auto const& row: VerbOptions)
             if (static_cast<std::size_t>(row.option) != index++)
                 return false;
-        return index == static_cast<std::size_t>(VerbOption::Features) + 1;
+        return index == static_cast<std::size_t>(LastVerbOption) + 1;
     }(),
     "VerbOptions must hold one row per VerbOption, at the index of its enumerator");
 

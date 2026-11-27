@@ -49,6 +49,9 @@ enum class Refusal : uint8_t
     PageSizeNotWritable, ///< A memory's page size is one the text format cannot say.
 };
 
+/// The last Refusal enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastRefusal = Refusal::PageSizeNotWritable;
+
 /// One row of Refusals: a refusal, the exit code it ends the run with, and what it means.
 struct RefusalRow
 {
@@ -109,7 +112,7 @@ static_assert(
         for (auto const& row: Refusals)
             if (static_cast<std::size_t>(row.refusal) != index++)
                 return false;
-        return index == static_cast<std::size_t>(Refusal::PageSizeNotWritable) + 1;
+        return index == static_cast<std::size_t>(LastRefusal) + 1;
     }(),
     "Refusals must hold one row per Refusal, at the index of its enumerator");
 
@@ -149,6 +152,9 @@ enum class FeatureChoice : uint8_t
     Wasm3, ///< WebAssembly 3.0: FeatureSet::wasm3().
 };
 
+/// The last FeatureChoice enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastFeatureChoice = FeatureChoice::Wasm3;
+
 /// One row of FeatureChoices: a `--features` value and the proposals it names.
 struct FeatureChoiceRow
 {
@@ -169,7 +175,7 @@ static_assert(
         for (auto const& row: FeatureChoices)
             if (static_cast<std::size_t>(row.choice) != index++)
                 return false;
-        return index == static_cast<std::size_t>(FeatureChoice::Wasm3) + 1;
+        return index == static_cast<std::size_t>(LastFeatureChoice) + 1;
     }(),
     "FeatureChoices must hold one row per FeatureChoice, at the index of its enumerator");
 

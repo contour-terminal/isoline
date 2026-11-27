@@ -628,7 +628,7 @@ namespace
     using Evaluator = std::
         variant<std::monostate, UnaryFn, BinaryFn, TernaryFn, TestFn, ShiftFn, SplatFn, ExtractFn, ReplaceFn>;
 
-    static_assert(std::variant_size_v<Evaluator> == static_cast<std::size_t>(SimdShape::ReplaceLane) + 1,
+    static_assert(std::variant_size_v<Evaluator> == static_cast<std::size_t>(LastSimdShape) + 1,
                   "Evaluator holds one alternative per SimdShape, in its order");
 
     /// One SIMD operator: the instruction and its evaluator.

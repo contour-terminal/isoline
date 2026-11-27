@@ -364,6 +364,10 @@ inline constexpr auto OpcodeTable = std::to_array<OpcodeInfo>({
 /// The number of instructions in OpcodeTable.
 inline constexpr auto OpcodeCount = OpcodeTable.size();
 
+/// The last Opcode enumerator, as OpcodeTable counts them. C++23 cannot tell it from the enum's last
+/// enumerator, as both come from Opcodes.def; a reflection check compares the two.
+inline constexpr auto LastOpcode = static_cast<Opcode>(OpcodeCount - 1);
+
 static_assert(OpcodeCount == 471,
               "every WebAssembly 3.0 instruction but GC's, and wide arithmetic's four: 2.0's non-SIMD "
               "201, SIMD's 236, relaxed SIMD's 20, typed function references' four, tail calls' three "

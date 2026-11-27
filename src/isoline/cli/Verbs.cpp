@@ -212,7 +212,7 @@ namespace
             for (auto const& row: WriteRefusals)
                 if (static_cast<std::size_t>(row.error) != index++)
                     return false;
-            return index == static_cast<std::size_t>(text::WriteError::PageSizeNotWritable) + 1;
+            return index == static_cast<std::size_t>(text::LastWriteError) + 1;
         }(),
         "WriteRefusals must hold one row per WriteError, at the index of its enumerator");
 
