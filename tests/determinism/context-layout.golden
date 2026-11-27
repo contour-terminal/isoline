@@ -1,0 +1,27 @@
+# The code-to-runtime layout (src/isoline/compiler/ContextLayout.hpp), which every CI host must
+# reproduce byte for byte (ContextLayout.matchesTheGolden): generated code addresses these fields by
+# offset, so a host or standard library that lays them out differently would generate different code.
+# One line per field: record, field, offset, size. Changing the layout is changing this file.
+PendingAbrupt kind 0 1
+PendingAbrupt code 1 1
+PendingAbrupt subject 2 1
+PendingAbrupt subjectBits 8 8
+ExecutionState interruptFlag 0 8
+ExecutionState stepsLeft 8 8
+ExecutionState stackValuesLeft 16 8
+ExecutionState callDepthLeft 24 4
+ExecutionState nativeStackLimit 32 8
+ExecutionState entryStackPointer 40 8
+ExecutionState stubs 48 8
+ExecutionState dispatch 56 8
+ExecutionState pending 64 16
+ExecutionState hostScratch 80 8
+ExecutionState hostScratchCapacity 88 4
+ExecutionState executorState 96 8
+InstanceContext memory0 0 8
+InstanceContext memories 8 8
+InstanceContext tables 16 8
+InstanceContext globals 24 8
+InstanceContext typeIds 32 8
+InstanceContext functions 40 8
+InstanceContext moduleInstance 48 4

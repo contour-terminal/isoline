@@ -5,13 +5,17 @@ configure_file(VersionConfig.hpp.in "${PROJECT_BINARY_DIR}/include/isoline/Versi
 
 add_library(isoline_core STATIC)
 
-# The floating-point control register's row of the target (runtime/FloatEnvironment.hpp): exactly one
-# per build, chosen here from the compiler's target architecture (its predefined macros, so cross and
-# Visual Studio -A builds choose right), so that no source selects it with #ifdef. MSVC has no inline
-# assembly for arm64's FPCR and defines no __aarch64__, so it takes the portable row there; so does a
-# build for several architectures at once, where one object serves them all.
+# The target this build's code runs on, chosen here from the compiler's target architecture (its
+# predefined macros, so cross and Visual Studio -A builds choose right), so that no source selects
+# with #ifdef: the floating-point control register's row (runtime/FloatEnvironment.hpp), exactly one
+# per build, and the generated isoline/HostTarget.hpp, which names the architecture and the operating
+# system ABI as the compiler describes them (compiler/machine/TargetDescription.hpp). MSVC has no
+# inline assembly for arm64's FPCR and defines no __aarch64__, so it takes the portable float row
+# there; so does a build for several architectures at once, where one object serves them all and no
+# one architecture is the host's. ARM64EC runs x86-64 code under an arm64 ABI no row describes.
 include(CheckCXXSymbolExists)
 list(LENGTH CMAKE_OSX_ARCHITECTURES isolineOsxArchitectureCount)
+set(isolineHostArchitecture "")
 if(isolineOsxArchitectureCount GREATER 1)
     message(STATUS "[isoline] several target architectures (${CMAKE_OSX_ARCHITECTURES}): portable float control row")
     set(isolineFloatControl runtime/FloatControlPortable.cpp)
@@ -20,15 +24,38 @@ else()
     check_cxx_symbol_exists(_M_X64 "" ISOLINE_TARGET_X86_64_MSVC)
     check_cxx_symbol_exists(_M_ARM64EC "" ISOLINE_TARGET_ARM64EC)
     check_cxx_symbol_exists(__aarch64__ "" ISOLINE_TARGET_ARM64_GNU)
+    check_cxx_symbol_exists(_M_ARM64 "" ISOLINE_TARGET_ARM64_MSVC)
     if((ISOLINE_TARGET_X86_64_GNU OR ISOLINE_TARGET_X86_64_MSVC) AND NOT ISOLINE_TARGET_ARM64EC)
         set(isolineFloatControl runtime/FloatControlX86_64.cpp)
+        set(isolineHostArchitecture X64)
     elseif(ISOLINE_TARGET_ARM64_GNU)
         set(isolineFloatControl runtime/FloatControlArm64.cpp)
+        set(isolineHostArchitecture Arm64)
+    elseif(ISOLINE_TARGET_ARM64_MSVC AND NOT ISOLINE_TARGET_ARM64EC)
+        set(isolineFloatControl runtime/FloatControlPortable.cpp)
+        set(isolineHostArchitecture Arm64)
     else()
         set(isolineFloatControl runtime/FloatControlPortable.cpp)
     endif()
 endif()
+check_cxx_symbol_exists(_WIN32 "" ISOLINE_TARGET_WINDOWS)
+check_cxx_symbol_exists(__APPLE__ "" ISOLINE_TARGET_APPLE)
+if(ISOLINE_TARGET_WINDOWS)
+    set(isolineHostAbi Windows)
+elseif(ISOLINE_TARGET_APPLE)
+    set(isolineHostAbi Apple)
+else()
+    set(isolineHostAbi SystemV)
+endif()
+if(isolineHostArchitecture)
+    set(ISOLINE_HOST_ARCHITECTURE "compiler::machine::Architecture::${isolineHostArchitecture}")
+else()
+    set(ISOLINE_HOST_ARCHITECTURE "std::nullopt")
+endif()
+set(ISOLINE_HOST_OPERATING_SYSTEM_ABI "compiler::machine::OperatingSystemAbi::${isolineHostAbi}")
+configure_file(HostTarget.hpp.in "${PROJECT_BINARY_DIR}/include/isoline/HostTarget.hpp" @ONLY)
 message(STATUS "[isoline] float control row: ${isolineFloatControl}")
+message(STATUS "[isoline] host target: ${ISOLINE_HOST_ARCHITECTURE}, ${ISOLINE_HOST_OPERATING_SYSTEM_ABI}")
 add_library(isoline::core ALIAS isoline_core)
 
 # The host-stack rows, one per build flavour: the bytes one nested invocation takes at the most on the
@@ -163,6 +190,7 @@ target_sources(isoline_core
             validate/ValidationError.hpp
             validate/Validator.hpp
             Version.hpp
+            "${PROJECT_BINARY_DIR}/include/isoline/HostTarget.hpp"
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp"
             "${PROJECT_BINARY_DIR}/include/isoline/runtime/NestedInvocationBytes.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
@@ -170,6 +198,7 @@ target_link_libraries(isoline_core PUBLIC core::base)
 isoline_apply_target_policy(isoline_core)
 
 add_subdirectory(numerics)
+add_subdirectory(compiler)
 add_subdirectory(fastinterpreter)
 add_subdirectory(text)
 add_subdirectory(cli)
@@ -216,8 +245,11 @@ if(ISOLINE_TESTING)
         target_link_libraries(isoline_test PRIVATE Threads::Threads)
     endif()
     # The source tree, from which tests derive the paths of their data: tests/spec, and docs/embedding.md,
-    # whose generated blocks PublishedLimits_test checks against the tables.
-    target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    # whose generated blocks PublishedLimits_test checks against the tables. The operating system the tests
+    # run on, by CMake's name for it: what HostTarget_test checks the generated host ABI, which the
+    # compiler's predefined macros chose, against.
+    target_compile_definitions(isoline_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+                                                   ISOLINE_TEST_SYSTEM_NAME="${CMAKE_SYSTEM_NAME}")
     isoline_apply_target_policy(isoline_test TEST)
     # The unit run, one test per area: an area is the part of a case's name before its first dot, and
     # isoline_test.<area> runs every case of it ("<area>.*"), so that the areas run in parallel and each has a
