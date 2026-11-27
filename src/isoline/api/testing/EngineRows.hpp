@@ -7,12 +7,15 @@
 
 #include <catch2/catch_tostring.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/EngineIdentity.hpp>
@@ -22,25 +25,49 @@
 namespace isoline::api::testing
 {
 
-/// An engine an api case runs on: its name, the execution engine and the features it is configured with.
+/// An engine an api case runs on: its name, the execution engine, its dispatch and the features it is
+/// configured with.
 struct EngineRow
 {
     std::string_view name;                               ///< How a case's report names the row.
     ExecutionEngine engine = ExecutionEngine::Reference; ///< The engine that runs the code.
-    FeatureSet features = FeatureSet::wasm3();           ///< The features modules load with.
+    Dispatch dispatch = Dispatch::Switch;      ///< The fast engine's dispatch; the reference ignores it.
+    FeatureSet features = FeatureSet::wasm3(); ///< The features modules load with.
 };
 
-/// Every engine row, in the order the cases run them; the first is the default engine of the cases
-/// that name none (contract::configOf(ContractLimits, uint64_t)).
+/// Every engine row, in the order the cases run them: the reference engine, then the fast one under each
+/// dispatch; a build runs those it compiled (engineRows()).
 inline constexpr auto EngineRowTable = std::to_array<EngineRow>({
     { .name = "reference", .engine = ExecutionEngine::Reference, .features = FeatureSet::wasm3() },
+    { .name = "fast-switch",
+      .engine = ExecutionEngine::Fast,
+      .dispatch = Dispatch::Switch,
+      .features = FeatureSet::wasm3() },
+    { .name = "fast-tailcall",
+      .engine = ExecutionEngine::Fast,
+      .dispatch = Dispatch::TailCall,
+      .features = FeatureSet::wasm3() },
 });
 
-/// Every engine row (EngineRowTable), as GENERATE(from_range(…)) takes it.
-/// @return The rows.
-[[nodiscard]] inline std::span<EngineRow const> engineRows() noexcept
+/// Whether this build runs @p row: the reference engine always, the fast one under a dispatch it compiled.
+/// @param row The row.
+/// @return Whether the row's engine can be constructed.
+[[nodiscard]] inline bool isAvailable(EngineRow const& row) noexcept
 {
-    return EngineRowTable;
+    return row.engine != ExecutionEngine::Fast
+           || std::ranges::find(availableDispatches(), row.dispatch) != availableDispatches().end();
+}
+
+/// Every engine row this build runs (EngineRowTable, isAvailable()), as GENERATE(from_range(…)) takes it.
+/// @return The rows.
+[[nodiscard]] inline std::span<EngineRow const> engineRows()
+{
+    static auto const rows = [] {
+        auto available = std::vector<EngineRow> {};
+        std::ranges::copy_if(EngineRowTable, std::back_inserter(available), &isAvailable);
+        return available;
+    }();
+    return rows;
 }
 
 namespace contract
@@ -58,6 +85,7 @@ namespace contract
         auto config = EngineConfig {};
         config.features = row.features;
         config.engine = row.engine;
+        config.dispatch = row.dispatch;
         config.store.maxMemoryBytes = limits.memoryBytes;
         config.store.maxTableElements = limits.tableElements;
         config.store.maxSteps = maxSteps;
@@ -73,18 +101,9 @@ namespace contract
         auto config = EngineConfig {};
         config.features = row.features;
         config.engine = row.engine;
+        config.dispatch = row.dispatch;
         config.store = limits;
         return config;
-    }
-
-    /// An engine configuration of the first engine row (EngineRowTable), under @p limits.
-    /// @param limits The store caps.
-    /// @param maxSteps The steps a call may take; a backstop only, for the cases that spin.
-    /// @return The configuration.
-    [[nodiscard]] inline EngineConfig configOf(ContractLimits limits,
-                                               uint64_t maxSteps = std::numeric_limits<uint64_t>::max())
-    {
-        return configOf(limits, EngineRowTable.front(), maxSteps);
     }
 } // namespace contract
 

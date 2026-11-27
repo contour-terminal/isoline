@@ -37,6 +37,7 @@ using isoline::api::CallFailure;
 using isoline::api::Engine;
 using isoline::api::EngineConfig;
 using isoline::api::EngineMismatch;
+using isoline::api::ExecutionEngine;
 using isoline::api::ExecutionMode;
 using isoline::api::ExternKind;
 using isoline::api::ForeignImport;
@@ -651,7 +652,7 @@ TEST_CASE("Store.modesAgreeOnTheReferenceEngine")
         .exportFunction("nan", 0)
         .exportFunction("madd", 1);
     auto const run = [&](ExecutionMode mode) {
-        auto fixture = Fixture { EngineConfig { .mode = mode } };
+        auto fixture = Fixture { EngineConfig { .engine = ExecutionEngine::Reference, .mode = mode } };
         auto instance = fixture.instantiate(builder);
         auto nan = std::array<Value, 1> {};
         auto madd = std::array<Value, 1> {};

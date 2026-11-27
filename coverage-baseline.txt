@@ -265,7 +265,6 @@
 #   a generic vector operation's kernel word by its instruction; the two lines no input reaches are the unknown-kernel
 #   exclusion, and the new untaken branch is the end of its search, which only an unknown kernel reaches.
 
-exclude src/isoline/api/Store.cpp fast-engine-refused makeExecutor for the fast engine, a core::todo naming P4 Task 14b: Engine's constructor refuses ExecutionEngine::Fast until Task 14b wires the fast interpreter in, so no store is made with it
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine

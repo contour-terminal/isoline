@@ -32,7 +32,6 @@
 
 using isoline::api::CallFailure;
 using isoline::api::Engine;
-using isoline::api::EngineConfig;
 using isoline::api::FuncType;
 using isoline::api::HeapMemoryAllocator;
 using isoline::api::I32;
@@ -214,9 +213,10 @@ TEST_CASE("Latency.interruptToReturnP99", "[.perf]")
 {
     // Each trial spins in a fresh store (the interrupt is final), on the test thread; a watchdog waits
     // for the guest's first poll, lets it spin a while, stamps t0 and interrupts; t1 is stamped when
-    // the call returns. The spin is the shortest loop: every iteration a back-edge poll.
-    auto config = EngineConfig {};
-    config.store.maxSteps = BackstopSteps;
+    // the call returns. The spin is the shortest loop: every iteration a back-edge poll. On every engine row:
+    // the p99 holds for each.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto config = configOf(ContractLimits {}, row, BackstopSteps);
     auto const engine = Engine { config };
     auto builder = ModuleBuilder {};
     builder.type(FuncType {}).function(0, {}, loop(br(0))).exportFunction("spin", 0);

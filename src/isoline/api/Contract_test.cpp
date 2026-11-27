@@ -8,6 +8,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <array>
 #include <chrono>
@@ -44,7 +45,6 @@ using isoline::api::CallError;
 using isoline::api::CallFailure;
 using isoline::api::DecodeError;
 using isoline::api::Engine;
-using isoline::api::EngineConfig;
 using isoline::api::ExportAccessError;
 using isoline::api::ExternKind;
 using isoline::api::ForeignHandle;
@@ -69,6 +69,8 @@ using isoline::api::StoreDeleted;
 using isoline::api::Trap;
 using isoline::api::TrapCode;
 using isoline::api::Value;
+using isoline::api::testing::EngineRow;
+using isoline::api::testing::engineRows;
 using isoline::api::testing::contract::addModule;
 using isoline::api::testing::contract::atLeast;
 using isoline::api::testing::contract::bytesOf;
@@ -482,10 +484,11 @@ enum class FirstToGo : uint8_t
 };
 
 /// Two stores share one Imports, as Contour's runtimes share their host functions, both bind them, and
-/// @p firstToGo goes: what the other instantiated keeps calling them, and it keeps linking them.
-void survivorKeepsHostImports(FirstToGo firstToGo)
+/// @p firstToGo goes: what the other instantiated keeps calling them, and it keeps linking them. Both
+/// stores are of @p row's engine.
+void survivorKeepsHostImports(EngineRow const& row, FirstToGo firstToGo)
 {
-    auto const engine = Engine { configOf({}) };
+    auto const engine = Engine { configOf(ContractLimits {}, row) };
     auto allocator = isoline::api::HeapMemoryAllocator {};
     auto const log = std::make_shared<HostLog>();
     auto const imports = hostImports(log);
@@ -516,7 +519,8 @@ void survivorKeepsHostImports(FirstToGo firstToGo)
 
 TEST_CASE("Contract.loadRejectsNonModule", "[contract]")
 {
-    auto const engine = Engine { configOf({}) };
+    auto const row = GENERATE(from_range(engineRows()));
+    auto const engine = Engine { configOf(ContractLimits {}, row) };
     auto const bytes = std::array { std::byte { 1 }, std::byte { 2 } };
     auto const loaded = engine.load(bytes);
     CHECK(std::holds_alternative<DecodeError>(errorOf(loaded)));
@@ -524,7 +528,8 @@ TEST_CASE("Contract.loadRejectsNonModule", "[contract]")
 
 TEST_CASE("Contract.describesImportsAndExports", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const module = runtime.load(describedModule());
     CHECK(module.imports().size() == 2);
     CHECK(importedSignature(module, HostModule, "ping") == FuncType { .params = { TypeI32 }, .results = {} });
@@ -545,7 +550,8 @@ TEST_CASE("Contract.describesImportsAndExports", "[contract]")
 
 TEST_CASE("Contract.unknownImportIsUnsatisfied", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const module = runtime.load(unknownImportModule());
     CHECK(linkageOf(runtime.imports(), module, "nowhere", "f") == Linkage::Unsatisfied);
     // Instantiation agrees with resolve().
@@ -555,7 +561,8 @@ TEST_CASE("Contract.unknownImportIsUnsatisfied", "[contract]")
 
 TEST_CASE("Contract.wrongSignatureImportIsUnsatisfied", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const module = runtime.load(wrongSignatureModule());
     CHECK(importedSignature(module, HostModule, "ping")
           == FuncType { .params = { TypeI32, TypeI32 }, .results = {} });
@@ -567,7 +574,8 @@ TEST_CASE("Contract.wrongSignatureImportIsUnsatisfied", "[contract]")
 
 TEST_CASE("Contract.moduleCrossesThreads", "[contract][threading]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const bytes = describedModule().build();
     auto const loaded = onPreparedThread(runtime.engine(), [&] { return runtime.engine().load(bytes); });
     REQUIRE(loaded.has_value());
@@ -581,7 +589,8 @@ TEST_CASE("Contract.moduleCrossesThreads", "[contract][threading]")
 
 TEST_CASE("Contract.instantiateLeavesReactorToCaller", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const builder = reactorModule();
     auto bytes = builder.build();
     SECTION("a one-byte name length")
@@ -608,7 +617,8 @@ TEST_CASE("Contract.instantiateLeavesReactorToCaller", "[contract]")
 
 TEST_CASE("Contract.callsExport", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     CHECK_FALSE(instance.function("nothing").has_value());
     CHECK_FALSE(instance.function("memory").has_value());
@@ -618,7 +628,8 @@ TEST_CASE("Contract.callsExport", "[contract]")
 
 TEST_CASE("Contract.memoryViewIsBoundsChecked", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     auto const memory = memoryOf(instance);
     auto const whole = instance.memoryRange(memory, 0, PageBytes);
@@ -640,7 +651,8 @@ TEST_CASE("Contract.memoryViewIsBoundsChecked", "[contract]")
 
 TEST_CASE("Contract.hostCallbackReceivesArguments", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     CHECK(callI32(instance, "ping-then-store").has_value());
     CHECK(runtime.log().calls() == std::vector { pingOnThisThread({ 42 }) });
@@ -649,7 +661,8 @@ TEST_CASE("Contract.hostCallbackReceivesArguments", "[contract]")
 
 TEST_CASE("Contract.hostCallbackReceivesArgumentsInOrder", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const module = runtime.load(pairModule());
     CHECK(linkageOf(runtime.imports(), module, HostModule, "pair") == Linkage::Satisfied);
     auto const instance = runtime.instantiate(module);
@@ -661,7 +674,8 @@ TEST_CASE("Contract.hostCallbackReceivesArgumentsInOrder", "[contract]")
 
 TEST_CASE("Contract.hostCallbackErrorFails", "[contract]")
 {
-    auto runtime = Runtime { configOf({}), nullptr, HostAnswer::Fail };
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row), nullptr, HostAnswer::Fail };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     auto const error = errorOf(callI32(instance, "ping-then-store"));
     CHECK(error.failure() == CallFailure::HostFailure);
@@ -673,7 +687,8 @@ TEST_CASE("Contract.hostCallbackErrorFails", "[contract]")
 
 TEST_CASE("Contract.nestedHostFailureStaysNested", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto host = AbsorbingHost {};
     auto const instance = runtime.store().instantiate(runtime.load(nestedCallModule()), host.imports());
     REQUIRE(instance.has_value());
@@ -690,7 +705,8 @@ TEST_CASE("Contract.nestedHostFailureStaysNested", "[contract]")
 
 TEST_CASE("Contract.nestedCallKeepsTheOuterRecord", "[contract]")
 {
-    auto runtime = Runtime { configOf(withMemoryBytes(2 * PageBytes)) };
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(withMemoryBytes(2 * PageBytes), row) };
     auto host = AbsorbingHost {};
     auto const instance = runtime.store().instantiate(runtime.load(nestedCallModule()), host.imports());
     REQUIRE(instance.has_value());
@@ -705,19 +721,22 @@ TEST_CASE("Contract.nestedCallKeepsTheOuterRecord", "[contract]")
 
 TEST_CASE("Contract.twoRuntimesShareHostImports", "[contract]")
 {
-    survivorKeepsHostImports(FirstToGo::Older);
+    auto const row = GENERATE(from_range(engineRows()));
+    survivorKeepsHostImports(row, FirstToGo::Older);
 }
 
 TEST_CASE("Contract.olderRuntimeOutlivesNewer", "[contract]")
 {
-    survivorKeepsHostImports(FirstToGo::Newer);
+    auto const row = GENERATE(from_range(engineRows()));
+    survivorKeepsHostImports(row, FirstToGo::Newer);
 }
 
 TEST_CASE("Contract.memoryCapRefusesGrowth", "[contract]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     SECTION("the store's cap")
     {
-        auto runtime = Runtime { configOf(withMemoryBytes(2 * PageBytes)) };
+        auto runtime = Runtime { configOf(withMemoryBytes(2 * PageBytes), row) };
         auto const instance = runtime.instantiate(runtime.load(instanceModule()));
         auto const error = errorOf(callI32(instance, "grow"));
         CHECK(error.failure() == CallFailure::Trap);
@@ -727,10 +746,9 @@ TEST_CASE("Contract.memoryCapRefusesGrowth", "[contract]")
     }
     SECTION("the embedder's own allocator, as Contour provides its mapping")
     {
-        auto runtime =
-            Runtime { configOf({}), std::make_unique<ProvidedMemoryAllocator>(2 * PageBytes, 0, [](uint64_t) {
-                          return GrowDecision::Grant;
-                      }) };
+        auto runtime = Runtime { configOf(ContractLimits {}, row),
+                                 std::make_unique<ProvidedMemoryAllocator>(
+                                     2 * PageBytes, 0, [](uint64_t) { return GrowDecision::Grant; }) };
         auto const instance = runtime.instantiate(runtime.load(instanceModule()));
         auto const error = errorOf(callI32(instance, "grow"));
         CHECK(error.failure() == CallFailure::Trap);
@@ -742,6 +760,7 @@ TEST_CASE("Contract.memoryCapRefusesGrowth", "[contract]")
 
 TEST_CASE("Contract.grownMemoryIsVisible", "[contract]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     constexpr auto Address = uint32_t { 65'540 };
     constexpr auto Word = uint32_t { 0xC0DE };
     auto allocator = std::unique_ptr<isoline::api::IMemoryAllocator> {};
@@ -753,7 +772,7 @@ TEST_CASE("Contract.grownMemoryIsVisible", "[contract]")
         allocator = std::make_unique<ProvidedMemoryAllocator>(
             2 * PageBytes, 0, [](uint64_t) { return GrowDecision::Grant; });
     }
-    auto runtime = Runtime { configOf({}), std::move(allocator) };
+    auto runtime = Runtime { configOf(ContractLimits {}, row), std::move(allocator) };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     CHECK(errorOf(instance.memoryRange(memoryOf(instance), Address, 4)) == MemoryAccessError::OutOfBounds);
     CHECK(callI32(instance, "grow-by", std::array { 1U }) == std::vector { 1U });
@@ -763,7 +782,8 @@ TEST_CASE("Contract.grownMemoryIsVisible", "[contract]")
 
 TEST_CASE("Contract.callAfterTrapRuns", "[contract]")
 {
-    auto runtime = Runtime { configOf(withMemoryBytes(2 * PageBytes)) };
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(withMemoryBytes(2 * PageBytes), row) };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     CHECK(errorOf(callI32(instance, "grow")).failure() == CallFailure::Trap);
     CHECK(callI32(instance, "add", std::array { 2U, 3U }) == std::vector { 5U });
@@ -771,7 +791,8 @@ TEST_CASE("Contract.callAfterTrapRuns", "[contract]")
 
 TEST_CASE("Contract.memoryCapRefusesInitialSize", "[contract]")
 {
-    auto runtime = Runtime { configOf(withMemoryBytes(PageBytes / 2)) };
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(withMemoryBytes(PageBytes / 2), row) };
     auto const error =
         errorOf(runtime.store().instantiate(runtime.load(instanceModule()), runtime.imports()));
     CHECK(error == InstantiateError { LimitExceeded { Limit::MemoryBytes } });
@@ -779,7 +800,8 @@ TEST_CASE("Contract.memoryCapRefusesInitialSize", "[contract]")
 
 TEST_CASE("Contract.memoryCapRefusesUnexportedInitialSize", "[contract]")
 {
-    auto runtime = Runtime { configOf(withMemoryBytes(PageBytes / 2)) };
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(withMemoryBytes(PageBytes / 2), row) };
     auto const error =
         errorOf(runtime.store().instantiate(runtime.load(unexportedMemoryModule()), runtime.imports()));
     CHECK(error == InstantiateError { LimitExceeded { Limit::MemoryBytes } });
@@ -787,9 +809,10 @@ TEST_CASE("Contract.memoryCapRefusesUnexportedInitialSize", "[contract]")
 
 TEST_CASE("Contract.tableGrowthIsCapped", "[contract][memory]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     constexpr auto Refused = std::numeric_limits<uint32_t>::max();
     auto const cap = static_cast<uint32_t>(ContractLimits {}.tableElements);
-    auto runtime = Runtime {};
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const instance = runtime.instantiate(runtime.load(tableModule()));
     CHECK(callI32(instance, "grow", std::array { cap - 40 }) == std::vector { 40U });
     CHECK(callI32(instance, "grow", std::array { 1U }) == std::vector { Refused });
@@ -799,7 +822,8 @@ TEST_CASE("Contract.tableGrowthIsCapped", "[contract][memory]")
 
 TEST_CASE("Contract.tableInitialSizeIsCapped", "[contract][memory]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const error =
         errorOf(runtime.store().instantiate(runtime.load(oversizedTableModule()), runtime.imports()));
     CHECK(error == InstantiateError { LimitExceeded { Limit::TableElements } });
@@ -807,14 +831,16 @@ TEST_CASE("Contract.tableInitialSizeIsCapped", "[contract][memory]")
 
 TEST_CASE("Contract.tableSectionWithTrailingBytesIsRefused", "[contract]")
 {
-    auto const engine = Engine { configOf({}) };
+    auto const row = GENERATE(from_range(engineRows()));
+    auto const engine = Engine { configOf(ContractLimits {}, row) };
     auto const loaded = engine.load(bytesOf(TrailingBytesTableModule));
     CHECK(std::holds_alternative<DecodeError>(errorOf(loaded)));
 }
 
 TEST_CASE("Contract.unboundedRecursionTraps", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     auto const error = errorOf(callI32(instance, "recurse"));
     CHECK(error.failure() == CallFailure::Trap);
@@ -823,13 +849,16 @@ TEST_CASE("Contract.unboundedRecursionTraps", "[contract]")
 
 TEST_CASE("Contract.interruptStopsLoop", "[contract][threading]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     using namespace std::chrono_literals;
     SECTION("at a fixed back-edge")
     {
         // Contour's case interrupts 50 ms in; here the spinning thread hands over at a fixed back-edge
         // and waits until another thread interrupted it, so the case does not depend on scheduling.
         auto handover = HandoverInterrupt {};
-        auto runtime = Runtime { configOf({}, SpinBackstopSteps), nullptr, HostAnswer::Return, &handover };
+        auto runtime = Runtime {
+            configOf(ContractLimits {}, row, SpinBackstopSteps), nullptr, HostAnswer::Return, &handover
+        };
         auto const instance = runtime.instantiate(runtime.load(instanceModule()));
         auto const started = std::chrono::steady_clock::now();
         auto handedOver = Handover::TimedOut;
@@ -851,7 +880,7 @@ TEST_CASE("Contract.interruptStopsLoop", "[contract][threading]")
         // ThreadSanitizer sees the poll's read against the other thread's write. Interrupted whichever
         // comes first: an interrupt before the call is sticky. The backstop is four times the handover's,
         // room for the other thread to be scheduled late.
-        auto runtime = Runtime { configOf({}, SpinBackstopSteps * 4) };
+        auto runtime = Runtime { configOf(ContractLimits {}, row, SpinBackstopSteps * 4) };
         auto const instance = runtime.instantiate(runtime.load(instanceModule()));
         auto watchdog =
             JoiningThread { [interrupter = runtime.store().interrupter()] { interrupter->interrupt(); } };
@@ -863,7 +892,8 @@ TEST_CASE("Contract.interruptStopsLoop", "[contract][threading]")
 
 TEST_CASE("Contract.interruptIsFinal", "[contract]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const instance = runtime.instantiate(runtime.load(instanceModule()));
     runtime.store().interrupter()->interrupt();
     for (auto const attempt: std::views::iota(0, 2))
@@ -877,7 +907,8 @@ TEST_CASE("Contract.interruptIsFinal", "[contract]")
 
 TEST_CASE("Contract.instanceCrossesThreads", "[contract][threading]")
 {
-    auto runtime = Runtime {};
+    auto const row = GENERATE(from_range(engineRows()));
+    auto runtime = Runtime { configOf(ContractLimits {}, row) };
     auto const bytes = describedModule().build();
     auto const loaded = onPreparedThread(runtime.engine(), [&] { return runtime.engine().load(bytes); });
     REQUIRE(loaded.has_value());
@@ -896,6 +927,7 @@ TEST_CASE("Contract.instanceCrossesThreads", "[contract][threading]")
 
 TEST_CASE("Contract.instantiatesConcurrently", "[contract][threading]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // One module is instantiated on two threads at once, each into a store of its own, sharing the
     // module and the host functions' Imports: every instance is whole and runs. So too for a module
     // whose import is unsatisfied: each thread meets the outcome one instantiation alone has.
@@ -908,7 +940,7 @@ TEST_CASE("Contract.instantiatesConcurrently", "[contract][threading]")
         uint32_t asReference = 0;
         uint32_t added = 0;
     };
-    auto const engine = Engine { configOf({}) };
+    auto const engine = Engine { configOf(ContractLimits {}, row) };
     auto const log = std::make_shared<HostLog>();
     auto const imports = hostImports(log);
     auto const onTwoThreads = [&](Module const& module) {
@@ -966,10 +998,11 @@ TEST_CASE("Contract.instantiatesConcurrently", "[contract][threading]")
 
 TEST_CASE("Contract.threadPreparationNests", "[contract][threading]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // Tokens nest: two of one engine and one of a second on one thread; dropping the inner one of the
     // first leaves the thread prepared for both, and guest calls of both engines' stores still run.
-    auto first = Runtime {};
-    auto second = Runtime {};
+    auto first = Runtime { configOf(ContractLimits {}, row) };
+    auto second = Runtime { configOf(ContractLimits {}, row) };
     auto const firstInstance = first.instantiate(first.load(addModule()));
     auto const secondInstance = second.instantiate(second.load(addModule()));
     /// What the thread saw.
@@ -1004,9 +1037,10 @@ TEST_CASE("Contract.threadPreparationNests", "[contract][threading]")
 
 TEST_CASE("Contract.tableCountIsCapped", "[contract]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // Contour's MaxTables, expressed as Isoline's decode limit: a module defining more tables than the
     // engine's LoadLimits allow is not loaded, and the refusal is an implementation limit.
-    auto config = configOf({});
+    auto config = configOf(ContractLimits {}, row);
     config.load.decode.maxTables = 1;
     auto const engine = Engine { config };
     auto builder = ModuleBuilder {};
@@ -1296,11 +1330,16 @@ std::vector<FeatureCase> const& featureCases()
 /// implements is refused naming it (requiredFeature()), or the row's named prerequisite that is off too
 /// (relaxed-simd's module takes a v128 before it reaches a relaxed instruction), and loads once the
 /// engine enables it, so the module is valid otherwise; one Isoline lacks is refused whatever the
-/// features.
-void checkFeatureCases(ExtensionUse use)
+/// features. Both engines are @p engineRow's.
+void checkFeatureCases(EngineRow const& engineRow, ExtensionUse use)
 {
-    auto const extensions = Engine { EngineConfig { .features = extensionFeatures() } };
-    auto const everything = Engine { EngineConfig { .features = isoline::FeatureSet::all() } };
+    auto const engineOf = [&](isoline::FeatureSet features) {
+        auto config = configOf(ContractLimits {}, engineRow);
+        config.features = features;
+        return Engine { config };
+    };
+    auto const extensions = engineOf(extensionFeatures());
+    auto const everything = engineOf(isoline::FeatureSet::all());
     for (auto const& row: featureCases())
     {
         if (row.use != use)
@@ -1336,13 +1375,15 @@ void checkFeatureCases(ExtensionUse use)
 
 TEST_CASE("Contract.refusesDisabledFeatures", "[contract]")
 {
-    checkFeatureCases(ExtensionUse::Refused);
+    auto const row = GENERATE(from_range(engineRows()));
+    checkFeatureCases(row, ExtensionUse::Refused);
 }
 
 TEST_CASE("Contract.acceptsEnabledFeatures", "[contract]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     CHECK(extensionFeatures().checkPrerequisites().has_value());
-    checkFeatureCases(ExtensionUse::Accepted);
+    checkFeatureCases(row, ExtensionUse::Accepted);
 }
 
 namespace
@@ -1406,6 +1447,7 @@ enum class DeletedUse : uint8_t
 
 TEST_CASE("Contract.foreignHandlesAreValues", "[contract]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // A handle of another store is refused with ForeignHandle wherever it is given, reading nothing of
     // either store: never a contract check that ends the process.
     auto const use = GENERATE(ForeignUse::InstanceCall,
@@ -1414,8 +1456,8 @@ TEST_CASE("Contract.foreignHandlesAreValues", "[contract]")
                               ForeignUse::StoreCall);
     CAPTURE(use);
     auto const checks = FailedChecks {};
-    auto runtimeA = Runtime {};
-    auto runtimeB = Runtime {};
+    auto runtimeA = Runtime { configOf(ContractLimits {}, row) };
+    auto runtimeB = Runtime { configOf(ContractLimits {}, row) };
     auto const instanceA = runtimeA.instantiate(runtimeA.load(instanceModule()));
     auto const instanceB = runtimeB.instantiate(runtimeB.load(instanceModule()));
     auto const function = functionOf(instanceB, "add");
@@ -1448,6 +1490,7 @@ TEST_CASE("Contract.foreignHandlesAreValues", "[contract]")
 
 TEST_CASE("Contract.storeDeletedHandlesAreValues", "[contract]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // An instance whose store is gone reports it (StoreDeleted), or finds nothing, reading nothing of
     // the store: never a contract check that ends the process.
     auto const use = GENERATE(DeletedUse::Call,
@@ -1457,7 +1500,7 @@ TEST_CASE("Contract.storeDeletedHandlesAreValues", "[contract]")
                               DeletedUse::Function);
     CAPTURE(use);
     auto const checks = FailedChecks {};
-    auto runtime = std::make_unique<Runtime>();
+    auto runtime = std::make_unique<Runtime>(configOf(ContractLimits {}, row));
     auto const instance = runtime->instantiate(runtime->load(instanceModule()));
     auto const function = functionOf(instance, "add");
     auto const memory = memoryOf(instance);

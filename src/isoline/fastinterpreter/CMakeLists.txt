@@ -114,13 +114,18 @@ isoline_write_dispatch_availability("${isolineFastAvailabilityHeader}" "${isolin
 # The dispatch rows: the dispatches this build compiles, from the most portable to the fastest, and their
 # sources. Switch is portable C++ and always the first row.
 set(isolineDispatchSources SwitchDispatch.cpp SwitchDispatchCold.cpp)
+# The dispatches by the names the spec runner's --dispatch takes, for the tests that run each one
+# (tests/spec/CMakeLists.txt).
+set(isolineDispatchNames switch)
 if(isolineTailCallRow)
     message(STATUS "[isoline] fast interpreter dispatches: Switch TailCall (${isolineTailCallRow})")
     list(APPEND isolineDispatchSources ${isolineTailCallFamilyFiles})
+    list(APPEND isolineDispatchNames tailcall)
 else()
     message(STATUS "[isoline] fast interpreter dispatches: Switch")
     list(APPEND isolineDispatchSources ${isolineTailCallUnavailableFiles})
 endif()
+set_property(GLOBAL PROPERTY ISOLINE_FAST_DISPATCH_NAMES ${isolineDispatchNames})
 
 # The frame-size rows of the dispatch files, per build flavour: an optimized build without sanitizers or
 # coverage keeps each frame within 4 KiB (a deep host re-entry nests these frames on a small thread); a

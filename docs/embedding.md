@@ -34,14 +34,22 @@ auto results = std::array<Value, 1> {};
 auto const called = instance->call(*instance->function("run"), args, results);
 ```
 
-1. **`Engine`** holds an `EngineConfig` and nothing else: the features modules are decoded and
-   validated with, the execution engine and mode, the `LoadLimits`, and the `StoreLimits` every store
-   made for it keeps to unless it overrides them (`StoreOptions`). The feature set must be closed over
-   its prerequisites (checked); `FeatureSet::withPrerequisites()` closes one.
-2. **`Module`** is what `Engine::load()` makes of a module's bytes: decoded, validated and described
-   (`imports()`, `exports()`), never linked. A module loads whatever it imports. It carries the
-   engine's `EngineIdentity` (engine, mode, features), and only a store of an engine of the same
-   identity instantiates it (`EngineMismatch` otherwise).
+1. **`Engine`** holds an `EngineConfig`, and the memory its lowered code comes from: the features modules
+   are decoded and validated with, the execution engine and mode, the fast engine's `Dispatch`, the
+   `LoadLimits`, and the `StoreLimits` every store made for it keeps to unless it overrides them
+   (`StoreOptions`). The feature set must be closed over its prerequisites (checked);
+   `FeatureSet::withPrerequisites()` closes one. The engine is the fast interpreter by default
+   (`ExecutionEngine::Fast`), under the fastest dispatch the build compiled (`bestDispatch()`; a fast engine
+   of a dispatch outside `availableDispatches()` is a programming error, checked);
+   `ExecutionEngine::Reference` runs the reference interpreter instead. The fast engine's code is
+   allocated from the global heap, or from the `std::pmr::memory_resource` the second constructor takes,
+   which must outlive every module the engine loads.
+2. **`Module`** is what `Engine::load()` makes of a module's bytes: decoded, validated, described
+   (`imports()`, `exports()`) and, by the fast engine, lowered once (`code()`), never linked. Every store
+   that instantiates it runs that one lowered code. A module loads whatever it imports. It carries the
+   engine's `EngineIdentity` (engine, mode, features, and the dispatch of a fast engine's code), and only a
+   store of an engine of the same identity instantiates it (`EngineMismatch` otherwise): two reference
+   engines that differ only in `EngineConfig::dispatch` share their modules.
 3. **`Store`** is where instances live, with their memories, tables, globals, tags and host functions,
    under one `StoreLimits`: its engine's, or its own (`StoreOptions`, under *Limits*). Every limit caps
    the whole store, all its instances together.
@@ -285,8 +293,10 @@ builds with MSVC, and every other standard library, refuse as described; the mem
 ## Errors
 
 `Engine::load()` fails with a `LoadError`: `ModuleTooLarge` (before a byte is decoded),
-`HostMemoryExhausted`, a `DecodeError` or a `ValidationError`. `isImplementationLimit()` tells a refusal
-that raised `LoadLimits` would lift. A module that uses a proposal the engine does not enable is refused
+`HostMemoryExhausted`, a `DecodeError`, a `ValidationError`, or `CompileLimitExceeded` when the fast engine
+would hold more than `LoadLimits::maxCompileBytes` (256 MiB by default) at once to lower it. The refusal
+names the function it came at (its index in the code section) and what the refused reservation asked
+for. `isImplementationLimit()` tells a refusal that raised `LoadLimits` would lift. A module that uses a proposal the engine does not enable is refused
 with the error the spec suite expects of an engine without it (an unknown opcode, a malformed section
 id, a second memory), and `requiredFeature()` names the proposal; the message appends it:
 `illegal opcode 0c (simd not enabled)`. Enabling it, closed over its prerequisites, gets the module past

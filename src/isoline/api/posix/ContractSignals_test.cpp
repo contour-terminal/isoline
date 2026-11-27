@@ -4,6 +4,8 @@
 // CMake adds this file to the unit tests there (src/isoline/CMakeLists.txt), so no source tests for the
 // platform.
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <array>
 #include <csignal>
@@ -17,7 +19,10 @@
 #include <isoline/api/testing/Contract.hpp>
 
 using isoline::api::CallFailure;
+using isoline::api::testing::engineRows;
 using isoline::api::testing::contract::callI32;
+using isoline::api::testing::contract::configOf;
+using isoline::api::testing::contract::ContractLimits;
 using isoline::api::testing::contract::instanceModule;
 using isoline::api::testing::contract::onPreparedThread;
 using isoline::api::testing::contract::Runtime;
@@ -60,13 +65,14 @@ std::optional<std::array<Disposition, GuardedSignals.size()>> dispositions()
 
 TEST_CASE("Contract.installsNoSignalHandlers", "[contract]")
 {
+    auto const row = GENERATE(from_range(engineRows()));
     // No trap handler for out-of-bounds accesses, no wake-up signal: an engine, a store, an
     // instantiation, a trapping call and a prepared thread leave the process's (or a sanitizer's)
     // handlers in charge.
     auto const before = dispositions();
     REQUIRE(before.has_value());
     {
-        auto runtime = Runtime {};
+        auto runtime = Runtime { configOf(ContractLimits {}, row) };
         CHECK(dispositions() == before);
         auto const instance = runtime.instantiate(runtime.load(instanceModule()));
         CHECK(dispositions() == before);
