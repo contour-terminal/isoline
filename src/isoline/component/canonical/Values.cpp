@@ -60,7 +60,8 @@ namespace
     /// Appends @p codePoint (a Unicode scalar value) to @p text in UTF-8.
     void appendUtf8(std::string& text, char32_t codePoint)
     {
-        for (auto const byte: encodeUtf8(codePoint).view())
+        auto const encoded = encodeUtf8(codePoint);
+        for (auto const byte: encoded.view())
             text.push_back(static_cast<char>(byte));
     }
 
