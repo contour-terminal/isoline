@@ -7,13 +7,13 @@
 #include <new>
 #include <tuple>
 
-#include <isoline/fastinterpreter/LoweringArena.hpp>
+#include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/testing/ContractViolation.hpp>
 
-using isoline::fastinterpreter::BudgetExceeded;
-using isoline::fastinterpreter::CountingArena;
-using isoline::fastinterpreter::Refusal;
-using isoline::fastinterpreter::RefusalReason;
+using isoline::runtime::ArenaBudgetExceeded;
+using isoline::runtime::ArenaRefusal;
+using isoline::runtime::ArenaRefusalReason;
+using isoline::runtime::CountingArena;
 
 namespace
 {
@@ -32,7 +32,7 @@ class ExhaustedResource final: public std::pmr::memory_resource
 
 } // namespace
 
-TEST_CASE("LoweringArena.chargesAllocationsAndTracksThePeak")
+TEST_CASE("CountingArena.chargesAllocationsAndTracksThePeak")
 {
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };
     CHECK(arena.budget() == 1'000);
@@ -48,7 +48,7 @@ TEST_CASE("LoweringArena.chargesAllocationsAndTracksThePeak")
     CHECK_FALSE(arena.lastRefusal().has_value());
 }
 
-TEST_CASE("LoweringArena.allocationsDrawOnTheReservation")
+TEST_CASE("CountingArena.allocationsDrawOnTheReservation")
 {
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };
     REQUIRE(arena.reserve(600).has_value());
@@ -68,7 +68,7 @@ TEST_CASE("LoweringArena.allocationsDrawOnTheReservation")
     CHECK(arena.charged() == 0);
 }
 
-TEST_CASE("LoweringArena.releaseReturnsAReservation")
+TEST_CASE("CountingArena.releaseReturnsAReservation")
 {
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };
     REQUIRE(arena.reserve(600).has_value());
@@ -80,19 +80,19 @@ TEST_CASE("LoweringArena.releaseReturnsAReservation")
     CHECK(arena.peak() == 600);
 }
 
-TEST_CASE("LoweringArena.refusesAReservationPastTheBudget")
+TEST_CASE("CountingArena.refusesAReservationPastTheBudget")
 {
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };
     REQUIRE(arena.reserve(700).has_value());
     auto const refused = arena.reserve(301);
     REQUIRE_FALSE(refused.has_value());
-    CHECK(refused.error() == BudgetExceeded { .requested = 301, .available = 300 });
+    CHECK(refused.error() == ArenaBudgetExceeded { .requested = 301, .available = 300 });
     CHECK(arena.charged() == 700);
     REQUIRE(arena.reserve(300).has_value());
     CHECK(arena.charged() == 1'000);
 }
 
-TEST_CASE("LoweringArena.refusesAnAllocationPastTheBudget")
+TEST_CASE("CountingArena.refusesAnAllocationPastTheBudget")
 {
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };
     REQUIRE(arena.reserve(300).has_value());
@@ -101,7 +101,7 @@ TEST_CASE("LoweringArena.refusesAnAllocationPastTheBudget")
     CHECK(arena.charged() == 900);
     CHECK_THROWS_AS(std::ignore = arena.allocate(101, 8), std::bad_alloc);
     REQUIRE(arena.lastRefusal().has_value());
-    CHECK(*arena.lastRefusal() == Refusal { .reason = RefusalReason::Budget, .requested = 101 });
+    CHECK(*arena.lastRefusal() == ArenaRefusal { .reason = ArenaRefusalReason::Budget, .requested = 101 });
     CHECK(arena.charged() == 900);
     CHECK(arena.peak() == 900);
     auto* const fits = arena.allocate(100, 8);
@@ -110,7 +110,7 @@ TEST_CASE("LoweringArena.refusesAnAllocationPastTheBudget")
     arena.deallocate(held, 900, 8);
 }
 
-TEST_CASE("LoweringArena.aRefusalLeavesTheReservation")
+TEST_CASE("CountingArena.aRefusalLeavesTheReservation")
 {
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };
     REQUIRE(arena.reserve(600).has_value());
@@ -124,20 +124,20 @@ TEST_CASE("LoweringArena.aRefusalLeavesTheReservation")
     arena.deallocate(fits, 1'000, 8);
 }
 
-TEST_CASE("LoweringArena.recordsAHostRefusal")
+TEST_CASE("CountingArena.recordsAHostRefusal")
 {
     auto exhausted = ExhaustedResource {};
     auto arena = CountingArena { 1'000, exhausted };
     REQUIRE(arena.reserve(50).has_value());
     CHECK_THROWS_AS(std::ignore = arena.allocate(80, 8), std::bad_alloc);
     REQUIRE(arena.lastRefusal().has_value());
-    CHECK(*arena.lastRefusal() == Refusal { .reason = RefusalReason::HostMemory, .requested = 80 });
+    CHECK(*arena.lastRefusal() == ArenaRefusal { .reason = ArenaRefusalReason::HostMemory, .requested = 80 });
     // Nothing was allocated, so nothing was charged or drawn.
     CHECK(arena.charged() == 50);
     CHECK(arena.reserved() == 50);
 }
 
-TEST_CASE("LoweringArena.equalsOnlyItself")
+TEST_CASE("CountingArena.equalsOnlyItself")
 {
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };
     auto other = CountingArena { 1'000, *std::pmr::new_delete_resource() };
@@ -149,7 +149,7 @@ TEST_CASE("LoweringArena.equalsOnlyItself")
 // tests/CMakeLists.txt runs each in a process of its own and expects the Require's text
 // (isoline::runtime::testing::endAtContractViolation()).
 
-TEST_CASE("Contract.LoweringArena.releaseOnlyWhatIsReserved", "[.contract]")
+TEST_CASE("Contract.CountingArena.releaseOnlyWhatIsReserved", "[.contract]")
 {
     isoline::runtime::testing::endAtContractViolation();
     auto arena = CountingArena { 1'000, *std::pmr::new_delete_resource() };

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <isoline/fastinterpreter/LoweringArena.hpp>
+#include <isoline/runtime/CountingArena.hpp>
 
 #include <core/Assert.hpp>
 
@@ -11,7 +11,7 @@
 #include <new>
 #include <optional>
 
-namespace isoline::fastinterpreter
+namespace isoline::runtime
 {
 
 CountingArena::CountingArena(uint64_t budget, std::pmr::memory_resource& upstream) noexcept:
@@ -39,11 +39,11 @@ uint64_t CountingArena::peak() const noexcept
     return _peak;
 }
 
-std::expected<void, BudgetExceeded> CountingArena::reserve(uint64_t bytes) noexcept
+std::expected<void, ArenaBudgetExceeded> CountingArena::reserve(uint64_t bytes) noexcept
 {
     auto const available = _budget - _charged;
     if (bytes > available)
-        return std::unexpected(BudgetExceeded { .requested = bytes, .available = available });
+        return std::unexpected(ArenaBudgetExceeded { .requested = bytes, .available = available });
     charge(bytes);
     _reserved += bytes;
     return {};
@@ -56,7 +56,7 @@ void CountingArena::release(uint64_t bytes) noexcept
     _charged -= bytes;
 }
 
-std::optional<Refusal> CountingArena::lastRefusal() const noexcept
+std::optional<ArenaRefusal> CountingArena::lastRefusal() const noexcept
 {
     return _lastRefusal;
 }
@@ -73,7 +73,7 @@ void* CountingArena::do_allocate(std::size_t bytes, std::size_t alignment)
     auto const fresh = bytes - drawn;
     if (fresh > _budget - _charged)
     {
-        _lastRefusal = Refusal { .reason = RefusalReason::Budget, .requested = bytes };
+        _lastRefusal = ArenaRefusal { .reason = ArenaRefusalReason::Budget, .requested = bytes };
         throw std::bad_alloc();
     }
     try
@@ -85,7 +85,7 @@ void* CountingArena::do_allocate(std::size_t bytes, std::size_t alignment)
     }
     catch (std::bad_alloc const&)
     {
-        _lastRefusal = Refusal { .reason = RefusalReason::HostMemory, .requested = bytes };
+        _lastRefusal = ArenaRefusal { .reason = ArenaRefusalReason::HostMemory, .requested = bytes };
         throw;
     }
 }
@@ -107,4 +107,4 @@ void CountingArena::charge(uint64_t bytes) noexcept
     _peak = std::max(_peak, _charged);
 }
 
-} // namespace isoline::fastinterpreter
+} // namespace isoline::runtime

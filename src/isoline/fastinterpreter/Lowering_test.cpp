@@ -29,11 +29,11 @@
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Listing.hpp>
 #include <isoline/fastinterpreter/Lowering.hpp>
-#include <isoline/fastinterpreter/LoweringArena.hpp>
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
 #include <isoline/fastinterpreter/testing/HostileModules.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
+#include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/runtime/testing/ContractViolation.hpp>
@@ -60,7 +60,6 @@ using isoline::binary::testing::unreachable;
 using isoline::fastinterpreter::bodyUnits;
 using isoline::fastinterpreter::Continuation;
 using isoline::fastinterpreter::continuationAfter;
-using isoline::fastinterpreter::CountingArena;
 using isoline::fastinterpreter::describe;
 using isoline::fastinterpreter::Dispatch;
 using isoline::fastinterpreter::LocalInit;
@@ -82,6 +81,7 @@ using isoline::fastinterpreter::testing::lowered;
 using isoline::fastinterpreter::testing::loweredWithinTheBounds;
 using isoline::fastinterpreter::testing::op;
 using isoline::fastinterpreter::testing::validated;
+using isoline::runtime::CountingArena;
 using isoline::runtime::ExecutionMode;
 using isoline::validate::ValidatedModule;
 

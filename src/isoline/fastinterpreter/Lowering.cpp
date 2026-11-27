@@ -1088,7 +1088,7 @@ namespace
         return std::nullopt;
     }
 
-    /// The LoweringFailure of each RefusalReason of the arena, indexed by the reason.
+    /// The LoweringFailure of each runtime::ArenaRefusalReason of the arena, indexed by the reason.
     inline constexpr auto RefusalFailures =
         std::to_array<LoweringFailure>({ LoweringFailure::Budget, LoweringFailure::HostMemory });
 
@@ -1099,7 +1099,7 @@ namespace
     /// first.
     [[nodiscard]] std::expected<LoweringStats, LoweringError> lowerFunctions(
         validate::ValidatedModule const& validated,
-        ILoweringArena& arena,
+        runtime::ICountingArena& arena,
         LoweringVector<LoweredFunction>& functions,
         uint32_t& codeIndex)
     {
@@ -1168,7 +1168,7 @@ uint64_t loweringReservation(binary::Module const& module, uint32_t codeIndex)
 std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     validate::ValidatedModule const& module,
     LoweringConfig const& config,
-    std::shared_ptr<ILoweringArena> arena)
+    std::shared_ptr<runtime::ICountingArena> arena)
 {
     Require(arena != nullptr);
     Require(std::ranges::find(availableDispatches(), config.dispatch) != availableDispatches().end());

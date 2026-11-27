@@ -51,9 +51,9 @@ inline constexpr auto SlotWidths = std::to_array<uint32_t>({ 1, 2, 2 });
 /// Stores @p value into @p slots, an exact bijection: loadValue() gives it back bit for bit, a typed
 /// null's heap included.
 ///
-/// A 32-bit value is zero-extended, a 64-bit one stored as its bits, a vector as lane 0 then lane 1,
-/// and a reference as `kind | heap.kind << 8 | heap.typeIndex << 32`, then its address. Slots are
-/// written as whole integers, never through their bytes, so the layout is the same on every host.
+/// The slots are the words of runtime::encodeWords(), the encoding every engine shares: a 32-bit value
+/// zero-extended, a 64-bit one as its bits, a vector as lane 0 then lane 1, and a reference as
+/// `kind | heap.kind << 8 | heap.typeIndex << 32`, then its address. A scalar takes the first word only.
 ///
 /// Precondition (checked): @p slots is exactly as wide as @p value's SlotClass.
 /// @param value The value.

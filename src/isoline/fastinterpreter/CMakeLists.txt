@@ -141,7 +141,6 @@ target_sources(isoline_core
         FastInterpreter.cpp
         Listing.cpp
         Lowering.cpp
-        LoweringArena.cpp
         SlotCodec.cpp
         ${isolineDispatchSources}
     PUBLIC FILE_SET HEADERS
@@ -156,7 +155,6 @@ target_sources(isoline_core
             Listing.hpp
             Lowering.hpp
             LoweringAllocator.hpp
-            LoweringArena.hpp
             LoweringTable.hpp
             Operations.def
             Operations.hpp

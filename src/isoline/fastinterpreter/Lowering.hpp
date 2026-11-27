@@ -9,7 +9,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Dispatch.hpp>
-#include <isoline/fastinterpreter/LoweringArena.hpp>
+#include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
@@ -119,6 +119,6 @@ struct LoweringError
 [[nodiscard]] std::expected<std::shared_ptr<LoweredModule const>, LoweringError> lower(
     validate::ValidatedModule const& module,
     LoweringConfig const& config,
-    std::shared_ptr<ILoweringArena> arena);
+    std::shared_ptr<runtime::ICountingArena> arena);
 
 } // namespace isoline::fastinterpreter

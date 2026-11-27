@@ -255,7 +255,7 @@ set(isolineContractRows
     "Contract.SlotCodec.loadFromItsWidth|slots\\.size\\(\\) == width"
     "Contract.SlotCodec.nullHeapIsTheInstances|typeIndex < instanceTypes\\.size\\(\\)"
     "Contract.Code.everyContainerUsesTheArena|allocateFrom\\(_arena\\.get\\(\\), _functions\\)"
-    "Contract.LoweringArena.releaseOnlyWhatIsReserved|bytes <= _reserved"
+    "Contract.CountingArena.releaseOnlyWhatIsReserved|bytes <= _reserved"
     "Contract.Lowering.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), config\\.dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"
     "Contract.Listing.wholeOperations|row\\.words <= code\\.size\\(\\)"
     "Contract.FastInterpreter.dispatchMustBeAvailable|std::ranges::find\\(availableDispatches\\(\\), dispatch\\) != availableDispatches\\(\\)\\.end\\(\\)"

@@ -7,7 +7,7 @@ can rely on.
 ## The lowering arena and the compile budget
 
 Lowering charges every byte it allocates to the module's compile budget, through a lowering arena
-(`fastinterpreter::ILoweringArena`, `CountingArena`): a `std::pmr::memory_resource` that counts what it
+(`runtime::ICountingArena`, `runtime::CountingArena`): a `std::pmr::memory_resource` that counts what it
 charges, lets lowering reserve a bound before the work it covers, and refuses past the budget by throwing
 `std::bad_alloc`. `lower()` catches the refusal at its boundary and refuses the module with a
 `LoweringError`, which says whether the budget or the host's memory ran out. So a module over the budget is
