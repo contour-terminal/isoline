@@ -20,6 +20,25 @@ enum class CallFailure : uint8_t
     UncaughtException, ///< The guest threw an exception no handler caught.
     ArgumentMismatch,  ///< The arguments, or the number of result slots, do not fit the function: no
                        ///< guest code ran.
+    ForeignHandle,     ///< The function is another store's: no guest code ran. Reserved: Instance::call()
+                       ///< checks that as a precondition.
+    StoreDeleted,      ///< The instance's store is gone: nothing ran, and nothing was read.
+};
+
+/// A handle of another store than the one asked (isOf() is false): its entity is not this store's, so
+/// nothing was read or changed. A handle of a store that is gone is foreign to every live store.
+struct ForeignHandle
+{
+    /// All such refusals are equal.
+    bool operator==(ForeignHandle const&) const = default;
+};
+
+/// A handle used after its store was destroyed: the store's alive-token has expired, so nothing was
+/// read or changed.
+struct StoreDeleted
+{
+    /// All such refusals are equal.
+    bool operator==(StoreDeleted const&) const = default;
 };
 
 /// An exception the guest threw and nothing caught, copied out of the store.
@@ -29,7 +48,7 @@ enum class CallFailure : uint8_t
 /// (runtime::Store::markEscaped()), so they stay valid for the store's life.
 struct UncaughtException
 {
-    TagAddr tag = 0;            ///< Its tag, which compares with Instance::tag().
+    TagAddr tag = 0;            ///< Its tag, which compares with Instance::tag()'s Tag::address().
     std::vector<Value> payload; ///< The tag's params' values, in order.
 
     /// Equal when tag and payload are.
@@ -41,8 +60,9 @@ struct CallError
 {
     /// How it ended: the trap; a host function's failure; the exception nobody caught; or, for a call
     /// that was refused before it entered the guest, the first argument (or result count) that did not
-    /// fit.
-    using Detail = std::variant<Trap, HostFailure, UncaughtException, ValueMismatch>;
+    /// fit, a function of another store, or an instance whose store is gone.
+    using Detail =
+        std::variant<Trap, HostFailure, UncaughtException, ValueMismatch, ForeignHandle, StoreDeleted>;
 
     /// How it ended: the one truth failure() reads.
     ///
@@ -56,12 +76,30 @@ struct CallError
     GrowthRecord refusedGrowth;
 
     /// Why the call failed, derived from detail: a Trap of TrapCode::Interrupted is Interrupted, every
-    /// other Trap is Trap, and a ValueMismatch is ArgumentMismatch.
+    /// other Trap is Trap, a ValueMismatch is ArgumentMismatch, and every other alternative is the
+    /// CallFailure of its name.
     /// @return The failure.
     [[nodiscard]] CallFailure failure() const noexcept;
 
     /// Equal when detail and refusedGrowth are.
     bool operator==(CallError const&) const = default;
 };
+
+/// An initial value for a table's new elements (Store::growTable()) that is not of the table's element
+/// type: nothing was grown.
+struct InitValueMismatch
+{
+    /// All such refusals are equal.
+    bool operator==(InitValueMismatch const&) const = default;
+};
+
+/// Why growing a memory failed, its size unchanged: a memory of another store, or the guest's own
+/// refusal (Refusal), as memory.grow is refused, the store's limits charged alike.
+using MemoryGrowthError = std::variant<ForeignHandle, Refusal>;
+
+/// Why growing a table (Store::growTable()) failed, its size unchanged: a table of another store; an
+/// initial value not of its element type; or the guest's own refusal (Refusal), as table.grow is
+/// refused, the store's limits charged alike.
+using TableGrowthError = std::variant<ForeignHandle, InitValueMismatch, Refusal>;
 
 } // namespace isoline::api

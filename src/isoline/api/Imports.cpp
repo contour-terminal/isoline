@@ -116,6 +116,7 @@ Imports& Imports::define(std::string module,
                          Instance const& instance,
                          std::string_view exportName)
 {
+    Require(instance.isAlive());
     auto const& runtime = instance._store->_runtime;
     auto const& exports = runtime.moduleInstance(instance._address).exports;
     auto const found = std::ranges::find(

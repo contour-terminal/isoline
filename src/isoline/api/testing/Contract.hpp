@@ -39,6 +39,7 @@
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Store.hpp>
 #include <isoline/api/Types.hpp>
+#include <isoline/api/testing/EngineRows.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
 
@@ -53,27 +54,6 @@ inline constexpr auto PageBytes = uint64_t { 64 } * 1024;
 
 /// How long a contract case waits for another thread at most, before it gives up and fails.
 inline constexpr auto ThreadDeadline = std::chrono::seconds { 30 };
-
-/// The caps a contract store keeps to: Contour's RuntimeLimits, as StoreLimits express them.
-struct ContractLimits
-{
-    uint64_t memoryBytes = uint64_t { 4 } * 1024 * 1024; ///< All memories of the store together.
-    uint64_t tableElements = 64; ///< All tables of the store together, below any engine default.
-};
-
-/// An engine configuration of @p limits; @p maxSteps bounds a call that should have been interrupted.
-/// @param limits The store caps.
-/// @param maxSteps The steps a call may take; a backstop only, for the cases that spin.
-/// @return The configuration.
-[[nodiscard]] inline EngineConfig configOf(ContractLimits limits,
-                                           uint64_t maxSteps = std::numeric_limits<uint64_t>::max())
-{
-    auto config = EngineConfig {};
-    config.store.maxMemoryBytes = limits.memoryBytes;
-    config.store.maxTableElements = limits.tableElements;
-    config.store.maxSteps = maxSteps;
-    return config;
-}
 
 /// The bytes of @p raw, as Engine::load() takes them.
 /// @param raw The module's bytes.

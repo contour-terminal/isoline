@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -10,7 +11,9 @@
 #include <iostream>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <isoline/api/CallError.hpp>
@@ -28,10 +31,13 @@ using isoline::api::Engine;
 using isoline::api::EngineConfig;
 using isoline::api::FuncType;
 using isoline::api::HeapMemoryAllocator;
+using isoline::api::I32;
 using isoline::api::Imports;
 using isoline::api::IPollObserver;
 using isoline::api::PollSite;
 using isoline::api::Store;
+using isoline::api::Value;
+using isoline::api::testing::contract::addModule;
 using isoline::api::testing::contract::JoiningThread;
 using isoline::api::testing::contract::ThreadDeadline;
 using isoline::binary::testing::br;
@@ -108,6 +114,50 @@ double microseconds(Clock::duration duration)
     return std::chrono::duration<double, std::micro> { duration }.count();
 }
 
+/// The calls one batch of the call-latency benchmark times together: enough that the clock's
+/// resolution and the loop around them vanish in the batch's duration.
+constexpr auto CallsPerBatch = std::size_t { 100'000 };
+
+/// The batches the call-latency benchmark times, of which it reports the median and the fastest.
+constexpr auto CallBatches = std::size_t { 31 };
+
+/// What the call-latency benchmark measured of one entry: the duration of a call, per batch.
+struct CallTimes
+{
+    double medianNanoseconds = 0;  ///< The median batch's duration, per call.
+    double fastestNanoseconds = 0; ///< The fastest batch's duration, per call.
+    std::size_t failures = 0;      ///< The calls that failed or returned a wrong sum: 0 in a valid run.
+};
+
+/// Times CallBatches batches of CallsPerBatch calls of @p call, which adds its two arguments.
+/// @param call Calls the guest's add with the arguments and the result slot; returns whether it did.
+template <typename Call>
+CallTimes timeCalls(Call const& call)
+{
+    auto perBatch = std::vector<Clock::duration> {};
+    perBatch.reserve(CallBatches);
+    auto failures = std::size_t { 0 };
+    for ([[maybe_unused]] auto const batch: std::views::iota(std::size_t { 0 }, CallBatches))
+    {
+        auto const startedAt = Clock::now();
+        for (auto const index: std::views::iota(std::size_t { 0 }, CallsPerBatch))
+        {
+            auto const args = std::array<Value, 2> { I32 { static_cast<uint32_t>(index) }, I32 { 1 } };
+            auto results = std::array<Value, 1> {};
+            if (!call(std::span<Value const> { args }, std::span<Value> { results })
+                || std::get<I32>(results[0]).bits != static_cast<uint32_t>(index) + 1)
+                ++failures;
+        }
+        perBatch.push_back(Clock::now() - startedAt);
+    }
+    auto const perCall = [](Clock::duration batch) {
+        return std::chrono::duration<double, std::nano> { batch }.count() / double { CallsPerBatch };
+    };
+    return CallTimes { .medianNanoseconds = perCall(percentile(perBatch, 50)),
+                       .fastestNanoseconds = perCall(percentile(perBatch, 1)),
+                       .failures = failures };
+}
+
 } // namespace
 
 TEST_CASE("Latency.interruptToReturnP99", "[.perf]")
@@ -162,4 +212,31 @@ TEST_CASE("Latency.interruptToReturnP99", "[.perf]")
         microseconds(p99),
         microseconds(percentile(samples, 100)));
     CHECK(p99 <= LatencyBound);
+}
+
+TEST_CASE("Latency.callRoundTrip", "[.perf]")
+{
+    // The cost of one call into the guest and back, the checks of every call (the alive-token, the
+    // handle's store, the arguments) included: the guest's add of two i32s, so that the entry, not the
+    // guest, is what is timed.
+    auto const engine = Engine { EngineConfig {} };
+    auto const module = engine.load(addModule().build());
+    REQUIRE(module.has_value());
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { engine, allocator };
+    auto const instance = store.instantiate(*module, Imports {});
+    REQUIRE(instance.has_value());
+    auto const add = instance->function("add");
+    REQUIRE(add.has_value());
+
+    auto const viaInstance = timeCalls([&](std::span<Value const> args, std::span<Value> results) {
+        return instance->call(*add, args, results).has_value();
+    });
+    std::cout << std::format(
+        "Instance::call over {} batches of {} calls: median {:.1f} ns, fastest {:.1f} ns\n",
+        CallBatches,
+        CallsPerBatch,
+        viaInstance.medianNanoseconds,
+        viaInstance.fastestNanoseconds);
+    CHECK(viaInstance.failures == 0);
 }

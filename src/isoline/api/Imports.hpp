@@ -68,7 +68,7 @@ class Imports
     /// identity, never the store.
     /// @param module The import module name.
     /// @param name The import field name.
-    /// @param instance The instance (its store must be alive now).
+    /// @param instance The instance (checked, aborting: its store is alive).
     /// @param exportName The name of one of its exports (checked: it exists).
     /// @return This definition set. A later definition of the same names replaces an earlier one.
     Imports& define(std::string module,
@@ -83,7 +83,7 @@ class Imports
     /// The definition keeps the store's identity, never the store.
     /// @param module The import module name.
     /// @param name The import field name.
-    /// @param function The function (its store must be alive now).
+    /// @param function The function (checked, aborting: its store is alive).
     /// @return This definition set. A later definition of the same names replaces an earlier one.
     Imports& define(std::string module, std::string name, Function const& function);
 

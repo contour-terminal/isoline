@@ -42,8 +42,10 @@ auto const called = instance->call(*instance->function("run"), args, results);
    identity instantiates it (`EngineMismatch` otherwise).
 3. **`Store`** is where instances live, with their memories, tables, globals, tags and host functions,
    under one `StoreLimits`. Every limit caps the whole store, all its instances together.
-4. **`Instance`** is a handle to one module instance of a store; `Function` and `Memory` are handles to
-   its exports. All three are cheap to copy and valid as long as their store.
+4. **`Instance`** is a handle to one module instance of a store; `Function`, `Table`, `Memory`,
+   `Global` and `Tag` (`api/Extern.hpp`) are handles to its exports, and `Extern` is any one of them, a
+   `std::variant` with one alternative per `ExternKind`, in that order. All are cheap to copy; what they
+   do once their store is gone is under *Lifetimes*.
 
 `Imports` is a plain value holding definitions by module and field name: host functions
 (`define(module, name, type, implementation)`), another instance's export (`define(module, name,
@@ -55,8 +57,11 @@ each import of a module has a definition of its name, kind and type.
 
 - `Engine` and `Module` are immutable: share them, load and instantiate on any number of threads at
   once.
-- A `Store` and all its instances are one unit, used by one thread at a time. The unit may move to
-  another thread between calls.
+- A `Store` and every handle of it (its `Instance`s, and every `Function`, `Memory`, `Global`, `Table`
+  and `Tag`) are one unit, used by one thread at a time. The unit may move to another thread between
+  calls. Destroying the store on one thread while another thread holds or uses one of its handles is a
+  contract violation: a handle's alive-token check (see *Lifetimes*) catches a store destroyed before
+  the use, on the unit's thread, and synchronizes nothing.
 - The store's `Interrupter` (`Store::interrupter()`) is the one thing another thread may use while the
   store runs.
 - A host function implementation defined in an `Imports` that several stores use is called on each of
@@ -79,11 +84,21 @@ each import of a module has a definition of its name, kind and type.
   `define(module, name, function)` the function's: the instance's store must be alive when the
   definition is made, and only that store links it (`ForeignImport` from any other). The definition
   keeps the store's identity (`StoreId`), never the store, so it may outlive the store safely.
-- Handles are valid as long as their store. A `Function` or `Memory` that outlives its store is never
-  taken for one of a later store: every `StoreId` has a serial number unique within the process, which
-  they copy and `Function::isOf()`/`Memory::isOf()` compare, so passing one to a later store's `Instance`
-  is a checked precondition violation. An `Instance` is different: it refers to its store directly, and
-  using one after its store is destroyed is undefined behaviour, which nothing checks.
+- Handles name their store's entities for as long as the store lives, and are safe to keep after it:
+  each one holds the store's *alive-token*, a `std::weak_ptr` to a token the store owns and destroys
+  first, and checks it before it reads the store. Nothing dereferences a store that is gone:
+  - An `Instance` whose store is gone reports it: `call()` fails with a `CallError` whose `detail` is
+    `StoreDeleted` (`CallFailure::StoreDeleted`), `memoryRange()`, `memorySize()` and `exportAt()` fail
+    with `StoreDeleted`, and the by-name lookups (`function()`, `memory()`, `global()`, `table()`,
+    `tag()`) find nothing: a deleted store names no export.
+  - `Function::type()`, `Tag::type()` and every handle's `store()` return a reference into the store, so
+    they check that it is alive and abort when it is not (a checked precondition violation, never
+    undefined behaviour); `Imports::define()` of an instance or a function reads the store and checks it
+    the same way. `address()` and `isOf()` read nothing of the store and answer at any time.
+  - A handle is never taken for one of a later store: every `StoreId` has a serial number unique within
+    the process, which handles copy and `isOf()` compares. The `Store` accessors (`globalValue()`,
+    `tableGet()`, …) refuse a handle of another store, a deleted one included, with `ForeignHandle`;
+    passing another store's `Function` or `Memory` to an `Instance` is a checked precondition violation.
 - A memory view (`Instance::memoryRange()`) is valid until the next call into the store, which may grow,
   and so move, the memory.
 
@@ -111,6 +126,35 @@ embedder places guest memory in storage of its own.
   memories, or a component whose core instances each define one, fails to instantiate with
   `AllocationFailure { Memory, Embedder }`. Such an embedder gives each store its own allocator, or one
   that can provide several memories.
+
+## Globals, tables and exports
+
+An instance's exports are reached by name, of one kind (`Instance::function()`, `memory()`, `global()`,
+`table()`, `tag()`), or by index, of any kind: `Instance::exportAt(index)` returns the export at
+`index` in the module's export order (`Module::exports()`) as an `Extern`, or `OutOfRange`.
+
+The store reads and writes a global or table of any of its instances, without one:
+
+| Call | Returns | Refusals |
+|---|---|---|
+| `globalValue(global)` | its value | `ForeignHandle` |
+| `setGlobal(global, value)` | nothing | `ForeignHandle`, `Immutable` (a const global), `ValueMismatch` |
+| `globalType(global)` | its `GlobalType` | `ForeignHandle` |
+| `tableSize(table)` | its size in elements | `ForeignHandle` |
+| `tableGet(table, index)` | the `Ref` at `index` | `ForeignHandle`, `OutOfBounds` |
+| `tableSet(table, index, ref)` | nothing | `ForeignHandle`, `OutOfBounds`, `ValueMismatch` |
+| `growTable(table, delta, init)` | the old size | `TableGrowthError`: `ForeignHandle`, `InitValueMismatch`, or a `Refusal` |
+| `tableType(table)` | its `TableType`, its minimum the current size | `ForeignHandle` |
+
+A refused call changes nothing. A value is checked as a call's arguments are: of the global's type, or
+of the table's element type, a reference of another heap or one naming what the store does not hold
+included (`ValueMismatch`; `InitValueMismatch` for `growTable()`'s `init`). `growTable()` goes through
+the guest's own path: it is charged against `maxTableElements` and refused as `table.grow` would be
+(`TypeMaximum`, `Limit`, `HostMemory`). A refusal while a call into the store runs (a host function
+growing a table) belongs to that call: it is recorded in the call's `refusedGrowth.table`, as a refused
+`table.grow` of the guest's is, and a `CallError` the call ends with reports it. Types are in their
+store's form, as `Function::type()` is: a concrete heap names a type of the store. An `exnref` that
+`globalValue()` or `tableGet()` returns is escaped (see *Exceptions*).
 
 ## Calls and re-entrancy
 
@@ -177,6 +221,8 @@ A failed call is a `CallError`: its `detail` says how it ended, `failure()` redu
 | `HostFailure` | a `HostFailure` a host function the guest called returned |
 | `UncaughtException` | an `UncaughtException`: the exception's tag and payload, copied out of the store |
 | `ArgumentMismatch` | a `ValueMismatch`: the call was refused before it entered the guest |
+| `ForeignHandle` | a `ForeignHandle`: the function is another store's (reserved: `Instance::call()` still checks that as a precondition) |
+| `StoreDeleted` | a `StoreDeleted`: the instance's store is gone; nothing ran |
 
 `Store::instantiate()` fails with an `InstantiateError`: `EngineMismatch`, `ForeignImport { index }`,
 `LinkError` (`UnknownImport` for an import with no definition, `IncompatibleImportType` for one of
@@ -320,8 +366,8 @@ it by address alone keeps the visible partial writes after an interrupt the same
 ## Exceptions
 
 An exception the guest throws and nothing catches ends the call as `UncaughtException`, a copy of its
-tag and payload. `UncaughtException::tag` compares with `Instance::tag(name)`, the address of an
-exported tag.
+tag and payload. `UncaughtException::tag` compares with the `address()` of the `Tag` an instance
+exports (`Instance::tag(name)`), whose `type()` lists the payload's types.
 
 A store holds its exceptions in an arena capped by `maxExceptions` and `maxExceptionValues`; when it is
 full, an allocation sweeps it and reclaims what no root reaches. An `exnref` handed to the embedder (in

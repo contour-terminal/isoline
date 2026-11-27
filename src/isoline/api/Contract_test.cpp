@@ -430,7 +430,7 @@ class AbsorbingHost
 
     /// Names the instance `ping(0)` calls back into: an attach-style call after construction, as the
     /// instance is created with this host's imports.
-    void attach(Instance instance) noexcept { _state->instance = instance; }
+    void attach(Instance const& instance) noexcept { _state->instance = instance; }
 
     /// What the latest call back into the instance returned; nothing before the first.
     [[nodiscard]] std::optional<std::expected<void, CallFailure>> const& nested() const noexcept

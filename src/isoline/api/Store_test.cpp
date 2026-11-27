@@ -460,11 +460,10 @@ TEST_CASE("Store.hostFunctionUnderTwoTypesIsTwoFunctions")
     CHECK(exportedFunction(second, "wide").address() == wide.address());
     CHECK(runtimeOf(fixture.store).functionCount() == 2);
 
-    auto instance = first;
     auto const narrowArgs = std::array<Value, 1> { I32 { 1 } };
     auto const wideArgs = std::array<Value, 1> { I64 { 1 } };
-    CHECK(instance.call(narrow, narrowArgs, {}).has_value());
-    CHECK(instance.call(wide, wideArgs, {}).has_value());
+    CHECK(first.call(narrow, narrowArgs, {}).has_value());
+    CHECK(first.call(wide, wideArgs, {}).has_value());
     CHECK(calls == 2);
 }
 
@@ -680,7 +679,7 @@ TEST_CASE("Store.uncaughtExceptionIsCopiedOut")
         auto const failed = instance.call(thrower, {}, {});
         CHECK(errorOf(failed).failure() == CallFailure::UncaughtException);
         CHECK(errorOf(failed).detail
-              == CallError::Detail { UncaughtException { .tag = *tag, .payload = { I32 { 5 } } } });
+              == CallError::Detail { UncaughtException { .tag = tag->address(), .payload = { I32 { 5 } } } });
     }
     CHECK(runtimeOf(fixture.store).liveExceptions() == 1); // the latest, unswept
     CHECK_FALSE(instance.tag("throw").has_value());
@@ -862,7 +861,7 @@ TEST_CASE("Store.crossInstanceLinksOfEveryKind")
     auto const tag = exporter.tag("e");
     REQUIRE(tag.has_value());
     CHECK(errorOf(thrown).detail
-          == CallError::Detail { UncaughtException { .tag = *tag, .payload = { I32 { 9 } } } });
+          == CallError::Detail { UncaughtException { .tag = tag->address(), .payload = { I32 { 9 } } } });
 }
 
 TEST_CASE("Store.definedHostFunctionLinksThroughImports")

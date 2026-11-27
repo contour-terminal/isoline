@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The canary's cases, one per line: ISOLINE_REQUIRE_CANARY_CASE(function, "name", "check"). The function
+// (RequireCanary.cpp) calls what must fail its Require(); the name is the command-line argument that runs
+// it, and the CTest it becomes (isoline_require_canary.<name>); the check is the CMake regular expression
+// of the Require()'s condition text the test must print. RequireCanary.cpp includes this file for its case
+// table, and tests/CMakeLists.txt reads it for the tests: one list, so the two cannot drift.
+ISOLINE_REQUIRE_CANARY_CASE(engineOfOpenFeatureSet, "engine-open-features", "_config[.]features[.]checkPrerequisites[(][)][.]has_value[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(functionStoreAfterDelete, "function-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(functionTypeAfterDelete, "function-type-after-delete", "_link[.]isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(memoryStoreAfterDelete, "memory-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(globalStoreAfterDelete, "global-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(tableStoreAfterDelete, "table-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(tagStoreAfterDelete, "tag-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(tagTypeAfterDelete, "tag-type-after-delete", "_link[.]isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(importsInstanceAfterDelete, "imports-instance-after-delete", "instance[.]isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(importsFunctionAfterDelete, "imports-function-after-delete", "isAlive[(][)]")

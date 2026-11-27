@@ -28,6 +28,7 @@
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Store.hpp>
+#include <isoline/runtime/ValueCheck.hpp>
 
 namespace isoline::api
 {
@@ -64,6 +65,8 @@ CallFailure CallError::failure() const noexcept
                           [](HostFailure const&) { return CallFailure::HostFailure; },
                           [](UncaughtException const&) { return CallFailure::UncaughtException; },
                           [](ValueMismatch const&) { return CallFailure::ArgumentMismatch; },
+                          [](ForeignHandle const&) { return CallFailure::ForeignHandle; },
+                          [](StoreDeleted const&) { return CallFailure::StoreDeleted; },
                       },
                       detail);
 }
@@ -92,7 +95,8 @@ Store::Store(Engine const& engine, IMemoryAllocator& allocator, IPollObserver* o
                runtime::StoreServices { .allocator = allocator,
                                         .requiredGuardBytes = engine.requiredGuardBytes(),
                                         .pollObserver = observer } },
-    _executor { makeExecutor(engine.config().engine) }
+    _executor { makeExecutor(engine.config().engine) },
+    _alive { std::make_shared<std::monostate>() }
 {
 }
 
@@ -238,7 +242,114 @@ std::expected<Function, DefineError> Store::define(FuncType const& type,
         discardReservations();
         return std::unexpected { DefineError { address.error() } };
     }
-    return Function { *_id, *address, _runtime.functionType(*address) };
+    return Function { handleLink(), *address, _runtime.functionType(*address) };
+}
+
+std::expected<Value, GlobalAccessError> Store::globalValue(Global const& global) noexcept
+{
+    if (!global.isOf(*_id))
+        return std::unexpected { GlobalAccessError::ForeignHandle };
+    auto const& value = _runtime.global(global.address()).value;
+    // The embedder holds it now: an exnref must survive later sweeps.
+    _runtime.markEscaped(value);
+    return value;
+}
+
+std::expected<void, GlobalAccessError> Store::setGlobal(Global const& global, Value value) noexcept
+{
+    if (!global.isOf(*_id))
+        return std::unexpected { GlobalAccessError::ForeignHandle };
+    auto& instance = _runtime.global(global.address());
+    if (instance.type.mutability != binary::Mutability::Var)
+        return std::unexpected { GlobalAccessError::Immutable };
+    if (!checkValue(value, instance.type.type))
+        return std::unexpected { GlobalAccessError::ValueMismatch };
+    instance.value = value;
+    return {};
+}
+
+std::expected<GlobalType, GlobalAccessError> Store::globalType(Global const& global) const noexcept
+{
+    if (!global.isOf(*_id))
+        return std::unexpected { GlobalAccessError::ForeignHandle };
+    return _runtime.global(global.address()).type;
+}
+
+std::expected<uint64_t, TableAccessError> Store::tableSize(Table const& table) const noexcept
+{
+    if (!table.isOf(*_id))
+        return std::unexpected { TableAccessError::ForeignHandle };
+    return uint64_t { _runtime.table(table.address()).elements.size() };
+}
+
+std::expected<Ref, TableAccessError> Store::tableGet(Table const& table, uint64_t index) noexcept
+{
+    if (!table.isOf(*_id))
+        return std::unexpected { TableAccessError::ForeignHandle };
+    auto const& elements = _runtime.table(table.address()).elements;
+    if (index >= elements.size())
+        return std::unexpected { TableAccessError::OutOfBounds };
+    auto const& element = elements[static_cast<std::size_t>(index)];
+    // The embedder holds it now: an exnref must survive later sweeps.
+    _runtime.markEscaped(element);
+    return element;
+}
+
+std::expected<void, TableAccessError> Store::tableSet(Table const& table, uint64_t index, Ref value) noexcept
+{
+    if (!table.isOf(*_id))
+        return std::unexpected { TableAccessError::ForeignHandle };
+    auto& instance = _runtime.table(table.address());
+    if (index >= instance.elements.size())
+        return std::unexpected { TableAccessError::OutOfBounds };
+    if (!checkValue(value, instance.type.element))
+        return std::unexpected { TableAccessError::ValueMismatch };
+    instance.elements[static_cast<std::size_t>(index)] = value;
+    return {};
+}
+
+std::expected<uint64_t, TableGrowthError> Store::growTable(Table const& table,
+                                                           uint64_t delta,
+                                                           Ref init) noexcept
+{
+    if (!table.isOf(*_id))
+        return std::unexpected { TableGrowthError { ForeignHandle {} } };
+    if (!checkValue(init, _runtime.table(table.address()).type.element))
+        return std::unexpected { TableGrowthError { InitValueMismatch {} } };
+    // The guest's own path: charged against the store's limits, refused as table.grow is. It throws
+    // nothing but what an allocation inside it throws, which it reports as HostMemory.
+    return _runtime.growTable(table.address(), delta, init).transform_error([](Refusal refusal) {
+        return TableGrowthError { refusal };
+    });
+}
+
+std::expected<TableType, TableAccessError> Store::tableType(Table const& table) const noexcept
+{
+    if (!table.isOf(*_id))
+        return std::unexpected { TableAccessError::ForeignHandle };
+    auto const& instance = _runtime.table(table.address());
+    auto type = instance.type;
+    type.limits.min = instance.elements.size();
+    return type;
+}
+
+Extern Store::externOf(runtime::ExternValue value) const noexcept
+{
+    switch (value.kind)
+    {
+        case ExternKind::Func:
+            return Function { handleLink(), value.address, _runtime.functionType(value.address) };
+        case ExternKind::Table: return Table { handleLink(), value.address };
+        case ExternKind::Memory: return Memory { handleLink(), value.address };
+        case ExternKind::Global: return Global { handleLink(), value.address };
+        case ExternKind::Tag: break; // below the switch, so that every kind is a case
+    }
+    return Tag { handleLink(), value.address, _runtime.type(_runtime.tag(value.address).typeId) };
+}
+
+std::expected<void, ValueMismatch> Store::checkValue(Value const& value, ValueType const& type) const noexcept
+{
+    return runtime::checkValues(_runtime, std::span { &value, 1 }, std::span { &type, 1 });
 }
 
 Store::PendingHost Store::reserveHost(FuncType const& type, std::shared_ptr<IHostFunction> const& function)
@@ -283,12 +394,16 @@ CallError Store::callError(Abrupt const& abrupt, GrowthRecord const& refusedGrow
     return CallError { .detail = std::move(detail), .refusedGrowth = refusedGrowth };
 }
 
-Instance::Instance(Store& store, uint32_t address) noexcept: _store { &store }, _address { address }
+Instance::Instance(Store& store, uint32_t address) noexcept:
+    _store { &store }, _address { address }, _alive { store._alive }
 {
 }
 
 std::optional<runtime::ExternValue> Instance::exported(std::string_view name, ExternKind kind) const noexcept
 {
+    // A deleted store names no export.
+    if (!isAlive())
+        return std::nullopt;
     for (auto const& [exportName, value]: _store->_runtime.moduleInstance(_address).exports)
         if (exportName == name)
             return value.kind == kind ? std::optional { value } : std::nullopt;
@@ -298,28 +413,54 @@ std::optional<runtime::ExternValue> Instance::exported(std::string_view name, Ex
 std::optional<Function> Instance::function(std::string_view name) const noexcept
 {
     return exported(name, ExternKind::Func).transform([this](runtime::ExternValue value) {
-        return Function { *_store->_id, value.address, _store->_runtime.functionType(value.address) };
+        return std::get<Function>(_store->externOf(value));
     });
 }
 
 std::optional<Memory> Instance::memory(std::string_view name) const noexcept
 {
     return exported(name, ExternKind::Memory).transform([this](runtime::ExternValue value) {
-        return Memory { *_store->_id, value.address };
+        return std::get<Memory>(_store->externOf(value));
     });
 }
 
-std::optional<TagAddr> Instance::tag(std::string_view name) const noexcept
+std::optional<Global> Instance::global(std::string_view name) const noexcept
 {
-    return exported(name, ExternKind::Tag).transform([](runtime::ExternValue value) {
-        return value.address;
+    return exported(name, ExternKind::Global).transform([this](runtime::ExternValue value) {
+        return std::get<Global>(_store->externOf(value));
     });
 }
 
-std::expected<void, CallError> Instance::call(Function function,
+std::optional<Table> Instance::table(std::string_view name) const noexcept
+{
+    return exported(name, ExternKind::Table).transform([this](runtime::ExternValue value) {
+        return std::get<Table>(_store->externOf(value));
+    });
+}
+
+std::optional<Tag> Instance::tag(std::string_view name) const noexcept
+{
+    return exported(name, ExternKind::Tag).transform([this](runtime::ExternValue value) {
+        return std::get<Tag>(_store->externOf(value));
+    });
+}
+
+std::expected<Extern, ExportAccessError> Instance::exportAt(uint32_t index) const noexcept
+{
+    if (!isAlive())
+        return std::unexpected { ExportAccessError::StoreDeleted };
+    auto const& exports = _store->_runtime.moduleInstance(_address).exports;
+    if (index >= exports.size())
+        return std::unexpected { ExportAccessError::OutOfRange };
+    return _store->externOf(exports[index].second);
+}
+
+std::expected<void, CallError> Instance::call(Function const& function,
                                               std::span<Value const> args,
                                               std::span<Value> results) const noexcept
 {
+    if (!isAlive())
+        return std::unexpected { CallError { .detail = StoreDeleted {}, .refusedGrowth = {} } };
     Require(function.isOf(*_store->_id));
     auto& runtime = _store->_runtime;
     auto const invoked =
@@ -343,10 +484,12 @@ std::expected<void, CallError> Instance::call(Function function,
     return std::unexpected { _store->callError(invoked.outcome.error(), invoked.refusedGrowth) };
 }
 
-std::expected<std::span<std::byte>, MemoryAccessError> Instance::memoryRange(Memory memory,
+std::expected<std::span<std::byte>, MemoryAccessError> Instance::memoryRange(Memory const& memory,
                                                                              uint64_t address,
                                                                              uint64_t size) const noexcept
 {
+    if (!isAlive())
+        return std::unexpected { MemoryAccessError::StoreDeleted };
     Require(memory.isOf(*_store->_id));
     auto const bytes = _store->_runtime.memory(memory.address()).bytes();
     if (size == 0)
@@ -356,8 +499,10 @@ std::expected<std::span<std::byte>, MemoryAccessError> Instance::memoryRange(Mem
     return bytes.subspan(static_cast<std::size_t>(address), static_cast<std::size_t>(size));
 }
 
-MemorySize Instance::memorySize(Memory memory) const noexcept
+std::expected<MemorySize, MemoryAccessError> Instance::memorySize(Memory const& memory) const noexcept
 {
+    if (!isAlive())
+        return std::unexpected { MemoryAccessError::StoreDeleted };
     Require(memory.isOf(*_store->_id));
     auto const& instance = _store->_runtime.memory(memory.address());
     auto const bytes = static_cast<uint64_t>(instance.bytes().size());
