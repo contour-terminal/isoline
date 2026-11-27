@@ -1,0 +1,2 @@
+header not included: isoline/api/Table.hpp declares into isoline::api
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

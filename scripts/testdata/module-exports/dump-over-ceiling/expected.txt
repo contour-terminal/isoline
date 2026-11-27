@@ -1,0 +1,1 @@
+error: the AST dump is <masked> bytes, over the ceiling of 1 bytes (DUMP_SIZE_LIMIT_BYTES): an internal namespace has grown; raise the ceiling with the measurement

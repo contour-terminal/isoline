@@ -184,6 +184,18 @@ if(CMAKE_CROSSCOMPILING_EMULATOR)
     set(isolineMemoryTestTimeout 600)
 endif()
 
+# The export lint's self-test, on its fixture cases (scripts/testdata/module-exports/): registered where the
+# lint itself is (module-exports-*, cmake/IsolineModules.cmake), so a lane without the pinned LLVM's Clang
+# gains no skipped test. Run by hand without --clang, it exits 77.
+if(ISOLINE_MODULE_LINT_CLANG)
+    add_test(NAME check-module-exports-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-module-exports_test.py"
+                     --clang "${ISOLINE_MODULE_LINT_CLANG}"
+                     --work-directory "${CMAKE_CURRENT_BINARY_DIR}/check-module-exports-selftest")
+    # Two dozen parses of a few lines each.
+    set_tests_properties(check-module-exports-selftest PROPERTIES LABELS lint TIMEOUT 300 SKIP_RETURN_CODE 77)
+endif()
+
 # The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced
 # global operator new (AllocationCounter.cpp). The replacement is program-wide, hence a binary of its
 # own. TSan's runtime defines operator new itself, not replaceably, so a TSan build leaves it out; the

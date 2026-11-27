@@ -105,6 +105,14 @@ set(tidyCases
     "Clang" "22.1.8" "clang-tidy, some build"                                        "LLVM version"
     "GNU"   "15.2.0" "LLVM version 15.2.0"                                           "BMIs of GNU")
 
+# (clang++ --version output → reason substring): the export lint's Clang, LLVM's at the pinned major.
+set(lintClangCases
+    "clang version 22.1.8 (Fedora 22.1.8-4.fc44)\nTarget: x86_64-redhat-linux-gnu"         "-"
+    "Ubuntu clang version 22.1.0 (++20260301)\nTarget: x86_64-pc-linux-gnu"                 "-"
+    "clang version 20.1.8\nTarget: x86_64-redhat-linux-gnu"                                 "LLVM 20"
+    "Apple clang version 17.0.0 (clang-1700.0.13.5)\nTarget: arm64-apple-darwin24.5.0"      "Apple"
+    "g++ (GCC) 16.2.1"                                                                       "no 'clang version'")
+
 ## @brief Sets @p outVar to @p value, or to "" where @p value is the placeholder `-`.
 function(_unplaceholder outVar value)
     if(value STREQUAL "-")
@@ -212,6 +220,25 @@ while(cases)
         string(FIND "${reason}" "${expectedReason}" position)
         if(reason STREQUAL "" OR position EQUAL -1)
             string(APPEND failures "\n  ${compilerId} ${version} with '${shownOutput}': reason '${reason}', "
+                                   "expected one naming '${expectedReason}'")
+        endif()
+    endif()
+endwhile()
+
+set(cases "${lintClangCases}")
+while(cases)
+    list(POP_FRONT cases versionOutput expectedReason)
+    _unplaceholder(expectedReason "${expectedReason}")
+    isoline_module_lint_clang_refusal(VERSION_OUTPUT "${versionOutput}" OUT_REASON reason)
+    string(REPLACE "\n" " | " shownOutput "${versionOutput}")
+    if(expectedReason STREQUAL "")
+        if(NOT reason STREQUAL "")
+            string(APPEND failures "\n  lint Clang '${shownOutput}': refused ('${reason}'), expected accepted")
+        endif()
+    else()
+        string(FIND "${reason}" "${expectedReason}" position)
+        if(reason STREQUAL "" OR position EQUAL -1)
+            string(APPEND failures "\n  lint Clang '${shownOutput}': reason '${reason}', "
                                    "expected one naming '${expectedReason}'")
         endif()
     endif()

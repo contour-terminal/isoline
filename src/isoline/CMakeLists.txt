@@ -111,6 +111,15 @@ isoline_apply_target_policy(isoline_core)
 add_subdirectory(text)
 add_subdirectory(cli)
 
+# Module isoline: the public names of isoline_core's header set, re-exported by the generated isoline.cppm.
+# binary, runtime, validate and interpreter are internal: isoline::api re-exports what of them is public.
+isoline_add_module(
+    NAME isoline
+    LIBRARY isoline_core
+    SOURCE isoline.cppm
+    NAMESPACES isoline isoline::api isoline::config
+    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter)
+
 if(ISOLINE_TESTING)
     # Every *_test.cpp under src/isoline/ is one translation unit of the single unit-test binary,
     # except in the directories whose tests link a target of their own and build their own binary.

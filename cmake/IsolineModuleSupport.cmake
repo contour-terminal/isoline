@@ -68,6 +68,11 @@ set(ISOLINE_MODULE_TOOL_FLOORS
 set(ISOLINE_MODULE_TIDY_COMPILERS
     "Clang")
 
+# The LLVM major of the export lint's Clang (scripts/check-module-exports.py): the one CI pins. The lint's
+# Clang dumps the header set's AST, whose JSON form is Clang's own and changes between majors, so another
+# major (or Apple's Clang, whose versions are Xcode's) is refused rather than trusted.
+set(ISOLINE_MODULE_LINT_LLVM_MAJOR 22)
+
 ## @brief Sets @p outVar to the minimum version of @p tool in ISOLINE_MODULE_TOOL_FLOORS.
 function(_isoline_module_tool_floor tool outVar)
     set(rows "${ISOLINE_MODULE_TOOL_FLOORS}")
@@ -306,5 +311,25 @@ function(isoline_module_tidy_refusal)
                    "the BMIs it reads must come from its own LLVM build")
     endif()
     string(JOIN "" reason ${reason})
+    set(${arg_OUT_REASON} "${reason}" PARENT_SCOPE)
+endfunction()
+
+## @brief Decides whether a clang++ may be the export lint's Clang: LLVM's (not Apple's) at
+## ISOLINE_MODULE_LINT_LLVM_MAJOR.
+##
+## isoline_module_lint_clang_refusal(VERSION_OUTPUT <what `<clang++> --version` printed> OUT_REASON <var>)
+## Sets OUT_REASON to why it is refused, or to "" where it is accepted.
+function(isoline_module_lint_clang_refusal)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "VERSION_OUTPUT;OUT_REASON" "")
+    set(reason "")
+    string(REGEX MATCH "clang version ([0-9]+)(\\.[0-9]+)*" ignored "${arg_VERSION_OUTPUT}")
+    set(major "${CMAKE_MATCH_1}")
+    if(arg_VERSION_OUTPUT MATCHES "Apple clang")
+        set(reason "Apple's Clang is not LLVM ${ISOLINE_MODULE_LINT_LLVM_MAJOR}")
+    elseif(major STREQUAL "")
+        set(reason "it printed no 'clang version'")
+    elseif(NOT major EQUAL ISOLINE_MODULE_LINT_LLVM_MAJOR)
+        set(reason "it is LLVM ${major}, not the pinned LLVM ${ISOLINE_MODULE_LINT_LLVM_MAJOR}")
+    endif()
     set(${arg_OUT_REASON} "${reason}" PARENT_SCOPE)
 endfunction()

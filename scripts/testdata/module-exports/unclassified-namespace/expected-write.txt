@@ -1,0 +1,2 @@
+unclassified namespace: isoline::compiler
+error: <case>/module.cppm not written: the surface is undetermined

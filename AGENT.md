@@ -244,7 +244,8 @@ tools made in Rust may serve as test inputs only (pinned by version and SHA-256 
 - `cmake/` — `IsolineOptions.cmake` (every `ISOLINE_*` switch), `IsolineDependencies.cmake`
   (core-cpp and Catch2) and `IsolinePedantic.cmake` (warnings, sanitizers, coverage, clang-tidy, applied
   per target by `isoline_apply_target_policy()` so that dependencies are never built with `-Werror`).
-- `scripts/` — the tooling around the build (tool pins, spec-test import, coverage ratchet).
+- `scripts/` — the tooling around the build (tool pins, spec-test import, coverage ratchet, the C++
+  module export lint).
 - `vendor/core-cpp/` — [core-cpp](https://github.com/contour-terminal/core-cpp), the shared C++23
   foundation of the Contour Terminal projects, as a verbatim copy of tag v0.21.0 (the tag Contour
   vendors; the two move in lockstep). When a parent project already defines `core::base`, Isoline
