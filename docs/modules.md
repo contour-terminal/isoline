@@ -316,7 +316,10 @@ module `isoline.recipe_fixture` re-exports `isoline`, and the tests prove each s
    headers. Every public name must be exported and none stale, the `export import` lines must equal
    `IMPORTS`, no macro may be left defined, no declaration may be of internal linkage, no public header may
    be missing from the set, and the unit must precompile, the modules it imports first. A header changed
-   without `--write` fails it, naming the name.
+   without `--write` fails it, naming the name. `--list [--kinds <kind>...]` prints the public names it
+   reads, each with the declaration kinds that declare it; where reflection is native, the test
+   `meta-module-surface.reflection` compares them with GCC's reading of the same headers
+   ([docs/language-features.md](language-features.md), "The reflected module surface").
 5. **The install row**, one row of `ISOLINE_INSTALL_LIBRARIES` (`cmake/IsolineInstallRows.cmake`): the
    library, its export name (a consumer's `isoline::<name>` and `COMPONENTS <name>`), its export set
    `isoline<Name>Targets`, its install component, and whether a plain `cmake --install` leaves it out. The

@@ -1,0 +1,13 @@
+isoline::Feature
+isoline::api::AnonymousConstant
+isoline::api::Box
+isoline::api::BoxOf
+isoline::api::Boxed
+isoline::api::Kind
+isoline::api::KindFunction
+isoline::api::Pages
+isoline::api::Store
+isoline::api::open
+isoline::api::operator<
+isoline::api::storeLimit
+isoline::api::Value

@@ -347,6 +347,8 @@ same on both paths. Where reflection is native, two targets exist that the fallb
 - `isoline_meta_reflection_test` (label `unit`) tests the checks on fixtures of its own.
 - `isoline_enum_tables_check` is compile-only: its `static_assert`s are the check, and the build fails
   when one does.
+- `isoline_meta_surface_reflection` prints module isoline's reflected surface, which the lint test
+  `meta-module-surface.reflection` compares with the export lint's ("The reflected module surface").
 
 ### Opcode names
 
@@ -470,6 +472,34 @@ of their own, `runtime/ValueCheckTables.hpp` and `cli/VerbsTables.hpp`, where di
 first is installed with `isoline_core`'s headers, C++23 like each of them, as `binary/OpcodeNames.hpp` and
 `meta/FixedText.hpp` are: module isoline's surface is its header set, and `isoline::meta` is one of its
 internal namespaces. Nothing under `meta/contracts/`, `meta/fallback/` or `meta/reflection/` is installed.
+
+### The reflected module surface
+
+Module isoline's surface is what its interface unit exports: the public names of `isoline_core`'s header
+set, as the export lint (`scripts/check-module-exports.py`, [docs/modules.md](modules.md)) reads them through
+Clang's AST. Where reflection is native, a second reading checks the first: `isoline_meta_surface_reflection`
+(`meta/reflection/ModuleSurface.cpp`) includes exactly the header set, through an umbrella of its own
+(`isoline_add_reflection_check(... PROGRAM ... HEADER_SETS_ONLY)`), and prints `std::meta::members_of` over
+each of the row's `NAMESPACES`, the internal ones and any `detail` or `testing` namespace left out, named as
+the lint names what it lists (`meta/reflection/ModuleSurface.hpp`; `isoline_meta_reflection_test` checks the
+naming on a fixture). The row's namespaces reach it as a generated row file,
+`ModuleSurfaceNamespaces.def`, so a namespace made public is compared without an edit here
+(`isoline_add_module_surface_reflection()`, `cmake/IsolineModules.cmake`).
+
+The lint test `meta-module-surface.reflection` (`scripts/compare-module-surface.py`) runs the lint's
+`--list` and the program, and fails on every name only one of them sees. The two readings are different
+compilers' (Clang's and GCC's), so such a name is a declaration only one compiler compiles: a public
+function behind `#if defined(__GNUC__) && !defined(__clang__)` is named, as is one behind
+`#if defined(__clang__)`. It runs where reflection is native and the export lint's Clang exists; CI's
+`linux-gcc-cxx26` lane installs that Clang for it. `compare-module-surface-selftest` pins the comparison on the
+lint's fixture module and stand-in programs, on every lane with the lint.
+
+`members_of` does not report every kind the lint lists. The row `ISOLINE_MODULE_SURFACE_UNREFLECTED_KINDS`
+holds the kinds it was measured not to report: `UsingDecl`, a using-declaration, is no member of the
+namespace (GCC 16.2.1). A name the lint lists only by such a kind is left out of the comparison (56 of
+module isoline's 131 names, 2026-11-27), and one the program reflects all the same fails the test, so a
+compiler that starts reporting the kind makes the row stale visibly. An unscoped enumeration's enumerators
+are not members either; the program reads them through their enumeration, as the lint does.
 
 ### What stays a review question
 
@@ -694,6 +724,10 @@ the pull, which is how to check that a pin is in force.
   parse its umbrella header (70 headers) as C++23: reflection about doubles the cost of one translation
   unit, which only native lanes compile.
 - Clang 22.1.8 accepts neither `-freflection` nor `-fcontracts`.
+- `std::meta::members_of` over a namespace reports its classes, enumerations, variables, functions (each
+  overload), aliases, typedefs, concepts, the templates of each, and its nested namespaces. It does not
+  report a using-declaration (of a type or a function), a hidden friend, an explicit specialization or an
+  unscoped enumeration's enumerators.
 - GCC 16.2.1 does not evaluate a `contract_assert` that is the first statement of a `for`, `while` or
   `do` body, or the whole body of a braceless one (a range-based `for` and a later statement are fine): `do { contract_assert(false); } while (0)` returns, and so does a loop whose body starts
   with one. Wrapped in `if (true) { … } else …`, it is dropped there too. Behind

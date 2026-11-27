@@ -1,0 +1,2 @@
+isoline::api::Value: reflected, though the export lint lists it only by UsingDecl, a kind members_of was measured not to report: measure again, and drop the kind from the row
+module surface: 1 difference among 13 names (0 left out: listed only by the kinds members_of does not reflect, UsingDecl)

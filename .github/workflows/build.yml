@@ -124,6 +124,17 @@ jobs:
             languageFeatures: native
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The export lint's Clang (LLVM ${{ env.LLVM_VERSION }}), for the lint tests and the reflected module
+      # surface's comparison (meta-module-surface.reflection), which reads the headers through both
+      # compilers. The image runs as root, without the sudo and lsb_release the action and llvm.sh call.
+      - name: Install what the LLVM action needs
+        run: |
+          apt-get update -q
+          apt-get install -qy sudo lsb-release
+      - name: Install LLVM ${{ env.LLVM_VERSION }} for the export lint
+        uses: ./.github/actions/install-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
       - name: Install the pinned CMake and Ninja
         env:
           PINNED: ${{ matrix.cmake == 'pinned' && 'cmake' || '' }} ${{ matrix.ninja == 'pinned' && 'ninja' || '' }}
@@ -139,6 +150,7 @@ jobs:
           check "$(command -v cmake)" --tool cmake
           check "$NINJA_EXECUTABLE" --tool ninja
           check "$(command -v "${{ matrix.compiler }}")" --tool gcc --expected "${{ matrix.compilerVersion }}"
+          check "$(command -v "clang++-$LLVM_VERSION")" --tool llvm --expected "$LLVM_VERSION"
       - name: Configure
         # ISOLINE_EXPECT_LANGUAGE_FEATURES fails the configure unless every feature row's path is this one.
         run: >

@@ -362,6 +362,22 @@ if(NOT CMAKE_CROSSCOMPILING)
                      -DISOLINE_REFLECTION=OFF -DISOLINE_ANNOTATIONS=OFF -DISOLINE_CONTRACTS=OFF)
     set_tests_properties(language-features-reflection-check-feature PROPERTIES LABELS lint
                          PASS_REGULAR_EXPRESSION "no feature row[ \n]+\"annotation\"") # CMake wraps at spaces
+    # Its options that exclude each other, the same fixture's other cases: each refusal names both.
+    foreach(case IN ITEMS test-and-program header-sets-only-and-exclude)
+        add_test(NAME language-features-reflection-check-${case}
+                 COMMAND "${CMAKE_COMMAND}"
+                         -S "${CMAKE_CURRENT_SOURCE_DIR}/cmake/reflection-check-feature"
+                         -B "${CMAKE_CURRENT_BINARY_DIR}/reflection-check-${case}"
+                         -G "${CMAKE_GENERATOR}"
+                         "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                         "-DISOLINE_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                         "-DCASE=${case}"
+                         -DISOLINE_REFLECTION=OFF -DISOLINE_ANNOTATIONS=OFF -DISOLINE_CONTRACTS=OFF)
+    endforeach()
+    set_tests_properties(language-features-reflection-check-test-and-program PROPERTIES LABELS lint
+                         PASS_REGULAR_EXPRESSION "TEST[ \n]+and[ \n]+PROGRAM[ \n]+exclude[ \n]+each[ \n]+other")
+    set_tests_properties(language-features-reflection-check-header-sets-only-and-exclude PROPERTIES LABELS lint
+                         PASS_REGULAR_EXPRESSION "EXCLUDE[ \n]+filters[ \n]+the[ \n]+private[ \n]+headers")
 endif()
 
 # The contracts' two refusals, on a parent project with its own core-cpp that adds Isoline with contracts
@@ -440,6 +456,14 @@ if(ISOLINE_MODULE_LINT_CLANG)
                      --work-directory "${CMAKE_CURRENT_BINARY_DIR}/check-module-exports-selftest")
     # Two dozen parses of a few lines each.
     set_tests_properties(check-module-exports-selftest PROPERTIES LABELS lint TIMEOUT 300 SKIP_RETURN_CODE 77)
+    # The reflected module surface's comparison (meta-module-surface.reflection), on the lint's fixture module
+    # and stand-ins for the reflection program (scripts/testdata/module-surface/): on every lane with the lint,
+    # reflection native or not, since the comparison is Python.
+    add_test(NAME compare-module-surface-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/compare-module-surface_test.py"
+                     --clang "${ISOLINE_MODULE_LINT_CLANG}"
+                     --work-directory "${CMAKE_CURRENT_BINARY_DIR}/compare-module-surface-selftest")
+    set_tests_properties(compare-module-surface-selftest PROPERTIES LABELS lint TIMEOUT 300 SKIP_RETURN_CODE 77)
 endif()
 
 # The memory bounds: what decoding a module, and instantiating it, may hold, measured by a replaced

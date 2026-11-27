@@ -55,12 +55,19 @@ where its header includes it, as the preprocessor reads it), and finally
 precompiles the unit as an importer's build would, its imported modules first, so that what Clang refuses
 to export (an entity of internal linkage) is a finding too.
 
+--list prints the surface's public names, sorted, one per line, each followed by the declaration kinds that
+declare it (LISTED_KINDS; a template's own kind, an unscoped enumeration's enumerator as EnumConstantDecl),
+comma-separated; --kinds lists only the names, and kinds, of the kinds it names. An undetermined surface (the
+findings --write refuses on) lists nothing. It is what another reading of the headers is compared with: the
+reflected module surface (src/isoline/meta/reflection/ModuleSurface.cpp, docs/language-features.md).
+
 Exit status: 0 clean, 1 findings, 2 a tool error (no Clang, an unreadable manifest, headers Clang cannot
 parse, a dump over the ceiling, an imported module without its interface unit, imports that form a cycle,
 and any failure the lint did not foresee).
 
 Usage: python3 -I scripts/check-module-exports.py --clang <clang++> --manifest <surface.json>
-                                                  (--check | --write) [--work-directory <dir>]
+                                                  (--check | --write | --list [--kinds <kind>...])
+                                                  [--work-directory <dir>]
 """
 
 import argparse
@@ -133,6 +140,13 @@ DECLARATION_KIND_ROWS = (
 )
 DECLARATION_KINDS = {kind: action for kind, action, _ in DECLARATION_KIND_ROWS}
 DECLARATION_REASONS = {kind: why for kind, _, why in DECLARATION_KIND_ROWS}
+
+# The kind of an unscoped enumeration's enumerator, a name of the enumeration's namespace.
+ENUMERATOR_KIND = "EnumConstantDecl"
+# The kinds --list names a name by: a row's that exports, a template's (the template, not its templated
+# declaration), and an enumerator's.
+LISTED_KINDS = tuple(sorted([kind for kind, action, _ in DECLARATION_KIND_ROWS
+                             if action in (EXPORT, EXPORT_ENUMERATION, TEMPLATED)] + [ENUMERATOR_KIND]))
 
 # The kinds of a template's children that are its parameters, not its templated declaration.
 TEMPLATE_PARAMETER_KINDS = ("TemplateTypeParmDecl", "NonTypeTemplateParmDecl", "TemplateTemplateParmDecl")
@@ -232,6 +246,8 @@ class Surface:
 
     # Qualified public name -> the file of its definition, or of its first declaration (_addName()).
     names: dict = field(default_factory=dict)
+    # Qualified public name -> the declaration kinds (LISTED_KINDS) that declare it, in --list's output.
+    kinds: dict = field(default_factory=dict)
     # Header -> the public namespaces it declares a name into, directly or through a row file it includes.
     declaringFiles: dict = field(default_factory=dict)
     # Qualified names of namespaces under a public one that are neither public nor internal.
@@ -716,6 +732,7 @@ class SurfaceWalker:
         if child.get("isImplicit"):
             return
         kind = child.get("kind")
+        listedKind = kind  # a template's own kind, not its templated declaration's
         action = DECLARATION_KINDS.get(kind)
         declaration = child
         if action == TEMPLATED:
@@ -743,12 +760,12 @@ class SurfaceWalker:
             action == EXPORT_ENUMERATION
             and any(inner.get("kind") == "EnumConstantDecl" for inner in child.get("inner", [])))
         if "name" in child:
-            self._addName(namespace, child["name"].split("::")[-1], file, header, isDefinition)
+            self._addName(namespace, child["name"].split("::")[-1], listedKind, file, header, isDefinition)
         # An unscoped enumeration's enumerators are names of the namespace, the enumeration named or not.
         if action == EXPORT_ENUMERATION and "scopedEnumTag" not in child:
             for enumerator in child.get("inner", []):
                 if enumerator.get("kind") == "EnumConstantDecl":
-                    self._addName(namespace, enumerator["name"], file, header, isDefinition)
+                    self._addName(namespace, enumerator["name"], ENUMERATOR_KIND, file, header, isDefinition)
 
     def _declaringHeader(self, file, includer):
         """The header of the set a declaration in @p file comes from: @p file itself, or the header that
@@ -764,10 +781,12 @@ class SurfaceWalker:
             return includer
         return file
 
-    def _addName(self, namespace, leaf, file, header, isDefinition):
-        """Records a public name. Its file is that of its definition where a class or enumeration has one in
-        the headers, else that of its first declaration: a forward declaration does not say where it lives."""
+    def _addName(self, namespace, leaf, kind, file, header, isDefinition):
+        """Records a public name, declared by a declaration of @p kind. Its file is that of its definition where
+        a class or enumeration has one in the headers, else that of its first declaration: a forward declaration
+        does not say where it lives."""
         name = f"{namespace}::{leaf}"
+        self.surface.kinds.setdefault(name, set()).add(kind)
         if name not in self.surface.names or (isDefinition and name not in self._defined):
             self.surface.names[name] = file
         if isDefinition:
@@ -1145,6 +1164,30 @@ def runWrite(manifest, surface):
     return EXIT_CLEAN
 
 
+def listedNames(surface, kinds):
+    """The lines of --list: each public name declared by a kind of @p kinds, with those of its kinds, sorted."""
+    lines = []
+    for name in sorted(surface.names):
+        nameKinds = sorted(surface.kinds.get(name, set()) & set(kinds))
+        if nameKinds:
+            lines.append(f"{name} {','.join(nameKinds)}")
+    return lines
+
+
+def runList(manifest, surface, kinds):
+    """Prints the public names (listedNames()), unless the surface is undetermined, as --write refuses to write."""
+    context = Context(manifest=manifest, surface=surface, unit=None, generatedText="")
+    findings = applyRules(context, [rule for rule in RULES if rule[0] in SURFACE_RULES])
+    if findings:
+        for finding in findings:
+            print(finding)
+        print("error: no names listed: the surface is undetermined", file=sys.stderr)
+        return EXIT_FINDINGS
+    for line in listedNames(surface, kinds):
+        print(line)
+    return EXIT_CLEAN
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--clang", required=True, help="the clang++ that dumps the AST (the pinned LLVM)")
@@ -1152,12 +1195,23 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="report what the interface unit lacks")
     mode.add_argument("--write", action="store_true", help="regenerate the interface unit")
+    mode.add_argument("--list", action="store_true",
+                      help="print the public names, one per line, each with the kinds that declare it")
+    parser.add_argument("--kinds", nargs="+", metavar="KIND",
+                        help=f"--list only the names a declaration of these kinds declares (of {', '.join(LISTED_KINDS)})")
     parser.add_argument("--work-directory", type=pathlib.Path,
                         help="where the umbrella, the dump and the BMIs go (default: a temporary directory)")
     parser.add_argument("--dump-size-limit-bytes", type=int, default=DUMP_SIZE_LIMIT_BYTES,
                         help="the ceiling of the AST dump")
     arguments = parser.parse_args()
+    kinds = arguments.kinds if arguments.kinds is not None else LISTED_KINDS
     try:
+        unlistedKinds = [kind for kind in kinds if kind not in LISTED_KINDS]
+        if unlistedKinds:
+            raise ToolError(f"--kinds {' '.join(unlistedKinds)}: no kind the lint lists a name by "
+                            f"({', '.join(LISTED_KINDS)})")
+        if arguments.kinds is not None and not arguments.list:
+            raise ToolError("--kinds selects what --list prints; it takes --list")
         manifest = readManifest(arguments.manifest.resolve())
         refuseContradictions(manifest)
         if arguments.work_directory is not None:
@@ -1167,6 +1221,8 @@ def main():
                                      arguments.dump_size_limit_bytes)
             if arguments.write:
                 return runWrite(manifest, surface)
+            if arguments.list:
+                return runList(manifest, surface, kinds)
             return runCheck(manifest, surface, arguments.clang, pathlib.Path(workDirectory))
     except ToolError as error:
         print(f"error: {error}", file=sys.stderr)

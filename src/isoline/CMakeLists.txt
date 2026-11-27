@@ -185,13 +185,23 @@ if(ISOLINE_TESTING)
     # and the exhaustive check of meta/EnumTables.def over every header of the libraries, installed or
     # private, but the test helpers' and the checks' own.
     isoline_add_reflection_check(isoline_meta_reflection_test TEST LABELS unit
-        SOURCES meta/reflection/EnumReflection_test.cpp
+        SOURCES meta/reflection/EnumReflection_test.cpp meta/reflection/ModuleSurface_test.cpp
         LINK_LIBRARIES isoline::core)
     # The annotations rehearsal (P19 Task 7): rows derived from enumerator annotations, only where
     # annotations are native.
     isoline_add_reflection_check(isoline_meta_annotations_test TEST LABELS unit FEATURE annotations
         SOURCES meta/reflection/AnnotatedRows_test.cpp
         LINK_LIBRARIES isoline::core)
+    # The reflected module surface (P19 Task 9): GCC's members_of over module isoline's public namespaces,
+    # compared with the export lint's names by the test meta-module-surface.reflection.
+    isoline_add_reflection_check(isoline_meta_surface_reflection PROGRAM
+        SOURCES meta/reflection/ModuleSurface.cpp
+        LINK_LIBRARIES isoline::core
+        UMBRELLA isoline/meta/reflection/ModuleSurfaceUmbrella.hpp
+        HEADER_TARGETS isoline_core
+        HEADER_SETS_ONLY)
+    isoline_add_module_surface_reflection(NAME meta-module-surface.reflection MODULE isoline
+                                          PROGRAM isoline_meta_surface_reflection)
     # The C API's private headers include its C headers (wasm.h among them): reached through its static
     # library where the C API is built, and left out where it is not.
     set(isolineEnumTablesLinks isoline::cli)
