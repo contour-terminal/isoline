@@ -54,7 +54,7 @@ enum class OperationForm : uint8_t
 /// the switch dispatch runs them inline or out of line (OperationFamilyTable).
 enum class OperationFamily : uint8_t
 {
-    Control,    ///< Moves, constants, branches and leaving the function.
+    Control,    ///< Moves, constants, branches, calls and leaving the function.
     Numeric,    ///< The numeric operations and their immediate twins.
     Variable,   ///< The instance's state reached through the store: globals.
     Memory,     ///< Linear memory access.
@@ -108,6 +108,22 @@ enum class OperationId : uint16_t
 {
     return 1 + ((slots + 1) / 2) + immediates;
 }
+
+/// What names the function a call operation calls (CallTable).
+enum class CalleeKind : uint8_t
+{
+    Internal,  ///< A function of the caller's own module, by its code index: no look-up through the store.
+    Import,    ///< An imported function, by its function index, through the running instance and the store.
+    Table,     ///< A table element, by the index on the operand stack (call_indirect).
+    Reference, ///< A function reference on the operand stack (call_ref).
+};
+
+/// What a call operation does with its caller's frame.
+enum class CallMode : uint8_t
+{
+    Call, ///< Keeps it: the caller goes on after the callee returns.
+    Tail, ///< Replaces it with the callee's (return_call and its twins).
+};
 
 /// What the operation table knows about one operation.
 struct OperationRow

@@ -172,7 +172,9 @@ namespace
     {
         binary::Module const& module;               ///< The module.
         std::span<ValueType const> importedGlobals; ///< The value types of its imported globals, in order.
-        std::span<TypeSlots const> typeSlots;       ///< The slots of each type's params and results.
+        std::span<uint32_t const>
+            importedFunctions;                ///< The type indices of its imported functions, in order.
+        std::span<TypeSlots const> typeSlots; ///< The slots of each type's params and results.
 
         /// The value type of a global.
         /// @param index The global's index, the imported ones first.
@@ -181,6 +183,22 @@ namespace
             if (index < importedGlobals.size())
                 return importedGlobals[index];
             return module.globals.at(index - importedGlobals.size()).type.type;
+        }
+
+        /// Whether a function is imported.
+        /// @param index The function's index, the imported ones first.
+        [[nodiscard]] bool importsFunction(uint32_t index) const noexcept
+        {
+            return index < importedFunctions.size();
+        }
+
+        /// The type index of a function.
+        /// @param index The function's index, the imported ones first.
+        [[nodiscard]] uint32_t functionType(uint32_t index) const
+        {
+            if (importsFunction(index))
+                return importedFunctions[index];
+            return module.code.at(index - importedFunctions.size()).typeIndex;
         }
     };
 
@@ -211,6 +229,18 @@ namespace
         for (auto const& import: module.imports)
             if (import.kind == binary::ExternKind::Global)
                 types.push_back(import.global.type);
+        return types;
+    }
+
+    /// The type indices of @p module's imported functions, in order, allocated from @p resource.
+    [[nodiscard]] LoweringVector<uint32_t> importedFunctionTypes(binary::Module const& module,
+                                                                 std::pmr::memory_resource* resource)
+    {
+        auto types = LoweringVector<uint32_t>(resource);
+        types.reserve(module.importedCount(binary::ExternKind::Func));
+        for (auto const& import: module.imports)
+            if (import.kind == binary::ExternKind::Func)
+                types.push_back(import.typeIndex);
         return types;
     }
 
@@ -413,6 +443,12 @@ namespace
                 case Opcode::LocalGet: pushLocal(instruction.a); return;
                 case Opcode::LocalSet: std::ignore = setLocal(instruction.a); return;
                 case Opcode::LocalTee: push(setLocal(instruction.a)); return;
+                case Opcode::Call:
+                case Opcode::CallIndirect:
+                case Opcode::CallRef:
+                case Opcode::ReturnCall:
+                case Opcode::ReturnCallIndirect:
+                case Opcode::ReturnCallRef: lowerCall(instruction); return;
                 case Opcode::GlobalGet: lowerGlobalGet(instruction.a); return;
                 case Opcode::GlobalSet: lowerGlobalSet(instruction.a); return;
                 case Opcode::I32Const:
@@ -426,7 +462,7 @@ namespace
                 // uncovered-begin(lowering-later-task)
                 default:
                     core::todo(std::format(
-                        "lowering {}: calls, memory, references, SIMD and exceptions are lowered by later "
+                        "lowering {}: memory, references, SIMD and exceptions are lowered by later "
                         "parts of the fast interpreter",
                         binary::opcodeInfo(instruction.opcode).text));
                     // uncovered-end(lowering-later-task)
@@ -531,6 +567,61 @@ namespace
         {
             auto value = pop();
             emit(OperationId::GlobalSet, { readable(value) }, { global });
+        }
+
+        /// Lowers call, call_indirect, call_ref and their return_call twins (CallTable): the arguments are
+        /// materialized into consecutive slots on top, where the callee's frame begins and where its results
+        /// come back to. A function of the module's own code is called by code index, any other through the
+        /// store. Only the arguments are materialized: the callee's frame begins above every other entry,
+        /// and no callee writes the caller's locals, so a forwarded local or a constant below stays valid.
+        void lowerCall(binary::Instruction const& instruction)
+        {
+            auto callee = CalleeKind::Table;
+            auto typeIndex = instruction.a;
+            switch (instruction.opcode)
+            {
+                case Opcode::Call:
+                case Opcode::ReturnCall:
+                    callee =
+                        _context.importsFunction(instruction.a) ? CalleeKind::Import : CalleeKind::Internal;
+                    typeIndex = _context.functionType(instruction.a);
+                    break;
+                case Opcode::CallRef:
+                case Opcode::ReturnCallRef: callee = CalleeKind::Reference; break;
+                default: break;
+            }
+            auto const* row = callOf(instruction.opcode, callee);
+            Require(row != nullptr);
+            // The callee's table index or reference is above the arguments, read before the frame overlaps
+            // it.
+            auto operandSlot = uint32_t { 0 };
+            if (callSlots(callee) == 2)
+            {
+                auto operand = pop();
+                operandSlot = readable(operand);
+            }
+            auto const& type = _context.module.types.at(typeIndex);
+            auto const& slots = _context.typeSlots[typeIndex];
+            auto const argumentSlot = _top - static_cast<uint32_t>(slots.params);
+            materializeValues(argumentSlot);
+            switch (callee)
+            {
+                case CalleeKind::Internal:
+                    emit(row->operation,
+                         { argumentSlot },
+                         { instruction.a - static_cast<uint32_t>(_context.importedFunctions.size()) });
+                    break;
+                case CalleeKind::Import: emit(row->operation, { argumentSlot }, { instruction.a }); break;
+                case CalleeKind::Table:
+                    emit(row->operation, { argumentSlot, operandSlot }, { instruction.a, instruction.b });
+                    break;
+                case CalleeKind::Reference:
+                    emit(row->operation, { argumentSlot, operandSlot }, { instruction.a });
+                    break;
+            }
+            truncate(_height - static_cast<uint32_t>(type.params.size()), argumentSlot);
+            if (row->mode == CallMode::Call)
+                pushRun(type.results, static_cast<uint32_t>(slots.results));
         }
 
         // --- Control flow ---
@@ -1111,9 +1202,12 @@ namespace
                 return std::unexpected(*refusal);
         }
         auto const importedGlobals = importedGlobalTypes(module, &arena);
+        auto const importedFunctions = importedFunctionTypes(module, &arena);
         auto const typeSlots = typeSlotsOf(module, &arena);
-        auto const context =
-            ModuleContext { .module = module, .importedGlobals = importedGlobals, .typeSlots = typeSlots };
+        auto const context = ModuleContext { .module = module,
+                                             .importedGlobals = importedGlobals,
+                                             .importedFunctions = importedFunctions,
+                                             .typeSlots = typeSlots };
         auto stats = LoweringStats {};
         for (auto const index: std::views::iota(uint32_t { 0 }, static_cast<uint32_t>(module.code.size())))
         {

@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <ranges>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <isoline/binary/Opcode.hpp>
@@ -16,10 +18,12 @@
 #include <isoline/fastinterpreter/LoweringTable.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
 
+using isoline::binary::FuncType;
 using isoline::binary::GlobalType;
 using isoline::binary::Mutability;
 using isoline::binary::Opcode;
 using isoline::binary::OpcodeTable;
+using isoline::binary::TableType;
 using isoline::binary::ValueKind;
 using isoline::binary::testing::Bytes;
 using isoline::binary::testing::code;
@@ -57,6 +61,29 @@ struct SpecialRowCase
 [[nodiscard]] Bytes blockOf(uint8_t opcode, uint8_t blockType, Bytes const& body)
 {
     return code({ { opcode, blockType }, body, { 0x0B } });
+}
+
+/// A module whose function 0, of (i32) -> i32, has the body @p body, with a funcref table of one element for
+/// the indirect calls.
+[[nodiscard]] ModuleBuilder withTable(Bytes body)
+{
+    auto module = functionOf({ binary::I32 }, { binary::I32 }, {}, std::move(body));
+    module.table(
+        TableType { .element = binary::FuncRef,
+                    .limits = { .min = 1, .max = std::nullopt, .addressType = binary::AddressType::I32 } });
+    return module;
+}
+
+/// A module whose function 0, of ((ref null 0)) -> i32, has the body @p body: type 0 is () -> i32, the type
+/// call_ref calls.
+[[nodiscard]] ModuleBuilder withReference(Bytes body)
+{
+    auto module = ModuleBuilder {};
+    module.type(FuncType { .params = {}, .results = { binary::I32 } });
+    module.type(
+        FuncType { .params = { binary::concreteRef(0, binary::Nullable::Yes) }, .results = { binary::I32 } });
+    module.function(1, {}, std::move(body));
+    return module;
 }
 
 /// One case per Special row: the listings name the row's operation where it emits one.
@@ -105,6 +132,24 @@ struct SpecialRowCase
     add(Opcode::Return,
         functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), op(0x0F) })),
         "move64 s1, s0\nreturn s1\n");
+    add(Opcode::Call,
+        functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), op(0x10, 0) })),
+        "move64 s1, s0\ncall s1, #0\nreturn s1\n");
+    add(Opcode::CallIndirect,
+        withTable(code({ localGet(0), i32Const(0), { 0x11, 0x00, 0x00 } })),
+        "const64 s2, #0\nmove64 s1, s0\ncall_indirect s1, s2, #0, #0\nreturn s1\n");
+    add(Opcode::CallRef,
+        withReference(code({ localGet(0), { 0x14, 0x00 } })),
+        "call_ref s2, s0, #0\nreturn s2\n");
+    add(Opcode::ReturnCall,
+        functionOf({ binary::I32 }, { binary::I32 }, {}, code({ localGet(0), op(0x12, 0) })),
+        "move64 s1, s0\nreturn_call s1, #0\n");
+    add(Opcode::ReturnCallIndirect,
+        withTable(code({ localGet(0), i32Const(0), { 0x13, 0x00, 0x00 } })),
+        "const64 s2, #0\nmove64 s1, s0\nreturn_call_indirect s1, s2, #0, #0\n");
+    add(Opcode::ReturnCallRef,
+        withReference(code({ localGet(0), { 0x15, 0x00 } })),
+        "return_call_ref s2, s0, #0\n");
     add(Opcode::Drop, functionOf({ binary::I32 }, {}, {}, code({ localGet(0), op(0x1A) })), "return s1\n");
     add(Opcode::Select,
         functionOf(
@@ -238,6 +283,7 @@ TEST_CASE("LoweringRows.everyRowIsExercised")
         }
     }
     // An opcode without a row is Special, which a later part of lowering handles.
-    CHECK(loweringRow(Opcode::Call).form == OperationForm::Special);
+    CHECK(loweringRow(Opcode::MemorySize).form == OperationForm::Special);
+    CHECK(loweringRow(Opcode::MemorySize).operation == OperationId::Nop);
     CHECK(OpcodeTable.size() == LoweringTable.size());
 }

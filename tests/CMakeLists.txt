@@ -239,6 +239,9 @@ if(UNIX AND NOT CMAKE_CROSSCOMPILING AND Python3_Interpreter_FOUND)
                          PASS_REGULAR_EXPRESSION "a binary is not written to a terminal")
 endif()
 
+# The host-stack rows: unit cases run again under a small main-thread stack.
+include("${CMAKE_CURRENT_SOURCE_DIR}/stack/StackLimit.cmake")
+
 # The contract checks of the unit tests: each case tagged [.contract] in isoline_test violates one
 # Require on purpose, which ends its process, so the unit run hides it and it runs here, alone in a
 # process. Their names start with "Contract.", so no wildcard over an area ("Instantiate.*") reaches

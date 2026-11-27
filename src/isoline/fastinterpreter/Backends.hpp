@@ -18,13 +18,6 @@ namespace isoline::fastinterpreter
 /// @return How it stopped.
 [[nodiscard]] Exit runSwitch(State state) noexcept;
 
-/// What an operation run out of line leaves: the registers, and whether to go on.
-struct OutOfLineStep
-{
-    State state;                ///< The registers after it.
-    Flow flow = Flow::Continue; ///< Whether to go on.
-};
-
 /// Runs the operation at State::pc whose family the switch dispatch places out of line
 /// (SwitchPlacement::OutOfLine), in a translation unit of its own (SwitchDispatchCold.cpp), so that its
 /// body adds nothing to the loop's frame or code.

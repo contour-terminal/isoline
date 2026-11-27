@@ -5,22 +5,27 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cfenv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
-#include <memory>
+#include <limits>
 #include <memory_resource>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <isoline/fastinterpreter/Backends.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Context.hpp>
 #include <isoline/fastinterpreter/SlotCodec.hpp>
+#include <isoline/runtime/HostCall.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/ValueCheck.hpp>
@@ -31,6 +36,7 @@ namespace isoline::fastinterpreter
 namespace
 {
     using runtime::Abrupt;
+    using runtime::FuncAddr;
     using runtime::FunctionInstance;
     using runtime::ModuleInstance;
     using runtime::PollSite;
@@ -54,58 +60,6 @@ namespace
         return lowered;
     }
 
-    /// The slots a value of @p type takes.
-    [[nodiscard]] uint32_t widthOf(binary::ValueType const& type) noexcept
-    {
-        return slotWidth(slotClassOf(type));
-    }
-
-    /// A run of slots from a memory resource, given back when it ends; empty until assigned one.
-    class SlotChunk
-    {
-      public:
-        SlotChunk() = default;
-
-        /// @p count slots, uninitialized, from @p memory.
-        SlotChunk(std::pmr::memory_resource* memory, uint64_t count):
-            _memory { memory },
-            _bytes { count * sizeof(Slot) },
-            _slots { static_cast<Slot*>(memory->allocate(_bytes, alignof(Slot))) }
-        {
-        }
-
-        SlotChunk(SlotChunk const&) = delete;
-        SlotChunk& operator=(SlotChunk const&) = delete;
-
-        SlotChunk(SlotChunk&&) = delete;
-
-        SlotChunk& operator=(SlotChunk&& other) noexcept
-        {
-            release();
-            _memory = std::exchange(other._memory, nullptr);
-            _bytes = std::exchange(other._bytes, 0);
-            _slots = std::exchange(other._slots, nullptr);
-            return *this;
-        }
-
-        ~SlotChunk() { release(); }
-
-        /// Its first slot; null when empty.
-        [[nodiscard]] Slot* slots() const noexcept { return _slots; }
-
-      private:
-        void release() noexcept
-        {
-            if (_slots != nullptr)
-                _memory->deallocate(_slots, _bytes, alignof(Slot));
-            _slots = nullptr;
-        }
-
-        std::pmr::memory_resource* _memory = nullptr;
-        uint64_t _bytes = 0;
-        Slot* _slots = nullptr;
-    };
-
     /// Fills @p slots, pair by pair, with @p pair: a run of reference locals with their null.
     void fillPairs(std::span<Slot> slots, std::array<Slot, 2> const& pair) noexcept
     {
@@ -113,156 +67,517 @@ namespace
             std::ranges::copy(pair, slots.subspan(2 * index, 2).begin());
     }
 
-    /// One invocation's execution: its context, its slots and its frames.
-    ///
-    /// Every frame it entered is given back when it ends, however execution stopped: the depth and the
-    /// stack charge of each (~Invocation()).
-    class Invocation
+    /// Decodes the values of @p types from consecutive slots from @p slots into @p values.
+    void loadValues(std::span<binary::ValueType const> types,
+                    Slot const* slots,
+                    std::span<Value> values) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, types.size()))
+        {
+            auto const width = slotWidth(slotClassOf(types[index]));
+            values[index] = loadValue(types[index], std::span { slots, width });
+            slots += width;
+        }
+    }
+
+    /// Encodes @p values, of @p types, into consecutive slots from @p slots.
+    void storeValues(std::span<binary::ValueType const> types,
+                     std::span<Value const> values,
+                     Slot* slots) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, types.size()))
+        {
+            auto const width = slotWidth(slotClassOf(types[index]));
+            storeValue(values[index], std::span { slots, width });
+            slots += width;
+        }
+    }
+
+    /// A run of slots from a memory resource, given back when it ends; empty until assigned one.
+    class SlotChunk
     {
       public:
-        /// @param store The store to execute on.
-        /// @param depth The frames active over every invocation in progress; kept up to date.
-        /// @param dispatch The dispatch the code was lowered for.
-        /// @param slotMemory What the slot chunks come from.
-        Invocation(Store& store, uint32_t& depth, Dispatch dispatch, std::pmr::memory_resource& slotMemory):
-            _context { store },
-            _depth { depth },
-            _dispatch { dispatch },
-            _slotMemory { &slotMemory },
-            _stepsLeft { _context.gate.reload() }
+        /// @p count slots, uninitialized, from @p memory.
+        SlotChunk(std::pmr::memory_resource* memory, uint64_t count):
+            _memory { memory },
+            _count { count },
+            _slots { static_cast<Slot*>(memory->allocate(count * sizeof(Slot), alignof(Slot))) }
         {
         }
 
-        Invocation(Invocation const&) = delete;
-        Invocation(Invocation&&) = delete;
-        Invocation& operator=(Invocation const&) = delete;
-        Invocation& operator=(Invocation&&) = delete;
+        SlotChunk(SlotChunk const&) = delete;
+        SlotChunk& operator=(SlotChunk const&) = delete;
 
-        /// Gives back the depth and the stack charges of the frames it entered.
-        ~Invocation()
+        SlotChunk(SlotChunk&& other) noexcept:
+            _memory { std::exchange(other._memory, nullptr) },
+            _count { std::exchange(other._count, 0) },
+            _slots { std::exchange(other._slots, nullptr) }
         {
-            _depth -= static_cast<uint32_t>(_frameCosts.size());
-            for (auto const cost: _frameCosts)
-                _context.store.releaseFrame(cost);
         }
 
-        /// Invokes the module function @p callee with @p args and writes its results to @p results.
-        [[nodiscard]] std::expected<void, Abrupt> run(FunctionInstance const& callee,
-                                                      binary::FuncType const& type,
-                                                      std::span<Value const> args,
-                                                      std::span<Value> results)
-        {
-            auto const& instance = _context.store.moduleInstance(callee.moduleInstance);
-            auto const& function = loweredModuleOf(instance, _dispatch).functions()[callee.codeIndex];
-            auto const entered = enterFunction(instance, function);
-            if (!entered)
-                return stop(entered.error());
-            auto* const fp = *entered;
-            auto slot = uint32_t { 0 };
-            for (auto const index: std::views::iota(std::size_t { 0 }, args.size()))
-            {
-                auto const width = widthOf(type.params[index]);
-                storeValue(args[index], std::span { fp + slot, width });
-                slot += width;
-            }
-            auto const exit = Runners[std::to_underlying(_dispatch)](State { .pc = function.code.data(),
-                                                                             .fp = fp,
-                                                                             .context = &_context,
-                                                                             .memory0 = nullptr,
-                                                                             .memory0Size = 0,
-                                                                             .stepsLeft = _stepsLeft });
-            switch (exit)
-            {
-                case Exit::Returned: break;
-                case Exit::Trapped: return std::unexpected { Abrupt { *_context.trap } };
-                // uncovered-begin(no-exceptions-yet)
-                case Exit::Thrown:
-                    // No operation throws before the fast interpreter's exceptions are lowered.
-                    core::unreachable();
-                    // uncovered-end(no-exceptions-yet)
-            }
-            slot = _context.resultSlot;
-            for (auto const index: std::views::iota(std::size_t { 0 }, results.size()))
-            {
-                auto const width = widthOf(type.results[index]);
-                results[index] = loadValue(type.results[index], std::span<Slot const> { fp + slot, width });
-                slot += width;
-            }
-            return {};
-        }
+        SlotChunk& operator=(SlotChunk&&) = delete;
+
+        ~SlotChunk() { release(); }
+
+        /// Its first slot; null when empty.
+        [[nodiscard]] Slot* slots() const noexcept { return _slots; }
+
+        /// The slots it holds.
+        [[nodiscard]] uint64_t count() const noexcept { return _count; }
 
       private:
-        /// Enters @p function of @p instance: the one routine every frame goes through. It polls at
-        /// FunctionEntry, then checks StoreLimits::maxCallDepth (one count over every invocation in
-        /// progress), then charges the frame's static cost (Store::chargeFrame()), which ~Invocation() gives
-        /// back; only then does it reserve the frame's slots and initialize its declared locals, so a frame
-        /// refused at its entry allocates nothing.
-        /// @return The frame's first slot, where its arguments go; or the trap it stopped with: Interrupted,
-        /// StepLimitExceeded or CallStackExhausted.
-        [[nodiscard]] std::expected<Slot*, Trap> enterFunction(ModuleInstance const& instance,
-                                                               LoweredFunction const& function)
+        void release() noexcept
         {
-            if (auto const polled = _context.gate.poll(PollSite::FunctionEntry, _stepsLeft); !polled)
-                return std::unexpected { polled.error() };
-            if (_depth >= _context.store.limits().maxCallDepth)
-                return std::unexpected { Trap { TrapCode::CallStackExhausted } };
-            if (auto const charged = _context.store.chargeFrame(function.frameCost); !charged)
-                return std::unexpected { charged.error() };
-            _frameCosts.push_back(function.frameCost);
-            ++_depth;
-            _chunk = SlotChunk { _slotMemory, std::max(MinimumChunkSlots, uint64_t { function.frameSlots }) };
-            auto* const fp = _chunk.slots();
-            initializeLocals(instance, function, fp);
-            _context.instance = &instance;
-            _context.code = function.code.data();
-            return fp;
+            if (_slots != nullptr)
+                _memory->deallocate(_slots, _count * sizeof(Slot), alignof(Slot));
+            _slots = nullptr;
         }
 
-        /// Sets @p function's declared locals to their defaults: a Zero run's slots to zero, a Null run's
-        /// pairs to the null of its heap, which nullSlots() maps through @p instance's TypeIds once per run.
-        static void initializeLocals(ModuleInstance const& instance,
-                                     LoweredFunction const& function,
-                                     Slot* fp)
-        {
-            for (auto const& run: function.localInit)
-            {
-                auto const slots = std::span { fp + run.slotBase, run.slotCount };
-                switch (run.kind)
-                {
-                    case LocalInit::Zero: std::ranges::fill(slots, Slot { 0 }); break;
-                    case LocalInit::Null: fillPairs(slots, nullSlots(run.heap, instance.types)); break;
-                }
-            }
-        }
+        std::pmr::memory_resource* _memory = nullptr;
+        uint64_t _count = 0;
+        Slot* _slots = nullptr;
+    };
 
-        /// Stops before any code ran: commits the countdown, as every way out does, and ends with @p trap.
-        [[nodiscard]] std::unexpected<Abrupt> stop(Trap trap) noexcept
-        {
-            _context.gate.commit(_stepsLeft);
-            return std::unexpected { Abrupt { trap } };
-        }
+    /// The index of the chunk before the first: where the arguments of the invocation's own function are,
+    /// which come from the embedder, not from a slot.
+    inline constexpr auto NoChunk = std::numeric_limits<std::size_t>::max();
 
-        Context _context;
-        uint32_t& _depth;
-        Dispatch _dispatch;
-        std::pmr::memory_resource* _slotMemory;
-        uint64_t _stepsLeft;
-        SlotChunk _chunk;
-        std::vector<uint64_t> _frameCosts; ///< The stack charge of each frame entered, which ends with it.
+    /// The function a call resolved to: a host function, or a module function with its code.
+    struct Callee
+    {
+        FunctionInstance const* host = nullptr;    ///< The host function; null for a module function.
+        ModuleInstance const* instance = nullptr;  ///< A module function's instance.
+        uint32_t instanceAddress = 0;              ///< Its address in the store.
+        LoweredModule const* module = nullptr;     ///< Its module's code.
+        LoweredFunction const* function = nullptr; ///< Its own code.
     };
 } // namespace
 
+/// One invocation's execution: its context, its frames and its slot chunks.
+///
+/// Frames live in a vector, never on the host stack: a call pushes one, a return pops one, and lowered code
+/// runs on in the same dispatch loop, so no depth of Wasm calls recurses on the host stack. A frame's slots
+/// are in a chunk: a callee's frame begins at its arguments, in its caller's chunk, where the whole frame
+/// fits there, and at the start of the next chunk otherwise, its arguments copied there once. A chunk holds
+/// max(MinimumChunkSlots, the frame's slots) slots, is kept for the frames entered later, and is freed when
+/// the invocation ends; a chunk too small for the frame that needs it is replaced, and every chunk after it
+/// freed. So the chunks hold at most twice the slots of the frames active at once, plus one chunk.
+///
+/// Every frame it entered is given back when it ends, however execution stopped: the depth and the stack
+/// charge of each (~Invocation()).
+class Invocation
+{
+  public:
+    /// @param store The store to execute on.
+    /// @param executor What a host function it calls re-enters the guest through: the interpreter.
+    /// @param depth The frames active over every invocation in progress; kept up to date.
+    /// @param dispatch The dispatch the code was lowered for.
+    /// @param slotMemory What the slot chunks come from.
+    Invocation(Store& store,
+               runtime::ICodeExecutor& executor,
+               uint32_t& depth,
+               Dispatch dispatch,
+               std::pmr::memory_resource& slotMemory):
+        _context { store, *this },
+        _executor { executor },
+        _depth { depth },
+        _dispatch { dispatch },
+        _slotMemory { &slotMemory },
+        _stepsLeft { _context.gate.reload() }
+    {
+    }
+
+    Invocation(Invocation const&) = delete;
+    Invocation(Invocation&&) = delete;
+    Invocation& operator=(Invocation const&) = delete;
+    Invocation& operator=(Invocation&&) = delete;
+
+    /// Gives back the depth and the stack charges of the frames a trap left behind.
+    ~Invocation()
+    {
+        _depth -= static_cast<uint32_t>(_frames.size());
+        for (auto const& frame: _frames)
+            _context.store.releaseFrame(frame.function->frameCost);
+    }
+
+    /// Invokes @p function, of @p type, with @p args and writes its results to @p results: a module
+    /// function's code runs from its frame, which enters as every frame does; a host function runs through
+    /// runtime::callHostFunction(), after its FunctionEntry poll, the embedder its caller.
+    [[nodiscard]] std::expected<void, Abrupt> run(FuncAddr function,
+                                                  binary::FuncType const& type,
+                                                  std::span<Value const> args,
+                                                  std::span<Value> results)
+    {
+        auto const callee = calleeAt(function);
+        if (auto const polled = _context.gate.poll(PollSite::FunctionEntry, _stepsLeft); !polled)
+            return stop(polled.error());
+        if (callee.host != nullptr)
+        {
+            // Committed first: the host call charges, polls and may invoke the guest through the store.
+            _context.gate.commit(_stepsLeft);
+            return runtime::callHostFunction(
+                _context.store, _executor, *callee.host, std::nullopt, args, results);
+        }
+        auto const entered = enterFrame(callee, nullptr, NoChunk, nullptr, nullptr);
+        if (!entered)
+            return stop(entered.error());
+        storeValues(type.params, args, *entered);
+        auto const exit = Runners[std::to_underlying(_dispatch)](State { .pc = callee.function->code.data(),
+                                                                         .fp = *entered,
+                                                                         .context = &_context,
+                                                                         .memory0 = nullptr,
+                                                                         .memory0Size = 0,
+                                                                         .stepsLeft = _stepsLeft });
+        switch (exit)
+        {
+            case Exit::Returned: break;
+            case Exit::Trapped: return std::unexpected { *_context.abrupt };
+            // uncovered-begin(no-exceptions-yet)
+            case Exit::Thrown:
+                // No operation throws before the fast interpreter's exceptions are lowered.
+                core::unreachable();
+                // uncovered-end(no-exceptions-yet)
+        }
+        loadValues(type.results, _context.results, results);
+        return {};
+    }
+
+    /// Calls what @p site names from the current frame (callFunction()).
+    [[nodiscard]] OutOfLineStep call(State state, CallSite const& site) noexcept
+    {
+        // An indirect callee is resolved, and its traps raised, before anything else: before the frame a
+        // tail call replaces ends, and before the FunctionEntry poll.
+        auto const callee = resolve(state, site);
+        if (!callee)
+            return stopping(state, leaveTrapped(_context, state.stepsLeft, callee.error()));
+        auto* const arguments = state.fp + site.argumentSlot;
+        if (site.mode == CallMode::Tail)
+            return tailCall(state, *callee, arguments);
+        // Copied: entering the callee's frame grows the frames, which may move them.
+        auto const caller = _frames.back();
+        if (auto const polled = _context.gate.poll(PollSite::FunctionEntry, state.stepsLeft); !polled)
+            return stopping(state, leaveTrapped(_context, state.stepsLeft, polled.error()));
+        if (callee->host != nullptr)
+        {
+            if (auto const called =
+                    callHost(state.stepsLeft, *callee->host, caller.instanceAddress, arguments, arguments);
+                !called)
+                return stopping(state, leaveAbruptly(_context, state.stepsLeft, called.error()));
+            state.pc += site.words;
+            return { .state = state, .flow = Flow::Continue };
+        }
+        auto const entered = enterFrame(*callee, arguments, caller.chunk, state.pc + site.words, arguments);
+        if (!entered)
+            return stopping(state, leaveTrapped(_context, state.stepsLeft, entered.error()));
+        state.pc = callee->function->code.data();
+        state.fp = *entered;
+        return { .state = state, .flow = Flow::Continue };
+    }
+
+    /// Returns from the current frame (returnFromFunction()).
+    [[nodiscard]] OutOfLineStep returnFrom(State state, uint32_t resultSlot) noexcept
+    {
+        auto const* const results = state.fp + resultSlot;
+        if (_frames.size() == 1)
+            return stopping(state, leaveReturning(_context, state.stepsLeft, results));
+        auto const ending = _frames.back();
+        std::memmove(ending.results, results, std::size_t { ending.function->resultSlots } * sizeof(Slot));
+        leaveFrame();
+        return resumeCaller(state, ending.returnPc);
+    }
+
+  private:
+    /// One active Wasm frame of the invocation.
+    struct Frame
+    {
+        LoweredFunction const* function = nullptr; ///< Its code.
+        LoweredModule const* module = nullptr;     ///< Its module's code, which a call by code index reaches.
+        ModuleInstance const* instance = nullptr;  ///< Its instance.
+        uint32_t instanceAddress = 0;              ///< The instance's address: the caller of a host callee.
+        Slot* fp = nullptr;                        ///< Its first slot.
+        Slot* results = nullptr;        ///< Where its results go when it returns: its caller's arguments.
+        Word const* returnPc = nullptr; ///< Where its caller goes on; null for the invocation's own function.
+        std::size_t chunk = 0;          ///< The chunk its slots are in.
+    };
+
+    /// The callee of a function address: a host function, or a module function and its code.
+    [[nodiscard]] Callee calleeAt(FuncAddr address) const
+    {
+        auto const& function = _context.store.function(address);
+        if (function.isHost())
+            return Callee { .host = &function };
+        auto const& instance = _context.store.moduleInstance(function.moduleInstance);
+        auto const& module = loweredModuleOf(instance, _dispatch);
+        return Callee { .instance = &instance,
+                        .instanceAddress = function.moduleInstance,
+                        .module = &module,
+                        .function = &module.functions()[function.codeIndex] };
+    }
+
+    /// The callee @p site names in the current frame: a function of its own module by code index, any
+    /// other through the store. A table element and a reference are checked as the reference interpreter
+    /// checks them, in its order.
+    /// @return The callee, or the trap: UndefinedElement and UninitializedElement naming the element,
+    ///         IndirectCallTypeMismatch, or NullFunctionReference.
+    [[nodiscard]] std::expected<Callee, Trap> resolve(State const& state, CallSite const& site) const
+    {
+        auto const& frame = _frames.back();
+        auto const& instance = *frame.instance;
+        switch (site.callee)
+        {
+            case CalleeKind::Internal:
+                return Callee { .instance = frame.instance,
+                                .instanceAddress = frame.instanceAddress,
+                                .module = frame.module,
+                                .function = &frame.module->functions()[site.index] };
+            case CalleeKind::Import: return calleeAt(instance.functions[site.index]);
+            case CalleeKind::Table: {
+                auto const& table = _context.store.table(instance.tables[site.table]);
+                // A table of i32 addresses holds its index zero-extended in the slot.
+                auto const slot = state.fp[site.operandSlot];
+                auto const index = table.type.limits.addressType == binary::AddressType::I64
+                                       ? slot
+                                       : Slot { static_cast<uint32_t>(slot) };
+                if (index >= table.elements.size())
+                    return std::unexpected { Trap { TrapCode::UndefinedElement,
+                                                    std::bit_cast<int64_t>(index) } };
+                auto const& element = table.elements[index];
+                if (element.kind == runtime::RefKind::Null)
+                    return std::unexpected { Trap { TrapCode::UninitializedElement,
+                                                    std::bit_cast<int64_t>(index) } };
+                if (_context.store.function(element.address).typeId != instance.types[site.index])
+                    return std::unexpected { Trap { TrapCode::IndirectCallTypeMismatch } };
+                return calleeAt(element.address);
+            }
+            case CalleeKind::Reference: break;
+        }
+        // A reference's slots are its tag word, then its address (storeValue()).
+        if (isNullReference(state.fp[site.operandSlot]))
+            return std::unexpected { Trap { TrapCode::NullFunctionReference } };
+        auto const address = static_cast<FuncAddr>(state.fp[site.operandSlot + 1]);
+        // Validation typed the reference, and every reference from a host is checked against its type, so
+        // a function of another type is the interpreter's own error (the reference interpreter's too).
+        Require(_context.store.function(address).typeId == instance.types[site.index]);
+        return calleeAt(address);
+    }
+
+    /// Enters the Wasm frame of @p callee: the one routine every Wasm frame goes through, right after the
+    /// FunctionEntry poll its caller took (a call polls before it tells a host callee from a Wasm one). It
+    /// checks StoreLimits::maxCallDepth (one count over every invocation in progress), then charges the
+    /// frame's static cost (Store::chargeFrame()), which leaveFrame() or ~Invocation() gives back; only then
+    /// does it place the frame's slots and initialize its declared locals, so a frame refused at its entry
+    /// allocates nothing.
+    /// @param callee The module function.
+    /// @param arguments Its arguments, in consecutive slots of @p argumentsChunk; null for the invocation's
+    ///        own function, whose arguments the caller stores into the frame.
+    /// @param argumentsChunk The chunk of @p arguments; NoChunk for the invocation's own function.
+    /// @param returnPc Where the caller goes on; null for the invocation's own function.
+    /// @param results Where its results go when it returns; null for the invocation's own function.
+    /// @return The frame's first slot; or Trap{CallStackExhausted}, past the depth or the stack budget.
+    [[nodiscard]] std::expected<Slot*, Trap> enterFrame(Callee const& callee,
+                                                        Slot* arguments,
+                                                        std::size_t argumentsChunk,
+                                                        Word const* returnPc,
+                                                        Slot* results) noexcept
+    {
+        if (_depth >= _context.store.limits().maxCallDepth)
+            return std::unexpected { Trap { TrapCode::CallStackExhausted } };
+        auto const& function = *callee.function;
+        if (auto const charged = _context.store.chargeFrame(function.frameCost); !charged)
+            return std::unexpected { charged.error() };
+        auto const [fp, chunk] = place(function, arguments, argumentsChunk);
+        _frames.push_back(Frame { .function = &function,
+                                  .module = callee.module,
+                                  .instance = callee.instance,
+                                  .instanceAddress = callee.instanceAddress,
+                                  .fp = fp,
+                                  .results = results != nullptr ? results : fp,
+                                  .returnPc = returnPc,
+                                  .chunk = chunk });
+        ++_depth;
+        initializeLocals(*callee.instance, function, fp);
+        _context.instance = callee.instance;
+        _context.code = function.code.data();
+        return fp;
+    }
+
+    /// Where the frame of @p function goes, its arguments at @p arguments in @p argumentsChunk: there, where
+    /// the whole frame fits in the chunk; else at the start of the next chunk, which is reused where it is
+    /// large enough and replaced (every chunk after it freed) where it is not, the arguments copied there.
+    /// @return The frame's first slot, and its chunk.
+    [[nodiscard]] std::pair<Slot*, std::size_t> place(LoweredFunction const& function,
+                                                      Slot* arguments,
+                                                      std::size_t argumentsChunk) noexcept
+    {
+        if (argumentsChunk != NoChunk)
+        {
+            auto const& chunk = _chunks[argumentsChunk];
+            auto const offset = static_cast<uint64_t>(arguments - chunk.slots());
+            if (chunk.count() - offset >= function.frameSlots)
+                return { arguments, argumentsChunk };
+        }
+        auto const next = argumentsChunk == NoChunk ? std::size_t { 0 } : argumentsChunk + 1;
+        auto const needed = std::max(MinimumChunkSlots, uint64_t { function.frameSlots });
+        if (next >= _chunks.size() || _chunks[next].count() < needed)
+        {
+            // Every chunk from it on holds no active frame: the frames above the caller are gone.
+            while (_chunks.size() > next)
+                _chunks.pop_back();
+            _chunks.emplace_back(_slotMemory, needed);
+        }
+        auto* const fp = _chunks[next].slots();
+        if (arguments != nullptr)
+            std::copy_n(arguments, function.paramSlots, fp);
+        return { fp, next };
+    }
+
+    /// Sets @p function's declared locals to their defaults: a Zero run's slots to zero, a Null run's
+    /// pairs to the null of its heap, which nullSlots() maps through @p instance's TypeIds once per run.
+    static void initializeLocals(ModuleInstance const& instance, LoweredFunction const& function, Slot* fp)
+    {
+        for (auto const& run: function.localInit)
+        {
+            auto const slots = std::span { fp + run.slotBase, run.slotCount };
+            switch (run.kind)
+            {
+                case LocalInit::Zero: std::ranges::fill(slots, Slot { 0 }); break;
+                case LocalInit::Null: fillPairs(slots, nullSlots(run.heap, instance.types)); break;
+            }
+        }
+    }
+
+    /// Ends the current frame: gives back its depth and its stack charge.
+    void leaveFrame() noexcept
+    {
+        _context.store.releaseFrame(_frames.back().function->frameCost);
+        _frames.pop_back();
+        --_depth;
+    }
+
+    /// Goes on in the frame now current at @p returnPc, after the call that left it.
+    [[nodiscard]] OutOfLineStep resumeCaller(State state, Word const* returnPc) noexcept
+    {
+        auto const& caller = _frames.back();
+        state.pc = returnPc;
+        state.fp = caller.fp;
+        _context.instance = caller.instance;
+        _context.code = caller.function->code.data();
+        return { .state = state, .flow = Flow::Continue };
+    }
+
+    /// Tail-calls @p callee, whose arguments are at @p arguments: the current frame ends first, its charge
+    /// given back, and the callee enters in its place. A Wasm callee's frame replaces it, at its first slot,
+    /// so neither the depth nor the slots grow; a host callee runs, and its results are the frame's.
+    [[nodiscard]] OutOfLineStep tailCall(State state, Callee const& callee, Slot* arguments) noexcept
+    {
+        auto const ending = _frames.back();
+        if (callee.host == nullptr)
+            std::memmove(ending.fp, arguments, std::size_t { callee.function->paramSlots } * sizeof(Slot));
+        leaveFrame();
+        if (auto const polled = _context.gate.poll(PollSite::FunctionEntry, state.stepsLeft); !polled)
+            return stopping(state, leaveTrapped(_context, state.stepsLeft, polled.error()));
+        if (callee.host != nullptr)
+        {
+            // A host callee is called by the instance whose frame it replaces.
+            if (auto const called = callHost(
+                    state.stepsLeft, *callee.host, ending.instanceAddress, arguments, ending.results);
+                !called)
+                return stopping(state, leaveAbruptly(_context, state.stepsLeft, called.error()));
+            if (_frames.empty())
+                return stopping(state, leaveReturning(_context, state.stepsLeft, ending.results));
+            return resumeCaller(state, ending.returnPc);
+        }
+        auto const entered = enterFrame(callee, ending.fp, ending.chunk, ending.returnPc, ending.results);
+        if (!entered)
+            return stopping(state, leaveTrapped(_context, state.stepsLeft, entered.error()));
+        state.pc = callee.function->code.data();
+        state.fp = *entered;
+        return { .state = state, .flow = Flow::Continue };
+    }
+
+    /// Runs the host function @p function, its arguments in slots from @p arguments, its results to slots
+    /// from @p results, through runtime::callHostFunction(), @p caller its caller: the countdown committed
+    /// before, since the host frame charges, polls and may invoke the guest through the store, and reloaded
+    /// after.
+    /// @return Nothing, or how the call ended abruptly.
+    [[nodiscard]] std::expected<void, Abrupt> callHost(uint64_t& stepsLeft,
+                                                       FunctionInstance const& function,
+                                                       uint32_t caller,
+                                                       Slot const* arguments,
+                                                       Slot* results) noexcept
+    {
+        auto const& type = _context.store.type(function.typeId);
+        _hostArguments.resize(type.params.size());
+        _hostResults.resize(type.results.size());
+        loadValues(type.params, arguments, _hostArguments);
+        _context.gate.commit(stepsLeft);
+        auto const done = runtime::callHostFunction(
+            _context.store, _executor, function, caller, _hostArguments, _hostResults);
+        stepsLeft = _context.gate.reload();
+        if (!done)
+        {
+            if (std::holds_alternative<runtime::Thrown>(done.error()))
+                // uncovered-begin(no-exceptions-yet)
+                core::todo("a host function's exception unwinds the fast interpreter's frames with its "
+                           "exceptions (Task 13)");
+            // uncovered-end(no-exceptions-yet)
+            return done;
+        }
+        storeValues(type.results, _hostResults, results);
+        return {};
+    }
+
+    /// Stops before any code ran: commits the countdown, as every way out does, and ends with @p trap.
+    [[nodiscard]] std::unexpected<Abrupt> stop(Trap trap) noexcept
+    {
+        _context.gate.commit(_stepsLeft);
+        return std::unexpected { Abrupt { trap } };
+    }
+
+    /// The registers @p state and the stopping @p flow, which left the context already.
+    [[nodiscard]] static OutOfLineStep stopping(State state, Flow flow) noexcept
+    {
+        return { .state = state, .flow = flow };
+    }
+
+    Context _context;
+    runtime::ICodeExecutor& _executor;
+    uint32_t& _depth;
+    Dispatch _dispatch;
+    std::pmr::memory_resource* _slotMemory;
+    uint64_t _stepsLeft;
+    std::vector<SlotChunk> _chunks;    ///< The slot chunks, in the order the frames reached them.
+    std::vector<Frame> _frames;        ///< The active frames, the invocation's own function first.
+    std::vector<Value> _hostArguments; ///< A host call's arguments, reused by every host call.
+    std::vector<Value> _hostResults;   ///< A host call's results, reused by every host call.
+};
+
+OutOfLineStep callFunction(State state, CallSite const& site) noexcept
+{
+    return state.context->invocation.call(state, site);
+}
+
+OutOfLineStep returnFromFunction(State state, uint32_t resultSlot) noexcept
+{
+    return state.context->invocation.returnFrom(state, resultSlot);
+}
+
 Flow leaveTrapped(Context& context, uint64_t stepsLeft, Trap trap) noexcept
 {
+    return leaveAbruptly(context, stepsLeft, Abrupt { trap });
+}
+
+Flow leaveAbruptly(Context& context, uint64_t stepsLeft, Abrupt abrupt) noexcept
+{
     context.gate.commit(stepsLeft);
-    context.trap = trap;
+    context.abrupt = abrupt;
     return Flow::Trapped;
 }
 
-Flow leaveReturning(Context& context, uint64_t stepsLeft, uint32_t resultSlot) noexcept
+Flow leaveReturning(Context& context, uint64_t stepsLeft, Slot const* results) noexcept
 {
     context.gate.commit(stepsLeft);
-    context.resultSlot = resultSlot;
+    context.results = results;
     return Flow::Returned;
 }
 
@@ -288,7 +603,7 @@ Dispatch FastInterpreter::dispatch() const noexcept
 }
 
 std::expected<void, Abrupt> FastInterpreter::invoke(Store& store,
-                                                    runtime::FuncAddr function,
+                                                    FuncAddr function,
                                                     std::span<Value const> args,
                                                     std::span<Value> results)
 {
@@ -297,14 +612,11 @@ std::expected<void, Abrupt> FastInterpreter::invoke(Store& store,
     assert(std::fegetround() == FE_TONEAREST);
     // The invocation's scope, its nesting limit and its step budget, is the entry's to open.
     Require(store.invocationDepth() > 0);
-    auto const& callee = store.function(function);
-    // A host function's direct invocation comes with calls, through the one host-call seam.
-    Require(!callee.isHost());
     auto const& type = store.functionType(function);
     // The caller's to check: arguments of the function's types, references in this store.
     Require(runtime::checkValues(store, args, type.params).has_value());
     Require(results.size() == type.results.size());
-    return Invocation { store, _depth, _dispatch, *_slotMemory }.run(callee, type, args, results);
+    return Invocation { store, *this, _depth, _dispatch, *_slotMemory }.run(function, type, args, results);
 }
 
 } // namespace isoline::fastinterpreter

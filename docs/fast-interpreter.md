@@ -58,3 +58,47 @@ remain. *Rejected:* building with `_ITERATOR_DEBUG_LEVEL=0`. It changes the ABI,
 build does not share. *Rejected:* refusing only at reservation points, with allocations that never throw.
 The temporaries and a standard library's growth pattern cannot all be reserved exactly, and a budget
 checked only at checkpoints would let the peak pass it.
+
+## Calls, frames and the slot stack
+
+**Calls never recurse on the host stack.** A call operation hands its call to the executor out of line
+(`callFunction()`), which pushes a frame record of the invocation and returns the callee's registers; the
+same dispatch loop then runs the callee, and a return pops the record and resumes the caller. A million
+Wasm frames are a million records in a vector, on any host stack: `Calls.deepRecursionDoesNotRecurseOnTheHostStack`
+runs a million frames deep, and `tests/stack/StackLimit.cmake` runs it again under a 1 MiB main-thread stack on
+Linux. Only a host function that invokes the guest again nests on the host stack, one invocation per level,
+which `StoreLimits::maxNestedInvocations` bounds; `Dispatch.nestedInvocationsFitASmallThread` runs every level on
+a small thread (`runtime/testing/SmallStackThread.hpp`: 512 KiB where the dispatch files' frames are bounded,
+larger in sanitizer, coverage and unoptimized builds).
+
+**Every frame enters through one routine, in the reference interpreter's order.** The call operation names
+its callee by data (`CallTable`): a function of the caller's own module by code index, with no look-up
+through the store; an imported one by function index; a table element; or a function reference. A table
+element or a reference is checked first, before anything else: `UndefinedElement` and
+`UninitializedElement` naming the element, `IndirectCallTypeMismatch`, `NullFunctionReference`, with no
+FunctionEntry poll for the callee. Then the FunctionEntry poll; then, for a Wasm callee, the depth check
+against `maxCallDepth`, one count over every invocation in progress, host-nested ones included; then the
+frame's static charge (`Store::chargeFrame()`); and only then are its slots placed. So when the steps and the
+depth, or the steps and the stack budget, run out at the same entry, both engines trap with
+`StepLimitExceeded` (`Calls.tiesFollowTheEntryOrder`). A tail call ends its caller's frame, its charge given
+back, before the callee's entry polls and charges, so `return_call` recursion runs in one frame's budget.
+Every frame's charge is given back however it ends, a trap included.
+
+**A host callee runs through `runtime::callHostFunction()`**, the one host-frame routine of every engine:
+charge `hostFrameCost`, escape every argument (`Store::markEscaped()`), call under a `HostCallScope` with a
+`HostContext`, check the outcome, give the charge back, poll at HostReturn. The executor commits its step
+countdown before and reloads it after, since the host frame charges, polls and may invoke the guest through
+the store. The embedder's own invocation of a host function polls at FunctionEntry and runs it the same way,
+with no caller instance.
+
+**The slot stack is per invocation and chunked.** A callee's frame begins at its arguments, in the caller's
+frame, where the whole frame fits in the caller's chunk; otherwise it starts the next chunk, and its
+arguments, and nothing else, are copied there. A chunk holds `max(MinimumChunkSlots, frame slots)` slots, is
+kept for the frames entered later, and is freed when the invocation ends; a chunk too small for the frame
+that needs it is replaced, and every chunk after it freed. Each chunk but the last either holds a frame its
+own size, or was left because the next frame did not fit, so the chunks hold at most twice the slots of the
+frames active at once, plus one chunk. A frame takes at most two slots per value its charge counts (one per
+number, two per vector or reference), so the slot stack is at most `2 × maxStackValues` slots plus one chunk
+where every value is a number, and `4 × maxStackValues` plus one chunk in the worst case.
+(`Calls.newChunkCopiesOnlyTheArguments`). Running out of host memory for a chunk terminates, as running out
+of it does anywhere in `runtime::invokeChecked()`.

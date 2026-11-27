@@ -4,23 +4,39 @@
 #include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
+#include <cstdint>
+#include <expected>
 #include <ranges>
 #include <set>
+#include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
+#include <isoline/binary/testing/ModuleBuilder.hpp>
 #include <isoline/fastinterpreter/Code.hpp>
 #include <isoline/fastinterpreter/Dispatch.hpp>
 #include <isoline/fastinterpreter/DispatchAvailability.hpp>
 #include <isoline/fastinterpreter/Listing.hpp>
 #include <isoline/fastinterpreter/Lowering.hpp>
+#include <isoline/fastinterpreter/testing/Engines.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
+#include <isoline/runtime/Abrupt.hpp>
+#include <isoline/runtime/HostFunction.hpp>
+#include <isoline/runtime/Limits.hpp>
+#include <isoline/runtime/Store.hpp>
+#include <isoline/runtime/Trap.hpp>
+#include <isoline/runtime/Value.hpp>
+#include <isoline/runtime/testing/SmallStackThread.hpp>
 
+using isoline::binary::ExternKind;
+using isoline::binary::FuncType;
 using isoline::binary::testing::code;
 using isoline::binary::testing::i32Const;
 using isoline::binary::testing::localGet;
+using isoline::binary::testing::ModuleBuilder;
 using isoline::fastinterpreter::availableDispatches;
 using isoline::fastinterpreter::bestDispatch;
 using isoline::fastinterpreter::describe;
@@ -33,10 +49,24 @@ using isoline::fastinterpreter::OperationFamilyTable;
 using isoline::fastinterpreter::operationOfHeader;
 using isoline::fastinterpreter::OperationTable;
 using isoline::fastinterpreter::Word;
+using isoline::fastinterpreter::testing::fast;
 using isoline::fastinterpreter::testing::functionOf;
+using isoline::fastinterpreter::testing::Harness;
 using isoline::fastinterpreter::testing::lowered;
 using isoline::fastinterpreter::testing::op;
 using isoline::fastinterpreter::testing::validated;
+using isoline::runtime::Abrupt;
+using isoline::runtime::ExternValue;
+using isoline::runtime::HostContext;
+using isoline::runtime::I32;
+using isoline::runtime::makeHostFunction;
+using isoline::runtime::Store;
+using isoline::runtime::StoreLimits;
+using isoline::runtime::Trap;
+using isoline::runtime::TrapCode;
+using isoline::runtime::Value;
+using isoline::runtime::testing::runOnSmallStack;
+using isoline::runtime::testing::SmallStackBytes;
 
 namespace binary = isoline::binary;
 namespace configured = isoline::fastinterpreter::configured;
@@ -174,4 +204,56 @@ TEST_CASE("Dispatch.threadedCodeListsAlike")
     CHECK(threaded->dispatch() == dispatch);
     REQUIRE(threadedFunction.code.size() == switchFunction.code.size());
     CHECK((threadedFunction.code == switchFunction.code) == (dispatch == Dispatch::Switch));
+}
+
+TEST_CASE("Dispatch.nestedInvocationsFitASmallThread")
+{
+    // f(n) = n == 0 ? 0 : reenter(n - 1) + 1, the host invoking f again: every level nests an invocation on
+    // the host stack, StoreLimits::maxNestedInvocations of them at the most, and they fit a small thread
+    // (SmallStackBytes) on every dispatch. One level more traps, on the same thread.
+    auto const dispatch = GENERATE(from_range(availableDispatches()));
+    auto module = ModuleBuilder {};
+    module.type(FuncType { .params = { binary::I32 }, .results = { binary::I32 } });
+    module.importFunction("env", "reenter", 0);
+    module.function(0,
+                    {},
+                    code({ localGet(0),
+                           { 0x45, 0x04, 0x7F },
+                           i32Const(0),
+                           { 0x05 },
+                           localGet(0),
+                           i32Const(1),
+                           op(0x6B),
+                           op(0x10, 0),
+                           i32Const(1),
+                           op(0x6A),
+                           { 0x0B } }));
+    Harness* self = nullptr;
+    auto harness =
+        Harness { module, fast(dispatch), [&self](Store& store) {
+                     auto const host = store.addHostFunction(
+                         FuncType { .params = { binary::I32 }, .results = { binary::I32 } },
+                         makeHostFunction(
+                             [&self](HostContext& context,
+                                     std::span<Value const> args,
+                                     std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+                                 return context.invoke(self->function(1), args, results);
+                             }));
+                     REQUIRE(host.has_value());
+                     return std::vector { ExternValue { .kind = ExternKind::Func, .address = *host } };
+                 } };
+    self = &harness;
+    auto const levels = static_cast<int32_t>(StoreLimits {}.maxNestedInvocations) - 1;
+    auto deepest = std::expected<std::vector<Value>, Abrupt> {};
+    auto beyond = std::expected<std::vector<Value>, Abrupt> {};
+    auto const ran = runOnSmallStack(SmallStackBytes, [&] {
+        deepest = harness.outcome(1, { I32 { static_cast<uint32_t>(levels) } });
+        beyond = harness.outcome(1, { I32 { static_cast<uint32_t>(levels + 1) } });
+    });
+    REQUIRE(ran.has_value());
+    CHECK(deepest == std::vector<Value> { I32 { static_cast<uint32_t>(levels) } });
+    CHECK(beyond
+          == std::expected<std::vector<Value>, Abrupt> {
+              std::unexpected { Abrupt { Trap { TrapCode::CallStackExhausted } } } });
+    CHECK(harness.store().chargedStackValues() == 0);
 }

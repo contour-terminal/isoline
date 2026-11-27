@@ -67,13 +67,29 @@ class Harness
     /// hand.
     using CodeRewrite = std::function<std::shared_ptr<LoweredModule const>(LoweredModule const&)>;
 
+    /// What a Harness binds its module's imports to: the external values, in import order, which it may add
+    /// to the store first (host functions).
+    using Imports = std::function<std::vector<runtime::ExternValue>(runtime::Store&)>;
+
     /// Decodes, validates and instantiates @p builder's module on @p engine, in a store of @p limits.
     /// @param observer Observes the store's polls; none when null.
     Harness(ModuleBuilder const& builder,
             EngineUnderTest engine,
             runtime::StoreLimits limits = {},
             runtime::IPollObserver* observer = nullptr):
-        Harness { builder, engine, CodeRewrite {}, limits, observer }
+        Harness { builder, engine, CodeRewrite {}, Imports {}, limits, observer }
+    {
+    }
+
+    /// Decodes, validates and instantiates @p builder's module on @p engine, its imports bound to what
+    /// @p imports adds, in a store of @p limits.
+    /// @param observer Observes the store's polls; none when null.
+    Harness(ModuleBuilder const& builder,
+            EngineUnderTest engine,
+            Imports const& imports,
+            runtime::StoreLimits limits = {},
+            runtime::IPollObserver* observer = nullptr):
+        Harness { builder, engine, CodeRewrite {}, imports, limits, observer }
     {
     }
 
@@ -85,6 +101,23 @@ class Harness
             CodeRewrite const& rewrite,
             runtime::StoreLimits limits = {},
             runtime::IPollObserver* observer = nullptr):
+        Harness { builder, engine, rewrite, Imports {}, limits, observer }
+    {
+    }
+
+    /// The executor that runs the module: the reference interpreter, or the fast one.
+    [[nodiscard]] runtime::ICodeExecutor& executor() noexcept { return *_executor; }
+
+    /// The validated module.
+    [[nodiscard]] validate::ValidatedModule const& validated() const noexcept { return *_validated; }
+
+  private:
+    Harness(ModuleBuilder const& builder,
+            EngineUnderTest engine,
+            CodeRewrite const& rewrite,
+            Imports const& imports,
+            runtime::StoreLimits limits,
+            runtime::IPollObserver* observer):
         _store { limits, runtime::StoreServices { .allocator = _allocator, .pollObserver = observer } },
         _executor { executorOf(engine) }
     {
@@ -99,11 +132,13 @@ class Harness
             REQUIRE(_code != nullptr);
             _code = rewrite(*_code);
         }
-        auto const address = runtime::instantiate(_store, *_executor, _validated, _code, {});
+        auto const externs = imports ? imports(_store) : std::vector<runtime::ExternValue> {};
+        auto const address = runtime::instantiate(_store, *_executor, _validated, _code, externs);
         REQUIRE(address.has_value());
         _address = *address;
     }
 
+  public:
     /// Invokes the module's function @p index.
     /// @param index The function's index in the module's function index space.
     /// @param args Its arguments.
