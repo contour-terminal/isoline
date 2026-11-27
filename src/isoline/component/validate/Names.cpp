@@ -160,10 +160,9 @@ namespace
         if (!packageLabel)
             return std::unexpected { packageLabel.error() };
         name.package = std::format("{}:{}", *namespaceLabel, *packageLabel);
-        if (!parser.rest().starts_with('/'))
+        // wasm-tools names a missing `/` with a text of its own, so it is looked for before it is eaten.
+        if (!parser.eat("/"))
             return std::unexpected { nameError(NameErrorCode::ExpectedPackageSlash, {}) };
-        if (auto slash = parser.expect("/"); !slash)
-            return slash;
         auto const interfaceLabel = parser.takeKebab();
         if (!interfaceLabel)
             return std::unexpected { interfaceLabel.error() };

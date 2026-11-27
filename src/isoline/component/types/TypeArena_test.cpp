@@ -10,6 +10,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <isoline/component/Limits.hpp>
@@ -19,18 +20,26 @@
 using isoline::component::ComponentLimit;
 using isoline::component::ComponentLimits;
 using isoline::component::binary::CoreValueKind;
+using isoline::component::types::AnyTypeId;
+using isoline::component::types::ComponentTypeId;
 using isoline::component::types::ComponentTypeInfo;
 using isoline::component::types::DefinedType;
 using isoline::component::types::FunctionTypeInfo;
 using isoline::component::types::HandleContent;
 using isoline::component::types::holds;
+using isoline::component::types::InstanceTypeId;
+using isoline::component::types::InstanceTypeInfo;
 using isoline::component::types::NamedExtern;
+using isoline::component::types::ResourcePath;
+using isoline::component::types::ResourceSubstitution;
+using isoline::component::types::ResourceTypeId;
 using isoline::component::types::ResourceTypeInfo;
 using isoline::component::types::TypeArena;
 using isoline::component::types::TypeExtern;
 using isoline::component::types::TypeId;
 using isoline::component::types::TypeLimitError;
 using isoline::component::types::TypeMeasure;
+using isoline::component::types::ValueExtern;
 using isoline::component::types::ValueKind;
 
 namespace
@@ -242,7 +251,11 @@ TEST_CASE("TypeArena.solvedHashCollisionsStayLogarithmic")
     // child ids, under a public seed) can be solved: for each first child a, the second child b that
     // brings every tuple<a, b> to one state. Thousands of such tuples once landed in one bucket and
     // interning compared each with all before it. The ordered index makes O(log n) comparisons per
-    // lookup whatever the types; the bound below is about 20x under what the bucket made.
+    // lookup whatever the types. The bound is the tree's, not a measurement: a red-black tree of n
+    // keys (std::set in libstdc++, libc++ and the MSVC STL) is at most 2 log2(n + 1) high, and an
+    // insertion compares once per level and once more for equality; a debug STL may call the
+    // comparator twice per comparison to check its ordering (MSVC's does). The bucket made nearly
+    // 20 x this bound (4'114'146 comparisons).
     constexpr auto Children = uint32_t { 200'000 };
     constexpr auto Golden = uint64_t { 0x9e3779b97f4a7c15ULL };
     auto const mix = [](uint64_t seed, uint64_t value) {
@@ -274,7 +287,155 @@ TEST_CASE("TypeArena.solvedHashCollisionsStayLogarithmic")
         std::ignore =
             interned(arena, typeOf(ValueKind::Tuple, { TypeId { .value = a }, TypeId { .value = b } }));
     auto const made = arena.structuralComparisons() - before;
-    auto const depth = static_cast<std::size_t>(std::bit_width(arena.valueTypeCount()));
+    auto const treeHeight = 2 * static_cast<std::size_t>(std::bit_width(arena.valueTypeCount() + 1));
+    auto const perInsertion = 2 * (treeHeight + 1);
     INFO(std::format("{} tuples, {} comparisons", pairs.size(), made));
-    CHECK(made <= pairs.size() * 2 * (depth + 2));
+    CHECK(made <= pairs.size() * perInsertion);
+}
+
+TEST_CASE("TypeArena.vocabulary")
+{
+    // Ids order by index, as the ordered maps keyed by them need.
+    CHECK(ComponentTypeId { .value = 1 } < ComponentTypeId { .value = 2 });
+    CHECK(InstanceTypeId { .value = 3 } > InstanceTypeId { .value = 2 });
+    // The kind table at run time, not only in its static_asserts.
+    CHECK(isoline::component::types::valueKindRow(ValueKind::Record).kind == ValueKind::Record);
+    CHECK(isoline::component::types::SharedName {}.str().empty());
+    CHECK(TypeExtern { .type = AnyTypeId { TypeId { .value = 1 } } }
+          == TypeExtern { .type = AnyTypeId { TypeId { .value = 1 } } });
+    CHECK(TypeExtern { .type = AnyTypeId { TypeId { .value = 1 } } }
+          != TypeExtern { .type = AnyTypeId { ComponentTypeId { .value = 1 } } });
+    auto substitution = ResourceSubstitution {};
+    substitution.bind(ResourceTypeId { .value = 0 }, ResourceTypeId { .value = 1 });
+    CHECK(substitution.find(ResourceTypeId { .value = 0 }) == ResourceTypeId { .value = 1 });
+    CHECK_FALSE(substitution.find(ResourceTypeId { .value = 1 }).has_value());
+
+    // An arena moved into another keeps its types.
+    auto source = TypeArena { ComponentLimits {} };
+    auto const record =
+        interned(source, typeOf(ValueKind::Record, { source.primitive(ValueKind::U8) }, { "a" }));
+    auto target = TypeArena { ComponentLimits {} };
+    target = std::move(source);
+    CHECK(target[record].kind == ValueKind::Record);
+}
+
+TEST_CASE("TypeArena.functionAndInstanceTypesMeasureTheirChildren")
+{
+    // With types at most 2 deep, a function or instance type over a type 2 deep is 3 deep: refused.
+    auto limits = ComponentLimits {};
+    limits.maxTypeDepth = 2;
+    auto arena = TypeArena { limits };
+    auto const list = interned(arena, typeOf(ValueKind::List, { arena.primitive(ValueKind::U8) }));
+    REQUIRE(arena[list].depth == 2);
+
+    auto const function = arena.add(FunctionTypeInfo { .params = { { "a", list } } });
+    REQUIRE_FALSE(function.has_value());
+    CHECK(function.error() == TypeLimitError { .limit = ComponentLimit::TypeDepth, .value = 2 });
+
+    auto const instance = arena.add(InstanceTypeInfo {
+        .exports = { NamedExtern { .name = "v", .type = ValueExtern { .type = list } } } });
+    REQUIRE_FALSE(instance.has_value());
+    CHECK(instance.error() == TypeLimitError { .limit = ComponentLimit::TypeDepth, .value = 2 });
+
+    // A value extern naming an own counts as naming a resource.
+    auto const resource = arena.newResource(ResourceTypeInfo {});
+    REQUIRE(resource.has_value());
+    auto const own = interned(arena, DefinedType { .kind = ValueKind::Own, .resource = *resource });
+    auto const component = arena.add(ComponentTypeInfo {
+        .imports = { NamedExtern { .name = "v", .type = ValueExtern { .type = own } } } });
+    REQUIRE(component.has_value());
+    CHECK(arena.namesResource(AnyTypeId { *component }));
+}
+
+namespace
+{
+
+/// An arena holding resource r, the instance type { export "t" (type (sub resource)) defining r,
+/// export "f" (func (param own<r>)) }, and the component type importing that instance and exporting
+/// it again, importing r and defining it.
+struct NestedResourceTypes
+{
+    TypeArena arena { ComponentLimits {} };
+    ResourceTypeId resource {};
+    ResourceTypeId image {};
+    InstanceTypeId instance {};
+    ComponentTypeId component {};
+
+    explicit NestedResourceTypes(ComponentLimits const& limits): arena { limits }
+    {
+        auto const first = arena.newResource(ResourceTypeInfo {});
+        auto const second = arena.newResource(ResourceTypeInfo {});
+        REQUIRE(first.has_value());
+        REQUIRE(second.has_value());
+        resource = *first;
+        image = *second;
+        auto const own = interned(arena, DefinedType { .kind = ValueKind::Own, .resource = resource });
+        auto const function = arena.add(FunctionTypeInfo { .params = { { "x", own } } });
+        REQUIRE(function.has_value());
+        auto const instanceType = arena.add(InstanceTypeInfo {
+            .exports = { NamedExtern { .name = "t", .type = TypeExtern { .type = AnyTypeId { resource } } },
+                         NamedExtern { .name = "f", .type = *function } },
+            .definedResources = { ResourcePath { .resource = resource, .path = { 0 } } } });
+        REQUIRE(instanceType.has_value());
+        instance = *instanceType;
+        auto const componentType = arena.add(ComponentTypeInfo {
+            .imports = { NamedExtern { .name = "i", .type = instance } },
+            .exports = { NamedExtern { .name = "j", .type = instance } },
+            .importedResources = { ResourcePath { .resource = resource, .path = { 0, 0 } } },
+            .definedResources = { ResourcePath { .resource = resource, .path = { 0, 0 } } } });
+        REQUIRE(componentType.has_value());
+        component = *componentType;
+    }
+
+    /// The substitution of r by its image.
+    [[nodiscard]] ResourceSubstitution substitution() const
+    {
+        auto mapping = ResourceSubstitution {};
+        mapping.bind(resource, image);
+        return mapping;
+    }
+};
+
+} // namespace
+
+TEST_CASE("TypeArena.substitutesNestedInstanceAndComponentTypes")
+{
+    auto types = NestedResourceTypes { ComponentLimits {} };
+    auto& arena = types.arena;
+    auto const substituted = arena.substitute(types.component, types.substitution());
+    REQUIRE(substituted.has_value());
+    auto const* component = std::get_if<ComponentTypeId>(&*substituted);
+    REQUIRE(component != nullptr);
+    CHECK(*component != types.component);
+    auto const& rewritten = arena[*component];
+    REQUIRE(rewritten.importedResources.size() == 1);
+    CHECK(rewritten.importedResources.front().resource == types.image);
+    CHECK(rewritten.definedResources.front().resource == types.image);
+    auto const* imported = std::get_if<InstanceTypeId>(&rewritten.imports.front().type);
+    REQUIRE(imported != nullptr);
+    // The instance is rewritten once, shared by the import and the export.
+    CHECK(rewritten.exports.front().type == rewritten.imports.front().type);
+    auto const& instance = arena[*imported];
+    CHECK(instance.definedResources.front().resource == types.image);
+    CHECK(std::get<TypeExtern>(instance.exports.front().type).type == AnyTypeId { types.image });
+}
+
+TEST_CASE("TypeArena.substitutedInstanceIsCharged")
+{
+    // The instance and its exports are charged before anything is rewritten, and a rewrite's own
+    // charge refuses the instance as well.
+    auto limits = ComponentLimits {};
+    limits.maxSubstitutedTypes = 2;
+    auto types = NestedResourceTypes { limits };
+    auto const exports = types.arena[types.instance].exports;
+    auto const tooMany = types.arena.substitutedInstance(exports, types.substitution());
+    REQUIRE_FALSE(tooMany.has_value());
+    CHECK(tooMany.error() == TypeLimitError { .limit = ComponentLimit::SubstitutedTypes, .value = 2 });
+
+    limits.maxSubstitutedTypes = 4;
+    auto room = NestedResourceTypes { limits };
+    auto const inner = room.arena.substitutedInstance(room.arena[room.instance].exports, room.substitution());
+    REQUIRE_FALSE(inner.has_value());
+    CHECK(inner.error() == TypeLimitError { .limit = ComponentLimit::SubstitutedTypes, .value = 4 });
+    CHECK(room.arena.substitutedTypes() == 4); // the instance and its two exports, then the own
 }

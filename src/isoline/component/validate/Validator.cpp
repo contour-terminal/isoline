@@ -356,7 +356,9 @@ namespace
                                                .importedResources = std::move(frame.importedResources),
                                                .definedResources = std::move(frame.definedResources) });
                 if (!added)
+                    // uncovered-begin(arena-refold)
                     return std::unexpected { limitError(added.error(), frame.origin) };
+                // uncovered-end(arena-refold)
                 return pushType(*added, frame.origin);
             }
             case binary::ScopeKind::InstanceType: {
@@ -365,12 +367,14 @@ namespace
                     types::InstanceTypeInfo { .exports = std::move(frame.exports),
                                               .definedResources = std::move(frame.definedResources) });
                 if (!added)
+                    // uncovered-begin(arena-refold)
                     return std::unexpected { limitError(added.error(), frame.origin) };
+                // uncovered-end(arena-refold)
                 return pushType(*added, frame.origin);
             }
         }
         Require(false);
-        return {};
+        return {}; // uncovered(exhaustive-switch)
     }
 
     Result<void> ComponentValidator::step(binary::Definition const& definition, DefinitionPosition position)
@@ -505,8 +509,8 @@ namespace
     Result<TypeId> ComponentValidator::intern(types::DefinedType type, DefinitionPosition position)
     {
         return _arena.intern(std::move(type)).transform_error([&](types::TypeLimitError const& error) {
-            return limitError(error, position);
-        });
+            return limitError(error, position); // uncovered(premeasured)
+        });                                     // uncovered(premeasured)
     }
 
     Result<void> ComponentValidator::typeDefinition(binary::TypeDefinition const& definition,
@@ -559,8 +563,8 @@ namespace
                 else if constexpr (std::is_same_v<Alternative, binary::ListType>)
                     return elements(ValueKind::List, { alternative.element }, position);
                 else if constexpr (std::is_same_v<Alternative, binary::FixedListType>)
+                // uncovered-begin(fixed-length-lists): unreachable while the gate above refuses 🔧.
                 {
-                    // uncovered-begin(fixed-length-lists): unreachable while the gate above refuses 🔧.
                     if (alternative.length < 1)
                         return std::unexpected { ValidationError {
                             .code = ValidationErrorCode::EmptyFixedList, .position = position } };
@@ -578,8 +582,8 @@ namespace
                                                        .children = { *element },
                                                        .length = alternative.length },
                                   position);
-                    // uncovered-end(fixed-length-lists)
                 }
+                // uncovered-end(fixed-length-lists)
                 else if constexpr (std::is_same_v<Alternative, binary::TupleType>)
                     return tuple(alternative, position);
                 else if constexpr (std::is_same_v<Alternative, binary::FlagsType>)
@@ -832,7 +836,7 @@ namespace
         }
         auto const added = _arena.add(std::move(info));
         if (!added)
-            return std::unexpected { limitError(added.error(), position) };
+            return std::unexpected { limitError(added.error(), position) }; // uncovered(premeasured)
         return pushType(*added, position);
     }
 
@@ -903,10 +907,12 @@ namespace
             }
             case Sort::CoreModule:
                 return std::unexpected { deferredError(DeferredForm::CoreModuleTypes, position) };
-            default: break;
+            default: break; // uncovered(core-sort-extern)
         }
         Require(false);
+        // uncovered-begin(core-sort-extern)
         return std::unexpected { deferredError(DeferredForm::CoreModuleTypes, position) };
+        // uncovered-end(core-sort-extern)
     }
 
     Result<void> ComponentValidator::attributes(binary::NameAttributes const& name,
@@ -1300,31 +1306,28 @@ std::string specMessage(ValidationError const& error)
     {
         case ValidationErrorDetail::None: return std::string { row.text };
         case ValidationErrorDetail::Index: return std::vformat(row.text, std::make_format_args(subject));
-        case ValidationErrorDetail::Deferred: {
+        case ValidationErrorDetail::Deferred:
             Require(subject < DeferredFormTable.size());
             return std::vformat(row.text, std::make_format_args(DeferredFormTable[subject].text));
-        }
         case ValidationErrorDetail::Refusal: return error.name;
-        case ValidationErrorDetail::Extern: {
+        case ValidationErrorDetail::Extern:
             Require(subject < ExternKindWords.size());
             return std::vformat(row.text,
                                 std::make_format_args(ExternKindWords[subject], error.name, error.previous));
-        }
         case ValidationErrorDetail::Named:
             return std::vformat(row.text, std::make_format_args(error.name, error.previous));
-        case ValidationErrorDetail::Label: {
+        case ValidationErrorDetail::Label:
             Require(subject < LabelKindTable.size());
-            auto const& kind = LabelKindTable[subject];
-            return std::vformat(
-                row.text, std::make_format_args(kind.description, error.name, kind.noun, error.previous));
-        }
-        case ValidationErrorDetail::Limit: {
-            auto const limit = exceededLimit(error);
-            Require(limit.has_value());
-            return limitMessage(*limit, subject >> 8U);
-        }
+            return std::vformat(row.text,
+                                std::make_format_args(LabelKindTable[subject].description,
+                                                      error.name,
+                                                      LabelKindTable[subject].noun,
+                                                      error.previous));
+        case ValidationErrorDetail::Limit:
+            Require(exceededLimit(error).has_value());
+            return limitMessage(*exceededLimit(error), subject >> 8U);
     }
-    return std::string { row.text };
+    return std::string { row.text }; // uncovered(exhaustive-switch)
 }
 
 std::expected<std::shared_ptr<ValidatedComponent const>, ValidationError> validateComponent(

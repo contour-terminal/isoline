@@ -1571,3 +1571,10 @@ TEST_CASE("Decoder.truncatedForms")
               componentOf({ section(4, componentPreamble()) }), ComponentFeatureSet::wasi03(), limits))
           == ComponentLimit::Definitions);
 }
+
+TEST_CASE("Decoder.truncatedFixedList")
+{
+    // (list t len) cut off before its element and before its length: the section ends early.
+    CHECK(errorOf(oneOf(7, bytesOf({ 0x67 }))).code == DecodeErrorCode::UnexpectedEnd);
+    CHECK(errorOf(oneOf(7, bytesOf({ 0x67, 0x7D }))).code == DecodeErrorCode::UnexpectedEnd);
+}

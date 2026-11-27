@@ -1216,7 +1216,6 @@ namespace
     }
 
     Result<DefinedValueType> ComponentDecoder::fixedListType(Reader& reader)
-    // uncovered-begin(fixed-length-lists)
     {
         auto const element = valueType(reader);
         if (!element)
@@ -1226,7 +1225,6 @@ namespace
             return std::unexpected { length.error() };
         return DefinedValueType { FixedListType { .element = *element, .length = *length } };
     }
-    // uncovered-end(fixed-length-lists)
 
     Result<DefinedValueType> ComponentDecoder::tupleType(Reader& reader)
     {

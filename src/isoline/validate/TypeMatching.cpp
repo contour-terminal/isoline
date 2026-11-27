@@ -54,15 +54,15 @@ bool TypeMatcher::matchesExtern(CoreExternType const& sub, CoreExternType const&
     auto const equivalent = [this](uint32_t subIndex, uint32_t superIndex) {
         return matches(subIndex, superIndex);
     };
-    switch (sub.kind)
-    {
-        case binary::ExternKind::Func: return matches(sub.typeIndex, super.typeIndex);
-        case binary::ExternKind::Table: return tableTypeMatches(sub.table, super.table, equivalent);
-        case binary::ExternKind::Memory: return memoryTypeMatches(sub.memory, super.memory);
-        case binary::ExternKind::Global: return globalTypeMatches(sub.global, super.global, equivalent);
-        case binary::ExternKind::Tag: break; // below the switch, so that every kind is a case
-    }
-    // A tag's type matches only an equivalent one: an exception's payload is read by the tag's type.
+    static_assert(binary::ExternKindCount == 5, "a new extern kind needs its matching rule here");
+    if (sub.kind == binary::ExternKind::Table)
+        return tableTypeMatches(sub.table, super.table, equivalent);
+    if (sub.kind == binary::ExternKind::Memory)
+        return memoryTypeMatches(sub.memory, super.memory);
+    if (sub.kind == binary::ExternKind::Global)
+        return globalTypeMatches(sub.global, super.global, equivalent);
+    // A function's or a tag's type matches only an equivalent one: an exception's payload is read by
+    // the tag's type.
     return matches(sub.typeIndex, super.typeIndex);
 }
 

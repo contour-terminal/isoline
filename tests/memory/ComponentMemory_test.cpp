@@ -62,7 +62,6 @@ using isoline::component::validate::validateComponent;
 using isoline::component::validate::ValidationError;
 using isoline::component::validate::testing::CoreModuleValidator;
 using isoline::testing::AllocationLimit;
-using isoline::testing::AllocationScope;
 
 namespace
 {
@@ -293,25 +292,62 @@ BudgetedValidation validateUnderBudget(ComponentPool pool, std::size_t budget)
 
 } // namespace
 
+namespace
+{
+
+/// What decoding and validating a component may hold per byte of it, beyond FixedComponentBytes.
+///
+/// The pool and the arena turn each definition into structs and vectors several times its encoding,
+/// and a vector holds up to twice what it uses, more while it grows (by 2 in libstdc++ and libc++, by
+/// 1.5 in the MSVC STL, whose debug build adds a proxy per container). Measured under Clang/libstdc++
+/// with ASan, a list chain holds about 46 bytes per byte while decoded and validated and shallow
+/// records about 37; under MSVC's debug STL about 62 and 41. The bound leaves room above them for
+/// any standard library, and stays far below a hold that grows faster than the input: kept copies of
+/// what was read so far, one per definition, pass it within the first few thousand definitions.
+constexpr auto BytesPerComponentByte = std::size_t { 512 };
+
+/// What decoding and validating may hold whatever the component: the empty component's cost.
+constexpr auto FixedComponentBytes = std::size_t { 64 } * 1024;
+
+/// The budget of a component of @p bytes bytes.
+[[nodiscard]] constexpr std::size_t componentBudget(std::size_t bytes) noexcept
+{
+    return FixedComponentBytes + (BytesPerComponentByte * bytes);
+}
+
+} // namespace
+
 TEST_CASE("TypeArena.depthCapLinearMemory")
 {
-    // A list chain 100'000 deep, decoded and validated: refused at depth 101, and what the two hold at
-    // once grows with the input alone (peak at 2n within 2.2 x the peak at n).
-    auto const peakOf = [](Bytes const& bytes) {
-        auto coreModules = CoreModuleValidator {};
-        auto const scope = AllocationScope {};
-        auto pool = decodeComponent(bytes, ComponentFeatureSet::defaults(), ComponentLimits {});
-        REQUIRE(pool.has_value());
-        auto const validated = validateComponent(
-            std::move(*pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
-        REQUIRE_FALSE(validated.has_value());
-        CHECK(isoline::component::validate::exceededLimit(validated.error()) == ComponentLimit::TypeDepth);
-        CHECK(validated.error().position.definition == ComponentLimits {}.maxTypeDepth);
-        return scope.peakBytes();
-    };
-    auto const single = peakOf(listChain(50'000));
-    auto const twice = peakOf(listChain(100'000));
-    CHECK(twice * 10 <= single * 22);
+    // A list chain 100'000 deep, decoded and validated: refused at depth 101, holding no more than its
+    // budget per byte of the component (BytesPerComponentByte), at n and at 2n.
+    for (auto const lists: { uint32_t { 50'000 }, uint32_t { 100'000 } })
+    {
+        auto const bytes = listChain(lists);
+        auto outcome = BudgetedValidation {};
+        try
+        {
+            auto coreModules = CoreModuleValidator {};
+            auto const limit = AllocationLimit { componentBudget(bytes.size()) };
+            auto pool = decodeComponent(bytes, ComponentFeatureSet::defaults(), ComponentLimits {});
+            if (pool)
+            {
+                auto const validated = validateComponent(
+                    std::move(*pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
+                if (!validated)
+                    outcome.error = validated.error();
+            }
+        }
+        catch (std::bad_alloc const&)
+        {
+            outcome.budget = Budget::Refused;
+        }
+        INFO(std::format("{} lists, {} bytes", lists, bytes.size()));
+        CHECK(outcome.budget == Budget::Kept);
+        REQUIRE(outcome.error.has_value());
+        CHECK(isoline::component::validate::exceededLimit(*outcome.error) == ComponentLimit::TypeDepth);
+        CHECK(outcome.error->position.definition == ComponentLimits {}.maxTypeDepth);
+    }
 }
 
 TEST_CASE("TypeArena.doublingChainInBudget")
@@ -336,28 +372,21 @@ TEST_CASE("TypeArena.doublingChainInBudget")
 
 TEST_CASE("Validator.acceptedComponentLinearMemory")
 {
-    // An accepted component of n shallow records, each its own type (distinct labels): what validation
-    // holds grows with n alone, the peak at 2n within 2.2 x the peak at n.
-    auto const recordsOf = [](uint32_t records) {
+    // An accepted component of n shallow records, each its own type (distinct labels): validation holds
+    // no more than its budget per byte of the component (BytesPerComponentByte), at n and at 2n.
+    for (auto const records: { uint32_t { 50'000 }, uint32_t { 100'000 } })
+    {
         auto builder = ComponentBuilder {};
         for (auto const index: std::views::iota(uint32_t { 0 }, records))
             std::ignore = builder.type(TypeDefinition {
                 .type = RecordType { .fields = { LabeledType { .label = std::format("f{}", index),
                                                                .type = PrimitiveValueType::U32 } } } });
-        return builder.pool();
-    };
-    auto const peakOf = [](ComponentPool pool) {
-        auto coreModules = CoreModuleValidator {};
-        auto const scope = AllocationScope {};
-        auto const validated = validateComponent(
-            std::move(pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
-        REQUIRE(validated.has_value());
-        return scope.peakBytes();
-    };
-    auto const single = peakOf(recordsOf(50'000));
-    auto const twice = peakOf(recordsOf(100'000));
-    INFO(std::format("{} bytes at n, {} at 2n", single, twice));
-    CHECK(twice * 10 <= single * 22);
+        auto const budget = componentBudget(builder.build().size());
+        auto const outcome = validateUnderBudget(builder.pool(), budget);
+        INFO(std::format("{} records, budget {} bytes", records, budget));
+        CHECK(outcome.budget == Budget::Kept);
+        CHECK_FALSE(outcome.error.has_value());
+    }
 }
 
 TEST_CASE("Validator.freshInstancesShareTheirNames")

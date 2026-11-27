@@ -545,10 +545,12 @@ std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const
                     });
                 }
                 else
+                // uncovered-begin(resource-rebuild)
                 {
                     Require(false);
                     return typed;
                 }
+                // uncovered-end(resource-rebuild)
             },
             id);
     };

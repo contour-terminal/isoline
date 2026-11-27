@@ -1096,3 +1096,195 @@ TEST_CASE("Validator.outerAliasesIntoComponentsDeferred")
     std::ignore = local.aliasOuter(Sort::Type, 0, 0);
     CHECK(accepted(local.pool()));
 }
+
+namespace
+{
+
+/// The error validating @p pool under @p limits reports; the validation must fail.
+[[nodiscard]] ValidationError refusalUnder(ComponentPool pool, ComponentLimits const& limits)
+{
+    auto coreModules = CoreModuleValidator {};
+    auto result = validateComponent(std::move(pool), ComponentFeatureSet::defaults(), limits, coreModules);
+    REQUIRE_FALSE(result.has_value());
+    return result.error();
+}
+
+/// A list chain of @p lists levels over u32 in @p builder; its last type's index.
+uint32_t listChainIn(ComponentBuilder& builder, uint32_t lists)
+{
+    auto previous = builder.type(defined(PrimitiveValueType::U32));
+    for ([[maybe_unused]] auto const level: std::views::iota(uint32_t { 0 }, lists))
+        previous = builder.type(defined(ListType { .element = at(previous) }));
+    return previous;
+}
+
+/// An instance type exporting a `(sub resource)` `r` and a function taking an own of it.
+TypeScopeBuilder definingAResource()
+{
+    auto scope = TypeScopeBuilder {};
+    auto const resource =
+        scope.exportItem("r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto const handle = scope.type(defined(OwnType { .resource = resource }));
+    auto const function = scope.type(
+        TypeDefinition { .type = functionOf({ LabeledType { .label = "x", .type = at(handle) } }) });
+    std::ignore = scope.exportItem("f", ExternDesc { .sort = Sort::Func, .index = function });
+    return scope;
+}
+
+} // namespace
+
+TEST_CASE("Validator.limitsAtEachDeclaration")
+{
+    auto const limitOf = [](ValidationError const& error) {
+        return exceededLimit(error);
+    };
+    auto oneTypeOnly = ComponentLimits {};
+    oneTypeOnly.maxTypes = 1;
+
+    // A component type that would be the second type, when its scope finishes.
+    auto component = ComponentBuilder {};
+    std::ignore = component.type(defined(PrimitiveValueType::U32));
+    std::ignore = component.componentType(TypeScopeBuilder {});
+    CHECK(limitOf(refusalUnder(component.pool(), oneTypeOnly)) == ComponentLimit::Types);
+
+    // A type import, which is a type of the index space too.
+    auto typeImport = ComponentBuilder {};
+    std::ignore = typeImport.type(defined(PrimitiveValueType::U32));
+    std::ignore =
+        typeImport.import("t", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::Equal });
+    CHECK(limitOf(refusalUnder(typeImport.pool(), oneTypeOnly)) == ComponentLimit::Types);
+
+    // Resources: defined, imported as `(sub resource)`, and minted afresh for an instance import.
+    auto noResources = ComponentLimits {};
+    noResources.maxResourceTypes = 0;
+    auto definition = ComponentBuilder {};
+    std::ignore = definition.resource();
+    CHECK(limitOf(refusalUnder(definition.pool(), noResources)) == ComponentLimit::ResourceTypes);
+    auto subResource = ComponentBuilder {};
+    std::ignore = subResource.import(
+        "r", ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    CHECK(limitOf(refusalUnder(subResource.pool(), noResources)) == ComponentLimit::ResourceTypes);
+
+    auto oneResource = ComponentLimits {};
+    oneResource.maxResourceTypes = 1;
+    auto instanceImport = ComponentBuilder {};
+    auto const instance = instanceImport.instanceType(definingAResource());
+    std::ignore = instanceImport.import("i", ExternDesc { .sort = Sort::Instance, .index = instance });
+    CHECK(limitOf(refusalUnder(instanceImport.pool(), oneResource)) == ComponentLimit::ResourceTypes);
+
+    // The fresh instance type is charged to the substitutions: refused there.
+    auto fewSubstitutions = ComponentLimits {};
+    fewSubstitutions.maxSubstitutedTypes = 1;
+    auto substituted = ComponentBuilder {};
+    auto const substitutedInstance = substituted.instanceType(definingAResource());
+    std::ignore =
+        substituted.import("i", ExternDesc { .sort = Sort::Instance, .index = substitutedInstance });
+    CHECK(limitOf(refusalUnder(substituted.pool(), fewSubstitutions)) == ComponentLimit::SubstitutedTypes);
+}
+
+TEST_CASE("Validator.referencedTypesChecked")
+{
+    // A field, a payload, a map key or value and a function result must each name a defined type.
+    auto const notDefined = [](auto&& add) {
+        auto builder = ComponentBuilder {};
+        auto const function = builder.type(TypeDefinition { .type = functionOf({}) });
+        add(builder, function);
+        return refusalText(builder.pool(), ComponentFeatureSet::wasi03());
+    };
+    CHECK(notDefined([](ComponentBuilder& builder, uint32_t function) {
+              std::ignore = builder.type(defined(recordOf({ "a" }, at(function))));
+          })
+          == "type index 0 is not a defined type");
+    CHECK(notDefined([](ComponentBuilder& builder, uint32_t function) {
+              std::ignore = builder.type(
+                  defined(VariantType { .cases = { VariantCase { .label = "a", .type = at(function) } } }));
+          })
+          == "type index 0 is not a defined type");
+    CHECK(notDefined([](ComponentBuilder& builder, uint32_t function) {
+              std::ignore =
+                  builder.type(defined(MapType { .key = at(function), .value = PrimitiveValueType::U8 }));
+          })
+          == "type index 0 is not a defined type");
+    CHECK(notDefined([](ComponentBuilder& builder, uint32_t function) {
+              std::ignore =
+                  builder.type(defined(MapType { .key = PrimitiveValueType::String, .value = at(function) }));
+          })
+          == "type index 0 is not a defined type");
+    CHECK(notDefined([](ComponentBuilder& builder, uint32_t function) {
+              std::ignore = builder.type(TypeDefinition { .type = functionOf({}, at(function)) });
+          })
+          == "type index 0 is not a defined type");
+
+    // A payload or a result one level too deep.
+    auto deepPayload = ComponentBuilder {};
+    auto const chain = listChainIn(deepPayload, 99);
+    std::ignore = deepPayload.type(
+        defined(VariantType { .cases = { VariantCase { .label = "a", .type = at(chain) } } }));
+    CHECK(refusalText(deepPayload.pool()) == "type nesting is too deep");
+    auto deepResult = ComponentBuilder {};
+    auto const resultChain = listChainIn(deepResult, 99);
+    std::ignore = deepResult.type(TypeDefinition { .type = functionOf({}, at(resultChain)) });
+    CHECK(refusalText(deepResult.pool()) == "type nesting is too deep");
+
+    // An import naming no type, a value import of a built pool, and a core module import.
+    auto missing = ComponentBuilder {};
+    std::ignore =
+        missing.import("t", ExternDesc { .sort = Sort::Type, .index = 5, .bound = TypeBound::Equal });
+    CHECK(refusal(missing.pool()).code == ValidationErrorCode::TypeIndexOutOfBounds);
+    auto value = ComponentBuilder {};
+    std::ignore = value.type(defined(PrimitiveValueType::U32));
+    std::ignore = value.import("v", ExternDesc { .sort = Sort::Value, .index = 0 });
+    CHECK(refusal(value.pool()).disabled == ComponentFeature::Values);
+    auto coreModule = ComponentBuilder {};
+    std::ignore = coreModule.import("m", ExternDesc { .sort = Sort::CoreModule, .index = 0 });
+    CHECK(specMessage(refusal(coreModule.pool())) == "not yet validated: core module types");
+}
+
+TEST_CASE("Validator.deferredFormsNamed")
+{
+    // A custom definition is accepted; everything Task 7 validates is named as it is refused.
+    auto custom = ComponentBuilder {};
+    auto const payload = std::vector<std::byte> { std::byte { 1 } };
+    custom.custom("note", payload);
+    CHECK(accepted(custom.pool()));
+
+    auto const deferredText = [](ComponentBuilder const& builder) {
+        return specMessage(refusal(builder.pool()));
+    };
+    auto lift = ComponentBuilder {};
+    auto const function = lift.type(TypeDefinition { .type = functionOf({}) });
+    std::ignore = lift.canonLift(0, { CanonOption { .kind = CanonOptionKind::Utf8, .index = 0 } }, function);
+    CHECK(deferredText(lift) == "not yet validated: canonical function definitions");
+    auto exportAlias = ComponentBuilder {};
+    std::ignore = exportAlias.aliasExport(0, "f", Sort::Func);
+    CHECK(deferredText(exportAlias) == "not yet validated: aliases of instance exports");
+    auto coreAlias = ComponentBuilder {};
+    std::ignore = coreAlias.aliasCoreExport(0, "f", isoline::component::binary::CoreSort::Func);
+    CHECK(deferredText(coreAlias) == "not yet validated: aliases of core instance exports");
+    auto inlineInstance = ComponentBuilder {};
+    std::ignore = inlineInstance.inlineInstance({ { "f", SortIndex { .sort = Sort::Func, .index = 0 } } });
+    CHECK(deferredText(inlineInstance) == "not yet validated: component instances");
+    auto ascribed = ComponentBuilder {};
+    std::ignore = ascribed.exportItem("f", Sort::Func, 0, ExternDesc { .sort = Sort::Func, .index = 0 });
+    CHECK(deferredText(ascribed) == "not yet validated: export definitions");
+    auto coreInstance = ComponentBuilder {};
+    std::ignore = coreInstance.coreInstantiate(0, {});
+    CHECK(deferredText(coreInstance) == "not yet validated: core instances");
+    auto coreType = ComponentBuilder {};
+    std::ignore = coreType.coreType(
+        isoline::component::binary::CoreTypeDefinition { .type = isoline::binary::FuncType {} });
+    CHECK(deferredText(coreType) == "not yet validated: core type definitions");
+
+    // A refusal that is no limit names none.
+    CHECK_FALSE(exceededLimit(refusal(coreType.pool())).has_value());
+}
+
+TEST_CASE("Validator.coreModuleValidatorIsAnInterface")
+{
+    // The embedder's validator is owned through the interface it implements.
+    auto owned = std::unique_ptr<isoline::component::validate::ICoreModuleValidator> {
+        std::make_unique<CoreModuleValidator>()
+    };
+    owned.reset();
+    CHECK(owned == nullptr);
+}

@@ -429,7 +429,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::advance(Frame& frame
                         actualSide, arena(actualSide)[actual].exports, expected, ExternKind::Export));
                 case ComponentPhase::Finished: return Progress::Done;
             }
-            break;
+            break; // uncovered(exhaustive-switch)
         }
         case FrameKind::Open: {
             auto const& component =
@@ -444,7 +444,7 @@ TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::advance(Frame& frame
         }
     }
     Require(false);
-    return Progress::Done;
+    return Progress::Done; // uncovered(exhaustive-switch)
 }
 
 TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::advanceValue(Frame& frame)
@@ -565,7 +565,7 @@ std::optional<std::string> TypeRelation::context(Frame const& frame) const
                     return contextLine(
                         static_cast<RelationContext>(static_cast<std::size_t>(*rules.context) + index));
             }
-            return std::nullopt;
+            return std::nullopt; // uncovered(exhaustive-switch)
         }
         case FrameKind::Function: {
             auto const& actual = arena(actualSide)[types::FunctionTypeId { .value = frame.actual }];
@@ -588,7 +588,7 @@ std::optional<std::string> TypeRelation::context(Frame const& frame) const
                 RelationContext::Extern, externKindWord(frame.externKind), entities[index].name.str());
         }
     }
-    return std::nullopt;
+    return std::nullopt; // uncovered(exhaustive-switch)
 }
 
 TypeRelation::Outcome<TypeRelation::Progress> TypeRelation::startEntity(Side actualSide,

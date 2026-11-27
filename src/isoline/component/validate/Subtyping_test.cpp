@@ -630,3 +630,239 @@ TEST_CASE("Resources.instanceImportsMintFresh")
         });
     CHECK(*declared == 0);
 }
+
+TEST_CASE("Subtyping.compoundShapes")
+{
+    // Each shape check of component_defined_type (component_types.rs:4233-4418) in wasm-tools' words,
+    // from RelationErrorTexts.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const u32 = primitive(arena, ValueKind::U32);
+    auto const fieldX = record(arena, { { "x", u32 } });
+    auto const fieldsXY = record(arena, { { "x", u32 }, { "y", u32 } });
+    CHECK(mismatchText(arena, TypeExtern { .type = fieldX }, TypeExtern { .type = fieldsXY })
+          == "expected 2 fields, found 1");
+
+    auto const variant = [&](std::vector<std::pair<std::string, std::optional<TypeId>>> const& cases) {
+        auto type = DefinedType { .kind = ValueKind::Variant };
+        for (auto const& [label, payload]: cases)
+        {
+            type.labels.emplace_back(label);
+            type.children.push_back(payload);
+        }
+        return held(arena.intern(std::move(type)));
+    };
+    auto const bare = variant({ { "a", std::nullopt } });
+    auto const carrying = variant({ { "a", u32 } });
+    CHECK(mismatchText(arena,
+                       TypeExtern { .type = bare },
+                       TypeExtern { .type = variant({ { "a", std::nullopt }, { "b", std::nullopt } }) })
+          == "expected 2 cases, found 1");
+    CHECK(mismatchText(arena, TypeExtern { .type = bare }, TypeExtern { .type = carrying })
+          == "expected case `a` to have a type, found none");
+    CHECK(mismatchText(arena, TypeExtern { .type = carrying }, TypeExtern { .type = bare })
+          == "expected case `a` to have no type");
+    // A case without a payload is passed over, the next one compared.
+    auto const mixed = variant({ { "a", std::nullopt }, { "b", u32 } });
+    auto const mixedOther = variant({ { "a", std::nullopt }, { "b", primitive(arena, ValueKind::U8) } });
+    CHECK(mismatchText(arena, TypeExtern { .type = mixed }, TypeExtern { .type = mixedOther })
+          == "type mismatch in variant case `b`\nexpected primitive `u8` found primitive `u32`");
+
+    auto const fixed = [&](uint32_t length) {
+        return held(arena.intern(
+            DefinedType { .kind = ValueKind::FixedList, .children = { u32 }, .length = length }));
+    };
+    CHECK(mismatchText(arena, TypeExtern { .type = fixed(2) }, TypeExtern { .type = fixed(3) })
+          == "expected fixed-length 3, found size 2");
+
+    auto const stream = [&](std::optional<TypeId> element) {
+        return held(
+            arena.intern(DefinedType { .kind = ValueKind::Stream,
+                                       .children = element ? std::vector<std::optional<TypeId>> { element }
+                                                           : std::vector<std::optional<TypeId>> {} }));
+    };
+    CHECK(mismatchText(arena, TypeExtern { .type = stream(std::nullopt) }, TypeExtern { .type = stream(u32) })
+          == "expected stream type, but found none");
+    CHECK(mismatchText(arena, TypeExtern { .type = stream(u32) }, TypeExtern { .type = stream(std::nullopt) })
+          == "expected stream type to not be present");
+    // A stream's element: the context of a kind with no argument.
+    CHECK(mismatchText(arena,
+                       TypeExtern { .type = stream(u32) },
+                       TypeExtern { .type = stream(primitive(arena, ValueKind::U8)) })
+          == "type mismatch in stream\nexpected primitive `u8` found primitive `u32`");
+    // A list's element: no context line at all.
+    auto const list = [&](TypeId element) {
+        return held(arena.intern(DefinedType { .kind = ValueKind::List, .children = { element } }));
+    };
+    CHECK(mismatchText(arena, TypeExtern { .type = list(u32) }, TypeExtern { .type = list(fieldX) })
+          == "expected record, found u32");
+}
+
+TEST_CASE("Subtyping.entityKinds")
+{
+    // A component where a function is required, and a function, instance or component bound as a type.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const empty = function(arena, {});
+    auto const component = held(arena.add(ComponentTypeInfo {}));
+    CHECK(mismatchText(arena, component, empty) == "expected func, found component");
+    CHECK(mismatchText(arena, empty, component) == "expected component, found func");
+    auto relation = TypeRelation { arena, arena, ResourceMapping {}, ComponentLimits {} };
+    CHECK(relation.isSubtype(TypeExtern { .type = empty }, TypeExtern { .type = empty }).has_value());
+    auto const exportsOne = instance(arena, { NamedExtern { .name = "f", .type = empty } });
+    CHECK(relation.isSubtype(TypeExtern { .type = exportsOne }, TypeExtern { .type = instance(arena, {}) })
+              .has_value());
+    CHECK(relation.isSubtype(TypeExtern { .type = component }, TypeExtern { .type = component }).has_value());
+}
+
+namespace
+{
+
+/// One component type of every frame kind, built into @p arena: it imports an instance `i`
+/// exporting the resource `t` (quantified over at the path {0, 0}) and a function over a record, a
+/// variant, an enum, flags and a fixed list of it, and a component `c` quantifying over the same
+/// resource, which itself imports a component `d` doing so too; it exports a function of the record.
+/// Built once per arena, the two copies share no id, so every value is compared by structure; and
+/// the resource is bound three levels deep, the import of an import flipping the side back.
+[[nodiscard]] ComponentTypeId richComponent(TypeArena& arena)
+{
+    auto const resource = held(arena.newResource(ResourceTypeInfo {}));
+    auto const u32 = primitive(arena, ValueKind::U32);
+    auto const handle = own(arena, resource);
+    auto const fields = record(arena, { { "handle", handle }, { "count", u32 } });
+    auto const choice = held(arena.intern(DefinedType {
+        .kind = ValueKind::Variant, .children = { std::nullopt, fields }, .labels = { "none", "some" } }));
+    auto const letters = held(arena.intern(DefinedType { .kind = ValueKind::Enum, .labels = { "a", "b" } }));
+    auto const bits = held(arena.intern(DefinedType { .kind = ValueKind::Flags, .labels = { "x", "y" } }));
+    auto const three =
+        held(arena.intern(DefinedType { .kind = ValueKind::FixedList, .children = { u32 }, .length = 3 }));
+    auto const use =
+        function(arena,
+                 { { "choice", choice }, { "letters", letters }, { "bits", bits }, { "three", three } },
+                 fields);
+    auto const exported =
+        instance(arena,
+                 { NamedExtern { .name = "t", .type = TypeExtern { .type = AnyTypeId { resource } } },
+                   NamedExtern { .name = "use", .type = use } });
+    auto const quantified = [&](std::vector<NamedExtern> more) {
+        auto imports = std::vector<NamedExtern> { NamedExtern { .name = "i", .type = exported } };
+        imports.insert(imports.end(), more.begin(), more.end());
+        return held(arena.add(ComponentTypeInfo {
+            .imports = std::move(imports),
+            .importedResources = { ResourcePath { .resource = resource, .path = { 0, 0 } } } }));
+    };
+    auto const innermost = quantified({});
+    auto const inner = quantified({ NamedExtern { .name = "d", .type = innermost } });
+    return held(arena.add(ComponentTypeInfo {
+        .imports = { NamedExtern { .name = "i", .type = exported },
+                     NamedExtern { .name = "c", .type = inner } },
+        .exports = { NamedExtern { .name = "make", .type = function(arena, { { "n", u32 } }, fields) } },
+        .importedResources = { ResourcePath { .resource = resource, .path = { 0, 0 } } } }));
+}
+
+/// richComponent() in two arenas.
+struct RichComponents
+{
+    TypeArena left { ComponentLimits {} };
+    TypeArena right { ComponentLimits {} };
+    ComponentTypeId first = richComponent(left);
+    ComponentTypeId second = richComponent(right);
+};
+
+} // namespace
+
+TEST_CASE("Subtyping.stepCapAtEveryStep")
+{
+    // The same relation under every cap below what it takes: refused at that step, wherever in the
+    // walk it falls (a step, a name's bytes, an index, a lookup, a path into an instance).
+    auto types = RichComponents {};
+    auto relation = TypeRelation { types.left, types.right, ResourceMapping {}, ComponentLimits {} };
+    REQUIRE(relation.isSubtype(types.first, types.second).has_value());
+    auto const total = relation.steps();
+    REQUIRE(total > 10);
+    for (auto const cap: std::views::iota(std::size_t { 1 }, total))
+    {
+        auto limits = ComponentLimits {};
+        limits.maxSubtypingSteps = static_cast<uint32_t>(cap);
+        auto capped = TypeRelation { types.left, types.right, ResourceMapping {}, limits };
+        auto const refused = capped.isSubtype(types.first, types.second);
+        REQUIRE_FALSE(refused.has_value());
+        REQUIRE(refused.error().code == RelationErrorCode::StepLimit);
+    }
+}
+
+TEST_CASE("Subtyping.pathToAMissingExport")
+{
+    // A resource quantified over at {0, 0} whose argument instance lacks the export the path names:
+    // the path binds nothing, and the instance check reports the missing export.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const resource = held(arena.newResource(ResourceTypeInfo {}));
+    auto const exported = instance(
+        arena, { NamedExtern { .name = "t", .type = TypeExtern { .type = AnyTypeId { resource } } } });
+    auto const quantifying = held(arena.add(ComponentTypeInfo {
+        .imports = { NamedExtern { .name = "i", .type = exported } },
+        .importedResources = { ResourcePath { .resource = resource, .path = { 0, 0 } } } }));
+    auto const other = instance(arena, { NamedExtern { .name = "u", .type = function(arena, {}) } });
+    auto const takingOther =
+        held(arena.add(ComponentTypeInfo { .imports = { NamedExtern { .name = "i", .type = other } } }));
+    CHECK(mismatchText(arena, quantifying, takingOther)
+          == "type mismatch for import `i`\nmissing expected export `t`");
+}
+
+TEST_CASE("Subtyping.pathIntoAnArgumentOfAnotherKind")
+{
+    // A resource quantified over at {0, 0} whose argument at 0 is a function, not an instance: the path
+    // binds nothing, and the type check reports the function where the instance is required.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const resource = held(arena.newResource(ResourceTypeInfo {}));
+    auto const exported = instance(
+        arena, { NamedExtern { .name = "t", .type = TypeExtern { .type = AnyTypeId { resource } } } });
+    auto const quantifying = held(arena.add(ComponentTypeInfo {
+        .imports = { NamedExtern { .name = "i", .type = exported } },
+        .importedResources = { ResourcePath { .resource = resource, .path = { 0, 0 } } } }));
+    auto const takingAFunction = held(arena.add(
+        ComponentTypeInfo { .imports = { NamedExtern { .name = "i", .type = function(arena, {}) } } }));
+    CHECK(mismatchText(arena, quantifying, takingAFunction)
+          == "type mismatch for import `i`\nexpected instance, found func");
+}
+
+TEST_CASE("Resources.freshResourcesCapped")
+{
+    // Minting a component's defined resources afresh is refused at maxResourceTypes.
+    auto limits = ComponentLimits {};
+    limits.maxResourceTypes = 1;
+    auto arena = TypeArena { limits };
+    auto const resource = held(arena.newResource(ResourceTypeInfo {}));
+    auto const defining =
+        ComponentTypeInfo { .definedResources = { ResourcePath { .resource = resource, .path = { 0 } } } };
+    auto const fresh = freshResourcesFor(arena, defining);
+    REQUIRE_FALSE(fresh.has_value());
+    CHECK(fresh.error().limit == ComponentLimit::ResourceTypes);
+}
+
+TEST_CASE("Subtyping.instancePairComparedOnce")
+{
+    // An instance type exported twice on both sides, across two arenas: the second export finds the
+    // pair memoised and takes one step, not the instance's walk again.
+    auto left = TypeArena { ComponentLimits {} };
+    auto right = TypeArena { ComponentLimits {} };
+    auto const inner = [](TypeArena& arena) {
+        return instance(
+            arena,
+            { NamedExtern { .name = "f",
+                            .type = function(arena, { { "x", primitive(arena, ValueKind::U32) } }) } });
+    };
+    auto const outer = [](TypeArena& arena, InstanceTypeId shared) {
+        return instance(
+            arena,
+            { NamedExtern { .name = "a", .type = shared }, NamedExtern { .name = "b", .type = shared } });
+    };
+    auto const leftOuter = outer(left, inner(left));
+    auto const rightOuter = outer(right, inner(right));
+    auto relation = TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} };
+    REQUIRE(relation.isSubtype(leftOuter, rightOuter).has_value());
+    auto const twice = relation.steps();
+
+    auto single = TypeRelation { left, right, ResourceMapping {}, ComponentLimits {} };
+    REQUIRE(single.isSubtype(inner(left), inner(right)).has_value());
+    INFO(std::format("{} steps for the pair, {} for one instance", twice, single.steps()));
+    CHECK(twice <= single.steps() + 6);
+}
