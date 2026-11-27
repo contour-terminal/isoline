@@ -37,12 +37,30 @@ namespace
         uint32_t position = 0;                                 ///< Its position in the block.
         /// The operation whose result it is; Removed for a block parameter.
         Operation operation = Operation::Removed;
+        uint32_t instruction = 0; ///< The instruction whose result it is; 0 for a block parameter.
 
         /// Whether the value has a definition.
         [[nodiscard]] bool isDefined() const noexcept
         {
             return block != std::numeric_limits<uint32_t>::max();
         }
+    };
+
+    /// How far guardSpanOf() has worked a value out.
+    enum class SpanState : uint8_t
+    {
+        Unknown,   ///< Not yet.
+        Resolving, ///< On the current chain: meeting it again is a loop.
+        Resolved,  ///< It leads to a guard.
+        Refused,   ///< It leads to none, loops, or its offsets overflow.
+    };
+
+    /// Where a pointer's guardAddress chain leads.
+    struct GuardSpan
+    {
+        SpanState state = SpanState::Unknown; ///< How far it is worked out.
+        uint32_t root = 0;                    ///< The guard's instruction, once Resolved.
+        uint64_t offset = 0;                  ///< The chain's offsets, summed, once Resolved.
     };
 
     /// The types an OperandType admits.
@@ -110,7 +128,9 @@ namespace
         explicit Verification(Function const& function):
             _function { function },
             _definitions(function.valueCount(), Definition {}, &function.memory()),
-            _isListed(function.instructionCount(), false, &function.memory())
+            _isListed(function.instructionCount(), false, &function.memory()),
+            _spans(function.valueCount(), GuardSpan {}, &function.memory()),
+            _chain(&function.memory())
         {
         }
 
@@ -151,14 +171,17 @@ namespace
         [[nodiscard]] std::expected<void, VerifierErrorCode> define(ValueId value,
                                                                     uint32_t block,
                                                                     uint32_t position,
-                                                                    Operation operation = Operation::Removed)
+                                                                    Operation operation = Operation::Removed,
+                                                                    uint32_t instruction = 0)
         {
             if (std::to_underlying(value) >= _definitions.size())
                 return std::unexpected { VerifierErrorCode::UndefinedValue };
             auto& definition = _definitions[std::to_underlying(value)];
             if (definition.isDefined())
                 return std::unexpected { VerifierErrorCode::RedefinedValue };
-            definition = Definition { .block = block, .position = position, .operation = operation };
+            definition = Definition {
+                .block = block, .position = position, .operation = operation, .instruction = instruction
+            };
             return {};
         }
 
@@ -207,8 +230,11 @@ namespace
                              _function.immediatePoolSize()))
                     return fault(VerifierErrorCode::RangeOutOfBounds, blockId, index);
                 for (auto const result: _function.operands(instruction.results))
-                    if (auto defined = define(
-                            result, blockIndex, static_cast<uint32_t>(position + 1), instruction.operation);
+                    if (auto defined = define(result,
+                                              blockIndex,
+                                              static_cast<uint32_t>(position + 1),
+                                              instruction.operation,
+                                              index);
                         !defined)
                         return fault(defined.error(), blockId, index);
                 if (isTerminator(instruction.operation) && position != lastLive)
@@ -238,18 +264,112 @@ namespace
             });
         }
 
-        /// A use of a guarded pointer takes it from one of its GuardedUseTable row's guards, so that no
-        /// address reaches an access past its select or with an offset added after it.
+        /// The immediate of @p field of the instruction at @p index, if its immediates are long enough to
+        /// hold its schema's fixed fields: how a guard's row is read before that row's own check.
+        [[nodiscard]] std::optional<uint64_t> fixedImmediateOf(uint32_t index, ImmediateField field) const
+        {
+            auto const& instruction = _function.instruction(index);
+            auto const& schema = immediateSchemaRow(operationRow(instruction.operation).immediates);
+            if (instruction.immediates.count < schema.fixed.size())
+                return std::nullopt;
+            return immediateOf(instruction, field);
+        }
+
+        /// Where @p pointer's guardAddress chain leads: the guard at its root, and the chain's offsets
+        /// summed; none when it leads to no guard or loops. Each value is worked out once, iteratively.
+        [[nodiscard]] std::optional<GuardSpan> guardSpanOf(ValueId pointer) const
+        {
+            _chain.clear();
+            auto value = pointer;
+            while (_spans[std::to_underlying(value)].state == SpanState::Unknown)
+            {
+                auto const& definition = _definitions[std::to_underlying(value)];
+                if (definition.operation != Operation::GuardAddress)
+                    break;
+                auto const operands =
+                    _function.operands(_function.instruction(definition.instruction).operands);
+                if (operands.empty() || std::to_underlying(operands[0]) >= _spans.size())
+                    break;
+                _spans[std::to_underlying(value)].state = SpanState::Resolving;
+                _chain.push_back(value);
+                value = operands[0];
+            }
+            // The chain's start: a span already worked out, a guard, or what leads to none (a loop back
+            // into the chain, which is Resolving, among them).
+            auto& start = _spans[std::to_underlying(value)];
+            auto const& definition = _definitions[std::to_underlying(value)];
+            if (start.state == SpanState::Unknown && definition.operation != Operation::GuardAddress
+                && guardRowOf(definition.operation).has_value())
+                start =
+                    GuardSpan { .state = SpanState::Resolved, .root = definition.instruction, .offset = 0 };
+            auto base = start.state == SpanState::Resolved || start.state == SpanState::Refused
+                            ? start
+                            : GuardSpan { .state = SpanState::Refused };
+            for (auto const link: _chain | std::views::reverse)
+            {
+                auto const delta = fixedImmediateOf(_definitions[std::to_underlying(link)].instruction,
+                                                    ImmediateField::Offset);
+                // Each link's own use checks its offset against the root's size, overflow refused, so
+                // a sum past 2^64 - 1 is a function the verifier refuses at that link anyway.
+                if (base.state != SpanState::Resolved || !delta)
+                    base = GuardSpan { .state = SpanState::Refused };
+                else
+                    base.offset += *delta;
+                _spans[std::to_underlying(link)] = base;
+            }
+            if (base.state != SpanState::Resolved)
+                return std::nullopt;
+            return base;
+        }
+
+        /// The immediate a use of @p scope must share with its guard; none for GuardScope::None.
+        [[nodiscard]] static std::optional<ImmediateField> scopeFieldOf(GuardScope scope) noexcept
+        {
+            switch (scope)
+            {
+                case GuardScope::None: return std::nullopt;
+                case GuardScope::Memory: return ImmediateField::Memory;
+                case GuardScope::Table: return ImmediateField::Table;
+            }
+            return std::nullopt; // uncovered(guard-scope-without-case)
+        }
+
+        /// A use of a guarded pointer takes it from its GuardedUseTable row's guard, directly or through
+        /// guardAddress: of the same memory or table, and reaching no further than the guard checked.
         [[nodiscard]] std::expected<void, VerifierErrorCode> checkGuardedUse(
             Instruction const& instruction) const
         {
             auto const use = guardedUseOf(instruction.operation);
             if (!use)
                 return {};
-            auto const pointer = _function.operands(instruction.operands)[use->operand];
-            auto const definedBy = _definitions[std::to_underlying(pointer)].operation;
-            if (std::ranges::find(use->guards, definedBy) == use->guards.end())
-                return std::unexpected { VerifierErrorCode::UnguardedAddress };
+            auto const unguarded = std::unexpected { VerifierErrorCode::UnguardedAddress };
+            auto const span = guardSpanOf(_function.operands(instruction.operands)[use->operand]);
+            if (!span || _function.instruction(span->root).operation != use->guard)
+                return unguarded;
+            if (auto const field = scopeFieldOf(use->scope))
+            {
+                auto const guarded = fixedImmediateOf(span->root, *field);
+                if (!guarded || immediateOf(instruction, *field) != guarded)
+                    return unguarded;
+            }
+            auto reach = uint64_t { 0 };
+            switch (use->extent)
+            {
+                // guardAddress's own row takes only a checkMemory's chain, so an element or a row is
+                // never reached through a move.
+                case UseExtent::Element: return {};
+                case UseExtent::Size:
+                    reach = immediateOf(instruction, ImmediateField::Size).value_or(0);
+                    break;
+                case UseExtent::Offset:
+                    reach = immediateOf(instruction, ImmediateField::Offset).value_or(0);
+                    break;
+            }
+            // What the root checkMemory covered: its `size` bytes past the address it returned.
+            auto const covered = fixedImmediateOf(span->root, ImmediateField::Size);
+            if (!covered || span->offset > std::numeric_limits<uint64_t>::max() - reach
+                || span->offset + reach > *covered)
+                return unguarded;
             return {};
         }
 
@@ -481,6 +601,10 @@ namespace
         Function const& _function;
         std::pmr::vector<Definition> _definitions;
         std::pmr::vector<bool> _isListed;
+        /// Per value, where its guardAddress chain leads, worked out once by guardSpanOf(): what keeps the
+        /// guarded-use checks linear however long a chain is or however often its end is used.
+        mutable std::pmr::vector<GuardSpan> _spans;
+        mutable std::pmr::vector<ValueId> _chain; ///< guardSpanOf()'s worklist.
     };
 } // namespace
 

@@ -125,39 +125,75 @@ static_assert(
     }(),
     "every operation that returns a guarded Pointer has a GuardTable row, and only those");
 
-/// Which guards may produce the pointer one operand of an operation uses.
-struct GuardedUseRow
+/// Which immediate of a use must name what its guard named.
+enum class GuardScope : uint8_t
 {
-    Operation operation;             ///< The operation that uses a pointer.
-    uint8_t operand;                 ///< Which of its operands the pointer is.
-    std::array<Operation, 2> guards; ///< The operations that may define it; a repeated one fills the pair.
+    None,   ///< None: a dispatch row belongs to the store, not to a table or memory.
+    Memory, ///< The `memory` immediate: an access of memory m takes an address checkMemory of m guarded.
+    Table,  ///< The `table` immediate: an element of table t comes from checkTable of t.
 };
 
-/// Every use of a guarded pointer, with the guards its pointer must come from: what the verifier checks
-/// (VerifierErrorCode::UnguardedAddress), so that no pass or translation feeds an access an address that
-/// skipped its select or took an offset after it.
+/// How far past its guarded address a use reaches.
+enum class UseExtent : uint8_t
+{
+    Element, ///< The element or row its guard chose, at the guard's own address: no offset on the way.
+    Size,    ///< Its `size` immediate's bytes past the address: a load's or store's width.
+    Offset,  ///< Its `offset` immediate past the address: guardAddress, which moves it.
+};
+
+/// One use of a guarded pointer: where the pointer is, the guard at the root of its guardAddress chain,
+/// and what the use must agree on with that guard.
+struct GuardedUseRow
+{
+    Operation operation; ///< The operation that uses a pointer.
+    uint8_t operand;     ///< Which of its operands the pointer is.
+    Operation guard;     ///< The guard its pointer must come from, through guardAddress only.
+    GuardScope scope;    ///< Which immediate must equal the guard's.
+    UseExtent extent;    ///< How far past the address it reaches, which the guard must cover.
+};
+
+/// Every use of a guarded pointer: what the verifier checks (VerifierErrorCode::UnguardedAddress). A
+/// pointer must come from its row's guard, directly or through guardAddress; a memory use must name the
+/// guard's memory, and the offsets of its guardAddress chain plus its own extent must stay within the
+/// `size` bytes checkMemory covered, summed in 64 bits with an overflow refused. So no pass or translation
+/// feeds an access an address that skipped its select, belongs to another memory, or reaches past what was
+/// checked.
 inline constexpr auto GuardedUseTable = std::to_array<GuardedUseRow>({
-    { .operation = Operation::Load,
-      .operand = 0,
-      .guards = { Operation::CheckMemory, Operation::GuardAddress } },
-    { .operation = Operation::Store,
-      .operand = 0,
-      .guards = { Operation::CheckMemory, Operation::GuardAddress } },
     { .operation = Operation::GuardAddress,
       .operand = 0,
-      .guards = { Operation::CheckMemory, Operation::GuardAddress } },
+      .guard = Operation::CheckMemory,
+      .scope = GuardScope::None,
+      .extent = UseExtent::Offset },
+    { .operation = Operation::Load,
+      .operand = 0,
+      .guard = Operation::CheckMemory,
+      .scope = GuardScope::Memory,
+      .extent = UseExtent::Size },
+    { .operation = Operation::Store,
+      .operand = 0,
+      .guard = Operation::CheckMemory,
+      .scope = GuardScope::Memory,
+      .extent = UseExtent::Size },
     { .operation = Operation::LoadTableElement,
       .operand = 0,
-      .guards = { Operation::CheckTable, Operation::CheckTable } },
+      .guard = Operation::CheckTable,
+      .scope = GuardScope::Table,
+      .extent = UseExtent::Element },
     { .operation = Operation::StoreTableElement,
       .operand = 0,
-      .guards = { Operation::CheckTable, Operation::CheckTable } },
+      .guard = Operation::CheckTable,
+      .scope = GuardScope::Table,
+      .extent = UseExtent::Element },
     { .operation = Operation::LoadDispatchType,
       .operand = 0,
-      .guards = { Operation::CheckDispatch, Operation::CheckDispatch } },
+      .guard = Operation::CheckDispatch,
+      .scope = GuardScope::None,
+      .extent = UseExtent::Element },
     { .operation = Operation::CallIndirect,
       .operand = 0,
-      .guards = { Operation::CheckDispatch, Operation::CheckDispatch } },
+      .guard = Operation::CheckDispatch,
+      .scope = GuardScope::None,
+      .extent = UseExtent::Element },
 });
 
 /// The row of @p operation in GuardedUseTable; none when it uses no guarded pointer.
@@ -172,12 +208,26 @@ inline constexpr auto GuardedUseTable = std::to_array<GuardedUseRow>({
 static_assert(
     [] {
         for (auto const& row: GuardedUseTable)
-            for (auto const guard: row.guards)
-                if (!guardRowOf(guard).has_value())
-                    return false;
+            if (!guardRowOf(row.guard).has_value() || row.guard == Operation::GuardAddress)
+                return false;
         return true;
     }(),
-    "every guard GuardedUseTable names has a GuardTable row");
+    "every guard GuardedUseTable names is a root guard of GuardTable: guardAddress is a link of a chain");
+
+static_assert(
+    [] {
+        for (auto const& row: OperationTable)
+        {
+            auto const takesPointer = row.operands == OperandSignature::Pointer
+                                      || row.operands == OperandSignature::Store
+                                      || row.operands == OperandSignature::StoreReference
+                                      || row.operands == OperandSignature::PointerVariadic;
+            if (takesPointer && !guardedUseOf(row.operation).has_value())
+                return false;
+        }
+        return true;
+    }(),
+    "every operation that takes a Pointer operand has a GuardedUseTable row");
 
 /// The index a guard reads from an operand of @p type holding @p bits: an I32's low 32 bits,
 /// zero-extended; an I64's 64.

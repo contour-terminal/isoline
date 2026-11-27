@@ -470,8 +470,8 @@ std::array<uint64_t, 4> loadOf(uint64_t size, Extension extension, Type type)
     return { 0, size, std::to_underlying(extension), std::to_underlying(type) };
 }
 
-/// A guarded address: checkMemory of parameters of the entry.
-ValueId guardedAddress(Fixture& fixture)
+/// A guarded address: checkMemory [memory, offset 0, size] of parameters of the entry.
+ValueId guardedAddress(Fixture& fixture, uint64_t memory = 0, uint64_t size = 8)
 {
     auto const index = fixture.builder.addParameter(fixture.entry, Type::I32);
     auto const base = fixture.builder.addParameter(fixture.entry, Type::Pointer);
@@ -479,7 +479,7 @@ ValueId guardedAddress(Fixture& fixture)
     return fixture.builder.emit(Operation::CheckMemory,
                                 std::array { Type::Pointer },
                                 std::array { index, base, bound },
-                                std::array<uint64_t, 3> { 0, 0, 8 })[0];
+                                std::array<uint64_t, 3> { memory, 0, size })[0];
 }
 
 /// A load from a guarded address with @p immediates, its result of @p type.
@@ -631,20 +631,69 @@ TEST_CASE("Verifier.typedImmediatesFitTheirTypes")
 
 TEST_CASE("Verifier.refusesTheRemainingShapes")
 {
-    SECTION("an access whose address took an offset after its select")
+    SECTION("an access its guard does not cover")
     {
-        // load(guardAddress(checkMemory)) is guarded; a load of an address computed from a guarded one by
-        // anything else (here a select between it and the base) is refused.
-        auto fixture = Fixture {};
-        auto const address = guardedAddress(fixture);
-        auto const moved = fixture.builder.emit(
-            Operation::GuardAddress, std::array { Type::Pointer }, std::array { address }, constant(16))[0];
-        std::ignore = fixture.builder.emit(Operation::Load,
-                                           std::array { Type::I32 },
-                                           std::array { moved },
-                                           loadOf(4, Extension::Zero, Type::I32));
-        fixture.builder.ret({});
-        CHECK(verify(fixture.function).has_value());
+        // Each access through a checkMemory [memory 0, size 8], maybe moved by guardAddress: within the 8
+        // bytes it is accepted; past them, of another memory, through an offset sum past 2^64, or from no
+        // guard at all, refused.
+        enum class Verdict : uint8_t
+        {
+            Refused,
+            Accepted,
+        };
+        struct Case
+        {
+            std::string_view name;
+            uint64_t checkedMemory;      ///< The checkMemory's memory.
+            uint64_t checkedSize;        ///< Its size.
+            std::vector<uint64_t> moves; ///< The guardAddress offsets on the way, in order.
+            uint64_t memory;             ///< The load's memory.
+            uint64_t size;               ///< Its width.
+            Verdict verdict;             ///< Whether the verifier accepts it.
+        };
+        auto const cases = std::vector<Case> {
+            { "the guard's own width", 0, 8, {}, 0, 8, Verdict::Accepted },
+            { "4 bytes moved 4 bytes", 0, 8, { 4 }, 0, 4, Verdict::Accepted },
+            { "two moves to the end", 0, 8, { 2, 2 }, 0, 4, Verdict::Accepted },
+            { "a narrow guard, a wide load", 0, 1, {}, 0, 8, Verdict::Refused },
+            { "another memory", 1, 8, {}, 0, 4, Verdict::Refused },
+            { "a move past the guard", 0, 8, { uint64_t { 1 } << 40U }, 0, 1, Verdict::Refused },
+            { "a move that leaves the load no room", 0, 8, { 4 }, 0, 8, Verdict::Refused },
+            { "moves that sum past 2^64",
+              0,
+              8,
+              { uint64_t { 1 } << 63U, uint64_t { 1 } << 63U },
+              0,
+              1,
+              Verdict::Refused },
+        };
+        for (auto const& entry: cases)
+        {
+            INFO(entry.name);
+            auto fixture = Fixture {};
+            auto address = guardedAddress(fixture, entry.checkedMemory, entry.checkedSize);
+            for (auto const move: entry.moves)
+                address = fixture.builder.emit(Operation::GuardAddress,
+                                               std::array { Type::Pointer },
+                                               std::array { address },
+                                               constant(move))[0];
+            std::ignore = fixture.builder.emit(Operation::Load,
+                                               std::array { Type::I64 },
+                                               std::array { address },
+                                               std::array<uint64_t, 4> { entry.memory,
+                                                                         entry.size,
+                                                                         std::to_underlying(Extension::Zero),
+                                                                         std::to_underlying(Type::I64) });
+            fixture.builder.ret({});
+            if (entry.verdict == Verdict::Accepted)
+                CHECK(verify(fixture.function).has_value());
+            else
+                CHECK(refusal(fixture.function).code == VerifierErrorCode::UnguardedAddress);
+        }
+    }
+    SECTION("an address that skipped its guard")
+    {
+        // A select of two guarded addresses is no guard's result.
         auto other = Fixture {};
         auto const guarded = guardedAddress(other);
         auto const condition = other.i32(1);
@@ -656,6 +705,61 @@ TEST_CASE("Verifier.refusesTheRemainingShapes")
                                          loadOf(4, Extension::Zero, Type::I32));
         other.builder.ret({});
         CHECK(refusal(other.function).code == VerifierErrorCode::UnguardedAddress);
+    }
+    SECTION("a table element of another table, or moved")
+    {
+        // checkTable of table 1 guards no element of table 0, and guardAddress moves no table element.
+        auto const elementOf = [](Fixture& fixture, uint64_t guardedTable, uint64_t movedBy) {
+            auto const index = fixture.builder.addParameter(fixture.entry, Type::I32);
+            auto element = fixture.builder.emit(Operation::CheckTable,
+                                                std::array { Type::Pointer },
+                                                std::array { index },
+                                                std::array<uint64_t, 2> { guardedTable, 0 })[0];
+            if (movedBy != 0)
+                element = fixture.builder.emit(Operation::GuardAddress,
+                                               std::array { Type::Pointer },
+                                               std::array { element },
+                                               constant(movedBy))[0];
+            std::ignore = fixture.builder.emit(Operation::LoadTableElement,
+                                               std::array { Type::Ref },
+                                               std::array { element },
+                                               std::array<uint64_t, 5> { 0, 0, 1, 4, 8 });
+            fixture.builder.ret({});
+        };
+        auto same = Fixture {};
+        elementOf(same, 0, 0);
+        CHECK(verify(same.function).has_value());
+        auto other = Fixture {};
+        elementOf(other, 1, 0);
+        CHECK(refusal(other.function).code == VerifierErrorCode::UnguardedAddress);
+        auto moved = Fixture {};
+        elementOf(moved, 0, 4);
+        CHECK(refusal(moved.function).code == VerifierErrorCode::UnguardedAddress);
+    }
+    SECTION("a dispatch row's type read through a table element")
+    {
+        // loadDispatchType takes a checkDispatch's row: a checkTable's element, the same shape of pointer, is
+        // refused.
+        auto fixture = Fixture {};
+        auto const index = fixture.builder.addParameter(fixture.entry, Type::I32);
+        auto const element = fixture.builder.emit(Operation::CheckTable,
+                                                  std::array { Type::Pointer },
+                                                  std::array { index },
+                                                  std::array<uint64_t, 2> { 0, 0 })[0];
+        std::ignore = fixture.builder.emit(Operation::LoadDispatchType, I32Result, std::array { element });
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::UnguardedAddress);
+    }
+    SECTION("a guardAddress chain that loops")
+    {
+        // guardAddress of its own result: no guard at the root, refused rather than walked forever.
+        auto fixture = Fixture {};
+        auto const address = guardedAddress(fixture);
+        auto const moved = fixture.builder.emit(
+            Operation::GuardAddress, std::array { Type::Pointer }, std::array { address }, constant(0))[0];
+        fixture.function.operands(fixture.function.instruction(fixture.last()).operands)[0] = moved;
+        fixture.builder.ret({});
+        CHECK(refusal(fixture.function).code == VerifierErrorCode::UnguardedAddress);
     }
     SECTION("a block parameter that names no value")
     {
