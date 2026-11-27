@@ -335,6 +335,24 @@ TEST_CASE("Instantiate.tableAndGlobalImports")
     CHECK(store.moduleInstance(*instance).globals == std::vector { varGlobal });
 }
 
+TEST_CASE("Instantiate.grownTableMatchesBySize")
+{
+    // A table matches an import by its current size, as a memory does, not by its allocated minimum.
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto executor = StubExecutor {};
+    auto builder = ModuleBuilder {};
+    builder.importTable("m", "t", TableType { .element = FuncRef, .limits = atLeast(2) });
+    auto const module = moduleOf(builder);
+    auto const table = store.addTable(TableType { .element = FuncRef, .limits = atLeast(1) }, Ref {});
+    REQUIRE(table.has_value());
+    auto const imports = std::vector { ExternValue { .kind = ExternKind::Table, .address = *table } };
+    CHECK(errorOf(instantiate(store, executor, module, imports))
+          == InstantiationError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+    REQUIRE(store.growTable(*table, 1, Ref {}) == 1U);
+    CHECK(instantiate(store, executor, module, imports).has_value());
+}
+
 TEST_CASE("Instantiate.importSubtyping")
 {
     auto allocator = HeapMemoryAllocator {};

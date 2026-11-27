@@ -27,7 +27,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
-#include <isoline/validate/Subtyping.hpp>
+#include <isoline/validate/TypeMatching.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::runtime
@@ -46,49 +46,46 @@ namespace
     /// The outcome of one step of instantiation.
     using Step = std::expected<void, InstantiationError>;
 
-    /// Whether limits @p actual, of an entity whose current size is @p currentSize, match @p required.
-    ///
-    /// Limits match by subtyping: the entity is at least as large as required, and if a maximum is
-    /// required, it has one no larger.
-    [[nodiscard]] bool limitsMatch(uint64_t currentSize,
-                                   Limits const& actual,
-                                   Limits const& required) noexcept
+    /// The limits of an entity of declared limits @p declared whose current size is @p currentSize: the
+    /// limits of its type in the store, which matches imports by validate::limitsMatch().
+    [[nodiscard]] Limits currentLimits(uint64_t currentSize, Limits const& declared) noexcept
     {
-        if (actual.addressType != required.addressType || currentSize < required.min)
-            return false;
-        return !required.max || (actual.max && *actual.max <= *required.max);
+        return Limits { .min = currentSize, .max = declared.max, .addressType = declared.addressType };
     }
 
-    /// Whether @p table matches the table type @p required, in store form: its element type, exactly,
-    /// and its limits.
-    [[nodiscard]] bool tableMatches(TableInstance const& table, binary::TableType const& required) noexcept
+    /// Whether two concrete types of the store are equivalent: in store form, equal types are one TypeId.
+    [[nodiscard]] bool sameTypeId(uint32_t sub, uint32_t super) noexcept
     {
-        return table.type.element == required.element
-               && limitsMatch(table.elements.size(), table.type.limits, required.limits);
+        return sub == super;
     }
 
-    /// Whether @p memory matches the memory type @p required: its page size, exactly, and its limits,
-    /// in pages.
+    /// Whether @p table matches the table type @p required, in store form, by its current size: the rule
+    /// validation applies (validate::tableTypeMatches()), concrete types compared by TypeId.
+    [[nodiscard]] bool tableMatches(TableInstance const& table, binary::TableType const& required)
+    {
+        auto const current =
+            binary::TableType { .element = table.type.element,
+                                .limits = currentLimits(table.elements.size(), table.type.limits) };
+        return validate::tableTypeMatches(current, required, sameTypeId);
+    }
+
+    /// Whether @p memory matches the memory type @p required by its current size in pages: the rule
+    /// validation applies (validate::memoryTypeMatches()).
     [[nodiscard]] bool memoryMatches(MemoryInstance const& memory,
                                      binary::MemoryType const& required) noexcept
     {
-        return memory.type.pageSizeLog2 == required.pageSizeLog2
-               && limitsMatch(memory.bytes().size() / binary::pageSize(memory.type),
-                              memory.type.limits,
-                              required.limits);
+        auto const current = binary::MemoryType { .limits = currentLimits(memory.bytes().size()
+                                                                              / binary::pageSize(memory.type),
+                                                                          memory.type.limits),
+                                                  .pageSizeLog2 = memory.type.pageSizeLog2 };
+        return validate::memoryTypeMatches(current, required);
     }
 
-    /// Whether @p global matches the global type @p required, in store form: its mutability exactly,
-    /// and its value type by subtyping when immutable, exactly when mutable, as it may be written
-    /// through either side then.
-    [[nodiscard]] bool globalMatches(GlobalInstance const& global,
-                                     binary::GlobalType const& required) noexcept
+    /// Whether @p global matches the global type @p required, in store form: the rule validation applies
+    /// (validate::globalTypeMatches()), concrete types compared by TypeId.
+    [[nodiscard]] bool globalMatches(GlobalInstance const& global, binary::GlobalType const& required)
     {
-        if (global.type.mutability != required.mutability)
-            return false;
-        if (required.mutability == binary::Mutability::Var)
-            return global.type.type == required.type;
-        return validate::isStoreSubtype(global.type.type, required.type);
+        return validate::globalTypeMatches(global.type, required, sameTypeId);
     }
 
     /// The index space of @p kind in @p instance.

@@ -57,6 +57,7 @@ target_sources(isoline_core
         runtime/Store.cpp
         runtime/ValueCheck.cpp
         validate/Subtyping.cpp
+        validate/TypeMatching.cpp
         validate/ValidatedModule.cpp
         validate/Validator.cpp
     PUBLIC FILE_SET HEADERS
@@ -106,6 +107,7 @@ target_sources(isoline_core
             runtime/ValueCheck.hpp
             runtime/ValueCheckTables.hpp
             validate/Subtyping.hpp
+            validate/TypeMatching.hpp
             validate/ValidatedModule.hpp
             validate/ValidationError.hpp
             validate/Validator.hpp

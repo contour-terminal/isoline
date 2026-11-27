@@ -85,6 +85,59 @@ static_assert(meta::firstMisplacedRow<binary::LastAbstractHeapType>(HeapTable, &
     return heapRow(kind).top;
 }
 
+/// Whether @p sub is a subtype of @p super, the two concrete types of a pair compared by
+/// @p equivalent(sub's type index, super's type index): numbers and vectors when equal; references when
+/// @p sub admits null only if @p super does and its heap is a subtype of @p super's (HeapTable). Without
+/// GC no concrete type declares a supertype, so two are related only when equivalent. The rule
+/// isSubtype() applies within a module, isStoreSubtype() in a store, and TypeMatcher across two modules.
+/// @param sub The type a value has.
+/// @param super The type required of it.
+/// @param equivalent Whether a concrete type of @p sub's indices and one of @p super's are equivalent.
+/// @return Whether a value of @p sub may stand where @p super is required.
+template <typename Equivalent>
+[[nodiscard]] bool isSubtypeWith(binary::ValueType const& sub,
+                                 binary::ValueType const& super,
+                                 Equivalent const& equivalent)
+{
+    if (sub.kind != binary::ValueKind::Ref || super.kind != binary::ValueKind::Ref)
+        return sub.kind == super.kind;
+    if (sub.nullable == binary::Nullable::Yes && super.nullable == binary::Nullable::No)
+        return false;
+    auto const& subRow = heapRow(sub.heap.kind);
+    auto const& superRow = heapRow(super.heap.kind);
+    if (subRow.rank == HeapRank::BelowAll)
+        return true;
+    if (subRow.top != superRow.top)
+        return false;
+    if (sub.heap.kind == binary::AbstractHeapType::Concrete
+        && super.heap.kind == binary::AbstractHeapType::Concrete)
+        return equivalent(sub.heap.typeIndex, super.heap.typeIndex);
+    return sub.heap.kind == super.heap.kind || superRow.rank == HeapRank::Top
+           || subRow.rank == HeapRank::Bottom;
+}
+
+/// Whether @p first and @p second are equivalent, each a subtype of the other: of one kind, and
+/// references of one nullability and one heap, two concrete heaps compared by
+/// @p equivalent(first's type index, second's type index).
+/// @param first One type.
+/// @param second The other.
+/// @param equivalent Whether a concrete type of @p first's indices and one of @p second's are equivalent.
+/// @return Whether the two are equivalent.
+template <typename Equivalent>
+[[nodiscard]] bool isEquivalentWith(binary::ValueType const& first,
+                                    binary::ValueType const& second,
+                                    Equivalent const& equivalent)
+{
+    if (first.kind != second.kind)
+        return false;
+    if (first.kind != binary::ValueKind::Ref)
+        return true;
+    if (first.nullable != second.nullable || first.heap.kind != second.heap.kind)
+        return false;
+    return first.heap.kind != binary::AbstractHeapType::Concrete
+           || equivalent(first.heap.typeIndex, second.heap.typeIndex);
+}
+
 /// Whether @p sub matches @p super in a module: numbers and vectors when equal; references when
 /// @p sub admits null only if @p super does and its heap is a subtype of @p super's (HeapTable),
 /// two concrete types when their canonical ids are equal (no declared subtypes without GC).

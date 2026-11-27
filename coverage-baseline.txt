@@ -175,6 +175,17 @@
 # check of its Usages table moved onto meta::firstMisplacedRow: the hand-written loop's nine lines, covered because the
 # static_assert sits in a function the tests run, became two. Its two uncovered lines are the ones they were, the bad-alloc
 # exclusion's; no line lost its coverage.
+#
+# validate/TypeMatching.{hpp,cpp} (P11 Task 6, cross-module core type matching) entered at 100 % of their lines. Two branch
+# entries were lowered and one raised when the subtype rule moved into validate/Subtyping.hpp as isSubtypeWith(), a template the
+# matcher and the runtime share, and the runtime's limit, table, memory and global rules became validate's:
+# - src/isoline/validate/Subtyping.cpp, 89.65 to 57.14 (4 of 7): the file keeps isSubtype() and isStoreSubtype() only, whose
+#   branches are isSubtype()'s precondition that both indices name a canonical id; its failing sides are the 3 untaken.
+# - src/isoline/validate/Subtyping.hpp, 66.66 to 97.29 (36 of 37): the moved rule, every branch taken but topOf()'s precondition.
+# - src/isoline/runtime/Instantiate.cpp, 94.67 to 93.87 (138 of 147): limitsMatch(), globalMatches() and the element comparison,
+#   whose branches were all taken, moved to validate/TypeMatching; the 9 untaken (Requires' failing sides and indexSpace()'s
+#   no-case side) are the ones the entry already counted, now of fewer.
+# No branch a test takes lost its coverage.
 
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
@@ -271,7 +282,7 @@ src/isoline/runtime/FloatEnvironment.cpp         100.00 100.00
 src/isoline/runtime/FloatEnvironment.hpp         100.00 -
 src/isoline/runtime/HostFunction.cpp             100.00 100.00
 src/isoline/runtime/HostFunction.hpp             100.00 -
-src/isoline/runtime/Instantiate.cpp              100.00 94.67
+src/isoline/runtime/Instantiate.cpp              100.00 93.87
 src/isoline/runtime/Instantiate.hpp              100.00 -
 src/isoline/runtime/Interrupt.hpp                100.00 -
 src/isoline/runtime/Limits.hpp                   100.00 -
@@ -308,8 +319,10 @@ src/isoline/text/SExpression.cpp                 100.00 97.36
 src/isoline/text/SExpression.hpp                 100.00 100.00
 src/isoline/text/TextError.hpp                   100.00 95.45
 src/isoline/text/TopLevel.cpp                    100.00 100.00
-src/isoline/validate/Subtyping.cpp               100.00 89.65
-src/isoline/validate/Subtyping.hpp               100.00 66.66
+src/isoline/validate/Subtyping.cpp               100.00 57.14
+src/isoline/validate/Subtyping.hpp               100.00 97.29
+src/isoline/validate/TypeMatching.cpp            100.00 96.10
+src/isoline/validate/TypeMatching.hpp            100.00 100.00
 src/isoline/validate/ValidatedModule.cpp         100.00 76.92
 src/isoline/validate/ValidatedModule.hpp         100.00 66.66
 src/isoline/validate/ValidationError.hpp         100.00 96.87
