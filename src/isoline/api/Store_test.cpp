@@ -298,7 +298,7 @@ TEST_CASE("Store.nestedFailureStaysNested")
     CHECK(errorOf(failed).detail == CallError::Detail { embedderFailure(1) });
 }
 
-TEST_CASE("Store.outerGrowthRecordSurvivesNestedCall")
+TEST_CASE("Store.outerGrowthRecordSurvivesNestedCall", "[memory]")
 {
     auto reentry = Reentry { reentryPath() };
     auto const failed = reentry.instance().call(reentry.function("grow-absorb-then-trap"), {}, {});
@@ -306,7 +306,7 @@ TEST_CASE("Store.outerGrowthRecordSurvivesNestedCall")
     CHECK(errorOf(failed).refusedGrowth == GrowthRecord { .memory = Refusal::Limit, .table = {} });
 }
 
-TEST_CASE("Store.instantiationReportsItsRefusedGrowth")
+TEST_CASE("Store.instantiationReportsItsRefusedGrowth", "[memory]")
 {
     // A start function refused a memory.grow by the store's limit, and then trapping: the error says
     // why the guest gave up, as a call's does.
@@ -326,7 +326,7 @@ TEST_CASE("Store.instantiationReportsItsRefusedGrowth")
     CHECK(error.refusedGrowth == GrowthRecord { .memory = Refusal::Limit, .table = {} });
 }
 
-TEST_CASE("Store.nestedRefusalDoesNotLeak")
+TEST_CASE("Store.nestedRefusalDoesNotLeak", "[memory]")
 {
     auto reentry = Reentry { reentryPath() };
     auto const failed = reentry.instance().call(reentry.function("reenter-then-trap"), {}, {});

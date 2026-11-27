@@ -778,7 +778,7 @@ TEST_CASE("Contract.memoryCapRefusesUnexportedInitialSize", "[contract]")
     CHECK(error == InstantiateError { LimitExceeded { Limit::MemoryBytes } });
 }
 
-TEST_CASE("Contract.tableGrowthIsCapped", "[contract]")
+TEST_CASE("Contract.tableGrowthIsCapped", "[contract][memory]")
 {
     constexpr auto Refused = std::numeric_limits<uint32_t>::max();
     auto const cap = static_cast<uint32_t>(ContractLimits {}.tableElements);
@@ -790,7 +790,7 @@ TEST_CASE("Contract.tableGrowthIsCapped", "[contract]")
     CHECK(callI32(instance, "size") == std::vector { cap });
 }
 
-TEST_CASE("Contract.tableInitialSizeIsCapped", "[contract]")
+TEST_CASE("Contract.tableInitialSizeIsCapped", "[contract][memory]")
 {
     auto runtime = Runtime {};
     auto const error =

@@ -20,6 +20,7 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(IsolineOptions)
 include(IsolineDependencies)
 include(IsolinePedantic)
+include(IsolineCappedTest)
 
 if(ISOLINE_TESTING)
     enable_testing()

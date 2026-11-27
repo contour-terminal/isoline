@@ -72,7 +72,7 @@ TEST_CASE("HeapMemoryAllocator.growsZeroed")
     CHECK(allZero(linear.bytes().subspan(PageSize)));
 }
 
-TEST_CASE("HeapMemoryAllocator.refusesWhatNoVectorHolds")
+TEST_CASE("HeapMemoryAllocator.refusesWhatNoVectorHolds", "[memory]")
 {
     auto allocator = HeapMemoryAllocator {};
     auto request = requestOf(0);

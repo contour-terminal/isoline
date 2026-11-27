@@ -177,7 +177,7 @@ TEST_CASE("Store.constAccessors")
     CHECK(&view.global(global) == &store.global(global));
 }
 
-TEST_CASE("Store.addressTypesBoundGrowth")
+TEST_CASE("Store.addressTypesBoundGrowth", "[memory]")
 {
     // A guest can name sizes no host can hold; the store refuses them without allocating.
     auto allocator = HeapMemoryAllocator {};
@@ -201,7 +201,7 @@ TEST_CASE("Store.addressTypesBoundGrowth")
     CHECK(store.growTable(*table, 1, Ref {}) == 1U);
 }
 
-TEST_CASE("Store.byteGranularMemory")
+TEST_CASE("Store.byteGranularMemory", "[memory]")
 {
     // A memory of 1-byte pages holds as many bytes as pages, and grows by bytes.
     auto allocator = HeapMemoryAllocator {};
@@ -634,7 +634,7 @@ TEST_CASE("Store.memoryLimitIsStoreWide")
     CHECK(limited.instantiate(moduleWithMemories(1, 0)).has_value());
 }
 
-TEST_CASE("Store.growPastLimitIsRefused")
+TEST_CASE("Store.growPastLimitIsRefused", "[memory]")
 {
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits { .maxMemoryBytes = 2 * PageSize, .maxTableElements = 2 },

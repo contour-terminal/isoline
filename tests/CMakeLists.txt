@@ -103,10 +103,9 @@ if(NOT ISOLINE_SANITIZE STREQUAL "thread")
     # under wine) before Engine::load or Store::instantiate can refuse it, so the Debug configuration of
     # an MSVC or clang-cl build (clangcl-cross-debug, msvc-debug) leaves them out. Every other build runs
     # them, a Windows release build included (clangcl-cross-release, under wine).
-    add_test(NAME isoline_memory_test
-        COMMAND isoline_memory_test
-                "$<IF:$<AND:$<BOOL:${MSVC}>,$<CONFIG:Debug>>,~[host-memory]~[branch-cost],~[branch-cost]>")
-    set_tests_properties(isoline_memory_test PROPERTIES LABELS unit TIMEOUT 600)
+    # It measures memory bounds, so it runs under the build's memory cap (cmake/IsolineCappedTest.cmake).
+    isoline_add_capped_test(NAME isoline_memory_test TARGET isoline_memory_test LABELS unit
+        ARGS "$<IF:$<AND:$<BOOL:${MSVC}>,$<CONFIG:Debug>>,~[host-memory]~[branch-cost],~[branch-cost]>")
     # The [branch-cost] cases bound validation time: branches whose labels carry a thousand operands,
     # which typed per operand per branch take about 18 s on clang-release, and far longer under a sanitizer
     # or an emulator. Checked in place, as the validator does, they take seconds, which the timeout holds
