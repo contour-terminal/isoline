@@ -23,6 +23,10 @@ namespace
     }
 } // namespace
 
+// The case of every row of Operations.def, defined outside the loop so that only the rows are inside it.
+#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates, Family) \
+    case OperationId::Name: flow = switchCase<OperationId::Name>(state); break;
+
 Exit runSwitch(State state) noexcept
 {
     while (true)
@@ -30,14 +34,13 @@ Exit runSwitch(State state) noexcept
         auto flow = Flow::Continue;
         switch (static_cast<OperationId>(*state.pc))
         {
-#define ISOLINE_FAST_OPERATION(Name, Text, Form, Slots, Immediates, Family) \
-    case OperationId::Name: flow = switchCase<OperationId::Name>(state); break;
 #include <isoline/fastinterpreter/Operations.def>
-#undef ISOLINE_FAST_OPERATION
         }
         if (flow != Flow::Continue) [[unlikely]]
             return exitOf(flow);
     }
 }
+
+#undef ISOLINE_FAST_OPERATION
 
 } // namespace isoline::fastinterpreter

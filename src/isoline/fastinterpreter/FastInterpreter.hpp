@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <memory_resource>
 #include <span>
 
 #include <isoline/fastinterpreter/Dispatch.hpp>
@@ -27,7 +28,8 @@ inline constexpr auto MinimumChunkSlots = uint64_t { 65'536 };
 /// charges the frame's static cost (Store::chargeFrame()), which it gives back however the frame ends.
 ///
 /// A frame's slots live in a slot chunk of the invocation, of at least MinimumChunkSlots slots, so a frame of
-/// any size runs. Its declared locals start as their type's default: zero, or the null of their heap, which a
+/// any size runs; the chunks come from an injected memory resource, and only once the frame's entry checks
+/// passed. Its declared locals start as their type's default: zero, or the null of their heap, which a
 /// concrete heap names by the running instance's TypeId, never by an index baked into the shared code.
 ///
 /// An instance is not thread-safe: its depth counter belongs to one thread at a time. Threads that execute
@@ -35,10 +37,16 @@ inline constexpr auto MinimumChunkSlots = uint64_t { 65'536 };
 class FastInterpreter final: public runtime::ICodeExecutor
 {
   public:
-    /// An interpreter running code lowered for @p dispatch.
+    /// An interpreter running code lowered for @p dispatch, its slot chunks from the global heap.
     /// Precondition (checked): @p dispatch is available (availableDispatches()).
     /// @param dispatch The dispatch.
     explicit FastInterpreter(Dispatch dispatch);
+
+    /// An interpreter running code lowered for @p dispatch, its slot chunks from @p slotMemory.
+    /// Precondition (checked): @p dispatch is available (availableDispatches()).
+    /// @param dispatch The dispatch.
+    /// @param slotMemory What every invocation's slot chunks come from; must outlive the interpreter.
+    FastInterpreter(Dispatch dispatch, std::pmr::memory_resource& slotMemory);
 
     /// The fast engine, whose instances hold their module's LoweredModule.
     /// @return ExecutionEngine::Fast.
@@ -66,6 +74,7 @@ class FastInterpreter final: public runtime::ICodeExecutor
 
   private:
     Dispatch _dispatch;
+    std::pmr::memory_resource* _slotMemory;
 
     /// The Wasm frames live across every invocation in progress: a host function that invokes Wasm again
     /// nests within the depth of the call that reached it.

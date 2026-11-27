@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -481,10 +482,13 @@ template <OperationId Id, auto Kernel, typename... Operands>
         if (!result) [[unlikely]]
             return leaveTrapped(*state.context, state.stepsLeft, result.error());
         state.fp[destination] = detail::encode(*result);
+        return next<Id>(state);
     }
     else
+    {
         state.fp[destination] = detail::encode(result);
-    return next<Id>(state);
+        return next<Id>(state);
+    }
 }
 
 /// A numeric operation: its instruction's kernel over its operand slots, or over its left operand's slot and

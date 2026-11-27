@@ -5,7 +5,9 @@
 
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <ranges>
 #include <set>
@@ -44,6 +46,8 @@ struct EngineUnderTest
 {
     /// The fast interpreter's dispatch; none for the reference interpreter.
     std::optional<Dispatch> dispatch;
+    /// What the fast interpreter's slot chunks come from; the global heap when null.
+    std::pmr::memory_resource* slotMemory = nullptr;
 };
 
 /// The reference interpreter.
@@ -59,10 +63,26 @@ inline constexpr auto Reference = EngineUnderTest {};
 class Harness
 {
   public:
+    /// What a Harness may make of the fast engine's lowered code before it instantiates: code written by
+    /// hand.
+    using CodeRewrite = std::function<std::shared_ptr<LoweredModule const>(LoweredModule const&)>;
+
     /// Decodes, validates and instantiates @p builder's module on @p engine, in a store of @p limits.
     /// @param observer Observes the store's polls; none when null.
     Harness(ModuleBuilder const& builder,
             EngineUnderTest engine,
+            runtime::StoreLimits limits = {},
+            runtime::IPollObserver* observer = nullptr):
+        Harness { builder, engine, CodeRewrite {}, limits, observer }
+    {
+    }
+
+    /// Decodes, validates and lowers @p builder's module for the fast engine @p engine, then instantiates it
+    /// with the code @p rewrite makes of the lowered code, in a store of @p limits.
+    /// @param observer Observes the store's polls; none when null.
+    Harness(ModuleBuilder const& builder,
+            EngineUnderTest engine,
+            CodeRewrite const& rewrite,
             runtime::StoreLimits limits = {},
             runtime::IPollObserver* observer = nullptr):
         _store { limits, runtime::StoreServices { .allocator = _allocator, .pollObserver = observer } },
@@ -74,6 +94,11 @@ class Harness
         _validated = *validated;
         if (engine.dispatch)
             _code = lowered(_validated, LoweringConfig { .dispatch = *engine.dispatch });
+        if (rewrite)
+        {
+            REQUIRE(_code != nullptr);
+            _code = rewrite(*_code);
+        }
         auto const address = runtime::instantiate(_store, *_executor, _validated, _code, {});
         REQUIRE(address.has_value());
         _address = *address;
@@ -129,6 +154,8 @@ class Harness
   private:
     [[nodiscard]] static std::unique_ptr<runtime::ICodeExecutor> executorOf(EngineUnderTest engine)
     {
+        if (engine.dispatch && engine.slotMemory != nullptr)
+            return std::make_unique<FastInterpreter>(*engine.dispatch, *engine.slotMemory);
         if (engine.dispatch)
             return std::make_unique<FastInterpreter>(*engine.dispatch);
         return std::make_unique<interpreter::ReferenceInterpreter>();

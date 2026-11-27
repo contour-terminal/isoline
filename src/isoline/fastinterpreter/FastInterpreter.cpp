@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <memory_resource>
 #include <ranges>
 #include <span>
 #include <utility>
@@ -59,6 +60,59 @@ namespace
         return slotWidth(slotClassOf(type));
     }
 
+    /// A run of slots from a memory resource, given back when it ends; empty until assigned one.
+    class SlotChunk
+    {
+      public:
+        SlotChunk() = default;
+
+        /// @p count slots, uninitialized, from @p memory.
+        SlotChunk(std::pmr::memory_resource* memory, uint64_t count):
+            _memory { memory },
+            _bytes { count * sizeof(Slot) },
+            _slots { static_cast<Slot*>(memory->allocate(_bytes, alignof(Slot))) }
+        {
+        }
+
+        SlotChunk(SlotChunk const&) = delete;
+        SlotChunk& operator=(SlotChunk const&) = delete;
+
+        SlotChunk(SlotChunk&&) = delete;
+
+        SlotChunk& operator=(SlotChunk&& other) noexcept
+        {
+            release();
+            _memory = std::exchange(other._memory, nullptr);
+            _bytes = std::exchange(other._bytes, 0);
+            _slots = std::exchange(other._slots, nullptr);
+            return *this;
+        }
+
+        ~SlotChunk() { release(); }
+
+        /// Its first slot; null when empty.
+        [[nodiscard]] Slot* slots() const noexcept { return _slots; }
+
+      private:
+        void release() noexcept
+        {
+            if (_slots != nullptr)
+                _memory->deallocate(_slots, _bytes, alignof(Slot));
+            _slots = nullptr;
+        }
+
+        std::pmr::memory_resource* _memory = nullptr;
+        uint64_t _bytes = 0;
+        Slot* _slots = nullptr;
+    };
+
+    /// Fills @p slots, pair by pair, with @p pair: a run of reference locals with their null.
+    void fillPairs(std::span<Slot> slots, std::array<Slot, 2> const& pair) noexcept
+    {
+        for (auto const index: std::views::iota(std::size_t { 0 }, slots.size() / 2))
+            std::ranges::copy(pair, slots.subspan(2 * index, 2).begin());
+    }
+
     /// One invocation's execution: its context, its slots and its frames.
     ///
     /// Every frame it entered is given back when it ends, however execution stopped: the depth and the
@@ -69,10 +123,12 @@ namespace
         /// @param store The store to execute on.
         /// @param depth The frames active over every invocation in progress; kept up to date.
         /// @param dispatch The dispatch the code was lowered for.
-        Invocation(Store& store, uint32_t& depth, Dispatch dispatch):
+        /// @param slotMemory What the slot chunks come from.
+        Invocation(Store& store, uint32_t& depth, Dispatch dispatch, std::pmr::memory_resource& slotMemory):
             _context { store },
             _depth { depth },
             _dispatch { dispatch },
+            _slotMemory { &slotMemory },
             _stepsLeft { _context.gate.reload() }
         {
         }
@@ -98,7 +154,10 @@ namespace
         {
             auto const& instance = _context.store.moduleInstance(callee.moduleInstance);
             auto const& function = loweredModuleOf(instance, _dispatch).functions()[callee.codeIndex];
-            auto* const fp = reserveSlots(function.frameSlots);
+            auto const entered = enterFunction(instance, function);
+            if (!entered)
+                return stop(entered.error());
+            auto* const fp = *entered;
             auto slot = uint32_t { 0 };
             for (auto const index: std::views::iota(std::size_t { 0 }, args.size()))
             {
@@ -106,8 +165,6 @@ namespace
                 storeValue(args[index], std::span { fp + slot, width });
                 slot += width;
             }
-            if (auto const entered = enterFunction(instance, function, fp); !entered)
-                return stop(entered.error());
             auto const exit = Runners[std::to_underlying(_dispatch)](State { .pc = function.code.data(),
                                                                              .fp = fp,
                                                                              .context = &_context,
@@ -135,22 +192,15 @@ namespace
         }
 
       private:
-        /// The slots of a frame of @p frameSlots slots, in a slot chunk of at least MinimumChunkSlots.
-        [[nodiscard]] Slot* reserveSlots(uint64_t frameSlots)
-        {
-            _chunk = std::make_unique_for_overwrite<Slot[]>(std::max(MinimumChunkSlots, frameSlots));
-            return _chunk.get();
-        }
-
-        /// Enters @p function of @p instance, its arguments in its first slots at @p fp: the one routine
-        /// every frame goes through. It polls at FunctionEntry, then checks StoreLimits::maxCallDepth (one
-        /// count over every invocation in progress), then charges the frame's static cost
-        /// (Store::chargeFrame()), which ~Invocation() gives back, then initializes its declared locals.
-        /// @return Nothing, or the trap it stopped with: Interrupted, StepLimitExceeded or
-        /// CallStackExhausted.
-        [[nodiscard]] std::expected<void, Trap> enterFunction(ModuleInstance const& instance,
-                                                              LoweredFunction const& function,
-                                                              Slot* fp)
+        /// Enters @p function of @p instance: the one routine every frame goes through. It polls at
+        /// FunctionEntry, then checks StoreLimits::maxCallDepth (one count over every invocation in
+        /// progress), then charges the frame's static cost (Store::chargeFrame()), which ~Invocation() gives
+        /// back; only then does it reserve the frame's slots and initialize its declared locals, so a frame
+        /// refused at its entry allocates nothing.
+        /// @return The frame's first slot, where its arguments go; or the trap it stopped with: Interrupted,
+        /// StepLimitExceeded or CallStackExhausted.
+        [[nodiscard]] std::expected<Slot*, Trap> enterFunction(ModuleInstance const& instance,
+                                                               LoweredFunction const& function)
         {
             if (auto const polled = _context.gate.poll(PollSite::FunctionEntry, _stepsLeft); !polled)
                 return std::unexpected { polled.error() };
@@ -160,10 +210,12 @@ namespace
                 return std::unexpected { charged.error() };
             _frameCosts.push_back(function.frameCost);
             ++_depth;
+            _chunk = SlotChunk { _slotMemory, std::max(MinimumChunkSlots, uint64_t { function.frameSlots }) };
+            auto* const fp = _chunk.slots();
             initializeLocals(instance, function, fp);
             _context.instance = &instance;
             _context.code = function.code.data();
-            return {};
+            return fp;
         }
 
         /// Sets @p function's declared locals to their defaults: a Zero run's slots to zero, a Null run's
@@ -178,12 +230,7 @@ namespace
                 switch (run.kind)
                 {
                     case LocalInit::Zero: std::ranges::fill(slots, Slot { 0 }); break;
-                    case LocalInit::Null: {
-                        auto const null = nullSlots(run.heap, instance.types);
-                        for (auto const pair: std::views::iota(std::size_t { 0 }, slots.size() / 2))
-                            std::ranges::copy(null, slots.subspan(2 * pair, 2).begin());
-                        break;
-                    }
+                    case LocalInit::Null: fillPairs(slots, nullSlots(run.heap, instance.types)); break;
                 }
             }
         }
@@ -198,8 +245,9 @@ namespace
         Context _context;
         uint32_t& _depth;
         Dispatch _dispatch;
+        std::pmr::memory_resource* _slotMemory;
         uint64_t _stepsLeft;
-        std::unique_ptr<Slot[]> _chunk;
+        SlotChunk _chunk;
         std::vector<uint64_t> _frameCosts; ///< The stack charge of each frame entered, which ends with it.
     };
 } // namespace
@@ -218,7 +266,13 @@ Flow leaveReturning(Context& context, uint64_t stepsLeft, uint32_t resultSlot) n
     return Flow::Returned;
 }
 
-FastInterpreter::FastInterpreter(Dispatch dispatch): _dispatch { dispatch }
+FastInterpreter::FastInterpreter(Dispatch dispatch):
+    FastInterpreter { dispatch, *std::pmr::new_delete_resource() }
+{
+}
+
+FastInterpreter::FastInterpreter(Dispatch dispatch, std::pmr::memory_resource& slotMemory):
+    _dispatch { dispatch }, _slotMemory { &slotMemory }
 {
     Require(std::ranges::find(availableDispatches(), dispatch) != availableDispatches().end());
 }
@@ -250,7 +304,7 @@ std::expected<void, Abrupt> FastInterpreter::invoke(Store& store,
     // The caller's to check: arguments of the function's types, references in this store.
     Require(runtime::checkValues(store, args, type.params).has_value());
     Require(results.size() == type.results.size());
-    return Invocation { store, _depth, _dispatch }.run(callee, type, args, results);
+    return Invocation { store, _depth, _dispatch, *_slotMemory }.run(callee, type, args, results);
 }
 
 } // namespace isoline::fastinterpreter

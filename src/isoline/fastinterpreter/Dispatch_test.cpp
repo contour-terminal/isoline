@@ -98,6 +98,17 @@ TEST_CASE("Dispatch.probeRowsAreExercised")
     if (configured::TailCallSetting == "AUTO"
         && familiesOf("Clang AppleClang").contains(configured::CompilerFamily))
         CHECK(passed == "clang::musttail");
+    // GCC has had its row's spelling since GCC 15; only a sanitizer keeps the handler's locals addressable
+    // across the tail call, which GCC refuses.
+    auto const major = configured::CompilerVersion.substr(0, configured::CompilerVersion.find('.'));
+    auto const gccWithTailCalls = configured::CompilerFamily == "GNU" && major.size() >= 2 && major >= "15";
+    if (configured::TailCallSetting == "AUTO" && gccWithTailCalls && configured::Sanitizers.empty())
+        CHECK(passed == "gnu::musttail");
+    // A compiler no row names, MSVC's, is not probed at all.
+    if (!std::ranges::any_of(configured::TailCallProbeFamilies, [](std::string_view families) {
+            return familiesOf(families).contains(configured::CompilerFamily);
+        }))
+        CHECK(passed.empty());
     if (configured::TailCallSetting == "OFF")
         CHECK(passed.empty());
 }

@@ -61,6 +61,8 @@ namespace
             for (auto const index: std::views::iota(std::size_t { 0 }, words.size()))
                 entries.push_back({ .header = words[index], .operation = static_cast<OperationId>(index) });
             std::ranges::sort(entries, {}, &HeaderOperation::header);
+            // Distinct handlers at one address (identical code folding) would name two operations alike.
+            Require(std::ranges::adjacent_find(entries, {}, &HeaderOperation::header) == entries.end());
             return entries;
         }();
         return sorted;
