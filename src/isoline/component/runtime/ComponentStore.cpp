@@ -71,10 +71,15 @@ namespace
         isoline::api::Extern value; ///< The entity.
     };
 
-    /// The store limits a component store's core store keeps to: its engine's.
-    [[nodiscard]] isoline::api::StoreOptions storeOptions(isoline::api::IPollObserver* observer) noexcept
+    /// The store limits a component store's core store keeps to: its engine's, nesting at most
+    /// maxNestedCalls invocations.
+    [[nodiscard]] isoline::api::StoreOptions storeOptions(isoline::api::Engine const& engine,
+                                                          ComponentLimits const& limits,
+                                                          isoline::api::IPollObserver* observer) noexcept
     {
-        return isoline::api::StoreOptions { .limits = std::nullopt, .observer = observer };
+        auto store = engine.config().store;
+        store.maxNestedInvocations = limits.maxNestedCalls;
+        return isoline::api::StoreOptions { .limits = store, .observer = observer };
     }
 } // namespace
 
@@ -143,7 +148,7 @@ struct ComponentStore::Instantiation
             frame.slots[index].resize(count);
         frame.instance = store._resources.instances().add();
         store._bindings.emplace_back();
-        store._roots.emplace_back();
+        store._roots.push_back(UnfinishedInstance);
         return &frame;
     }
 
@@ -575,19 +580,23 @@ ComponentStore::ComponentStore(isoline::api::Engine const& engine,
                                isoline::api::IPollObserver* observer):
     _limits { limits },
     _identity { engine.config().identity() },
-    _store { std::make_unique<isoline::api::Store>(engine, allocator, storeOptions(observer)) },
+    _store { std::make_unique<isoline::api::Store>(
+        engine, allocator, storeOptions(engine, limits, observer)) },
     _resources { limits },
     _liveBytes { std::make_shared<canonical::LiveBytesBudget>(limits.maxLiveValueBytes) }
 {
 }
 
-ComponentStore::~ComponentStore() = default;
+ComponentStore::~ComponentStore()
+{
+    _liveBytes->release(_hostNameBytes);
+}
 
 std::expected<uint32_t, InstantiationFailure> ComponentStore::instantiate(
     ComponentCode const& code, ResolvedImports const& imports) noexcept
 {
     // Every refusal before the first step changes nothing, so none locks down.
-    if (_isInstantiating || _activeCalls > 0)
+    if (_state == StoreState::Instantiating || _activeCalls > 0)
         return fail(InstantiationFailureKind::Reentrant);
     if (_state == StoreState::LockedDown)
         return fail(InstantiationFailureKind::LockedDown);
@@ -597,7 +606,17 @@ std::expected<uint32_t, InstantiationFailure> ComponentStore::instantiate(
         return std::unexpected { std::move(checked.error()) };
     if (_resources.instances().size() >= _limits.maxComponentInstances)
         return fail(InstantiationFailureKind::LimitExceeded, ComponentLimit::ComponentInstances);
-    _isInstantiating = true;
+    // The host's export names are copied for the store's life: charged last of the refusals, so a
+    // refusal changes nothing.
+    auto nameBytes = uint64_t { 0 };
+    for (auto const& value: imports.values)
+        if (auto const* instance = std::get_if<HostInstanceImport>(&value))
+            for (auto const& entry: instance->exports)
+                nameBytes += entry.first.size();
+    if (!_liveBytes->charge(nameBytes))
+        return fail(InstantiationFailureKind::LimitExceeded, ComponentLimit::LiveValueBytes);
+    _hostNameBytes += nameBytes;
+    _state = StoreState::Instantiating;
     auto result = std::expected<uint32_t, InstantiationFailure> {};
     try
     {
@@ -609,7 +628,15 @@ std::expected<uint32_t, InstantiationFailure> ComponentStore::instantiate(
         result = fail(InstantiationFailureKind::HostMemoryExhausted);
     }
     // uncovered-end(host-memory)
-    _isInstantiating = false;
+    catch (std::length_error const&)
+    {
+        // uncovered-begin(host-memory)
+        // A container asked for more than its max_size(): a memory refusal, as std::bad_alloc is.
+        result = fail(InstantiationFailureKind::HostMemoryExhausted);
+    }
+    // uncovered-end(host-memory)
+    if (_state == StoreState::Instantiating)
+        _state = StoreState::Live;
     if (!result)
         lockDown();
     return result;
@@ -646,6 +673,18 @@ std::expected<void, InstantiationFailure> ComponentStore::checkImports(Component
                 return mismatch(index);
         }
     }
+    // The host resource types the imports mint, each identity once, fit the cap: checked before any is.
+    auto identities = std::vector<HostResourceIdentity const*> {};
+    for (auto const& value: imports.values)
+        if (auto const* resource = std::get_if<HostResourceImport>(&value);
+            resource != nullptr && !_hostResources.contains(resource->identity.get()))
+            identities.push_back(resource->identity.get());
+    std::ranges::sort(identities);
+    auto const fresh = static_cast<uint64_t>(
+        std::ranges::distance(identities.begin(), std::ranges::unique(identities).begin()));
+    if (fresh
+        > _limits.maxResourceTypes - std::min<uint64_t>(_resources.types().size(), _limits.maxResourceTypes))
+        return fail(InstantiationFailureKind::LimitExceeded, ComponentLimit::ResourceTypes);
     for (auto const [position, requirement]: core::views::enumerate(plan.imports))
     {
         auto const import = static_cast<uint32_t>(position);
@@ -727,7 +766,7 @@ std::expected<ResourceTypeIndex, InstantiationFailure> ComponentStore::hostResou
     auto type = _resources.types().create(
         HostImplementor { .identity = resource.identity, .destructor = resource.destructor });
     if (!type)
-        return fail(InstantiationFailureKind::Trap, std::move(type.error()));
+        return fail(InstantiationFailureKind::Trap, std::move(type.error())); // uncovered(prechecked)
     _hostIdentities.push_back(resource.identity);
     _hostResources.emplace(resource.identity.get(), *type);
     return *type;
@@ -735,10 +774,12 @@ std::expected<ResourceTypeIndex, InstantiationFailure> ComponentStore::hostResou
 
 ComponentCode const& ComponentStore::keep(ComponentCode const& code)
 {
-    for (auto const& kept: _codes)
-        if (kept.owner == code.owner && kept.plans == code.plans)
-            return kept;
-    return _codes.emplace_back(code);
+    auto const key = std::pair { code.owner.get(), code.plans };
+    if (auto const found = _codeIndex.find(key); found != _codeIndex.end())
+        return _codes[found->second];
+    auto const& kept = _codes.emplace_back(code);
+    _codeIndex.emplace(key, _codes.size() - 1);
+    return kept;
 }
 
 InstanceRef ComponentStore::addInstance(std::vector<NamedValue> exports)
@@ -762,7 +803,7 @@ std::expected<uint32_t, InstantiationFailure> ComponentStore::run(ComponentCode 
     {
         auto converted = importValue(value, instantiation.imports);
         if (!converted)
-            return std::unexpected { std::move(converted.error()) };
+            return std::unexpected { std::move(converted.error()) }; // uncovered(prechecked)
         instantiation.imports.push_back(std::move(*converted));
     }
     // ImportSlot reads the root's imports by import index.
@@ -805,12 +846,15 @@ std::expected<uint32_t, InstantiationFailure> ComponentStore::run(ComponentCode 
 
 std::span<NamedValue const> ComponentStore::exportsOf(uint32_t instance) const noexcept
 {
-    return exportsOf(instanceValueOf(instance));
+    Require(instance < _roots.size());
+    if (_roots[instance] == UnfinishedInstance)
+        return {};
+    return exportsOf(_roots[instance]);
 }
 
 InstanceRef ComponentStore::instanceValueOf(uint32_t instance) const noexcept
 {
-    Require(instance < _roots.size());
+    Require(instance < _roots.size() && _roots[instance] != UnfinishedInstance);
     return _roots[instance];
 }
 

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -27,6 +28,7 @@
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/runtime/Calls.hpp>
 #include <isoline/component/runtime/ComponentStore.hpp>
+#include <isoline/component/runtime/testing/StackThread.hpp>
 #include <isoline/component/runtime/testing/StoreFixtures.hpp>
 
 using isoline::component::binary::BorrowType;
@@ -55,6 +57,7 @@ using isoline::component::runtime::CallError;
 using isoline::component::runtime::ComponentStore;
 using isoline::component::runtime::HostResourceIdentity;
 using isoline::component::runtime::HostResourceImport;
+using isoline::component::runtime::IHostCallee;
 using isoline::component::runtime::LiftedFunction;
 using isoline::component::runtime::ResolvedImports;
 using isoline::component::runtime::StoreState;
@@ -632,34 +635,37 @@ TEST_CASE("Calls.trapSwallowedByTheEmbedderStillFails")
     CHECK(store.state() == StoreState::LockedDown);
 }
 
-TEST_CASE("Calls.recursiveSelfCallIsBounded")
+namespace
 {
-    // rec(n, data) calls itself through a lowered import of its own lifted export, 100 deep, each hop
-    // passing a list the overlapping realloc puts where the caller's copy lies. Each hop's arguments are
-    // destroyed once lowered, so one copy is live at a time: the budget holds one and a half. (Scaled
-    // from the plan's 200 MiB of a 256 MiB budget, which takes the unoptimised sanitizer build past
-    // the suite's timeout; the bound is the same: keeping a hop's arguments to its return traps at the
-    // second hop.)
-    constexpr auto Hops = uint32_t { 100 };
-    constexpr auto Length = uint32_t { 8 } << 20;
-    auto const engine = GENERATE(from_range(Engines));
+
+/// A component exporting rec(n: u32, data: list<u8>) -> u32: rec calls itself n deep through a lowered
+/// import of its own lifted export (a funcref table a second core module fills), each hop passing data,
+/// which the overlapping realloc puts where the caller's copy lies; at depth 0 it calls the host's probe
+/// and returns data's length. Its memory holds 130 pages: data of up to 8 MiB.
+[[nodiscard]] std::vector<std::byte> recursionComponent()
+{
     auto builder = ComponentBuilder {};
     auto const list = builder.type(
         TypeDefinition { .type = DefinedValueType { ListType { .element = PrimitiveValueType::U8 } } });
     auto const type = functionType(
         builder, { PrimitiveValueType::U32, TypeIndex { .index = list } }, PrimitiveValueType::U32);
+    auto const probeType = functionType(builder, {}, std::nullopt);
+    auto const probe = builder.import("probe", ExternDesc { .sort = Sort::Func, .index = probeType });
+    auto const host = builder.coreInlineExports({ CoreInlineExport {
+        .name = "probe", .sort = CoreSort::Func, .index = builder.canonLower(probe, {}) } });
     auto const module = builder.coreModule(coreModule(R"((module
+      (import "host" "probe" (func $probe))
       (type $rec (func (param i32 i32 i32) (result i32)))
       (memory (export "mem") 130)
       (table (export "t") 1 funcref)
       (func (export "realloc") (param i32 i32 i32 i32) (result i32) (i32.const 1024))
       (func (export "rec") (param $n i32) (param $p i32) (param $l i32) (result i32)
         (if (result i32) (i32.eqz (local.get $n))
-          (then (local.get $l))
+          (then (call $probe) (local.get $l))
           (else (call_indirect (type $rec)
                   (i32.sub (local.get $n) (i32.const 1)) (local.get $p) (local.get $l) (i32.const 0))))))
     )"));
-    auto const instance = builder.coreInstantiate(module, {});
+    auto const instance = builder.coreInstantiate(module, { { "host", host } });
     auto const memory = builder.aliasCoreExport(instance, "mem", CoreSort::Memory);
     auto const realloc = builder.aliasCoreExport(instance, "realloc", CoreSort::Func);
     auto const rec = builder.aliasCoreExport(instance, "rec", CoreSort::Func);
@@ -678,24 +684,160 @@ TEST_CASE("Calls.recursiveSelfCallIsBounded")
       (elem (i32.const 0) func $rec)))"));
     std::ignore = builder.coreInstantiate(wiring, { { "m", tables }, { "l", functions } });
     std::ignore = builder.exportItem("rec", Sort::Func, lifted);
+    return builder.build();
+}
 
-    auto storeLimits = isoline::api::StoreLimits {};
-    storeLimits.maxNestedInvocations = 250;
-    auto limits = isoline::component::ComponentLimits {};
-    limits.maxLiveValueBytes = Length + (Length / 2);
-    auto harness =
-        Harness { builder.build(),
-                  HarnessOptions { .engine = engine, .storeLimits = storeLimits, .limits = limits } };
-    auto const root = harness.instance();
-    auto outcome = call(*harness.store, root, "rec", [&](ValueBuilder& args) {
-        args.scalar(Hops).begin(Length);
-        std::ignore = args.packedElements();
-        args.end();
+/// What one component hop costs of the host's stack, measured.
+struct HopCost
+{
+    uint64_t bytesPerHop = 0; ///< Between two depths of rec, per hop.
+    uint64_t base = 0;        ///< From the calling thread's frame to rec's probe at depth 0.
+};
+
+/// The stack a thread needs to nest @p hops component calls: hops × bytes per hop + reserve, the
+/// formula docs/embedding.md gives, with twice the measured cost as the margin and twice the base as the
+/// reserve.
+[[nodiscard]] std::size_t stackFor(uint32_t hops, HopCost const& cost)
+{
+    return static_cast<std::size_t>((uint64_t { hops } * cost.bytesPerHop * 2) + (cost.base * 2)
+                                    + (uint64_t { 64 } << 10));
+}
+
+/// A store of recursionComponent(), its probe recording the stack address it ran at.
+struct RecursionHarness
+{
+    explicit RecursionHarness(isoline::api::ExecutionEngine engine,
+                              uint32_t maxNestedCalls = 250,
+                              uint64_t maxLiveValueBytes = uint64_t { 256 } << 20):
+        harness { recursionComponent(),
+                  HarnessOptions { .engine = engine,
+                                   .storeLimits = {},
+                                   .limits = limitsOf(maxNestedCalls, maxLiveValueBytes) } },
+        root { harness.instance(importsOf({ probe })) },
+        rec { &liftedExport(*harness.store, root, "rec") }
+    {
+    }
+
+    /// rec(hops, a list of @p length bytes), owned; no Catch2 assertion, so any thread may run it.
+    [[nodiscard]] isoline::component::runtime::testing::CallOutcome call(uint32_t hops, uint32_t length) const
+    {
+        return callWith(
+            *harness.store,
+            *rec,
+            [&](ValueBuilder& args) {
+                args.scalar(hops).begin(length);
+                std::ignore = args.packedElements();
+                args.end();
+            },
+            ArgumentOwnership::Owned,
+            [](Values const&) {});
+    }
+
+    [[nodiscard]] static isoline::component::ComponentLimits limitsOf(uint32_t maxNestedCalls,
+                                                                      uint64_t maxLiveValueBytes)
+    {
+        auto limits = isoline::component::ComponentLimits {};
+        limits.maxNestedCalls = maxNestedCalls;
+        limits.maxLiveValueBytes = maxLiveValueBytes;
+        return limits;
+    }
+
+    std::uintptr_t probed = 0; ///< The stack address the probe last ran at.
+    std::shared_ptr<IHostCallee> probe = hostFunction([this](ComponentStore&, Values const&, ValueBuilder&)
+                                                          -> std::expected<void, isoline::api::HostFailure> {
+        probed = isoline::component::runtime::testing::stackAddress();
+        return {};
     });
+    Harness harness;
+    uint32_t root = 0;
+    LiftedFunction const* rec = nullptr;
+};
+
+/// The stack one component hop takes on @p engine, measured on a thread of ample stack.
+[[nodiscard]] HopCost measureHop(isoline::api::ExecutionEngine engine)
+{
+    constexpr auto Shallow = uint32_t { 10 };
+    constexpr auto Deep = uint32_t { 40 };
+    auto recursion = RecursionHarness { engine };
+    auto shallow = std::uintptr_t { 0 };
+    auto deep = std::uintptr_t { 0 };
+    auto top = std::uintptr_t { 0 };
+    auto atZero = std::uintptr_t { 0 };
+    auto succeeded = true;
+    isoline::component::runtime::testing::runOnStack(std::size_t { 64 } << 20, [&] {
+        top = isoline::component::runtime::testing::stackAddress();
+        succeeded = recursion.call(0, 16).result.has_value();
+        atZero = recursion.probed;
+        succeeded = succeeded && recursion.call(Shallow, 16).result.has_value();
+        shallow = recursion.probed;
+        succeeded = succeeded && recursion.call(Deep, 16).result.has_value();
+        deep = recursion.probed;
+    });
+    REQUIRE(succeeded);
+    REQUIRE(shallow > deep); // the stack grows down on every platform the build targets
+    REQUIRE(top > atZero);
+    return HopCost { .bytesPerHop = (shallow - deep) / (Deep - Shallow), .base = top - atZero };
+}
+
+} // namespace
+
+TEST_CASE("Calls.recursiveSelfCallIsBounded")
+{
+    // 100 hops, each passing a list: each hop's arguments are destroyed once lowered, so one copy is live
+    // at a time, and the budget holds one and a half. (Scaled from the plan's 200 MiB of a 256 MiB budget,
+    // which takes the unoptimised sanitizer build past the suite's timeout; the bound is the same: keeping
+    // a hop's arguments to its return traps at the second hop.) It runs on a thread sized by the stack
+    // formula.
+    constexpr auto Hops = uint32_t { 100 };
+    constexpr auto Length = uint32_t { 8 } << 20;
+    auto const engine = GENERATE(from_range(Engines));
+    auto const cost = measureHop(engine);
+    auto recursion = RecursionHarness { engine, 250, Length + (Length / 2) };
+    auto outcome = isoline::component::runtime::testing::CallOutcome { .result = {} };
+    isoline::component::runtime::testing::runOnStack(stackFor(Hops, cost),
+                                                     [&] { outcome = recursion.call(Hops, Length); });
     CHECK(u32Result(outcome) == Length);
-    CHECK(harness.store->state() == StoreState::Live);
+    CHECK(recursion.harness.store->state() == StoreState::Live);
     outcome.values.reset();
-    CHECK(harness.store->liveBytes()->live() == 0);
+    CHECK(recursion.harness.store->liveBytes()->live() == 0);
+}
+
+TEST_CASE("Calls.nestingPastTheLimitTraps")
+{
+    // One hop past maxNestedCalls traps CallStackExhausted before the host's stack runs out: the store
+    // locks down and every value lifted on the way is released. The component store's default (80) binds
+    // below the engine's maxNestedInvocations (100).
+    auto const engine = GENERATE(from_range(Engines));
+    auto const limit = GENERATE(uint32_t { 20 }, isoline::component::ComponentLimits {}.maxNestedCalls);
+    CAPTURE(limit);
+    REQUIRE(limit < isoline::api::StoreLimits {}.maxNestedInvocations);
+    auto const cost = measureHop(engine);
+    auto recursion = RecursionHarness { engine, limit };
+    auto outcome = isoline::component::runtime::testing::CallOutcome { .result = {} };
+    isoline::component::runtime::testing::runOnStack(stackFor(limit + 10, cost),
+                                                     [&] { outcome = recursion.call(limit + 10, 4096); });
+    REQUIRE_FALSE(outcome.result.has_value());
+    auto const* trap = std::get_if<isoline::component::canonical::Trap>(&outcome.result.error());
+    REQUIRE(trap != nullptr);
+    CHECK(trap->code == TrapCode::Core);
+    CHECK(trap->core == isoline::api::TrapCode::CallStackExhausted);
+    CHECK(recursion.harness.store->state() == StoreState::LockedDown);
+    CHECK(recursion.harness.store->liveBytes()->live() == 0);
+
+    // One hop fewer fits.
+    auto fits = RecursionHarness { engine, limit };
+    isoline::component::runtime::testing::runOnStack(stackFor(limit, cost),
+                                                     [&] { outcome = fits.call(limit - 1, 4096); });
+    CHECK(u32Result(outcome) == 4096);
+}
+
+TEST_CASE("Calls.stackPerHop", "[.][measure]")
+{
+    // Prints what one component hop costs of the stack in this build, for docs/embedding.md's table.
+    auto const engine = GENERATE(from_range(Engines));
+    auto const cost = measureHop(engine);
+    std::cout << std::format("component hop: {} bytes per hop, {} bytes base\n", cost.bytesPerHop, cost.base);
+    CHECK(cost.bytesPerHop > 0);
 }
 
 TEST_CASE("Calls.oneInvocationScopePerCall")

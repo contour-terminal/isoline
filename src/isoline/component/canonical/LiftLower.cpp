@@ -1096,6 +1096,7 @@ namespace
             if (auto const packed = value.packedElementBytes();
                 std::endian::native == std::endian::little && !packed.empty() && isStoredAsLowered(row.rule))
             {
+                Require(packed.size() == size); // the block realloc made for exactly these elements
                 if (auto put = writer.put(packed); !put)
                     return put;
                 return writer.flush();

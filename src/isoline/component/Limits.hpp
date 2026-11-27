@@ -78,6 +78,11 @@ struct ComponentLimits
     /// component of 4'096 instantiations of a module of 100'000 imports would take 4 x 10^8 lookups. Ten
     /// million covers a thousand instantiations of ten thousand imports, far past what toolchains emit.
     uint32_t maxCoreMatchingSteps = 10'000'000;
+    /// Per ComponentStore: the invocations in progress at once in its core store, the outermost call and
+    /// every hop a lowered import makes back into a guest; it is the core store's maxNestedInvocations, in
+    /// place of the engine's 100. Each hop takes host stack (docs/embedding.md measures it: 4.6 KB with
+    /// clang, 5.4 KB with MSVC, release builds), so 80 hops fit a 1 MiB thread stack with a 2x margin.
+    uint32_t maxNestedCalls = 80;
 
     /// Two sets of limits are equal when every limit is.
     bool operator==(ComponentLimits const&) const = default;
@@ -113,10 +118,11 @@ enum class ComponentLimit : uint8_t
     CoreGlobals,
     CoreTags,
     CoreMatchingSteps,
+    NestedCalls,
 };
 
 /// The last ComponentLimit enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastComponentLimit = ComponentLimit::CoreMatchingSteps;
+inline constexpr auto LastComponentLimit = ComponentLimit::NestedCalls;
 
 /// The number of ComponentLimit enumerators, as LastComponentLimit counts them.
 inline constexpr auto ComponentLimitCount = static_cast<std::size_t>(LastComponentLimit) + 1;
@@ -298,6 +304,13 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t {
           return limits.maxCoreMatchingSteps;
       } },
+    // Isoline's own, below the core default: a component hop takes more host stack than a core one.
+    { .limit = ComponentLimit::NestedCalls,
+      .name = "maxNestedCalls",
+      .rule = "invocations in progress at once in one ComponentStore's core store: the outermost component "
+              "call and each hop back into a guest; one more traps CallStackExhausted",
+      .message = "nested calls exceed the limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxNestedCalls; } },
 });
 
 static_assert(

@@ -306,6 +306,8 @@ class ResourceStore
     [[nodiscard]] InstanceTables& instances() noexcept { return _instances; }
     /// @return The runtime resource types.
     [[nodiscard]] ResourceTypeTable& types() noexcept { return _types; }
+    /// @return The runtime resource types.
+    [[nodiscard]] ResourceTypeTable const& types() const noexcept { return _types; }
     /// @return The tasks in progress.
     [[nodiscard]] TaskStack& tasks() noexcept { return _tasks; }
 

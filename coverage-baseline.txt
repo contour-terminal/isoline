@@ -19,6 +19,12 @@
 # to be checked under the engine's core features (P11 Task 14): declaredHeapType()'s case for the bottom heap type, which no decoded
 # type names, and the fall-through after its switch are the bottom-heap and exhaustive-switch exclusions.
 #
+# P11 Task 15 fix round 1 lowered three entries it had raised: src/isoline/component/canonical/LiftLower.cpp's branches from
+# 83.90 to 83.80 (the bulk path's Require that the block holds the packed elements), src/isoline/component/runtime/
+# ComponentStore.cpp's lines from 96.81 to 96.42 and branches from 83.38 to 83.12 (instantiate()'s std::length_error catch,
+# host-memory, and the conversions the resource-type pre-check left unreachable, prechecked), and src/isoline/component/
+# runtime/Calls.cpp's lines from 98.32 to 98.31 (fromCallError()'s chain, unreachable).
+#
 # src/isoline/api/CallError.hpp, Imports.cpp, Imports.hpp, Store.cpp and Store.hpp entered the baseline with the backend
 # contract (P3 Task 11): Task 10 added them under the light gate, which runs no coverage. Their uncovered lines were covered
 # then (CallError's equality, resolve() leaving concrete types on both sides to the store, a new host type over the type
@@ -258,7 +264,8 @@ exclude src/isoline/component/runtime/Calls.cpp unreachable fromCallError() of a
 exclude src/isoline/component/runtime/ComponentPlan.cpp no-sort planning a custom section or an export declaration: neither introduces a sort (introducedSort()), so build() never visits one; the overloads exist for the visit
 exclude src/isoline/component/runtime/ComponentStore.cpp async-option the 🔀 async and callback canonical options: validation refuses them before a plan names one (D11)
 exclude src/isoline/component/runtime/ComponentStore.cpp defence a start function, plan step or guest destructor that succeeded with a trap pending or the store locked down, or a destructor run in a locked-down store: see Calls.cpp's defence
-exclude src/isoline/component/runtime/ComponentStore.cpp host-memory std::bad_alloc during instantiation: the host out of memory, which no test injects into the store's own containers
+exclude src/isoline/component/runtime/ComponentStore.cpp host-memory std::bad_alloc or std::length_error during instantiation: the host out of memory, which no test injects into the store's own containers
+exclude src/isoline/component/runtime/ComponentStore.cpp prechecked a host resource type past maxResourceTypes while the imports are converted: checkImports() counted the identities the imports mint against the cap before any step
 exclude src/isoline/component/runtime/ComponentStore.cpp validated-slot a slot holding another kind of value than its validated sort says (a function slot without a function, an instance alias of a non-instance, a missing export), an import of a sort validation refuses, or a host instance converted outside run(): checkImports() and validation rule each out before any step
 exclude src/isoline/component/runtime/HandleTable.cpp chunk-allocation std::bad_alloc growing a handle table's chunk: the host out of memory, which no test injects; the charge is released and the exception propagates
 exclude src/isoline/component/types/TypeArena.cpp resource-rebuild substitute()'s rebuild of a resource: a resource's image is the substitution's, read by imageOf() before any type is rebuilt, so the walk never pushes one
@@ -359,7 +366,7 @@ src/isoline/component/canonical/GuestMemory.cpp  100.00 88.88
 src/isoline/component/canonical/GuestMemory.hpp  100.00 -
 src/isoline/component/canonical/Layout.cpp       99.57 88.69
 src/isoline/component/canonical/Layout.hpp       100.00 -
-src/isoline/component/canonical/LiftLower.cpp    98.18 83.90
+src/isoline/component/canonical/LiftLower.cpp    98.18 83.80
 src/isoline/component/canonical/LiftLower.hpp    100.00 -
 src/isoline/component/canonical/LiftSteps.hpp    100.00 -
 src/isoline/component/canonical/Strings.cpp      99.69 95.12
@@ -370,11 +377,11 @@ src/isoline/component/canonical/Values.cpp       99.53 90.86
 src/isoline/component/canonical/Values.hpp       100.00 80.39
 src/isoline/component/runtime/Builtins.cpp       100.00 83.33
 src/isoline/component/runtime/Builtins.hpp       100.00 -
-src/isoline/component/runtime/Calls.cpp          98.32 89.31
+src/isoline/component/runtime/Calls.cpp          98.31 89.31
 src/isoline/component/runtime/Calls.hpp          100.00 -
 src/isoline/component/runtime/ComponentPlan.cpp  98.75 81.42
 src/isoline/component/runtime/ComponentPlan.hpp  100.00 -
-src/isoline/component/runtime/ComponentStore.cpp 96.81 83.38
+src/isoline/component/runtime/ComponentStore.cpp 96.42 83.12
 src/isoline/component/runtime/ComponentStore.hpp 100.00 -
 src/isoline/component/runtime/HandleTable.cpp    95.77 86.66
 src/isoline/component/runtime/HandleTable.hpp    100.00 100.00

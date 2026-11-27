@@ -72,7 +72,8 @@ using OnResolve = CallbackRef<std::expected<void, CallError>(canonical::Values)>
 /// task (BorrowOutstanding while a borrow lent to it is held), hands the results to @p onResolve, then
 /// runs `post-return` with `may_leave` cleared. After the callee, every `realloc` and the `post-return`
 /// it re-checks the store: locked down (a host swallowed a nested trap) is CannotEnter, even after
-/// success. Every failure locks the store down.
+/// success. Every failure locks the store down. The host running out of memory (std::bad_alloc from a
+/// lift, a lower or a ValueBuilder) terminates the process, as a core call's does (api::Store).
 /// @param store The store.
 /// @param function The function, of @p store.
 /// @param onStart Supplies the arguments.
@@ -91,7 +92,8 @@ using OnResolve = CallbackRef<std::expected<void, CallError>(canonical::Values)>
 /// @param resultType The caller's view of the function's type, for a host function.
 /// @param onStart Supplies the arguments.
 /// @param onResolve Takes the results.
-/// @return Nothing, or how the call failed; the store is locked down then.
+/// @return Nothing, or how the call failed; the store is locked down then. As canonLift(), the host
+///         running out of memory terminates the process.
 [[nodiscard]] std::expected<void, CallError> callComponentFunction(ComponentStore& store,
                                                                    ComponentFunction const& function,
                                                                    InstanceSide const& resultSide,
@@ -148,7 +150,8 @@ class GuestMemory final: public canonical::IGuestMemoryAccess
 /// the caller, calls the callee (canonLift(), or the host's IHostCallee), lowers the results into the
 /// caller, and ends the subtask's lends. A trap crosses the core frames as canonical::carrierTrap(),
 /// stored in the store's PendingTrap, and locks the store down; a host failure ends the core call as
-/// itself. It runs with no task in progress too: during instantiation, from a core start function.
+/// itself. It runs with no task in progress too: during instantiation, from a core start function. Its
+/// call() is noexcept, as IHostFunction's: the host running out of memory in it terminates the process.
 class LoweredFunction final: public isoline::api::IHostFunction
 {
   public:

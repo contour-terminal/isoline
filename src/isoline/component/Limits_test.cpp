@@ -63,6 +63,7 @@ TEST_CASE("Limits.valuesReadTheirField")
     limits.maxCoreGlobals = 24;
     limits.maxCoreTags = 25;
     limits.maxCoreMatchingSteps = 26;
+    limits.maxNestedCalls = 27;
     for (auto const& row: LimitTable)
         CHECK(limitValue(limits, row.limit) == static_cast<uint64_t>(row.limit) + 1);
 

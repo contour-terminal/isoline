@@ -39,8 +39,9 @@ class ComponentStore;
 /// Whether a ComponentStore may still run guest code (D6, Component Invariant #1).
 enum class StoreState : uint8_t
 {
-    Live,       ///< It may.
-    LockedDown, ///< A trap ended a call or an instantiation: no guest code of it runs again.
+    Live,          ///< It may.
+    Instantiating, ///< It may, and an instantiate() runs: a nested one is refused (Reentrant).
+    LockedDown,    ///< A trap ended a call or an instantiation: no guest code of it runs again.
 };
 
 /// How a component call failed: a trap of the canonical ABI or of a core call, or a host function's
@@ -123,7 +124,13 @@ struct CoreInstanceRef
 struct InstanceRef
 {
     uint32_t index = 0; ///< Its number.
+
+    /// Two references are equal when their numbers are.
+    bool operator==(InstanceRef const&) const = default;
 };
+
+/// What a component instance's exports are while its plan has not run to its end: no instance value.
+inline constexpr auto UnfinishedInstance = InstanceRef { .index = UINT32_MAX };
 
 /// The code a ComponentStore instantiates: a validated component, its plans and its loaded core modules,
 /// and what keeps them alive. The store keeps @ref owner for its own life, as its instances read the
@@ -262,7 +269,8 @@ class ComponentStore final: public IBuiltinHost
 {
   public:
     /// An empty, live store.
-    /// @param engine The engine whose modules it instantiates; its configuration is copied.
+    /// @param engine The engine whose modules it instantiates; its configuration is copied, and its core
+    ///               store keeps to its store limits but nests at most limits.maxNestedCalls invocations.
     /// @param allocator Allocates every linear memory; outlives the store.
     /// @param limits The component caps it enforces.
     /// @param observer Observes every poll; none when null; outlives the store.
@@ -285,7 +293,8 @@ class ComponentStore final: public IBuiltinHost
     [[nodiscard]] StoreState state() const noexcept { return _state; }
 
     /// Locks the store down for good: later calls fail CannotEnter and instantiations LockedDown, without
-    /// entering a guest. Idempotent (Component Invariant #1).
+    /// entering a guest. Idempotent (Component Invariant #1). For the thread that owns the store only,
+    /// as every other member: another thread stops a running call with coreStore().interrupter().
     void lockDown() noexcept { _state = StoreState::LockedDown; }
 
     /// The carrier of a trap crossing core frames (canonical::PendingTrap).
@@ -315,7 +324,7 @@ class ComponentStore final: public IBuiltinHost
 
     /// The exports of a component instance instantiate() returned.
     /// @param instance Its number (checked).
-    /// @return Its exports, ordered by name.
+    /// @return Its exports, ordered by name; none for an instance a failed instantiation left unfinished.
     [[nodiscard]] std::span<NamedValue const> exportsOf(uint32_t instance) const noexcept;
 
     /// The exports of an instance value.
@@ -325,14 +334,14 @@ class ComponentStore final: public IBuiltinHost
 
     /// The instance value of a component instance instantiate() returned: what another instantiation of
     /// the store imports it as (ResolvedValue's InstanceRef).
-    /// @param instance Its number (checked).
+    /// @param instance Its number (checked, and finished: one instantiate() returned).
     /// @return Its exports' instance value.
     [[nodiscard]] InstanceRef instanceValueOf(uint32_t instance) const noexcept;
 
     /// The export @p name of @p instance's root, if a function.
     /// @param instance A number instantiate() returned (checked).
     /// @param name The export's name.
-    /// @return The function; none for no such export or another sort.
+    /// @return The function; none for no such export, another sort, or an unfinished instance.
     [[nodiscard]] std::optional<ComponentFunction> function(uint32_t instance, std::string_view name) const;
 
     /// The runtime resource type a host resource type is bound to in the store, as a host function
@@ -396,16 +405,19 @@ class ComponentStore final: public IBuiltinHost
     canonical::PendingTrap _pendingTrap {};
     StoreState _state = StoreState::Live;
     uint32_t _activeCalls = 0;
-    bool _isInstantiating = false; ///< Whether an instantiate() runs: a predicate, read by instantiate().
-    uint32_t _coreInstances = 0;   ///< Core instances created, against maxCoreInstances.
-    std::deque<ComponentCode> _codes {};       ///< Every code instantiated, kept for the store's life.
-    std::deque<Frame> _frames {};              ///< Every plan run.
-    std::deque<ResourceBindings> _bindings {}; ///< Per component instance, by its number.
-    std::deque<LiftedFunction> _lifted {};     ///< Every lifted function, by LiftedRef.
+    uint32_t _coreInstances = 0;         ///< Core instances created, against maxCoreInstances.
+    std::deque<ComponentCode> _codes {}; ///< Every code instantiated, kept for the store's life.
+    /// _codes by identity (owner, plans), so keep() finds one in O(log n).
+    std::map<std::pair<void const*, ComponentPlans const*>, std::size_t> _codeIndex {};
+    uint64_t _hostNameBytes = 0;  ///< The bytes of _hostNames, charged to _liveBytes until the store goes.
+    std::deque<Frame> _frames {}; ///< Every plan run.
+    std::deque<ResourceBindings> _bindings {};               ///< Per component instance, by its number.
+    std::deque<LiftedFunction> _lifted {};                   ///< Every lifted function, by LiftedRef.
     std::deque<CoreInstanceExports> _coreInstanceExports {}; ///< Every core instance, by CoreInstanceRef.
     std::deque<std::vector<NamedValue>> _instanceValues {};  ///< Every instance value, by InstanceRef.
-    std::vector<InstanceRef> _roots {};                      ///< Per component instance, its exports.
-    std::deque<std::string> _hostNames {};                   ///< The host's export names, copied.
+    /// Per component instance, its exports; UnfinishedInstance while its plan has not run to its end.
+    std::vector<InstanceRef> _roots {};
+    std::deque<std::string> _hostNames {}; ///< The host's export names, copied.
     std::map<HostResourceIdentity const*, ResourceTypeIndex> _hostResources {};  ///< By identity.
     std::vector<std::shared_ptr<HostResourceIdentity const>> _hostIdentities {}; ///< Keeps them alive.
 };

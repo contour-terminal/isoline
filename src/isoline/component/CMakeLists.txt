@@ -68,11 +68,11 @@ if(ISOLINE_TESTING)
     # The store and call tests write their core modules in the text format.
     target_link_libraries(isoline_component_test PRIVATE isoline::component isoline::text Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_component_test TEST)
-    # Calls.recursiveSelfCallIsBounded nests 100 component calls on the main thread, about 16 KiB of
-    # stack each in an unoptimised MSVC build: past Windows' default 1 MiB, so the binary reserves the
-    # 8 MiB a Linux main thread has.
-    if(MSVC)
-        target_link_options(isoline_component_test PRIVATE /STACK:8388608)
+    # The deep-nesting call tests run on threads of a measured stack size (runtime/testing/StackThread.hpp).
+    if(WIN32)
+        target_sources(isoline_component_test PRIVATE runtime/testing/StackThreadWindows.cpp)
+    else()
+        target_sources(isoline_component_test PRIVATE runtime/testing/StackThreadPosix.cpp)
     endif()
     add_test(NAME isoline_component_test COMMAND isoline_component_test)
     set_tests_properties(isoline_component_test PROPERTIES LABELS unit TIMEOUT 600)

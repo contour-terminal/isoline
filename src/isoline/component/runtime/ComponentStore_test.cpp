@@ -183,6 +183,71 @@ TEST_CASE("ComponentStore.startTrapLocksDown")
     CHECK(harness.store->state() == StoreState::LockedDown);
 }
 
+TEST_CASE("ComponentStore.unfinishedInstanceExportsNothing")
+{
+    // A failed instantiation leaves its component instance unfinished: it exports nothing, never another
+    // instance's exports.
+    auto const engine = GENERATE(from_range(Engines));
+    auto harness = Harness { liftedIdentity().build(), HarnessOptions { .engine = engine } };
+    auto& store = *harness.store;
+    auto const first = harness.instance();
+    auto failing = Harness { startComponent("unreachable"), HarnessOptions { .engine = engine } };
+    REQUIRE_FALSE(store.instantiate(failing.component->code(), {}).has_value());
+    REQUIRE(store.resources().instances().size() == 2);
+    CHECK(store.exportsOf(first).size() == 1);
+    CHECK(store.exportsOf(1).empty());
+    CHECK_FALSE(store.function(1, "id").has_value());
+}
+
+TEST_CASE("ComponentStore.hostImportsCheckedBeforeAnyChange")
+{
+    // A host instance's export names are copied for the store's life, charged to the live-bytes budget
+    // before anything is created; refused, nothing changed and nothing locked down.
+    auto const engine = GENERATE(from_range(Engines));
+    auto scope = TypeScopeBuilder {};
+    for (auto const* name: { "r0", "r1", "r2" })
+        std::ignore = scope.exportItem(
+            name, ExternDesc { .sort = Sort::Type, .index = 0, .bound = TypeBound::SubResource });
+    auto builder = ComponentBuilder {};
+    std::ignore = builder.import(
+        "host", ExternDesc { .sort = Sort::Instance, .index = builder.instanceType(std::move(scope)) });
+    auto const bytes = builder.build();
+    auto const imports = [] {
+        auto resolved = ResolvedImports {};
+        auto instance = isoline::component::runtime::HostInstanceImport {};
+        for (auto const index: std::views::iota(uint32_t { 0 }, uint32_t { 3 }))
+        {
+            resolved.values.emplace_back(HostResourceImport {
+                .identity =
+                    std::make_shared<HostResourceIdentity const>(HostResourceIdentity { .name = "r" }) });
+            instance.exports.emplace_back("r" + std::to_string(index), index);
+        }
+        resolved.values.emplace_back(std::move(instance));
+        resolved.imports = { 3 };
+        return resolved;
+    }();
+    SECTION("the names past the budget")
+    {
+        auto limits = ComponentLimits {};
+        limits.maxLiveValueBytes = 5;
+        auto harness = Harness { bytes, HarnessOptions { .engine = engine, .limits = limits } };
+        auto const failure = failureOf(harness.instantiate(imports));
+        CHECK(failure.kind == InstantiationFailureKind::LimitExceeded);
+        CHECK(std::get<ComponentLimit>(failure.detail) == ComponentLimit::LiveValueBytes);
+        CHECK(harness.store->state() == StoreState::Live);
+        CHECK(harness.store->liveBytes()->live() == 0);
+    }
+    SECTION("the names charged while the store lives")
+    {
+        auto harness = Harness { bytes, HarnessOptions { .engine = engine } };
+        auto const budget = harness.store->liveBytes();
+        std::ignore = harness.instance(imports);
+        CHECK(budget->live() == 6);
+        harness.store.reset();
+        CHECK(budget->live() == 0);
+    }
+}
+
 TEST_CASE("ComponentStore.refusalsBeforeTheFirstStepDoNotLockDown")
 {
     auto const engine = GENERATE(from_range(Engines));
@@ -719,15 +784,19 @@ TEST_CASE("ComponentStore.hostResourceTypesByIdentity")
         REQUIRE(exports.size() == 2);
         CHECK(std::get<ResourceTypeIndex>(exports[0].value) == std::get<ResourceTypeIndex>(exports[1].value));
     }
-    SECTION("the cap, for host types")
+    SECTION("the cap, for host types, before anything is created")
     {
         auto limits = ComponentLimits {};
         limits.maxResourceTypes = 1;
         auto harness = Harness { bytes, HarnessOptions { .engine = engine, .limits = limits } };
         auto const failure = failureOf(harness.instantiate(importing(one, two)));
-        CHECK(failure.kind == InstantiationFailureKind::Trap);
-        CHECK(std::get<isoline::component::canonical::Trap>(failure.detail).code == TrapCode::ResourceTypes);
-        CHECK(harness.store->state() == StoreState::LockedDown);
+        CHECK(failure.kind == InstantiationFailureKind::LimitExceeded);
+        CHECK(std::get<ComponentLimit>(failure.detail) == ComponentLimit::ResourceTypes);
+        CHECK(harness.store->state() == StoreState::Live);
+        CHECK_FALSE(harness.store->hostResourceTypeOf(*one).has_value());
+        CHECK(harness.store->resources().instances().size() == 0);
+        // One identity twice mints one type, which fits.
+        CHECK(harness.instantiate(importing(one, one)).has_value());
     }
     SECTION("the cap, for guest types")
     {

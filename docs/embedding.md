@@ -516,9 +516,35 @@ failure, and a nested trap even when a host function swallowed it. A locked-down
 again (`CannotEnter`); core instances alone keep the core contract, staying callable after a trap. The
 embedder drops the store and instantiates afresh. One component call runs in one invocation scope, so the
 argument `realloc`s, the callee and `post-return` share one step budget; synchronous re-entrance, a host
-function calling back into the store, is allowed, and each such hop is one nested invocation against
-`maxNestedInvocations`. Arguments a call lifts are destroyed once lowered into the callee, so a chain of
-hops holds one copy of them live at a time.
+function calling back into the store, is allowed, and each such hop is one more nested invocation of
+the store's core store. Arguments a call lifts are destroyed once lowered into the callee, so a chain of
+hops holds one copy of them live at a time. The host running out of memory during a call (`canonLift`,
+`callComponentFunction`, a lowered function) terminates the process, as it does in a core call;
+`instantiate` reports it as `HostMemoryExhausted`.
+
+**Stack per hop.** Each hop takes host stack on the calling thread, more than a core-only nesting does,
+so the component store's core store nests at most `ComponentLimits::maxNestedCalls` (80) invocations
+in place of the engine's `maxNestedInvocations` (100); one more traps `CallStackExhausted` and locks the
+store down. The thread that calls into a component store needs
+
+    stack >= hops × bytes per hop + reserve
+
+with `hops` = `maxNestedCalls`, the bytes per hop of the build below, and a reserve for what the
+embedder's own frames and the outermost call take (the base column, plus the embedder's frames).
+Measured with `isoline_component_test "Calls.stackPerHop"` (a lowered import of a lifted export
+calling itself, between depth 10 and 40, on the Reference engine):
+
+| Build                        | Bytes per hop | Base   | 80 hops, 2× margin |
+|------------------------------|---------------|--------|--------------------|
+| clang, release               | 4 640         | 5 200  | 742 KB             |
+| MSVC (cl.exe), release       | 5 440         | 8 000  | 870 KB             |
+| GCC, debug                   | 8 192         | 10 368 | 1.31 MB            |
+| clang, debug + ASan + UBSan  | 11 520        | 13 056 | 1.84 MB            |
+| MSVC (cl.exe), debug         | 15 584        | 19 152 | 2.49 MB            |
+
+So 80 hops fit the 1 MiB a Windows thread reserves by default with a 2× margin in release builds, and
+fit an 8 MiB Linux or macOS main thread in every build; a debug build on Windows, or an embedder that
+raises `maxNestedCalls`, runs component calls on a thread sized by the formula.
 
 ## Interrupts and poll sites
 

@@ -54,22 +54,24 @@ namespace
         ComponentStore* _store;
     };
 
-    /// Clears an instance's `may_leave` while it lives (definitions.py's realloc and post-return).
+    /// Clears an instance's `may_leave` while it lives (definitions.py's realloc and post-return), and
+    /// restores what it was, so a nested clearing never sets it where an outer one cleared it.
     class MayLeaveCleared
     {
       public:
-        explicit MayLeaveCleared(ComponentInstanceState& state) noexcept: _state { &state }
+        explicit MayLeaveCleared(ComponentInstanceState& state) noexcept:
+            _state { &state }, _previous { std::exchange(state.mayLeave, MayLeave::No) }
         {
-            state.mayLeave = MayLeave::No;
         }
         MayLeaveCleared(MayLeaveCleared const&) = delete;
         MayLeaveCleared& operator=(MayLeaveCleared const&) = delete;
         MayLeaveCleared(MayLeaveCleared&&) = delete;
         MayLeaveCleared& operator=(MayLeaveCleared&&) = delete;
-        ~MayLeaveCleared() { _state->mayLeave = MayLeave::Yes; }
+        ~MayLeaveCleared() { _state->mayLeave = _previous; }
 
       private:
         ComponentInstanceState* _state;
+        MayLeave _previous;
     };
 
     /// A Task in progress while it lives: started on construction, ended (returned or trapped) on
