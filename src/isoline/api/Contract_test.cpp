@@ -4,7 +4,10 @@
 // engine-level case, named after it and expressed against Isoline's public api. Contour-only rules
 // stay in Contour's adapter and have no case here: the WASI shim, MaxTables, offering only all-i32
 // exports, runtime generations and thread guards.
+#include <core/Assert.hpp>
+
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <array>
 #include <chrono>
@@ -12,6 +15,7 @@
 #include <cstdint>
 #include <expected>
 #include <initializer_list>
+#include <iostream>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -41,7 +45,9 @@ using isoline::api::CallFailure;
 using isoline::api::DecodeError;
 using isoline::api::Engine;
 using isoline::api::EngineConfig;
+using isoline::api::ExportAccessError;
 using isoline::api::ExternKind;
+using isoline::api::ForeignHandle;
 using isoline::api::FuncType;
 using isoline::api::GrowthRecord;
 using isoline::api::HostContext;
@@ -59,6 +65,7 @@ using isoline::api::MemoryAccessError;
 using isoline::api::Module;
 using isoline::api::Refusal;
 using isoline::api::Store;
+using isoline::api::StoreDeleted;
 using isoline::api::Trap;
 using isoline::api::TrapCode;
 using isoline::api::Value;
@@ -1336,4 +1343,140 @@ TEST_CASE("Contract.acceptsEnabledFeatures", "[contract]")
 {
     CHECK(extensionFeatures().checkPrerequisites().has_value());
     checkFeatureCases(ExtensionUse::Accepted);
+}
+
+namespace
+{
+
+/// Counts the contract checks (Require(), Guarantee()) that fail while it lives, through
+/// core::setFailHandler(): a case asserts that none did. A failed check still ends the process once the
+/// handler returned, so the count is also what the report says before it does.
+class FailedChecks
+{
+  public:
+    FailedChecks()
+    {
+        core::setFailHandler(
+            [this](std::string_view text, std::string_view message, std::string_view file, int line) {
+                ++_count;
+                std::cerr << "contract check failed: [" << file << ':' << line << "] " << message << ' '
+                          << text << '\n';
+            });
+    }
+
+    FailedChecks(FailedChecks const&) = delete;
+    FailedChecks(FailedChecks&&) = delete;
+    FailedChecks& operator=(FailedChecks const&) = delete;
+    FailedChecks& operator=(FailedChecks&&) = delete;
+
+    /// Restores the default handler.
+    ~FailedChecks() { core::setFailHandler({}); }
+
+    /// The checks that failed so far.
+    [[nodiscard]] std::size_t count() const noexcept { return _count; }
+
+  private:
+    std::size_t _count = 0; ///< The checks that failed so far.
+};
+
+/// An operation given a handle of another store than the one asked (Contract.foreignHandlesAreValues).
+enum class ForeignUse : uint8_t
+{
+    InstanceCall,        ///< Instance::call() of the other store's function.
+    InstanceMemoryRange, ///< Instance::memoryRange() of the other store's memory.
+    InstanceMemorySize,  ///< Instance::memorySize() of the other store's memory.
+    StoreCall,           ///< Store::call() of the other store's function.
+};
+
+/// An operation of an instance whose store is gone (Contract.storeDeletedHandlesAreValues).
+enum class DeletedUse : uint8_t
+{
+    Call,        ///< Instance::call().
+    MemoryRange, ///< Instance::memoryRange().
+    MemorySize,  ///< Instance::memorySize().
+    ExportAt,    ///< Instance::exportAt().
+    Function,    ///< Instance::function(name).
+};
+
+} // namespace
+
+TEST_CASE("Contract.foreignHandlesAreValues", "[contract]")
+{
+    // A handle of another store is refused with ForeignHandle wherever it is given, reading nothing of
+    // either store: never a contract check that ends the process.
+    auto const use = GENERATE(ForeignUse::InstanceCall,
+                              ForeignUse::InstanceMemoryRange,
+                              ForeignUse::InstanceMemorySize,
+                              ForeignUse::StoreCall);
+    CAPTURE(use);
+    auto const checks = FailedChecks {};
+    auto runtimeA = Runtime {};
+    auto runtimeB = Runtime {};
+    auto const instanceA = runtimeA.instantiate(runtimeA.load(instanceModule()));
+    auto const instanceB = runtimeB.instantiate(runtimeB.load(instanceModule()));
+    auto const function = functionOf(instanceB, "add");
+    auto const memory = memoryOf(instanceB);
+    auto const args = std::array<Value, 2> { I32 { 2 }, I32 { 3 } };
+    auto results = std::array<Value, 1> {};
+    auto const foreignCall = CallError { .detail = ForeignHandle {}, .refusedGrowth = {} };
+    switch (use)
+    {
+        case ForeignUse::InstanceCall:
+            CHECK(errorOf(instanceA.call(function, args, results)) == foreignCall);
+            CHECK(errorOf(instanceA.call(function, args, results)).failure() == CallFailure::ForeignHandle);
+            break;
+        case ForeignUse::InstanceMemoryRange:
+            CHECK(errorOf(instanceA.memoryRange(memory, 0, 1)) == MemoryAccessError::ForeignHandle);
+            break;
+        case ForeignUse::InstanceMemorySize:
+            CHECK(errorOf(instanceA.memorySize(memory)) == MemoryAccessError::ForeignHandle);
+            break;
+        case ForeignUse::StoreCall:
+            CHECK(errorOf(runtimeA.store().call(function, args, results)) == foreignCall);
+            break;
+    }
+    CHECK(checks.count() == 0);
+    CHECK(results[0] == Value {});
+    // Both stores still work.
+    CHECK(callI32(instanceA, "add", std::array { 2U, 3U }) == std::vector { 5U });
+    CHECK(callI32(instanceB, "add", std::array { 2U, 3U }) == std::vector { 5U });
+}
+
+TEST_CASE("Contract.storeDeletedHandlesAreValues", "[contract]")
+{
+    // An instance whose store is gone reports it (StoreDeleted), or finds nothing, reading nothing of
+    // the store: never a contract check that ends the process.
+    auto const use = GENERATE(DeletedUse::Call,
+                              DeletedUse::MemoryRange,
+                              DeletedUse::MemorySize,
+                              DeletedUse::ExportAt,
+                              DeletedUse::Function);
+    CAPTURE(use);
+    auto const checks = FailedChecks {};
+    auto runtime = std::make_unique<Runtime>();
+    auto const instance = runtime->instantiate(runtime->load(instanceModule()));
+    auto const function = functionOf(instance, "add");
+    auto const memory = memoryOf(instance);
+    runtime.reset();
+    auto const args = std::array<Value, 2> { I32 { 2 }, I32 { 3 } };
+    auto results = std::array<Value, 1> {};
+    switch (use)
+    {
+        case DeletedUse::Call:
+            CHECK(errorOf(instance.call(function, args, results))
+                  == CallError { .detail = StoreDeleted {}, .refusedGrowth = {} });
+            break;
+        case DeletedUse::MemoryRange:
+            CHECK(errorOf(instance.memoryRange(memory, 0, 1)) == MemoryAccessError::StoreDeleted);
+            break;
+        case DeletedUse::MemorySize:
+            CHECK(errorOf(instance.memorySize(memory)) == MemoryAccessError::StoreDeleted);
+            break;
+        case DeletedUse::ExportAt:
+            CHECK(errorOf(instance.exportAt(0)) == ExportAccessError::StoreDeleted);
+            break;
+        case DeletedUse::Function: CHECK_FALSE(instance.function("add").has_value()); break;
+    }
+    CHECK(checks.count() == 0);
+    CHECK(results[0] == Value {});
 }

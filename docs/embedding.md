@@ -9,8 +9,10 @@ with the decoder and validator, and re-exported there. The names the API re-expo
 layers (`api/Types.hpp`) are the public subset of those layers; everything else under `runtime/`,
 `binary/` and `validate/` is internal.
 
-Fallible calls return `std::expected`; a violated precondition (a handle of another store, a null
-implementation) is a programming error of the embedder and aborts. Four functions allocate while the
+Fallible calls return `std::expected`, and a handle of another store, or of a store that is gone, is
+one of their error values wherever it is given. A violated precondition (a null implementation, a host
+function type `Imports` cannot hold, a reference read from a handle whose store is gone) is a
+programming error of the embedder and aborts. Four functions allocate while the
 embedder sets up, and may throw `std::bad_alloc` (or `std::length_error` for a container asked past its
 `max_size()`), leaving nothing half-built: the `Store` constructor, `makeHostFunction()` (which also
 throws what moving the callable throws), and `Imports::define()` and `Imports::resolve()`, of which a
@@ -49,9 +51,18 @@ auto const called = instance->call(*instance->function("run"), args, results);
 
 `Imports` is a plain value holding definitions by module and field name: host functions
 (`define(module, name, type, implementation)`), another instance's export (`define(module, name,
-instance, exportName)`) and a function of a store (`define(module, name, function)`, for a host function
-`Store::define()` added or an exported function). `Imports::resolve()` answers, without a store, whether
-each import of a module has a definition of its name, kind and type.
+instance, exportName)`) and an entity of a store (`define(module, name, extern)`, for any `Extern`: an
+exported one, or one the store made with `define()`, `defineMemory()`, `defineTable()` or
+`defineGlobal()`). `Imports::resolve()` answers, without a store, whether each import of a module has a
+definition of its name, kind and type.
+
+`Store::instantiateByPosition(module, externs)` binds the imports by position instead, as `wasm.h`'s
+`wasm_instance_new()` does: one `Extern` of the store per import, in import order. Names play no part,
+so a module importing `("m", "x")` twice, as a function and as a global, links both, which one `Imports`
+definition of `("m", "x")` cannot. The count is checked first (`ImportCountMismatch { expected, given }`),
+then each extern's store (`ForeignImport { index }`, its position as index), and linking checks kinds and
+types as it does for named definitions. Both forms share one linking path, so the limits, the
+nested-instantiation budget and the errors after the lookup are the same.
 
 ## Threads
 
@@ -81,9 +92,10 @@ each import of a module has a definition of its name, kind and type.
   `ExportDescription`, `EngineIdentity`) point into it and are valid while any copy of the module lives.
   The `const&&` overloads are deleted, so a temporary module's descriptions do not compile.
 - `Imports::define(module, name, instance, exportName)` copies the export's address, and
-  `define(module, name, function)` the function's: the instance's store must be alive when the
-  definition is made, and only that store links it (`ForeignImport` from any other). The definition
-  keeps the store's identity (`StoreId`), never the store, so it may outlive the store safely.
+  `define(module, name, extern)` the extern's, each with the entity's type as the store holds it then:
+  the store must be alive when the definition is made, and only that store links it (`ForeignImport`
+  from any other). The definition keeps the store's identity (`StoreId`), never the store, so it may
+  outlive the store safely.
 - Handles name their store's entities for as long as the store lives, and are safe to keep after it:
   each one holds the store's *alive-token*, a `std::weak_ptr` to a token the store owns and destroys
   first, and checks it before it reads the store. Nothing dereferences a store that is gone:
@@ -93,13 +105,16 @@ each import of a module has a definition of its name, kind and type.
     `tag()`) find nothing: a deleted store names no export.
   - `Function::type()`, `Tag::type()` and every handle's `store()` return a reference into the store, so
     they check that it is alive and abort when it is not (a checked precondition violation, never
-    undefined behaviour); `Imports::define()` of an instance or a function reads the store and checks it
+    undefined behaviour); `Imports::define()` of an instance or an extern reads the store and checks it
     the same way. `address()` and `isOf()` read nothing of the store and answer at any time.
   - A handle is never taken for one of a later store: every `StoreId` has a serial number unique within
-    the process, which handles copy and `isOf()` compares. The `Store` accessors (`globalValue()`,
-    `tableGet()`, `memoryRange()`, `growMemory()`, …) refuse a handle of another store, a deleted one
-    included, with `ForeignHandle`;
-    passing another store's `Function` or `Memory` to an `Instance` is a checked precondition violation.
+    the process, which handles copy and `isOf()` compares. Every operation given a handle of another
+    store, a deleted one included, refuses it with `ForeignHandle` and reads nothing: the `Store`
+    accessors (`call()`, `globalValue()`, `tableGet()`, `memoryRange()`, `growMemory()`, …) and the
+    `Instance` ones (`call()`, `memoryRange()`, `memorySize()`) alike; `instantiateByPosition()`
+    refuses it as `ForeignImport`. No contract check guards a handle's store, with one exception:
+    `Imports::define()` of an instance or an extern, a builder the C API does not reach, checks that its
+    store is alive, as above.
 - A memory view (`Store::memoryRange()`, `Instance::memoryRange()`) is valid until the next call into the
   store or grow of the memory, either of which may move it.
 
@@ -196,8 +211,10 @@ memory's bytes and a table's elements are allocated before that step, and their 
 
 ## Calls and re-entrancy
 
-`Instance::call()` is the one checked entry into the guest, which a host function's
-`HostContext::invoke()` shares. Arguments are checked against the function's params, and the result
+`Store::call(function, args, results)` is the one checked entry into the guest, which
+`Instance::call()` (once it found its store alive) and a host function's `HostContext::invoke()`
+share. It needs no instance: it calls a host function `Store::define()` added as readily as an exported
+one. Arguments are checked against the function's params, and the result
 slots against its results, before any guest code runs (`ArgumentMismatch` otherwise). Calls are
 re-entrant: a host function may call back into this or another instance of the store, within the call
 that called it. A failure in a nested call stays nested unless the host function returns it, and an
@@ -260,10 +277,11 @@ A failed call is a `CallError`: its `detail` says how it ended, `failure()` redu
 | `HostFailure` | a `HostFailure` a host function the guest called returned |
 | `UncaughtException` | an `UncaughtException`: the exception's tag and payload, copied out of the store |
 | `ArgumentMismatch` | a `ValueMismatch`: the call was refused before it entered the guest |
-| `ForeignHandle` | a `ForeignHandle`: the function is another store's (reserved: `Instance::call()` still checks that as a precondition) |
+| `ForeignHandle` | a `ForeignHandle`: the function is another store's, or a store's that is gone; nothing ran |
 | `StoreDeleted` | a `StoreDeleted`: the instance's store is gone; nothing ran |
 
-`Store::instantiate()` fails with an `InstantiateError`: `EngineMismatch`, `ForeignImport { index }`,
+`Store::instantiate()` fails with an `InstantiateError`: `EngineMismatch`, `ImportCountMismatch
+{ expected, given }` (`instantiateByPosition()` only), `ForeignImport { index }`,
 `LinkError` (`UnknownImport` for an import with no definition, `IncompatibleImportType` for one of
 another kind or type), `LimitExceeded { limit }` (the instance would exceed one of the store's limits,
 checked before anything is allocated), `AllocationFailure { kind, reason }`, `HostMemoryExhausted`, or a

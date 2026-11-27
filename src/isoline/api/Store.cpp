@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <new>
 #include <optional>
@@ -197,6 +198,43 @@ std::expected<Instance, InstantiateError> Store::instantiate(Module const& modul
         return std::unexpected { InstantiateError { HostMemoryExhausted {} } };
     }
     return link(module, std::move(externs), std::move(pending));
+}
+
+std::expected<Instance, InstantiateError> Store::instantiateByPosition(
+    Module const& module, std::span<Extern const> imports) noexcept
+{
+    if (module.engine() != _identity)
+        return std::unexpected { InstantiateError { EngineMismatch {} } };
+    auto const expected = module.imports().size();
+    if (imports.size() != expected)
+        return std::unexpected { InstantiateError {
+            ImportCountMismatch { .expected = static_cast<uint32_t>(expected),
+                                  // Saturated: no span of externs that many long fits a host's memory anyway.
+                                  .given = static_cast<uint32_t>(std::min<std::size_t>(
+                                      imports.size(), std::numeric_limits<uint32_t>::max())) } } };
+    // Every extern names an entity of its store already: there is nothing to reserve, so the only
+    // allocation before the store changes is the externs' own.
+    auto externs = std::vector<runtime::ExternValue> {};
+    try
+    {
+        externs.reserve(imports.size());
+    }
+    catch (std::bad_alloc const&)
+    {
+        return std::unexpected { InstantiateError { HostMemoryExhausted {} } };
+    }
+    catch (std::length_error const&)
+    {
+        return std::unexpected { InstantiateError { HostMemoryExhausted {} } };
+    }
+    for (auto const [index, value]: core::views::enumerate(imports))
+    {
+        if (!std::visit([this](auto const& handle) { return handle.isOf(*_id); }, value))
+            return std::unexpected { InstantiateError {
+                ForeignImport { .index = static_cast<uint32_t>(index) } } };
+        externs.push_back(externValueOf(value));
+    }
+    return link(module, std::move(externs), {});
 }
 
 std::expected<Instance, InstantiateError> Store::link(
@@ -476,6 +514,64 @@ std::expected<TableType, TableAccessError> Store::tableType(Table const& table) 
     return type;
 }
 
+std::expected<void, CallError> Store::call(Function const& function,
+                                           std::span<Value const> args,
+                                           std::span<Value> results) noexcept
+{
+    if (!function.isOf(*_id))
+        return std::unexpected { CallError { .detail = ForeignHandle {}, .refusedGrowth = {} } };
+    auto const invoked = runtime::invokeChecked(_runtime, *_executor, function.address(), args, results);
+    if (invoked.outcome)
+    {
+        // The embedder holds them now: an exnref among them must survive later sweeps.
+        for (auto const& value: results)
+            _runtime.markEscaped(value);
+        return {};
+    }
+    // A refused call ran nothing: what is wrong with it is the mismatch its checks found. A Function
+    // names a function its store holds, so the refusal always names one.
+    if (invoked.entry == runtime::Entry::Refused)
+    {
+        auto const& failure = std::get<HostFailure>(invoked.outcome.error());
+        Require(failure.mismatch.has_value());
+        return std::unexpected { CallError { .detail = *failure.mismatch,
+                                             .refusedGrowth = invoked.refusedGrowth } };
+    }
+    return std::unexpected { callError(invoked.outcome.error(), invoked.refusedGrowth) };
+}
+
+Store const& Store::ownerOf(Extern const& value) noexcept
+{
+    return std::visit([](auto const& handle) -> Store const& { return handle._link.owner(); }, value);
+}
+
+runtime::ExternValue Store::externValueOf(Extern const& value) noexcept
+{
+    // Extern's alternatives follow ExternKind's order.
+    return runtime::ExternValue {
+        .kind = static_cast<ExternKind>(value.index()),
+        .address = std::visit([](auto const& handle) -> uint32_t { return handle.address(); }, value)
+    };
+}
+
+Imports::EntityType Store::entityTypeOf(runtime::ExternValue value) const
+{
+    switch (value.kind)
+    {
+        case ExternKind::Func: return _runtime.functionType(value.address);
+        case ExternKind::Table: return _runtime.table(value.address).type;
+        case ExternKind::Memory: return _runtime.memory(value.address).type;
+        case ExternKind::Global: return _runtime.global(value.address).type;
+        case ExternKind::Tag: break; // below the switch, so that every kind is a case
+    }
+    return _runtime.type(_runtime.tag(value.address).typeId);
+}
+
+std::expected<void, DefineError> Store::checkHostFunctionType(FuncType const& type) noexcept
+{
+    return checkDefinable(type);
+}
+
 Extern Store::externOf(runtime::ExternValue value) const noexcept
 {
     switch (value.kind)
@@ -604,27 +700,7 @@ std::expected<void, CallError> Instance::call(Function const& function,
 {
     if (!isAlive())
         return std::unexpected { CallError { .detail = StoreDeleted {}, .refusedGrowth = {} } };
-    Require(function.isOf(*_store->_id));
-    auto& runtime = _store->_runtime;
-    auto const invoked =
-        runtime::invokeChecked(runtime, *_store->_executor, function.address(), args, results);
-    if (invoked.outcome)
-    {
-        // The embedder holds them now: an exnref among them must survive later sweeps.
-        for (auto const& value: results)
-            runtime.markEscaped(value);
-        return {};
-    }
-    // A refused call ran nothing: what is wrong with it is the mismatch its checks found. A Function
-    // names a function its store holds, so the refusal always names one.
-    if (invoked.entry == runtime::Entry::Refused)
-    {
-        auto const& failure = std::get<HostFailure>(invoked.outcome.error());
-        Require(failure.mismatch.has_value());
-        return std::unexpected { CallError { .detail = *failure.mismatch,
-                                             .refusedGrowth = invoked.refusedGrowth } };
-    }
-    return std::unexpected { _store->callError(invoked.outcome.error(), invoked.refusedGrowth) };
+    return _store->call(function, args, results);
 }
 
 std::expected<std::span<std::byte>, MemoryAccessError> Instance::memoryRange(Memory const& memory,
@@ -633,7 +709,6 @@ std::expected<std::span<std::byte>, MemoryAccessError> Instance::memoryRange(Mem
 {
     if (!isAlive())
         return std::unexpected { MemoryAccessError::StoreDeleted };
-    Require(memory.isOf(*_store->_id));
     return _store->memoryRange(memory, address, size);
 }
 
@@ -641,7 +716,6 @@ std::expected<MemorySize, MemoryAccessError> Instance::memorySize(Memory const& 
 {
     if (!isAlive())
         return std::unexpected { MemoryAccessError::StoreDeleted };
-    Require(memory.isOf(*_store->_id));
     return _store->memorySize(memory);
 }
 

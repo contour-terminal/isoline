@@ -10,6 +10,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <expected>
 #include <memory>
 #include <optional>
 #include <print>
@@ -170,6 +171,45 @@ void importsFunctionAfterDelete()
     auto imports = Imports {};
     imports.define("m", "f", deletedStoreHandles().function);
     wentThrough("Imports::define(function)", 0);
+}
+
+void importsMemoryAfterDelete()
+{
+    auto imports = Imports {};
+    imports.define("m", "m", deletedStoreHandles().memory);
+    wentThrough("Imports::define(memory)", 0);
+}
+
+/// A host function that does nothing, which the host-function type cases define.
+[[nodiscard]] std::shared_ptr<IHostFunction> doingNothing()
+{
+    return makeHostFunction([](HostContext&, std::span<Value const>, std::span<Value>) noexcept {
+        return std::expected<void, Abrupt> {};
+    });
+}
+
+/// A nullable reference to a heap of @p kind, of type index 0 where it names one.
+[[nodiscard]] ValueType referenceTo(isoline::binary::AbstractHeapType kind)
+{
+    return ValueType { .kind = ValueKind::Ref,
+                       .nullable = isoline::binary::Nullable::Yes,
+                       .heap = { .kind = kind, .typeIndex = 0 } };
+}
+
+void importsHostTypeConcrete()
+{
+    auto imports = Imports {};
+    auto const concrete = referenceTo(isoline::binary::AbstractHeapType::Concrete);
+    imports.define("m", "f", FuncType { .params = { concrete }, .results = {} }, doingNothing());
+    wentThrough("Imports::define() of a concrete type index", 0);
+}
+
+void importsHostTypeBottom()
+{
+    auto imports = Imports {};
+    auto const bottom = referenceTo(isoline::binary::AbstractHeapType::Bot);
+    imports.define("m", "f", FuncType { .params = {}, .results = { bottom } }, doingNothing());
+    wentThrough("Imports::define() of the bot heap", 0);
 }
 
 /// The handles a store made without an instance (Store::defineMemory(), defineTable(), defineGlobal()),

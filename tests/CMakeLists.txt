@@ -57,8 +57,9 @@ foreach(usage IN ITEMS "1" "1;--features" "1;--features;wasm4" "x;--features;was
 endforeach()
 
 # The api's Require() checks, which end the process, one case of the canary each: Engine's constructor
-# refuses a feature set not closed over its prerequisites, and the accessors of a handle whose store is
-# gone that return a reference into the store refuse to read it. Each case is judged by its check's own
+# refuses a feature set not closed over its prerequisites, the accessors of a handle whose store is gone
+# that return a reference into the store refuse to read it, and Imports refuses a host function of a type
+# no store could define. Each case is judged by its check's own
 # text (PASS_REGULAR_EXPRESSION, which ignores the exit status), so that an abort elsewhere does not
 # pass for it; the line the canary prints when the check let the call through fails it.
 add_executable(isoline_require_canary canary/RequireCanary.cpp)

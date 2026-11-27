@@ -25,6 +25,7 @@
 #include "AllocationCounter.hpp"
 #include <isoline/Features.hpp>
 #include <isoline/api/Engine.hpp>
+#include <isoline/api/Extern.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
 #include <isoline/api/Store.hpp>
@@ -442,6 +443,39 @@ TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryBeforeTheStoreChanges", "[ho
     // With memory, the same store instantiates it: nothing refused earlier is in its way.
     CHECK(store.instantiate(*module, imports).has_value());
     CHECK(runtime.functionCount() == 2);
+}
+
+TEST_CASE("MemoryBounds.positionalInstantiateRefusesHostMemoryBeforeTheStoreChanges", "[host-memory]")
+{
+    // Positional externs name entities of the store already: their copy is the one allocation before the
+    // store changes. Refused, the instantiation is HostMemoryExhausted, and the store is as it was.
+    using isoline::api::HostMemoryExhausted;
+    using isoline::api::InstantiateError;
+    auto const constI32 =
+        isoline::binary::GlobalType { .type = I32, .mutability = isoline::binary::Mutability::Const };
+    auto builder = ModuleBuilder {};
+    builder.importGlobal("env", "g", constI32);
+    auto const engine = isoline::api::Engine { isoline::api::EngineConfig {} };
+    auto allocator = isoline::runtime::HeapMemoryAllocator {};
+    auto store = isoline::api::Store { engine, allocator };
+    auto const module = engine.load(builder.build());
+    REQUIRE(module.has_value());
+    auto const global = store.defineGlobal(constI32, isoline::runtime::I32 { 1 });
+    REQUIRE(global.has_value());
+    auto const externs = std::array<isoline::api::Extern, 1> { *global };
+    auto& runtime = isoline::api::testing::runtimeOf(store);
+    for (auto const refusal: { RefusalException::BadAlloc, RefusalException::LengthError })
+    {
+        auto const result = [&] {
+            auto const limit = AllocationLimit { 0, refusal };
+            return store.instantiateByPosition(*module, externs);
+        }();
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error() == InstantiateError { HostMemoryExhausted {} });
+        CHECK(runtime.moduleInstanceCount() == 0);
+    }
+    CHECK(store.instantiateByPosition(*module, externs).has_value());
+    CHECK(runtime.moduleInstanceCount() == 1);
 }
 
 TEST_CASE("MemoryBounds.instantiateRefusesHostMemoryWhilePreparing", "[host-memory]")

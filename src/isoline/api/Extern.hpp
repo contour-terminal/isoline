@@ -22,9 +22,9 @@ namespace isoline::api
 class Instance;
 class Store;
 
-/// The identity of a store: what its handles (Instance, Function, Memory, Global, Table, Tag) carry,
-/// and what an Imports definition of one of its entities keeps, so that a handle of another store is
-/// told apart.
+/// The identity of a store: what its handles (Instance, Function, Memory, Global, Table, Tag) are
+/// compared with (isOf()), and what an Imports definition of one of its entities keeps, so that a handle of
+/// another store is told apart.
 ///
 /// It is opaque. Each one has a serial number no other identity of the process has had, which the
 /// handles copy: a handle outliving its store is never taken for one of a later store, even one whose
@@ -46,22 +46,23 @@ class StoreId: public std::enable_shared_from_this<StoreId>
 
 namespace detail
 {
-    /// What every handle keeps of the store that made it: its identity, that identity's serial
-    /// number, and the store's alive-token, which expires when the store is destroyed.
+    /// What every handle keeps of the store that made it: the store, its identity's serial number, and
+    /// the store's alive-token, which expires when the store is destroyed.
     class StoreLink
     {
       public:
-        /// A link to the store of identity @p store, alive while @p alive is.
-        /// @param store The store's identity.
+        /// A link to @p store, alive while @p alive is.
+        /// @param store The store.
         /// @param alive The store's alive-token.
-        StoreLink(StoreId const& store, std::weak_ptr<void> alive) noexcept:
-            _store { &store }, _storeSerial { store.serial() }, _alive { std::move(alive) }
-        {
-        }
+        StoreLink(Store const& store, std::weak_ptr<void> alive) noexcept;
 
         /// Whether the store is still alive: whether its alive-token has not expired.
         /// @return Whether the store may be dereferenced.
         [[nodiscard]] bool isAlive() const noexcept { return !_alive.expired(); }
+
+        /// The store. Precondition (checked, aborting): it is alive.
+        /// @return The store.
+        [[nodiscard]] Store const& owner() const noexcept;
 
         /// The identity of the store. Precondition (checked, aborting): the store is alive.
         /// @return The identity.
@@ -77,8 +78,8 @@ namespace detail
         }
 
       private:
-        StoreId const* _store;      ///< The identity of the store; never null, valid while it is alive.
-        uint64_t _storeSerial;      ///< That identity's serial number, which isOf() compares.
+        Store const* _store;        ///< The store; never null, valid while it is alive.
+        uint64_t _storeSerial;      ///< Its identity's serial number, which isOf() compares.
         std::weak_ptr<void> _alive; ///< The store's alive-token; expired once the store is destroyed.
     };
 } // namespace detail

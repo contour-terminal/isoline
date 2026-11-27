@@ -13,8 +13,11 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
+#include <vector>
 
 #include <isoline/api/CallError.hpp>
 #include <isoline/api/Engine.hpp>
@@ -35,8 +38,10 @@ using isoline::api::CallFailure;
 using isoline::api::DefineError;
 using isoline::api::Engine;
 using isoline::api::ExportAccessError;
+using isoline::api::Extern;
 using isoline::api::ExternKind;
 using isoline::api::ForeignHandle;
+using isoline::api::ForeignImport;
 using isoline::api::FuncType;
 using isoline::api::Global;
 using isoline::api::GlobalAccessError;
@@ -46,19 +51,25 @@ using isoline::api::HostFailure;
 using isoline::api::HostFailureKind;
 using isoline::api::I32;
 using isoline::api::I64;
+using isoline::api::ImportCountMismatch;
 using isoline::api::Imports;
 using isoline::api::InitValueMismatch;
 using isoline::api::Instance;
+using isoline::api::InstantiateError;
 using isoline::api::InvalidType;
 using isoline::api::InvalidTypeReason;
 using isoline::api::Limit;
 using isoline::api::LimitExceeded;
+using isoline::api::Linkage;
+using isoline::api::LinkError;
+using isoline::api::LinkErrorCode;
 using isoline::api::makeHostFunction;
 using isoline::api::MemoryAccessError;
 using isoline::api::MemoryGrowthError;
 using isoline::api::MemorySize;
 using isoline::api::MemoryType;
 using isoline::api::MismatchKind;
+using isoline::api::Module;
 using isoline::api::Ref;
 using isoline::api::RefKind;
 using isoline::api::Refusal;
@@ -408,6 +419,17 @@ TEST_CASE("Externs.instanceAfterStoreDeleteIsAnError", "[api]")
     CHECK(errorOf(later.setGlobal(global, I32 { 1 })) == GlobalAccessError::ForeignHandle);
     CHECK(errorOf(later.tableGet(table, 0)) == TableAccessError::ForeignHandle);
     CHECK(errorOf(later.growTable(table, 1, nullFunc())) == TableGrowthError { ForeignHandle {} });
+    // Calls and positional instantiation alike, the later store's own instance included.
+    auto const foreignCall = CallError { .detail = ForeignHandle {}, .refusedGrowth = {} };
+    CHECK(errorOf(later.call(function, {}, results)) == foreignCall);
+    CHECK(errorOf(laterInstance.call(function, {}, results)) == foreignCall);
+    auto importer = ModuleBuilder {};
+    importer.importMemory("x", "m", atLeast(1));
+    auto const importing = fixture.engine.load(importer.build());
+    REQUIRE(importing.has_value());
+    auto const deletedExterns = std::array<Extern, 1> { memory };
+    CHECK(errorOf(later.instantiateByPosition(*importing, deletedExterns))
+          == InstantiateError { ForeignImport { .index = 0 } });
     CHECK(callI32(laterInstance, "f") == 5);
 }
 
@@ -432,26 +454,33 @@ namespace
 ///         (local.tee 0) (global.set $g) (table.set $t (i32.const 0) (local.get 0)))
 ///       (func (export "clear") (global.set $g (ref.null exn)) (table.set $t (i32.const 0) (ref.null exn)))
 ///       (func (export "throw") (throw $e))
+///       (func (export "catch") (result exnref)
+///         (block (result exnref) (try_table (catch_all_ref 0) (throw $e)) (unreachable)))
 ///       (export "g" (global $g)) (export "t" (table $t)))
 ModuleBuilder stashModule()
 {
     auto const exnRef = isoline::binary::ExnRef;
     auto builder = ModuleBuilder {};
+    auto const caught = isoline::binary::testing::Bytes { 0x02, 0x69, 0x1F, 0x40, 0x01, 0x03,
+                                                          0x00, 0x08, 0x00, 0x0B, 0x00, 0x0B };
     builder.type(FuncType {})
+        .type(FuncType { .params = {}, .results = { exnRef } })
         .table(TableType { .element = exnRef, .limits = atLeast(1) })
         .tag(0)
         .global(GlobalType { .type = exnRef, .mutability = Mutability::Var }, { 0xD0, 0x69 })
         .function(0,
                   { exnRef },
-                  code({ { 0x02, 0x69, 0x1F, 0x40, 0x01, 0x03, 0x00, 0x08, 0x00, 0x0B, 0x00, 0x0B }, // catch
+                  code({ caught,
                          { 0x22, 0x00, 0x24, 0x00 }, // local.tee 0; global.set 0
                          i32Const(0),
                          { 0x20, 0x00, 0x26, 0x00 } })) // local.get 0; table.set 0
         .function(0, {}, code({ { 0xD0, 0x69, 0x24, 0x00 }, i32Const(0), { 0xD0, 0x69, 0x26, 0x00 } }))
         .function(0, {}, code({ { 0x08, 0x00 } }))
+        .function(1, {}, code({ caught }))
         .exportFunction("stash", 0)
         .exportFunction("clear", 1)
         .exportFunction("throw", 2)
+        .exportFunction("catch", 3)
         .exportEntity("g", ExternKind::Global, 0)
         .exportEntity("t", ExternKind::Table, 0);
     return builder;
@@ -460,8 +489,10 @@ ModuleBuilder stashModule()
 /// Where the embedder reads the stashed exnref from.
 enum class StashedIn : uint8_t
 {
-    Global, ///< Store::globalValue().
-    Table,  ///< Store::tableGet().
+    Global,          ///< Store::globalValue().
+    Table,           ///< Store::tableGet().
+    InstanceResult,  ///< The result of the guest's catch, called by Instance::call().
+    StoreCallResult, ///< The result of the guest's catch, called by Store::call().
 };
 
 } // namespace
@@ -471,7 +502,8 @@ TEST_CASE("Externs.exnrefReadFromTheStoreEscapes", "[api]")
     // The embedder reads the exnref the guest stashed; the guest then drops its own references. The
     // embedder holds it, so the sweep the next throw makes in the full arena must not reclaim it.
     auto const row = GENERATE(from_range(engineRows()));
-    auto const where = GENERATE(StashedIn::Global, StashedIn::Table);
+    auto const where =
+        GENERATE(StashedIn::Global, StashedIn::Table, StashedIn::InstanceResult, StashedIn::StoreCallResult);
     auto config = configOf(ContractLimits {}, row);
     config.store.maxExceptions = 1;
     auto fixture = Fixture { config };
@@ -480,13 +512,25 @@ TEST_CASE("Externs.exnrefReadFromTheStoreEscapes", "[api]")
     REQUIRE(instance.call(exported(instance.function("stash")), {}, {}).has_value());
 
     auto const held = [&] {
-        if (where == StashedIn::Global)
+        auto results = std::array<Value, 1> {};
+        auto const catcher = exported(instance.function("catch"));
+        // A result's exnref is a second exception: the stashed one is dropped first, so that the arena
+        // of one has room for it.
+        if (where == StashedIn::InstanceResult || where == StashedIn::StoreCallResult)
+            REQUIRE(instance.call(exported(instance.function("clear")), {}, {}).has_value());
+        switch (where)
         {
-            auto const value = valueOf(store.globalValue(exported(instance.global("g"))));
-            REQUIRE(std::holds_alternative<Ref>(value));
-            return std::get<Ref>(value);
+            case StashedIn::Global:
+                results[0] = valueOf(store.globalValue(exported(instance.global("g"))));
+                break;
+            case StashedIn::Table:
+                results[0] = valueOf(store.tableGet(exported(instance.table("t")), 0));
+                break;
+            case StashedIn::InstanceResult: REQUIRE(instance.call(catcher, {}, results).has_value()); break;
+            case StashedIn::StoreCallResult: REQUIRE(store.call(catcher, {}, results).has_value()); break;
         }
-        return valueOf(store.tableGet(exported(instance.table("t")), 0));
+        REQUIRE(std::holds_alternative<Ref>(results[0]));
+        return std::get<Ref>(results[0]);
     }();
     REQUIRE(held.kind == RefKind::Exn);
     REQUIRE(instance.call(exported(instance.function("clear")), {}, {}).has_value());
@@ -887,4 +931,234 @@ TEST_CASE("Externs.liveHostHandlesNameTheirStore", "[api]")
     CHECK(&table.store() == &store.id());
     CHECK(&global.store() == &store.id());
     CHECK(memory.store().serial() == store.id().serial());
+    // An instance's handles alike, a tag's included.
+    auto const instance = fixture.instantiate();
+    CHECK(&exported(instance.tag("e")).store() == &store.id());
+}
+
+namespace
+{
+
+/// A host function returning @p answer as an i32, counting its calls in @p calls.
+std::shared_ptr<isoline::api::IHostFunction> answering(uint32_t answer, std::size_t& calls)
+{
+    return makeHostFunction(
+        [answer, &calls](HostContext&,
+                         std::span<Value const>,
+                         std::span<Value> results) noexcept -> std::expected<void, Abrupt> {
+            ++calls;
+            results[0] = I32 { answer };
+            return {};
+        });
+}
+
+/// Imports a function and a global under one name, ("m", "x"), which Imports holds one definition of,
+/// and exports their sum:
+///
+///     (module
+///       (import "m" "x" (func $x (result i32))) (import "m" "x" (global $x i32))
+///       (func (export "sum") (result i32) (i32.add (call $x) (global.get $x))))
+ModuleBuilder sameNameTwoTypes()
+{
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = { TypeI32 } })
+        .importFunction("m", "x", 0)
+        .importGlobal("m", "x", GlobalType { .type = TypeI32, .mutability = Mutability::Const })
+        .function(0, {}, code({ { 0x10, 0x00 }, { 0x23, 0x00 }, { 0x6A } })) // call 0; global.get 0; i32.add
+        .exportFunction("sum", 1);
+    return builder;
+}
+
+/// Loads @p builder's module with @p fixture's engine, which must load.
+Module loaded(Fixture const& fixture, ModuleBuilder const& builder)
+{
+    auto module = fixture.engine.load(builder.build());
+    REQUIRE(module.has_value());
+    return *std::move(module);
+}
+
+} // namespace
+
+TEST_CASE("Externs.positionalSameNameTwoTypes", "[api]")
+{
+    auto const row = GENERATE(from_range(engineRows()));
+    auto fixture = Fixture { row };
+    auto& store = *fixture.store;
+    auto calls = std::size_t { 0 };
+    auto const function =
+        valueOf(store.define(FuncType { .params = {}, .results = { TypeI32 } }, answering(40, calls)));
+    auto const global = valueOf(
+        store.defineGlobal(GlobalType { .type = TypeI32, .mutability = Mutability::Const }, I32 { 2 }));
+    auto const module = loaded(fixture, sameNameTwoTypes());
+
+    // By name, one definition serves both imports, and fits only one of them.
+    auto imports = Imports {};
+    imports.define("m", "x", function);
+    CHECK(imports.resolve(module) == std::vector { Linkage::Satisfied, Linkage::Unsatisfied });
+    imports.define("m", "x", global);
+    CHECK(imports.resolve(module) == std::vector { Linkage::Unsatisfied, Linkage::Satisfied });
+    CHECK(errorOf(store.instantiate(module, imports))
+          == InstantiateError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+
+    // By position, each import has its own extern, so both link.
+    auto const externs = std::array<Extern, 2> { function, global };
+    auto const instance = valueOf(store.instantiateByPosition(module, externs));
+    CHECK(callI32(instance, "sum") == 42);
+    CHECK(calls == 1);
+
+    // A positional extern of another kind than its import's is refused as a named definition is.
+    auto const swapped = std::array<Extern, 2> { global, function };
+    CHECK(errorOf(store.instantiateByPosition(module, swapped))
+          == InstantiateError { LinkError { LinkErrorCode::IncompatibleImportType, 0 } });
+}
+
+TEST_CASE("Externs.positionalCountMismatch", "[api]")
+{
+    auto const row = GENERATE(from_range(engineRows()));
+    auto fixture = Fixture { row };
+    auto& store = *fixture.store;
+    auto calls = std::size_t { 0 };
+    auto const function =
+        valueOf(store.define(FuncType { .params = {}, .results = { TypeI32 } }, answering(1, calls)));
+    auto const global = valueOf(
+        store.defineGlobal(GlobalType { .type = TypeI32, .mutability = Mutability::Const }, I32 { 2 }));
+    auto const module = loaded(fixture, sameNameTwoTypes());
+    auto const memories = store.used(Limit::Memories);
+
+    auto const tooFew = std::array<Extern, 1> { function };
+    CHECK(errorOf(store.instantiateByPosition(module, tooFew))
+          == InstantiateError { ImportCountMismatch { .expected = 2, .given = 1 } });
+    auto const tooMany = std::array<Extern, 3> { function, global, global };
+    CHECK(errorOf(store.instantiateByPosition(module, tooMany))
+          == InstantiateError { ImportCountMismatch { .expected = 2, .given = 3 } });
+    CHECK(errorOf(store.instantiateByPosition(module, {}))
+          == InstantiateError { ImportCountMismatch { .expected = 2, .given = 0 } });
+    // Refused before anything ran or was added.
+    CHECK(calls == 0);
+    CHECK(runtimeOf(store).functionCount() == 1);
+    CHECK(store.used(Limit::Memories) == memories);
+    // A module of no imports takes no externs.
+    CHECK(valueOf(store.instantiateByPosition(loaded(fixture, everyKind()), {})).exportAt(0).has_value());
+}
+
+TEST_CASE("Externs.positionalForeignImport", "[api]")
+{
+    auto const row = GENERATE(from_range(engineRows()));
+    auto storeA = Fixture { row };
+    auto storeB = Fixture { row };
+    auto calls = std::size_t { 0 };
+    auto const own =
+        valueOf(storeA.store->define(FuncType { .params = {}, .results = { TypeI32 } }, answering(1, calls)));
+    auto const foreign = valueOf(storeB.store->defineGlobal(
+        GlobalType { .type = TypeI32, .mutability = Mutability::Const }, I32 { 2 }));
+    auto const module = loaded(storeA, sameNameTwoTypes());
+    auto const externs = std::array<Extern, 2> { own, foreign };
+    CHECK(errorOf(storeA.store->instantiateByPosition(module, externs))
+          == InstantiateError { ForeignImport { .index = 1 } });
+    CHECK(calls == 0);
+    // A module of another engine is refused first, whatever its externs.
+    auto otherConfig = configOf({}, row);
+    otherConfig.features = isoline::api::FeatureSet::wasm2();
+    auto const otherEngine = Engine { otherConfig };
+    auto const otherModule = otherEngine.load(sameNameTwoTypes().build());
+    REQUIRE(otherModule.has_value());
+    CHECK(std::holds_alternative<isoline::api::EngineMismatch>(
+        errorOf(storeA.store->instantiateByPosition(*otherModule, externs))));
+}
+
+TEST_CASE("Externs.importsDefineEveryKind", "[api]")
+{
+    // Imports::define() of an Extern of each kind snapshots its type: resolve() compares it without a
+    // store, and the store that made it links it by name.
+    auto const row = GENERATE(from_range(engineRows()));
+    auto fixture = Fixture { row };
+    auto const exporter = fixture.instantiate();
+    auto const exporterModule = loaded(fixture, everyKind());
+    auto imports = Imports {};
+    for (auto const [index, description]: core::views::enumerate(exporterModule.exports()))
+        imports.define(
+            "x", std::string { description.name }, valueOf(exporter.exportAt(static_cast<uint32_t>(index))));
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = {}, .results = { TypeI32 } })
+        .type(FuncType { .params = { TypeI32 }, .results = {} })
+        .importGlobal("x", "g", GlobalType { .type = TypeI32, .mutability = Mutability::Var })
+        .importTag("x", "e", 1)
+        .importFunction("x", "f", 0)
+        .importMemory("x", "m", atLeast(1))
+        .importTable("x", "t", TableType { .element = isoline::binary::FuncRef, .limits = atLeast(2) })
+        .importGlobal("x", "c", GlobalType { .type = TypeI32, .mutability = Mutability::Const })
+        .exportFunction("f", 0);
+    auto const module = loaded(fixture, builder);
+    CHECK(imports.resolve(module) == std::vector<Linkage>(6, Linkage::Satisfied));
+    auto const importer = valueOf(fixture.store->instantiate(module, imports));
+    CHECK(callI32(importer, "f") == 5);
+
+    // A type the snapshot tells apart: a mutable global for a const import, a larger table.
+    auto mismatched = ModuleBuilder {};
+    mismatched.importGlobal("x", "g", GlobalType { .type = TypeI32, .mutability = Mutability::Const })
+        .importTable("x", "t", TableType { .element = isoline::binary::FuncRef, .limits = between(0, 1) })
+        .importMemory("x", "m", between(0, 1))
+        .importGlobal("x", "c", GlobalType { .type = isoline::binary::I64, .mutability = Mutability::Const });
+    CHECK(imports.resolve(loaded(fixture, mismatched)) == std::vector<Linkage>(4, Linkage::Unsatisfied));
+
+    // A host-made memory's snapshot: its page size, which a memory of the default page size does not fit.
+    imports.define(
+        "x",
+        "tiny",
+        valueOf(fixture.store->defineMemory(MemoryType { .limits = atLeast(1), .pageSizeLog2 = 0 })));
+    auto pageSized = ModuleBuilder {};
+    pageSized.importMemory("x", "tiny", atLeast(1)).importMemory("x", "m", atLeast(1));
+    CHECK(imports.resolve(loaded(fixture, pageSized))
+          == std::vector { Linkage::Unsatisfied, Linkage::Satisfied });
+}
+
+TEST_CASE("Externs.storeCallHostFunction", "[api]")
+{
+    auto const row = GENERATE(from_range(engineRows()));
+    auto fixture = Fixture { row };
+    auto& store = *fixture.store;
+    auto calls = std::size_t { 0 };
+    auto const function =
+        valueOf(store.define(FuncType { .params = {}, .results = { TypeI32 } }, answering(17, calls)));
+    // No instance exists: the store calls its own function.
+    auto results = std::array<Value, 1> {};
+    REQUIRE(store.call(function, {}, results).has_value());
+    CHECK(results[0] == Value { I32 { 17 } });
+    CHECK(calls == 1);
+    // An exported function, without its instance.
+    auto const instance = fixture.instantiate();
+    auto const exportedFunction = exported(instance.function("f"));
+    REQUIRE(store.call(exportedFunction, {}, results).has_value());
+    CHECK(results[0] == Value { I32 { 5 } });
+    // A guest's trap is the call's, as through an instance.
+    auto trapping = ModuleBuilder {};
+    trapping.type(FuncType {}).function(0, {}, code({ { 0x00 } })).exportFunction("trap", 0);
+    auto const trapper = fixture.instantiate(trapping);
+    auto const trapped = store.call(exported(trapper.function("trap")), {}, {});
+    CHECK(errorOf(trapped).failure() == CallFailure::Trap);
+    CHECK(std::get<Trap>(errorOf(trapped).detail).code == TrapCode::Unreachable);
+}
+
+TEST_CASE("Externs.storeCallArgumentMismatch", "[api]")
+{
+    auto const row = GENERATE(from_range(engineRows()));
+    auto fixture = Fixture { row };
+    auto& store = *fixture.store;
+    auto calls = std::size_t { 0 };
+    auto const function = valueOf(
+        store.define(FuncType { .params = { TypeI32 }, .results = { TypeI32 } }, answering(3, calls)));
+    auto results = std::array<Value, 1> {};
+    auto const wrongType = std::array<Value, 1> { I64 { 1 } };
+    auto const wrongCount = std::array<Value, 2> { I32 { 1 }, I32 { 2 } };
+    auto const right = std::array<Value, 1> { I32 { 1 } };
+    CHECK(errorOf(store.call(function, wrongType, results)).failure() == CallFailure::ArgumentMismatch);
+    CHECK(std::get<ValueMismatch>(errorOf(store.call(function, wrongType, results)).detail).kind
+          == MismatchKind::Kind);
+    CHECK(errorOf(store.call(function, wrongCount, results)).failure() == CallFailure::ArgumentMismatch);
+    CHECK(errorOf(store.call(function, {}, results)).failure() == CallFailure::ArgumentMismatch);
+    CHECK(errorOf(store.call(function, right, {})).failure() == CallFailure::ArgumentMismatch);
+    // No call entered the host function.
+    CHECK(calls == 0);
+    REQUIRE(store.call(function, right, results).has_value());
+    CHECK(calls == 1);
 }

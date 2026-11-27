@@ -20,8 +20,7 @@ enum class CallFailure : uint8_t
     UncaughtException, ///< The guest threw an exception no handler caught.
     ArgumentMismatch,  ///< The arguments, or the number of result slots, do not fit the function: no
                        ///< guest code ran.
-    ForeignHandle,     ///< The function is another store's: no guest code ran. Reserved: Instance::call()
-                       ///< checks that as a precondition.
+    ForeignHandle,     ///< The function is another store's (or a store's that is gone): no guest code ran.
     StoreDeleted,      ///< The instance's store is gone: nothing ran, and nothing was read.
 };
 
