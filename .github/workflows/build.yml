@@ -124,15 +124,19 @@ jobs:
         working-directory: out/clang-coverage
         run: |
           "llvm-profdata-$LLVM_VERSION" merge -sparse profiles/*.profraw -o isoline.profdata
-          # The unit tests and the spec runner both exercise src/isoline/; the ratchet covers it alone.
+          # The test binaries all exercise src/isoline/; the ratchet covers it alone.
           # llvm-cov warns "N functions have mismatched data", which is benign: a binary that includes a
           # header's inline or constexpr function without emitting it (it calls none, or only in constant
           # evaluation, as the spec runner does FeatureSet::all()) carries clang's
           # placeholder record for it, of hash 0 and all counts zero, while the profile holds the record of
           # the binaries that do emit it. llvm-cov drops the placeholder and keeps the real counts.
-          objects=(src/isoline/isoline_test -object tests/spec/isoline_spec_runner
-                   -object tests/spec/isoline_spectest_test -object src/isoline/text/isoline_text_test
-                   -object src/isoline/cli/isoline_cli_test -object src/isoline/cli/isoline)
+          # Every test binary and the C API's shared library, as the build lists them
+          # (cmake/IsolineCoverage.cmake): the first is the main object, the rest are -object arguments.
+          mapfile -t binaries < coverage-binaries.txt
+          objects=("${binaries[0]}")
+          for binary in "${binaries[@]:1}"; do
+            objects+=(-object "$binary")
+          done
           ignore='vendor/|_deps/|^/usr/|_test\.cpp$|/out/|/tests/|/testing/'
           "llvm-cov-$LLVM_VERSION" report "${objects[@]}" -instr-profile=isoline.profdata \
             -ignore-filename-regex="$ignore" | tee coverage-summary.txt

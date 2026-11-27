@@ -13,6 +13,11 @@
  *                 functions cannot carry a convention.
  * ISOLINE_NOEXCEPT what every isoline_ declaration ends with: noexcept in C++, nothing in C. No C++
  *                 exception ever crosses the boundary.
+ * WASM_API_EXTERN wasm.h's annotation of its own functions, defined here to ISOLINE_API unless already
+ *                 defined, so one definition of ISOLINE_C_STATIC selects the static library for both.
+ *                 Every header of the C API includes this one before wasm.h. A program that includes
+ *                 wasm.h first, or alone, gets wasm.h's own annotation, which LIBWASM_STATIC switches
+ *                 the same way.
  *
  * Like wasm.h's WASM_API_EXTERN, ISOLINE_API may be defined before this header is included; the
  * library's symbol lint (scripts/c-api-symbols.py) does so to find every declaration.
@@ -43,4 +48,8 @@
     #define ISOLINE_NOEXCEPT noexcept
 #else
     #define ISOLINE_NOEXCEPT
+#endif
+
+#if !defined(WASM_API_EXTERN)
+    #define WASM_API_EXTERN ISOLINE_API
 #endif

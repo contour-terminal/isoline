@@ -83,6 +83,51 @@ class CApiSymbolsTest(unittest.TestCase):
         _, problems = symbols.readList(self.writeList(["isoline a"]))
         self.assertIn("is not one name", problems[0])
 
+    def defined(self, text):
+        header = pathlib.Path(self.directory.name) / "fixture.h"
+        header.write_text(text, encoding="utf-8")
+        return symbols.definedAggregates(symbols.preprocess(COMPILER, INCLUDES, header))
+
+    def testStructsAreFoundAsDefined(self):
+        found = self.defined("#include <stddef.h>\n"
+                             "typedef struct isoline_named_t { int a; } isoline_named_t;\n"
+                             "typedef struct { union { int b; } of; struct isoline_inner_t { int c; } inner; } "
+                             "isoline_anonymous_t;\n"
+                             "struct isoline_tagged_t { int d; };\n"
+                             "union isoline_union_t { int e; };\n"
+                             "typedef struct isoline_opaque_t isoline_opaque_t;\n"
+                             "struct isoline_tagged_t* isoline_make(void);\n"
+                             "struct other_t { int f; };\n")
+        # Opaque, nested and foreign structs are owed no row.
+        self.assertEqual(found, ["isoline_anonymous_t", "isoline_named_t", "isoline_tagged_t", "isoline_union_t"])
+
+    def testEveryVectorOfWasmHIsAStruct(self):
+        found = self.defined("#include <wasm.h>\n")
+        self.assertIn("wasm_valtype_vec_t", found)
+        self.assertIn("wasm_val_t", found)
+        self.assertEqual(len([name for name in found if name.endswith("_vec_t")]), 13)
+
+    def testLayoutProblems(self):
+        self.assertEqual(symbols.layoutProblems(["isoline_a_t"], ["isoline_a_t"]), [])
+        self.assertEqual(symbols.layoutProblems(["isoline_a_t", "isoline_b_t"], ["isoline_a_t"]),
+                         ["isoline_b_t: defined by the header, and no ISOLINE_LAYOUT_STRUCT row"])
+        self.assertEqual(symbols.layoutProblems([], ["isoline_c_t"]),
+                         ["isoline_c_t: an ISOLINE_LAYOUT_STRUCT row, and the header defines no such struct"])
+
+    def testTheCheckedInLayoutRowsAreComplete(self):
+        result = self.run_("layout", "--compiler", COMPILER, *[f"-I{include}" for include in INCLUDES],
+                           "--layout", ROOT / "src/isoline/c/abi/layout.def", ROOT / "src/isoline/c/isoline.h")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def testStructWithoutRowFailsTheLint(self):
+        layout = pathlib.Path(self.directory.name) / "layout.def"
+        rows = (ROOT / "src/isoline/c/abi/layout.def").read_text(encoding="utf-8")
+        layout.write_text(rows.replace("ISOLINE_LAYOUT_STRUCT(wasm_tagtype_vec_t, 16, 8)\n", ""), encoding="utf-8")
+        result = self.run_("layout", "--compiler", COMPILER, *[f"-I{include}" for include in INCLUDES],
+                           "--layout", layout, ROOT / "src/isoline/c/isoline.h")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wasm_tagtype_vec_t: defined by the header, and no ISOLINE_LAYOUT_STRUCT row", result.stderr)
+
     def testElfExportsIgnoreTheVersionNode(self):
         listing = ("0000000000000000 A ISOLINE_C_0.1\n"
                    "0000000000001100 T isoline_abi_version@@ISOLINE_C_0.1\n"

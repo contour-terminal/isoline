@@ -53,8 +53,9 @@ set(_isolineMsvcWarnings
     /Zc:__cplusplus)
 
 # The C sources (the C API's tests) and every C header a consumer includes: the set the C API promises
-# its headers compile under (plan P17a, Global Constraints).
-set(_isolineGnuStyleCWarnings
+# its headers compile under (plan P17a, Global Constraints, D9), which c-headers-standalone compiles each
+# header alone with (tests/c/HeaderLint.cmake).
+set(ISOLINE_C_API_GNU_WARNINGS
     -Wall
     -Wextra
     -Wpedantic
@@ -105,7 +106,7 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX ${_isolineGccOverrides})
     endif()
-    _isoline_supported_flags(ISOLINE_C_WARNINGS C -fdiagnostics-color=always ${_isolineGnuStyleCWarnings})
+    _isoline_supported_flags(ISOLINE_C_WARNINGS C -fdiagnostics-color=always ${ISOLINE_C_API_GNU_WARNINGS})
     _isoline_supported_flags(ISOLINE_TEST_COMPILE_OPTIONS CXX ${_isolineTestWarnings})
     if(ISOLINE_WERROR)
         list(APPEND ISOLINE_COMPILE_OPTIONS -Werror)
@@ -203,7 +204,8 @@ endfunction()
 ## TEST marks a test binary, which additionally gets the test-only warning adjustments and, where
 ## core-cpp provides it, core::testing_dialogs: on Windows a failed assertion, std::abort() or a crash
 ## then reports to stderr and ends the process, instead of opening a dialog (the Debug CRT's abort
-## dialog, Windows Error Reporting) that waits for a click and holds the run until its timeout.
+## dialog, Windows Error Reporting) that waits for a click and holds the run until its timeout. A test
+## executable is also one of the binaries the coverage report reads (cmake/IsolineCoverage.cmake).
 function(isoline_apply_target_policy target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "TEST" "" "")
     set(cxxWarnings ${ISOLINE_CXX_WARNINGS})
@@ -237,6 +239,9 @@ function(isoline_apply_target_policy target)
     get_target_property(type ${target} TYPE)
     if(type STREQUAL "EXECUTABLE" OR type STREQUAL "SHARED_LIBRARY")
         set(linkOptions ${ISOLINE_LINK_OPTIONS})
+    endif()
+    if(arg_TEST AND type STREQUAL "EXECUTABLE")
+        isoline_coverage_binary(${target})
     endif()
     isoline_apply_build_options(${target} COMPILE ${compileOptions} ${languageOptions} LINK ${linkOptions})
     isoline_apply_tidy_command(${target})

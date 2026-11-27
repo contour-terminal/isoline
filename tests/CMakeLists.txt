@@ -161,6 +161,18 @@ if(NOT ISOLINE_MODULES AND CMAKE_GENERATOR MATCHES "^Ninja")
     set_tests_properties(modules-off-build PROPERTIES LABELS lint TIMEOUT 60)
 endif()
 
+# The binaries the coverage report reads (cmake/IsolineCoverage.cmake): every test executable, and the C
+# API's shared library, whose code the C tests reach through it. A test executable of each kind stands for
+# the rule that lists it.
+set(isolineRequiredCoverageBinaries "$<TARGET_FILE:isoline_test>" "$<TARGET_FILE:isoline_spec_runner>")
+if(TARGET isoline_c_shared)
+    list(APPEND isolineRequiredCoverageBinaries "$<TARGET_FILE:isoline_c_shared>" "$<TARGET_FILE:isoline_c_test>")
+endif()
+add_test(NAME coverage-binaries
+         COMMAND "${CMAKE_COMMAND}" "-DLIST=${ISOLINE_COVERAGE_BINARIES_FILE}"
+                 "-DREQUIRED=${isolineRequiredCoverageBinaries}" -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckCoverageBinaries.cmake")
+set_tests_properties(coverage-binaries PROPERTIES LABELS lint)
+
 # The coverage ratchet's checker, tested on fixture reports: it needs Python, not a coverage build.
 # The Python tests name the interpreter by its path, not as the imported target Python3::Interpreter:
 # CMake runs an executable target through CMAKE_CROSSCOMPILING_EMULATOR, and a cross build's emulator

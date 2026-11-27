@@ -147,6 +147,10 @@ else()
     set_target_properties(isoline_c_shared PROPERTIES OUTPUT_NAME isoline_c)
 endif()
 
+# The C tests run the C API's code in this library, which no test executable contains: the coverage report
+# reads it beside them (cmake/IsolineCoverage.cmake).
+isoline_coverage_binary(isoline_c_shared)
+
 # What it exports: wasm_* and isoline_*, under the ABI's version node (cmake/IsolineCExports.cmake).
 isoline_c_export_rules(isoline_c_shared MAP "${CMAKE_CURRENT_SOURCE_DIR}/isoline_c.map"
                        SYMBOLS "${CMAKE_CURRENT_SOURCE_DIR}/exported-symbols.txt")
@@ -225,7 +229,8 @@ endif()
 # library, which carries them. The C tests, which see the public headers only, are tests/c/.
 if(ISOLINE_TESTING)
     file(GLOB_RECURSE isolineCTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
-    add_executable(isoline_c_test ${isolineCTestSources})
+    # The C test support compiled as C, a callback the C++ tests call through the C API's trampoline.
+    add_executable(isoline_c_test ${isolineCTestSources} "${CMAKE_CURRENT_SOURCE_DIR}/testing/CallingConventionProbe.c")
     target_link_libraries(isoline_c_test PRIVATE isoline::c_static Catch2::Catch2WithMain)
     target_include_directories(isoline_c_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
     isoline_apply_target_policy(isoline_c_test TEST)

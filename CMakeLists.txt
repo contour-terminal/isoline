@@ -42,6 +42,7 @@ endif()
 
 include(IsolineOptions)
 include(IsolineDependencies)
+include(IsolineCoverage)
 include(IsolinePedantic)
 include(IsolineCappedTest)
 include(IsolineModules)
@@ -55,6 +56,8 @@ add_subdirectory(src/isoline)
 
 if(ISOLINE_TESTING)
     add_subdirectory(tests)
+    # Once every directory has added its test binaries.
+    isoline_write_coverage_binaries()
 endif()
 
 # Last, because it installs and exports library targets every directory above has created.

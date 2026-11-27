@@ -52,8 +52,30 @@ if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
              COMMAND "${Python3_EXECUTABLE}" -I "${isolineSymbolsScript}" check-list --compiler "${CMAKE_C_COMPILER}"
                      -I "${PROJECT_SOURCE_DIR}/src" -I "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include"
                      --list "${isolineSymbolList}" --implemented "${PROJECT_SOURCE_DIR}/src/isoline/c/isoline.h")
-    set_tests_properties(c-api-symbols-selftest c-api-symbols-list PROPERTIES LABELS lint)
+    # Every struct the headers define, wasm.h's vectors included, has its layout rows (src/isoline/c/abi/layout.def),
+    # which the layout tests hold to the compiler.
+    add_test(NAME c-api-layout-rows
+             COMMAND "${Python3_EXECUTABLE}" -I "${isolineSymbolsScript}" layout --compiler "${CMAKE_C_COMPILER}"
+                     -I "${PROJECT_SOURCE_DIR}/src" -I "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include"
+                     --layout "${PROJECT_SOURCE_DIR}/src/isoline/c/abi/layout.def" "${PROJECT_SOURCE_DIR}/src/isoline/c/isoline.h")
+    set_tests_properties(c-api-symbols-selftest c-api-symbols-list c-api-layout-rows PROPERTIES LABELS lint)
 endif()
+
+# --- the boundary --------------------------------------------------------------
+#
+# No C++ exception crosses the C API and every call across it has its convention: each isoline_
+# declaration is ISOLINE_API ... ISOLINE_CALL ... ISOLINE_NOEXCEPT, each function pointer a header declares
+# is (ISOLINE_CALL* name), each isoline_ definition noexcept and each wasm_ body one detail::boundary() call
+# (scripts/c-api-noexcept.py; its selftest breaks each rule once).
+file(GLOB isolineBoundaryHeaders CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/isoline/c/*.h")
+file(GLOB_RECURSE isolineBoundarySources CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/isoline/c/*.cpp")
+list(FILTER isolineBoundarySources EXCLUDE REGEX "_test[.]cpp$")
+add_test(NAME c-api-noexcept-selftest
+         COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-noexcept_test.py")
+add_test(NAME c-api-noexcept
+         COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/c-api-noexcept.py"
+                 ${isolineBoundaryHeaders} ${isolineBoundarySources})
+set_tests_properties(c-api-noexcept-selftest c-api-noexcept PROPERTIES LABELS lint)
 
 # How each object format is inspected: format|export-listing tool|name-reading tool|the file whose names
 # are read|the name it must carry. The tools are looked up by the names given, the first found wins.
@@ -118,6 +140,15 @@ add_test(NAME c-library-names
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckLibraryName.cmake")
 set_tests_properties(c-library-names PROPERTIES LABELS lint)
 
+# --- every header alone --------------------------------------------------------
+#
+# Each C header of the C API, and the vendored wasm.h, compiles alone as C11, C17 and C++23 under the C
+# API's warning set (tests/c/HeaderLint.cmake), with this tree's compiler.
+include("${CMAKE_CURRENT_SOURCE_DIR}/HeaderLint.cmake")
+file(GLOB isolineLintedHeaders CONFIGURE_DEPENDS RELATIVE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src/isoline/c/*.h")
+isoline_c_header_lint(HEADERS ${isolineLintedHeaders} wasm.h
+                      INCLUDE_DIRECTORIES "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/vendor/wasm-c-api/include")
+
 # --- position-independent code -------------------------------------------------
 #
 # Only the shared library pays for PIC: isoline_core and the core-cpp libraries are compiled as the
@@ -179,6 +210,7 @@ endif()
 # (tests/c/CheckInstall.cmake). A cross build checks the layout alone: its consumer would need the cross
 # toolchain.
 if(ISOLINE_INSTALL)
+    include(GNUInstallDirs)
     set(isolineConsumerArguments "")
     if(NOT CMAKE_CROSSCOMPILING)
         # The pkg-config consumer, wherever pkg-config is the way a C program finds a library (not
@@ -193,6 +225,7 @@ if(ISOLINE_INSTALL)
     add_test(NAME c-install-layout
              COMMAND "${CMAKE_COMMAND}" "-DBUILD=${PROJECT_BINARY_DIR}" "-DSOURCE=${PROJECT_SOURCE_DIR}"
                      "-DPREFIX=${CMAKE_CURRENT_BINARY_DIR}/install-layout" "-DCONFIG=$<CONFIG>"
+                     "-DLIBDIR=${CMAKE_INSTALL_LIBDIR}"
                      "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}" "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}"
                      "-DCXX_FRONTEND=${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" ${isolineConsumerArguments}
                      -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckInstall.cmake")

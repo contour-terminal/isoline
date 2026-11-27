@@ -14,11 +14,18 @@ check-list   checks the list file against the header: sorted, one name per line,
 exports      checks what a shared library exports against the list file, exactly: a symbol the list
              lacks is a leak through the export rules (version script, exported-symbols list,
              dllexport), and a listed symbol that is missing is an implementation lost.
+layout       checks that every struct and union the header defines (a complete type, of a wasm_ or
+             isoline_ name: wasm.h's and Isoline's, not the system headers' they include) has its
+             ISOLINE_LAYOUT_STRUCT row in the layout file (src/isoline/c/abi/layout.def), and that every
+             such row names one: a struct a caller allocates or reads fields of, without a row, has a
+             layout nothing holds to the ABI. The structs a macro defines (WASM_DECLARE_VEC's) are found as
+             the compiler sees them; a struct or union nested in another is a member, judged with it.
 
 Usage:
   c-api-symbols.py declared --compiler <cc> [-I <dir>]... <header>
   c-api-symbols.py check-list --compiler <cc> [-I <dir>]... --list <file> [--implemented] <header>
   c-api-symbols.py exports --format elf|pe|macho --tool <nm or llvm-readobj> --list <file> <library>
+  c-api-symbols.py layout --compiler <cc> [-I <dir>]... --layout <layout.def> <header>
 """
 
 import argparse
@@ -76,6 +83,59 @@ def preprocess(compiler, includes, header):
 def declaredNames(preprocessed):
     """The names of the functions the preprocessed text declares for export, sorted."""
     return sorted(set(DECLARATION.findall(preprocessed)))
+
+
+# A struct or union head: its keyword and its tag, if any, before the opening brace.
+AGGREGATE_HEAD = re.compile(r"\b(?:struct|union)\b\s*([A-Za-z_][A-Za-z0-9_]*)?\s*\{")
+
+# The prefixes of the names a layout row is owed to: wasm.h's and the C API's own.
+LAYOUT_PREFIXES = ("wasm_", "isoline_")
+
+LAYOUT_ROW = re.compile(r"^ISOLINE_LAYOUT_STRUCT\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,", re.MULTILINE)
+
+
+def definedAggregates(preprocessed):
+    """The names of the structs and unions the preprocessed text defines at file scope, sorted: a typedef's
+    name where the definition is a typedef's (`typedef struct tag { ... } name;`), its tag otherwise. A struct
+    or union within another's braces is a member, and not counted."""
+    names = set()
+    depth = 0
+    index = 0
+    while index < len(preprocessed):
+        char = preprocessed[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif depth == 0:
+            head = AGGREGATE_HEAD.match(preprocessed, index)
+            if head is not None and (index == 0 or not (preprocessed[index - 1].isalnum()
+                                                        or preprocessed[index - 1] == "_")):
+                close = head.end()
+                level = 1
+                while close < len(preprocessed) and level > 0:
+                    level += {"{": 1, "}": -1}.get(preprocessed[close], 0)
+                    close += 1
+                before = preprocessed[max(0, preprocessed.rfind(";", 0, index) + 1):index]
+                alias = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", preprocessed[close:])
+                if re.search(r"\btypedef\b", before) and alias is not None:
+                    names.add(alias.group(1))
+                elif head.group(1) is not None:
+                    names.add(head.group(1))
+                index = close
+                continue
+        index += 1
+    return sorted(name for name in names if name.startswith(LAYOUT_PREFIXES))
+
+
+def layoutProblems(defined, rows):
+    """How the layout rows differ from the structs the header defines."""
+    rowSet = set(rows)
+    definedSet = set(defined)
+    return ([f"{name}: defined by the header, and no ISOLINE_LAYOUT_STRUCT row" for name in defined
+             if name not in rowSet]
+            + [f"{name}: an ISOLINE_LAYOUT_STRUCT row, and the header defines no such struct" for name in rows
+               if name not in definedSet])
 
 
 def readList(path):
@@ -151,6 +211,11 @@ def main(arguments):
         if name == "check-list":
             command.add_argument("--list", required=True)
             command.add_argument("--implemented", action="store_true")
+    layout = commands.add_parser("layout")
+    layout.add_argument("--compiler", required=True)
+    layout.add_argument("-I", dest="includes", action="append", default=[])
+    layout.add_argument("--layout", required=True)
+    layout.add_argument("header")
     exports = commands.add_parser("exports")
     exports.add_argument("--format", required=True, choices=sorted(EXPORT_FORMATS))
     exports.add_argument("--tool", required=True)
@@ -167,6 +232,14 @@ def main(arguments):
         exported, unreadable = exportedNames(result.stdout, options.format)
         return report(problems + unreadable + exportProblems(exported, listed),
                       f"{options.library} exports exactly the {len(listed)} listed symbol(s)")
+
+    if options.command == "layout":
+        defined = definedAggregates(preprocess(options.compiler, options.includes, options.header))
+        rows = LAYOUT_ROW.findall(pathlib.Path(options.layout).read_text(encoding="utf-8"))
+        problems = layoutProblems(defined, rows)
+        if not defined:
+            problems.append(f"{options.header}: defines no struct of a {' or '.join(LAYOUT_PREFIXES)} name")
+        return report(problems, f"{options.layout}: a row for each of the {len(defined)} struct(s) defined")
 
     declared = declaredNames(preprocess(options.compiler, options.includes, options.header))
     if options.command == "declared":

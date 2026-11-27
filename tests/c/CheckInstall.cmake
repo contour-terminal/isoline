@@ -3,6 +3,7 @@
 # Installs the C API's install component, isoline-c, into a scratch prefix and checks its layout:
 #
 #   cmake -DBUILD=<build directory> -DSOURCE=<source directory> -DPREFIX=<scratch prefix> [-DCONFIG=<config>]
+#         -DLIBDIR=<the install's library directory, CMAKE_INSTALL_LIBDIR>
 #         -DCXX_COMPILER=<c++> "-DCXX_FLAGS=<flags>" -DCXX_FRONTEND=<GNU|MSVC>
 #         [-DC_COMPILER=<cc> -DPKG_CONFIG=<pkg-config> "-DC_FLAGS=<flags>" "-DLINK_FLAGS=<flag>;..."]
 #         -P CheckInstall.cmake
@@ -26,6 +27,10 @@
 
 cmake_minimum_required(VERSION 3.25)
 
+# The library directory is the build's, never a guess: a prefix may hold lib/ and lib64/ both.
+if(NOT LIBDIR)
+    message(FATAL_ERROR "CheckInstall: LIBDIR (CMAKE_INSTALL_LIBDIR) is not given")
+endif()
 file(REMOVE_RECURSE "${PREFIX}")
 set(configArguments "")
 if(CONFIG)
@@ -41,8 +46,8 @@ set(missing "")
 
 # The headers: every C header the source tree has, beneath include/isoline/.
 file(GLOB headers RELATIVE "${SOURCE}/src" "${SOURCE}/src/isoline/c/*.h")
-set(expected "include/isoline/wasm.h" "lib*/pkgconfig/isoline-c.pc" "lib*/cmake/isoline/isolineCTargets.cmake"
-             "lib*/isoline/*isoline_core*")
+set(expected "include/isoline/wasm.h" "${LIBDIR}/pkgconfig/isoline-c.pc" "${LIBDIR}/cmake/isoline/isolineCTargets.cmake"
+             "${LIBDIR}/isoline/*isoline_core*")
 foreach(header IN LISTS headers)
     list(APPEND expected "include/isoline/${header}")
 endforeach()
@@ -85,8 +90,8 @@ if(CXX_FRONTEND STREQUAL "GNU")
     endif()
 endif()
 
-file(GLOB pc "${PREFIX}/lib*/pkgconfig/isoline-c.pc")
-if(pc)
+set(pc "${PREFIX}/${LIBDIR}/pkgconfig/isoline-c.pc")
+if(EXISTS "${pc}")
     file(STRINGS "${pc}" pcLines)
     set(fields "")
     foreach(line IN LISTS pcLines)
@@ -119,8 +124,8 @@ endif()
 # A consumer of pkg-config, built by the C compiler and run: first against the shared library, then
 # statically, once the shared library is gone from the prefix.
 if(PKG_CONFIG)
-    file(GLOB pcDirectory LIST_DIRECTORIES true "${PREFIX}/lib*/pkgconfig")
-    get_filename_component(libraryDirectory "${pcDirectory}" DIRECTORY)
+    set(pcDirectory "${PREFIX}/${LIBDIR}/pkgconfig")
+    set(libraryDirectory "${PREFIX}/${LIBDIR}")
     set(consumer "${PREFIX}.pkg-config")
     file(REMOVE_RECURSE "${consumer}")
     file(WRITE "${consumer}/consumer.c"
