@@ -233,7 +233,7 @@
 #   one marked line (exhaustive-switch); Interrupt.stepsChargedPerGranule now checks every row at run time too.
 #
 # P11 Task 12, the next coverage gate after Task 9, entered the canonical files Tasks 10-12 added (canonical/{GuestMemory,
-# LiftLower,Strings,Trap,Unicode}): every line covered but the marked ones, each listed below with its reason; the untaken
+# LiftLower,LiftSteps,Strings,Trap,Unicode}): every line covered but the marked ones, each listed below with its reason; the untaken
 # branches are Requires' failing sides and error returns of a guest memory that cannot fail where it was just checked.
 
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
@@ -345,12 +345,13 @@ src/isoline/component/canonical/Layout.cpp       99.57 88.69
 src/isoline/component/canonical/Layout.hpp       100.00 -
 src/isoline/component/canonical/LiftLower.cpp    98.04 83.26
 src/isoline/component/canonical/LiftLower.hpp    100.00 -
-src/isoline/component/canonical/Strings.cpp      99.66 94.93
+src/isoline/component/canonical/LiftSteps.hpp    100.00 -
+src/isoline/component/canonical/Strings.cpp      99.69 95.12
 src/isoline/component/canonical/Trap.cpp         100.00 90.90
 src/isoline/component/canonical/Trap.hpp         100.00 71.42
 src/isoline/component/canonical/Unicode.hpp      99.06 96.00
-src/isoline/component/canonical/Values.cpp       99.52 90.70
-src/isoline/component/canonical/Values.hpp       100.00 78.26
+src/isoline/component/canonical/Values.cpp       99.53 90.70
+src/isoline/component/canonical/Values.hpp       100.00 78.43
 src/isoline/component/types/TypeArena.cpp        100.00 92.11
 src/isoline/component/types/TypeArena.hpp        100.00 100.00
 src/isoline/component/validate/CoreTypes.cpp     100.00 100.00

@@ -65,7 +65,7 @@ namespace
     }
 
     /// Whether two strings hold the same text, whatever their encodings. Strings whose bytes are not
-    /// text (which only a caller of encodedString() that breaks its contract makes) compare by their
+    /// text (which a host's encodedString() can hold, and lowering refuses) compare by their
     /// text up to the fault and the fault.
     [[nodiscard]] bool sameText(StringValue const& lhs, StringValue const& rhs) noexcept
     {
@@ -680,23 +680,34 @@ ValueBuilder& ValueBuilder::string(std::string_view utf8)
 
 std::span<std::byte> ValueBuilder::encodedString(StringEncoding encoding, uint32_t taggedCodeUnits)
 {
+    return stringSteps(encoding, taggedCodeUnits, GrowthFill::Zeroed);
+}
+
+std::span<std::byte> ValueBuilder::packedElements()
+{
+    return packedSteps(GrowthFill::Zeroed);
+}
+
+std::span<std::byte> ValueBuilder::stringSteps(StringEncoding encoding,
+                                               uint32_t taggedCodeUnits,
+                                               GrowthFill fill)
+{
     auto bytes = std::span<std::byte> {};
     step([&]() -> std::expected<void, ValueError> {
         auto const slot = slotFor(BuildStep::String);
         if (!slot)
             return std::unexpected { slot.error() };
-        return appendString(*slot, encoding, taggedCodeUnits).transform([&](std::span<std::byte> stored) {
-            bytes = stored;
-        });
+        return appendString(*slot, encoding, taggedCodeUnits, fill)
+            .transform([&](std::span<std::byte> stored) { bytes = stored; });
     });
     return bytes;
 }
 
-std::span<std::byte> ValueBuilder::packedElements()
+std::span<std::byte> ValueBuilder::packedSteps(GrowthFill fill)
 {
     auto bytes = std::span<std::byte> {};
     step([&] {
-        return buildPackedElements().transform([&](std::span<std::byte> stored) { bytes = stored; });
+        return buildPackedElements(fill).transform([&](std::span<std::byte> stored) { bytes = stored; });
     });
     return bytes;
 }
@@ -885,7 +896,9 @@ std::expected<void, ValueError> ValueBuilder::buildString(std::string_view utf8)
         return std::unexpected { errorHere(ValueErrorCode::TooLarge,
                                            std::format("a string of {} bytes", bytes.size())) };
     // uncovered-end(string-bytes)
-    auto const stored = appendString(*slot, StringEncoding::Utf8, static_cast<uint32_t>(bytes.size()));
+    // Copied whole over the growth: no zeroing pass first.
+    auto const stored = appendString(
+        *slot, StringEncoding::Utf8, static_cast<uint32_t>(bytes.size()), GrowthFill::ForOverwrite);
     if (!stored)
         return std::unexpected { stored.error() };
     std::ranges::copy(bytes, stored->begin());
@@ -894,7 +907,8 @@ std::expected<void, ValueError> ValueBuilder::buildString(std::string_view utf8)
 
 std::expected<std::span<std::byte>, ValueError> ValueBuilder::appendString(Slot const& slot,
                                                                            StringEncoding encoding,
-                                                                           uint32_t taggedCodeUnits)
+                                                                           uint32_t taggedCodeUnits,
+                                                                           GrowthFill fill)
 {
     auto const byteLength = stringByteLength(encoding, taggedCodeUnits);
     if (byteLength > MaxStringBytes)
@@ -913,10 +927,10 @@ std::expected<std::span<std::byte>, ValueError> ValueBuilder::appendString(Slot 
         return std::unexpected { stored.error() };
     _ranges.append(range);
     completed();
-    return _pool.grow(static_cast<std::size_t>(byteLength));
+    return _pool.grow(static_cast<std::size_t>(byteLength), fill);
 }
 
-std::expected<std::span<std::byte>, ValueError> ValueBuilder::buildPackedElements()
+std::expected<std::span<std::byte>, ValueError> ValueBuilder::buildPackedElements(GrowthFill fill)
 {
     if (_frames.empty())
         return std::unexpected { errorHere(ValueErrorCode::Unbalanced, "packed elements without begin()") };
@@ -931,7 +945,7 @@ std::expected<std::span<std::byte>, ValueError> ValueBuilder::buildPackedElement
     auto const& element = valueShapeRow((*_arena)[*(*_arena)[frame.type].children[0]].kind);
     auto const bytes = frame.expected * element.bytes;
     frame.given = frame.expected;
-    return _pool.grow(static_cast<std::size_t>(bytes));
+    return _pool.grow(static_cast<std::size_t>(bytes), fill);
 }
 
 std::expected<void, ValueError> ValueBuilder::buildBegin(uint32_t caseIndexOrCount)

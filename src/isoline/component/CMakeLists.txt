@@ -13,6 +13,7 @@ target_sources(isoline_component
         canonical/GuestMemory.cpp
         canonical/Layout.cpp
         canonical/LiftLower.cpp
+        canonical/LiftSteps.hpp
         canonical/Strings.cpp
         canonical/Trap.cpp
         canonical/Unicode.hpp

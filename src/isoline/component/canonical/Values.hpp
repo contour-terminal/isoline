@@ -112,6 +112,28 @@ class LiveBytesBudget
     std::atomic<uint64_t> _live { 0 };
 };
 
+/// How a growth for the caller to fill in place starts out.
+enum class GrowthFill : uint8_t
+{
+    Zeroed,       ///< Zero bytes: what a host gets, so a byte it leaves unwritten is never stale memory.
+    ForOverwrite, ///< Indeterminate (poisoned in debug builds): only for the runtime's own copies, which
+                  ///< overwrite every byte.
+};
+
+/// Whether this build poisons a GrowthFill::ForOverwrite growth with 0xFF bytes, so that a byte left
+/// unwritten shows (0xFF is never UTF-8): in debug builds, where NDEBUG is not defined.
+enum class OverwritePoison : uint8_t
+{
+    Off, ///< A release build: the bytes are left as the allocation found them.
+    On,  ///< A debug build: every byte is 0xFF until overwritten.
+};
+
+#ifdef NDEBUG
+inline constexpr auto ThisBuildPoisons = OverwritePoison::Off; ///< This build's choice.
+#else
+inline constexpr auto ThisBuildPoisons = OverwritePoison::On; ///< This build's choice.
+#endif
+
 /// The allocator of ChargedVector's storage: std::allocator, except that a growth that gives no value
 /// (resize()) default-initializes, so the bytes of a trivially constructible element are left for their
 /// caller to overwrite rather than zeroed first: the resize-for-overwrite std::vector lacks.
@@ -237,16 +259,23 @@ class ChargedVector
         _items.insert(_items.end(), items.begin(), items.end());
     }
 
-    /// Appends @p count default-initialized elements into room reserveFor() made (checked), for the caller
-    /// to overwrite in place: a trivially constructible element's bytes are indeterminate until it does,
-    /// and nothing spends a pass zeroing what a copy overwrites.
+    /// Appends @p count elements into room reserveFor() made (checked), for the caller to fill in place.
     /// @param count The elements.
+    /// @param fill Zeroed (value-initialized), or ForOverwrite: default-initialized, so a trivially
+    ///             constructible element's bytes are indeterminate (0xFF in a debug build) until the
+    ///             caller overwrites them, and no pass zeroes what a copy overwrites.
     /// @return They, valid until the next growth.
-    [[nodiscard]] std::span<T> grow(std::size_t count)
+    [[nodiscard]] std::span<T> grow(std::size_t count, GrowthFill fill)
     {
         Require(count <= _capacity - _items.size());
-        _items.resize(_items.size() + count);
-        return std::span { _items }.last(count);
+        if (fill == GrowthFill::Zeroed)
+            _items.resize(_items.size() + count, T {});
+        else
+            _items.resize(_items.size() + count);
+        auto const grown = std::span { _items }.last(count);
+        if (fill == GrowthFill::ForOverwrite && ThisBuildPoisons == OverwritePoison::On)
+            std::ranges::fill(std::as_writable_bytes(grown), std::byte { 0xFF });
+        return grown;
     }
 
     /// The number of elements.
@@ -645,6 +674,7 @@ struct ValueError
 class Values;
 class ChildIterator;
 class ChildRange;
+class LiftSteps;
 
 /// Whether a ValueView names a node or an element packed in a list's pool range.
 enum class ViewForm : uint8_t
@@ -910,26 +940,27 @@ class ValueBuilder
     /// @throws std::bad_alloc When the host cannot allocate what the budget allowed.
     ValueBuilder& begin(uint32_t caseIndexOrCount);
 
-    /// A string whose bytes the caller writes in place, in their encoding (D4): a lift copies guest
-    /// memory straight into the values' storage, which is charged before it is allocated.
+    /// A string whose bytes the caller writes in place, in their encoding (D4), charged before they are
+    /// allocated.
     ///
-    /// The caller writes text in @p encoding into the bytes returned before the builder's next step;
-    /// the builder does not read them. A lift validates them as it copies, and abandons the builder when
-    /// they are not text.
+    /// The caller writes text in @p encoding into the bytes returned before the builder's next step; the
+    /// builder does not read them, and a string that is not text traps InvalidEncoding when it is lowered.
+    /// A byte left unwritten stays zero. (Lifting copies guest memory in through LiftSteps instead, whose
+    /// growth it overwrites whole and so is not zeroed first.)
     /// @param encoding The string's encoding.
     /// @param taggedCodeUnits Its tagged code units, which give its byte length (stringByteLength()).
-    /// @return Its bytes, indeterminate until the caller writes every one; empty when the step is refused
-    ///         (error() then says why) or the string is empty.
+    /// @return Its bytes, zero-filled; empty when the step is refused (error() then says why) or the string
+    ///         is empty.
     /// @throws std::bad_alloc When the host cannot allocate what the budget allowed.
     [[nodiscard]] std::span<std::byte> encodedString(StringEncoding encoding, uint32_t taggedCodeUnits);
 
     /// Gives the list of scalars begin() opened last all its elements at once, for the caller to write in
-    /// place: a lift copies them from guest memory in one read, not one per element.
+    /// place rather than one scalar() each.
     ///
     /// The caller writes each element's bits, at its width and in host byte order, a value of the element
-    /// type (a bool 0 or 1, a char a Unicode scalar value), before the builder's next step.
-    /// @return The elements' bytes, indeterminate until the caller writes every one, count times the
-    ///         element's width (begin() charged for
+    /// type (a bool 0 or 1, a char a Unicode scalar value), before the builder's next step; an element left
+    /// unwritten stays zero. (Lifting copies guest memory in through LiftSteps, unzeroed.)
+    /// @return The elements' bytes, zero-filled, count times the element's width (begin() charged for
     ///         them); empty when the step is refused (error() then says why: the open compound is not a
     ///         list of scalars, or has elements given) or the list is empty.
     [[nodiscard]] std::span<std::byte> packedElements();
@@ -953,6 +984,13 @@ class ValueBuilder
     [[nodiscard]] std::expected<Values, ValueError> finish();
 
   private:
+    friend class LiftSteps;
+
+    [[nodiscard]] std::span<std::byte> stringSteps(StringEncoding encoding,
+                                                   uint32_t taggedCodeUnits,
+                                                   GrowthFill fill);
+    [[nodiscard]] std::span<std::byte> packedSteps(GrowthFill fill);
+
     /// A compound begin() opened.
     struct Frame
     {
@@ -987,8 +1025,9 @@ class ValueBuilder
     [[nodiscard]] std::expected<void, ValueError> buildString(std::string_view utf8);
     [[nodiscard]] std::expected<std::span<std::byte>, ValueError> appendString(Slot const& slot,
                                                                                StringEncoding encoding,
-                                                                               uint32_t taggedCodeUnits);
-    [[nodiscard]] std::expected<std::span<std::byte>, ValueError> buildPackedElements();
+                                                                               uint32_t taggedCodeUnits,
+                                                                               GrowthFill fill);
+    [[nodiscard]] std::expected<std::span<std::byte>, ValueError> buildPackedElements(GrowthFill fill);
     [[nodiscard]] std::expected<void, ValueError> buildBegin(uint32_t caseIndexOrCount);
     [[nodiscard]] std::expected<void, ValueError> buildEnd();
     [[nodiscard]] std::expected<void, ValueError> buildResource(ResourceValue value);

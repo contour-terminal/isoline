@@ -1549,6 +1549,18 @@ TEST_CASE("Values.inPlaceSteps")
     CHECK(values->root(0).string().simpleEncoding() == SimpleEncoding::Utf16);
     CHECK(values->root(1).child(1).scalar<uint16_t>() == 0xbeef);
 
+    // A host that leaves elements or bytes unwritten gets zeros there.
+    auto partial = ValueBuilder { types.arena(), std::vector { shorts }, budgetOf() };
+    partial.begin(3);
+    auto const some = partial.packedElements();
+    REQUIRE(some.size() == 6);
+    some[0] = std::byte { 5 };
+    partial.end();
+    auto zeroed = partial.finish();
+    REQUIRE(zeroed.has_value());
+    CHECK(zeroed->root(0).child(1).scalar<uint16_t>() == 0);
+    CHECK(zeroed->root(0).child(2).scalar<uint16_t>() == 0);
+
     // Refusals: a string past 2^32 - 1 bytes; a string where another value goes; packed elements with no
     // list open, for a list of strings, or after an element was given.
     auto const refused = [&](std::vector<TypeId> const& roots, auto const& steps) {

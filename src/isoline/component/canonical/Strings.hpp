@@ -131,8 +131,8 @@ inline constexpr auto TranscodeTable = std::to_array<TranscodeRow>({
 /// @param value The string.
 /// @return The block's address and the string's tagged code units in the destination; or OutOfBounds
 ///         for a string of more than MaxStringByteLength bytes, the trap of a `realloc`, a write or a
-///         poll, or InvalidEncoding for bytes that are not text (which only a broken caller of
-///         ValueBuilder::encodedString() makes).
+///         poll, or InvalidEncoding for bytes that are not text (which a host's
+///         ValueBuilder::encodedString() can hold; no guest receives them).
 /// @throws std::bad_alloc When a trap's message cannot be stored.
 [[nodiscard]] std::expected<std::pair<uint32_t, uint32_t>, Trap> storeString(LiftContext& context,
                                                                              StringValue const& value);

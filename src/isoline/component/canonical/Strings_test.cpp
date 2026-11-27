@@ -18,6 +18,7 @@
 #include <isoline/api/Types.hpp>
 #include <isoline/component/canonical/GuestMemory.hpp>
 #include <isoline/component/canonical/LiftLower.hpp>
+#include <isoline/component/canonical/LiftSteps.hpp>
 #include <isoline/component/canonical/Strings.hpp>
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Values.hpp>
@@ -30,12 +31,15 @@ using isoline::api::I32;
 using isoline::api::Value;
 using isoline::component::canonical::equal;
 using isoline::component::canonical::liftFlat;
+using isoline::component::canonical::LiftSteps;
 using isoline::component::canonical::liftString;
 using isoline::component::canonical::MaxFlatParams;
 using isoline::component::canonical::MaxStringByteLength;
+using isoline::component::canonical::OverwritePoison;
 using isoline::component::canonical::SimpleEncoding;
 using isoline::component::canonical::storeString;
 using isoline::component::canonical::StringEncoding;
+using isoline::component::canonical::ThisBuildPoisons;
 using isoline::component::canonical::transcodeRow;
 using isoline::component::canonical::TranscodeTable;
 using isoline::component::canonical::TrapCode;
@@ -535,4 +539,43 @@ TEST_CASE("Strings.liftFailurePointsTrap")
         CHECK(liftTrap(FakeGuestMemoryOptions { .interruptAtPoll = at }) == trapOf(TrapCode::Interrupted));
         CHECK(liftTrap(FakeGuestMemoryOptions { .failAtRead = at }).code == TrapCode::OutOfBounds);
     }
+}
+
+TEST_CASE("Strings.hostBytesLeftUnwrittenAreZero")
+{
+    // A host that writes only part of an encodedString() hands the guest zeros there, never stale memory.
+    auto side = Side {};
+    auto builder = ValueBuilder { side.arena(),
+                                  std::vector { side.primitive(ValueKind::String) },
+                                  side.budgetPointer() };
+    auto const bytes = builder.encodedString(StringEncoding::Utf8, 4);
+    REQUIRE(bytes.size() == 4);
+    std::ranges::copy(bytesOf({ 'a', 'b' }), bytes.begin());
+    auto values = builder.finish();
+    REQUIRE(values.has_value());
+    auto context = side.context();
+    auto const stored = storeString(context, values->root(0).string());
+    REQUIRE(stored.has_value());
+    CHECK(std::ranges::equal(side.memory().bytes().subspan(stored->first, 4), bytesOf({ 'a', 'b', 0, 0 })));
+}
+
+TEST_CASE("Strings.liftStepsPoisonInDebug")
+{
+    // The lift's own steps are not zeroed: a debug build fills them with 0xFF, so a lift that skipped a
+    // byte would hand on text that is not UTF-8, which lowering refuses.
+    if constexpr (ThisBuildPoisons == OverwritePoison::Off)
+        SKIP("a release build does not poison");
+    auto side = Side {};
+    auto builder = ValueBuilder { side.arena(),
+                                  std::vector { side.primitive(ValueKind::String) },
+                                  side.budgetPointer() };
+    auto const bytes = LiftSteps::encodedString(builder, StringEncoding::Utf8, 3);
+    REQUIRE(bytes.size() == 3);
+    bytes[0] = std::byte { 'a' };
+    auto values = builder.finish();
+    REQUIRE(values.has_value());
+    CHECK(std::ranges::equal(values->root(0).string().bytes, bytesOf({ 'a', 0xff, 0xff })));
+    auto context = side.context();
+    CHECK(trapIn(storeString(context, values->root(0).string()))
+          == trapOf(TrapCode::InvalidEncoding, "utf-8"));
 }

@@ -17,6 +17,7 @@
 #include <isoline/api/Types.hpp>
 #include <isoline/component/canonical/GuestMemory.hpp>
 #include <isoline/component/canonical/LiftLower.hpp>
+#include <isoline/component/canonical/LiftSteps.hpp>
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Unicode.hpp>
 #include <isoline/component/canonical/Values.hpp>
@@ -435,7 +436,7 @@ std::expected<void, Trap> liftString(LiftContext& context,
     if (auto inRange = checkRange(address, byteLength, alignmentOf(context.encoding), memory.size());
         !inRange)
         return inRange;
-    auto const bytes = builder.encodedString(context.encoding, taggedCodeUnits);
+    auto const bytes = LiftSteps::encodedString(builder, context.encoding, taggedCodeUnits);
     if (auto const& refused = builder.error(); refused)
         return std::unexpected { builderTrap(context, *refused) };
     // Copied in granules straight into the values, each validated as far as it holds whole code points,

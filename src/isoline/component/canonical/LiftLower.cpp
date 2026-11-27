@@ -22,6 +22,7 @@
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/canonical/GuestMemory.hpp>
 #include <isoline/component/canonical/Layout.hpp>
+#include <isoline/component/canonical/LiftSteps.hpp>
 #include <isoline/component/canonical/Strings.hpp>
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Values.hpp>
@@ -817,7 +818,7 @@ namespace
             auto const flat = context().layouts[element.value].flat.front();
             // begin() charged for the elements: the builder refuses nothing here, and an error would be
             // the end()'s to report.
-            auto const elements = _builder->packedElements();
+            auto const elements = LiftSteps::packedElements(*_builder);
             auto& memory = *context().memory;
             auto copied = std::size_t { 0 };
             while (copied < elements.size())
