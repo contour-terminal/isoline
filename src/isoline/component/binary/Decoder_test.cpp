@@ -1436,3 +1436,163 @@ TEST_CASE("Decoder.typeCaps")
                                 limits))
           == ComponentLimit::DecodedItems);
 }
+
+TEST_CASE("Decoder.truncatedSectionsFail")
+{
+    // Every vector section of every fixture, cut short at each of its bytes and its size adjusted:
+    // each read that runs out reports the end of the file, wherever in a definition it stands.
+    auto const readLeb = [](Bytes const& bytes, std::size_t& at) {
+        auto value = uint64_t { 0 };
+        auto shift = 0U;
+        while (true)
+        {
+            auto const byte = std::to_integer<uint8_t>(bytes[at++]);
+            value |= uint64_t { byte & 0x7FU } << shift;
+            shift += 7U;
+            if ((byte & 0x80U) == 0)
+                return value;
+        }
+    };
+    constexpr auto PreambleSize = std::size_t { 8 };
+    auto cuts = 0;
+    for (auto const& fixture: decoderFixtures())
+    {
+        auto at = PreambleSize;
+        while (at < fixture.bytes.size())
+        {
+            auto const id = std::to_integer<uint8_t>(fixture.bytes[at++]);
+            auto const size = readLeb(fixture.bytes, at);
+            auto const payload = Bytes(fixture.bytes.begin() + static_cast<std::ptrdiff_t>(at),
+                                       fixture.bytes.begin() + static_cast<std::ptrdiff_t>(at + size));
+            at += size;
+            // A custom section's payload, a core module and a nested component are no vectors.
+            if (id == 0 || id == 1 || id == 4)
+                continue;
+            for (auto const length: std::views::iota(std::size_t { 0 }, payload.size()))
+            {
+                INFO(fixture.name << ": section " << int { id } << " cut to " << length << " bytes");
+                auto const cut =
+                    Bytes(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(length));
+                CHECK(errorOf(componentOf({ section(id, cut) })).code == DecodeErrorCode::UnexpectedEnd);
+                ++cuts;
+            }
+        }
+    }
+    CHECK(cuts > 250);
+    // A type index cut inside its LEB128, and one too long.
+    CHECK(errorOf(oneOf(7, bytesOf({ 0x70, 0x80 }))).code == DecodeErrorCode::UnexpectedEnd);
+    CHECK(errorOf(oneOf(7, bytesOf({ 0x70, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00 }))).code
+          == DecodeErrorCode::IntegerRepresentationTooLong);
+}
+
+TEST_CASE("Decoder.capsInEverySection")
+{
+    auto limits = ComponentLimits {};
+    limits.maxDefinitions = 1;
+    // Refused before the second element is read, in a vector section and in the type section.
+    auto imports = Bytes { std::byte { 0x02 } };
+    for ([[maybe_unused]] auto const index: { 0, 1 })
+    {
+        appendBytes(imports, plainName("a"));
+        appendBytes(imports, { 0x01, 0x00 });
+    }
+    CHECK(exceededLimit(errorOf(componentOf({ section(10, imports) }), ComponentFeatureSet::wasi03(), limits))
+          == ComponentLimit::Definitions);
+    CHECK(exceededLimit(errorOf(componentOf({ section(7, bytesOf({ 0x02, 0x73, 0x73 })) }),
+                                ComponentFeatureSet::wasi03(),
+                                limits))
+          == ComponentLimit::Definitions);
+
+    // A custom section and a nested component each cost an item.
+    limits = ComponentLimits {};
+    limits.maxDecodedItems = 0;
+    auto custom = Bytes {};
+    appendName(custom, "c");
+    CHECK(exceededLimit(errorOf(componentOf({ section(0, custom) }), ComponentFeatureSet::wasi03(), limits))
+          == ComponentLimit::DecodedItems);
+    CHECK(exceededLimit(errorOf(
+              componentOf({ section(4, componentPreamble()) }), ComponentFeatureSet::wasi03(), limits))
+          == ComponentLimit::DecodedItems);
+
+    // A value type and a scope type each count against maxTypes.
+    limits = ComponentLimits {};
+    limits.maxTypes = 0;
+    CHECK(exceededLimit(errorOf(oneOf(7, bytesOf({ 0x73 })), ComponentFeatureSet::wasi03(), limits))
+          == ComponentLimit::Types);
+    CHECK(exceededLimit(errorOf(oneOf(7, bytesOf({ 0x42, 0x00 })), ComponentFeatureSet::wasi03(), limits))
+          == ComponentLimit::Types);
+}
+
+TEST_CASE("Decoder.specMessageWithoutSubject")
+{
+    // An error built without the subject its detail reads falls back to its row's text.
+    CHECK(specMessage(DecodeError { DecodeErrorCode::MalformedSectionId, 0 }) == "malformed section id");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::UnknownBinaryVersion, 0 }) == "unknown binary version");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::DuplicateNameAttribute, 0 }) == "option in name");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::DuplicateNameAttribute, 0, 99 }) == "option in name");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::FeatureDisabled, 0 }) == "feature not enabled");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::LimitExceeded, 0 }) == "limit exceeded");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::MalformedCoreType, 0 }) == "malformed core type");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::MalformedCoreType, 0, 0xFFFF })
+          == "malformed core type");
+    CHECK(specMessage(DecodeError { DecodeErrorCode::InvalidCanonSort, 0, 0x0700 }) == "canonical function");
+    CHECK_FALSE(exceededLimit(DecodeError { DecodeErrorCode::UnexpectedEnd, 0 }).has_value());
+    CHECK_FALSE(exceededLimit(DecodeError { DecodeErrorCode::LimitExceeded, 0 }).has_value());
+}
+
+TEST_CASE("Decoder.coreGrammarErrors")
+{
+    // A core function type and a core extern type the core decoder refuses, in its words.
+    auto const function = errorOf(oneOf(3, bytesOf({ 0x60, 0x01, 0x55, 0x00 })));
+    CHECK(function.code == DecodeErrorCode::MalformedCoreType);
+    CHECK(function.subject
+          == static_cast<uint64_t>(isoline::binary::DecodeErrorCode::MalformedReferenceType));
+    auto module = bytesOf({ 0x50, 0x01, 0x00 });
+    appendName(module, "a");
+    appendName(module, "b");
+    appendBytes(module, { 0x09 });
+    CHECK(errorOf(oneOf(3, module)).code == DecodeErrorCode::MalformedCoreType);
+
+    // An export alias of a sort no component names, and of 🪙's value sort.
+    auto alias = bytesOf({ 0x06, 0x00, 0x00 });
+    appendName(alias, "f");
+    CHECK(errorOf(oneOf(6, alias)) == DecodeError { DecodeErrorCode::InvalidExternalKind, 11, 0x06 });
+    auto value = bytesOf({ 0x02, 0x00, 0x00 });
+    appendName(value, "v");
+    CHECK(errorOf(oneOf(6, value), everyFeature())
+          == DecodeError { DecodeErrorCode::FeatureDisabled, 11, std::nullopt, ComponentFeature::Values });
+}
+
+TEST_CASE("Decoder.truncatedForms")
+{
+    // Forms cut short where no fixture's truncation reaches: each read reports the end of the file.
+    auto const cases = std::vector<std::pair<uint8_t, std::vector<uint8_t>>> {
+        { 8, { 0x06 } },             // subtask.cancel, its async? missing
+        { 7, { 0x72, 0x01 } },       // a record field's label
+        { 7, { 0x3F } },             // a resource's representation
+        { 7, { 0x3F, 0x7F } },       // a resource's destructor
+        { 3, { 0x00 } },             // a non-final subtype's form
+        { 3, { 0x4F } },             // a subtype's supertypes
+        { 3, { 0x4F, 0x00 } },       // a subtype's composite type
+        { 3, { 0x50, 0x01, 0x01 } }, // a module type's type declaration
+    };
+    for (auto const& [id, element]: cases)
+    {
+        INFO("section " << int { id } << ", " << element.size() << " bytes");
+        auto bytes = Bytes {};
+        appendBytes(bytes, element);
+        CHECK(errorOf(oneOf(id, bytes)).code == DecodeErrorCode::UnexpectedEnd);
+    }
+
+    // A core module and a nested component cost an item, and a nested component a definition.
+    auto limits = ComponentLimits {};
+    limits.maxDecodedItems = 0;
+    CHECK(exceededLimit(
+              errorOf(componentOf({ section(1, modulePreamble()) }), ComponentFeatureSet::wasi03(), limits))
+          == ComponentLimit::DecodedItems);
+    limits = ComponentLimits {};
+    limits.maxDefinitions = 0;
+    CHECK(exceededLimit(errorOf(
+              componentOf({ section(4, componentPreamble()) }), ComponentFeatureSet::wasi03(), limits))
+          == ComponentLimit::Definitions);
+}

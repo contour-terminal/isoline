@@ -27,6 +27,7 @@
 #include <isoline/component/Features.hpp>
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Component.hpp>
+#include <isoline/component/binary/Grammar.hpp>
 
 namespace isoline::component::binary
 {
@@ -38,28 +39,6 @@ namespace
 
     template <typename T>
     using Result = std::expected<T, DecodeError>;
-
-    /// The size of a preamble: the magic number, then the version and layer word.
-    constexpr auto PreambleSize = std::size_t { 8 };
-
-    /// The magic number every WebAssembly binary starts with, "\0asm".
-    constexpr auto Magic = std::to_array<std::byte>(
-        { std::byte { 0x00 }, std::byte { 0x61 }, std::byte { 0x73 }, std::byte { 0x6D } });
-
-    /// One version and layer word, and the kind of binary it introduces.
-    struct PreambleRow
-    {
-        std::array<std::byte, 4> word; ///< The four bytes after the magic number.
-        LayerKind layer;               ///< What they announce.
-    };
-
-    /// The preambles there are: a core module's, and the pre-standard component's (version 0x0d).
-    constexpr auto PreambleTable = std::to_array<PreambleRow>({
-        { .word = { std::byte { 0x01 }, std::byte { 0x00 }, std::byte { 0x00 }, std::byte { 0x00 } },
-          .layer = LayerKind::CoreModule },
-        { .word = { std::byte { 0x0D }, std::byte { 0x00 }, std::byte { 0x01 }, std::byte { 0x00 } },
-          .layer = LayerKind::Component },
-    });
 
     /// The layer the four bytes after the magic number name.
     [[nodiscard]] LayerKind layerOfWord(std::span<std::byte const> word) noexcept
@@ -100,121 +79,10 @@ namespace
         return DecodeError { row->component, error.offset };
     }
 
-    /// One kind byte, or a pair of them led by 0x00 for a core sort, and the sort it names.
-    struct KindRow
-    {
-        uint8_t byte;                         ///< The first byte.
-        std::optional<uint8_t> coreByte;      ///< The core sort byte after a first byte of 0x00.
-        Sort sort;                            ///< The sort named.
-        std::optional<ComponentFeature> gate; ///< The feature that introduced it.
-    };
-
-    /// What a component may name by sort, in a sortidx, an export alias and an extern type:
-    /// wasm-tools' ComponentExternalKind, of the core sorts the module alone.
-    constexpr auto ExternalKinds = std::to_array<KindRow>({
-        { .byte = 0x00, .coreByte = 0x11, .sort = Sort::CoreModule, .gate = std::nullopt },
-        { .byte = 0x01, .coreByte = std::nullopt, .sort = Sort::Func, .gate = std::nullopt },
-        { .byte = 0x02, .coreByte = std::nullopt, .sort = Sort::Value, .gate = ComponentFeature::Values },
-        { .byte = 0x03, .coreByte = std::nullopt, .sort = Sort::Type, .gate = std::nullopt },
-        { .byte = 0x04, .coreByte = std::nullopt, .sort = Sort::Component, .gate = std::nullopt },
-        { .byte = 0x05, .coreByte = std::nullopt, .sort = Sort::Instance, .gate = std::nullopt },
-    });
-
     // A value extern type carries a value bound, which needs the value types of P11 Task 2 and is
     // read nowhere: the gate keeps the decoder from ever meeting one.
     static_assert(componentFeatureRow(ComponentFeature::Values).p11 == Implementation::Refused,
                   "the decoder reads no value bound; admitting 🪙 needs one");
-
-    /// What an outer alias may name (`outeraliassort`).
-    constexpr auto OuterAliasKinds = std::to_array<KindRow>({
-        { .byte = 0x00, .coreByte = 0x10, .sort = Sort::CoreType, .gate = std::nullopt },
-        { .byte = 0x00, .coreByte = 0x11, .sort = Sort::CoreModule, .gate = std::nullopt },
-        { .byte = 0x03, .coreByte = std::nullopt, .sort = Sort::Type, .gate = std::nullopt },
-        { .byte = 0x04, .coreByte = std::nullopt, .sort = Sort::Component, .gate = std::nullopt },
-    });
-
-    /// A core extern kind's byte, as core inline exports and core export aliases name a definition.
-    struct CoreExternKindRow
-    {
-        uint8_t byte;  ///< The byte.
-        CoreSort sort; ///< The core sort it names.
-    };
-
-    /// The core extern kinds: func, table, memory, global and tag.
-    constexpr auto CoreExternKinds = std::to_array<CoreExternKindRow>({
-        { .byte = 0x00, .sort = CoreSort::Func },
-        { .byte = 0x01, .sort = CoreSort::Table },
-        { .byte = 0x02, .sort = CoreSort::Memory },
-        { .byte = 0x03, .sort = CoreSort::Global },
-        { .byte = 0x04, .sort = CoreSort::Tag },
-    });
-
-    /// An alias's target byte and the target it names.
-    struct AliasTargetRow
-    {
-        uint8_t byte;       ///< The byte after the sort.
-        AliasTarget target; ///< The target it names.
-    };
-
-    /// Every alias target.
-    constexpr auto AliasTargets = std::to_array<AliasTargetRow>({
-        { .byte = 0x00, .target = AliasTarget::Export },
-        { .byte = 0x01, .target = AliasTarget::CoreExport },
-        { .byte = 0x02, .target = AliasTarget::Outer },
-    });
-
-    /// Whether a name's form carries attributes.
-    enum class NameForm : uint8_t
-    {
-        Plain,      ///< The name alone.
-        Attributed, ///< The name, then a vector of attributes (🏷️/🔗).
-    };
-
-    /// A `nameattributes` form byte and the form it introduces.
-    struct NameFormRow
-    {
-        uint8_t byte;  ///< The byte.
-        NameForm form; ///< The form.
-    };
-
-    /// Every name form; 0x01 is the legacy interface-name byte wasm-tools still reads as 0x00.
-    constexpr auto NameForms = std::to_array<NameFormRow>({
-        { .byte = 0x00, .form = NameForm::Plain },
-        { .byte = 0x01, .form = NameForm::Plain },
-        { .byte = 0x02, .form = NameForm::Attributed },
-    });
-
-    /// A type bound's byte and the bound it introduces; Equal reads a type index after it.
-    struct TypeBoundRow
-    {
-        uint8_t byte;    ///< The byte.
-        TypeBound bound; ///< The bound.
-    };
-
-    /// Every type bound.
-    constexpr auto TypeBounds = std::to_array<TypeBoundRow>({
-        { .byte = 0x00, .bound = TypeBound::Equal },
-        { .byte = 0x01, .bound = TypeBound::SubResource },
-    });
-
-    /// The bytes of `deftype` that open a scope of declarations, and the scope each opens.
-    struct TypeScopeFormRow
-    {
-        uint8_t byte;    ///< The byte.
-        ScopeKind scope; ///< The scope it opens.
-    };
-
-    /// Every form of `deftype` that holds declarations: component and instance types.
-    constexpr auto TypeScopeForms = std::to_array<TypeScopeFormRow>({
-        { .byte = 0x41, .scope = ScopeKind::ComponentType },
-        { .byte = 0x42, .scope = ScopeKind::InstanceType },
-    });
-
-    /// The byte of `deftype` that introduces a resource type.
-    constexpr auto ResourceTypeForm = uint8_t { 0x3F };
-
-    /// The byte of `core:deftype` that introduces a module type; after a 0x00, a non-final subtype.
-    constexpr auto ModuleTypeForm = uint8_t { 0x50 };
 
     /// What a byte at the start of a core `rectype` begins, as wasmparser reads one.
     enum class CoreTypeForm : uint8_t
@@ -234,7 +102,7 @@ namespace
 
     /// Every byte wasmparser reads at the start of a core `rectype` or a subtype's composite type.
     constexpr auto CoreTypeForms = std::to_array<CoreTypeFormRow>({
-        { .byte = 0x60, .form = CoreTypeForm::Function },
+        { .byte = CoreFuncTypeForm, .form = CoreTypeForm::Function },
         { .byte = 0x4E, .form = CoreTypeForm::RecGroup },
         { .byte = 0x50, .form = CoreTypeForm::SubType },
         { .byte = 0x4F, .form = CoreTypeForm::SubType },
@@ -255,30 +123,9 @@ namespace
                              static_cast<uint64_t>(isoline::binary::DecodeErrorCode::MalformedFunctionType) };
     }
 
-    /// The byte that prefixes a non-final core subtype among a component's core types.
-    constexpr auto NonFinalSubTypePrefix = uint8_t { 0x00 };
-
-    /// The two bytes of `core:alias`: the core type sort, then the outer target.
-    constexpr auto CoreOuterAliasSort = uint8_t { 0x10 };
-    constexpr auto CoreOuterAliasTarget = uint8_t { 0x01 };
-
-    /// The bytes of `<T>?`: absent, or present and followed by a T.
-    constexpr auto Absent = uint8_t { 0x00 };
-    constexpr auto Present = uint8_t { 0x01 };
-
-    /// The bytes of `resultlist`: one result type, or none (0x01 0x00).
-    constexpr auto OneResult = uint8_t { 0x00 };
-    constexpr auto NoResults = uint8_t { 0x01 };
-
     /// The core features a component's core types are decoded under: every one Isoline's core decodes.
     /// The validator checks them against the engine's.
     constexpr auto CoreTypeFeatures = isoline::FeatureSet::all();
-
-    /// The byte of `core:instantiatearg` that names its argument an instance, the one sort allowed.
-    constexpr auto CoreInstantiateArgumentKind = uint8_t { 0x12 };
-
-    /// The id of a component section, which opens a frame rather than holding definitions.
-    constexpr auto ComponentSectionId = uint8_t { 4 };
 
     /// The bit of a section id that makes it malformed whatever its value, as wasm-tools reads ids.
     constexpr auto SectionIdHighBit = uint8_t { 0x80 };
@@ -291,10 +138,16 @@ namespace
                            std::variant_alternative_t<Index, Attribute> { std::move(value) } };
     }
 
-    /// One factory per Attribute alternative, at the index of its NameAttributeTable row.
-    constexpr auto AttributeFactories = []<std::size_t... Index>(std::index_sequence<Index...>) {
+    /// The factories of the Attribute alternatives @p Index.
+    template <std::size_t... Index>
+    consteval auto attributeFactories(std::index_sequence<Index...> /*indices*/)
+    {
         return std::array<Attribute (*)(std::string), sizeof...(Index)> { &makeAttribute<Index>... };
-    }(std::make_index_sequence<std::variant_size_v<Attribute>> {});
+    }
+
+    /// One factory per Attribute alternative, at the index of its NameAttributeTable row.
+    constexpr auto AttributeFactories =
+        attributeFactories(std::make_index_sequence<std::variant_size_v<Attribute>> {});
 
     /// The bytes of a section and where it sits.
     struct SectionContext
@@ -564,9 +417,9 @@ namespace
     {
         auto& reader = _frames[frame].reader;
         auto const idOffset = reader.offset();
+        // The loop of decode() reads a section only where its frame's reader has bytes left.
         auto const id = u8(reader);
-        if (!id)
-            return std::unexpected { id.error() };
+        Require(id.has_value());
         if ((*id & SectionIdHighBit) != 0)
             return std::unexpected { DecodeError { DecodeErrorCode::MalformedSectionId, idOffset } };
         auto const sizeOffset = reader.offset();
@@ -733,7 +586,7 @@ namespace
         if (!first)
             return std::unexpected { first.error() };
         auto second = std::optional<uint8_t> {};
-        if (*first == 0x00)
+        if (*first == CoreSortPrefix)
         {
             auto const core = u8(reader);
             if (!core)
@@ -854,7 +707,7 @@ namespace
             return std::unexpected { kind.error() };
         switch (*kind)
         {
-            case 0x00: {
+            case InstantiateForm: {
                 auto const module = u32(reader);
                 if (!module)
                     return std::unexpected { module.error() };
@@ -881,7 +734,7 @@ namespace
                     return std::unexpected { arguments.error() };
                 return CoreInstanceDefinition { .expression = std::move(instantiate) };
             }
-            case 0x01: {
+            case InlineExportsForm: {
                 auto inlineExports = CoreInlineExports {};
                 auto const exports = forEach(reader, [&]() -> Result<void> {
                     auto exportName = name(reader);
@@ -921,7 +774,7 @@ namespace
             return std::unexpected { kind.error() };
         switch (*kind)
         {
-            case 0x00: {
+            case InstantiateForm: {
                 auto const component = u32(reader);
                 if (!component)
                     return std::unexpected { component.error() };
@@ -940,7 +793,7 @@ namespace
                     return std::unexpected { arguments.error() };
                 return InstanceDefinition { .expression = std::move(instantiate) };
             }
-            case 0x01: {
+            case InlineExportsForm: {
                 auto inlineExports = InlineExports {};
                 auto const exports = forEach(reader, [&]() -> Result<void> {
                     auto exportName = nameAttributes(reader);
@@ -971,7 +824,7 @@ namespace
         if (!first)
             return std::unexpected { first.error() };
         auto second = std::optional<uint8_t> {};
-        if (*first == 0x00)
+        if (*first == CoreSortPrefix)
         {
             auto const core = u8(reader);
             if (!core)
@@ -1072,8 +925,8 @@ namespace
             ExportDefinition { .name = std::move(*exportName), .item = *item, .type = std::nullopt };
         switch (*hasType)
         {
-            case 0x00: return definition;
-            case 0x01: {
+            case Absent: return definition;
+            case Present: {
                 auto const type = externDesc(reader);
                 if (!type)
                     return std::unexpected { type.error() };
@@ -1262,7 +1115,7 @@ namespace
                 auto const count = u8(reader);
                 if (!count)
                     return std::unexpected { count.error() };
-                if (*count != 0x00)
+                if (*count != NoResultsCount)
                     return std::unexpected { DecodeError {
                         DecodeErrorCode::InvalidResultCount, countOffset, *count } };
                 return std::optional<ValueTypeRef> {};
@@ -1326,7 +1179,7 @@ namespace
             auto const zero = u8(reader);
             if (!zero)
                 return std::unexpected { zero.error() };
-            if (*zero != 0x00)
+            if (*zero != CaseEnd)
                 return std::unexpected { DecodeError {
                     DecodeErrorCode::ZeroByteRequired, zeroOffset, *zero } };
             variant.cases.push_back({ .label = std::move(*label), .type = *payload });
@@ -1344,6 +1197,7 @@ namespace
     }
 
     Result<DefinedValueType> ComponentDecoder::fixedListType(Reader& reader)
+    // uncovered-begin(fixed-length-lists)
     {
         auto const element = valueType(reader);
         if (!element)
@@ -1353,6 +1207,7 @@ namespace
             return std::unexpected { length.error() };
         return DefinedValueType { FixedListType { .element = *element, .length = *length } };
     }
+    // uncovered-end(fixed-length-lists)
 
     Result<DefinedValueType> ComponentDecoder::tupleType(Reader& reader)
     {
@@ -1477,11 +1332,10 @@ namespace
 
     Result<TypeDefinition> ComponentDecoder::definedType(Reader& reader)
     {
-        // Every `deftype` but the scopes, which typeEntry() opens.
+        // Every `deftype` but the scopes, which typeEntry() opens, having peeked the byte read here.
         auto const offset = reader.offset();
         auto const byte = u8(reader);
-        if (!byte)
-            return std::unexpected { byte.error() };
+        Require(byte.has_value());
         if (*byte == ResourceTypeForm)
             return resourceType(reader).transform(
                 [](ResourceTypeDefinition resource) { return TypeDefinition { .type = resource }; });
@@ -1541,11 +1395,11 @@ namespace
             auto definition = form->scope == ScopeKind::ComponentType
                                   ? TypeDefinition { .type = ComponentTypeDefinition { .scope = scope } }
                                   : TypeDefinition { .type = InstanceTypeDefinition { .scope = scope } };
-            if (auto added = addDefinition(frame.scope, offset, std::move(definition)); !added)
-                return added;
-            _pool.components.push_back(Component { .kind = form->scope, .definitions = {} });
-            stack.push_back(TypeScopeFrame { .scope = scope, .remaining = *count, .depth = frame.depth + 1 });
-            return {};
+            return addDefinition(frame.scope, offset, std::move(definition)).transform([&] {
+                _pool.components.push_back(Component { .kind = form->scope, .definitions = {} });
+                stack.push_back(
+                    TypeScopeFrame { .scope = scope, .remaining = *count, .depth = frame.depth + 1 });
+            });
         }
         auto type = definedType(reader);
         if (!type)
@@ -1586,18 +1440,16 @@ namespace
                 return import(reader).and_then([&](ImportDefinition definition) {
                     return addDefinition(frame.scope, offset, std::move(definition));
                 });
-            case DeclarationKind::Export: {
-                auto exportName = nameAttributes(reader);
-                if (!exportName)
-                    return std::unexpected { exportName.error() };
-                auto const type = externDesc(reader);
-                if (!type)
-                    return std::unexpected { type.error() };
-                return addDefinition(
-                    frame.scope, offset, ExportDeclaration { .name = std::move(*exportName), .type = *type });
-            }
+            case DeclarationKind::Export: break;
         }
-        return {};
+        auto exportName = nameAttributes(reader);
+        if (!exportName)
+            return std::unexpected { exportName.error() };
+        auto const type = externDesc(reader);
+        if (!type)
+            return std::unexpected { type.error() };
+        return addDefinition(
+            frame.scope, offset, ExportDeclaration { .name = std::move(*exportName), .type = *type });
     }
 
     /// The component decoder's error for one the core decoder reported while reading a core type:
@@ -1690,18 +1542,15 @@ namespace
                                                                                .outerIndex = index } };
                 });
             }
-            case CoreDeclarationKind::Export: {
-                auto exportName = name(reader);
-                if (!exportName)
-                    return std::unexpected { exportName.error() };
-                return coreExternType(reader).transform([&](CoreExternType type) {
-                    return CoreModuleDeclaration { CoreExportDeclaration { .name = std::move(*exportName),
-                                                                           .type = type } };
-                });
-            }
+            case CoreDeclarationKind::Export: break;
         }
-        return std::unexpected { DecodeError {
-            DecodeErrorCode::InvalidModuleTypeDeclaration, offset, *byte } };
+        auto exportName = name(reader);
+        if (!exportName)
+            return std::unexpected { exportName.error() };
+        return coreExternType(reader).transform([&](CoreExternType type) {
+            return CoreModuleDeclaration { CoreExportDeclaration { .name = std::move(*exportName),
+                                                                   .type = type } };
+        });
     }
 
     Result<isoline::binary::FuncType> ComponentDecoder::coreRecType(Reader& reader)
@@ -1724,24 +1573,22 @@ namespace
             case CoreTypeForm::Function: return coreFuncType(reader);
             case CoreTypeForm::RecGroup:
             case CoreTypeForm::Composite: return std::unexpected { coreGcRefusal(offset) };
-            case CoreTypeForm::SubType: {
-                std::ignore = u8(reader);
-                auto const supertypes =
-                    forEach(reader, [&]() { return u32(reader).transform([](uint32_t) {}); });
-                if (!supertypes)
-                    return std::unexpected { supertypes.error() };
-                auto const compositeOffset = reader.offset();
-                auto const composite = peek(reader);
-                if (!composite)
-                    return std::unexpected { composite.error() };
-                auto const compositeForm = formOf(*composite);
-                if (compositeForm != CoreTypeForm::Function && compositeForm != CoreTypeForm::Composite)
-                    return std::unexpected { DecodeError {
-                        DecodeErrorCode::InvalidCoreTypeForm, compositeOffset, *composite } };
-                return std::unexpected { coreGcRefusal(offset) };
-            }
+            case CoreTypeForm::SubType: break;
         }
-        return std::unexpected { DecodeError { DecodeErrorCode::InvalidCoreTypeForm, offset, *byte } };
+        // A subtype: its supertypes, then its composite type's byte.
+        std::ignore = u8(reader);
+        auto const supertypes = forEach(reader, [&]() { return u32(reader).transform([](uint32_t) {}); });
+        if (!supertypes)
+            return std::unexpected { supertypes.error() };
+        auto const compositeOffset = reader.offset();
+        auto const composite = peek(reader);
+        if (!composite)
+            return std::unexpected { composite.error() };
+        auto const compositeForm = formOf(*composite);
+        if (compositeForm != CoreTypeForm::Function && compositeForm != CoreTypeForm::Composite)
+            return std::unexpected { DecodeError {
+                DecodeErrorCode::InvalidCoreTypeForm, compositeOffset, *composite } };
+        return std::unexpected { coreGcRefusal(offset) };
     }
 
     Result<CoreTypeDefinition> ComponentDecoder::coreType(Reader& reader)
@@ -1791,7 +1638,7 @@ namespace
                 auto const sort = u8(reader);
                 if (!sort)
                     return std::unexpected { sort.error() };
-                if (*sort != 0x00)
+                if (*sort != CanonFuncSort)
                     return std::unexpected { DecodeError {
                         DecodeErrorCode::InvalidCanonSort, offset, canonSortSubject(row.opcode, *sort) } };
                 return {};
@@ -1829,19 +1676,20 @@ namespace
             case Immediate::Async:
                 return boolean(reader).transform(
                     [&](bool isAsync) { definition.immediates.push_back(isAsync ? 1 : 0); });
-            case Immediate::Reserved: {
-                auto const reserved = boolean(reader);
-                if (!reserved)
-                    return std::unexpected { reserved.error() };
-                if (*reserved)
-                    return std::unexpected { DecodeError { DecodeErrorCode::NonZeroReservedByte, offset } };
-                return {};
-            }
+            // `shared` is 🧵②, the gate of every built-in that reads it (static_assert above), which P11
+            // refuses before the immediates are read.
+            // uncovered-begin(shared-threading)
             case Immediate::Shared:
-                // `shared` is 🧵②, the gate of every built-in that reads it (static_assert above).
                 return boolean(reader).transform(
                     [&](bool isShared) { definition.immediates.push_back(isShared ? 1 : 0); });
+            // uncovered-end(shared-threading)
+            case Immediate::Reserved: break;
         }
+        auto const reserved = boolean(reader);
+        if (!reserved)
+            return std::unexpected { reserved.error() };
+        if (*reserved)
+            return std::unexpected { DecodeError { DecodeErrorCode::NonZeroReservedByte, offset } };
         return {};
     }
 
@@ -1920,10 +1768,12 @@ namespace
     }
 
     Result<void> ComponentDecoder::unimplementedSection(SectionContext& section)
+    // uncovered-begin(values-sections)
     {
         return std::unexpected { DecodeError {
             DecodeErrorCode::UnimplementedSection, section.reader.offset(), section.id } };
     }
+    // uncovered-end(values-sections)
 
 } // namespace
 
@@ -1940,7 +1790,7 @@ std::string specMessage(DecodeError const& error)
     auto text = std::string { row.text };
     switch (row.detail)
     {
-        case DecodeErrorDetail::None: return text;
+        case DecodeErrorDetail::None: break;
         case DecodeErrorDetail::LeadingByte:
             return std::format("invalid leading byte (0x{:x}) for {}", error.subject.value_or(0), row.text);
         case DecodeErrorDetail::SectionId:
@@ -1989,13 +1839,8 @@ std::expected<ComponentPool, DecodeError> decodeComponent(std::span<std::byte co
     return ComponentDecoder { features, limits }.decode(bytes);
 }
 
-std::expected<std::vector<std::span<std::byte const>>, DecodeError> splitCoreModules(
-    std::span<std::byte const> bytes, ComponentFeatureSet features, ComponentLimits const& limits)
+std::vector<DefinitionPosition> coreModulePositions(ComponentPool const& pool)
 {
-    auto const pool = decodeComponent(bytes, features, limits);
-    if (!pool)
-        return std::unexpected { pool.error() };
-
     // Pre-order over the pool, on an explicit stack: a component's definitions up to a nested one,
     // that one's, then the rest.
     struct Visit
@@ -2003,22 +1848,43 @@ std::expected<std::vector<std::span<std::byte const>>, DecodeError> splitCoreMod
         uint32_t component; ///< The pool index of the component.
         std::size_t next;   ///< Its next definition to visit.
     };
-    auto modules = std::vector<std::span<std::byte const>> {};
+    auto positions = std::vector<DefinitionPosition> {};
     auto stack = std::vector<Visit> { Visit { .component = 0, .next = 0 } };
     while (!stack.empty())
     {
         auto& visit = stack.back();
-        auto const& definitions = pool->components[visit.component].definitions;
+        auto const& definitions = pool.components[visit.component].definitions;
         if (visit.next == definitions.size())
         {
             stack.pop_back();
             continue;
         }
-        auto const& definition = definitions[visit.next++];
-        if (auto const* module = std::get_if<CoreModuleDefinition>(&definition))
-            modules.push_back(bytes.subspan(module->offset, module->size));
+        auto const position = DefinitionPosition { .scope = visit.component, .definition = visit.next++ };
+        auto const& definition = definitions[position.definition];
+        if (std::holds_alternative<CoreModuleDefinition>(definition))
+            positions.push_back(position);
         else if (auto const* nested = std::get_if<NestedComponent>(&definition))
+        {
+            Require(nested->index > position.scope && nested->index < pool.components.size());
             stack.push_back(Visit { .component = nested->index, .next = 0 });
+        }
+    }
+    return positions;
+}
+
+std::expected<std::vector<std::span<std::byte const>>, DecodeError> splitCoreModules(
+    std::span<std::byte const> bytes, ComponentFeatureSet features, ComponentLimits const& limits)
+{
+    auto const pool = decodeComponent(bytes, features, limits);
+    if (!pool)
+        return std::unexpected { pool.error() };
+
+    auto modules = std::vector<std::span<std::byte const>> {};
+    for (auto const& position: coreModulePositions(*pool))
+    {
+        auto const& module =
+            std::get<CoreModuleDefinition>(pool->components[position.scope].definitions[position.definition]);
+        modules.push_back(bytes.subspan(module.offset, module.size));
     }
     return modules;
 }

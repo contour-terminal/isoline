@@ -7,13 +7,16 @@ add_library(isoline::component ALIAS isoline_component)
 target_sources(isoline_component
     PRIVATE
         binary/Decoder.cpp
+        binary/Encoder.cpp
+        binary/Grammar.hpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES
             Features.hpp
             Limits.hpp
             binary/Component.hpp
-            binary/Decoder.hpp)
+            binary/Decoder.hpp
+            binary/Encoder.hpp)
 target_compile_features(isoline_component PUBLIC cxx_std_23)
 target_link_libraries(isoline_component PUBLIC isoline::core)
 isoline_apply_target_policy(isoline_component)

@@ -84,10 +84,11 @@ enum class DecodeErrorCode : uint8_t
     InvalidCanonOption,
     InvalidBooleanValue,
     NonZeroReservedByte,
+    CoreModuleRefused,
 };
 
 /// The last DecodeErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::NonZeroReservedByte;
+inline constexpr auto LastDecodeErrorCode = DecodeErrorCode::CoreModuleRefused;
 
 /// How a decode error's message is built from its row's text and the error's subject.
 enum class DecodeErrorDetail : uint8_t
@@ -257,6 +258,9 @@ inline constexpr auto DecodeErrorMessages = std::to_array<DecodeErrorRow>({
     // test/binary/binary.wast's, whose reserved byte was the boolean `cancellable` once.
     { .code = DecodeErrorCode::InvalidBooleanValue, .text = "invalid boolean value" },
     { .code = DecodeErrorCode::NonZeroReservedByte, .text = "non-zero reserved byte" },
+    // Isoline's own, from canonicalizeComponent(): the ICoreModuleCanonicalizer refused the embedded
+    // core module at the error's offset.
+    { .code = DecodeErrorCode::CoreModuleRefused, .text = "core module refused by its canonicalizer" },
 });
 
 static_assert(
@@ -362,6 +366,25 @@ struct DecodeError
 [[nodiscard]] std::expected<ComponentPool, DecodeError> decodeComponent(std::span<std::byte const> bytes,
                                                                         ComponentFeatureSet features,
                                                                         ComponentLimits const& limits);
+
+/// Where one definition sits in a pool: its scope, and its index among that scope's definitions.
+struct DefinitionPosition
+{
+    uint32_t scope = 0;         ///< The index of its scope in ComponentPool::components.
+    std::size_t definition = 0; ///< Its index in that scope's Component::definitions.
+
+    /// Two positions are equal when their scopes and indices are.
+    bool operator==(DefinitionPosition const&) const = default;
+};
+
+/// The embedded core modules of @p pool in definition order, pre-order over nested components: the
+/// order of their ordinals (D10). Walks an explicit stack, never recursively.
+///
+/// Precondition: every NestedComponent of @p pool names an entry after its own scope, as the decoder
+/// and testing::ComponentBuilder lay pools out.
+/// @param pool A decoded or built pool.
+/// @return The position of each CoreModuleDefinition, the first ordinal first.
+[[nodiscard]] std::vector<DefinitionPosition> coreModulePositions(ComponentPool const& pool);
 
 /// The embedded core modules in definition order (pre-order over nested components): what the
 /// compile helper keys by ordinal (D10).
