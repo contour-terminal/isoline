@@ -71,7 +71,8 @@ isoline_add_capped_test(NAME isoline_differential_test_memory TARGET isoline_dif
 # shard, a contiguous run of seeds each, so that ctest runs them side by side. Lane 1 replays every module;
 # lane 2 and the oracle replay the seeds divisible by ISOLINE_DIFFERENTIAL_SAMPLE: 8 on a pull request, 1
 # (everything) in the nightly run. Each skips (exit status 4) while out/corpus/differential does not exist.
-set(ISOLINE_DIFFERENTIAL_SHARDS 8 CACHE STRING "How many ctest entries the differential corpus is split into")
+set(ISOLINE_DIFFERENTIAL_SHARDS 24 CACHE STRING
+    "How many ctest entries the differential corpus is split into: each shard ends within half its timeout under ASan")
 set(ISOLINE_DIFFERENTIAL_SAMPLE 8 CACHE STRING
     "Lane 2 and the Wasmtime oracle replay the corpus seeds divisible by this: 8 on pull requests, 1 nightly")
 math(EXPR isolineCorpusTimeout "3600 * ${ISOLINE_TEST_TIMEOUT_FACTOR}")

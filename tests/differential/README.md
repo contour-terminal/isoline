@@ -51,7 +51,7 @@ compares them all; the corpus replay is never run under ThreadSanitizer.
 
 ## Running the corpus
 
-The replay is `ISOLINE_DIFFERENTIAL_SHARDS` ctest entries (8 by default), one per contiguous run of seeds,
+The replay is `ISOLINE_DIFFERENTIAL_SHARDS` ctest entries (24 by default), one per contiguous run of seeds,
 for `ctest -j`. Lane 1 replays every module. Lane 2 and Wasmtime replay the seeds divisible by
 `ISOLINE_DIFFERENTIAL_SAMPLE`: 8 on a pull request, 1 in the nightly run (`differential-nightly.yml`). The
 reference is observed once per module and reused by lane 2. Each shard prints what it counted: modules by
