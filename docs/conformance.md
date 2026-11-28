@@ -126,6 +126,209 @@ were mapped function by function against that tag.
 |---|---|---|---|
 | WASI 0.3 WIT (`proposals/<package>/wit/*.wit`, every package `@0.3.2`) | [WebAssembly/WASI](https://github.com/WebAssembly/WASI) | `v0.3.2` | `bdadbbb8cadd287cc5014c4b5a0bf76efc60291c` |
 
+## The component suites
+
+The component model's suites (P11, D12) are imported by `scripts/import-spec-tests.py --suite component`
+into `tests/<source>/<path>/`, one directory per `.wast` file, and run by CTest (label `component-spec`) on
+the reference engine under the component suites' rules: an assertion's message is found as a substring,
+of Isoline's message or of one of the suites' wordings of it (`tests/spec/ComponentWording.hpp`: Wasmtime's
+and wasm-tools' texts for the same failure, by stage), and a core trap is worded as Wasmtime words it.
+`tests/component-files.txt` names every file, pins its skip count, and the core and component features it
+runs with, which the import derives from the file (wasm-tools' `;; RUN:` line, Wasmtime's `;;!`
+directives, or the component model's `test/README.md`); wasm-tools' own tests run short of executing
+anything, as its `wast` does: a component is validated, never instantiated, and an action is read.
+
+| Source | Repository | Commit |
+|---|---|---|
+| `component-model` | [WebAssembly/component-model](https://github.com/WebAssembly/component-model) `test/` | `f78ac03c178ad0f51b307852087792f1f164dc34` |
+| `component-wasm-tools` | [bytecodealliance/wasm-tools](https://github.com/bytecodealliance/wasm-tools) 1.263.0 `tests/cli/component-model/` | `7a2fa422cdf9aeeaf488a2acac8bc94a078bfa32` |
+| `component-wasmtime` | [bytecodealliance/wasmtime](https://github.com/bytecodealliance/wasmtime) 51.0.0 `tests/misc_testsuite/component-model/`, a curated list | `32656dc4873fcec5c8662aa937bd01acda3b2e85` |
+
+The oracle is wasm-tools 1.263.0, whose component model submodule is at `1a743de6`. A command is skipped
+only for a reason of `SkipReasons` (`tests/spec/SpecCheck.hpp`), which the runner refuses any other of:
+
+- a rule of the importer's `FILE_SKIPS` skips a whole file: `async (P12)` for the async tests, `gated
+  <emoji>` for a gate Isoline refuses (🧵②, 🐘, 📝, 🔧, 🪙), `core feature cut <name>` for GC and custom
+  descriptors, `legacy text indices` for the legacy text syntax;
+- the component cut (`component.cut.features` in `scripts/tools.lock`: the core cut less shared memories,
+  with the component model and the gates Isoline implements) changes a command's verdict: it is skipped
+  for the gate or core feature that gives the suite's verdict back, as wasm-tools validates it;
+- the pinned wasm-tools fails the directive: `upstream nyi.txt` in a file the suite's `nyi.txt` lists,
+  else `oracle unavailable since <commit>`, recorded in `tests/component-skips.txt` with the suite's commit
+  that introduced the expectation;
+- `wasmtime restriction (restrictions.wast:<line>)`, recorded there too: Wasmtime refuses what the component
+  model admits (a root import or export of a component, a re-exported host function), as the assert_invalid
+  at that line of its `restrictions.wast` does with the same message (the names it quotes aside), and the
+  pinned wasm-tools admits it;
+- `diverges from CM pin (definitions.py:<line>)`, recorded there too: the suite asserts what the pinned
+  canonical ABI does otherwise at that line;
+- and every command that uses a skipped module, for its root's reason.
+
+Two Wasmtime tests are not imported: `same-instance-call.wast` expects an entry check the pin's
+`definitions.py` does not make, and `big-strings.wast` strings past its `MAX_STRING_BYTE_LENGTH`.
+
+<!-- component-exclusions:begin -->
+```text
+component-wasmtime big-strings: it sends strings of 2^31 bytes, past the pin's MAX_STRING_BYTE_LENGTH of 2^28 - 1 (definitions.py:1337, trapped at definitions.py:1360), raises Wasmtime's own hostcall fuel through a `wasmtime` instance no other runtime has, and needs about 4 GiB of memory
+component-wasmtime same-instance-call: it expects a call from an instance into a function it lifted itself to trap, an entry check the pin's synchronous entry (definitions.py:425-445, canon_lift at definitions.py:2056) does not make
+```
+<!-- component-exclusions:end -->
+
+Skips by file and reason:
+
+<!-- component-skips:begin -->
+```text
+component-model async/async-calls-sync: 3 × async (P12)
+component-model async/big-interleaving-test: 57 × async (P12)
+component-model async/builtin-trap-poisons-instance: 8 × async (P12)
+component-model async/cancel-and-exclusive-lock: 2 × async (P12)
+component-model async/cancel-delivery: 4 × async (P12)
+component-model async/cancel-not-delivered: 2 × async (P12)
+component-model async/cancel-resumed-callback-switch: 4 × async (P12)
+component-model async/cancel-stream: 15 × async (P12)
+component-model async/cancel-subtask: 4 × async (P12)
+component-model async/cancel-targeted-resume: 10 × async (P12)
+component-model async/closed-stream: 3 × async (P12)
+component-model async/cross-abi-calls: 49 × async (P12)
+component-model async/cross-task-future: 2 × async (P12)
+component-model async/deadlock: 2 × async (P12)
+component-model async/dont-block-start: 2 × async (P12)
+component-model async/drop-cross-task-borrow: 7 × async (P12)
+component-model async/drop-stream: 5 × async (P12)
+component-model async/drop-subtask: 3 × async (P12)
+component-model async/drop-waitable-set: 2 × async (P12)
+component-model async/during-sync-call-exclusive-resume: 6 × async (P12)
+component-model async/during-sync-call-may-block-if-other-ready-threads: 9 × async (P12)
+component-model async/during-sync-call-no-sibling-resume: 6 × async (P12)
+component-model async/during-sync-scheduling-candidates: 31 × async (P12)
+component-model async/empty-wait: 2 × async (P12)
+component-model async/forward: 95 × async (P12)
+component-model async/future-completion-order: 5 × async (P12)
+component-model async/futures-must-write: 14 × async (P12)
+component-model async/idle-drop: 38 × async (P12)
+component-model async/partial-stream-copies: 9 × async (P12)
+component-model async/passing-resources: 3 × async (P12)
+component-model async/reentrance: 25 × async (P12)
+component-model async/same-component-stream-future: 9 × async (P12)
+component-model async/self-switch-traps: 9 × async (P12)
+component-model async/switch-to-ready-callback: 17 × async (P12)
+component-model async/sync-barges-in: 3 × async (P12)
+component-model async/sync-streams: 2 × async (P12)
+component-model async/trap-if-block-and-sync: 48 × async (P12)
+component-model async/trap-if-done: 31 × async (P12)
+component-model async/trap-if-sync-and-waitable-set: 29 × async (P12)
+component-model async/trap-if-transfer-in-waitable-set: 5 × async (P12)
+component-model async/validate-no-async-abi-for-sync-type: 3 × async (P12)
+component-model async/validate-no-stream-char: 1 × async (P12)
+component-model async/validate-task-return: 3 × async (P12)
+component-model async/wait-during-callback: 2 × async (P12)
+component-model async/zero-length: 27 × async (P12)
+component-model binary/binary: 4 × async (P12)
+component-model binary/binary: 3 × core feature cut gc
+component-model binary/binary: 1 × gated 🔧
+component-model binary/binary: 11 × upstream nyi.txt
+component-model validation/indicies: 2 × async (P12)
+component-model validation/indicies: 1 × gated 🧵
+component-model validation/instantiation: 1 × core feature cut threads
+component-model validation/kebab: 1 × upstream nyi.txt
+component-model validation/max-value-size: 1 × async (P12)
+component-model validation/max-value-size: 7 × gated 🔧
+component-model values/post-return: 5 × async (P12)
+component-model values/post-return: 61 × upstream nyi.txt
+component-model values/variants: 5 × async (P12)
+component-wasm-tools async/abi: 2 × async (P12)
+component-wasm-tools async/async-builtins: 19 × async (P12)
+component-wasm-tools async/futures: 24 × async (P12)
+component-wasm-tools async/lift: 11 × async (P12)
+component-wasm-tools async/lower: 6 × async (P12)
+component-wasm-tools async/names: 4 × async (P12)
+component-wasm-tools async/stackful: 8 × async (P12)
+component-wasm-tools async/streams: 23 × async (P12)
+component-wasm-tools async/task-builtins: 49 × async (P12)
+component-wasm-tools async/threading: 29 × async (P12)
+component-wasm-tools async/threading-and-memory64: 7 × async (P12)
+component-wasm-tools attribute-order: 5 × gated 🔗
+component-wasm-tools canon-names: 21 × gated 🔗
+component-wasm-tools custom-descriptors: 7 × core feature cut custom-descriptors
+component-wasm-tools error-context/error-context: 9 × gated 📝
+component-wasm-tools fixed-length-lists: 7 × gated 🔧
+component-wasm-tools gc/enum-types: 2 × core feature cut gc
+component-wasm-tools gc/error-context: 2 × core feature cut gc
+component-wasm-tools gc/flag-types: 2 × core feature cut gc
+component-wasm-tools gc/futures: 2 × core feature cut gc
+component-wasm-tools gc/gc: 14 × core feature cut gc
+component-wasm-tools gc/lift-func-many-params: 1 × core feature cut gc
+component-wasm-tools gc/lift-func-no-params: 1 × core feature cut gc
+component-wasm-tools gc/list-types: 2 × core feature cut gc
+component-wasm-tools gc/option-types: 6 × core feature cut gc
+component-wasm-tools gc/primitive-types: 60 × core feature cut gc
+component-wasm-tools gc/record-types: 4 × core feature cut gc
+component-wasm-tools gc/resource-types: 4 × core feature cut gc
+component-wasm-tools gc/result-types: 6 × core feature cut gc
+component-wasm-tools gc/tuple-types: 4 × core feature cut gc
+component-wasm-tools gc/variant-types: 6 × core feature cut gc
+component-wasm-tools implements-version-suffix: 7 × gated 🔗
+component-wasm-tools indices: 2 × async (P12)
+component-wasm-tools indices: 1 × gated 🧵
+component-wasm-tools instance-type: 2 × core feature cut threads
+component-wasm-tools instantiate: 1 × core feature cut threads
+component-wasm-tools legacy-indices: 8 × legacy text indices
+component-wasm-tools map: 3 × async (P12)
+component-wasm-tools map: 1 × gated 📝
+component-wasm-tools max-value-size: 1 × async (P12)
+component-wasm-tools max-value-size: 8 × gated 🔧
+component-wasm-tools memory64/async: 8 × gated 🐘
+component-wasm-tools memory64/context: 9 × gated 🐘
+component-wasm-tools memory64/list: 1 × gated 🐘
+component-wasm-tools memory64/memory64: 1 × gated 🐘
+component-wasm-tools memory64/realloc: 3 × gated 🐘
+component-wasm-tools memory64/resources: 7 × gated 🐘
+component-wasm-tools memory64/string: 1 × gated 🐘
+component-wasm-tools memory64/waitable-set: 6 × gated 🐘
+component-wasm-tools naming: 2 × async (P12)
+component-wasm-tools naming: 22 × gated 📡
+component-wasm-tools nested-names: 1 × gated 🪺
+component-wasm-tools options: 1 × core feature cut threads
+component-wasm-tools shared-everything-threads/globals: 3 × gated 🧵②
+component-wasm-tools shared-everything-threads/not-accepted: 3 × gated 🧵②
+component-wasm-tools tags: 3 × core feature cut gc
+component-wasm-tools values/start: 9 × gated 🪙
+component-wasm-tools values/values: 18 × gated 🪙
+component-wasmtime core-import-func-subtype: 2 × core feature cut gc
+component-wasmtime core-type-out-of-group-deps: 3 × core feature cut gc
+component-wasmtime empty-rec-groups: 3 × core feature cut gc
+component-wasmtime resources: 4 × async (P12)
+```
+<!-- component-skips:end -->
+
+Recorded skips, by line:
+
+<!-- component-recorded-skips:begin -->
+```text
+component-model validation/attributes:88: oracle unavailable since fb27002f
+component-model validation/attributes:92: oracle unavailable since fb27002f
+component-wasmtime adapter:98: diverges from CM pin (definitions.py:425)
+component-wasmtime import:2: wasmtime restriction (restrictions.wast:9)
+component-wasmtime resources:1318: diverges from CM pin (definitions.py:1432)
+component-wasmtime restrictions:2: wasmtime restriction (restrictions.wast:1)
+component-wasmtime restrictions:6: wasmtime restriction (restrictions.wast:5)
+component-wasmtime restrictions:10: wasmtime restriction (restrictions.wast:9)
+component-wasmtime restrictions:17: wasmtime restriction (restrictions.wast:16)
+component-wasmtime simple:25: wasmtime restriction (restrictions.wast:1)
+component-wasmtime simple:31: wasmtime restriction (restrictions.wast:5)
+component-wasmtime types:524: diverges from CM pin (definitions.py:1493)
+component-wasmtime types:525: diverges from CM pin (definitions.py:1503)
+```
+<!-- component-recorded-skips:end -->
+
+Divergences from the oracle (`tests/component-divergences.txt`), each checked by the runner:
+
+<!-- component-divergences:begin -->
+```text
+component-wasm-tools very-nested:1871: message unexpected token
+```
+<!-- component-divergences:end -->
+
 ## Features
 
 Suite paths are relative to the source's `test/` directory.

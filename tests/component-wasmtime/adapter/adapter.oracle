@@ -1,0 +1,14 @@
+commands 55
+0 4 wasm adapter.0.wasm
+1 16 wasm adapter.1.wasm
+2 31 wasm adapter.2.wasm
+3 77 wasm adapter.3.wasm
+4 90 wasm adapter.4.wasm
+5 98 wasm adapter.5.wasm
+5 98 skip 64697665726765732066726f6d20434d2070696e2028646566696e6974696f6e732e70793a34323529
+6 118 wasm adapter.6.wasm
+8 141 wasm adapter.8.wasm
+10 182 wasm adapter.10.wasm
+41 330 wasm adapter.41.wasm
+46 350 wasm adapter.46.wasm
+53 391 wasm adapter.53.wasm

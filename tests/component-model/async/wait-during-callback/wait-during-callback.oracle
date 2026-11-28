@@ -1,0 +1,4 @@
+commands 2
+0 2 wasm wait-during-callback.0.wasm
+0 2 skip 6173796e63202850313229
+1 77 skip 6173796e63202850313229

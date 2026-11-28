@@ -1,0 +1,3 @@
+commands 5
+0 3 wasm trap.0.wasm
+2 33 wasm trap.2.wasm

@@ -1,0 +1,14 @@
+commands 12
+0 4 wasm instance-type.0.wasm
+0 4 skip 636f72652066656174757265206375742074687265616473
+1 70 wasm instance-type.1.wasm
+2 75 wasm instance-type.2.wasm
+3 85 wasm instance-type.3.wasm
+3 85 skip 636f72652066656174757265206375742074687265616473
+4 109 wasm instance-type.4.wasm
+5 181 wasm instance-type.5.wasm
+6 188 wasm instance-type.6.wasm
+7 196 wasm instance-type.7.wasm
+9 211 wasm instance-type.9.wasm
+10 219 wasm instance-type.10.wasm
+11 227 wasm instance-type.11.wasm

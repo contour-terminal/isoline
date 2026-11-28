@@ -1,0 +1,13 @@
+commands 12
+0 4 wasm very-nested.0.wasm
+1 1570 wasm very-nested.1.wasm
+2 1691 wasm very-nested.2.wasm
+3 1781 wasm very-nested.3.wasm
+4 1871 message 756e657870656374656420746f6b656e
+5 1958 wasm very-nested.5.wasm
+6 2065 wasm very-nested.6.wasm
+7 2172 wasm very-nested.7.wasm
+8 2278 wasm very-nested.8.wasm
+9 2384 wasm very-nested.9.wasm
+10 2522 wasm very-nested.10.wasm
+11 2545 wasm very-nested.11.wasm

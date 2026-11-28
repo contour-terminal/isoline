@@ -1,0 +1,9 @@
+# The divergences from the oracle of the component suites, recorded for scripts/import-spec-tests.py
+# --suite component in tests/spec/divergences.txt's format: `<source> <path> <ordinal> <line> message
+# <Isoline's message…>` for an assert_malformed of a component given as text where Isoline reports another
+# of the text's errors first than wasm-tools does; the runner requires exactly this message. docs/
+# conformance.md lists every divergence.
+# - very-nested 4: an unclosed list 568 components deep. wasm-tools' parser refuses the 101st list of its
+#   items as it reads it (MAX_PARENS_DEPTH, crates/wast/src/parser.rs:85); Isoline reads the text's lists
+#   before its items, so the unclosed list comes first.
+component-wasm-tools very-nested 4 1871 message unexpected token

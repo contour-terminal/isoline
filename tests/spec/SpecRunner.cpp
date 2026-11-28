@@ -41,6 +41,7 @@
 
 #include "ComponentSpectest.hpp"
 #include "ComponentValues.hpp"
+#include "ComponentWording.hpp"
 #include "CoreTrapWording.hpp"
 #include "Oracle.hpp"
 #include "Script.hpp"
@@ -70,6 +71,7 @@
 #include <isoline/component/runtime/ComponentStore.hpp>
 #include <isoline/component/text/Forms.hpp>
 #include <isoline/component/types/TypeArena.hpp>
+#include <isoline/component/validate/Names.hpp>
 #include <isoline/component/validate/Validator.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
@@ -306,6 +308,17 @@ namespace
         SkipReasons, ///< Only a SkipReasons row's of its use (D12); any other reason fails the file.
     };
 
+    /// How far a suite's commands run.
+    enum class Execution : uint8_t
+    {
+        Run, ///< Every command, as the reference interpreter and Wasmtime run a script.
+        /// Short of executing anything, as wasm-tools' `wast` checks its own tests: a module command and an
+        /// assertion that a module links or instantiates assert only that it is valid (a component that
+        /// imports what no runner provides is), and an action is read, never performed (`map.wast` calls a
+        /// function that is `unreachable`).
+        ValidateOnly,
+    };
+
     /// One suite a file can come from: how `--suite` names it, and the rules its files run by.
     struct SuiteRow
     {
@@ -313,6 +326,9 @@ namespace
         MessageRule rule;       ///< How an assertion's expected message must occur in the actual one.
         CoreTrapText coreTraps; ///< How a core trap a component call met is worded.
         SkipPolicy skips;       ///< Which skip reasons its oracles may give.
+        /// How it words what Isoline words otherwise (ComponentWording), which its assertions may hold.
+        std::span<WordingRow const> wordings;
+        Execution execution; ///< How far its commands run.
     };
 
     /// Every suite. The core suites hold to the reference interpreter's rules, the component suites to
@@ -321,11 +337,21 @@ namespace
         { .name = "core",
           .rule = MessageRule::Prefix,
           .coreTraps = CoreTrapText::Isoline,
-          .skips = SkipPolicy::AnyReason },
+          .skips = SkipPolicy::AnyReason,
+          .wordings = {},
+          .execution = Execution::Run },
         { .name = "component",
           .rule = MessageRule::Substring,
           .coreTraps = CoreTrapText::Wasmtime,
-          .skips = SkipPolicy::SkipReasons },
+          .skips = SkipPolicy::SkipReasons,
+          .wordings = ComponentWording,
+          .execution = Execution::Run },
+        { .name = "wasm-tools",
+          .rule = MessageRule::Substring,
+          .coreTraps = CoreTrapText::Wasmtime,
+          .skips = SkipPolicy::SkipReasons,
+          .wordings = ComponentWording,
+          .execution = Execution::ValidateOnly },
     });
 
     /// One engine `--engine` can name.
@@ -518,6 +544,13 @@ namespace
 
         [[nodiscard]] Outcome execute(Command const& command)
         {
+            return _options.suite.execution == Execution::ValidateOnly ? validateOnly(command)
+                                                                       : performCommand(command);
+        }
+
+        /// Runs a command in full.
+        [[nodiscard]] Outcome performCommand(Command const& command)
+        {
             switch (command.kind)
             {
                 case CommandKind::Module: return defineModule(command);
@@ -563,7 +596,8 @@ namespace
             return checkFailure(stage,
                                 command.text,
                                 result ? std::nullopt : std::optional { result.error() },
-                                _options.suite.rule);
+                                _options.suite.rule,
+                                _options.suite.wordings);
         }
 
         /// assert_exception: a core invocation must throw; a component call must trap with the uncaught
@@ -581,7 +615,8 @@ namespace
             return checkFailure(Stage::Execute,
                                 uncaught,
                                 result ? std::nullopt : std::optional { result.error() },
-                                MessageRule::Substring);
+                                MessageRule::Substring,
+                                _options.suite.wordings);
         }
 
         /// Checks that a module loads, and that one of the custom sections the decoder interpreted was
@@ -652,7 +687,12 @@ namespace
                 }
                 Failure operator()(component::validate::ValidationError const& error) const
                 {
-                    return Failure { .stage = Stage::Validate,
+                    // An embedded module that does not decode makes the component malformed, as wasmparser,
+                    // which reads the module as part of the component, reports it.
+                    auto const malformed =
+                        error.coreModule
+                        && std::holds_alternative<binary::DecodeError>(error.coreModule->error);
+                    return Failure { .stage = malformed ? Stage::Decode : Stage::Validate,
                                      .message = component::validate::specMessage(error) };
                 }
                 Failure operator()(component::api::CoreModuleLoadError const& error) const
@@ -839,6 +879,41 @@ namespace
             return makeCurrent(command, instantiateDefinition(*definition));
         }
 
+        /// Runs a command short of executing anything (Execution::ValidateOnly): a module, and a module that
+        /// must link or instantiate, must load; an instance must name a definition; an assertion about a
+        /// module that must fail to load is checked as ever; an action is read only.
+        [[nodiscard]] Outcome validateOnly(Command const& command)
+        {
+            switch (command.kind)
+            {
+                case CommandKind::Module:
+                case CommandKind::ModuleDefinition: return defineDefinition(command);
+                case CommandKind::AssertTrapModule:
+                case CommandKind::AssertUnlinkable:
+                case CommandKind::AssertUninstantiable:
+                    return loadDefinition(command)
+                        .transform([](Definition const&) {})
+                        .transform_error(&describeFailure);
+                case CommandKind::ModuleInstance:
+                    if (!_definitions.contains(command.definition))
+                        return std::unexpected { std::format("no module definition named {}",
+                                                             command.definition) };
+                    return {};
+                case CommandKind::Register:
+                case CommandKind::Invoke:
+                case CommandKind::AssertReturn:
+                case CommandKind::AssertTrap:
+                case CommandKind::AssertExhaustion:
+                case CommandKind::AssertException: return {};
+                case CommandKind::AssertInvalid:
+                case CommandKind::AssertMalformed:
+                case CommandKind::AssertMalformedCustom:
+                case CommandKind::AssertInvalidCustom:
+                case CommandKind::Skip: break;
+            }
+            return performCommand(command);
+        }
+
         /// Decodes and validates a module or a component without instantiating it; a name keeps it for
         /// ModuleInstance.
         [[nodiscard]] Outcome defineDefinition(Command const& command)
@@ -861,7 +936,8 @@ namespace
             return makeCurrent(command, instantiateDefinition(definition->second));
         }
 
-        /// Makes an instantiated target current, under the command's name if it gives one.
+        /// Makes an instantiated target current, under the command's name if it gives one. A named
+        /// component's modules and resources become the linker's, under its name (nameComponent()).
         [[nodiscard]] Outcome makeCurrent(Command const& command,
                                           std::expected<Target, Failure> const& instance)
         {
@@ -869,7 +945,74 @@ namespace
                 return std::unexpected { describeFailure(instance.error()) };
             _current = *instance;
             if (command.name)
+            {
                 _named.insert_or_assign(*command.name, *instance);
+                if (auto const* run = std::get_if<std::shared_ptr<ComponentRun>>(&*instance))
+                    return nameComponent(*command.name, (*run)->instance);
+            }
+            return {};
+        }
+
+        /// Defines a named component instance's exported core modules and resource types in the linker as
+        /// an instance of its name (without its `$`), replacing one of that name, as Wasmtime's script runner
+        /// does (crates/wast/src/wast.rs:400-427): its other exports are not reflected, as there. The linker
+        /// never replaces a definition, so it is built again, the spectest's and every named instance's.
+        [[nodiscard]] Outcome nameComponent(std::string const& name,
+                                            component::api::ComponentInstance const& instance)
+        {
+            auto definitions = std::vector<NamedDefinition> {};
+            for (auto const& entry: instance.component().exports())
+            {
+                auto const& exportName = entry.name.str();
+                if (std::holds_alternative<component::types::CoreModuleTypeId>(entry.type))
+                {
+                    auto const module = instance.module(exportName);
+                    if (!module || !*module)
+                        return std::unexpected { std::format("register: no module export '{}'", exportName) };
+                    definitions.push_back({ .name = exportName, .definition = **module });
+                }
+                else if (auto const* type = std::get_if<component::types::TypeExtern>(&entry.type);
+                         type != nullptr
+                         && std::holds_alternative<component::types::ResourceTypeId>(type->type))
+                {
+                    auto const resource = instance.resource(exportName);
+                    if (!resource || !*resource)
+                        return std::unexpected { std::format("register: no resource export '{}'",
+                                                             exportName) };
+                    definitions.push_back({ .name = exportName, .definition = **resource });
+                }
+            }
+            _namedComponents.insert_or_assign(
+                std::string { std::string_view { name }.substr(name.starts_with('$') ? 1 : 0) },
+                std::move(definitions));
+            auto linker = linkSpectest(_engine, _componentConfig);
+            for (auto const& [instanceName, exports]: _namedComponents)
+            {
+                // No import can name an instance whose name is no extern name (`$Strings`), so it is not
+                // defined: Wasmtime's linker takes any string, Isoline's only the names imports have.
+                if (!component::validate::parseExternName(instanceName, _componentConfig.features))
+                    continue;
+                auto defined = linker.defineEmptyInstance(instanceName);
+                for (auto const& [exportName, definition]: exports)
+                {
+                    if (!defined)
+                        break;
+                    auto const path =
+                        std::format("{}{}{}", instanceName, component::api::PathSeparator, exportName);
+                    defined = std::visit(core::Overloaded {
+                                             [&](isoline::api::Module const& module) {
+                                                 return linker.defineModule(path, module);
+                                             },
+                                             [&](component::api::HostResourceType const& resource) {
+                                                 return linker.defineResource(path, resource);
+                                             },
+                                         },
+                                         definition);
+                }
+                if (!defined)
+                    return std::unexpected { std::format("register: {}", defined.error().message()) };
+            }
+            _linker = std::move(linker);
             return {};
         }
 
@@ -1074,6 +1217,16 @@ namespace
         isoline::api::HeapMemoryAllocator _componentAllocator;
         component::api::ComponentConfig _componentConfig;
         component::api::Linker _linker;
+        /// What a named component instance defines in the linker: an export's name and its module or
+        /// resource type.
+        struct NamedDefinition
+        {
+            std::string name;                                                                ///< The export.
+            std::variant<isoline::api::Module, component::api::HostResourceType> definition; ///< Its value.
+        };
+        /// The named component instances' definitions, by name without its `$`: what the linker holds
+        /// beside the spectest's (nameComponent()).
+        std::map<std::string, std::vector<NamedDefinition>> _namedComponents;
         std::optional<Target> _current;
         std::map<std::string, Target, std::less<>> _named;
         std::map<std::string, uint32_t, std::less<>> _registered;
@@ -1477,6 +1630,28 @@ namespace
         return found == rows.end() ? nullptr : &*found;
     }
 
+    /// The core features a `--features` value names: a named set, then any of its features switched off as
+    /// `-name` (FeatureTable's names), joined by commas, the result closed over its prerequisites.
+    [[nodiscard]] std::expected<FeatureSet, std::string> featuresNamed(std::string_view value)
+    {
+        auto const setName = value.substr(0, value.find(','));
+        auto features = featureSetNamed(setName);
+        if (!features)
+            return std::unexpected { std::format("no feature set named '{}'", setName) };
+        for (auto const part: std::views::split(value, ',') | std::views::drop(1))
+        {
+            auto const text = std::string_view { part.begin(), part.end() };
+            auto const row = std::ranges::find(
+                FeatureTable, text.substr(text.starts_with('-') ? 1 : 0), &FeatureRow::name);
+            if (!text.starts_with('-') || row == FeatureTable.end())
+                return std::unexpected { std::format("'{}' switches off no feature", text) };
+            features = features->without(row->feature);
+        }
+        if (!features->checkPrerequisites())
+            return std::unexpected { std::format("'{}' switches off a feature another needs", value) };
+        return *features;
+    }
+
     /// The gated features a `--component-features` value names: `none`, or feature names (wasm-tools'
     /// `--features` spellings) joined by commas.
     [[nodiscard]] std::expected<component::ComponentFeatureSet, std::string> componentFeaturesNamed(
@@ -1502,13 +1677,10 @@ namespace
         { .flag = "--features",
           .presence = OptionPresence::Required,
           .read = [](RunOptions& options, std::string_view value) -> std::expected<void, std::string> {
-              auto const features = featureSetNamed(value);
-              if (!features)
-                  return std::unexpected { std::format("no feature set named '{}'", value) };
-              options.features = *features;
-              return {};
+              return featuresNamed(value).transform(
+                  [&](FeatureSet features) { options.features = features; });
           },
-          .usage = "<wasm2|wasm3|all>" },
+          .usage = "<wasm2|wasm3|all>[,-feature…]" },
         { .flag = "--engine",
           .presence = OptionPresence::Optional,
           .read = [](RunOptions& options, std::string_view value) -> std::expected<void, std::string> {
@@ -1528,7 +1700,7 @@ namespace
               options.suite = *row;
               return {};
           },
-          .usage = "<core|component>" },
+          .usage = "<core|component|wasm-tools>" },
         { .flag = "--component-features",
           .presence = OptionPresence::Optional,
           .read = [](RunOptions& options, std::string_view value) -> std::expected<void, std::string> {

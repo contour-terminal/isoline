@@ -297,6 +297,8 @@ TEST_CASE("SpecCheck.skipReasons")
              "core feature cut gc",
              "legacy text indices",
              "diverges from CM pin (definitions.py:1234)",
+             "oracle unavailable since fb27002f",
+             "wasmtime restriction (restrictions.wast:9)",
          }))
     {
         INFO(reason);
@@ -319,10 +321,58 @@ TEST_CASE("SpecCheck.skipReasons")
              "diverges from CM pin (definitions.py:3x0)",
              "diverges from CM pin (definitions.py:350",
              "diverges from CM pin (Explainer.md:1)",
+             "oracle unavailable",
+             "oracle unavailable since ",
+             "oracle unavailable since two words",
+             "wasmtime restriction",
+             "wasmtime restriction (restrictions.wast:)",
+             "wasmtime restriction (simple.wast:9)",
          }))
     {
         INFO(reason);
         CHECK(reasonRowOf(reason, ReasonUse::Skip) == nullptr);
         CHECK(reasonRowOf(reason, ReasonUse::Parity) == nullptr);
     }
+}
+
+TEST_CASE("SpecCheck.suiteWordings")
+{
+    // A suite's wording of a failure holds the expected message where Isoline's own does not, at the
+    // failure's stage only, its groups substituted.
+    using isoline::spectest::MessageRule;
+    using isoline::spectest::suiteWordingsOf;
+    using isoline::spectest::WordingRow;
+    constexpr auto Wordings = std::to_array<WordingRow>({
+        { .stage = Stage::Execute,
+          .pattern = "^unaligned pointer [0-9]+ for an alignment of ([0-9]+)$",
+          .wording = "string pointer not aligned to $1" },
+        { .stage = Stage::Link,
+          .pattern = "expected ([a-z]+), found ([a-z]+)$",
+          .wording = "expected $1 found $2" },
+    });
+    auto const trap =
+        Failure { .stage = Stage::Execute, .message = "unaligned pointer 3 for an alignment of 2" };
+    CHECK(suiteWordingsOf(trap, Wordings) == std::vector<std::string> { "string pointer not aligned to 2" });
+    CHECK(
+        checkFailure(Stage::Execute, "not aligned to 2", trap, MessageRule::Substring, Wordings).has_value());
+    CHECK(checkFailure(Stage::Execute, "unaligned pointer 3", trap, MessageRule::Substring, Wordings)
+              .has_value());
+    CHECK_FALSE(
+        checkFailure(Stage::Execute, "not aligned to 4", trap, MessageRule::Substring, Wordings).has_value());
+    CHECK_FALSE(
+        checkFailure(Stage::Execute, "not aligned to 2", trap, MessageRule::Substring, {}).has_value());
+    // No row of another stage words it.
+    auto const link = Failure { .stage = Stage::Instantiate, .message = "expected func, found global" };
+    CHECK(suiteWordingsOf(link, Wordings).empty());
+    CHECK_FALSE(
+        checkFailure(Stage::Instantiate, "expected func found global", link, MessageRule::Substring, Wordings)
+            .has_value());
+    auto const linked = Failure { .stage = Stage::Link,
+                                  .message = "import `x` has the wrong type: expected func, found global" };
+    CHECK(checkFailure(Stage::Link, "expected func found global", linked, MessageRule::Substring, Wordings)
+              .has_value());
+    // A wording never passes a failure at another stage than the assertion's.
+    CHECK_FALSE(
+        checkFailure(Stage::Validate, "expected func found global", linked, MessageRule::Substring, Wordings)
+            .has_value());
 }

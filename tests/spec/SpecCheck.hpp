@@ -10,6 +10,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "Script.hpp"
 #include <isoline/runtime/Value.hpp>
@@ -74,6 +75,38 @@ enum class MessageRule : uint8_t
     Prefix,    ///< It starts the actual message: the reference interpreter's rule, the core suites'.
     Substring, ///< It occurs anywhere in it: Wasmtime's rule, the component suites' (D12).
 };
+
+/// One way a suite words a failure that Isoline words otherwise: a failure at @p stage whose message the
+/// pattern finds is also known to the suite as the wording, the pattern's groups substituted (`$1`, and
+/// `$$` for a `$`). The suite's assertion may hold either text.
+struct WordingRow
+{
+    Stage stage;              ///< The stage of the failures it words.
+    std::string_view pattern; ///< An ECMAScript regular expression the message must hold a match of.
+    std::string_view wording; ///< The suite's text, a std::regex format string.
+};
+
+/// The suite's texts for @p failure: the wording of every row of @p wordings its stage and message fit.
+/// @param failure A failure.
+/// @param wordings A suite's wordings.
+/// @return The texts, in row order; empty when no row fits.
+[[nodiscard]] std::vector<std::string> suiteWordingsOf(Failure const& failure,
+                                                       std::span<WordingRow const> wordings);
+
+/// Checks a failure assertion as checkFailure(Stage, std::string_view, std::optional<Failure> const&,
+/// MessageRule) does, where the expected message may instead be in one of the suite's wordings of the
+/// failure (suiteWordingsOf()).
+/// @param stage The stage the failure must arise at.
+/// @param expectedMessage The message the actual one, or one of its wordings, must hold.
+/// @param actual The failure, or nullopt when the command succeeded.
+/// @param rule Where in the actual message, or a wording, the expected one must be.
+/// @param wordings The suite's wordings.
+/// @return Nothing, or why the assertion does not hold; a Harness failure never satisfies it.
+[[nodiscard]] CheckResult checkFailure(Stage stage,
+                                       std::string_view expectedMessage,
+                                       std::optional<Failure> const& actual,
+                                       MessageRule rule,
+                                       std::span<WordingRow const> wordings);
 
 /// Checks a failure assertion: the command must have failed, at @p stage, with a message @p rule finds
 /// @p expectedMessage in (an empty expected message matches any).
@@ -166,6 +199,19 @@ inline constexpr auto SkipReasons = std::to_array<SkipReasonRow>({
       .suffix = "",
       .use = ReasonUse::Skip,
       .meaning = "its text uses index forms the pinned text format no longer reads" },
+    { .prefix = "oracle unavailable since ",
+      .argument = SkipArgument::Name,
+      .suffix = "",
+      .use = ReasonUse::Skip,
+      .meaning =
+          "the pinned wasm-tools fails the directive, so it is no oracle of it; the name is the suite's "
+          "commit that introduced the expectation" },
+    { .prefix = "wasmtime restriction (restrictions.wast:",
+      .argument = SkipArgument::Line,
+      .suffix = ")",
+      .use = ReasonUse::Skip,
+      .meaning =
+          "Wasmtime refuses what the component model admits, as its restrictions.wast asserts at that line" },
     { .prefix = "diverges from CM pin (definitions.py:",
       .argument = SkipArgument::Line,
       .suffix = ")",

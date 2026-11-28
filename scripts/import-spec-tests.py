@@ -51,6 +51,7 @@ WastReader.ordinalsMatchWasmTools reads). Run it after editing ordinals.wast or 
 import argparse
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -409,6 +410,10 @@ TEXT = "text"
 BINARY = "binary"
 QUOTE = "quote"
 
+# The keywords of the lists that give a module: a core module, or a component (D12), which the JSON gives
+# the same command types.
+LAYER_KEYWORDS = {"module", "component"}
+
 # The token after `module` (and its name) that gives a form other than text.
 MODULE_FORMS = {"binary": BINARY, "quote": QUOTE}
 
@@ -421,7 +426,7 @@ SCRIPT_TYPES = {"invoke": "action", "get": "action"}
 
 # The keywords of script commands. A script whose first list starts with another is an inline module:
 # bare module fields, one `module` command of the whole text.
-SCRIPT_KEYWORDS = {"module", "register", "invoke", "get", "assert_return", "assert_trap", "assert_exhaustion",
+SCRIPT_KEYWORDS = {"module", "component", "register", "invoke", "get", "assert_return", "assert_trap", "assert_exhaustion",
                    "assert_exception", "assert_invalid", "assert_malformed", "assert_unlinkable",
                    "assert_uninstantiable", "assert_invalid_custom", "assert_malformed_custom"}
 
@@ -444,7 +449,7 @@ class ScriptCommand:
 
     def jsonType(self):
         """The command type wasm-tools json-from-wast gives the command."""
-        if self.keyword == "module":
+        if self.keyword in LAYER_KEYWORDS:
             return MODULE_VARIANTS.get(self.variant, "module")
         if self.keyword == "assert_trap" and self.hasModule:
             return "assert_uninstantiable"
@@ -570,7 +575,7 @@ def scanScript(text):
                 awaitingKeyword = False
                 if depth == 1:
                     current.keyword = token
-                if token == "module" and depth <= 2 and not current.hasModule:
+                if token in LAYER_KEYWORDS and depth <= 2 and not current.hasModule:
                     current.hasModule = True
                     moduleDepth = depth
             elif depth == moduleDepth:
@@ -682,6 +687,27 @@ def readDivergences(path):
 ENTRY_ORDER = ("wasm", "skip", "message", "parity")
 
 
+def applyDivergences(source, commands, forms, entries, divergences):
+    """Adds the recorded divergences of a file to its manifest entries, each checked against the command it
+    names; fails the import on one that is stale, of a skipped command, repeated, or does not fit."""
+    for divergence in divergences:
+        ordinal = divergence.ordinal
+        what = f"{source}: the {divergence.kind} divergence of command {ordinal} (line {divergence.line})"
+        if ordinal >= len(commands):
+            raise SystemExit(f"{what}: the script has {len(commands)} commands")
+        command = commands[ordinal]
+        if command["line"] != divergence.line:
+            raise SystemExit(f"{what}: the command is on line {command['line']}; the record is stale")
+        if "skip" in entries[ordinal]:
+            raise SystemExit(f"{what}: the command is skipped, so it is never checked")
+        if divergence.kind in entries[ordinal]:
+            raise SystemExit(f"{what}: a second one for the command")
+        misfit = DIVERGENCE_KINDS[divergence.kind]["fits"](divergence, command, forms[ordinal], entries[ordinal])
+        if misfit is not None:
+            raise SystemExit(f"{what}: the command {misfit}")
+        entries[ordinal][divergence.kind] = hexOf(divergence.value)
+
+
 def oracleManifest(name, source, commands, forms, readImports, validate, divergences=()):
     """The .oracle manifest of an imported file, and the binaries it names.
 
@@ -705,22 +731,7 @@ def oracleManifest(name, source, commands, forms, readImports, validate, diverge
         reason = poisoning.skipOf(command)
         if reason is not None:
             entries[ordinal]["skip"] = hexOf(reason)
-    for divergence in divergences:
-        ordinal = divergence.ordinal
-        what = f"{source}: the {divergence.kind} divergence of command {ordinal} (line {divergence.line})"
-        if ordinal >= len(commands):
-            raise SystemExit(f"{what}: the script has {len(commands)} commands")
-        command = commands[ordinal]
-        if command["line"] != divergence.line:
-            raise SystemExit(f"{what}: the command is on line {command['line']}; the record is stale")
-        if "skip" in entries[ordinal]:
-            raise SystemExit(f"{what}: the command is skipped, so it is never checked")
-        if divergence.kind in entries[ordinal]:
-            raise SystemExit(f"{what}: a second one for the command")
-        misfit = DIVERGENCE_KINDS[divergence.kind]["fits"](divergence, command, forms[ordinal], entries[ordinal])
-        if misfit is not None:
-            raise SystemExit(f"{what}: the command {misfit}")
-        entries[ordinal][divergence.kind] = hexOf(divergence.value)
+    applyDivergences(source, commands, forms, entries, divergences)
     lines = [f"commands {len(commands)}"]
     for ordinal, (command, entry) in enumerate(zip(commands, entries)):
         lines.extend(f"{ordinal} {command['line']} {kind} {entry[kind]}" for kind in ENTRY_ORDER if kind in entry)
@@ -858,6 +869,594 @@ def ordinalsFixture(rawJson):
             "ordinals.commands": listCommands(json.loads(rawJson)["commands"])}
 
 
+# The component suites (D12): the component model's own tests, wasm-tools' and a curated list of Wasmtime's,
+# imported into tests/<source>/<path>/ as the core suites are, under the rows of tests/component-files.txt.
+
+COMPONENT_FILES = ROOT / "tests" / "component-files.txt"
+
+# The skips tests/component-skips.txt records, beside component-files.txt: those no oracle derives.
+COMPONENT_SKIPS = "component-skips.txt"
+
+# The divergences from the oracle tests/component-divergences.txt records, in divergences.txt's format.
+COMPONENT_DIVERGENCES = "component-divergences.txt"
+
+# Where the component feature table lives, whose rows say which gate Isoline implements.
+FEATURE_TABLE = ROOT / "src" / "isoline" / "component" / "Features.hpp"
+
+# Where the skip reasons a component suite's oracle may give are defined, as the runner checks them.
+SKIP_REASON_TABLE = ROOT / "tests" / "spec" / "SpecCheck.hpp"
+
+# The component feature row of Features.hpp: its emoji, its wasm-tools name and how far Isoline implements it.
+FEATURE_ROW = re.compile(r'\.gate = "(?P<gate>[^"]+)",\s*\.name = "(?P<name>[^"]+)",\s*'
+                         r'\.p11 = Implementation::(?P<implementation>\w+)')
+
+
+class Gate:
+    """A gated component feature, a row of Features.hpp's ComponentFeatureTable."""
+
+    def __init__(self, gate, name, implementation):
+        self.gate = gate
+        self.name = name  # as wasm-tools' --features spells it
+        self.implementation = implementation
+
+    def implemented(self):
+        return self.implementation == "Implemented"
+
+    def reason(self):
+        """The skip reason of a command that needs the gate while Isoline refuses it."""
+        return "async (P12)" if self.name == "cm-async" else f"gated {self.gate}"
+
+
+def readGates(text):
+    """The gates of Features.hpp's text, in table order."""
+    gates = [Gate(**row.groupdict()) for row in FEATURE_ROW.finditer(text)]
+    if not gates:
+        raise SystemExit(f"{FEATURE_TABLE}: no ComponentFeatureTable rows")
+    return gates
+
+
+# A SkipReasons row of SpecCheck.hpp: its prefix, what follows it, its suffix and its use.
+SKIP_REASON_ROW = re.compile(r'\.prefix = "(?P<prefix>[^"]*)",\s*\.argument = SkipArgument::(?P<argument>\w+),\s*'
+                             r'\.suffix = "(?P<suffix>[^"]*)",\s*\.use = ReasonUse::(?P<use>\w+)')
+
+# What each SkipArgument admits, as reasonRowOf() checks it.
+SKIP_ARGUMENTS = {
+    "None": lambda text, gates: text == "",
+    "Gate": lambda text, gates: text in {gate.gate for gate in gates},
+    "Name": lambda text, gates: text != "" and " " not in text,
+    "Line": lambda text, gates: text.isdigit(),
+}
+
+
+def readSkipReasons(text):
+    """The skip reasons of SpecCheck.hpp's text: (prefix, argument, suffix) of each row of use Skip."""
+    rows = [row.groupdict() for row in SKIP_REASON_ROW.finditer(text)]
+    if not rows:
+        raise SystemExit(f"{SKIP_REASON_TABLE}: no SkipReasons rows")
+    return [(row["prefix"], row["argument"], row["suffix"]) for row in rows if row["use"] == "Skip"]
+
+
+def isSkipReason(reason, reasons, gates):
+    """Whether reason is of a SkipReasons row, as the runner requires of every skip of a component suite."""
+    for prefix, argument, suffix in reasons:
+        if reason.startswith(prefix) and reason.endswith(suffix) and len(reason) >= len(prefix) + len(suffix):
+            if SKIP_ARGUMENTS[argument](reason[len(prefix):len(reason) - len(suffix)], gates):
+                return True
+    return False
+
+
+# The wasm-tools features of a Wasmtime `;;!` directive, by its name: None for one that says nothing of the
+# language (a hint to Wasmtime's runner).
+WASMTIME_DIRECTIVES = {
+    "bulk_memory": "bulk-memory",
+    "component_model_async": "cm-async",
+    "component_model_error_context": "cm-error-context",
+    "component_model_fixed_length_lists": "cm-fixed-length-lists",
+    "component_model_implements": "cm-implements",
+    "component_model_map": "cm-map",
+    "component_model_memory64": "cm64",
+    "exceptions": "exceptions",
+    "function_references": "function-references",
+    "gc": "gc",
+    "hogs_memory": None,
+    "memory64": "memory64",
+    "multi_memory": "multi-memory",
+    "reference_types": "reference-types",
+    "tail_call": "tail-call",
+}
+
+DIRECTIVE = re.compile(r"^;;! (?P<name>\w+) = (?P<value>true|false)$")
+
+# A wasm-tools test's RUN line: the environment it sets, then the `wast` subcommand's arguments.
+RUN_LINE = re.compile(r"^;; RUN: (?P<environment>(?:\w+=\S+ )*)wast (?P<arguments>.*)$")
+
+
+def runLineFeatures(text):
+    """What a wasm-tools test's `;; RUN:` line gives `wast`: the environment it sets ({name: value}) and its
+    features, every `-f`/`--features` value in order, split at commas."""
+    for line in text.splitlines():
+        match = RUN_LINE.match(line)
+        if match is None:
+            continue
+        environment = dict(item.split("=", 1) for item in match["environment"].split())
+        features = []
+        arguments = match["arguments"].split()
+        for index, argument in enumerate(arguments):
+            if argument in ("-f", "--features") and index + 1 < len(arguments):
+                features.extend(arguments[index + 1].split(","))
+            elif argument.startswith("--features="):
+                features.extend(argument.removeprefix("--features=").split(","))
+        return environment, [feature for feature in features if feature]
+    raise Unsupported("no `;; RUN:` line running `wast`")
+
+
+def directiveFeatures(text):
+    """The features a Wasmtime test's `;;!` directives switch, as wasm-tools spells them: `x` for one on,
+    `-x` for one off."""
+    features = []
+    for line in text.splitlines():
+        if not line.startswith(";;!"):
+            continue
+        match = DIRECTIVE.match(line)
+        if match is None or match["name"] not in WASMTIME_DIRECTIVES:
+            raise Unsupported(f"the directive `{line}`, which WASMTIME_DIRECTIVES does not map")
+        feature = WASMTIME_DIRECTIVES[match["name"]]
+        if feature is not None:
+            features.append(feature if match["value"] == "true" else f"-{feature}")
+    return {}, features
+
+
+# How a source says which features a file of it runs with: (environment, features) from its text and its
+# lock entry `source.<name>.features`.
+FEATURE_SOURCES = {
+    "run-line": lambda text, locked: runLineFeatures(text),
+    "directives": lambda text, locked: directiveFeatures(text),
+    "lock": lambda text, locked: ({}, [feature for feature in locked.split(",") if feature]),
+}
+
+# The component features wasmparser 0.263.0 enables by default (src/features.rs), of those Isoline implements:
+# what a file runs with unless its features switch one off.
+DEFAULT_COMPONENT_FEATURES = ("cm-map", "cm-implements")
+
+# Isoline's names of the core features a file may switch off, by wasm-tools' name.
+CORE_FEATURE_NAMES = {"exceptions": "exception-handling"}
+
+# The files a rule skips whole, every command for one reason: (source, a path or a directory ending in `/`,
+# the reason). A file's own commands are not looked at.
+FILE_SKIPS = (
+    ("component-model", "async/", "async (P12)"),
+    ("component-wasm-tools", "async/", "async (P12)"),
+    ("component-wasm-tools", "shared-everything-threads/", "gated 🧵②"),
+    ("component-wasm-tools", "memory64/", "gated 🐘"),
+    ("component-wasm-tools", "error-context/", "gated 📝"),
+    ("component-wasm-tools", "fixed-length-lists", "gated 🔧"),
+    ("component-wasm-tools", "gc/", "core feature cut gc"),
+    ("component-wasm-tools", "custom-descriptors", "core feature cut custom-descriptors"),
+    ("component-wasm-tools", "values/", "gated 🪙"),
+    ("component-wasm-tools", "legacy-indices", "legacy text indices"),
+)
+
+
+def fileSkipOf(source, path):
+    """The reason a FILE_SKIPS rule skips every command of a file for, or None."""
+    for ruleSource, rulePath, reason in FILE_SKIPS:
+        if source == ruleSource and (path == rulePath or (rulePath.endswith("/") and path.startswith(rulePath))):
+            return reason
+    return None
+
+
+class ComponentRow:
+    """One row of component-files.txt: a file imported with its pinned skip count and the features it runs
+    with (the runner's `--features` and `--component-features`), or one excluded."""
+
+    def __init__(self, source, path, skips=None, features=None, componentFeatures=None, exclude=None):
+        self.source = source
+        self.path = path
+        self.skips = skips
+        self.features = features
+        self.componentFeatures = componentFeatures
+        self.exclude = exclude
+
+    def __eq__(self, other):
+        return vars(self) == vars(other)
+
+    def __repr__(self):
+        return f"ComponentRow({vars(self)!r})"
+
+    def directory(self, root):
+        return root / self.source / self.path
+
+
+def readComponentFiles(path):
+    """The rows of component-files.txt, in order: `<source> <path> <skips> <features> <component features>`
+    or `<source> <path> exclude <reason…>`."""
+    rows = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) == 5 and fields[2].isdigit():
+            rows.append(ComponentRow(fields[0], fields[1], skips=int(fields[2]), features=fields[3],
+                                     componentFeatures=fields[4]))
+        elif len(fields) >= 4 and fields[2] == "exclude":
+            rows.append(ComponentRow(fields[0], fields[1], exclude=" ".join(fields[3:])))
+        else:
+            raise SystemExit(f"{path}:{number}: expected '<source> <path> <skips> <features> <component features>' "
+                             f"or '<source> <path> exclude <reason>', got '{line}'")
+    return rows
+
+
+class RecordedSkip:
+    """A skip tests/component-skips.txt records for one command: one no oracle derives."""
+
+    def __init__(self, ordinal, line, reason):
+        self.ordinal = ordinal
+        self.line = line
+        self.reason = reason
+
+    def __eq__(self, other):
+        return vars(self) == vars(other)
+
+    def __repr__(self):
+        return f"RecordedSkip({self.ordinal!r}, {self.line!r}, {self.reason!r})"
+
+
+# The reasons a recorded skip may give, each with what proves it: the pinned wasm-tools failing the command
+# (one it cannot be the oracle of); the line of Wasmtime's restrictions.wast that asserts the same refusal, a
+# restriction of Wasmtime's the component model does not make; or the line of definitions.py the pinned
+# canonical ABI does otherwise at.
+ORACLE_UNAVAILABLE = re.compile(r"^oracle unavailable since [0-9a-f]{8,40}$")
+WASMTIME_RESTRICTION = re.compile(r"^wasmtime restriction \(restrictions\.wast:(?P<line>[1-9][0-9]*)\)$")
+DEFINITIONS_DIVERGENCE = re.compile(r"^diverges from CM pin \(definitions\.py:(?P<line>[1-9][0-9]*)\)$")
+RECORDED_REASONS = (ORACLE_UNAVAILABLE, WASMTIME_RESTRICTION, DEFINITIONS_DIVERGENCE)
+# The recorded reasons the pinned wasm-tools must fail the command for: a record it passes is stale.
+ORACLE_FAILING_REASONS = (ORACLE_UNAVAILABLE, WASMTIME_RESTRICTION)
+WASMTIME_SOURCE = "component-wasmtime"
+RESTRICTIONS_WAST = "restrictions.wast"
+# A directive's expected message, closing it: `  "<message>")`.
+CLOSING_MESSAGE = re.compile(r'^\s*"(?P<message>[^"]*)"\)\s*$')
+# A name a message quotes, which another script's same refusal quotes for its own definition.
+QUOTED_NAME = re.compile(r"`[^`]*`")
+
+
+def readComponentSkips(path):
+    """The recorded skips of component-skips.txt, by (source, path): `<source> <path> <ordinal> <line> <reason…>`
+    with a reason of RECORDED_REASONS."""
+    skips = {}
+    if not path.exists():
+        return skips
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split(None, 4)
+        if (len(fields) != 5 or not fields[2].isdigit() or not fields[3].isdigit()
+                or not any(reason.match(fields[4]) for reason in RECORDED_REASONS)):
+            raise SystemExit(f"{path}:{number}: expected '<source> <path> <ordinal> <line> <reason>' with the reason "
+                             f"'oracle unavailable since <commit>', 'wasmtime restriction (restrictions.wast:<line>)' "
+                             f"or 'diverges from CM pin (definitions.py:<line>)', got '{line}'")
+        skips.setdefault((fields[0], fields[1]), []).append(RecordedSkip(int(fields[2]), int(fields[3]), fields[4]))
+    return skips
+
+
+def checkDefinitionsLine(reason, definitions):
+    """Fails unless a definitions.py divergence names a line the pinned definitions.py has: definitions is its
+    line count."""
+    match = DEFINITIONS_DIVERGENCE.match(reason)
+    if match is not None and int(match["line"]) > definitions:
+        raise SystemExit(f"'{reason}': definitions.py has {definitions} lines at the pin")
+
+
+def checkRestriction(where, source, reason, command, restrictions):
+    """Fails unless a Wasmtime restriction names, in Wasmtime's own restrictions.wast (its lines), an assert_invalid
+    that expects the refusal the skipped command does, whatever names the messages quote: the same restriction,
+    asserted where Wasmtime keeps them."""
+    match = WASMTIME_RESTRICTION.match(reason)
+    if match is None:
+        return
+    if source != WASMTIME_SOURCE:
+        raise SystemExit(f"{where}: '{reason}': only {WASMTIME_SOURCE} has Wasmtime's restrictions")
+    start = int(match["line"]) - 1
+    if start >= len(restrictions) or restrictions[start].strip() != "(assert_invalid":
+        raise SystemExit(f"{where}: '{reason}': {RESTRICTIONS_WAST} has no assert_invalid on that line")
+    message = next((found["message"] for found in map(CLOSING_MESSAGE.match, restrictions[start + 1:]) if found), None)
+    def refusal(text):
+        return None if text is None else QUOTED_NAME.sub("``", text)
+    if command["type"] != "assert_invalid" or refusal(command.get("text")) != refusal(message):
+        raise SystemExit(f"{where}: '{reason}': the command expects '{command.get('text')}', "
+                         f"{RESTRICTIONS_WAST} there '{message}'")
+
+
+class ComponentOracle:
+    """What the pinned wasm-tools says of one component file: validate(binary, features) is its message for a
+    binary under features (None when it accepts it), and failures the ordinals of the commands its `wast`
+    fails with the file's own features."""
+
+    def __init__(self, validate, failures):
+        self.validate = validate
+        self.failures = failures
+
+
+class ComponentPoisoning(Poisoning):
+    """The skips of one component file, command by command, in order: those no Isoline run can pass (a gate
+    it refuses, a core feature it cuts, an oracle the pinned wasm-tools cannot give), and those that use a
+    skipped module, which give their root's reason, a SkipReasons form with no line."""
+
+    def __init__(self, source, oracle, fileFeatures, cutFeatures, candidates, nyi):
+        super().__init__(source, lambda filename: [], None)
+        self.oracle = oracle
+        self.fileFeatures = fileFeatures  # the file's features, wasm-tools' `--features` value
+        self.cutFeatures = cutFeatures  # Isoline's, the cut with the file's own disabled features
+        self.candidates = candidates  # (wasm-tools feature, reason) of what the cut takes away
+        self.nyi = nyi  # whether the suite's nyi.txt lists the file
+
+    def skipOf(self, ordinal, command, recorded=None):
+        where = command["line"]
+        poison = self.poisonOf(command)
+        if poison is not None and recorded is not None:
+            raise SystemExit(f"{self.source}:{where}: a recorded skip of a command that uses a skipped module")
+        if poison is None:
+            reason = recorded or self.failureOf(ordinal, command) or self.cutReasonOf(command)
+            poison = Poison(reason, where) if reason else None
+        self.update(command, poison)
+        return poison.reason if poison else None
+
+    def failureOf(self, ordinal, command):
+        """The reason of a command the pinned wasm-tools fails: the suite's nyi.txt names its file, or else it
+        must be recorded, which the caller has checked."""
+        if ordinal not in self.oracle.failures:
+            return None
+        if self.nyi:
+            return "upstream nyi.txt"
+        raise SystemExit(f"{self.source}:{command['line']}: the pinned wasm-tools fails the directive; record it in "
+                         f"{COMPONENT_SKIPS} as 'oracle unavailable since <commit>'")
+
+    def cutReasonOf(self, command):
+        """The reason of a command whose module Isoline's cut changes the verdict on, or None."""
+        kind = command["type"]
+        filename = encodedModuleOf(command)
+        if kind not in CUT_EXPECTATIONS or filename is None:
+            return None
+        where = command["line"]
+        suite = self.oracle.validate(filename, self.fileFeatures)
+        if (suite is None) != (CUT_EXPECTATIONS[kind] == VALID):
+            raise SystemExit(f"{self.source}:{where}: {kind}: the pinned wasm-tools disagrees with the suite "
+                             f"({suite or 'valid'})")
+        isoline = self.oracle.validate(filename, self.cutFeatures)
+        if isoline == suite:
+            return None
+        reason = self.candidateOf(filename, suite)
+        if reason is None and CUT_EXPECTATIONS[kind] == VALID:
+            raise SystemExit(f"{self.source}:{where}: {kind}: the cut rejects a module the suite expects valid, and no "
+                             f"gate it refuses explains it: {isoline}")
+        return reason
+
+    def candidateOf(self, filename, wanted):
+        """The reason of the first thing the cut takes away that gives the suite's verdict back, alone or, when
+        none does alone, as the first one all of them need."""
+        def verdict(features):
+            return self.oracle.validate(filename, ",".join([self.cutFeatures, *features]))
+
+        for feature, reason in self.candidates:
+            if verdict([feature]) == wanted:
+                return reason
+        everything = [feature for feature, _ in self.candidates]
+        if verdict(everything) != wanted:
+            return None
+        for feature, reason in self.candidates:
+            if verdict([other for other in everything if other != feature]) != wanted:
+                return reason
+        return None
+
+
+def componentFeaturesOf(features, gates):
+    """What a file runs with: the runner's `--features` (all, less the core features the file switches off) and
+    `--component-features` (the gates Isoline implements that are on, `none` when none is), from the file's
+    wasm-tools features."""
+    on = set(DEFAULT_COMPONENT_FEATURES)
+    off = []
+    for feature in features:
+        name = feature.removeprefix("-")
+        if feature.startswith("-"):
+            on.discard(name)
+            if not any(gate.name == name for gate in gates):
+                if name not in CORE_FEATURE_NAMES:
+                    raise SystemExit(f"the core feature `{name}` is switched off, which CORE_FEATURE_NAMES does not map")
+                off.append(f"-{CORE_FEATURE_NAMES[name]}")
+        else:
+            on.add(name)
+    implemented = [gate.name for gate in gates if gate.implemented() and gate.name in on]
+    return ",".join(["all", *off]), ",".join(implemented) or "none"
+
+
+def cutCandidates(features, gates, cut):
+    """What the cut takes away from a file's features, (wasm-tools feature, reason) in order: each gate Isoline
+    refuses, then every core feature the cut switches off (GC's component half, cm-gc, with GC), then every
+    core feature the file switches on beyond the cut."""
+    candidates = [(gate.name, gate.reason()) for gate in gates if not gate.implemented()]
+    for feature in cut.split(","):
+        if feature.startswith("-"):
+            candidates.append((feature[1:], f"core feature cut {feature[1:]}"))
+            if feature == "-gc":
+                candidates.append(("cm-gc", "core feature cut gc"))
+    known = {feature for feature, _ in candidates}
+    for feature in features:
+        if not feature.startswith("-") and feature not in known:
+            candidates.append((feature, f"core feature cut {feature}"))
+            known.add(feature)
+    return candidates
+
+
+def componentManifest(name, row, commands, forms, poisoning, fileSkip, recorded, reasons, gates, divergences=()):
+    """The .oracle manifest of an imported component file, the binaries it names and how many commands it
+    skips: oracleManifest()'s, with the component suites' skips (component-files.txt, docs/conformance.md)."""
+    where = f"{row.source} {row.path}"
+    entries = [{} for _ in commands]
+    binaries = {}
+    pending = {skip.ordinal: skip for skip in recorded}
+    for ordinal, (command, form) in enumerate(zip(commands, forms)):
+        encoded = encodedModuleOf(command)
+        if command["type"] in MODULE_BEARING and form in (TEXT, QUOTE) and encoded is not None:
+            target = f"{name}.{ordinal}.wasm"
+            binaries[target] = encoded
+            entries[ordinal]["wasm"] = target
+        skip = pending.pop(ordinal, None)
+        if skip is not None and skip.line != command["line"]:
+            raise SystemExit(f"{where}: the recorded skip of command {ordinal} (line {skip.line}): the command is on "
+                             f"line {command['line']}; the record is stale")
+        if fileSkip is not None:
+            if skip is not None:
+                raise SystemExit(f"{where}: a recorded skip of command {ordinal} in a file FILE_SKIPS skips whole")
+            reason = fileSkip
+        else:
+            if (skip is not None and any(reason.match(skip.reason) for reason in ORACLE_FAILING_REASONS)
+                    and ordinal not in poisoning.oracle.failures):
+                raise SystemExit(f"{where}: the recorded skip of command {ordinal} (line {skip.line}): the pinned "
+                                 "wasm-tools passes it; the record is stale")
+            reason = poisoning.skipOf(ordinal, command, skip.reason if skip else None)
+        if reason is not None:
+            if not isSkipReason(reason, reasons, gates):
+                raise SystemExit(f"{where}: command {ordinal} (line {command['line']}): '{reason}' is no SkipReasons "
+                                 "row's reason")
+            entries[ordinal]["skip"] = hexOf(reason)
+    if pending:
+        raise SystemExit(f"{where}: recorded skips of commands the script does not have: {sorted(pending)}")
+    applyDivergences(where, commands, forms, entries, divergences)
+    lines = [f"commands {len(commands)}"]
+    for ordinal, (command, entry) in enumerate(zip(commands, entries)):
+        lines.extend(f"{ordinal} {command['line']} {kind} {entry[kind]}" for kind in ENTRY_ORDER if kind in entry)
+    skipped = sum("skip" in entry for entry in entries)
+    return "\n".join(lines) + "\n", binaries, skipped
+
+
+# A directive `wasm-tools wast` fails: `failed directive on <file>:<line>:<column>`.
+FAILED_DIRECTIVE = re.compile(r"^failed directive on .*:(?P<line>\d+):\d+$")
+
+
+def wastFailures(wasmTools, wast, features, environment, script):
+    """The ordinals of the commands `wasm-tools wast` fails in wast with features: script is its commands as
+    scanScript() reads them, whose lines are those of the directives `wast` names."""
+    arguments = [str(wasmTools), "wast", str(wast)] + ([f"--features={','.join(features)}"] if features else [])
+    result = subprocess.run(arguments, capture_output=True, text=True, check=False,
+                            env={**os.environ, **environment})
+    lines = {int(match["line"]) for match in map(FAILED_DIRECTIVE.match, result.stderr.splitlines()) if match}
+    if result.returncode != 0 and not lines:
+        raise SystemExit(f"{wast.name}: wasm-tools wast failed, naming no directive:\n{result.stderr}")
+    ordinals = {ordinal for ordinal, command in enumerate(script) if command.line in lines}
+    if len(ordinals) != len(lines):
+        raise SystemExit(f"{wast.name}: wasm-tools wast fails directives on lines {sorted(lines)}, not all of them "
+                         "a command's")
+    return ordinals
+
+
+def validatorOf(wasmTools, work):
+    """validate(filename, features) of ComponentOracle: `wasm-tools validate`'s message, memoized."""
+    cache = {}
+
+    def validate(filename, features):
+        key = (filename, features)
+        if key not in cache:
+            cache[key] = oracleMessage(wasmTools, features, work / filename)
+        return cache[key]
+
+    return validate
+
+
+def nyiFiles(checkout, testsDirectory):
+    """The paths the suite's nyi.txt lists, without `.wast`, relative to its test directory; empty without one."""
+    nyi = checkout / testsDirectory / "nyi.txt"
+    if not nyi.exists():
+        return set()
+    return {line.strip().removeprefix("./").removesuffix(".wast")
+            for line in nyi.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")}
+
+
+def convertComponent(wasmTools, lock, row, checkout, outDir, work, recorded, reasons, gates, divergences=()):
+    """Imports one component file into outDir, as convert() does a core one, and returns its command count, how
+    many it skips and the features it runs with."""
+    testsDirectory = lock[f"source.{row.source}.tests"]
+    wast = checkout / testsDirectory / f"{row.path}.wast"
+    script = wast.read_text(encoding="utf-8")
+    fileSkip = fileSkipOf(row.source, row.path)
+    reader = FEATURE_SOURCES[lock[f"source.{row.source}.features-from"]]
+    try:
+        environment, features = reader(script, lock.get(f"source.{row.source}.features", ""))
+    except Unsupported as unsupported:
+        raise SystemExit(f"{wast.name}: {unsupported}") from None
+    work.mkdir(parents=True)
+    jsonPath = work / f"{wast.stem}.json"
+    result = subprocess.run([str(wasmTools), "json-from-wast", str(wast), "-o", str(jsonPath), "--wasm-dir", str(work)],
+                            capture_output=True, text=True, check=False, env={**os.environ, **environment})
+    if result.returncode != 0:
+        raise SystemExit(f"{wast.name}: wasm-tools json-from-wast failed:\n{result.stderr}")
+    commands = json.loads(jsonPath.read_text(encoding="utf-8"))["commands"]
+    try:
+        scanned = scanScript(script)
+    except Unsupported as unsupported:
+        raise SystemExit(f"{wast.name}: {unsupported}") from None
+    forms = moduleForms(wast.name, scanned, commands)
+    restrictions = wast.with_name(RESTRICTIONS_WAST)
+    for skip in recorded:
+        if WASMTIME_RESTRICTION.match(skip.reason) and skip.ordinal < len(commands):
+            checkRestriction(f"{row.source} {row.path}", row.source, skip.reason, commands[skip.ordinal],
+                             restrictions.read_text(encoding="utf-8").splitlines() if restrictions.exists() else [])
+    fileFeatures = ",".join(features)
+    cutFeatures = ",".join([lock["component.cut.features"], *[feature for feature in features if feature.startswith("-")]])
+    failures = set() if fileSkip else wastFailures(wasmTools, wast, features, environment, scanned)
+    oracle = ComponentOracle(validatorOf(wasmTools, work), failures)
+    poisoning = ComponentPoisoning(f"{row.source} {row.path}", oracle, fileFeatures, cutFeatures,
+                                   cutCandidates(features, gates, lock["component.cut.features"]), row.path in nyiFiles(checkout, testsDirectory))
+    manifest, binaries, skipped = componentManifest(wast.stem, row, commands, forms, poisoning, fileSkip, recorded,
+                                                    reasons, gates, divergences)
+    if outDir.exists():
+        shutil.rmtree(outDir)
+    outDir.mkdir(parents=True)
+    shutil.copyfile(wast, outDir / f"{wast.stem}.wast")
+    for target, filename in binaries.items():
+        shutil.copyfile(work / filename, outDir / target)
+    (outDir / f"{wast.stem}.oracle").write_text(manifest, encoding="utf-8", newline="\n")
+    return len(commands), skipped, componentFeaturesOf(features, gates)
+
+
+def importComponents(wasmTools, lock, given, root):
+    """Imports every row of component-files.txt under root, the tests directory; fails when a row's skip count or
+    features differ from what the import finds."""
+    rows = [row for row in readComponentFiles(root / COMPONENT_FILES.name) if row.exclude is None]
+    recorded = readComponentSkips(root / COMPONENT_SKIPS)
+    divergences = readDivergences(root / COMPONENT_DIVERGENCES)
+    checkDivergenceRows(divergences, rows)
+    imported = {(row.source, row.path) for row in rows}
+    for key in recorded:
+        if key not in imported:
+            raise SystemExit(f"{COMPONENT_SKIPS}: {key[0]} {key[1]} is not imported, so its skips are never checked")
+    gates = readGates(FEATURE_TABLE.read_text(encoding="utf-8"))
+    reasons = readSkipReasons(SKIP_REASON_TABLE.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="isoline-component-spec-") as temporary:
+        temporary = pathlib.Path(temporary)
+        checkouts = {}
+        mismatches = []
+        for row in rows:
+            if row.source not in checkouts:
+                checkouts[row.source] = checkout(row.source, lock, given, temporary)
+                if row.source == "component-model":
+                    definitions = checkouts[row.source] / "design" / "mvp" / "canonical-abi" / "definitions.py"
+                    lines = len(definitions.read_text(encoding="utf-8").splitlines())
+                    for skips in recorded.values():
+                        for skip in skips:
+                            checkDefinitionsLine(skip.reason, lines)
+            commands, skipped, (features, componentFeatures) = convertComponent(
+                wasmTools, lock, row, checkouts[row.source], row.directory(root),
+                temporary / "json" / row.source / row.path, recorded.get((row.source, row.path), []), reasons, gates,
+                divergences.get((row.source, row.path), []))
+            print(f"{row.source} {row.path}: {commands} commands, {skipped} skipped")
+            pinned = (row.skips, row.features, row.componentFeatures)
+            if pinned != (skipped, features, componentFeatures):
+                mismatches.append(f"{row.source} {row.path} {skipped} {features} {componentFeatures} "
+                                  f"(component-files.txt pins {' '.join(map(str, pinned))})")
+        if mismatches:
+            raise SystemExit("skip counts or features differ from component-files.txt; update it only if each "
+                             "change is meant:\n  " + "\n  ".join(mismatches))
+
+
 def sourceArgument(text):
     name, separator, path = text.partition("=")
     if not separator or not name or not path:
@@ -870,7 +1469,11 @@ def main():
     parser.add_argument("--source", type=sourceArgument, action="append", default=[], metavar="NAME=CHECKOUT",
                         help="an existing checkout of a suite source at its pinned commit (repeatable)")
     parser.add_argument("--wasm-tools", type=pathlib.Path, help="the wasm-tools to use (default: fetched)")
-    parser.add_argument("--out", type=pathlib.Path, default=ROOT / "tests" / "spec", help="the output root")
+    parser.add_argument("--suite", choices=("core", "component"), default="core",
+                        help="the core suites of tests/spec/files.txt, or the component suites of "
+                             "tests/component-files.txt (default: core)")
+    parser.add_argument("--out", type=pathlib.Path, help="the output root (default: tests/spec for the core "
+                                                         "suites, tests for the component suites)")
     parser.add_argument("--list-commands", type=pathlib.Path, metavar="WAST",
                         help="print the `<ordinal> <type>` of each command of one .wast file, and import nothing")
     parser.add_argument("--ordinals", type=pathlib.Path, nargs="?", const=ORDINALS, metavar="DIRECTORY",
@@ -898,6 +1501,10 @@ def main():
         for name, text in ordinalsFixture(rawJson).items():
             (arguments.ordinals / name).write_text(text, encoding="utf-8", newline="\n")
         return 0
+    if arguments.suite == "component":
+        importComponents(wasmTools, lock, dict(arguments.source), arguments.out or COMPONENT_FILES.parent)
+        return 0
+    arguments.out = arguments.out or ROOT / "tests" / "spec"
     cutFeatures = lock.get("cut.features")
     if cutFeatures is None:
         raise SystemExit(f"{LOCK.name} pins no cut.features")

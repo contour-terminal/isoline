@@ -1,0 +1,13 @@
+commands 12
+0 4 wasm export.0.wasm
+1 8 wasm export.1.wasm
+2 12 wasm export.2.wasm
+3 16 wasm export.3.wasm
+4 19 wasm export.4.wasm
+5 33 wasm export.5.wasm
+6 41 wasm export.6.wasm
+7 50 wasm export.7.wasm
+8 53 wasm export.8.wasm
+9 56 wasm export.9.wasm
+10 59 wasm export.10.wasm
+11 62 wasm export.11.wasm

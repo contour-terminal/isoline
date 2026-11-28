@@ -1,0 +1,3 @@
+commands 46
+0 3 wasm concat.0.wasm
+36 463 wasm concat.36.wasm

@@ -639,5 +639,226 @@ class ReadFilesTest(unittest.TestCase):
                 self.assertEqual(present, set() if row.exclude else {".wast", ".oracle"})
 
 
+TESTS = SCRIPT.parent.parent / "tests"
+
+# The Wasmtime component tests imported (plan P11, Task 20), and the two deliberately not.
+CURATED_WASMTIME = ("adapter aliasing borrow-transfer-to-owner core-import-func-subtype core-type-out-of-group-deps "
+                    "empty-rec-groups enum_discriminant enums import implements instance lazy-lenders linking map-types "
+                    "modules nested nested-many-instantiations post-return resources restrictions simple strings "
+                    "string-transcode-invalid tags tail-calls exceptions trap types").split()
+DROPPED_WASMTIME = ("big-strings", "same-instance-call")
+
+
+class ComponentSourcesTest(unittest.TestCase):
+    """The component suites' sources and their files, as tools.lock and tests/component-files.txt pin them."""
+
+    def test_component_sources_pinned(self):
+        lock = importer.loadFetchTools().readLock(SCRIPT.parent / "tools.lock")
+        self.assertEqual(lock["source.component-model.repository"], "https://github.com/WebAssembly/component-model")
+        self.assertEqual(lock["source.component-model.commit"], "f78ac03c178ad0f51b307852087792f1f164dc34")
+        self.assertEqual(lock["source.component-wasm-tools.repository"], "https://github.com/bytecodealliance/wasm-tools")
+        self.assertEqual(lock["source.component-wasm-tools.commit"], "7a2fa422cdf9aeeaf488a2acac8bc94a078bfa32")
+        self.assertEqual(lock["source.component-wasmtime.repository"], "https://github.com/bytecodealliance/wasmtime")
+        self.assertEqual(lock["source.component-wasmtime.commit"], "32656dc4873fcec5c8662aa937bd01acda3b2e85")
+        for source in ("component-model", "component-wasm-tools", "component-wasmtime"):
+            with self.subTest(source=source):
+                self.assertIn(lock[f"source.{source}.features-from"], importer.FEATURE_SOURCES)
+                self.assertTrue(lock[f"source.{source}.tests"])
+
+    def test_cut_matches_the_feature_table(self):
+        # The component cut switches on exactly the gates Features.hpp implements, every other one off.
+        lock = importer.loadFetchTools().readLock(SCRIPT.parent / "tools.lock")
+        cut = lock["component.cut.features"].split(",")
+        gates = importer.readGates(importer.FEATURE_TABLE.read_text(encoding="utf-8"))
+        for gate in gates:
+            with self.subTest(gate=gate.name):
+                self.assertEqual(gate.name in cut, gate.implemented())
+        self.assertEqual(cut[0], "wasm3")  # which resets every gate first
+
+    def test_curated_wasmtime_list_exact(self):
+        rows = [row for row in importer.readComponentFiles(TESTS / "component-files.txt")
+                if row.source == "component-wasmtime"]
+        self.assertEqual(sorted(row.path for row in rows if row.exclude is None), sorted(CURATED_WASMTIME))
+        self.assertEqual(sorted(row.path for row in rows if row.exclude is not None), sorted(DROPPED_WASMTIME))
+        for row in rows:
+            if row.exclude is not None:
+                with self.subTest(path=row.path):
+                    self.assertRegex(row.exclude, r"definitions\.py:\d+")
+
+    def test_every_row_is_imported(self):
+        for row in importer.readComponentFiles(TESTS / "component-files.txt"):
+            stem = row.directory(TESTS) / pathlib.PurePosixPath(row.path).name
+            with self.subTest(source=row.source, path=row.path):
+                present = {suffix for suffix in (".wast", ".oracle") if stem.with_suffix(suffix).is_file()}
+                self.assertEqual(present, set() if row.exclude else {".wast", ".oracle"})
+
+
+class RunLineTest(unittest.TestCase):
+    """Where a component file's features come from: wasm-tools' RUN line, Wasmtime's directives."""
+
+    def test_reads_run_line_features(self):
+        self.assertEqual(importer.runLineFeatures(";; RUN: wast --assert default --snapshot tests/snapshots % -f cm-async\n"),
+                         ({}, ["cm-async"]))
+        self.assertEqual(importer.runLineFeatures(";; RUN: wast % -f cm-map,cm-error-context --assert default\n"),
+                         ({}, ["cm-map", "cm-error-context"]))
+        self.assertEqual(importer.runLineFeatures(";; RUN: wast --features=-exceptions --assert default %\n"),
+                         ({}, ["-exceptions"]))
+        self.assertEqual(importer.runLineFeatures(
+            ";; RUN: WAST_STRICT_COMPONENT_INDICES=0 wast --assert default % -f gc,cm-gc\n"),
+            ({"WAST_STRICT_COMPONENT_INDICES": "0"}, ["gc", "cm-gc"]))
+        self.assertEqual(importer.runLineFeatures(";; RUN: wast --assert default %\n"), ({}, []))
+        # A lenient RUN line is no `wast` run of the file's own.
+        self.assertEqual(importer.runLineFeatures(
+            ";; RUN[lenient]: WAST_STRICT_COMPONENT_INDICES=0 parse % -o x\n;; RUN: wast % -f cm64\n"), ({}, ["cm64"]))
+        with self.assertRaises(importer.Unsupported):
+            importer.runLineFeatures("(component)\n")
+
+    def test_reads_wasmtime_directives(self):
+        self.assertEqual(importer.directiveFeatures(";;! component_model_async = true\n;;! gc = false\n;;! hogs_memory = true\n"),
+                         ({}, ["cm-async", "-gc"]))
+        with self.assertRaises(importer.Unsupported):
+            importer.directiveFeatures(";;! something_new = true\n")
+
+    def test_runner_features(self):
+        gates = importer.readGates(importer.FEATURE_TABLE.read_text(encoding="utf-8"))
+        self.assertEqual(importer.componentFeaturesOf([], gates), ("all", "cm-map,cm-implements"))
+        self.assertEqual(importer.componentFeaturesOf(["-cm-map", "-exceptions"], gates),
+                         ("all,-exception-handling", "cm-implements"))
+        with self.assertRaises(SystemExit):
+            importer.componentFeaturesOf(["-tail-call"], gates)
+
+
+class ComponentSkipsTest(unittest.TestCase):
+    """The component suites' skips: only SkipReasons forms, recorded ones proved."""
+
+    def reasons(self):
+        return (importer.readSkipReasons(importer.SKIP_REASON_TABLE.read_text(encoding="utf-8")),
+                importer.readGates(importer.FEATURE_TABLE.read_text(encoding="utf-8")))
+
+    def read(self, text):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "skips.txt"
+            path.write_text(text, encoding="utf-8")
+            return importer.readComponentSkips(path)
+
+    def test_refuses_unknown_skip_reason(self):
+        reasons, gates = self.reasons()
+        for reason in ("async (P12)", "gated 🧵", "core feature cut gc", "upstream nyi.txt", "legacy text indices",
+                       "oracle unavailable since fb27002f", "wasmtime restriction (restrictions.wast:9)",
+                       "diverges from CM pin (definitions.py:1432)"):
+            with self.subTest(reason=reason):
+                self.assertTrue(importer.isSkipReason(reason, reasons, gates))
+        for reason in ("because", "gated 🐙", "async", "oracle unavailable", "core feature cut two words",
+                       "diverges from CM pin (Binary.md:350)"):  # a parity reason is no skip's
+            with self.subTest(reason=reason):
+                self.assertFalse(importer.isSkipReason(reason, reasons, gates))
+        # A recorded skip gives only a reason something proves.
+        with self.assertRaises(SystemExit):
+            self.read("component-model values/strings 3 40 upstream nyi.txt\n")
+        with self.assertRaises(SystemExit):
+            self.read("component-model values/strings 3 40 because it is hard\n")
+        self.assertEqual(self.read("component-model values/strings 3 40 oracle unavailable since fb27002f\n"),
+                         {("component-model", "values/strings"): [importer.RecordedSkip(3, 40, "oracle unavailable since fb27002f")]})
+
+    def test_divergence_needs_definitions_line(self):
+        for reason in ("diverges from CM pin (definitions.py:)", "diverges from CM pin (definitions.py:0)",
+                       "diverges from CM pin (definitions.py:12a)", "diverges from CM pin"):
+            with self.subTest(reason=reason), self.assertRaises(SystemExit):
+                self.read(f"component-wasmtime types 93 524 {reason}\n")
+        self.assertTrue(self.read("component-wasmtime types 93 524 diverges from CM pin (definitions.py:1493)\n"))
+        # The line must be one the pinned definitions.py has.
+        importer.checkDefinitionsLine("diverges from CM pin (definitions.py:1493)", 3000)
+        with self.assertRaises(SystemExit):
+            importer.checkDefinitionsLine("diverges from CM pin (definitions.py:3001)", 3000)
+
+    def test_restriction_names_wasmtimes_own_assertion(self):
+        for reason in ("wasmtime restriction", "wasmtime restriction (restrictions.wast:)",
+                       "wasmtime restriction (restrictions.wast:0)", "wasmtime restriction (simple.wast:9)"):
+            with self.subTest(reason=reason), self.assertRaises(SystemExit):
+                self.read(f"component-wasmtime simple 4 25 {reason}\n")
+        self.assertTrue(self.read("component-wasmtime simple 4 25 wasmtime restriction (restrictions.wast:5)\n"))
+        restrictions = ["(assert_invalid", "  (component (import \"x\" (component)))",
+                        "  \"root-level component imports are not supported\")", "",
+                        "(assert_invalid", "  (component (component (export \"x\")))",
+                        "  \"exporting a component from the root component is not supported\")"]
+        command = {"type": "assert_invalid", "line": 31,
+                   "text": "exporting a component from the root component is not supported"}
+        check = importer.checkRestriction
+        check("w", "component-wasmtime", "wasmtime restriction (restrictions.wast:5)", command, restrictions)
+        check("w", "component-wasmtime", "oracle unavailable since fb27002f", command, [])  # not a restriction
+        # Its own definition's name, quoted, is no other refusal.
+        reexport = ["(assert_invalid", "  (component", "    (import \"f\" (func $f))", "    (export \"f\" (func $f))",
+                    "  )", "  \"component export `f` is a reexport of an imported function which is not implemented\")"]
+        check("w", "component-wasmtime", "wasmtime restriction (restrictions.wast:1)",
+              {**command, "text": "component export `x` is a reexport of an imported function which is not implemented"},
+              reexport)
+        for source, line, given in (("component-wasmtime", 1, command),  # another refusal
+                                    ("component-wasmtime", 6, command),  # inside a directive, not its start
+                                    ("component-wasmtime", 9, command),  # past the file
+                                    ("component-model", 5, command),     # another suite's
+                                    ("component-wasmtime", 5, {**command, "type": "assert_malformed"})):
+            with self.subTest(source=source, line=line), self.assertRaises(SystemExit):
+                check("w", source, f"wasmtime restriction (restrictions.wast:{line})", given, restrictions)
+
+    def test_restriction_wasm_tools_passes_is_stale(self):
+        reasons, gates = self.reasons()
+        row = importer.ComponentRow("component-wasmtime", "simple", skips=1, features="all", componentFeatures="none")
+        command = {"type": "assert_invalid", "line": 5, "text": "x"}
+        recorded = [importer.RecordedSkip(0, 5, "wasmtime restriction (restrictions.wast:1)")]
+
+        def manifest(failures):
+            oracle = importer.ComponentOracle(lambda filename, features: None, set(failures))
+            poisoning = importer.ComponentPoisoning("x", oracle, "F", "C", [], nyi=False)
+            return importer.componentManifest("simple", row, [command], [None], poisoning, None, recorded, reasons,
+                                              gates)
+
+        self.assertEqual(manifest(failures=[0])[2], 1)
+        with self.assertRaises(SystemExit):
+            manifest(failures=[])
+
+    def test_file_skips(self):
+        self.assertEqual(importer.fileSkipOf("component-model", "async/forward"), "async (P12)")
+        self.assertEqual(importer.fileSkipOf("component-wasm-tools", "gc/gc"), "core feature cut gc")
+        self.assertEqual(importer.fileSkipOf("component-wasm-tools", "fixed-length-lists"), "gated 🔧")
+        self.assertIsNone(importer.fileSkipOf("component-wasm-tools", "fixed-length-lists-too"))
+        self.assertIsNone(importer.fileSkipOf("component-model", "values/strings"))
+
+
+class ComponentCutTest(unittest.TestCase):
+    """A command whose verdict Isoline's cut changes is skipped for what gives the suite's verdict back."""
+
+    def poisoning(self, verdicts, failures=()):
+        def validate(filename, features):
+            return verdicts.get((filename, features))
+        oracle = importer.ComponentOracle(validate, set(failures))
+        candidates = [("cm-async", "async (P12)"), ("cm-threading", "gated 🧵"), ("gc", "core feature cut gc")]
+        return importer.ComponentPoisoning("x", oracle, "F", "C", candidates, nyi=False)
+
+    def test_gate_found_by_giving_the_verdict_back(self):
+        poisoning = self.poisoning({("m.wasm", "C"): "needs threading", ("m.wasm", "C,cm-async"): "needs threading"})
+        self.assertEqual(poisoning.skipOf(0, module(1, filename="m.wasm")), "gated 🧵")
+        # Its users are skipped for it too.
+        self.assertEqual(poisoning.skipOf(1, invoke(2)), "gated 🧵")
+
+    def test_valid_under_the_cut_is_kept(self):
+        self.assertIsNone(self.poisoning({}).skipOf(0, module(1, filename="m.wasm")))
+
+    def test_unexplained_rejection_fails(self):
+        poisoning = self.poisoning({key: "broken" for key in [("m.wasm", "C"), ("m.wasm", "C,cm-async"),
+                                    ("m.wasm", "C,cm-threading"), ("m.wasm", "C,gc"), ("m.wasm", "C,cm-async,cm-threading,gc")]})
+        with self.assertRaises(SystemExit):
+            poisoning.skipOf(0, module(1, filename="m.wasm"))
+
+    def test_wast_failure_must_be_recorded(self):
+        with self.assertRaises(SystemExit):
+            self.poisoning({}, failures=[0]).skipOf(0, module(1, filename="m.wasm"))
+        self.assertEqual(self.poisoning({}, failures=[0]).skipOf(0, module(1, filename="m.wasm"),
+                                                                 "oracle unavailable since 01234567"),
+                         "oracle unavailable since 01234567")
+        self.assertEqual(self.poisoning({}, failures=[0]).skipOf(0, module(1, filename="m.wasm"),
+                                                                 "wasmtime restriction (restrictions.wast:1)"),
+                         "wasmtime restriction (restrictions.wast:1)")
+
+
 if __name__ == "__main__":
     unittest.main()

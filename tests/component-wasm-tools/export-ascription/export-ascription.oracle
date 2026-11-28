@@ -1,0 +1,5 @@
+commands 4
+0 3 wasm export-ascription.0.wasm
+1 11 wasm export-ascription.1.wasm
+2 20 wasm export-ascription.2.wasm
+3 28 wasm export-ascription.3.wasm

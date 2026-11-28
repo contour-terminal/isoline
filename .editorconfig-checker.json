@@ -4,6 +4,7 @@
     "^out/",
     "^\\.superpowers/",
     "^tests/spec/[^/]+/[^/]+/.+\\.wast$",
+    "^tests/component-[^/]+/.+\\.wast$",
     "\\.wasm$"
   ],
   "Disable": {

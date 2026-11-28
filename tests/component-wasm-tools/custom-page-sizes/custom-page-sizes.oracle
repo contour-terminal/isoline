@@ -1,0 +1,11 @@
+commands 10
+0 4 wasm custom-page-sizes.0.wasm
+1 14 wasm custom-page-sizes.1.wasm
+2 24 wasm custom-page-sizes.2.wasm
+3 31 wasm custom-page-sizes.3.wasm
+4 38 wasm custom-page-sizes.4.wasm
+5 45 wasm custom-page-sizes.5.wasm
+6 54 wasm custom-page-sizes.6.wasm
+7 63 wasm custom-page-sizes.7.wasm
+8 72 wasm custom-page-sizes.8.wasm
+9 81 wasm custom-page-sizes.9.wasm

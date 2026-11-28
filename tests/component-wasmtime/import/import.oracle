@@ -1,0 +1,9 @@
+commands 7
+0 2 wasm import.0.wasm
+0 2 skip 7761736d74696d65207265737472696374696f6e20287265737472696374696f6e732e776173743a3929
+1 8 wasm import.1.wasm
+2 15 wasm import.2.wasm
+3 23 wasm import.3.wasm
+4 27 wasm import.4.wasm
+5 39 wasm import.5.wasm
+6 65 wasm import.6.wasm

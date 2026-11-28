@@ -1,0 +1,7 @@
+commands 12
+0 7 wasm tags.0.wasm
+3 36 wasm tags.3.wasm
+5 64 wasm tags.5.wasm
+7 93 wasm tags.7.wasm
+10 138 wasm tags.10.wasm
+11 146 wasm tags.11.wasm

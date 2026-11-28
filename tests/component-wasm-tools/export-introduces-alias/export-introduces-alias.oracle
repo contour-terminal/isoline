@@ -1,0 +1,5 @@
+commands 5
+0 3 wasm export-introduces-alias.0.wasm
+1 12 wasm export-introduces-alias.1.wasm
+2 20 wasm export-introduces-alias.2.wasm
+4 42 wasm export-introduces-alias.4.wasm

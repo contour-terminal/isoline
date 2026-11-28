@@ -1,0 +1,26 @@
+# The skips of the component suites that no oracle derives, recorded for scripts/import-spec-tests.py
+# --suite component, one per line, each for one command: `<source> <path> <ordinal> <line> <reason>`, the
+# command's ordinal in the script and the line wasm-tools gives it, with one of three reasons:
+# - `oracle unavailable since <commit>`: the pinned wasm-tools' `wast` fails the directive, so it cannot be
+#   the command's oracle; <commit> is the suite's commit that introduced the expectation it fails. The import
+#   fails when wasm-tools passes the directive, and when it fails one not recorded here (or in nyi.txt).
+# - `wasmtime restriction (restrictions.wast:<line>)`: Wasmtime refuses what the component model admits, as
+#   the assert_invalid at that line of its restrictions.wast does with the same message (the names it quotes
+#   aside); the pinned wasm-tools admits it too, so the import fails when wasm-tools fails it no more, or the
+#   line asserts another refusal.
+# - `diverges from CM pin (definitions.py:<line>)`: the suite asserts what the pinned canonical ABI does
+#   otherwise at that line of design/mvp/canonical-abi/definitions.py, which must have it.
+# The import fails when the command there no longer fits. docs/conformance.md lists every skip.
+component-model    validation/attributes 4 88 oracle unavailable since fb27002f
+component-model    validation/attributes 5 92 oracle unavailable since fb27002f
+component-wasmtime import                0 2  wasmtime restriction (restrictions.wast:9)
+component-wasmtime restrictions          0 2  wasmtime restriction (restrictions.wast:1)
+component-wasmtime restrictions          1 6  wasmtime restriction (restrictions.wast:5)
+component-wasmtime restrictions          2 10 wasmtime restriction (restrictions.wast:9)
+component-wasmtime restrictions          3 17 wasmtime restriction (restrictions.wast:16)
+component-wasmtime simple                4 25 wasmtime restriction (restrictions.wast:1)
+component-wasmtime simple                5 31 wasmtime restriction (restrictions.wast:5)
+component-wasmtime types                 93 524 diverges from CM pin (definitions.py:1493)
+component-wasmtime types                 94 525 diverges from CM pin (definitions.py:1503)
+component-wasmtime adapter                5 98   diverges from CM pin (definitions.py:425)
+component-wasmtime resources              64 1318 diverges from CM pin (definitions.py:1432)

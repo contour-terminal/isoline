@@ -8,10 +8,12 @@
 #include <format>
 #include <optional>
 #include <ranges>
+#include <regex>
 #include <span>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include <isoline/binary/Types.hpp>
 #include <isoline/component/Features.hpp>
@@ -220,18 +222,38 @@ CheckResult checkResults(std::span<ExpectedValue const> expected, std::span<Valu
     return std::unexpected { std::format("expected {}, got {}", describeAll(expected), describeAll(actual)) };
 }
 
+std::vector<std::string> suiteWordingsOf(Failure const& failure, std::span<WordingRow const> wordings)
+{
+    auto texts = std::vector<std::string> {};
+    for (auto const& row: wordings)
+    {
+        if (row.stage != failure.stage)
+            continue;
+        auto const pattern = std::regex { row.pattern.begin(), row.pattern.end(), std::regex::ECMAScript };
+        auto match = std::smatch {};
+        if (std::regex_search(failure.message, match, pattern))
+            texts.push_back(match.format(std::string { row.wording }));
+    }
+    return texts;
+}
+
 CheckResult checkFailure(Stage stage,
                          std::string_view expectedMessage,
                          std::optional<Failure> const& actual,
-                         MessageRule rule)
+                         MessageRule rule,
+                         std::span<WordingRow const> wordings)
 {
     if (!actual)
         return std::unexpected { std::format(
             "expected {} failure '{}', but it succeeded", stageName(stage), expectedMessage) };
     if (actual->stage == Stage::Harness)
         return std::unexpected { actual->message };
-    auto const found = rule == MessageRule::Prefix ? actual->message.starts_with(expectedMessage)
-                                                   : actual->message.contains(expectedMessage);
+    auto const holds = [&](std::string_view text) {
+        return rule == MessageRule::Prefix ? text.starts_with(expectedMessage)
+                                           : text.contains(expectedMessage);
+    };
+    auto const found =
+        holds(actual->message) || std::ranges::any_of(suiteWordingsOf(*actual, wordings), holds);
     if (actual->stage != stage || !found)
         return std::unexpected { std::format("expected {} failure '{}', got {} failure '{}'",
                                              stageName(stage),
@@ -239,6 +261,14 @@ CheckResult checkFailure(Stage stage,
                                              stageName(actual->stage),
                                              actual->message) };
     return {};
+}
+
+CheckResult checkFailure(Stage stage,
+                         std::string_view expectedMessage,
+                         std::optional<Failure> const& actual,
+                         MessageRule rule)
+{
+    return checkFailure(stage, expectedMessage, actual, rule, {});
 }
 
 CheckResult checkFailure(Stage stage, std::string_view expectedMessage, std::optional<Failure> const& actual)

@@ -1,0 +1,3 @@
+commands 1
+0 3 wasm lift-func-no-params.0.wasm
+0 3 skip 636f7265206665617475726520637574206763

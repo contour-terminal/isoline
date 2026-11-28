@@ -1,0 +1,12 @@
+commands 8
+0 5 wasm indices.0.wasm
+1 60 wasm indices.1.wasm
+2 73 wasm indices.2.wasm
+3 140 wasm indices.3.wasm
+4 198 wasm indices.4.wasm
+5 211 wasm indices.5.wasm
+5 211 skip 6173796e63202850313229
+6 226 wasm indices.6.wasm
+6 226 skip 676174656420f09fa7b5
+7 242 wasm indices.7.wasm
+7 242 skip 6173796e63202850313229

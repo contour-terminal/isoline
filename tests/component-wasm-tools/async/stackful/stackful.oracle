@@ -1,0 +1,17 @@
+commands 8
+0 4 wasm stackful.0.wasm
+0 4 skip 6173796e63202850313229
+1 16 wasm stackful.1.wasm
+1 16 skip 6173796e63202850313229
+2 29 wasm stackful.2.wasm
+2 29 skip 6173796e63202850313229
+3 41 wasm stackful.3.wasm
+3 41 skip 6173796e63202850313229
+4 54 wasm stackful.4.wasm
+4 54 skip 6173796e63202850313229
+5 64 wasm stackful.5.wasm
+5 64 skip 6173796e63202850313229
+6 75 wasm stackful.6.wasm
+6 75 skip 6173796e63202850313229
+7 136 wasm stackful.7.wasm
+7 136 skip 6173796e63202850313229

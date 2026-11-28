@@ -1,0 +1,3 @@
+commands 14
+0 4 wasm shared-everything-dynamic-linking.0.wasm
+10 152 wasm shared-everything-dynamic-linking.10.wasm

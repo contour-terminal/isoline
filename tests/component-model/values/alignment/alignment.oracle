@@ -1,0 +1,8 @@
+commands 25
+0 5 wasm alignment.0.wasm
+3 30 wasm alignment.3.wasm
+6 56 wasm alignment.6.wasm
+9 85 wasm alignment.9.wasm
+12 114 wasm alignment.12.wasm
+15 143 wasm alignment.15.wasm
+20 177 wasm alignment.20.wasm

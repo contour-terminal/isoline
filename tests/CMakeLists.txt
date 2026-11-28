@@ -176,12 +176,43 @@ add_test(NAME spec-selftest-component-core-skip
 set_tests_properties(spec-selftest-component-core-skip PROPERTIES LABELS unit
                      PASS_REGULAR_EXPRESSION "passed 0, failed 0, skipped 1")
 
+# The component model's suites (D12), imported by `scripts/import-spec-tests.py --suite component` into
+# tests/<source>/<path>/: one test per row of component-files.txt, named spec.<source>.<path with / as .>,
+# run under the component suites' rules with the features the row pins, which fails unless the file skips
+# exactly as many commands as the row pins. An `exclude` row names a file that is deliberately not imported.
+# The rules each source's files run by: wasm-tools' own tests validate their components and run nothing
+# else, so a component of them is instantiated only when a command acts on it.
+set(componentSuite_component-model component)
+set(componentSuite_component-wasm-tools wasm-tools)
+set(componentSuite_component-wasmtime component)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS component-files.txt)
+file(STRINGS component-files.txt componentSpecFiles REGEX "^[^#]" ENCODING UTF-8)
+foreach(entry IN LISTS componentSpecFiles)
+    if(entry MATCHES "^[^ ]+ +[^ ]+ +exclude .+$")
+        continue()
+    endif()
+    if(NOT entry MATCHES "^([^ ]+) +([^ ]+) +([0-9]+) +([^ ]+) +([^ ]+)$")
+        message(FATAL_ERROR "tests/component-files.txt: expected '<source> <path> <skips> <features> "
+                            "<component features>' or '<source> <path> exclude <reason>', got '${entry}'")
+    endif()
+    if(NOT DEFINED componentSuite_${CMAKE_MATCH_1})
+        message(FATAL_ERROR "tests/component-files.txt: no suite for the source '${CMAKE_MATCH_1}'")
+    endif()
+    string(REPLACE "/" "." testName "spec.${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
+    add_test(NAME ${testName}
+             COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/${CMAKE_MATCH_1}/${CMAKE_MATCH_2}"
+                     "${CMAKE_MATCH_3}" --features "${CMAKE_MATCH_4}" --suite "${componentSuite_${CMAKE_MATCH_1}}"
+                     --component-features "${CMAKE_MATCH_5}")
+    set_tests_properties(${testName} PROPERTIES LABELS component-spec)
+endforeach()
+
 # The command line: a skip count and a feature set are required, the set must be one it knows, and so
 # must every other option's value; no option is given twice.
 foreach(usage IN ITEMS "1" "1;--features" "1;--features;wasm4" "x;--features;wasm2" "1;--feature;wasm2"
                        "1;--features;wasm2;--engine;jit" "1;--features;wasm2;--suite;gc"
                        "1;--features;wasm2;--component-features;cm-nope"
-                       "1;--features;wasm2;--features;wasm3")
+                       "1;--features;wasm2;--features;wasm3" "1;--features;all,-nope" "1;--features;all,simd"
+                       "1;--features;wasm3,-reference-types" "1;--features;wasm2;--suite;wasm-toolz")
     string(REPLACE ";" "-" usageName "${usage}")
     add_test(NAME spec-usage-${usageName}
              COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-skips" ${usage})

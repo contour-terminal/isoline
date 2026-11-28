@@ -1,0 +1,12 @@
+commands 11
+0 7 wasm core-modules.0.wasm
+1 25 wasm core-modules.1.wasm
+2 37 wasm core-modules.2.wasm
+3 44 wasm core-modules.3.wasm
+4 52 wasm core-modules.4.wasm
+5 63 wasm core-modules.5.wasm
+6 73 wasm core-modules.6.wasm
+7 87 wasm core-modules.7.wasm
+8 95 wasm core-modules.8.wasm
+9 103 wasm core-modules.9.wasm
+10 111 wasm core-modules.10.wasm

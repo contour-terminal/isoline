@@ -1,0 +1,4 @@
+commands 2
+0 10 wasm cancel-and-exclusive-lock.0.wasm
+0 10 skip 6173796e63202850313229
+1 196 skip 6173796e63202850313229

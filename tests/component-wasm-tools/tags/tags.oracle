@@ -1,0 +1,11 @@
+commands 7
+0 4 wasm tags.0.wasm
+1 11 wasm tags.1.wasm
+2 17 wasm tags.2.wasm
+3 24 wasm tags.3.wasm
+4 33 wasm tags.4.wasm
+4 33 skip 636f7265206665617475726520637574206763
+5 45 wasm tags.5.wasm
+5 45 skip 636f7265206665617475726520637574206763
+6 61 wasm tags.6.wasm
+6 61 skip 636f7265206665617475726520637574206763

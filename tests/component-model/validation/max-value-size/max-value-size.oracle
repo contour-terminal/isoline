@@ -1,0 +1,17 @@
+commands 8
+0 6 wasm max-value-size.0.wasm
+0 6 skip 6173796e63202850313229
+1 26 wasm max-value-size.1.wasm
+1 26 skip 676174656420f09f94a7
+2 32 wasm max-value-size.2.wasm
+2 32 skip 676174656420f09f94a7
+3 38 wasm max-value-size.3.wasm
+3 38 skip 676174656420f09f94a7
+4 44 wasm max-value-size.4.wasm
+4 44 skip 676174656420f09f94a7
+5 49 wasm max-value-size.5.wasm
+5 49 skip 676174656420f09f94a7
+6 58 wasm max-value-size.6.wasm
+6 58 skip 676174656420f09f94a7
+7 64 wasm max-value-size.7.wasm
+7 64 skip 676174656420f09f94a7

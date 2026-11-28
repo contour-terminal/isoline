@@ -53,13 +53,19 @@ DIVERGENCE_BLOCK = ("wasm3 core/native:7: unknown local $x\n"
 PARITY_BLOCK = "wasm3 core/native:3: 0x1b sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef one type, as the reference\n"
 
 
-def document(lines, divergenceLines=DIVERGENCE_BLOCK, parityLines=PARITY_BLOCK):
+# The component suites' blocks of the fixture: none when it has no tests/component-files.txt.
+NO_COMPONENT_BLOCKS = {checker.COMPONENT_EXCLUSIONS: "", checker.COMPONENT_SKIPS: "", checker.COMPONENT_RECORDED: "",
+                       checker.COMPONENT_DIVERGENCES: ""}
+
+
+def document(lines, divergenceLines=DIVERGENCE_BLOCK, parityLines=PARITY_BLOCK, components=NO_COMPONENT_BLOCKS):
     def block(name, content):
         return f"{checker.begin(name)}\n```text\n{content}```\n{checker.end(name)}\n"
 
     return (f"# Conformance\n\nIntro.\n\n{block(checker.EXCLUSIONS, lines)}\nMiddle.\n\n"
             f"{block(checker.DIVERGENCES, divergenceLines)}\nAnd.\n\n"
-            f"{block(checker.PARITY_DIVERGENCES, parityLines)}\nAfter.\n")
+            f"{block(checker.PARITY_DIVERGENCES, parityLines)}\nAfter.\n"
+            + "".join(f"\n{block(name, content)}" for name, content in components.items()))
 
 
 class CheckTest(unittest.TestCase):
@@ -101,7 +107,28 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(checker.generated(self.root / "tests" / "spec"),
                          {checker.EXCLUSIONS: BLOCK.splitlines(),
                           checker.DIVERGENCES: DIVERGENCE_BLOCK.splitlines(),
-                          checker.PARITY_DIVERGENCES: PARITY_BLOCK.splitlines()})
+                          checker.PARITY_DIVERGENCES: PARITY_BLOCK.splitlines(),
+                          **{name: [] for name in NO_COMPONENT_BLOCKS}})
+
+    def test_theComponentBlocks(self):
+        # A component file's skips by reason, its recorded ones by line, its divergences; an exclusion.
+        tests = self.root / "tests"
+        (tests / "component-files.txt").write_text(
+            "component-model values/x 4 all none\ncomponent-wasmtime gone exclude it needs Wasmtime\n", encoding="utf-8")
+        (tests / "component-model" / "values" / "x").mkdir(parents=True)
+        (tests / "component-model" / "values" / "x" / "x.oracle").write_text(
+            "commands 6\n" + skipEntry(0, 3, "async (P12)") + skipEntry(1, 9, "async (P12)")
+            + skipEntry(2, 12, "gated 🧵") + skipEntry(3, 20, "oracle unavailable since 01234567")
+            + skipEntry(5, 34, "wasmtime restriction (restrictions.wast:1)")
+            + f"4 30 message {'unexpected token'.encode().hex()}\n", encoding="utf-8")
+        generated = checker.generated(tests / "spec")
+        self.assertEqual(generated[checker.COMPONENT_EXCLUSIONS], ["component-wasmtime gone: it needs Wasmtime"])
+        self.assertEqual(generated[checker.COMPONENT_SKIPS],
+                         ["component-model values/x: 2 × async (P12)", "component-model values/x: 1 × gated 🧵"])
+        self.assertEqual(generated[checker.COMPONENT_RECORDED],
+                         ["component-model values/x:20: oracle unavailable since 01234567",
+                          "component-model values/x:34: wasmtime restriction (restrictions.wast:1)"])
+        self.assertEqual(generated[checker.COMPONENT_DIVERGENCES], ["component-model values/x:30: message unexpected token"])
 
     def test_aCurrentDocumentPasses(self):
         self.doc.write_text(document(BLOCK), encoding="utf-8")

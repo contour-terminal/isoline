@@ -1,0 +1,11 @@
+commands 12
+0 3 wasm func.0.wasm
+1 9 wasm func.1.wasm
+2 18 wasm func.2.wasm
+3 25 wasm func.3.wasm
+4 39 wasm func.4.wasm
+5 48 wasm func.5.wasm
+6 60 wasm func.6.wasm
+7 77 wasm func.7.wasm
+8 100 wasm func.8.wasm
+9 112 wasm func.9.wasm

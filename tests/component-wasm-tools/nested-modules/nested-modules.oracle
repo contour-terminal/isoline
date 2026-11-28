@@ -1,0 +1,5 @@
+commands 7
+0 3 wasm nested-modules.0.wasm
+1 23 wasm nested-modules.1.wasm
+2 30 wasm nested-modules.2.wasm
+3 40 wasm nested-modules.3.wasm

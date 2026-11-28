@@ -1,0 +1,13 @@
+commands 12
+0 8 wasm extern-names.0.wasm
+1 19 wasm extern-names.1.wasm
+2 27 wasm extern-names.2.wasm
+3 30 wasm extern-names.3.wasm
+4 33 wasm extern-names.4.wasm
+5 36 wasm extern-names.5.wasm
+6 39 wasm extern-names.6.wasm
+7 42 wasm extern-names.7.wasm
+8 45 wasm extern-names.8.wasm
+9 48 wasm extern-names.9.wasm
+10 54 wasm extern-names.10.wasm
+11 57 wasm extern-names.11.wasm

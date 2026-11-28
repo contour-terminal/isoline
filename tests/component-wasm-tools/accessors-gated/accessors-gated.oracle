@@ -1,0 +1,5 @@
+commands 4
+0 6 wasm accessors-gated.0.wasm
+1 10 wasm accessors-gated.1.wasm
+2 14 wasm accessors-gated.2.wasm
+3 20 wasm accessors-gated.3.wasm

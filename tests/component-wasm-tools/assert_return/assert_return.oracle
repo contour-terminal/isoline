@@ -1,0 +1,2 @@
+commands 2
+0 3 wasm assert_return.0.wasm

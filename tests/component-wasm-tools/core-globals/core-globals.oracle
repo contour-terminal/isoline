@@ -1,0 +1,7 @@
+commands 6
+0 4 wasm core-globals.0.wasm
+1 16 wasm core-globals.1.wasm
+2 27 wasm core-globals.2.wasm
+3 38 wasm core-globals.3.wasm
+4 46 wasm core-globals.4.wasm
+5 56 wasm core-globals.5.wasm

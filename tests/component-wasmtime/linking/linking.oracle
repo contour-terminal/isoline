@@ -1,0 +1,7 @@
+commands 6
+0 2 wasm linking.0.wasm
+1 6 wasm linking.1.wasm
+2 7 wasm linking.2.wasm
+3 11 wasm linking.3.wasm
+4 14 wasm linking.4.wasm
+5 17 wasm linking.5.wasm

@@ -1,0 +1,12 @@
+commands 13
+0 3 wasm map-types.0.wasm
+1 11 wasm map-types.1.wasm
+2 27 wasm map-types.2.wasm
+3 31 wasm map-types.3.wasm
+4 35 wasm map-types.4.wasm
+5 39 wasm map-types.5.wasm
+6 45 wasm map-types.6.wasm
+7 49 wasm map-types.7.wasm
+8 53 wasm map-types.8.wasm
+9 59 wasm map-types.9.wasm
+10 66 wasm map-types.10.wasm

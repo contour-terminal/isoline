@@ -1,0 +1,3 @@
+commands 3
+0 8 wasm outer-alias-names.0.wasm
+1 14 wasm outer-alias-names.1.wasm

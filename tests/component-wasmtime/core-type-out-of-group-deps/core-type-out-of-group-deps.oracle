@@ -1,0 +1,7 @@
+commands 3
+0 6 wasm core-type-out-of-group-deps.0.wasm
+0 6 skip 636f7265206665617475726520637574206763
+1 13 wasm core-type-out-of-group-deps.1.wasm
+1 13 skip 636f7265206665617475726520637574206763
+2 21 wasm core-type-out-of-group-deps.2.wasm
+2 21 skip 636f7265206665617475726520637574206763

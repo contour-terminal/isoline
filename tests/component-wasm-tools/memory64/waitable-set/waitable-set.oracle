@@ -1,0 +1,13 @@
+commands 6
+0 5 wasm waitable-set.0.wasm
+0 5 skip 676174656420f09f9098
+1 16 wasm waitable-set.1.wasm
+1 16 skip 676174656420f09f9098
+2 29 wasm waitable-set.2.wasm
+2 29 skip 676174656420f09f9098
+3 44 wasm waitable-set.3.wasm
+3 44 skip 676174656420f09f9098
+4 55 wasm waitable-set.4.wasm
+4 55 skip 676174656420f09f9098
+5 68 wasm waitable-set.5.wasm
+5 68 skip 676174656420f09f9098

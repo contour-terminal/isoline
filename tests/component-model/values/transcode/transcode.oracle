@@ -1,0 +1,6 @@
+commands 10
+0 7 wasm transcode.0.wasm
+2 117 wasm transcode.2.wasm
+4 205 wasm transcode.4.wasm
+6 323 wasm transcode.6.wasm
+8 437 wasm transcode.8.wasm

@@ -11,8 +11,12 @@ as the importer writes no other. The block between `<!-- divergences:begin -->` 
 `<!-- divergences:end -->` holds one line per expected divergence, a `message` entry of an .oracle,
 `<source> <path>:<wast line>: <Isoline's message>`, and the block between
 `<!-- parity-divergences:begin -->` and `<!-- parity-divergences:end -->` one line per `parity` entry,
-`<source> <path>:<wast line>: 0x<offset> sha256:<digest> <reason>`. The lines are sorted by source,
-path and wast line. The check fails, printing a diff, when a block differs from what the data says;
+`<source> <path>:<wast line>: 0x<offset> sha256:<digest> <reason>`. The component suites of
+tests/component-files.txt have blocks of their own: `component-exclusions` (`<source> <path>: <reason>`),
+`component-skips` (`<source> <path>: <count> × <reason>`, every skip by file and reason but the recorded
+ones), `component-recorded-skips` (`<source> <path>:<wast line>: <reason>`, those tests/component-skips.txt
+records) and `component-divergences` (`<source> <path>:<wast line>: <kind> <value>`). The lines are sorted
+by source, path and wast line (or reason). The check fails, printing a diff, when a block differs from what the data says;
 --update rewrites the blocks.
 
 Usage: python3 -I scripts/check-conformance.py [--root <repository>] [--update]
@@ -31,7 +35,17 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 EXCLUSIONS = "exclusions"
 DIVERGENCES = "divergences"
 PARITY_DIVERGENCES = "parity-divergences"
-BLOCKS = (EXCLUSIONS, DIVERGENCES, PARITY_DIVERGENCES)
+COMPONENT_EXCLUSIONS = "component-exclusions"
+COMPONENT_SKIPS = "component-skips"
+COMPONENT_RECORDED = "component-recorded-skips"
+COMPONENT_DIVERGENCES = "component-divergences"
+BLOCKS = (EXCLUSIONS, DIVERGENCES, PARITY_DIVERGENCES, COMPONENT_EXCLUSIONS, COMPONENT_SKIPS, COMPONENT_RECORDED,
+          COMPONENT_DIVERGENCES)
+
+# The reasons of the component suites' recorded skips (tests/component-skips.txt), each listed by its line;
+# every other reason is listed by how many commands of a file it skips.
+RECORDED_PREFIXES = ("oracle unavailable since ", "wasmtime restriction (restrictions.wast:",
+                     "diverges from CM pin (definitions.py:")
 
 # The skip reasons the importer writes: a root, `<reason> (wast line M)`, and a command that uses a
 # skipped module, `<reason> (root wast line N; wast line M)`.
@@ -105,7 +119,34 @@ def generated(spec):
                                       f"{row.source} {row.path}:{line}: {bytes.fromhex(value).decode('utf-8')}"))
         for line, text in skips(oracle, [reason for _, reason in oracleEntries(oracle, "skip")]):
             entries[EXCLUSIONS].append(((row.source, row.path, line), f"{row.source} {row.path}:{line}: {text}"))
+    generatedComponents(spec.parent, entries)
     return {name: [text for _, text in sorted(lines)] for name, lines in entries.items()}
+
+
+def generatedComponents(tests, entries):
+    """Adds the component suites' lines (tests/component-files.txt) to entries: their exclusions, their skips
+    by file and reason, their recorded skips by line, and their message and parity divergences."""
+    files = tests / "component-files.txt"
+    if not files.exists():
+        return
+    for row in loadImporter().readComponentFiles(files):
+        if row.exclude is not None:
+            entries[COMPONENT_EXCLUSIONS].append(((row.source, row.path, 0), f"{row.source} {row.path}: {row.exclude}"))
+            continue
+        oracle = (row.directory(tests) / pathlib.PurePosixPath(row.path).name).with_suffix(".oracle")
+        counts = {}
+        for line, value in oracleEntries(oracle, "skip"):
+            reason = bytes.fromhex(value).decode("utf-8")
+            if reason.startswith(RECORDED_PREFIXES):
+                entries[COMPONENT_RECORDED].append(((row.source, row.path, line), f"{row.source} {row.path}:{line}: {reason}"))
+            else:
+                counts[reason] = counts.get(reason, 0) + 1
+        for reason, count in counts.items():
+            entries[COMPONENT_SKIPS].append(((row.source, row.path, reason), f"{row.source} {row.path}: {count} × {reason}"))
+        for kind in ("message", "parity"):
+            for line, value in oracleEntries(oracle, kind):
+                entries[COMPONENT_DIVERGENCES].append(((row.source, row.path, line),
+                    f"{row.source} {row.path}:{line}: {kind} {bytes.fromhex(value).decode('utf-8')}"))
 
 
 def block(lines):
