@@ -334,10 +334,13 @@ def headersOutsideTheSet(manifest):
     """The spellings of the `.hpp` files beside a header of the set, in the same directory, that the set does
     not hold: a public header, by where it lives, that the module would not cover. Sorted."""
     inSet = {header.resolve() for header in manifest.headerSet}
-    directories = sorted({header.resolve().parent for header in umbrellaHeaders(manifest)})
+    # Sorted as `/`-separated text, so that the order is every operating system's (Windows' paths compare
+    # case-insensitively).
+    directories = sorted({header.resolve().parent for header in umbrellaHeaders(manifest)},
+                         key=lambda path: path.as_posix())
     return [includeSpelling(manifest, candidate)
             for directory in directories
-            for candidate in sorted(directory.glob("*.hpp"))
+            for candidate in sorted(directory.glob("*.hpp"), key=lambda path: path.as_posix())
             if candidate.resolve() not in inSet]
 
 
