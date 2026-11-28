@@ -286,7 +286,8 @@ TEST_CASE("SpecCheck.messageRules")
 
 TEST_CASE("SpecCheck.skipReasons")
 {
-    using isoline::spectest::skipReasonOf;
+    using isoline::spectest::reasonRowOf;
+    using isoline::spectest::ReasonUse;
     using isoline::spectest::SkipReasons;
     for (auto const reason: std::to_array<std::string_view>({
              "async (P12)",
@@ -296,13 +297,15 @@ TEST_CASE("SpecCheck.skipReasons")
              "core feature cut gc",
              "legacy text indices",
              "diverges from CM pin (definitions.py:1234)",
-             "diverges from CM pin (Binary.md:350)",
          }))
     {
         INFO(reason);
-        CHECK(skipReasonOf(reason) != nullptr);
+        CHECK(reasonRowOf(reason, ReasonUse::Skip) != nullptr);
+        CHECK(reasonRowOf(reason, ReasonUse::Parity) == nullptr); // a skip's reason is no divergence's
     }
-    CHECK(skipReasonOf("diverges from CM pin (Binary.md:350)") == &SkipReasons.back());
+    // Where the pinned wasm-tools encodes otherwise than Binary.md, the command runs: a parity divergence.
+    CHECK(reasonRowOf("diverges from CM pin (Binary.md:350)", ReasonUse::Parity) == &SkipReasons.back());
+    CHECK(reasonRowOf("diverges from CM pin (Binary.md:350)", ReasonUse::Skip) == nullptr);
     for (auto const reason: std::to_array<std::string_view>({
              "",
              "because",
@@ -312,13 +315,14 @@ TEST_CASE("SpecCheck.skipReasons")
              "gated ",
              "core feature cut ",
              "core feature cut two words",
-             "diverges from CM pin (Binary.md:)",
-             "diverges from CM pin (Binary.md:3x0)",
-             "diverges from CM pin (Binary.md:350",
+             "diverges from CM pin (definitions.py:)",
+             "diverges from CM pin (definitions.py:3x0)",
+             "diverges from CM pin (definitions.py:350",
              "diverges from CM pin (Explainer.md:1)",
          }))
     {
         INFO(reason);
-        CHECK(skipReasonOf(reason) == nullptr);
+        CHECK(reasonRowOf(reason, ReasonUse::Skip) == nullptr);
+        CHECK(reasonRowOf(reason, ReasonUse::Parity) == nullptr);
     }
 }

@@ -246,7 +246,7 @@ CheckResult checkFailure(Stage stage, std::string_view expectedMessage, std::opt
     return checkFailure(stage, expectedMessage, actual, MessageRule::Prefix);
 }
 
-SkipReasonRow const* skipReasonOf(std::string_view reason) noexcept
+SkipReasonRow const* reasonRowOf(std::string_view reason, ReasonUse use) noexcept
 {
     auto const argumentFits = [](SkipArgument argument, std::string_view text) {
         switch (argument)
@@ -264,7 +264,8 @@ SkipReasonRow const* skipReasonOf(std::string_view reason) noexcept
         return false;
     };
     auto const row = std::ranges::find_if(SkipReasons, [&](SkipReasonRow const& candidate) {
-        if (!reason.starts_with(candidate.prefix) || !reason.ends_with(candidate.suffix)
+        if (candidate.use != use || !reason.starts_with(candidate.prefix)
+            || !reason.ends_with(candidate.suffix)
             || reason.size() < candidate.prefix.size() + candidate.suffix.size())
             return false;
         auto const argument = reason.substr(

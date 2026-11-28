@@ -299,11 +299,11 @@ namespace
         Wasmtime, ///< As Wasmtime words it (CoreTrapWording), which the component suites assert.
     };
 
-    /// Which reasons a suite's oracles may skip a command for.
+    /// Which reasons a suite's oracles may skip a command, or record a parity divergence, for.
     enum class SkipPolicy : uint8_t
     {
-        AnyReason,   ///< Any: the core suites' importer words its own.
-        SkipReasons, ///< Only a SkipReasons row's (D12); any other skip fails the file.
+        AnyReason,   ///< Any: the core suites' importer words its own. Such a file may hold no component.
+        SkipReasons, ///< Only a SkipReasons row's of its use (D12); any other reason fails the file.
     };
 
     /// One suite a file can come from: how `--suite` names it, and the rules its files run by.
@@ -1113,24 +1113,55 @@ namespace
                              .message = std::format("{}:{}: {}", path.string(), error.line, error.message) };
     }
 
-    /// Checks that every skip of an oracle gives a reason @p policy admits: under SkipReasons, one of
-    /// that table's rows.
-    [[nodiscard]] std::expected<void, std::string> checkSkipReasons(Oracle const& oracle, SkipPolicy policy)
+    /// The reason of a recorded parity divergence, `0x<offset> sha256:<digest> <reason>`: what follows its
+    /// second space.
+    [[nodiscard]] std::string_view parityReasonOf(std::string_view parity) noexcept
+    {
+        auto const digest = parity.find(' ');
+        auto const reason = digest == std::string_view::npos ? digest : parity.find(' ', digest + 1);
+        return reason == std::string_view::npos ? std::string_view {} : parity.substr(reason + 1);
+    }
+
+    /// Checks a script and its oracle against @p policy. Under SkipReasons, every skip's reason and every
+    /// parity divergence's must be a SkipReasons row of its use. Under AnyReason, whose reasons go unpoliced,
+    /// the script may hold no component: a component suite's file run without its rules (`--suite
+    /// component`) would accept any reason.
+    [[nodiscard]] std::expected<void, std::string> checkReasons(Oracle const& oracle,
+                                                                std::span<Command const> commands,
+                                                                SkipPolicy policy)
     {
         if (policy == SkipPolicy::AnyReason)
+        {
+            for (auto const [ordinal, command]: core::views::enumerate(commands))
+                if (isComponentForm(command.source.form))
+                    return std::unexpected { std::format(
+                        "command {} (line {}) is a component, which runs under the component suites' rules "
+                        "only (--suite component)",
+                        ordinal,
+                        command.line) };
             return {};
+        }
         for (auto const& [ordinal, entry]: oracle.entries)
-            if (entry.skip && skipReasonOf(*entry.skip) == nullptr)
+        {
+            if (entry.skip && reasonRowOf(*entry.skip, ReasonUse::Skip) == nullptr)
                 return std::unexpected { std::format(
-                    "command {} (line {}) is skipped for '{}', which is no SkipReasons row",
+                    "command {} (line {}) is skipped for '{}', which is no SkipReasons row of a skip",
                     ordinal,
                     entry.line,
                     *entry.skip) };
+            if (entry.parity && reasonRowOf(parityReasonOf(*entry.parity), ReasonUse::Parity) == nullptr)
+                return std::unexpected { std::format("command {} (line {}) records a parity divergence for "
+                                                     "'{}', which is no SkipReasons row of a "
+                                                     "parity divergence",
+                                                     ordinal,
+                                                     entry.line,
+                                                     parityReasonOf(*entry.parity)) };
+        }
         return {};
     }
 
     /// Reads `<name>.wast` and its oracle, which must count its commands alike, whose every entry must fit
-    /// the command it lands on (checkEntries) and whose every skip must give a reason @p policy admits, and
+    /// the command it lands on (checkEntries) and which must hold to @p policy (checkReasons), and
     /// marks the commands the oracle skips: they are never compiled nor run.
     [[nodiscard]] std::expected<Script, ScriptError> readWast(std::filesystem::path const& scriptPath,
                                                               SkipPolicy policy)
@@ -1151,7 +1182,7 @@ namespace
             return std::unexpected { parseFailure(oraclePath, oracle.error()) };
         auto const aligned = checkAlignment(*oracle, commands->size())
                                  .and_then([&] { return checkEntries(*oracle, *commands); })
-                                 .and_then([&] { return checkSkipReasons(*oracle, policy); });
+                                 .and_then([&] { return checkReasons(*oracle, *commands, policy); });
         if (!aligned)
             return std::unexpected { ScriptError {
                 .status = 1,

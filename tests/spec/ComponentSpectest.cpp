@@ -100,17 +100,20 @@ namespace
             [](component::api::LinkerError const& error) { return error.message(); });
     }
 
-    /// Defines a host function of @p Signature, its parameters labelled @p names, at @p path.
+    /// Defines a host function of @p Signature at @p path, its parameters unnamed (ParameterNames::Unnamed)
+    /// as Wasmtime's func_wrap defines them, so an import matches whatever it calls them; @p names only
+    /// label them, as the suites mostly spell them.
     template <typename Signature, typename F>
     [[nodiscard]] Outcome defineTyped(Definitions& definitions,
                                       std::string path,
                                       std::span<std::string_view const> names,
                                       F body)
     {
-        auto const spec =
+        auto spec =
             component::api::typed::functionType<Signature>(definitions.linker, definitions.resources, names);
         if (!spec)
             return std::unexpected { spec.error().message() };
+        spec->names = component::api::ParameterNames::Unnamed;
         return linked(definitions.linker.defineFunction(
             std::move(path),
             *spec,
@@ -171,7 +174,7 @@ namespace
     /// [static]resource1.assert: that the own given is of the representation given.
     [[nodiscard]] Outcome defineAssert(Definitions& definitions, std::string path)
     {
-        // The own is forgotten, as Wasmtime's host drops its Resource without destroying it.
+        // The own stays the host's, as Wasmtime's host keeps its Resource: the store's teardown destroys it.
         return defineTyped<void(Own<Resource1>, uint32_t)>(
             definitions,
             std::move(path),
@@ -225,7 +228,7 @@ namespace
     /// [method]resource1.take-own: takes a borrow and an own.
     [[nodiscard]] Outcome defineTakeOwn(Definitions& definitions, std::string path)
     {
-        // As [static]resource1.assert, the own is forgotten.
+        // As [static]resource1.assert, the own stays the host's until the store's teardown destroys it.
         return defineTyped<void(Borrow<Resource1>, Own<Resource1>)>(
             definitions, std::move(path), SelfOther, [](Borrow<Resource1>, Own<Resource1> const&) noexcept {
             });

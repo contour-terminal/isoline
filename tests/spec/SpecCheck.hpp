@@ -119,46 +119,62 @@ enum class SkipArgument : uint8_t
     Line, ///< A line number: decimal digits.
 };
 
-/// One form a skip of a command of a component suite may give as its reason (D12): its fixed text, what
-/// follows it, and what closes it.
+/// What an oracle entry giving a reason records.
+enum class ReasonUse : uint8_t
+{
+    Skip,   ///< A skip: the command is not run.
+    Parity, ///< A parity divergence: the command runs, and its encoding differs from the oracle's there.
+};
+
+/// One form a component suite's oracle may give as the reason of a skip or of a parity divergence (D12):
+/// its fixed text, what follows it, what closes it, and which entry gives it.
 struct SkipReasonRow
 {
     std::string_view prefix;  ///< The text it starts with.
     SkipArgument argument;    ///< What follows the prefix.
     std::string_view suffix;  ///< The text it ends with, after the argument.
-    std::string_view meaning; ///< Why a command is skipped for it.
+    ReasonUse use;            ///< The entry that gives it.
+    std::string_view meaning; ///< Why a command is skipped, or its encoding diverges, for it.
 };
 
-/// Every reason a command of a component suite may be skipped for. Anything else is refused: a skip
-/// without one of these reasons fails its file. Adding a reason is adding a row.
+/// Every reason a component suite's oracle may skip a command for, or record its parity divergence for.
+/// Anything else is refused: an entry without one of these reasons, of its use, fails its file. Adding a
+/// reason is adding a row.
 inline constexpr auto SkipReasons = std::to_array<SkipReasonRow>({
     { .prefix = "async (P12)",
       .argument = SkipArgument::None,
       .suffix = "",
+      .use = ReasonUse::Skip,
       .meaning = "it runs async code, which P12 implements" },
     { .prefix = "gated ",
       .argument = SkipArgument::Gate,
       .suffix = "",
+      .use = ReasonUse::Skip,
       .meaning = "it needs a gated feature Isoline refuses" },
     { .prefix = "upstream nyi.txt",
       .argument = SkipArgument::None,
       .suffix = "",
+      .use = ReasonUse::Skip,
       .meaning = "the suite's own nyi.txt lists it as not yet implemented" },
     { .prefix = "core feature cut ",
       .argument = SkipArgument::Name,
       .suffix = "",
+      .use = ReasonUse::Skip,
       .meaning = "it needs a core proposal Isoline does not implement" },
     { .prefix = "legacy text indices",
       .argument = SkipArgument::None,
       .suffix = "",
+      .use = ReasonUse::Skip,
       .meaning = "its text uses index forms the pinned text format no longer reads" },
     { .prefix = "diverges from CM pin (definitions.py:",
       .argument = SkipArgument::Line,
       .suffix = ")",
+      .use = ReasonUse::Skip,
       .meaning = "the suite asserts what the pinned canonical ABI definitions do otherwise" },
     { .prefix = "diverges from CM pin (Binary.md:",
       .argument = SkipArgument::Line,
       .suffix = ")",
+      .use = ReasonUse::Parity,
       .meaning = "the pinned wasm-tools encodes what the pinned Binary.md encodes otherwise" },
 });
 
@@ -169,9 +185,10 @@ static_assert(std::ranges::all_of(SkipReasons,
                                   }),
               "every skip reason has a text and a meaning, and only a reason with an argument a suffix");
 
-/// The row of SkipReasons a skip's reason is of.
+/// The row of SkipReasons a skip's or a parity divergence's reason is of.
 /// @param reason The reason an oracle gives.
-/// @return Its row, or nullptr when it is of none.
-[[nodiscard]] SkipReasonRow const* skipReasonOf(std::string_view reason) noexcept;
+/// @param use The entry that gives it.
+/// @return Its row, or nullptr when it is of none of @p use.
+[[nodiscard]] SkipReasonRow const* reasonRowOf(std::string_view reason, ReasonUse use) noexcept;
 
 } // namespace isoline::spectest

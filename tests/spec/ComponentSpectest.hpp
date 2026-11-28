@@ -62,7 +62,8 @@ inline constexpr auto ComponentSpectestRows = std::to_array<ComponentSpectestRow
 });
 
 /// A linker holding every row of ComponentSpectestRows but the async ones: host functions written with
-/// typed::makeTypedHostFunction, `simple-module` through Linker::defineModule(). The resource1 functions
+/// typed::makeTypedHostFunction, their parameters unnamed (ParameterNames::Unnamed) as Wasmtime's are,
+/// `simple-module` through Linker::defineModule(). The resource1 functions
 /// share one count of the resource1 drops and the representation of the last dropped.
 /// @param engine The engine `simple-module` is loaded on, which the components it links must share.
 /// @param config The features and caps of the linker.

@@ -33,13 +33,15 @@ namespace
 
 /// A guest of the spectest's resource1: run(rep) makes a resource1 of @p rep through the host's
 /// constructor, checks it through [static]resource1.assert and [method]resource1.simple, drops it, and
-/// returns the host's drop count times 1000 plus the representation it last dropped.
+/// returns the host's drop count times 1000 plus the representation it last dropped. It names simple's
+/// second parameter `b`, as resources.wast:933 does, where the spectest labels it `rep`: the spectest's host
+/// functions are unnamed, so any name links.
 constexpr auto DropGuest = std::string_view { R"((component
   (import "host" (instance $host
     (export "resource1" (type $r (sub resource)))
     (export "[constructor]resource1" (func (param "r" u32) (result (own $r))))
     (export "[static]resource1.assert" (func (param "r" (own $r)) (param "rep" u32)))
-    (export "[method]resource1.simple" (func (param "self" (borrow $r)) (param "rep" u32)))
+    (export "[method]resource1.simple" (func (param "self" (borrow $r)) (param "b" u32)))
     (export "[static]resource1.drops" (func (result u32)))
     (export "[static]resource1.last-drop" (func (result u32)))
   ))

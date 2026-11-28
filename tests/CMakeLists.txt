@@ -150,6 +150,25 @@ add_test(NAME spec-selftest-component-bad-skip-exit
          COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-bad-skip" 1
                  --features wasm3 --suite component)
 set_tests_properties(spec-selftest-component-bad-skip-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
+# A component suite's parity divergences: one recorded for a reason no SkipReasons row of a divergence
+# gives fails the file; one for a Binary.md reason is admitted, and its record then checked (and fails, as
+# the encodings agree).
+add_test(NAME spec-selftest-component-bad-parity
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-bad-parity" 0
+                 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-bad-parity PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "records a parity divergence for 'because', which is no SkipReasons row")
+add_test(NAME spec-selftest-component-recorded-parity
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-recorded-parity"
+                 0 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-recorded-parity PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "the recorded parity divergence at 0x8 does not occur: the encodings agree.*passed 0, failed 1, skipped 0")
+# A component under the core suites' rules, whose reasons go unpoliced, fails its file before anything runs.
+add_test(NAME spec-selftest-component-core-suite
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-wrong" 0
+                 --features wasm3)
+set_tests_properties(spec-selftest-component-core-suite PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "command 0 [(]line 3[)] is a component, which runs under the component suites' rules only")
 # Under the core suites' rules the same skip passes: their importer words its own reasons.
 add_test(NAME spec-selftest-component-core-skip
          COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-bad-skip" 1
