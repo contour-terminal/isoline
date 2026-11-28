@@ -245,12 +245,6 @@ if(ISOLINE_TESTING)
             target_include_directories(isoline_c_api_check PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/isoline_c_api_check.headers")
         endif()
     endif()
-    isoline_add_reflection_check(isoline_enum_tables_check
-        SOURCES meta/reflection/EnumTablesCheck.cpp
-        LINK_LIBRARIES ${isolineEnumTablesLinks}
-        UMBRELLA isoline/meta/reflection/EnumTablesUmbrella.hpp
-        HEADER_TARGETS isoline_core isoline_text isoline_cli
-        EXCLUDE ${isolineEnumTablesExcludes})
     # The noexcept rule of declaration contracts, only where contracts are native: every header of the
     # libraries, the test helpers' included (Catch2 for their StringMakers), read through the proving
     # expansion of <isoline/Contracts.hpp> (isoline_add_declaration_contracts_proof()).
@@ -267,3 +261,37 @@ endif()
 
 # The component model, on isoline_core.
 add_subdirectory(component)
+
+# The exhaustive enum-table checks, only where reflection is native: one translation unit per scope, each
+# over its libraries' headers, installed or private, but the test helpers' and the checks' own, against
+# that scope's registry (meta/reflection/EnumTablesCheck.cpp). One unit reflecting over every layer at once
+# passes a CI runner's memory, so a layer is a row here. Each row: target|scope header|header targets|links|
+# excludes, the lists ;-separated within a column.
+if(ISOLINE_TESTING)
+    list(JOIN isolineEnumTablesLinks "," isolineCoreEnumTablesLinks)
+    list(JOIN isolineEnumTablesExcludes "," isolineCoreEnumTablesExcludes)
+    set(isolineEnumTablesChecks
+        "isoline_enum_tables_check|isoline/meta/reflection/CoreEnumTablesScope.hpp|isoline_core,isoline_text,isoline_cli|${isolineCoreEnumTablesLinks}|${isolineCoreEnumTablesExcludes},^isoline/component/"
+        "isoline_component_enum_tables_check|isoline/meta/reflection/ComponentEnumTablesScope.hpp|isoline_component,isoline_component_text|isoline::component,isoline::component_text|/testing/")
+    foreach(row IN LISTS isolineEnumTablesChecks)
+        string(REPLACE "|" ";" columns "${row}")
+        list(GET columns 0 checkTarget)
+        list(GET columns 1 checkScope)
+        list(GET columns 2 checkHeaders)
+        list(GET columns 3 checkLinks)
+        list(GET columns 4 checkExcludes)
+        string(REPLACE "," ";" checkHeaders "${checkHeaders}")
+        string(REPLACE "," ";" checkLinks "${checkLinks}")
+        string(REPLACE "," ";" checkExcludes "${checkExcludes}")
+        isoline_add_reflection_check(${checkTarget}
+            SOURCES meta/reflection/EnumTablesCheck.cpp
+            LINK_LIBRARIES ${checkLinks}
+            UMBRELLA isoline/meta/reflection/EnumTablesUmbrella.hpp
+            HEADER_TARGETS ${checkHeaders}
+            EXCLUDE ${checkExcludes})
+        # Made only where reflection is native.
+        if(TARGET ${checkTarget})
+            target_compile_definitions(${checkTarget} PRIVATE "ISOLINE_ENUM_TABLES_SCOPE=<${checkScope}>")
+        endif()
+    endforeach()
+endif()

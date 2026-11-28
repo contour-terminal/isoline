@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// The exhaustive checks of Isoline's enum tables, where reflection takes the native path: every row of
-// meta/EnumTables.def holds what it claims, every enum-first table discovery finds is a row there, and
-// every namespace under isoline is one discovery walks. Compile-only: the translation unit defines
-// nothing, and nothing links it. The umbrella header CMake generates includes every header of the
-// libraries' header sets and their private headers (isoline_add_reflection_check).
+// The exhaustive checks of Isoline's enum tables, where reflection takes the native path: every row of a
+// registry holds what it claims, every enum-first table discovery finds is a row there, and every namespace
+// under the discovery root is one discovery walks. Compile-only: the translation unit defines nothing, and
+// nothing links it. It is built once per scope (ISOLINE_ENUM_TABLES_SCOPE, a header naming the root, its
+// namespaces and the registry: src/isoline/CMakeLists.txt's isolineEnumTablesChecks), each against an
+// umbrella CMake generates of that scope's libraries' header sets and private headers
+// (isoline_add_reflection_check), so that no one translation unit reflects over every layer.
 
 #include <array>
 #include <cstddef>
@@ -18,29 +20,13 @@
 #include <isoline/meta/EnumRows.hpp>
 #include <isoline/meta/reflection/EnumReflection.hpp>
 #include <isoline/meta/reflection/EnumTablesUmbrella.hpp>
+#include ISOLINE_ENUM_TABLES_SCOPE
 
 namespace isoline::meta::reflection
 {
 
 namespace
 {
-    /// Every namespace under isoline that discovery walks, at any depth, by name, but those
-    /// ImplicitNamespaces names (anonymous and detail ones). A namespace added under isoline is a row
-    /// here, or the unclassified check below names it.
-    constexpr auto DiscoveredNamespaces = std::to_array<std::meta::info>({
-        ^^isoline,
-        ^^isoline::api,
-        ^^isoline::binary,
-        ^^isoline::binary::detail::proposal,
-        ^^isoline::c,
-        ^^isoline::cli,
-        ^^isoline::config,
-        ^^isoline::interpreter,
-        ^^isoline::runtime,
-        ^^isoline::text,
-        ^^isoline::validate,
-    });
-
     /// What a registry row claims, as discovery compares it.
     enum class RowKind : uint8_t
     {
@@ -81,9 +67,9 @@ namespace
       {} },
 #define ISOLINE_LAST_ENUMERATOR(Last, reason) { RowKind::LastConstant, {}, {}, ^^Last },
 #define ISOLINE_SOURCE_LOCAL_TABLE(file, Table, reason)
-    /// The rows of EnumTables.def, but those of the tables reflection cannot reach.
+    /// The registry's rows, but those of the tables reflection cannot reach.
     constexpr auto RegistryRows = std::to_array<RegistryRow>({
-#include <isoline/meta/EnumTables.def>
+#include ISOLINE_ENUM_TABLES_REGISTRY
     });
 #undef ISOLINE_ENUM_TABLE
 #undef ISOLINE_SIZED_TABLE
@@ -123,11 +109,11 @@ namespace
         return row.kind != RowKind::Keyed;
     }
 
-    /// The enum-first tables under isoline, found once.
-    constexpr auto Discovered = std::define_static_array(discoveredTables(^^isoline));
+    /// The enum-first tables under the root, found once.
+    constexpr auto Discovered = std::define_static_array(discoveredTables(DiscoveryRoot));
 
-    /// The Last constants under isoline, found once.
-    constexpr auto DiscoveredLasts = std::define_static_array(discoveredLastConstants(^^isoline));
+    /// The Last constants under the root, found once.
+    constexpr auto DiscoveredLasts = std::define_static_array(discoveredLastConstants(DiscoveryRoot));
 
     /// A registry row's problem, naming the row's table, or empty.
     /// @param table The table's name, as EnumTables.def spells it.
@@ -189,7 +175,7 @@ namespace
         rowProblem(#Last,                                                                                  \
                    enumeratorsProblem<std::remove_cvref_t<decltype(Last)>>(^^Last, LastEnumerator::Final)));
 #define ISOLINE_SOURCE_LOCAL_TABLE(file, Table, reason)
-#include <isoline/meta/EnumTables.def>
+#include ISOLINE_ENUM_TABLES_REGISTRY
 #undef ISOLINE_ENUM_TABLE
 #undef ISOLINE_SIZED_TABLE
 #undef ISOLINE_PREFIX_TABLE
@@ -212,9 +198,9 @@ namespace
                   "ISOLINE_LAST_ENUMERATOR row where reflection reaches none): "
                       + unlistedNames(DiscoveredLasts, fieldOf(&RegistryRow::last, checksLast)));
 
-    static_assert(unclassifiedNamespaces(^^isoline, DiscoveredNamespaces).empty(),
-                  "namespaces under isoline that DiscoveredNamespaces does not list (add a row): "
-                      + unlistedNames(unclassifiedNamespaces(^^isoline, DiscoveredNamespaces), {}));
+    static_assert(unclassifiedNamespaces(DiscoveryRoot, DiscoveredNamespaces).empty(),
+                  "namespaces under the root that DiscoveredNamespaces does not list (add a row): "
+                      + unlistedNames(unclassifiedNamespaces(DiscoveryRoot, DiscoveredNamespaces), {}));
 } // namespace
 
 } // namespace isoline::meta::reflection

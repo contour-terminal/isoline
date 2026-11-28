@@ -487,8 +487,12 @@ same on both paths. Where reflection is native, two targets exist that the fallb
 (`isoline_add_reflection_check()`, built with the tests):
 
 - `isoline_meta_reflection_test` (label `unit`) tests the checks on fixtures of its own.
-- `isoline_enum_tables_check` is compile-only: its `static_assert`s are the check, and the build fails
-  when one does.
+- `isoline_enum_tables_check` and `isoline_component_enum_tables_check` are compile-only: their
+  `static_assert`s are the check, and the build fails when one does. They are one source,
+  `meta/reflection/EnumTablesCheck.cpp`, built once per scope: a row of `src/isoline/CMakeLists.txt`'s
+  `isolineEnumTablesChecks` names the target, its scope header (the discovery root, its namespaces and its
+  registry: `CoreEnumTablesScope.hpp` against `meta/EnumTables.def`, `ComponentEnumTablesScope.hpp` against
+  `component/EnumTables.def`), the libraries whose headers it reads and what it leaves out. A layer is a row.
 - `isoline_meta_surface_reflection` prints module isoline's reflected surface, which the lint test
   `meta-module-surface.reflection` compares with the export lint's ("The reflected module surface").
 - `isoline_c_api_check`, where the C API is built, is compile-only too: the C API's enum mirrors and struct
@@ -559,10 +563,12 @@ The CLI's `Refusals`, indexed by `Refusal`, is an `ENUM` row.
 
 ### Discovery
 
-The check compiles one generated umbrella header, which includes every `.hpp` of the header sets of
-`isoline_core`, `isoline_text` and `isoline_cli` (an X-macro `.def` is left out), and every other
-`.hpp` under their sources: the private headers, but not `testing/` or `meta/reflection/`. A table in a
-new header is therefore reached without a row. Over those headers it asserts:
+Each check compiles one generated umbrella header, which includes every `.hpp` of the header sets of its
+scope's libraries (`isoline_core`, `isoline_text` and `isoline_cli` for the core one, `isoline_component` and
+`isoline_component_text` for the component model's; an X-macro `.def` is left out), and every other `.hpp`
+under their sources: the private headers, but not `testing/`, `meta/reflection/`, or, for the core one,
+`component/`. A table in a new header is therefore reached without a row. Over those headers it asserts,
+from its scope's root down (`isoline`, or `isoline::component`):
 
 - every namespace-scope `std::array` whose row's first member is a scoped enum, anywhere under
   `isoline`, is a row of `EnumTables.def`. Discovery walks every namespace but a `testing` one, at any
@@ -965,9 +971,12 @@ the pull, which is how to check that a pin is in force.
 - `-fcontracts` needs `-std=c++26`. Without `-fcontracts` on the link line, or without `-lstdc++exp`,
   the link fails with an undefined `handle_contract_violation`. The probe passes the flags to the
   compile only, as a target does, so it fails the same way when the library is missing.
-- `isoline_enum_tables_check` compiles in 2.7 s and 547 MB on GCC 16.2.1, against 1.4 s and 364 MB to
+- `isoline_enum_tables_check` compiled in 2.7 s and 547 MB on GCC 16.2.1, against 1.4 s and 364 MB to
   parse its umbrella header (70 headers) as C++23: reflection about doubles the cost of one translation
-  unit, which only native lanes compile.
+  unit, which only native lanes compile. Reflecting over the component model's headers in the same unit,
+  from `isoline` down, ran past 11 GB (refused at an 11 GB address-space cap after 31 s, and killed on CI's
+  runners): split into one unit per scope, the core one peaks at 763 MB and the component model's at
+  737 MB (GCC 16.2.1, `/usr/bin/time -v`, 2026-11-28).
 - Clang 22.1.8 accepts neither `-freflection` nor `-fcontracts`.
 - `std::meta::members_of` over a namespace reports its classes, enumerations, variables, functions (each
   overload), aliases, typedefs, concepts, the templates of each, and its nested namespaces. It does not

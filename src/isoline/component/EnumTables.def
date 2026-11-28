@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The registry of the component model's enum tables, as meta/EnumTables.def is the core libraries': every
+// table an enum indexes, sizes or keys in isoline::component's headers, and every Last constant there, one
+// row each, in that file's six row forms. Names are relative to isoline::. Read only by the component
+// model's enum-table check (meta/reflection/ComponentEnumTablesScope.hpp), where reflection is native; each
+// table keeps its own C++23 check beside it. Source-local tables stay meta/EnumTables.def's
+// ISOLINE_SOURCE_LOCAL_TABLE rows, which scripts/check-enum-tables.py reads. The file has no include guard;
+// each includer defines all six macros.
+
+// isoline::component
+ISOLINE_ENUM_TABLE(component::ComponentFeatureTable, component::LastComponentFeature, component::ComponentFeatureRow::feature)
+ISOLINE_ENUM_TABLE(component::LimitTable, component::LastComponentLimit, component::ComponentLimitRow::limit)
+
+// isoline::component::binary
+ISOLINE_ENUM_TABLE(component::binary::DecodeErrorMessages, component::binary::LastDecodeErrorCode, component::binary::DecodeErrorRow::code)
+
+// isoline::component::types
+ISOLINE_ENUM_TABLE(component::types::ValueKindTable, component::types::LastValueKind, component::types::ValueKindRow::kind)
+ISOLINE_PREFIX_TABLE(component::binary::PrimitiveValueTypeTable, component::types::LastPrimitiveKind, "one row per primitive ValueKind: the kinds before the defined ones")
+
+// isoline::component::canonical
+ISOLINE_ENUM_TABLE(component::canonical::TrapCodeTable, component::canonical::LastTrapCode, component::canonical::TrapCodeRow::code)
+ISOLINE_ENUM_TABLE(component::canonical::LayoutErrorMessages, component::canonical::LayoutErrorCode::FlagsLabelCount, component::canonical::LayoutErrorRow::code)
+ISOLINE_ENUM_TABLE(component::canonical::SimpleEncodingTable, component::canonical::SimpleEncoding::Latin1, component::canonical::SimpleEncodingRow::encoding)
+ISOLINE_ENUM_TABLE(component::canonical::ValueShapeTable, component::types::LastValueKind, component::canonical::ValueShapeRow::kind)
+ISOLINE_KEYED_TABLE(component::canonical::CaseForms, "keyed by the ValueKinds Option and Result: the case forms of the two")
+ISOLINE_ENUM_TABLE(component::canonical::ValueErrorMessages, component::canonical::ValueErrorCode::TooManyFlags, component::canonical::ValueErrorRow::code)
+ISOLINE_ENUM_TABLE(component::canonical::StringEncodingTable, component::canonical::StringEncoding::Latin1Utf16, component::canonical::StringEncodingRow::encoding)
+ISOLINE_KEYED_TABLE(component::canonical::TranscodeTable, "keyed by a pair of StringEncodings, the source's and the destination's")
+
+// isoline::component::validate
+ISOLINE_ENUM_TABLE(component::validate::CoreMismatchMessages, component::validate::CoreMismatchCode::GlobalType, component::validate::CoreMismatchRow::code)
+ISOLINE_ENUM_TABLE(component::validate::NameErrorMessages, component::validate::NameErrorCode::InvalidVersion, component::validate::NameErrorRow::code)
+ISOLINE_ENUM_TABLE(component::validate::RelationErrorMessages, component::validate::RelationErrorCode::StepLimit, component::validate::RelationErrorRow::code)
+ISOLINE_ENUM_TABLE(component::validate::RelationContextMessages, component::validate::RelationContext::CoreExport, component::validate::RelationContextRow::context)
+ISOLINE_ENUM_TABLE(component::validate::ValidationErrorMessages, component::validate::LastValidationErrorCode, component::validate::ValidationErrorRow::code)
+ISOLINE_ENUM_TABLE(component::validate::CoreFeatureGateTable, component::validate::CoreFeatureGate::MultipleMemories, component::validate::CoreFeatureGateRow::gate)
+ISOLINE_ENUM_TABLE(component::validate::GatedFormTable, component::validate::GatedForm::Memory64CanonicalMemory, component::validate::GatedFormRow::form)
+ISOLINE_ENUM_TABLE(component::validate::ResourceNameRuleMessages, component::validate::ResourceNameRule::ResourceNameMismatch, component::validate::ResourceNameRuleRow::rule)
+ISOLINE_KEYED_TABLE(component::validate::CanonRefusalTable, "keyed by the CanonBuiltins validation refuses, a subset")
+ISOLINE_ENUM_TABLE(component::validate::LabelKindTable, component::validate::LabelKind::FunctionParameter, component::validate::LabelKindRow::kind)
+
+// isoline::component::runtime
+ISOLINE_KEYED_TABLE(component::runtime::BuiltinHandlerTable, "keyed by the CanonBuiltins past Lift and Lower, each at its enumerator less two")
+
+// isoline::component::api
+ISOLINE_ENUM_TABLE(component::api::ComponentCallFailureTable, component::api::LastComponentCallFailure, component::api::ComponentCallFailureRow::failure)
+ISOLINE_ENUM_TABLE(component::api::LinkerErrorTable, component::api::LastLinkerErrorCode, component::api::LinkerErrorRow::code)
+
+// isoline::component::text
+ISOLINE_ENUM_TABLE(component::text::SortTexts, component::binary::Sort::Instance, component::text::SortTextRow::sort)
+ISOLINE_ENUM_TABLE(component::text::IndexSyntaxSpaces, component::text::IndexSyntax::LiftType, component::text::IndexSyntaxRow::syntax)
+ISOLINE_ENUM_TABLE(component::text::CanonTextTable, component::binary::LastCanonBuiltin, component::text::CanonTextRow::builtin)
