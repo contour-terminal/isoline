@@ -33,6 +33,7 @@
 #include <isoline/text/TextLimits.hpp>
 #include <isoline/text/TopLevel.hpp>
 
+using isoline::component::api::ComponentCallDetail;
 using isoline::component::api::ComponentCallError;
 using isoline::component::api::ComponentCallFailure;
 using isoline::component::api::ComponentCallFailureTable;
@@ -1295,6 +1296,33 @@ TEST_CASE("ComponentStore.reexportedHostFunctionIsCallable")
     CHECK_FALSE(store.isLockedDown());
 }
 
+TEST_CASE("ComponentStore.reexportedHostFunctionFailing")
+{
+    // A re-exported host callee that fails ends the host's call as it ends a guest's: the call fails with
+    // the host's failure, and the store is locked down.
+    auto harness = ApiHarness {};
+    auto builder = ComponentBuilder {};
+    auto const f = builder.import(
+        "f",
+        ExternDesc { .sort = Sort::Func,
+                     .index = functionType(builder, { PrimitiveValueType::U32 }, PrimitiveValueType::U32) });
+    std::ignore = builder.exportItem("g", Sort::Func, f);
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineFunction(
+        "f",
+        functionSpec({ primitive(linker, ValueKind::U32) }, primitive(linker, ValueKind::U32)),
+        hostFunction([](HostComponentContext&, Values const&, ValueBuilder&) -> HostResult {
+            return std::unexpected { embedderFailure(7) };
+        })));
+    auto store = harness.store();
+    auto instance = instanceOf(store.instantiate(harness.load(builder.build()), linker));
+    auto const error = failureOf(callWith(instance, "g", { 1 }));
+    CHECK(error.failure == ComponentCallFailure::HostFailure);
+    CHECK(error.detail == ComponentCallDetail { embedderFailure(7) });
+    CHECK(store.isLockedDown());
+    CHECK(failureOf(callWith(instance, "g", { 1 })).failure == ComponentCallFailure::LockedDown);
+}
+
 TEST_CASE("HostResources.guestResourceWithoutDestructor")
 {
     // The host's drop of an own of a guest resource without a destructor runs nothing, and succeeds once.
@@ -1827,4 +1855,46 @@ TEST_CASE("HostResources.reexportedHostResourceFunctions")
         CHECK_FALSE(store.isLockedDown());
     }
     CHECK(destructor->destroyed == std::vector<uint32_t> { 7 });
+}
+
+TEST_CASE("HostResources.reexportedHostFunctionReturningAnOwnItDoesNotHold")
+{
+    // A re-exported host callee returning an own the host no longer holds (it dropped it) fails as it does
+    // for a guest caller: the call fails HostFailure{ArgumentMismatch} (an own the store does not hold, as
+    // checkResults reports it) and locks the store down, and the resource it names is not destroyed again.
+    auto harness = ApiHarness {};
+    auto const component = harness.load(componentText(R"((component
+        (import "host" (instance $h
+            (export "r" (type (sub resource)))
+            (export "give" (func (param "rep" u32) (result (own 0))))))
+        (export "h" (instance $h))))"));
+    auto const destructor = std::make_shared<RecordingDestructor>();
+    auto const type = HostResourceType { "r", destructor };
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineResource("host#r", type));
+    auto const ownType = linker.ownType(type);
+    REQUIRE(ownType.has_value());
+    require(linker.defineFunction(
+        "host#give",
+        FunctionTypeSpec { .params = { { "rep", primitive(linker, ValueKind::U32) } }, .result = *ownType },
+        hostFunction(
+            [&](HostComponentContext& context, Values const& args, ValueBuilder& results) -> HostResult {
+                auto const fresh = context.newOwn(type, args.root(0).scalar<uint32_t>());
+                if (!fresh || !context.drop(*fresh))
+                    return std::unexpected { embedderFailure() };
+                results.resource(*fresh);
+                return {};
+            })));
+    {
+        auto store = harness.store();
+        auto instance = instanceOf(store.instantiate(component, linker));
+        auto const error = failureOf(callWith(instance, "h#give", { 5 }));
+        CHECK(error.failure == ComponentCallFailure::HostFailure);
+        auto const* const failure = std::get_if<isoline::api::HostFailure>(&error.detail);
+        REQUIRE(failure != nullptr);
+        CHECK(failure->kind == isoline::api::HostFailureKind::ArgumentMismatch);
+        CHECK(store.isLockedDown());
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 5 });
+    }
+    CHECK(destructor->destroyed == std::vector<uint32_t> { 5 });
 }
