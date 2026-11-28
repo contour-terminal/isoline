@@ -238,9 +238,10 @@ if(ISOLINE_TESTING)
     else()
         list(APPEND isolineTestSources runtime/testing/StackAddressGnu.cpp)
     endif()
-    # The compiled-code harness (execution/testing/CompileOne.hpp) and the platform's half of the page
+    # The compiled-code harness (execution/testing/CompileOne.hpp), the stack painting's calibration
+    # (execution/testing/StackCalibration.hpp, a translation unit of its own) and the platform's half of the page
     # protection the code memory tests read (execution/testing/PageProtection.hpp), one row per platform.
-    list(APPEND isolineTestSources execution/testing/CompileOne.cpp)
+    list(APPEND isolineTestSources execution/testing/CompileOne.cpp execution/testing/StackCalibration.cpp)
     if(ISOLINE_TARGET_WINDOWS)
         list(APPEND isolineTestSources execution/testing/PageProtectionWindows.cpp)
         set_source_files_properties(execution/testing/PageProtectionWindows.cpp
