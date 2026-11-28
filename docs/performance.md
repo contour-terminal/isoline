@@ -81,35 +81,65 @@ means the machine was not quiet, and the run is repeated (exit status 3).
 `benchmark.py calls` measures the host→guest call round trip: `run(0)` of `micro-loop` called 100'000 times
 in one process, by the runner's own clock.
 
-`benchmark.py instructions --update|--compare` counts the instructions of `isoline-benchmark` and of both
-WAMR runners on every guest under callgrind (Wasmtime, whose count is mostly its compiler's, has no row), at
-1 iteration less at 0 (so the count is the kernel's, without the start, load and lowering), kept in
-`benchmarks/baseline-instructions.json` and compared before a merge, with a tolerance of 1 % per kernel:
-counters, not hosted CI. `isoline-benchmark-simd-lanes` counts the reference interpreter's SIMD lane
-kernels alone (`--toggle-collect='*applySimd*'`).
+`benchmark.py instructions --update|--compare` counts the instructions of `isoline-benchmark` and of
+`wamr-contour` and `wamr-classic` on every guest under callgrind (Wasmtime, whose count is mostly its
+compiler's, has no row, nor `wamr-default`, whose hardware bounds checks catch SIGSEGV, which valgrind does
+not pass on), at 1 iteration less at 0 (so the count is the kernel's, without the start, load and lowering),
+kept in `benchmarks/baseline-instructions.json` and compared before a merge, with a tolerance of 1 % per
+kernel: counters, not hosted CI. Its `host-to-guest-call` row is the round trip itself: `run(0)` of
+`micro-loop` 1'001 calls less one, per call, so a cost every call pays fails the comparison.
+`isoline-benchmark-simd-lanes` counts the reference interpreter's SIMD lane kernels alone
+(`--toggle-collect='*applySimd*'`).
 
 ## The numbers
 
 ### Run notes (2026-11-28)
 
-- **Background load.** The baseline ran on the owner's desktop with the runner pinned to core 2. From
-  10:00 another lane's builds (P6, arm64) shared the machine (load average 9–17 on 32 threads); before
-  that the load was 2–4. Nine guests whose A/A spread was 2 % or more were measured again with the same
-  `N` (`--pinned-n benchmarks/pinned-iterations.json`), and per guest the measurement with the smaller
-  worst spread is the one below; six guests stay just over the tolerance (2.3–2.8 %: micro-call,
-  micro-call_indirect, micro-loop, shootout-ed25519, shootout-minicsv, shootout-random), so their A/A rows
-  say "repeat". The bar's margin (0.79 against 1.00) is far wider than that spread. A wall-clock run on a
-  quiet machine is owed, to replace these rows.
-- **The instruction counts** are callgrind's and independent of the load.
+The numbers below are generated from the committed raw runs, `benchmarks/results/2026-11-28/`: the
+full run (`run.json`, with the host→guest call rows of `benchmark.py calls`), and the guests measured
+again (`rerun-1.json`, `rerun-2.json`). Nothing in the block is edited by hand:
+
+```sh
+python3 -I scripts/benchmark.py merge benchmarks/results/2026-11-28/run.json \
+    benchmarks/results/2026-11-28/rerun-1.json benchmarks/results/2026-11-28/rerun-2.json \
+    --json out/benchmark.json
+python3 -I scripts/benchmark.py report --json out/benchmark.json
+```
+
+`merge` keeps, per guest, the measurement whose worst A/A spread is smaller, records which input each
+guest's numbers come from (`merged`), and computes the A/A verdicts and the bar again. `report` reads the
+instruction counts from `benchmarks/baseline-instructions.json`.
+
+- **Background load.** The runner was pinned to core 2. From 10:00 another lane's builds (P6, arm64)
+  shared the machine (load average 9–17 on 32 threads); before that it was 2–4. Nine guests whose A/A
+  spread was 2 % or more were measured again with the pinned `N`; six stay just over the tolerance
+  (2.3–2.8 %: micro-call, micro-call_indirect, micro-loop, shootout-ed25519, shootout-minicsv,
+  shootout-random), so their A/A rows say "repeat". The bar's margin (0.79 against 1.00) is far wider than
+  that spread. The quiet-machine rerun of those guests is Task 19b's step 4.
+- **Instruction counts** are callgrind's, independent of the load, of the rebased tree (the wall-clock
+  binaries were the same interpreter before the rebase onto master).
+- **Calls** are where the interpreter trails WAMR. micro-call takes 2.2× WAMR's time at 1.08× its
+  instructions, so there the time goes to the call path's dependent loads and calls, which callgrind does
+  not price; micro-call_indirect takes 2.7× at 1.57× its instructions, so it also does more work. The
+  host→guest round trip is 3.1× WAMR's (214 ns against 68 ns) at 2.1× its instructions (4'216 against
+  1'962, the `host-to-guest-call` row, which `instructions --compare` holds to 1 %).
+- **IPC.** micro-loop's tail-call dispatch runs at 6.4 instructions per cycle (user-space
+  `perf_event_open`, 2'000 iterations less 0, core 2, AMD Ryzen 9 9950X3D): 8.40 M instructions and
+  1.31 M cycles per iteration, 3 branch misses; WAMR's fast interpreter runs 11.5 M instructions at 4.3.
+  The dispatch's indirect jumps are predicted, and the loop's work fits Zen 5's width.
+- **Spectre select.** Every memory-0 load and store masks its offset with `accessMask()`, which Clang
+  compiles to a `cmov` (in the handler, or in the out-of-line lane access it calls);
+  `scripts/check-spectre-select.py` checks it on every optimized ELF build (`interpreter-spectre-select`)
+  and fails all 90 handlers with the mask removed. Its cost, tail-call dispatch, the mask removed for the
+  measurement only: instructions +4.4 % (geomean over the shootout guests; micro-memory +11.6 %,
+  heapsort +7.3 %, nestedloop +13.1 %), time +1.1 % to +5.6 % (sieve, nestedloop, heapsort,
+  micro-memory; `spectre-masked.json` and `spectre-unmasked.json`, 5 pairs). `wamr-contour` has no such
+  mitigation, so every ratio below carries it.
 - **Code size per dispatch backend** (`size`, text bytes of the dispatch objects in `libisoline_core`):
   Clang 22: switch 254 KB (`SwitchDispatch` 130 KB, `SwitchDispatchCold` 124 KB), tail calls 391 KB
   (control 121 KB, memory 156 KB, SIMD 89 KB, numeric 24 KB, exceptions 1 KB); GCC 16: switch 361 KB, tail
   calls 461 KB. `libisoline_core.a`'s whole text: 3.40 MB (Clang), 4.33 MB (GCC).
 - **The GCC switch dispatch** misses its secondary target (2.09 against 1.25): issue #21.
-- **Calls** are where the interpreter trails WAMR (micro-call 2.2×, micro-call_indirect 2.7×): the
-  instruction counts are close to WAMR's, so the time goes to the call path's dependent loads and calls,
-  which callgrind does not price. The follow-up PR tunes it.
-
 
 <!-- benchmark:begin -->
 Measured 2026-11-28 on x86_64, 10 pairs per runner and guest, by `scripts/benchmark.py run`.
@@ -201,31 +231,32 @@ callgrind's instruction count of one run() iteration (1 iteration less 0), and i
 
 | guest | isoline-interpreter-switch | isoline-interpreter-switch-gcc | isoline-interpreter-tailcall | isoline-reference | wamr-classic | wamr-contour |
 |---|---:|---:|---:|---:|---:|---:|
-| micro-call | 70'200'684 (1.17×) | 79'900'767 (1.33×) | 65'200'697 (1.08×) | 271'103'578 (4.51×) | 93'799'701 (1.56×) | 60'100'536 |
-| micro-call_indirect | 94'849'521 (1.60×) | 112'050'684 (1.89×) | 92'729'084 (1.57×) | 318'129'720 (5.38×) | 91'368'120 (1.54×) | 59'176'660 |
-| micro-float | 13'250'797 (1.91×) | 17'925'992 (2.59×) | 8'550'868 (1.23×) | 97'005'411 (14.01×) | 14'899'349 (2.15×) | 6'925'580 |
-| micro-loop | 14'375'658 (1.25×) | 16'025'751 (1.40×) | 8'400'695 (0.73×) | 177'728'573 (15.49×) | 22'648'833 (1.97×) | 11'475'512 |
-| micro-memory | 21'500'658 (1.52×) | 30'400'730 (2.15×) | 18'450'671 (1.31×) | 250'753'807 (17.75×) | 35'948'320 (2.54×) | 14'125'515 |
-| micro-simd | 44'995'193 | 59'918'521 | 32'457'711 | 95'874'070 | – | – |
-| shootout-ackermann | 229'885'135 (0.84×) | 255'900'516 (0.94×) | 217'364'521 (0.80×) | 1'145'578'315 (4.21×) | 400'365'227 (1.47×) | 272'313'881 |
-| shootout-base64 | 2'909'655 (1.27×) | 3'491'102 (1.52×) | 1'696'840 (0.74×) | 35'566'869 (15.51×) | 6'171'772 (2.69×) | 2'292'678 |
-| shootout-ctype | 38'050'606 (1.03×) | 48'700'617 (1.32×) | 25'700'594 (0.70×) | 481'602'557 (13.09×) | 98'699'317 (2.68×) | 36'800'518 |
-| shootout-ed25519 | 84'735'945 (1.49×) | 102'657'202 (1.81×) | 70'729'779 (1.25×) | 628'655'091 (11.07×) | 116'554'191 (2.05×) | 56'793'611 |
-| shootout-fib2 | 87'888'087 (1.00×) | 98'199'908 (1.12×) | 82'787'078 (0.94×) | 426'540'880 (4.86×) | 126'810'712 (1.45×) | 87'702'202 |
-| shootout-gimli | 36'328 (1.47×) | 41'255 (1.67×) | 21'943 (0.89×) | 510'256 (20.68×) | 59'504 (2.41×) | 24'668 |
-| shootout-heapsort | 70'582'886 (0.79×) | 95'814'305 (1.07×) | 53'979'769 (0.60×) | 896'533'579 (10.01×) | 171'123'563 (1.91×) | 89'555'597 |
-| shootout-keccak | 89'135 (1.56×) | 100'822 (1.76×) | 49'834 (0.87×) | 1'093'494 (19.14×) | 158'610 (2.78×) | 57'133 |
-| shootout-matrix | 141'921 (1.79×) | 205'870 (2.60×) | 130'134 (1.64×) | 1'300'620 (16.44×) | 151'444 (1.91×) | 79'121 |
-| shootout-memmove | 34'739'927 (1.17×) | 36'606'438 (1.23×) | 33'433'344 (1.13×) | 74'928'475 (2.52×) | 33'954'399 (1.14×) | 29'712'058 |
-| shootout-minicsv | 86'324 (0.77×) | 110'459 (0.98×) | 73'146 (0.65×) | 897'622 (7.99×) | 216'998 (1.93×) | 112'384 |
-| shootout-nestedloop | 127'622'344 (1.00×) | 183'311'260 (1.44×) | 120'522'321 (0.95×) | 1'343'370'071 (10.54×) | 245'974'570 (1.93×) | 127'455'745 |
-| shootout-random | 9'875'210 (1.55×) | 12'925'248 (2.03×) | 7'600'137 (1.19×) | 82'179'328 (12.89×) | 23'849'574 (3.74×) | 6'375'612 |
-| shootout-ratelimit | 3'573'019 (1.33×) | 4'388'007 (1.63×) | 2'663'008 (0.99×) | 38'939'767 (14.44×) | 5'618'153 (2.08×) | 2'696'021 |
-| shootout-seqhash | 119'188'374 (1.42×) | 149'080'106 (1.77×) | 83'821'994 (1.00×) | 1'560'155'448 (18.52×) | 183'761'449 (2.18×) | 84'221'891 |
-| shootout-sieve | 3'687'957 (0.72×) | 4'723'870 (0.92×) | 2'882'781 (0.56×) | 40'967'572 (7.98×) | 11'620'335 (2.26×) | 5'136'956 |
-| shootout-switch | 982'341 (0.64×) | 1'283'802 (0.83×) | 893'556 (0.58×) | 1'219'976'888 (793.11×) | 1'392'874'930 (905.51×) | 1'538'225 |
-| shootout-xblabla20 | 153'129 (1.33×) | 183'943 (1.60×) | 104'517 (0.91×) | 2'008'016 (17.51×) | 237'171 (2.07×) | 114'707 |
-| shootout-xchacha20 | 286'868 (1.32×) | 352'298 (1.63×) | 198'337 (0.91×) | 3'782'769 (17.45×) | 441'266 (2.04×) | 216'766 |
+| host-to-guest-call | 4'348 (2.22×) | 4'832 (2.46×) | 4'216 (2.15×) | 7'372 (3.76×) | 2'830 (1.44×) | 1'962 |
+| micro-call | 70'200'684 (1.17×) | 79'900'779 (1.33×) | 65'200'697 (1.08×) | 271'103'574 (4.51×) | 93'799'702 (1.56×) | 60'100'537 |
+| micro-call_indirect | 94'849'521 (1.60×) | 113'950'690 (1.93×) | 92'729'084 (1.57×) | 318'129'716 (5.38×) | 91'368'121 (1.54×) | 59'176'661 |
+| micro-float | 13'250'797 (1.91×) | 17'926'028 (2.59×) | 8'550'844 (1.23×) | 97'005'411 (14.01×) | 14'899'350 (2.15×) | 6'925'580 |
+| micro-loop | 14'375'658 (1.25×) | 16'025'763 (1.40×) | 8'400'671 (0.73×) | 177'728'574 (15.49×) | 22'648'834 (1.97×) | 11'475'513 |
+| micro-memory | 21'500'659 (1.52×) | 32'050'739 (2.27×) | 18'450'648 (1.31×) | 250'753'806 (17.75×) | 35'948'296 (2.54×) | 14'125'516 |
+| micro-simd | 44'995'171 | 59'918'528 | 32'457'687 | 95'874'071 | – | – |
+| shootout-ackermann | 229'885'135 (0.84×) | 255'901'554 (0.94×) | 217'364'517 (0.80×) | 1'145'578'315 (4.21×) | 400'365'223 (1.47×) | 272'313'878 |
+| shootout-base64 | 2'909'655 (1.27×) | 3'519'182 (1.53×) | 1'696'840 (0.74×) | 35'566'845 (15.51×) | 6'171'785 (2.69×) | 2'292'679 |
+| shootout-ctype | 38'050'582 (1.03×) | 49'900'595 (1.36×) | 25'700'594 (0.70×) | 481'602'558 (13.09×) | 98'699'317 (2.68×) | 36'800'483 |
+| shootout-ed25519 | 84'735'945 (1.49×) | 104'510'554 (1.84×) | 70'729'779 (1.25×) | 628'655'091 (11.07×) | 116'554'192 (2.05×) | 56'793'636 |
+| shootout-fib2 | 87'888'087 (1.00×) | 98'199'926 (1.12×) | 82'787'078 (0.94×) | 426'540'880 (4.86×) | 126'810'711 (1.45×) | 87'702'201 |
+| shootout-gimli | 36'328 (1.47×) | 41'387 (1.68×) | 21'943 (0.89×) | 510'258 (20.68×) | 59'506 (2.41×) | 24'670 |
+| shootout-heapsort | 70'582'886 (0.79×) | 98'968'186 (1.11×) | 53'979'769 (0.60×) | 896'533'580 (10.01×) | 171'123'563 (1.91×) | 89'555'598 |
+| shootout-keccak | 89'135 (1.56×) | 101'100 (1.77×) | 49'811 (0.87×) | 1'093'495 (19.14×) | 158'610 (2.78×) | 57'133 |
+| shootout-matrix | 141'921 (1.79×) | 218'647 (2.76×) | 130'133 (1.64×) | 1'300'621 (16.44×) | 151'444 (1.91×) | 79'121 |
+| shootout-memmove | 34'739'928 (1.17×) | 36'726'429 (1.24×) | 33'433'345 (1.13×) | 74'928'475 (2.52×) | 33'954'399 (1.14×) | 29'712'059 |
+| shootout-minicsv | 86'324 (0.77×) | 113'630 (1.01×) | 73'146 (0.65×) | 897'622 (7.99×) | 216'999 (1.93×) | 112'384 |
+| shootout-nestedloop | 127'622'344 (1.00×) | 195'311'266 (1.53×) | 120'522'321 (0.95×) | 1'343'370'071 (10.54×) | 245'974'570 (1.93×) | 127'455'746 |
+| shootout-random | 9'875'210 (1.55×) | 12'825'254 (2.01×) | 7'600'137 (1.19×) | 82'179'328 (12.89×) | 23'849'587 (3.74×) | 6'375'625 |
+| shootout-ratelimit | 3'573'020 (1.33×) | 4'490'007 (1.67×) | 2'663'009 (0.99×) | 38'939'767 (14.44×) | 5'618'153 (2.08×) | 2'696'021 |
+| shootout-seqhash | 119'188'374 (1.42×) | 153'369'974 (1.82×) | 83'821'994 (1.00×) | 1'560'155'449 (18.52×) | 183'761'450 (2.18×) | 84'221'892 |
+| shootout-sieve | 3'687'957 (0.72×) | 4'885'156 (0.95×) | 2'882'781 (0.56×) | 40'967'572 (7.98×) | 11'620'348 (2.26×) | 5'136'969 |
+| shootout-switch | 982'342 (0.64×) | 1'330'170 (0.86×) | 893'556 (0.58×) | 1'219'976'888 (793.11×) | 1'392'874'930 (905.51×) | 1'538'225 |
+| shootout-xblabla20 | 153'128 (1.33×) | 188'203 (1.64×) | 104'516 (0.91×) | 2'008'016 (17.51×) | 237'172 (2.07×) | 114'707 |
+| shootout-xchacha20 | 286'867 (1.32×) | 360'401 (1.66×) | 198'336 (0.91×) | 3'782'769 (17.45×) | 441'267 (2.04×) | 216'766 |
 
 
 The flag table of every C and C++ build: `-O2` `-DNDEBUG` `-fno-lto` `-fPIE` `-U_FORTIFY_SOURCE` `-D_FORTIFY_SOURCE=3` `-fstack-protector-strong` `-fstack-clash-protection` `-fcf-protection` `-pie` `-Wl,-z,relro` `-Wl,-z,now`.

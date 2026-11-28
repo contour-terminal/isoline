@@ -27,6 +27,7 @@ Usage: python3 -I scripts/benchmark.py build [--jobs N] [--pace-scheduler HOST:P
                                            [--no-aa] [--tree BUILD=DIR ...] [--json out/benchmark.json]
        python3 -I scripts/benchmark.py calls [--runners a,b,...] [--invocations 100000] [--tree BUILD=DIR ...]
        python3 -I scripts/benchmark.py instructions (--update | --compare) [--tree BUILD=DIR ...]
+       python3 -I scripts/benchmark.py merge BASE.json RERUN.json... [--json out/benchmark.json]
        python3 -I scripts/benchmark.py report [--json out/benchmark.json] [--doc docs/performance.md]
 """
 
@@ -183,6 +184,11 @@ INSTRUCTION_TOLERANCE = 0.01
 # The runner kinds callgrind counts: Isoline's and WAMR's interpreters. Wasmtime's compiler runs on threads of
 # its own and its count is mostly compilation, so it has no row.
 INSTRUCTION_KINDS = ("isoline", "wamr")
+# The host→guest call row of the instruction counts: run(0) of CALLS_GUEST called CALL_INSTRUCTION_INVOCATIONS
+# more times in one process, per call. The call's whole work, not a kernel less its start: an instruction
+# count of the round trip itself, so that a cost every call pays (a 64 KiB memset once did) fails --compare.
+CALL_INSTRUCTION_ROW = "host-to-guest-call"
+CALL_INSTRUCTION_INVOCATIONS = 1000
 # Runners of those kinds callgrind cannot run, and why.
 INSTRUCTION_EXCLUDED = {
     "wamr-default": "its hardware bounds checks catch SIGSEGV, which valgrind's own handler does not pass on",
@@ -307,6 +313,42 @@ def aaVerdict(spreads):
         worst = max(values) if values else 0.0
         verdicts[runner] = (worst, AA_VERDICT_OK if worst < AA_SPREAD_LIMIT else AA_VERDICT_REPEAT)
     return verdicts
+
+
+def spreadsOf(kernels, runners):
+    """{runner: [A/A spread per guest it ran]} of the kernels of a run."""
+    return {r.name: [e["runners"][r.name]["aa_spread"] for e in kernels.values()
+                     if r.name in e["runners"] and "aa_spread" in e["runners"][r.name]] for r in runners}
+
+
+def worstSpread(kernel):
+    """The worst A/A spread over the runners of one guest's measurement."""
+    return max((entry.get("aa_spread", 0.0) for entry in kernel["runners"].values()), default=0.0)
+
+
+def mergeRuns(base, reruns):
+    """A benchmark.json of @p base with the guests @p reruns (benchmark.json results of the same runners, or
+    Refused)
+    measured again spliced in: a guest's re-measurement replaces its measurement where its worst A/A spread
+    is smaller, in the order given. The A/A verdicts and the bar are computed again over the merged
+    kernels, and `merged` records, per guest, which input its numbers come from (0 the base, i the i-th
+    re-run)."""
+    merged = json.loads(json.dumps(base))
+    sources = {guest: 0 for guest in merged["kernels"]}
+    for index, rerun in enumerate(reruns, start=1):
+        if rerun["runners"] != base["runners"]:
+            raise Refused(f"re-run {index} ran other runners than the base: {rerun['runners']}")
+        for guest, kernel in rerun["kernels"].items():
+            if guest not in merged["kernels"]:
+                raise Refused(f"re-run {index} measured {guest}, which the base has no row for")
+            if worstSpread(kernel) < worstSpread(merged["kernels"][guest]):
+                merged["kernels"][guest] = kernel
+                sources[guest] = index
+    runners = [runnerNamed(name) for name in merged["runners"]]
+    merged["aa"] = aaVerdict(spreadsOf(merged["kernels"], runners))
+    merged["bar"] = barVerdict(merged["kernels"], runners)
+    merged["merged"] = sources
+    return merged
 
 
 def geomean(ratios):
@@ -676,6 +718,14 @@ def kernelInstructions(atN, at0):
     return atN - at0
 
 
+def callInstructions(atMany, atOne, invocations=CALL_INSTRUCTION_INVOCATIONS):
+    """The instructions of one host→guest call: a process making invocations + 1 calls less one making one,
+    over the invocations; rounded to a whole instruction."""
+    if atMany < atOne:
+        raise Refused(f"{invocations + 1} calls counted fewer instructions ({atMany}) than one ({atOne})")
+    return round((atMany - atOne) / invocations)
+
+
 def compareInstructions(baseline, measured, tolerance=INSTRUCTION_TOLERANCE):
     """The kernels whose count moved by more than tolerance from the baseline, and those the baseline lacks:
     [(runner, guest, baseline count or None, measured count)]."""
@@ -730,9 +780,7 @@ def commandRun(arguments):
             raise Refused(f"{arguments.pinned_n} pins no N for {guest.name}")
         iterations = pinned[guest.name] if pinned is not None else arguments.iterations
         kernels[guest.name] = measureGuest(timer, runners, guest, arguments.runs, iterations, not arguments.no_aa)
-    spreads = {r.name: [e["runners"][r.name]["aa_spread"] for e in kernels.values()
-                        if r.name in e["runners"] and "aa_spread" in e["runners"][r.name]] for r in runners}
-    aa = aaVerdict(spreads) if not arguments.no_aa else {}
+    aa = aaVerdict(spreadsOf(kernels, runners)) if not arguments.no_aa else {}
     result = {"schema": 1, "date": time.strftime("%Y-%m-%d"), "runs": arguments.runs,
               "runners": [r.name for r in runners], "kernels": kernels, "aa": aa,
               "bar": barVerdict(kernels, runners), "provenance": provenance(guests)}
@@ -773,6 +821,7 @@ def commandInstructions(arguments):
     """callgrind on every runner of INSTRUCTION_KINDS and guest at INSTRUCTION_ITERATIONS less at 0: --update
     writes the baseline, --compare fails on a kernel that moved by more than the tolerance."""
     guests = checkGuests()
+    guestsByFile = {guest.file: guest for guest in guests}
     runners, guests = selected(arguments, guests)
     commandOf = commandFactory(treesOf(arguments), None)
     measured = {}
@@ -791,6 +840,15 @@ def commandInstructions(arguments):
                 counts[iterations] = callgrindInstructions(out.read_text())
             measured.setdefault(runner.name, {})[guest.name] = kernelInstructions(counts[INSTRUCTION_ITERATIONS],
                                                                                   counts[0])
+        calls = {}
+        for invocations in (CALL_INSTRUCTION_INVOCATIONS + 1, 1):
+            out = scratch / f"{runner.name}.{CALL_INSTRUCTION_ROW}.{invocations}.callgrind"
+            command = ["valgrind", "--tool=callgrind", f"--callgrind-out-file={out}",
+                       *commandOf(runner, guestsByFile[CALLS_GUEST], 0, invocations)]
+            subprocess.run(command, capture_output=True, check=True)
+            calls[invocations] = callgrindInstructions(out.read_text())
+        measured[runner.name][CALL_INSTRUCTION_ROW] = callInstructions(calls[CALL_INSTRUCTION_INVOCATIONS + 1],
+                                                                       calls[1])
     if arguments.update:
         INSTRUCTIONS_BASELINE.write_text(json.dumps(measured, indent=2, sort_keys=True) + "\n")
         print(f"wrote {INSTRUCTIONS_BASELINE}")
@@ -800,6 +858,17 @@ def commandInstructions(arguments):
     for runner, guest, before, count in moved:
         print(f"{runner} {guest}: {before} -> {count} instructions")
     return 1 if moved else 0
+
+
+def commandMerge(arguments):
+    """Splices re-measured guests into a run (mergeRuns()) and writes the merged benchmark.json."""
+    base = json.loads(pathlib.Path(arguments.base).read_text())
+    reruns = [json.loads(pathlib.Path(path).read_text()) for path in arguments.reruns]
+    merged = mergeRuns(base, reruns)
+    pathlib.Path(arguments.json).parent.mkdir(parents=True, exist_ok=True)
+    pathlib.Path(arguments.json).write_text(json.dumps(merged, indent=2) + "\n")
+    print(f"wrote {arguments.json}")
+    return 0
 
 
 def commandReport(arguments):
@@ -869,13 +938,18 @@ def main(argv=None):
     mode.add_argument("--update", action="store_true")
     mode.add_argument("--compare", action="store_true")
 
+    merge = commands.add_parser("merge", help="splice re-measured guests into a run, its bar and A/A again")
+    merge.add_argument("base", help="the run's benchmark.json")
+    merge.add_argument("reruns", nargs="+", help="benchmark.json files of guests measured again, in order")
+    merge.add_argument("--json", default=str(DEFAULT_JSON), help="where the merged benchmark.json goes")
+
     report = commands.add_parser("report", help="write docs/performance.md from a benchmark.json")
     report.add_argument("--json", default=str(DEFAULT_JSON))
     report.add_argument("--doc", default=str(DEFAULT_DOC))
 
     arguments = parser.parse_args(argv)
     handlers = {"build": commandBuild, "run": commandRun, "calls": commandCalls,
-                "instructions": commandInstructions, "report": commandReport}
+                "instructions": commandInstructions, "merge": commandMerge, "report": commandReport}
     try:
         return handlers[arguments.command](arguments)
     except Refused as refusal:

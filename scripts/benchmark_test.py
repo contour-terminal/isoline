@@ -322,6 +322,32 @@ class BenchmarkTest(unittest.TestCase):
         with self.assertRaises(benchmark.Refused):
             benchmark.kernelInstructions(100, 200)
 
+    def test_merge_keeps_the_quieter_measurement(self):
+        def kernel(spread, time):
+            return {"group": "micro", "simd": False, "checksum": 1,
+                    "runners": {"wamr-contour": {"per_iteration": time, "aa_spread": spread, "pairs": [[1, 0]],
+                                                 "iterations": 1, "median": time, "cold_start": 0.0}}}
+        def run(kernels):
+            return {"runners": ["wamr-contour"], "kernels": kernels}
+        base = run({"a": kernel(0.05, 1.0), "b": kernel(0.01, 2.0)})
+        merged = benchmark.mergeRuns(base, [run({"a": kernel(0.03, 1.5), "b": kernel(0.02, 9.0)}),
+                                            run({"a": kernel(0.04, 7.0)})])
+        self.assertEqual(merged["kernels"]["a"]["runners"]["wamr-contour"]["per_iteration"], 1.5)
+        self.assertEqual(merged["kernels"]["b"]["runners"]["wamr-contour"]["per_iteration"], 2.0)
+        self.assertEqual(merged["merged"], {"a": 1, "b": 0})
+        self.assertEqual(merged["aa"]["wamr-contour"][1], benchmark.AA_VERDICT_REPEAT)
+        self.assertEqual(base["kernels"]["a"]["runners"]["wamr-contour"]["per_iteration"], 1.0)
+        with self.assertRaisesRegex(benchmark.Refused, "other runners"):
+            benchmark.mergeRuns(base, [{"runners": ["wasmtime"], "kernels": {}}])
+        with self.assertRaisesRegex(benchmark.Refused, "no row for"):
+            benchmark.mergeRuns(base, [run({"c": kernel(0.0, 1.0)})])
+
+    def test_call_instructions(self):
+        self.assertEqual(benchmark.callInstructions(5_000_000 + 1000 * 4_234, 5_000_000), 4_234)
+        self.assertEqual(benchmark.callInstructions(1_500, 1_000, invocations=100), 5)
+        with self.assertRaises(benchmark.Refused):
+            benchmark.callInstructions(1, 2)
+
     def test_instruction_table(self):
         instructions = {"wamr-contour": {"a.wasm": 200, "b.wasm": 100}, "isoline-interpreter-tailcall": {"a.wasm": 100}}
         lines = benchmark.instructionsMarkdown(instructions, "wamr-contour")

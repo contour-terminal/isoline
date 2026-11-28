@@ -1,0 +1,321 @@
+{
+  "schema": 1,
+  "date": "2026-11-28",
+  "runs": 5,
+  "runners": [
+    "isoline-interpreter-tailcall"
+  ],
+  "kernels": {
+    "micro-memory": {
+      "group": "micro",
+      "simd": false,
+      "checksum": 9657456255920780255,
+      "runners": {
+        "isoline-interpreter-tailcall": {
+          "iterations": 1318,
+          "pairs": [
+            [
+              0.7719674719846807,
+              0.0016430289833806455
+            ],
+            [
+              0.7718649710295722,
+              0.0012993470299988985
+            ],
+            [
+              0.8023411869653501,
+              0.0019413069821894169
+            ],
+            [
+              0.7807511919527315,
+              0.0013353649992495775
+            ],
+            [
+              0.789870077976957,
+              0.001636076020076871
+            ]
+          ],
+          "median": 0.7794158269534819,
+          "per_iteration": 0.0005913625394184232,
+          "cold_start": 0.001636076020076871,
+          "checksum": 9657456255920780255,
+          "aa_spread": 0.011945146090995003
+        }
+      }
+    },
+    "shootout-heapsort": {
+      "group": "shootout",
+      "simd": false,
+      "checksum": 3931800772008391010,
+      "runners": {
+        "isoline-interpreter-tailcall": {
+          "iterations": 356,
+          "pairs": [
+            [
+              0.8792907120077871,
+              0.001626026991289109
+            ],
+            [
+              0.8825453930185176,
+              0.0014246010105125606
+            ],
+            [
+              0.9146930300048552,
+              0.0016066909884102643
+            ],
+            [
+              0.9119287160574459,
+              0.0014188409550115466
+            ],
+            [
+              0.8889115959755145,
+              0.001583547971677035
+            ]
+          ],
+          "median": 0.8873280480038375,
+          "per_iteration": 0.002492494516864712,
+          "cold_start": 0.001583547971677035,
+          "checksum": 11246123948271051156,
+          "aa_spread": 0.01277063618761249
+        }
+      }
+    },
+    "shootout-nestedloop": {
+      "group": "shootout",
+      "simd": false,
+      "checksum": 11323876080168969247,
+      "runners": {
+        "isoline-interpreter-tailcall": {
+          "iterations": 263,
+          "pairs": [
+            [
+              0.9452867850195616,
+              0.0009332629851996899
+            ],
+            [
+              0.9452719780383632,
+              0.0007954660104587674
+            ],
+            [
+              0.9457368869916536,
+              0.0012024670140817761
+            ],
+            [
+              0.9463318979833275,
+              0.0008665790082886815
+            ],
+            [
+              0.9583628239925019,
+              0.0012092189863324165
+            ]
+          ],
+          "median": 0.9445344199775718,
+          "per_iteration": 0.0035913856272911477,
+          "cold_start": 0.0009332629851996899,
+          "checksum": 2048431227337787679,
+          "aa_spread": 0.0002573995868601857
+        }
+      }
+    },
+    "shootout-sieve": {
+      "group": "shootout",
+      "simd": false,
+      "checksum": 12641535213463544491,
+      "runners": {
+        "isoline-interpreter-tailcall": {
+          "iterations": 9685,
+          "pairs": [
+            [
+              0.9704795809811912,
+              0.001147563976701349
+            ],
+            [
+              0.9717131949728355,
+              0.0007715820102021098
+            ],
+            [
+              0.9733899779967032,
+              0.0012128159869462252
+            ],
+            [
+              1.0480287179816514,
+              0.0009560759644955397
+            ],
+            [
+              0.9705240640323609,
+              0.0010218489915132523
+            ]
+          ],
+          "median": 0.9709416129626334,
+          "per_iteration": 0.00010025210252582689,
+          "cold_start": 0.0010218489915132523,
+          "checksum": 4830402303811098627,
+          "aa_spread": 0.0004556362710433582
+        }
+      }
+    }
+  },
+  "aa": {
+    "isoline-interpreter-tailcall": [
+      0.01277063618761249,
+      "ok"
+    ]
+  },
+  "bar": {
+    "baseline": null,
+    "bar": 1.0,
+    "secondary_target": 1.25,
+    "minimum": 19,
+    "guests": {},
+    "geomeans": {},
+    "best": null,
+    "met": null,
+    "secondary": {},
+    "refused": [
+      "no baseline runner (wamr-contour) ran"
+    ]
+  },
+  "provenance": {
+    "machine": {
+      "system": "Linux",
+      "machine": "x86_64",
+      "processor": ""
+    },
+    "flags": [
+      {
+        "flag": "-O2",
+        "stage": "compile",
+        "machines": [],
+        "reason": "the release optimization level distributions build with"
+      },
+      {
+        "flag": "-DNDEBUG",
+        "stage": "compile",
+        "machines": [],
+        "reason": "assertions off, as in a release"
+      },
+      {
+        "flag": "-fno-lto",
+        "stage": "both",
+        "machines": [],
+        "reason": "LTO off on both, so that neither is optimized across its library boundary"
+      },
+      {
+        "flag": "-fPIE",
+        "stage": "compile",
+        "machines": [],
+        "reason": "Contour's hardening: a position-independent executable"
+      },
+      {
+        "flag": "-U_FORTIFY_SOURCE",
+        "stage": "compile",
+        "machines": [],
+        "reason": "Contour's hardening: drop a predefined fortify level first"
+      },
+      {
+        "flag": "-D_FORTIFY_SOURCE=3",
+        "stage": "compile",
+        "machines": [],
+        "reason": "Contour's hardening: checked libc calls"
+      },
+      {
+        "flag": "-fstack-protector-strong",
+        "stage": "both",
+        "machines": [],
+        "reason": "Contour's hardening: stack protector"
+      },
+      {
+        "flag": "-fstack-clash-protection",
+        "stage": "both",
+        "machines": [],
+        "reason": "Contour's hardening: stack clash protection"
+      },
+      {
+        "flag": "-fcf-protection",
+        "stage": "both",
+        "machines": [
+          "x86_64"
+        ],
+        "reason": "Contour's hardening: control-flow protection (x86-64)"
+      },
+      {
+        "flag": "-pie",
+        "stage": "link",
+        "machines": [],
+        "reason": "Contour's hardening: a position-independent executable"
+      },
+      {
+        "flag": "-Wl,-z,relro",
+        "stage": "link",
+        "machines": [],
+        "reason": "Contour's hardening: read-only relocations"
+      },
+      {
+        "flag": "-Wl,-z,now",
+        "stage": "link",
+        "machines": [],
+        "reason": "Contour's hardening: bind every symbol at load"
+      }
+    ],
+    "flags_used": {
+      "compile": [
+        "-O2",
+        "-DNDEBUG",
+        "-fno-lto",
+        "-fPIE",
+        "-U_FORTIFY_SOURCE",
+        "-D_FORTIFY_SOURCE=3",
+        "-fstack-protector-strong",
+        "-fstack-clash-protection",
+        "-fcf-protection"
+      ],
+      "link": [
+        "-fno-lto",
+        "-fstack-protector-strong",
+        "-fstack-clash-protection",
+        "-fcf-protection",
+        "-pie",
+        "-Wl,-z,relro",
+        "-Wl,-z,now"
+      ]
+    },
+    "compilers": {
+      "clang": {
+        "c": "clang version 22.1.8 (Fedora 22.1.8-4.fc44)",
+        "cxx": "clang version 22.1.8 (Fedora 22.1.8-4.fc44)"
+      },
+      "gcc": {
+        "c": "gcc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+        "cxx": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)"
+      }
+    },
+    "guest_compiler": "clang version 23.1.0-wasi-sdk (https://github.com/llvm/llvm-project 895aa2c896ada719451be2e3673c83da8ddf1141)",
+    "guests": {
+      "micro-memory.wasm": {
+        "sha256": "3a0ae7ffdcde7fec639c2bf19e08b764ce2dfedaacfafb14d3ca313e076b12da",
+        "features": "mvp,mutable-global,sign-extension,saturating-float-to-int,bulk-memory"
+      },
+      "shootout-heapsort.wasm": {
+        "sha256": "8aa182102166086e97d22d7f965ce8ce8f0dbc858c0d935d88446c0ad88d77e9",
+        "features": "mvp,mutable-global,sign-extension,saturating-float-to-int,bulk-memory"
+      },
+      "shootout-nestedloop.wasm": {
+        "sha256": "a02de55161a21aa3a9311934778de840a29a1f40956388bebfbd7b04fa486b41",
+        "features": "mvp,mutable-global,sign-extension,saturating-float-to-int,bulk-memory"
+      },
+      "shootout-sieve.wasm": {
+        "sha256": "4e353f9bfdb6c119e0d2cdcf1c994082fa0877438946b00b3d812b13d505580c",
+        "features": "mvp,mutable-global,sign-extension,saturating-float-to-int,bulk-memory"
+      }
+    },
+    "wamr": {
+      "release": "2.4.5",
+      "commit": "25bd7eb63e828e4bd242cc9b38d260b4b31c6605",
+      "contour_commit": "54387ba8140a81e62e92a2b1beb9a76b591be04f",
+      "patches": {
+        "wamr-unlink-exec-env-under-cluster-lock.patch": "84bfa9f50b8b0836bb9165e3dc5f1abb7e58921c6f6cdb59bdb0c6c7e0e158e0",
+        "wamr-map-jit-only-for-executable-memory.patch": "5a0df0172e592b0c28e42e38614e96d1f4d6f5ead572e9cc28f93c3b8c7ee9f8"
+      }
+    }
+  }
+}
