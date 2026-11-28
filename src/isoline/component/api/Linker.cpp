@@ -19,6 +19,7 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/component/binary/Component.hpp>
 #include <isoline/component/canonical/Unicode.hpp>
 #include <isoline/component/validate/Names.hpp>
 #include <isoline/component/validate/Subtyping.hpp>
@@ -82,6 +83,14 @@ namespace
     [[nodiscard]] std::string relationText(validate::RelationErrorCode code, Args const&... args)
     {
         return std::vformat(validate::RelationErrorMessages[static_cast<std::size_t>(code)].text,
+                            std::make_format_args(args...));
+    }
+
+    /// The text of a relation context line, formatted with up to two strings.
+    template <typename... Args>
+    [[nodiscard]] std::string contextText(validate::RelationContext context, Args const&... args)
+    {
+        return std::vformat(validate::RelationContextMessages[static_cast<std::size_t>(context)].text,
                             std::make_format_args(args...));
     }
 
@@ -332,6 +341,56 @@ class Linker::Walk
         return resolveLeaf(*definition, type);
     }
 
+    /// Whether an unnamed host function (ParameterNames::Unnamed) satisfies a function import: the rules of
+    /// TypeRelation's function comparison (wasm-tools' component_func_type) but the parameter names, which
+    /// it has none of. Asyncness, then the parameter count, then each parameter's type and the result,
+    /// value types compared by TypeRelation::isEqual (component_val_type).
+    /// @param provided The host function's type, of the linker's arena.
+    /// @param required The import's, of the component's arena.
+    /// @return Nothing when it does, else why not, in wasm-tools' words.
+    [[nodiscard]] std::expected<void, std::string> relateUnnamed(types::FunctionTypeId provided,
+                                                                 types::FunctionTypeId required)
+    {
+        auto const& actual = _linker._arena[provided];
+        auto const& expected = componentTypes()[required];
+        // A host function is sync (FunctionTypeSpec has no asyncness), and an async import is refused at
+        // validation until P12 (ComponentFeature::Async), so the two never differ yet.
+        if (actual.asyncness != expected.asyncness)
+        // uncovered-begin(unnamed-async)
+        {
+            auto const word = [](binary::Asyncness asyncness) {
+                return std::string { asyncness == binary::Asyncness::Async ? "async" : "sync" };
+            };
+            return std::unexpected { relationText(
+                validate::RelationErrorCode::Asyncness, word(actual.asyncness), word(expected.asyncness)) };
+        }
+        // uncovered-end(unnamed-async)
+        if (actual.params.size() != expected.params.size())
+            return std::unexpected { relationText(validate::RelationErrorCode::ParameterCount,
+                                                  std::to_string(expected.params.size()),
+                                                  std::to_string(actual.params.size())) };
+        auto relation =
+            validate::TypeRelation { _linker._arena, componentTypes(), _resources, _linker._config.limits };
+        // A parameter's context names the import's parameter: the host function's labels name nothing.
+        for (auto const index: std::views::iota(std::size_t { 0 }, actual.params.size()))
+            if (auto equal = relation.isEqual(actual.params[index].second, expected.params[index].second);
+                !equal)
+                return std::unexpected { std::format("{}\n{}",
+                                                     contextText(validate::RelationContext::FunctionParameter,
+                                                                 expected.params[index].first.str()),
+                                                     equal.error().message) };
+        if (actual.result.has_value() != expected.result.has_value())
+            return std::unexpected { relationText(actual.result
+                                                      ? validate::RelationErrorCode::ResultMissing
+                                                      : validate::RelationErrorCode::ResultPresent) };
+        if (actual.result)
+            if (auto equal = relation.isEqual(*actual.result, *expected.result); !equal)
+                return std::unexpected { std::format("{}\n{}",
+                                                     contextText(validate::RelationContext::FunctionResult),
+                                                     equal.error().message) };
+        return {};
+    }
+
     /// A definition of anything but an instance against @p type.
     [[nodiscard]] std::expected<uint32_t, Failure> resolveLeaf(Definition const& definition,
                                                                types::ExternType const& type)
@@ -345,6 +404,14 @@ class Linker::Walk
         return std::visit(
             core::Overloaded {
                 [&](FunctionDefinition const& function) -> std::expected<uint32_t, Failure> {
+                    if (function.names == ParameterNames::Unnamed)
+                    {
+                        if (auto related =
+                                relateUnnamed(function.type, std::get<types::FunctionTypeId>(type));
+                            !related)
+                            return std::unexpected { mismatchOf(std::move(related.error())) };
+                        return push(callee(function.function));
+                    }
                     auto relation = validate::TypeRelation {
                         _linker._arena, componentTypes(), _resources, _linker._config.limits
                     };
@@ -702,7 +769,9 @@ std::expected<void, LinkerError> Linker::defineFunction(std::string path,
             LinkerErrorCode::TypeLimit,
             std::move(path),
             std::string { LimitTable[static_cast<std::size_t>(added.error().limit)].name }) };
-    return define(std::move(path), FunctionDefinition { .type = *added, .function = std::move(function) });
+    return define(
+        std::move(path),
+        FunctionDefinition { .type = *added, .function = std::move(function), .names = type.names });
 }
 
 std::expected<void, LinkerError> Linker::defineResource(std::string path, HostResourceType type)

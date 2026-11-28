@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -32,6 +33,7 @@ using isoline::component::api::ImportResolution;
 using isoline::component::api::ImportTypeMismatch;
 using isoline::component::api::Linker;
 using isoline::component::api::LinkerErrorCode;
+using isoline::component::api::ParameterNames;
 using isoline::component::api::Satisfied;
 using isoline::component::api::SatisfiedByTypes;
 using isoline::component::api::TypeMismatch;
@@ -270,6 +272,52 @@ TEST_CASE("Linker.typeMismatchNamed")
                                                      .result = primitive(linker, ValueKind::U32) },
                                   constantFunction(1)));
         CHECK(mismatchOf(linker) == "expected parameter named `p0`, found `x`");
+    }
+    SECTION("an unnamed definition of another type")
+    {
+        // Unnamed parameters match any name, never any type: the import's name gives the context.
+        auto linker = Linker { ComponentConfig {} };
+        require(
+            linker.defineFunction("f",
+                                  FunctionTypeSpec { .params = { { "x", primitive(linker, ValueKind::U64) } },
+                                                     .result = primitive(linker, ValueKind::U32),
+                                                     .names = ParameterNames::Unnamed },
+                                  constantFunction(1)));
+        CHECK(mismatchOf(linker)
+              == "type mismatch in function parameter `p0`\nexpected primitive `u32` found primitive `u64`");
+    }
+    SECTION("an unnamed definition of another parameter count")
+    {
+        auto linker = Linker { ComponentConfig {} };
+        require(linker.defineFunction("f",
+                                      FunctionTypeSpec { .params = {},
+                                                         .result = primitive(linker, ValueKind::U32),
+                                                         .names = ParameterNames::Unnamed },
+                                      constantFunction(1)));
+        CHECK(mismatchOf(linker) == "expected 1 parameters, found 0");
+    }
+    SECTION("an unnamed definition without the result")
+    {
+        auto linker = Linker { ComponentConfig {} };
+        require(
+            linker.defineFunction("f",
+                                  FunctionTypeSpec { .params = { { "x", primitive(linker, ValueKind::U32) } },
+                                                     .result = std::nullopt,
+                                                     .names = ParameterNames::Unnamed },
+                                  constantFunction(1)));
+        CHECK(mismatchOf(linker) == "expected no result, found one");
+    }
+    SECTION("an unnamed definition of another result type")
+    {
+        auto linker = Linker { ComponentConfig {} };
+        require(
+            linker.defineFunction("f",
+                                  FunctionTypeSpec { .params = { { "x", primitive(linker, ValueKind::U32) } },
+                                                     .result = primitive(linker, ValueKind::S32),
+                                                     .names = ParameterNames::Unnamed },
+                                  constantFunction(1)));
+        CHECK(mismatchOf(linker)
+              == "type mismatch with result type\nexpected primitive `u32` found primitive `s32`");
     }
     SECTION("a definition of another sort")
     {
@@ -549,6 +597,45 @@ TEST_CASE("Linker.definitionsAreChecked")
     require(linker.defineResource("r", HostResourceType { "r", nullptr }));
 }
 
+TEST_CASE("Linker.unnamedParametersMatchAnyName")
+{
+    // A host function of ParameterNames::Unnamed, as Wasmtime's func_wrap defines one, satisfies imports
+    // whatever their parameters are called: two components naming f's parameter `a` and `b` both link it.
+    auto harness = ApiHarness {};
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineFunction(
+        "f",
+        FunctionTypeSpec { .params = { { "host-label", primitive(linker, ValueKind::U32) } },
+                           .result = primitive(linker, ValueKind::U32),
+                           .names = ParameterNames::Unnamed },
+        hostFunction([](HostComponentContext&,
+                        isoline::component::canonical::Values const& args,
+                        isoline::component::canonical::ValueBuilder& results)
+                         -> std::expected<void, isoline::api::HostFailure> {
+            results.scalar(args.root(0).scalar<uint32_t>() + 1);
+            return {};
+        })));
+    for (auto const* label: { "a", "b" })
+    {
+        INFO(label);
+        auto builder = ComponentBuilder {};
+        auto const imported = builder.import(
+            "f",
+            ExternDesc {
+                .sort = Sort::Func,
+                .index = builder.type(TypeDefinition {
+                    .type = FunctionTypeDefinition {
+                        .asyncness = Asyncness::Sync,
+                        .params = { LabeledType { .label = label, .type = PrimitiveValueType::U32 } },
+                        .result = PrimitiveValueType::U32 } }) });
+        std::ignore = imported;
+        auto const component = harness.load(builder.build());
+        CHECK(outcomeOf(linker, component) == ImportOutcome { Satisfied { .matched = "f" } });
+        auto store = harness.store();
+        CHECK(store.instantiate(component, linker).has_value());
+    }
+}
+
 TEST_CASE("Linker.storeInstanceExportsAreChecked")
 {
     // An instance of a store is matched export by export against the instance type imported.
@@ -558,17 +645,19 @@ TEST_CASE("Linker.storeInstanceExportsAreChecked")
         instanceOf(store.instantiate(harness.load(liftedIdentity().build()), Linker { ComponentConfig {} }));
     auto linker = Linker { ComponentConfig {} };
     require(linker.defineInstance("prov", provided));
-    auto const importing = [&](std::string const& name, PrimitiveValueType param) {
+    auto const importing = [&](std::string const& name,
+                               PrimitiveValueType param,
+                               std::string_view label = "x") {
         auto builder = ComponentBuilder {};
         auto scope = TypeScopeBuilder {};
-        std::ignore =
-            scope.exportItem(name,
-                             ExternDesc { .sort = Sort::Func,
-                                          .index = scope.type(TypeDefinition {
-                                              .type = FunctionTypeDefinition {
-                                                  .asyncness = Asyncness::Sync,
-                                                  .params = { LabeledType { .label = "x", .type = param } },
-                                                  .result = PrimitiveValueType::U32 } }) });
+        std::ignore = scope.exportItem(
+            name,
+            ExternDesc { .sort = Sort::Func,
+                         .index = scope.type(TypeDefinition {
+                             .type = FunctionTypeDefinition {
+                                 .asyncness = Asyncness::Sync,
+                                 .params = { LabeledType { .label = std::string { label }, .type = param } },
+                                 .result = PrimitiveValueType::U32 } }) });
         std::ignore = builder.import(
             "prov", ExternDesc { .sort = Sort::Instance, .index = builder.instanceType(std::move(scope)) });
         return harness.load(builder.build());
@@ -580,6 +669,11 @@ TEST_CASE("Linker.storeInstanceExportsAreChecked")
                                             .detail = "type mismatch in instance export `id`\n"
                                                       "type mismatch in function parameter `x`\n"
                                                       "expected primitive `s32` found primitive `u32`" } });
+    // Between two guests, parameter names are compared, as a functype's are (Explainer.md).
+    CHECK(outcomeOf(linker, importing("id", PrimitiveValueType::U32, "y"))
+          == ImportOutcome { TypeMismatch { .matched = "prov",
+                                            .detail = "type mismatch in instance export `id`\n"
+                                                      "expected parameter named `y`, found `x`" } });
     CHECK(outcomeOf(linker, importing("missing", PrimitiveValueType::U32))
           == ImportOutcome {
               TypeMismatch { .matched = "prov", .detail = "missing expected export `missing`" } });

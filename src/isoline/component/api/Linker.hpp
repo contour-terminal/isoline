@@ -28,12 +28,25 @@ namespace isoline::component::api
 /// `/` and `@` (`ns:p/i@1.0.0`), so `ns:p/i@0.1.2#f` is the function `f` of that interface (R10).
 inline constexpr auto PathSeparator = '#';
 
+/// Whether a host function's parameter labels are part of its type.
+enum class ParameterNames : uint8_t
+{
+    /// Its labels name its parameters: an import matches it only under the same names, as a functype's
+    /// names are compared (Explainer.md, at the pin, lines 1083-1089), and as two guests link.
+    Named,
+    /// It names no parameter, as a Wasmtime host function (`func_wrap`) names none: an import's
+    /// parameters match whatever they are called, their types and the result still compared. Its labels
+    /// only label the definition (they are checked as a Named one's are).
+    Unnamed,
+};
+
 /// A host function's type as a linker defines it (R10): labelled parameters and an optional result, every
-/// type a value type of the linker's arena (Linker::types()).
+/// type a value type of the linker's arena (Linker::types()), and whether the labels are names to match.
 struct FunctionTypeSpec
 {
     std::vector<std::pair<std::string, types::TypeId>> params {}; ///< The parameters, labelled, in order.
     std::optional<types::TypeId> result {};                       ///< The result's type, if any.
+    ParameterNames names = ParameterNames::Named; ///< Whether an import must match the labels.
 };
 
 /// Why a Linker refused a definition.
@@ -256,6 +269,7 @@ class Linker
     {
         types::FunctionTypeId type;
         std::shared_ptr<IHostComponentFunction> function;
+        ParameterNames names = ParameterNames::Named;
     };
     struct ResourceDefinition
     {

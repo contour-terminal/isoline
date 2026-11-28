@@ -337,6 +337,15 @@ TEST_CASE("Component.copiesShareOneState")
     CHECK(copy.coreModules().data() == loaded->coreModules().data());
     CHECK(&copy.validated() == &loaded->validated());
     CHECK(loading.loader.keys.size() == 1);
+
+    // Assigned, a component shares the other's state and lets its own go.
+    auto other = loading.load(modulesComponent(2).build());
+    REQUIRE(other.has_value());
+    auto assigned = *other;
+    CHECK(&assigned.plans() == &other->plans());
+    assigned = *loaded;
+    CHECK(&assigned.plans() == &loaded->plans());
+    CHECK(&assigned.validated() == &loaded->validated());
 }
 
 TEST_CASE("Component.limitsChargedAtLoad")

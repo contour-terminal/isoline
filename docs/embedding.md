@@ -564,7 +564,13 @@ semver-compatible version (from 1.0.0 the major, `0.M.x` the major and minor, `0
 for an instance import that `implements` an interface, that interface. An instance of types only (every
 export an `eq`-bound type, WIT's `use types.{…}`) needs no definition. Types match by subtyping as
 wasm-tools decides it, and a mismatch names the import and says why in wasm-tools' words
-(`ImportTypeMismatch`); `Linker::resolve` reports every import's outcome without a store. Host resource
+(`ImportTypeMismatch`); `Linker::resolve` reports every import's outcome without a store. A function's
+parameter names are part of its type, as the Explainer compares them, so a host function is matched under
+its labels (`ParameterNames::Named`, the default) and two guests under theirs. A host function defined with
+`FunctionTypeSpec::names = ParameterNames::Unnamed` names no parameter, as a Wasmtime `func_wrap` names
+none: it satisfies an import whatever the import calls its parameters, their count, their types (equal, as
+value types are) and the result still compared; a mismatch is reported under the import's parameter name.
+The wast runner's spectest defines its host functions so. Host resource
 types match by identity: copies of one `HostResourceType` are one resource type, so two imports defined
 with copies pass handles between them. `ComponentStore::instantiate` refuses a component of another
 engine, an unsatisfied or mistyped import, and an instance of another store before anything runs.

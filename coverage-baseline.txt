@@ -267,6 +267,7 @@ exclude src/isoline/component/api/ComponentStore.cpp host-memory std::bad_alloc 
 exclude src/isoline/component/api/ComponentStore.cpp split-yields-a-segment ComponentInstance::function() of a path that std::views::split yields no segment of: even the empty path yields one
 exclude src/isoline/component/api/Linker.cpp handle-measure an own or borrow the arena refuses at its caps: a handle type holds no other type, so its depth and size are the least, within any cap
 exclude src/isoline/component/api/Linker.cpp instance-is-not-a-leaf resolveLeaf() of a store instance: resolveAt() hands an instance-typed import to the instance paths, and any other import's kind mismatch is reported before the visit
+exclude src/isoline/component/api/Linker.cpp unnamed-async an unnamed host function of another asyncness than its import: a host function is sync, and validation refuses an async import until P12 turns the async feature on
 exclude src/isoline/component/api/Linker.cpp root-type-cap a component whose root type the arena could not measure: the root's measure is the one validation already held to the caps
 exclude src/isoline/component/api/Linker.cpp unsatisfied-inside an Unsatisfied failure inside a linker instance: an export's resolution fails only by mismatch there, a missing export being reported as one
 exclude src/isoline/component/api/Typed.hpp bound-result-reads TypedFunction's refusal of a result that does not read: bind() checked the result's type against the function's, and a lifted string is valid text, so a lifted result always reads
