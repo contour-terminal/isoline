@@ -173,12 +173,14 @@ isoline_c_export_rules(isoline_c_shared MAP "${CMAKE_CURRENT_SOURCE_DIR}/isoline
 include(GNUInstallDirs)
 
 
-# The C++ runtime a static link needs, by the standard library the build links: runtime|library. GCC
+# The C++ runtime a static link needs, by the standard library the build links: runtime|libraries. GCC
 # links libstdc++, MSVC its own runtime implicitly; Clang links libc++ where it is the platform's library
-# (Apple, the BSDs) or -stdlib=libc++ asks for it, and libstdc++ elsewhere.
+# (Apple, the BSDs) or -stdlib=libc++ asks for it, and libstdc++ elsewhere. The math library comes with
+# them: a C++ driver links it implicitly, a C consumer's does not, and the engines' floating-point
+# environment (fegetround(), fesetround(), runtime/FloatEnvironment.cpp) is in it.
 set(isolineCxxRuntimeRows
-    "libstdc++|-lstdc++"
-    "libc++|-lc++"
+    "libstdc++|-lstdc++ -lm"
+    "libc++|-lc++ -lm"
     "msvc|")
 if(MSVC)
     set(isolineCxxRuntimeKey msvc)
