@@ -21,7 +21,11 @@
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/runtime/testing/ResourceDoubles.hpp>
 #include <isoline/component/runtime/testing/StoreFixtures.hpp>
+#include <isoline/component/text/Forms.hpp>
+#include <isoline/text/TextLimits.hpp>
+#include <isoline/text/TopLevel.hpp>
 
+using isoline::component::api::Component;
 using isoline::component::api::ComponentCallFailure;
 using isoline::component::api::ComponentConfig;
 using isoline::component::api::ForeignInstance;
@@ -821,4 +825,60 @@ TEST_CASE("Linker.componentOfAnotherEngineRefused")
     CHECK(refusalAs<isoline::api::EngineMismatch>(store.instantiate(harness.load(builder.build()), linker))
           == isoline::api::EngineMismatch {});
     CHECK_FALSE(store.isLockedDown());
+}
+
+namespace
+{
+/// The component @p source gives as text, loaded; the text must compile.
+[[nodiscard]] Component loadText(ApiHarness& harness, std::string_view source)
+{
+    auto const bytes =
+        isoline::text::compileText(source, isoline::text::TextLimits {}, isoline::component::text::Forms);
+    REQUIRE(bytes.has_value());
+    return harness.load(*bytes);
+}
+} // namespace
+
+TEST_CASE("Linker.instancesOfTypesOnlyNeedNoDefinition")
+{
+    // As Wasmtime checks an instance with no definition (matching.rs:50-54): an instance of nothing, or of
+    // instances of nothing however deep, needs none (Wasmtime's import.wast:13-18).
+    auto harness = ApiHarness {};
+    auto store = harness.store();
+    auto const linker = Linker { ComponentConfig {} };
+    auto const nested = loadText(harness, R"((component
+        (import "a" (instance))
+        (import "b" (instance (export "x" (instance (export "y" (instance))))))))");
+    auto const outcomes = linker.resolve(nested);
+    REQUIRE(outcomes.size() == 2);
+    CHECK(outcomes[0].outcome == ImportOutcome { SatisfiedByTypes {} });
+    CHECK(outcomes[1].outcome == ImportOutcome { SatisfiedByTypes {} });
+    CHECK(store.instantiate(nested, linker).has_value());
+
+    // A function anywhere inside needs its definition.
+    auto const deepFunction = loadText(harness, R"((component
+        (import "b" (instance (export "x" (instance (export "f" (func))))))))");
+    CHECK(outcomeOf(linker, deepFunction) == ImportOutcome { Unsatisfied {} });
+}
+
+TEST_CASE("Linker.boundResourcesNeedNoDefinition")
+{
+    // An export `eq` to a resource an earlier export bound needs no definition (matching.rs:72-80,
+    // Wasmtime's resources.wast:205-213); a fresh resource does.
+    auto harness = ApiHarness {};
+    auto store = harness.store();
+    auto linker = Linker { ComponentConfig {} };
+    REQUIRE(linker.defineResource("host#r", HostResourceType { "r", nullptr }).has_value());
+    auto const equal = loadText(harness, R"((component
+        (import "host" (instance
+          (export "r" (type $r (sub resource)))
+          (export "missing" (type (eq $r)))))))");
+    CHECK(outcomeOf(linker, equal) == ImportOutcome { Satisfied { .matched = "host" } });
+    CHECK(store.instantiate(equal, linker).has_value());
+
+    auto const fresh = loadText(harness, R"((component
+        (import "host" (instance
+          (export "r" (type $r (sub resource)))
+          (export "missing" (type (sub resource)))))))");
+    CHECK(std::holds_alternative<TypeMismatch>(linker.resolve(fresh).front().outcome));
 }

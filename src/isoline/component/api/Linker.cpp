@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -140,16 +141,6 @@ namespace
         return implements;
     }
 
-    /// Whether every export of an instance type is a type that is not a resource: an instance of types
-    /// only (D8, WIT's `use types.{…}`), which needs no definition.
-    [[nodiscard]] bool isTypesOnly(types::TypeArena const& arena, types::InstanceTypeId instance)
-    {
-        return std::ranges::all_of(arena[instance].exports, [](types::NamedExtern const& entry) {
-            auto const* type = std::get_if<types::TypeExtern>(&entry.type);
-            return type != nullptr && !std::holds_alternative<types::ResourceTypeId>(type->type);
-        });
-    }
-
     /// The resource a type extern binds, if it binds one.
     [[nodiscard]] std::optional<types::ResourceTypeId> boundResource(types::ExternType const& type)
     {
@@ -271,15 +262,34 @@ class Linker::Walk
         return Satisfied { .matched = *matched };
     }
 
-    /// The value of an import of types only, which needs no definition; none for any other import.
+    /// The value of an import that needs no definition (D8): a type that is no resource, a resource an
+    /// earlier import bound already (an `eq` bound), or an instance of only such exports and of instances
+    /// of them, however deep, as Wasmtime checks an instance with no definition (matching.rs:50-54);
+    /// none for any other import.
     [[nodiscard]] std::optional<uint32_t> byTypes(types::ExternType const& type)
     {
-        if (auto const* instance = std::get_if<types::InstanceTypeId>(&type);
-            instance != nullptr && isTypesOnly(componentTypes(), *instance))
-            return push(std::monostate {});
-        if (std::holds_alternative<types::TypeExtern>(type) && !boundResource(type))
-            return push(std::monostate {});
-        return std::nullopt;
+        auto pending = std::vector<types::ExternType const*> { &type };
+        while (!pending.empty())
+        {
+            auto const* const current = pending.back();
+            pending.pop_back();
+            if (auto const* instance = std::get_if<types::InstanceTypeId>(current))
+            {
+                for (auto const& entry: componentTypes()[*instance].exports)
+                    pending.push_back(&entry.type);
+                continue;
+            }
+            if (!std::holds_alternative<types::TypeExtern>(*current))
+                return std::nullopt;
+            if (auto const resource = boundResource(*current); resource && !_resources.find(*resource))
+                return std::nullopt;
+        }
+        // A resource `eq` to one bound already is that one's value; an instance or a type is none at run
+        // time.
+        if (auto const resource = boundResource(type))
+            if (auto const value = _resourceValues.find(*resource); value != _resourceValues.end())
+                return value->second;
+        return push(std::monostate {});
     }
 
     [[nodiscard]] static TypeMismatch mismatchOf(std::string detail)
@@ -426,8 +436,10 @@ class Linker::Walk
                         return std::unexpected { mismatchOf(
                             relationText(validate::RelationErrorCode::ResourceMismatch)) };
                     _resources.bind(required, resource.resource);
-                    return push(runtime::HostResourceImport { .identity = resource.type.identity(),
-                                                              .destructor = resource.type.destructor() });
+                    auto const value = push(runtime::HostResourceImport {
+                        .identity = resource.type.identity(), .destructor = resource.type.destructor() });
+                    _resourceValues.try_emplace(required, value);
+                    return value;
                 },
                 [&](ModuleDefinition const& module) -> std::expected<uint32_t, Failure> {
                     // Its imports and exports are the core instantiation's to check (R7); its engine
@@ -596,6 +608,8 @@ class Linker::Walk
     StoreState* _store;
     Resolution& _out;
     validate::ResourceMapping _resources {}; ///< The component's resources bound to the linker's.
+    /// The value each of the component's resources bound to a linker's resource was given, by the resource.
+    std::map<types::ResourceTypeId, uint32_t> _resourceValues {};
     /// What the import being resolved met that only a store refuses: an instance of another store, a
     /// module or component of another engine. The first one met.
     std::optional<InstantiateComponentError> _deferred {};
