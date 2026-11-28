@@ -724,7 +724,7 @@ TEST_CASE("BoundsChecks.constantBelowMinimumIsElided")
     SECTION("one page: i32.load at 100 and at 65'532 elided, at 65'533 kept")
     {
         for (auto const spectre: { SpectreGuard::Disabled, SpectreGuard::Enabled })
-            for (auto const [index, elided]: std::array {
+            for (auto const& [index, elided]: std::array {
                      std::pair { 100, true }, std::pair { 65'532, true }, std::pair { 65'533, false } })
             {
                 INFO("index " << index);
@@ -764,7 +764,7 @@ TEST_CASE("BoundsChecks.constantBelowMinimumIsElided")
     }
     SECTION("custom page sizes: a memory of five 1-byte pages holds an i32 at 1, not at 2")
     {
-        for (auto const [index, elided]: std::array { std::pair { 1, true }, std::pair { 2, false } })
+        for (auto const& [index, elided]: std::array { std::pair { 1, true }, std::pair { 2, false } })
         {
             INFO("index " << index);
             auto const program =
@@ -1091,9 +1091,9 @@ TEST_CASE("BoundsChecks.memory64OverflowCheckKeptUnlessConstant")
     }
     SECTION("a constant index whose end wraps past 2^64: kept, and it traps")
     {
-        for (auto const [index, offset]: std::array { std::pair { All - 3, uint64_t { 8 } },
-                                                      std::pair { uint64_t { 8 }, All - 3 },
-                                                      std::pair { All, uint64_t { 1 } } })
+        for (auto const& [index, offset]: std::array { std::pair { All - 3, uint64_t { 8 } },
+                                                       std::pair { uint64_t { 8 }, All - 3 },
+                                                       std::pair { All, uint64_t { 1 } } })
         {
             INFO("index " << index << " offset " << offset);
             auto const program =
