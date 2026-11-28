@@ -49,8 +49,8 @@ ISOLINE_INTERPRETER_OPERATION(ReturnCallIndirect, "return_call_indirect", Call, 
 ISOLINE_INTERPRETER_OPERATION(ReturnCallRef, "return_call_ref", Call, 2, 1, Control)
 
 // Exceptions, out of line (throwException(), throwReference()): throw's payload's first slot and the tag's
-// index in the module; throw_ref's slot of the exnref. Each is a site (LoweredFunction::sites), which unwinding
-// starts from; a try_table emits no operation, its handler and catch clauses being records.
+// index in the module; throw_ref's slot of the exnref. Each is a site (LoweredFunction::sites), which
+// unwinding starts from; a try_table emits no operation, its handler and catch clauses being records.
 ISOLINE_INTERPRETER_OPERATION(Throw, "throw", Special, 1, 1, Exceptions)
 ISOLINE_INTERPRETER_OPERATION(ThrowRef, "throw_ref", Special, 1, 0, Exceptions)
 
@@ -203,10 +203,10 @@ ISOLINE_INTERPRETER_OPERATION(Select128, "select128", Special, 4, 0, Control)
 
 // The vector operations: a v128 takes two slots, lane 0's bits first, and an operation names its first.
 //
-// An operator of a kernel shape (numerics::SimdShape) runs its numerics kernel, which lowering resolved once and
-// wrote as the operation's last word: the destination slot and the operands' slots, then the kernel. A unary
-// operator and a test take one vector, a binary operator two, a ternary three, a shift a vector and its i32
-// count.
+// An operator of a kernel shape (numerics::SimdShape) runs its numerics kernel, which lowering resolved once
+// and wrote as the operation's last word: the destination slot and the operands' slots, then the kernel. A
+// unary operator and a test take one vector, a binary operator two, a ternary three, a shift a vector and its
+// i32 count.
 ISOLINE_INTERPRETER_OPERATION(SimdUnary, "simd.unary", Special, 2, 1, Simd)
 ISOLINE_INTERPRETER_OPERATION(SimdBinary, "simd.binary", Special, 3, 1, Simd)
 ISOLINE_INTERPRETER_OPERATION(SimdTernary, "simd.ternary", Special, 4, 1, Simd)
@@ -216,13 +216,13 @@ ISOLINE_INTERPRETER_OPERATION(SimdShift, "simd.shift", Special, 3, 1, Simd)
 // and the operands' slots, as a Binary row lowers them.
 ISOLINE_INTERPRETER_OPERATION(I32x4Add, "i32x4.add", Binary, 3, 0, Simd)
 ISOLINE_INTERPRETER_OPERATION(F32x4Mul, "f32x4.mul", Binary, 3, 0, Simd)
-// i8x16.shuffle: the first operand's slots, which lowering moved it to and the result replaces, and the second
-// operand's; then the 16 lane indices, eight bytes to the word, lane 0 lowest.
+// i8x16.shuffle: the first operand's slots, which lowering moved it to and the result replaces, and the
+// second operand's; then the 16 lane indices, eight bytes to the word, lane 0 lowest.
 ISOLINE_INTERPRETER_OPERATION(I8x16Shuffle, "i8x16.shuffle", Special, 2, 2, Simd)
 // The lane operations (SimdLaneTable): a splat's destination and its scalar's slot; an extract_lane's
-// destination and its vector's slot, then the lane; a replace_lane's destination, its vector's and its scalar's
-// slots, then the lane. A scalar of 32 bits is held zero-extended, an extracted i8 or i16 lane widened as its
-// instruction says.
+// destination and its vector's slot, then the lane; a replace_lane's destination, its vector's and its
+// scalar's slots, then the lane. A scalar of 32 bits is held zero-extended, an extracted i8 or i16 lane
+// widened as its instruction says.
 ISOLINE_INTERPRETER_OPERATION(I8x16Splat, "i8x16.splat", Special, 2, 0, Simd)
 ISOLINE_INTERPRETER_OPERATION(I16x8Splat, "i16x8.splat", Special, 2, 0, Simd)
 ISOLINE_INTERPRETER_OPERATION(I32x4Splat, "i32x4.splat", Special, 2, 0, Simd)
@@ -245,8 +245,8 @@ ISOLINE_INTERPRETER_OPERATION(F32x4ReplaceLane, "f32x4.replace_lane", Special, 3
 ISOLINE_INTERPRETER_OPERATION(F64x2ReplaceLane, "f64x2.replace_lane", Special, 3, 1, Simd)
 
 // Wide arithmetic (WideArithmeticTable): the destination slot, whose result's low half it gets and the slot
-// after it the high half, then the operands' slots: add128 and sub128 the low and high halves of each of their
-// two operands, the multiplications their two i64.
+// after it the high half, then the operands' slots: add128 and sub128 the low and high halves of each of
+// their two operands, the multiplications their two i64.
 ISOLINE_INTERPRETER_OPERATION(I64Add128, "i64.add128", Special, 5, 0, Numeric)
 ISOLINE_INTERPRETER_OPERATION(I64Sub128, "i64.sub128", Special, 5, 0, Numeric)
 ISOLINE_INTERPRETER_OPERATION(I64MulWideS, "i64.mul_wide_s", Special, 3, 0, Numeric)
