@@ -248,7 +248,7 @@ offline `ctest` need none of them.
 - `scripts/` — the tooling around the build (tool pins, spec-test import, coverage ratchet, the C++
   module export lint).
 - `vendor/core-cpp/` — [core-cpp](https://github.com/contour-terminal/core-cpp), the shared C++23
-  foundation of the Contour Terminal projects, as a verbatim copy of tag v0.21.0 (the tag Contour
+  foundation of the Contour Terminal projects, as a verbatim copy of tag v0.24.0 (the tag Contour
   vendors; the two move in lockstep). When a parent project already defines `core::base`, Isoline
   uses the parent's core-cpp instead.
 

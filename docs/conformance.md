@@ -116,6 +116,16 @@ awk '$1 == "wasm3" { print $2 }' "$repo/tests/spec/files.txt" | LC_ALL=C sort > 
 comm -3 pinned.txt listed.txt
 ```
 
+### WASI
+
+Isoline's WASI host interfaces target WASI 0.3, pinned to one tag of its WIT definitions. The core-cpp
+services that will serve them (`core::fs`, `core::net`, `core::http`, vendored from core-cpp v0.24.0)
+were mapped function by function against that tag.
+
+| Interface | Repository | Tag | Commit |
+|---|---|---|---|
+| WASI 0.3 WIT (`proposals/<package>/wit/*.wit`, every package `@0.3.2`) | [WebAssembly/WASI](https://github.com/WebAssembly/WASI) | `v0.3.2` | `bdadbbb8cadd287cc5014c4b5a0bf76efc60291c` |
+
 ## Features
 
 Suite paths are relative to the source's `test/` directory.
