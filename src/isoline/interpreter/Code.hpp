@@ -95,7 +95,7 @@ inline constexpr auto OperationFamilyTable = std::to_array<OperationFamilyRow>({
 /// loop twins); an enumerator that outgrows it is a build error, and the row that adds it widens it.
 enum class OperationId : uint16_t
 {
-#define ISOLINE_INTERPRETER_OPERATION(Name, Text, Form, Slots, Immediates, Family) Name,
+#define ISOLINE_INTERPRETER_OPERATION(Name, Text, Form, Slots, Immediates, Family, Result) Name,
 #include <isoline/interpreter/Operations.def>
 #undef ISOLINE_INTERPRETER_OPERATION
 };
@@ -109,6 +109,15 @@ enum class OperationId : uint16_t
 {
     return 1 + ((slots + 1) / 2) + immediates;
 }
+
+/// How an operation's handler writes its result, as lowering may use it: whether a local.set or local.tee
+/// right after the operation may take the result straight into the local's slot.
+enum class ResultWrite : uint8_t
+{
+    Unforwardable, ///< No one-slot result written after every operand is read: none, a wider one, or one
+                   ///< written while an operand is still read.
+    AfterOperands, ///< One one-slot result, written after the handler has read every operand.
+};
 
 /// What names the function a call operation calls (CallTable).
 enum class CalleeKind : uint8_t
@@ -137,19 +146,21 @@ struct OperationRow
     uint32_t immediates;   ///< Its 64-bit immediates, one code word each, after the slot operands.
     uint32_t words; ///< Its fixed size in code words, header included; a br_table adds its labels' records.
     OperationFamily family; ///< The operations it is executed with.
+    ResultWrite result;     ///< Whether lowering may aim its result at a local (resultOf()).
 };
 
 /// Every operation, one row per OperationId enumerator, in enumerator order.
 inline constexpr auto OperationTable = std::to_array<OperationRow>({
-#define ISOLINE_INTERPRETER_OPERATION(Name, Text, Form, Slots, Immediates, Family) \
-    { .id = OperationId::Name,                                                     \
-      .name = #Name,                                                               \
-      .text = (Text),                                                              \
-      .form = OperationForm::Form,                                                 \
-      .slots = (Slots),                                                            \
-      .immediates = (Immediates),                                                  \
-      .words = operationWords((Slots), (Immediates)),                              \
-      .family = OperationFamily::Family },
+#define ISOLINE_INTERPRETER_OPERATION(Name, Text, Form, Slots, Immediates, Family, Result) \
+    { .id = OperationId::Name,                                                             \
+      .name = #Name,                                                                       \
+      .text = (Text),                                                                      \
+      .form = OperationForm::Form,                                                         \
+      .slots = (Slots),                                                                    \
+      .immediates = (Immediates),                                                          \
+      .words = operationWords((Slots), (Immediates)),                                      \
+      .family = OperationFamily::Family,                                                   \
+      .result = ResultWrite::Result },
 #include <isoline/interpreter/Operations.def>
 #undef ISOLINE_INTERPRETER_OPERATION
 });

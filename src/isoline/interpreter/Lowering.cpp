@@ -737,7 +737,7 @@ namespace
         {
             auto operand = pop();
             auto const source = readable(operand);
-            auto const result = resultOf(resultTypeOf(row.opcode), operand.slot);
+            auto const result = resultOf(row.operation, resultTypeOf(row.opcode), operand.slot);
             emit(row.operation, { result.slot, source }, {});
             pushResult(result);
         }
@@ -752,7 +752,8 @@ namespace
             auto const folds =
                 row.form == OperationForm::BinaryImmediate && right.kind == EntryKind::Constant;
             auto const rightSource = folds ? 0 : readable(right);
-            auto const result = resultOf(resultTypeOf(row.opcode), left.slot);
+            auto const result =
+                resultOf(folds ? row.immediate : row.operation, resultTypeOf(row.opcode), left.slot);
             if (folds)
                 emit(row.immediate, { result.slot, leftSource }, { right.constant });
             else
@@ -829,6 +830,15 @@ namespace
                                                                         : binary::ValueKind::I32 };
         }
 
+        /// The access operation of @p row on @p instruction's memory: its memory64 twin where that memory's
+        /// addresses are 64-bit. What LoadIndexed runs for a memory other than memory 0.
+        [[nodiscard]] OperationId accessOperation(LoweringRow const& row,
+                                                  binary::Instruction const& instruction) const
+        {
+            return _context.memoryAddressTypes[instruction.b] == binary::AddressType::I64 ? row.memory64
+                                                                                          : row.operation;
+        }
+
         /// Emits the load or store of @p row over @p slots, for @p instruction's memory, offset and lane: to
         /// memory 0, the row's own operation of the memory's address type, a lane access's lane after the
         /// offset; to any other memory, @p indexed naming the memory, that operation and the lane.
@@ -838,9 +848,7 @@ namespace
                         std::initializer_list<uint32_t> slots)
         {
             auto const memory = instruction.b;
-            auto const access = _context.memoryAddressTypes[memory] == binary::AddressType::I64
-                                    ? row.memory64
-                                    : row.operation;
+            auto const access = accessOperation(row, instruction);
             auto const lane = binary::memoryAccessRowOf(row.opcode).shape == binary::VectorShape::Lane;
             if (memory != 0)
                 emit(indexed,
@@ -866,9 +874,9 @@ namespace
             auto const source = readable(address);
             if (access.shape == binary::VectorShape::Lane)
                 Require(homed(vector) == address.slot + 1);
-            // Its signature is its address type's (Special); the value's type is the access's. A lane load's
-            // vector takes two slots, so its result is never a local's (resultOf()).
-            auto const result = resultOf(ValueType { .kind = access.value }, address.slot);
+            // Its signature is its address type's (Special); the value's type is the access's.
+            auto const result =
+                resultOf(accessOperation(row, instruction), ValueType { .kind = access.value }, address.slot);
             emitAccess(row, instruction, OperationId::LoadIndexed, { result.slot, source });
             pushResult(result);
         }
@@ -1417,8 +1425,8 @@ namespace
             auto const source = _top - slots;
             materializeValues(source);
             Require(_code.size() + operationRow(OperationId::BrTable).words
-                        + (labels.size() * BranchTableEntryWords)
-                    <= _code.capacity());
+                                  + (labels.size() * BranchTableEntryWords)
+                              <= _code.capacity());
             emit(OperationId::BrTable, { indexSource, source }, { slots, labels.size() - 1 });
             for (auto const depth: labels)
             {
@@ -1490,18 +1498,21 @@ namespace
 
         // --- The abstract operand stack ---
 
-        /// Where an operation's result goes: straight into local L where the next instruction is
-        /// local.set L or local.tee L, the result takes one slot and no entry forwards L's value (its old
-        /// value is then read by no one after the operation, which reads its operands before it writes its
-        /// result); the local.set or local.tee is then lowered with it, and saves its move. Else to @p home,
-        /// the result's home slot.
+        /// Where the result of @p operation goes: straight into local L where the next instruction is
+        /// local.set L or local.tee L, the operation's row says its handler writes its one-slot result after
+        /// reading every operand (ResultWrite::AfterOperands), and no entry forwards L's value (its old value
+        /// is then read by no one after the operation); the local.set or local.tee is then lowered with it,
+        /// and saves its move. Else to @p home, the result's home slot.
+        /// @param operation What computes the result: for a load to another memory, the access LoadIndexed
+        ///        runs.
         /// @param type The result's type.
         /// @param home The home slot of the entry the result is pushed as.
-        [[nodiscard]] Result resultOf(ValueType type, uint32_t home)
+        [[nodiscard]] Result resultOf(OperationId operation, ValueType type, uint32_t home)
         {
             auto const& next = _source.body[_position + 1];
             auto const set = next.opcode == Opcode::LocalSet || next.opcode == Opcode::LocalTee;
-            if (!set || widthOf(type) != 1 || _chains[next.a] != NoEntry)
+            if (!set || operationRow(operation).result != ResultWrite::AfterOperands
+                || _chains[next.a] != NoEntry)
                 return Result { .type = type, .slot = home, .target = ResultTarget::Operand };
             ++_position;
             return Result { .type = type,

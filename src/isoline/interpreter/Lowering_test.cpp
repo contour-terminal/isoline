@@ -236,6 +236,52 @@ TEST_CASE("Lowering.writesAResultStraightIntoTheLocalSetOrTeedNext")
                                      code({ localGet(0), i32Const(1), op(0x6A), op(0x1A), localGet(0) }));
         CHECK(listingOf(kept).starts_with("i32.add.imm s1, s0, #1\n"));
     }
+    SECTION("a load goes straight to the local, its address read first")
+    {
+        // (local.get 0) (i32.load offset=4) (local.set 0): the loaded word replaces its own address.
+        auto load = functionOf(
+            { binary::I32 }, {}, {}, code({ localGet(0), op(0x28, 2), encodeU32(4), localSet(0) }));
+        load.memory(
+            binary::Limits { .min = 1, .max = std::nullopt, .addressType = binary::AddressType::I32 });
+        CHECK(listingOf(load) == "i32.load s0, s0, #4\nreturn s1\n");
+    }
+    SECTION("a v128 load and a lane load stay operands: their rows are Unforwardable")
+    {
+        // (local.get 0) (v128.load) (local.set 1): a v128 result takes two slots.
+        auto vector = functionOf(
+            { binary::I32 },
+            {},
+            { binary::V128 },
+            code({ localGet(0), code({ { 0xFD }, encodeU32(0), encodeU32(4), encodeU32(0) }), localSet(1) }));
+        vector.memory(
+            binary::Limits { .min = 1, .max = std::nullopt, .addressType = binary::AddressType::I32 });
+        CHECK(listingOf(vector) == "v128.load s3, s0, #0\nmove128 s1, s3\nreturn s3\n");
+        // (local.get 0) (local.get 1) (v128.load32_lane 0) (local.set 1): the lane load writes the vector
+        // it reads.
+        auto lane = functionOf({ binary::I32 },
+                               {},
+                               { binary::V128 },
+                               code({ localGet(0),
+                                      localGet(1),
+                                      code({ { 0xFD }, encodeU32(86), encodeU32(2), encodeU32(0), { 0x00 } }),
+                                      localSet(1) }));
+        lane.memory(
+            binary::Limits { .min = 1, .max = std::nullopt, .addressType = binary::AddressType::I32 });
+        CHECK(listingOf(lane).contains("move128 s1,"));
+    }
+    SECTION("a tee into a local a live operand forwards moves, and so does the set after it")
+    {
+        // (local.get 0) (local.get 0) (i32.const 1) (i32.add) (local.tee 0) (local.set 0) (return): the
+        // forwarder below the sum holds local 0's old value, so neither the tee nor the set may write
+        // local 0 before it is copied.
+        auto const teeSet = functionOf(
+            { binary::I32 },
+            { binary::I32 },
+            {},
+            code({ localGet(0), localGet(0), i32Const(1), op(0x6A), op(0x22, 0), localSet(0), op(0x0F) }));
+        CHECK(listingOf(teeSet)
+              == "i32.add.imm s2, s0, #1\nmove64 s1, s0\nmove64 s0, s2\nmove64 s0, s2\nreturn s1\n");
+    }
 }
 
 TEST_CASE("Lowering.skipsAnEmptyLocalRun")

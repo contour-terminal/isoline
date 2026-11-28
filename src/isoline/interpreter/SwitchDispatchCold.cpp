@@ -25,7 +25,7 @@ namespace
 } // namespace
 
 // The case of every row of Operations.def, defined outside the switch so that only the rows are inside it.
-#define ISOLINE_INTERPRETER_OPERATION(Name, Text, Form, Slots, Immediates, Family) \
+#define ISOLINE_INTERPRETER_OPERATION(Name, Text, Form, Slots, Immediates, Family, Result) \
     case OperationId::Name: flow = outOfLineCase<OperationId::Name>(state); break;
 
 OutOfLineStep runOutOfLine(State state) noexcept
