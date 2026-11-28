@@ -653,3 +653,15 @@ jobs:
           WASI_SDK="$(dirname "$(dirname "$(fetch wasi-sdk)")")"
           export WASM_TOOLS WIT_BINDGEN WASI_SDK
           tests/component/extension/build-guests.sh --check
+      - name: Rebuild Contour's clock extension with the pinned tools and compare
+        # tests/component/contour-clock/build-clock.sh --check: Contour's clock crate at the commit tools.lock records,
+        # built with the pinned Rust for wasm32-wasip1 and componentized with the pinned adapter, byte for byte
+        # against the committed clock.wasm.
+        run: |
+          fetch() { python3 -I scripts/fetch-tools.py --tool "$1" --cache "$RUNNER_TEMP/isoline-tools"; }
+          WASM_TOOLS="$(fetch wasm-tools)"
+          RUST_INSTALLER="$(fetch rust)"
+          RUST_STD_INSTALLER="$(fetch rust-std-wasm32-wasip1)"
+          WASI_ADAPTER="$(fetch wasi-preview1-adapter)"
+          export WASM_TOOLS RUST_INSTALLER RUST_STD_INSTALLER WASI_ADAPTER
+          tests/component/contour-clock/build-clock.sh --check

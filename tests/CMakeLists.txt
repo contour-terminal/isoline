@@ -2,6 +2,8 @@
 
 # Suites that are not unit tests of one module.
 add_subdirectory(spec)
+# Contour's clock extension, componentized with the preview-1 adapter, on a test double of WASI 0.2.
+add_subdirectory(component/contour-clock)
 # Isoline through `import isoline;` (ISOLINE_MODULES): the in-tree consumers of the module targets.
 if(ISOLINE_MODULES)
     add_subdirectory(modules)

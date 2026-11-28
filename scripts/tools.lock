@@ -54,6 +54,68 @@ wasi-sdk.sha256.aarch64-linux = f7e243dff54d60bcc576e94d6166b69f410f2500ae4a9cee
 wasi-sdk.sha256.aarch64-macos = 9c59398106b417f8f14913380fdf0097a8cc0ff4af9eb3ce0065a859e88d49e9
 wasi-sdk.sha256.x86_64-windows = cccb5c323a9b34f0349a9b09e8804a0a7632c68c3310f4b5f437ed57d7e71d8f
 
+# The Rust toolchain of Contour's clock extension (tests/component/contour-clock/build-clock.sh): Contour's own pin
+# (scripts/install-rust-wasm.sh's RUST_TOOLCHAIN at the commit below), its host toolchain and its wasm32-wasip1 standard
+# library, each an archive whose install.sh build-clock.sh runs into a directory of its own. The Rust crate wit-bindgen
+# the extension is built with is Contour's Cargo.lock's, the release wit-bindgen.version above pins (build-clock.sh
+# checks it). Neither is needed by a build: clock.wasm is committed prebuilt. The SHA-256 are the digests
+# static.rust-lang.org publishes beside each archive (.sha256); the x86_64-linux ones were verified by
+# scripts/fetch-tools.py on 2026-11-28.
+rust.version = 1.100.0
+rust.url = https://static.rust-lang.org/dist/{archive}
+rust.archive.x86_64-linux = rust-{version}-x86_64-unknown-linux-gnu.tar.xz
+rust.archive.aarch64-linux = rust-{version}-aarch64-unknown-linux-gnu.tar.xz
+rust.archive.aarch64-macos = rust-{version}-aarch64-apple-darwin.tar.xz
+rust.archive.x86_64-windows = rust-{version}-x86_64-pc-windows-msvc.tar.xz
+rust.executable.x86_64-linux = rust-{version}-x86_64-unknown-linux-gnu/install.sh
+rust.executable.aarch64-linux = rust-{version}-aarch64-unknown-linux-gnu/install.sh
+rust.executable.aarch64-macos = rust-{version}-aarch64-apple-darwin/install.sh
+rust.executable.x86_64-windows = rust-{version}-x86_64-pc-windows-msvc/install.sh
+rust.sha256.x86_64-linux = 98ee6bec240e1cfe944f17e7092412dc5ef6e008484bb668c6936d35a7d15acd
+rust.sha256.aarch64-linux = a21f6a21818df07c1e2e7addb570af5444b3fa9dd61e3a207f4fb1c5a5e665c9
+rust.sha256.aarch64-macos = 68ba729fe20df0f74309ef55ffbe518fc982177f327651b06112ef11e8e1de0d
+rust.sha256.x86_64-windows = 8c9dabd0a03ebb9d9b8f64fc5298b22ce3c5de7c80e38a075fcc6d81a0e1e7ec
+
+# The wasm32-wasip1 standard library of the Rust release above: one archive for every host.
+rust-std-wasm32-wasip1.version = 1.100.0
+rust-std-wasm32-wasip1.url = https://static.rust-lang.org/dist/{archive}
+rust-std-wasm32-wasip1.archive.x86_64-linux = rust-std-{version}-wasm32-wasip1.tar.xz
+rust-std-wasm32-wasip1.archive.aarch64-linux = rust-std-{version}-wasm32-wasip1.tar.xz
+rust-std-wasm32-wasip1.archive.aarch64-macos = rust-std-{version}-wasm32-wasip1.tar.xz
+rust-std-wasm32-wasip1.archive.x86_64-windows = rust-std-{version}-wasm32-wasip1.tar.xz
+rust-std-wasm32-wasip1.executable.x86_64-linux = rust-std-{version}-wasm32-wasip1/install.sh
+rust-std-wasm32-wasip1.executable.aarch64-linux = rust-std-{version}-wasm32-wasip1/install.sh
+rust-std-wasm32-wasip1.executable.aarch64-macos = rust-std-{version}-wasm32-wasip1/install.sh
+rust-std-wasm32-wasip1.executable.x86_64-windows = rust-std-{version}-wasm32-wasip1/install.sh
+rust-std-wasm32-wasip1.sha256.x86_64-linux = 7a506aa6fcc8ed4308780fc412ba5713eb1c97bf5b1e940eaa2cf1f70299c777
+rust-std-wasm32-wasip1.sha256.aarch64-linux = 7a506aa6fcc8ed4308780fc412ba5713eb1c97bf5b1e940eaa2cf1f70299c777
+rust-std-wasm32-wasip1.sha256.aarch64-macos = 7a506aa6fcc8ed4308780fc412ba5713eb1c97bf5b1e940eaa2cf1f70299c777
+rust-std-wasm32-wasip1.sha256.x86_64-windows = 7a506aa6fcc8ed4308780fc412ba5713eb1c97bf5b1e940eaa2cf1f70299c777
+
+# The preview-1 reactor adapter `wasm-tools component new --adapt` componentizes the clock extension with: Wasmtime
+# 51.0.0's, the release the component suites are imported from (source.component-wasmtime below). A bare module, no
+# archive, the same for every host. The SHA-256 is the digest GitHub reports for the release asset, verified by
+# scripts/fetch-tools.py on 2026-11-28.
+wasi-preview1-adapter.version = 51.0.0
+wasi-preview1-adapter.url = https://github.com/bytecodealliance/wasmtime/releases/download/v{version}/{archive}
+wasi-preview1-adapter.archive.x86_64-linux = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.archive.aarch64-linux = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.archive.aarch64-macos = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.archive.x86_64-windows = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.executable.x86_64-linux = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.executable.aarch64-linux = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.executable.aarch64-macos = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.executable.x86_64-windows = wasi_snapshot_preview1.reactor.wasm
+wasi-preview1-adapter.sha256.x86_64-linux = a5b12003abaa6d23bdac26146cccb4c7e85ef51d0fc6f8a202529fe812149da5
+wasi-preview1-adapter.sha256.aarch64-linux = a5b12003abaa6d23bdac26146cccb4c7e85ef51d0fc6f8a202529fe812149da5
+wasi-preview1-adapter.sha256.aarch64-macos = a5b12003abaa6d23bdac26146cccb4c7e85ef51d0fc6f8a202529fe812149da5
+wasi-preview1-adapter.sha256.x86_64-windows = a5b12003abaa6d23bdac26146cccb4c7e85ef51d0fc6f8a202529fe812149da5
+
+# The Contour commit whose bundled clock extension (extensions/bundled/clock) clock.wasm is built from, and the
+# repository it is fetched from: the head of feature/out-of-process-extension-host on 2026-11-28.
+extension.contour.repository = https://github.com/contour-terminal/contour
+extension.contour.commit = 54387ba8140a81e62e92a2b1beb9a76b591be04f
+
 # The CMake and Ninja the C++ module lanes build with (.github/workflows/build.yml): CMake 4.3 is
 # the modules floor (cmake/IsolineModuleSupport.cmake), and neither runner image ships it.
 cmake.version = 4.3.0

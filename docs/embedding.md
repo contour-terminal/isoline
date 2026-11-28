@@ -669,7 +669,12 @@ extensions (`tests/component/extension/extension.wit`: Contour's status-line wor
 `surface` resource and a control-shaped interface), against two guests of it, one written by hand in the
 text format and one built by the C toolchain (`wit-bindgen c` and wasi-sdk). It is written only against
 `component::api` and its typed bindings, and is the template for an embedder; the excerpts below are
-from it.
+from it and from the status-line world's types it shares (`src/isoline/component/api/testing/StatuslineWorld.hpp`).
+
+`tests/component/contour-clock` hosts one of Contour's own extensions the same way: its Rust clock, built for
+`wasm32-wasip1` as Contour builds it and componentized with the preview-1 reactor adapter. Such a component imports a
+narrow part of WASI 0.2 besides its world, which the embedder binds in its own `Linker` (Isoline ships no WASI 0.2);
+its README lists the interfaces and what the adapter imports of each.
 
 ### Hosting an extension
 
