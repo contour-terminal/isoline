@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -65,6 +68,25 @@ using CheckResult = std::expected<void, std::string>;
 [[nodiscard]] CheckResult checkResults(std::span<ExpectedValue const> expected,
                                        std::span<runtime::Value const> actual);
 
+/// How an assertion's expected message must appear in the actual one.
+enum class MessageRule : uint8_t
+{
+    Prefix,    ///< It starts the actual message: the reference interpreter's rule, the core suites'.
+    Substring, ///< It occurs anywhere in it: Wasmtime's rule, the component suites' (D12).
+};
+
+/// Checks a failure assertion: the command must have failed, at @p stage, with a message @p rule finds
+/// @p expectedMessage in (an empty expected message matches any).
+/// @param stage The stage the failure must arise at.
+/// @param expectedMessage The message the actual one must hold.
+/// @param actual The failure, or nullopt when the command succeeded.
+/// @param rule Where in the actual message the expected one must be.
+/// @return Nothing, or why the assertion does not hold; a Harness failure never satisfies it.
+[[nodiscard]] CheckResult checkFailure(Stage stage,
+                                       std::string_view expectedMessage,
+                                       std::optional<Failure> const& actual,
+                                       MessageRule rule);
+
 /// Checks a failure assertion: the command must have failed, at @p stage, with a message that
 /// starts with @p expectedMessage (the spec's rule, so an empty expected message matches any).
 /// @param stage The stage the failure must arise at.
@@ -87,5 +109,69 @@ using CheckResult = std::expected<void, std::string>;
 
 /// @copydoc describeAll(std::span<runtime::Value const>)
 [[nodiscard]] std::string describeAll(std::span<ExpectedValue const> values);
+
+/// What a skip reason's form takes between its fixed texts.
+enum class SkipArgument : uint8_t
+{
+    None, ///< Nothing: the reason is the prefix alone.
+    Gate, ///< A gated feature's emoji, a ComponentFeatureTable row's.
+    Name, ///< A name: one word of no spaces.
+    Line, ///< A line number: decimal digits.
+};
+
+/// One form a skip of a command of a component suite may give as its reason (D12): its fixed text, what
+/// follows it, and what closes it.
+struct SkipReasonRow
+{
+    std::string_view prefix;  ///< The text it starts with.
+    SkipArgument argument;    ///< What follows the prefix.
+    std::string_view suffix;  ///< The text it ends with, after the argument.
+    std::string_view meaning; ///< Why a command is skipped for it.
+};
+
+/// Every reason a command of a component suite may be skipped for. Anything else is refused: a skip
+/// without one of these reasons fails its file. Adding a reason is adding a row.
+inline constexpr auto SkipReasons = std::to_array<SkipReasonRow>({
+    { .prefix = "async (P12)",
+      .argument = SkipArgument::None,
+      .suffix = "",
+      .meaning = "it runs async code, which P12 implements" },
+    { .prefix = "gated ",
+      .argument = SkipArgument::Gate,
+      .suffix = "",
+      .meaning = "it needs a gated feature Isoline refuses" },
+    { .prefix = "upstream nyi.txt",
+      .argument = SkipArgument::None,
+      .suffix = "",
+      .meaning = "the suite's own nyi.txt lists it as not yet implemented" },
+    { .prefix = "core feature cut ",
+      .argument = SkipArgument::Name,
+      .suffix = "",
+      .meaning = "it needs a core proposal Isoline does not implement" },
+    { .prefix = "legacy text indices",
+      .argument = SkipArgument::None,
+      .suffix = "",
+      .meaning = "its text uses index forms the pinned text format no longer reads" },
+    { .prefix = "diverges from CM pin (definitions.py:",
+      .argument = SkipArgument::Line,
+      .suffix = ")",
+      .meaning = "the suite asserts what the pinned canonical ABI definitions do otherwise" },
+    { .prefix = "diverges from CM pin (Binary.md:",
+      .argument = SkipArgument::Line,
+      .suffix = ")",
+      .meaning = "the pinned wasm-tools encodes what the pinned Binary.md encodes otherwise" },
+});
+
+static_assert(std::ranges::all_of(SkipReasons,
+                                  [](SkipReasonRow const& row) {
+                                      return !row.prefix.empty() && !row.meaning.empty()
+                                             && (row.argument != SkipArgument::None || row.suffix.empty());
+                                  }),
+              "every skip reason has a text and a meaning, and only a reason with an argument a suffix");
+
+/// The row of SkipReasons a skip's reason is of.
+/// @param reason The reason an oracle gives.
+/// @return Its row, or nullptr when it is of none.
+[[nodiscard]] SkipReasonRow const* skipReasonOf(std::string_view reason) noexcept;
 
 } // namespace isoline::spectest

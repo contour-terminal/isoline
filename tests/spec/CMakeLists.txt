@@ -4,9 +4,10 @@
 # per .wast file: the verbatim .wast script with its oracle manifest and the oracle's .wasm files. The
 # import is committed, so running it needs neither the network nor wasm-tools.
 
-add_library(isoline_spectest STATIC Hex.cpp Oracle.cpp SpecCheck.cpp WastReader.cpp)
+add_library(isoline_spectest STATIC ComponentSpectest.cpp ComponentValues.cpp Hex.cpp Oracle.cpp SpecCheck.cpp WastReader.cpp)
 target_include_directories(isoline_spectest PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(isoline_spectest PUBLIC isoline::core isoline::text)
+# The component model's suites run through the same reader and runner (D12), so the harness links it.
+target_link_libraries(isoline_spectest PUBLIC isoline::core isoline::text isoline::component isoline::component_text)
 isoline_apply_target_policy(isoline_spectest)
 
 add_executable(isoline_spec_runner SpecRunner.cpp)
@@ -14,7 +15,14 @@ target_link_libraries(isoline_spec_runner PRIVATE isoline_spectest)
 # TEST: it is run by ctest alone, so a failing spec file must end it rather than open a dialog.
 isoline_apply_target_policy(isoline_spec_runner TEST)
 
-add_executable(isoline_spectest_test Oracle_test.cpp SpecCheck_test.cpp SpecFeatures_test.cpp WastReader_test.cpp)
+add_executable(isoline_spectest_test
+               ComponentSpectest_test.cpp
+               ComponentValues_test.cpp
+               CoreTrapWording_test.cpp
+               Oracle_test.cpp
+               SpecCheck_test.cpp
+               SpecFeatures_test.cpp
+               WastReader_test.cpp)
 target_link_libraries(isoline_spectest_test PRIVATE isoline_spectest Catch2::Catch2WithMain)
 # WastReader.ordinalsMatchWasmTools reads its fixture, tests/spec/ordinals, from the source tree.
 target_compile_definitions(isoline_spectest_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

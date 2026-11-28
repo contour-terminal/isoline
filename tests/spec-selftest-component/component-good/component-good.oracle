@@ -1,0 +1,8 @@
+commands 27
+0 4 wasm component-good.0.wasm
+9 33 wasm component-good.9.wasm
+16 49 wasm component-good.16.wasm
+22 71 wasm component-good.22.wasm
+23 72 wasm component-good.23.wasm
+24 73 wasm component-good.24.wasm
+25 78 wasm component-good.25.wasm

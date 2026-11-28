@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// isoline_spec_runner <dir> <skips> --features <set>: runs one imported .wast file of the spec suite,
-// <dir>/<name>.wast with its oracle <dir>/<name>.oracle, against the text reader, the decoder, the validator
-// and the reference interpreter, with the features of <set> on (wasm2, wasm3 or all). It fails when a command
-// fails, when a module given as text does not encode as the oracle's binary does, and when the script skips
-// other than <skips> commands: every skip is pinned in tests/spec/files.txt, so none appears unnoticed.
+// isoline_spec_runner <dir> <skips> --features <set> [--engine <e>] [--suite <s>] [--component-features <f>]:
+// runs one imported .wast file of a spec suite, <dir>/<name>.wast with its oracle <dir>/<name>.oracle,
+// against the text reader, the decoder, the validator and the reference interpreter, with the features of
+// <set> on (wasm2, wasm3 or all). A component, told apart by its preamble (layerOf()), is loaded through the
+// component api on engine <e>, each in a store of its own, and linked against the component spectest; a
+// component suite (<s> = component) asserts its messages by substring and words core traps as Wasmtime
+// does (D12). It fails when a command fails, when a module given as text does not encode as the oracle's
+// binary does, and when the script skips other than <skips> commands: every skip is pinned in
+// tests/spec/files.txt, so none appears unnoticed.
 
 #include <core/Sha256.hpp>
 #include <core/Utils.hpp>
@@ -35,18 +39,38 @@
 #include <variant>
 #include <vector>
 
+#include "ComponentSpectest.hpp"
+#include "ComponentValues.hpp"
+#include "CoreTrapWording.hpp"
 #include "Oracle.hpp"
 #include "Script.hpp"
 #include "SpecCheck.hpp"
 #include "SpecFeatures.hpp"
 #include "WastReader.hpp"
 #include <isoline/Features.hpp>
+#include <isoline/api/Engine.hpp>
+#include <isoline/api/EngineIdentity.hpp>
+#include <isoline/api/Types.hpp>
 #include <isoline/binary/BranchHints.hpp>
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Encoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/component/Features.hpp>
+#include <isoline/component/Limits.hpp>
+#include <isoline/component/api/CallError.hpp>
+#include <isoline/component/api/Component.hpp>
+#include <isoline/component/api/ComponentStore.hpp>
+#include <isoline/component/api/Linker.hpp>
+#include <isoline/component/binary/Decoder.hpp>
+#include <isoline/component/binary/Encoder.hpp>
+#include <isoline/component/canonical/Trap.hpp>
+#include <isoline/component/canonical/Values.hpp>
+#include <isoline/component/runtime/ComponentStore.hpp>
+#include <isoline/component/text/Forms.hpp>
+#include <isoline/component/types/TypeArena.hpp>
+#include <isoline/component/validate/Validator.hpp>
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
@@ -139,7 +163,7 @@ namespace
         auto const stage = TextErrorStages.at(static_cast<std::size_t>(text::stageOf(error.code)));
         auto const& at = error.position;
         auto const where =
-            source.form == ModuleForm::Text
+            source.form == ModuleForm::Text || source.form == ModuleForm::ComponentText
                 ? std::format("{}:{}",
                               source.position.line + at.line - 1,
                               at.line == 1 ? source.position.column + at.column - 1 : at.column)
@@ -148,22 +172,33 @@ namespace
                          .message = std::format("{} at {}", text::specMessage(error), where) };
     }
 
-    /// The bytes of a command's module: a binary's strings, or the text compiled.
+    /// Compiles a command's module or component given as text: a `(component quote …)`'s strings as a
+    /// component's fields, as wasm-tools reads them.
+    /// @param source The module or component, of a text form (isTextForm()).
+    /// @return Its bytes, or the text's first error.
+    [[nodiscard]] std::expected<std::vector<std::byte>, text::TextError> compileSource(
+        ModuleSource const& source)
+    {
+        if (source.form == ModuleForm::ComponentQuote)
+            return text::compileText(
+                std::format("(component {})", source.text), text::TextLimits {}, component::text::Forms);
+        if (source.form == ModuleForm::ComponentText)
+            return text::compileText(source.text, text::TextLimits {}, component::text::Forms);
+        return text::compileText(source.text, text::TextLimits {}, text::CoreForms);
+    }
+
+    /// The bytes of a command's module or component: a binary's strings, or the text compiled.
     /// @param source The module.
     /// @return The bytes, or the failure of malformed text.
     [[nodiscard]] std::expected<std::vector<std::byte>, Failure> moduleBytesOf(ModuleSource const& source)
     {
-        switch (source.form)
+        if (!isTextForm(source.form))
         {
-            case ModuleForm::Binary: {
-                auto const bytes = std::as_bytes(std::span { source.text });
-                return std::vector<std::byte> { bytes.begin(), bytes.end() };
-            }
-            case ModuleForm::Text:
-            case ModuleForm::Quote: break;
+            auto const bytes = std::as_bytes(std::span { source.text });
+            return std::vector<std::byte> { bytes.begin(), bytes.end() };
         }
-        return text::compileText(source.text, text::TextLimits {}, text::CoreForms)
-            .transform_error([&](text::TextError const& error) { return textFailure(source, error); });
+        return compileSource(source).transform_error(
+            [&](text::TextError const& error) { return textFailure(source, error); });
     }
 
     /// The `spectest` module every script may import from, as the spec interpreter defines it.
@@ -256,13 +291,202 @@ namespace
         Skipped,
     };
 
-    /// Runs the commands of one script against one store, as the spec interpreter runs a .wast file.
+    /// How a suite's assertions word a core trap that reached a component call (canonical::Trap of code
+    /// Core).
+    enum class CoreTrapText : uint8_t
+    {
+        Isoline,  ///< As the component layer reports it: the core's spec message.
+        Wasmtime, ///< As Wasmtime words it (CoreTrapWording), which the component suites assert.
+    };
+
+    /// Which reasons a suite's oracles may skip a command for.
+    enum class SkipPolicy : uint8_t
+    {
+        AnyReason,   ///< Any: the core suites' importer words its own.
+        SkipReasons, ///< Only a SkipReasons row's (D12); any other skip fails the file.
+    };
+
+    /// One suite a file can come from: how `--suite` names it, and the rules its files run by.
+    struct SuiteRow
+    {
+        std::string_view name;  ///< What `--suite` spells it as.
+        MessageRule rule;       ///< How an assertion's expected message must occur in the actual one.
+        CoreTrapText coreTraps; ///< How a core trap a component call met is worded.
+        SkipPolicy skips;       ///< Which skip reasons its oracles may give.
+    };
+
+    /// Every suite. The core suites hold to the reference interpreter's rules, the component suites to
+    /// Wasmtime's (D12). Adding a suite is adding a row.
+    constexpr auto Suites = std::to_array<SuiteRow>({
+        { .name = "core",
+          .rule = MessageRule::Prefix,
+          .coreTraps = CoreTrapText::Isoline,
+          .skips = SkipPolicy::AnyReason },
+        { .name = "component",
+          .rule = MessageRule::Substring,
+          .coreTraps = CoreTrapText::Wasmtime,
+          .skips = SkipPolicy::SkipReasons },
+    });
+
+    /// One engine `--engine` can name.
+    struct EngineRow
+    {
+        std::string_view name;                ///< What `--engine` spells it as.
+        isoline::api::ExecutionEngine engine; ///< The engine.
+    };
+
+    /// Every engine the runner runs components on. Adding an engine is adding a row.
+    constexpr auto Engines = std::to_array<EngineRow>({
+        { .name = "reference", .engine = isoline::api::ExecutionEngine::Reference },
+    });
+
+    /// What a file runs with: its features, its engine and its suite's rules.
+    struct RunOptions
+    {
+        FeatureSet features;                                           ///< The core features.
+        isoline::api::ExecutionEngine engine = Engines.front().engine; ///< What runs components.
+        SuiteRow suite = Suites.front();                               ///< The suite's rules.
+        /// The gated component features: wasm-tools' defaults, which enable implements, unless
+        /// `--component-features` names others (the importer maps them per file).
+        component::ComponentFeatureSet componentFeatures =
+            component::ComponentFeatureSet::defaults().with(component::ComponentFeature::Implements);
+    };
+
+    /// One row of CallFailureStages: the stage a component call's failure is reported at, and the
+    /// message it is reported with, empty for the failure's own.
+    struct CallFailureRow
+    {
+        component::api::ComponentCallFailure failure; ///< The failure; equal to the row's index.
+        Stage stage;                                  ///< Where it is reported.
+        std::string_view text;                        ///< Its message; empty for the failure's own.
+    };
+
+    /// How each failure of a component call is reported, in ComponentCallFailure's order. A store a trap
+    /// locked down refuses every later call, which Wasmtime reports as the trap of entering it.
+    constexpr auto CallFailureStages = std::to_array<CallFailureRow>({
+        { .failure = component::api::ComponentCallFailure::Trap, .stage = Stage::Execute, .text = "" },
+        { .failure = component::api::ComponentCallFailure::Interrupted, .stage = Stage::Execute, .text = "" },
+        { .failure = component::api::ComponentCallFailure::HostFailure, .stage = Stage::Execute, .text = "" },
+        { .failure = component::api::ComponentCallFailure::LockedDown,
+          .stage = Stage::Execute,
+          .text = component::canonical::trapCodeRow(component::canonical::TrapCode::CannotEnter).format },
+        { .failure = component::api::ComponentCallFailure::ArgumentMismatch,
+          .stage = Stage::Harness,
+          .text = "" },
+        { .failure = component::api::ComponentCallFailure::ForeignFunction,
+          .stage = Stage::Harness,
+          .text = "" },
+        { .failure = component::api::ComponentCallFailure::StoreDeleted,
+          .stage = Stage::Harness,
+          .text = "" },
+        { .failure = component::api::ComponentCallFailure::Instantiating,
+          .stage = Stage::Harness,
+          .text = "" },
+        { .failure = component::api::ComponentCallFailure::ResourceExhausted,
+          .stage = Stage::Execute,
+          .text = "" },
+    });
+
+    static_assert(
+        [] {
+            auto index = std::size_t { 0 };
+            for (auto const& row: CallFailureStages)
+                if (static_cast<std::size_t>(row.failure) != index++)
+                    return false;
+            return index == static_cast<std::size_t>(component::api::LastComponentCallFailure) + 1;
+        }(),
+        "CallFailureStages holds one row per ComponentCallFailure, at the index of its enumerator");
+
+    /// One row of InstantiationStages: the stage a failed component instantiation is reported at.
+    struct InstantiationFailureRow
+    {
+        component::runtime::InstantiationFailureKind kind; ///< The failure; equal to the row's index.
+        Stage stage;                                       ///< Where it is reported.
+        std::string_view text;                             ///< Its message, before its detail.
+    };
+
+    /// How each failure of a component instantiation is reported, in InstantiationFailureKind's order.
+    constexpr auto InstantiationStages = std::to_array<InstantiationFailureRow>({
+        { .kind = component::runtime::InstantiationFailureKind::Reentrant,
+          .stage = Stage::Harness,
+          .text = "instantiation re-entered its store" },
+        { .kind = component::runtime::InstantiationFailureKind::LockedDown,
+          .stage = Stage::Harness,
+          .text = "instantiation in a locked-down store" },
+        { .kind = component::runtime::InstantiationFailureKind::EngineMismatch,
+          .stage = Stage::Harness,
+          .text = "component of another engine" },
+        { .kind = component::runtime::InstantiationFailureKind::ImportMismatch,
+          .stage = Stage::Link,
+          .text = "import has the wrong type" },
+        { .kind = component::runtime::InstantiationFailureKind::LimitExceeded,
+          .stage = Stage::Instantiate,
+          .text = "component limit exceeded" },
+        { .kind = component::runtime::InstantiationFailureKind::CoreInstantiation,
+          .stage = Stage::Instantiate,
+          .text = "core instantiation failed" },
+        { .kind = component::runtime::InstantiationFailureKind::CoreDefinition,
+          .stage = Stage::Instantiate,
+          .text = "core definition failed" },
+        { .kind = component::runtime::InstantiationFailureKind::Trap,
+          .stage = Stage::Instantiate,
+          .text = "" },
+        { .kind = component::runtime::InstantiationFailureKind::HostFailure,
+          .stage = Stage::Instantiate,
+          .text = "host function failed" },
+        { .kind = component::runtime::InstantiationFailureKind::HostMemoryExhausted,
+          .stage = Stage::Harness,
+          .text = "host out of memory" },
+    });
+
+    static_assert(
+        [] {
+            auto index = std::size_t { 0 };
+            for (auto const& row: InstantiationStages)
+                if (static_cast<std::size_t>(row.kind) != index++)
+                    return false;
+            return index
+                   == static_cast<std::size_t>(
+                          component::runtime::InstantiationFailureKind::HostMemoryExhausted)
+                          + 1;
+        }(),
+        "InstantiationStages holds one row per InstantiationFailureKind, at the index of its enumerator");
+
+    /// A component instance and the store it alone lives in: each component command gets a fresh store,
+    /// as Wasmtime's runner gives it (D12).
+    struct ComponentRun
+    {
+        std::unique_ptr<component::api::ComponentStore> store; ///< Its store.
+        component::api::ComponentInstance instance;            ///< The instance.
+    };
+
+    /// What a command acts on: a core module instance of the runner's store, or a component instance.
+    using Target = std::variant<uint32_t, std::shared_ptr<ComponentRun>>;
+
+    /// What a definition names: a validated core module, or a loaded component.
+    using Definition =
+        std::variant<std::shared_ptr<validate::ValidatedModule const>, component::api::Component>;
+
+    /// A component function's results, with the function that returned them.
+    struct ComponentResults
+    {
+        component::api::ComponentFunction function; ///< The function called.
+        component::canonical::Values values;        ///< Its results, in its arena.
+    };
+
+    /// Runs the commands of one script against one store, as the spec interpreter runs a .wast file; a
+    /// component, as Wasmtime's runner does, against a store of its own.
     class Runner
     {
       public:
-        explicit Runner(FeatureSet features):
-            _features { features },
-            _store { runtime::StoreLimits {}, runtime::StoreServices { .allocator = _allocator } }
+        explicit Runner(RunOptions const& options):
+            _options { options },
+            _store { runtime::StoreLimits {}, runtime::StoreServices { .allocator = _allocator } },
+            _engine { isoline::api::EngineConfig { .features = options.features, .engine = options.engine } },
+            _loader { _engine },
+            _validator { _engine },
+            _componentConfig { .features = options.componentFeatures, .limits = {} },
+            _linker { linkSpectest(_engine, _componentConfig) }
         {
             _registered.emplace("spectest", _store.addModuleInstance(makeSpectest(_store)));
         }
@@ -282,6 +506,16 @@ namespace
       private:
         using Outcome = std::expected<void, std::string>;
 
+        /// The component spectest, or an exception: a runner that cannot define it runs nothing.
+        [[nodiscard]] static component::api::Linker linkSpectest(
+            isoline::api::Engine const& engine, component::api::ComponentConfig const& config)
+        {
+            auto linker = makeComponentSpectest(engine, config);
+            if (!linker)
+                throw std::runtime_error { linker.error() };
+            return std::move(*linker);
+        }
+
         [[nodiscard]] Outcome execute(Command const& command)
         {
             switch (command.kind)
@@ -290,27 +524,23 @@ namespace
                 case CommandKind::ModuleDefinition: return defineDefinition(command);
                 case CommandKind::ModuleInstance: return instantiateDefinition(command);
                 case CommandKind::Register: return registerModule(command);
-                case CommandKind::Invoke:
-                    return perform(command.action)
-                        .transform([](auto const&) {})
-                        .transform_error(&describeFailure);
+                case CommandKind::Invoke: return performAny(command).transform_error(&describeFailure);
                 case CommandKind::AssertReturn: return assertReturn(command);
                 case CommandKind::AssertTrap:
                 case CommandKind::AssertExhaustion:
-                    return expectFailure(command, perform(command.action), Stage::Execute);
+                    return expectFailure(command, performAny(command), Stage::Execute);
                 case CommandKind::AssertTrapModule:
                 case CommandKind::AssertUninstantiable:
                     return expectFailure(command, instantiateCommandModule(command), Stage::Instantiate);
                 case CommandKind::AssertInvalid:
-                    return expectFailure(command, loadModule(command), Stage::Validate);
+                    return expectFailure(command, loadDefinition(command), Stage::Validate);
                 case CommandKind::AssertMalformed:
-                    return expectFailure(command, loadModule(command), Stage::Decode);
+                    return expectFailure(command, loadDefinition(command), Stage::Decode);
                 case CommandKind::AssertMalformedCustom:
                     return expectFailure(command, loadModule(command), Stage::MalformedCustom);
                 case CommandKind::AssertUnlinkable:
                     return expectFailure(command, instantiateCommandModule(command), Stage::Link);
-                case CommandKind::AssertException:
-                    return expectFailure(command, perform(command.action), Stage::Exception);
+                case CommandKind::AssertException: return assertException(command);
                 case CommandKind::AssertInvalidCustom: return assertInvalidCustom(command);
                 case CommandKind::Skip: return {};
             }
@@ -323,14 +553,35 @@ namespace
                                                    : std::format("unexpected failure: {}", failure.message);
         }
 
-        /// Checks that @p result failed at @p stage with a message starting with the expected one.
+        /// Checks that @p result failed at @p stage with a message holding the expected one, as the
+        /// suite's rule finds it.
         template <typename T>
-        [[nodiscard]] static Outcome expectFailure(Command const& command,
-                                                   std::expected<T, Failure> const& result,
-                                                   Stage stage)
+        [[nodiscard]] Outcome expectFailure(Command const& command,
+                                            std::expected<T, Failure> const& result,
+                                            Stage stage) const
         {
-            return checkFailure(
-                stage, command.text, result ? std::nullopt : std::optional { result.error() });
+            return checkFailure(stage,
+                                command.text,
+                                result ? std::nullopt : std::optional { result.error() },
+                                _options.suite.rule);
+        }
+
+        /// assert_exception: a core invocation must throw; a component call must trap with the uncaught
+        /// exception's trap, as no exception crosses the component boundary.
+        [[nodiscard]] Outcome assertException(Command const& command)
+        {
+            auto const target = instanceNamed(command.action.module);
+            if (!target)
+                return std::unexpected { target.error().message };
+            if (std::holds_alternative<uint32_t>(*target))
+                return expectFailure(command, perform(command.action), Stage::Exception);
+            auto const uncaught =
+                component::canonical::trapCodeRow(component::canonical::TrapCode::UncaughtException).format;
+            auto const result = performComponent(command, *std::get<std::shared_ptr<ComponentRun>>(*target));
+            return checkFailure(Stage::Execute,
+                                uncaught,
+                                result ? std::nullopt : std::optional { result.error() },
+                                MessageRule::Substring);
         }
 
         /// Checks that a module loads, and that one of the custom sections the decoder interpreted was
@@ -375,7 +626,7 @@ namespace
                     return Failure { .stage = Stage::Validate, .message = validate::specMessage(error) };
                 }
             };
-            return validate::ValidatedModule::load(bytes, _features, binary::DecodeLimits {})
+            return validate::ValidatedModule::load(bytes, _options.features, binary::DecodeLimits {})
                 .transform_error(
                     [](validate::ModuleError const& error) { return std::visit(Describe {}, error); });
         }
@@ -386,6 +637,75 @@ namespace
         {
             return moduleBytes(command).and_then(
                 [this](std::vector<std::byte> const& bytes) { return loadModule(bytes); });
+        }
+
+        /// Loads a component on the runner's engine.
+        [[nodiscard]] std::expected<component::api::Component, Failure> loadComponent(
+            std::span<std::byte const> bytes)
+        {
+            struct Describe
+            {
+                Failure operator()(component::binary::DecodeError const& error) const
+                {
+                    return Failure { .stage = Stage::Decode,
+                                     .message = component::binary::specMessage(error) };
+                }
+                Failure operator()(component::validate::ValidationError const& error) const
+                {
+                    return Failure { .stage = Stage::Validate,
+                                     .message = component::validate::specMessage(error) };
+                }
+                Failure operator()(component::api::CoreModuleLoadError const& error) const
+                {
+                    return Failure { .stage = Stage::Validate,
+                                     .message =
+                                         std::format("core module {} refused at load", error.ordinal) };
+                }
+                Failure operator()(component::api::CoreModuleEngineMismatch const& error) const
+                {
+                    return harnessFailure(std::format("core module {} is of another engine", error.ordinal));
+                }
+                Failure operator()(component::api::CoreFeaturesMismatch const&) const
+                {
+                    return harnessFailure("the core module validator's features are not the engine's");
+                }
+                Failure operator()(isoline::api::HostMemoryExhausted const&) const
+                {
+                    return harnessFailure("the host ran out of memory loading a component");
+                }
+            };
+            return component::api::Component::load(_engine, bytes, _componentConfig, _loader, _validator)
+                .transform_error([](component::api::ComponentLoadError const& error) {
+                    return std::visit(Describe {}, error);
+                });
+        }
+
+        /// Whether a command's bytes are a component: by their preamble (layerOf()), or, for bytes of no
+        /// layer, by the form the script gives them in, which decides whose decoder reports them.
+        [[nodiscard]] static bool isComponent(ModuleSource const& source,
+                                              std::span<std::byte const> bytes) noexcept
+        {
+            switch (component::binary::layerOf(bytes))
+            {
+                case component::binary::LayerKind::Component: return true;
+                case component::binary::LayerKind::CoreModule: return false;
+                case component::binary::LayerKind::Unknown: break;
+            }
+            return isComponentForm(source.form);
+        }
+
+        /// Loads a command's module or component, by the layer of its bytes.
+        [[nodiscard]] std::expected<Definition, Failure> loadDefinition(Command const& command)
+        {
+            auto const bytes = moduleBytes(command);
+            if (!bytes)
+                return std::unexpected { bytes.error() };
+            if (isComponent(command.source, *bytes))
+                return loadComponent(*bytes).transform(
+                    [](component::api::Component component) { return Definition { std::move(component) }; });
+            return loadModule(*bytes).transform([](std::shared_ptr<validate::ValidatedModule const> module) {
+                return Definition { std::move(module) };
+            });
         }
 
         /// Resolves a module's imports against the registered modules, in import order.
@@ -448,41 +768,86 @@ namespace
             return std::unexpected { std::visit(Describe {}, instance.error()) };
         }
 
-        [[nodiscard]] std::expected<uint32_t, Failure> instantiateCommandModule(Command const& command)
+        /// The text of a component trap: a core trap as the suite words it, else the trap's own.
+        [[nodiscard]] std::string trapText(component::canonical::Trap const& trap) const
         {
-            return loadModule(command).and_then([&](std::shared_ptr<validate::ValidatedModule const> module) {
-                return instantiateModule(std::move(module));
-            });
+            if (trap.code == component::canonical::TrapCode::Core && trap.core
+                && _options.suite.coreTraps == CoreTrapText::Wasmtime)
+                return std::string { coreTrapWording(*trap.core) };
+            return trap.message();
         }
 
-        /// Instantiates a module and makes it current. A name names both the instance and, as in
-        /// the reference interpreter's scripts, a definition for ModuleInstance.
+        /// Instantiates a component in a store of its own, against the component spectest.
+        [[nodiscard]] std::expected<std::shared_ptr<ComponentRun>, Failure> instantiateComponent(
+            component::api::Component const& component)
+        {
+            auto store = std::make_unique<component::api::ComponentStore>(
+                _engine, _componentAllocator, _componentConfig);
+            auto instance = store->instantiate(component, _linker);
+            if (instance)
+                return std::make_shared<ComponentRun>(
+                    ComponentRun { .store = std::move(store), .instance = std::move(*instance) });
+            auto const describe = [this](component::api::InstantiateComponentError const& error) -> Failure {
+                if (auto const* missing = std::get_if<component::api::UnsatisfiedImport>(&error))
+                    return Failure { .stage = Stage::Link,
+                                     .message = std::format("import `{}` was not found", missing->name) };
+                if (auto const* mismatch = std::get_if<component::api::ImportTypeMismatch>(&error))
+                    return Failure { .stage = Stage::Link,
+                                     .message = std::format("import `{}` has the wrong type: {}",
+                                                            mismatch->name,
+                                                            mismatch->detail) };
+                if (std::holds_alternative<isoline::api::EngineMismatch>(error))
+                    return harnessFailure("a component of another engine");
+                if (auto const* foreign = std::get_if<component::api::ForeignInstance>(&error))
+                    return harnessFailure(std::format("import `{}` of another store", foreign->name));
+                auto const& failure = std::get<component::runtime::InstantiationFailure>(error);
+                auto const& row = InstantiationStages.at(static_cast<std::size_t>(failure.kind));
+                if (auto const* trap = std::get_if<component::canonical::Trap>(&failure.detail))
+                    return Failure { .stage = row.stage, .message = trapText(*trap) };
+                return Failure { .stage = row.stage, .message = std::string { row.text } };
+            };
+            return std::unexpected { describe(instance.error()) };
+        }
+
+        /// Instantiates a definition: a core module in the runner's store, a component in one of its own.
+        [[nodiscard]] std::expected<Target, Failure> instantiateDefinition(Definition const& definition)
+        {
+            if (auto const* component = std::get_if<component::api::Component>(&definition))
+                return instantiateComponent(*component).transform([](std::shared_ptr<ComponentRun> run) {
+                    return Target { std::move(run) };
+                });
+            return instantiateModule(std::get<std::shared_ptr<validate::ValidatedModule const>>(definition))
+                .transform([](uint32_t instance) { return Target { instance }; });
+        }
+
+        [[nodiscard]] std::expected<Target, Failure> instantiateCommandModule(Command const& command)
+        {
+            return loadDefinition(command).and_then(
+                [&](Definition const& definition) { return instantiateDefinition(definition); });
+        }
+
+        /// Instantiates a module or a component and makes it current. A name names both the instance and,
+        /// as in the reference interpreter's scripts, a definition for ModuleInstance.
         [[nodiscard]] Outcome defineModule(Command const& command)
         {
             _current = std::nullopt; // the commands after a module that failed fail too
-            auto module = loadModule(command);
-            if (!module)
-                return std::unexpected { describeFailure(module.error()) };
+            auto const definition = loadDefinition(command);
+            if (!definition)
+                return std::unexpected { describeFailure(definition.error()) };
             if (command.name)
-                _definitions[*command.name] = *module;
-            auto const instance = instantiateModule(std::move(*module));
-            if (!instance)
-                return std::unexpected { describeFailure(instance.error()) };
-            _current = *instance;
-            if (command.name)
-                _named[*command.name] = *instance;
-            return {};
+                _definitions.insert_or_assign(*command.name, *definition);
+            return makeCurrent(command, instantiateDefinition(*definition));
         }
 
-        /// Decodes and validates a module without instantiating it; a name keeps it for
+        /// Decodes and validates a module or a component without instantiating it; a name keeps it for
         /// ModuleInstance.
         [[nodiscard]] Outcome defineDefinition(Command const& command)
         {
-            auto module = loadModule(command);
-            if (!module)
-                return std::unexpected { describeFailure(module.error()) };
+            auto const definition = loadDefinition(command);
+            if (!definition)
+                return std::unexpected { describeFailure(definition.error()) };
             if (command.name)
-                _definitions[*command.name] = std::move(*module);
+                _definitions.insert_or_assign(*command.name, *definition);
             return {};
         }
 
@@ -493,16 +858,22 @@ namespace
             auto const definition = _definitions.find(command.definition);
             if (definition == _definitions.end())
                 return std::unexpected { std::format("no module definition named {}", command.definition) };
-            auto const instance = instantiateModule(definition->second);
+            return makeCurrent(command, instantiateDefinition(definition->second));
+        }
+
+        /// Makes an instantiated target current, under the command's name if it gives one.
+        [[nodiscard]] Outcome makeCurrent(Command const& command,
+                                          std::expected<Target, Failure> const& instance)
+        {
             if (!instance)
                 return std::unexpected { describeFailure(instance.error()) };
             _current = *instance;
             if (command.name)
-                _named[*command.name] = *instance;
+                _named.insert_or_assign(*command.name, *instance);
             return {};
         }
 
-        [[nodiscard]] std::expected<uint32_t, Failure> instanceNamed(
+        [[nodiscard]] std::expected<Target, Failure> instanceNamed(
             std::optional<std::string> const& name) const
         {
             if (!name)
@@ -517,21 +888,49 @@ namespace
             return found->second;
         }
 
+        /// The core module instance @p name names.
+        [[nodiscard]] std::expected<uint32_t, Failure> coreInstanceNamed(
+            std::optional<std::string> const& name) const
+        {
+            return instanceNamed(name).and_then([](Target const& target) -> std::expected<uint32_t, Failure> {
+                if (auto const* instance = std::get_if<uint32_t>(&target))
+                    return *instance;
+                return std::unexpected { harnessFailure(
+                    "a component instance where a core module is expected") };
+            });
+        }
+
+        /// Registers a core module instance for later imports. A component instance lives in a store of its
+        /// own, which no other store's instantiation reaches, so it is no exporter (as in Wasmtime's runner).
         [[nodiscard]] Outcome registerModule(Command const& command)
         {
-            auto const instance = instanceNamed(command.name);
+            auto const instance = coreInstanceNamed(command.name);
             if (!instance)
-                return std::unexpected { instance.error().message };
+                return std::unexpected { std::format("register: {}", instance.error().message) };
             _registered[command.text] = *instance;
             return {};
         }
 
-        /// Invokes an exported function or reads an exported global.
+        /// Performs an action on its target, whichever layer it is of, its results unchecked.
+        [[nodiscard]] std::expected<void, Failure> performAny(Command const& command)
+        {
+            auto const target = instanceNamed(command.action.module);
+            if (!target)
+                return std::unexpected { target.error() };
+            if (auto const* run = std::get_if<std::shared_ptr<ComponentRun>>(&*target))
+                return performComponent(command, **run).transform([](auto const&) {});
+            return perform(command.action).transform([](auto const&) {});
+        }
+
+        /// Invokes an exported function or reads an exported global of a core module instance.
         [[nodiscard]] std::expected<std::vector<Value>, Failure> perform(Action const& action)
         {
-            auto const instance = instanceNamed(action.module);
+            auto const instance = coreInstanceNamed(action.module);
             if (!instance)
                 return std::unexpected { instance.error() };
+            if (action.args.size() != action.arity)
+                return std::unexpected { harnessFailure(
+                    std::format("a component value passed to the core function '{}'", action.field)) };
             auto const target = exportOf(*instance, action.field);
             if (!target)
                 return std::unexpected { harnessFailure(std::format("no export '{}'", action.field)) };
@@ -559,8 +958,68 @@ namespace
             return results;
         }
 
+        /// The failure of a component call, as CallFailureStages reports it.
+        [[nodiscard]] Failure callFailure(component::api::ComponentCallError const& error) const
+        {
+            auto const& row = CallFailureStages.at(static_cast<std::size_t>(error.failure));
+            if (!row.text.empty())
+                return Failure { .stage = row.stage, .message = std::string { row.text } };
+            if (auto const* trap = std::get_if<component::canonical::Trap>(&error.detail))
+                return Failure { .stage = row.stage, .message = trapText(*trap) };
+            return Failure { .stage = row.stage, .message = error.message() };
+        }
+
+        /// Calls an exported function of a component instance with the command's component arguments.
+        [[nodiscard]] std::expected<ComponentResults, Failure> performComponent(Command const& command,
+                                                                                ComponentRun& run) const
+        {
+            auto const& action = command.action;
+            if (action.kind == ActionKind::Get)
+                return std::unexpected { harnessFailure(
+                    std::format("a component exports no global '{}'", action.field)) };
+            if (command.componentArgs.size() != action.arity)
+                return std::unexpected { harnessFailure(
+                    std::format("a core value passed to the component function '{}'", action.field)) };
+            auto const found = run.instance.function(action.field);
+            if (!found)
+                return std::unexpected { callFailure(found.error()) };
+            if (!*found)
+                return std::unexpected { harnessFailure(std::format(
+                    "no export '{}' (or one that re-exports a host import, which the runner does not call)",
+                    action.field)) };
+            auto const& function = **found;
+            auto builder = run.instance.argumentsFor(function);
+            if (!builder)
+                return std::unexpected { callFailure(builder.error()) };
+            auto const* type = function.type();
+            auto const* arena = function.types();
+            if (type == nullptr || arena == nullptr)
+                return std::unexpected { harnessFailure("the component store is gone") };
+            auto parameters = std::vector<component::types::TypeId> {};
+            for (auto const& [label, parameter]: type->params)
+                parameters.push_back(parameter);
+            if (auto const built = buildComponentValues(command.componentArgs, *arena, parameters, *builder);
+                !built)
+                return std::unexpected { built.error() };
+            auto const arguments = builder->finish();
+            if (!arguments)
+                return std::unexpected { harnessFailure(arguments.error().message()) };
+            auto results = run.instance.call(function, *arguments);
+            if (!results)
+                return std::unexpected { callFailure(results.error()) };
+            return ComponentResults { .function = function, .values = std::move(*results) };
+        }
+
         [[nodiscard]] Outcome assertReturn(Command const& command)
         {
+            auto const target = instanceNamed(command.action.module);
+            if (!target)
+                return std::unexpected { target.error().message };
+            if (auto const* run = std::get_if<std::shared_ptr<ComponentRun>>(&*target))
+                return assertComponentReturn(command, **run);
+            if (command.expected.size() != command.expectedCount)
+                return std::unexpected { std::format("'{}': a component value expected of a core function",
+                                                     command.action.field) };
             auto const results = perform(command.action);
             if (!results)
                 return std::unexpected { describeFailure(results.error()) };
@@ -569,16 +1028,57 @@ namespace
             });
         }
 
-        FeatureSet _features;
+        /// assert_return of a component function: each result equal to its expected value
+        /// (canonical::equal(), every NaN equal to every NaN), built against the result's type.
+        [[nodiscard]] Outcome assertComponentReturn(Command const& command, ComponentRun& run) const
+        {
+            auto const& field = command.action.field;
+            if (command.componentExpected.size() != command.expectedCount)
+                return std::unexpected { std::format("'{}': a core pattern expected of a component function",
+                                                     field) };
+            auto const results = performComponent(command, run);
+            if (!results)
+                return std::unexpected { describeFailure(results.error()) };
+            auto const* type = results->function.type();
+            auto const* arena = results->function.types();
+            if (type == nullptr || arena == nullptr)
+                return std::unexpected { std::string { "the component store is gone" } };
+            auto resultTypes = std::vector<component::types::TypeId> {};
+            if (type->result)
+                resultTypes.push_back(*type->result);
+            auto const expected = componentValuesOf(command.componentExpected,
+                                                    *arena,
+                                                    resultTypes,
+                                                    std::make_shared<component::canonical::LiveBytesBudget>(
+                                                        _componentConfig.limits.maxLiveValueBytes));
+            if (!expected)
+                return std::unexpected { std::format("'{}': {}", field, expected.error().message) };
+            auto const& actual = results->values;
+            for (auto const index: std::views::iota(std::size_t { 0 }, actual.rootCount()))
+                if (!component::canonical::equal(expected->root(index), actual.root(index)))
+                    return std::unexpected { std::format(
+                        "'{}': expected {}, got {}",
+                        field,
+                        component::canonical::toText(*arena, expected->root(index)),
+                        component::canonical::toText(*arena, actual.root(index))) };
+            return {};
+        }
+
+        RunOptions _options;
         runtime::HeapMemoryAllocator _allocator;
         runtime::Store _store;
         interpreter::ReferenceInterpreter _interpreter;
-        std::optional<uint32_t> _current;
-        std::map<std::string, uint32_t, std::less<>> _named;
+        isoline::api::Engine _engine;
+        component::api::EngineCoreModuleLoader _loader;
+        component::api::EngineCoreModuleValidator _validator;
+        isoline::api::HeapMemoryAllocator _componentAllocator;
+        component::api::ComponentConfig _componentConfig;
+        component::api::Linker _linker;
+        std::optional<Target> _current;
+        std::map<std::string, Target, std::less<>> _named;
         std::map<std::string, uint32_t, std::less<>> _registered;
-        std::map<std::string, std::shared_ptr<validate::ValidatedModule const>, std::less<>> _definitions;
+        std::map<std::string, Definition, std::less<>> _definitions;
     };
-
     /// The commands of a script, and the oracle its modules given as text are checked against.
     struct Script
     {
@@ -613,10 +1113,27 @@ namespace
                              .message = std::format("{}:{}: {}", path.string(), error.line, error.message) };
     }
 
-    /// Reads `<name>.wast` and its oracle, which must count its commands alike and whose every entry
-    /// must fit the command it lands on (checkEntries), and marks the commands the oracle skips: they are
-    /// never compiled nor run.
-    [[nodiscard]] std::expected<Script, ScriptError> readWast(std::filesystem::path const& scriptPath)
+    /// Checks that every skip of an oracle gives a reason @p policy admits: under SkipReasons, one of
+    /// that table's rows.
+    [[nodiscard]] std::expected<void, std::string> checkSkipReasons(Oracle const& oracle, SkipPolicy policy)
+    {
+        if (policy == SkipPolicy::AnyReason)
+            return {};
+        for (auto const& [ordinal, entry]: oracle.entries)
+            if (entry.skip && skipReasonOf(*entry.skip) == nullptr)
+                return std::unexpected { std::format(
+                    "command {} (line {}) is skipped for '{}', which is no SkipReasons row",
+                    ordinal,
+                    entry.line,
+                    *entry.skip) };
+        return {};
+    }
+
+    /// Reads `<name>.wast` and its oracle, which must count its commands alike, whose every entry must fit
+    /// the command it lands on (checkEntries) and whose every skip must give a reason @p policy admits, and
+    /// marks the commands the oracle skips: they are never compiled nor run.
+    [[nodiscard]] std::expected<Script, ScriptError> readWast(std::filesystem::path const& scriptPath,
+                                                              SkipPolicy policy)
     {
         auto const text = readText(scriptPath);
         if (!text)
@@ -632,9 +1149,9 @@ namespace
         auto oracle = parseOracle(*manifest);
         if (!oracle)
             return std::unexpected { parseFailure(oraclePath, oracle.error()) };
-        auto const aligned = checkAlignment(*oracle, commands->size()).and_then([&] {
-            return checkEntries(*oracle, *commands);
-        });
+        auto const aligned = checkAlignment(*oracle, commands->size())
+                                 .and_then([&] { return checkEntries(*oracle, *commands); })
+                                 .and_then([&] { return checkSkipReasons(*oracle, policy); });
         if (!aligned)
             return std::unexpected { ScriptError {
                 .status = 1,
@@ -681,6 +1198,30 @@ namespace
         return digest;
     }
 
+    /// The canonical form of a module or a component, by the layer of its bytes: binary::canonicalize, or
+    /// component::binary::canonicalizeComponent under every gated feature, as the text is compiled.
+    /// @param bytes A module or a component.
+    /// @param features The core features the decoder accepts.
+    /// @return The canonical bytes, or the decoder's message.
+    [[nodiscard]] std::expected<std::vector<std::byte>, std::string> canonicalOf(
+        std::span<std::byte const> bytes, FeatureSet const& features)
+    {
+        if (component::binary::layerOf(bytes) == component::binary::LayerKind::Component)
+        {
+            auto modules = component::text::P10CoreModules {};
+            return component::binary::canonicalizeComponent(bytes,
+                                                            component::text::everyComponentFeature(),
+                                                            component::ComponentLimits {},
+                                                            modules)
+                .transform_error([](component::binary::DecodeError const& error) {
+                    return component::binary::specMessage(error);
+                });
+        }
+        return binary::canonicalize(bytes, features).transform_error([](binary::DecodeError const& error) {
+            return std::string { binary::specMessage(error) };
+        });
+    }
+
     /// Checks that a module given as text encodes as the oracle's binary does, canonically
     /// (binary::canonicalize): encoding choices aside, the two must mean the same module. Two that do not
     /// decode are compared byte for byte; one that decodes and one that does not differ.
@@ -694,8 +1235,7 @@ namespace
                                                                  std::filesystem::path const& directory,
                                                                  FeatureSet const& features)
     {
-        if (!entry || !entry->wasm
-            || (command.source.form != ModuleForm::Text && command.source.form != ModuleForm::Quote))
+        if (!entry || !entry->wasm || !isTextForm(command.source.form))
             return Parity {};
         auto const ours = moduleBytesOf(command.source);
         if (!ours)
@@ -703,16 +1243,15 @@ namespace
         auto const theirs = readFile(directory / *entry->wasm);
         if (!theirs)
             return std::unexpected { theirs.error().message };
-        auto const ourCanonical = binary::canonicalize(*ours, features);
-        auto const theirCanonical = binary::canonicalize(*theirs, features);
+        auto const ourCanonical = canonicalOf(*ours, features);
+        auto const theirCanonical = canonicalOf(*theirs, features);
         auto const& left = ourCanonical ? *ourCanonical : *ours;
         auto parity = Parity { .kind = ParityKind::Differs, .digest = digestOf(left) };
         if (ourCanonical.has_value() != theirCanonical.has_value())
         {
-            parity.difference = std::format(
-                "encoding differs from the oracle: {} does not decode ({})",
-                ourCanonical ? "the oracle's" : "Isoline's",
-                binary::specMessage(ourCanonical ? theirCanonical.error() : ourCanonical.error()));
+            parity.difference = std::format("encoding differs from the oracle: {} does not decode ({})",
+                                            ourCanonical ? "the oracle's" : "Isoline's",
+                                            ourCanonical ? theirCanonical.error() : ourCanonical.error());
             return parity;
         }
         auto const& right = theirCanonical ? *theirCanonical : *theirs;
@@ -793,7 +1332,7 @@ namespace
     [[nodiscard]] std::expected<void, std::string> checkDivergence(Command const& command,
                                                                    std::string_view message)
     {
-        auto const compiled = text::compileText(command.source.text, text::TextLimits {}, text::CoreForms);
+        auto const compiled = compileSource(command.source);
         if (compiled)
             return std::unexpected { std::format(
                 "expected the recorded divergence '{}', but the text compiles", message) };
@@ -810,24 +1349,25 @@ namespace
     /// Runs the script in @p directory: `<name>.wast` against `<name>.oracle`.
     /// @param directory The directory of one imported .wast file.
     /// @param expectedSkips How many of its commands are skipped.
-    /// @param features The features the decoder and the validator accept.
+    /// @param options The features the decoder and the validator accept, the engine and the suite's rules.
     /// @return 0 when every command passed and exactly @p expectedSkips were skipped, 1 when not or when
     ///         the oracle does not describe the script, and 2 when a file cannot be read.
     [[nodiscard]] int runDirectory(std::filesystem::path directory,
                                    std::size_t expectedSkips,
-                                   FeatureSet features)
+                                   RunOptions const& options)
     {
+        auto const& features = options.features;
         if (!directory.has_filename())
             directory = directory.parent_path();
         auto const scriptPath = directory / (directory.filename().string() + ".wast");
-        auto const script = readWast(scriptPath);
+        auto const script = readWast(scriptPath, options.suite.skips);
         if (!script)
         {
             (script.error().status == 2 ? std::cerr : std::cout) << script.error().message << '\n';
             return script.error().status;
         }
 
-        auto runner = Runner { features };
+        auto runner = Runner { options };
         auto counts = std::array<std::size_t, 3> {};
         auto const location = scriptPath.string();
         for (auto const [ordinal, command]: core::views::enumerate(script->commands))
@@ -877,6 +1417,132 @@ namespace
             return std::nullopt;
         return count;
     }
+
+    /// Whether a command line must give an option.
+    enum class OptionPresence : uint8_t
+    {
+        Optional, ///< It may be left out, for its default.
+        Required, ///< It must be given.
+    };
+
+    /// Reads an option's value into the options, or says why it names nothing.
+    using OptionReader = std::expected<void, std::string> (*)(RunOptions& options, std::string_view value);
+
+    /// One option of the command line: its flag, whether it is required, and what reads its value.
+    struct OptionRow
+    {
+        std::string_view flag;   ///< `--features` and its siblings.
+        OptionPresence presence; ///< Whether it must be given.
+        OptionReader read;       ///< What reads its value.
+        std::string_view usage;  ///< Its value, for the usage line.
+    };
+
+    /// The row of @p rows whose `name` is @p name, or nullptr.
+    template <typename Row, std::size_t Count>
+    [[nodiscard]] constexpr Row const* rowNamed(std::array<Row, Count> const& rows,
+                                                std::string_view name) noexcept
+    {
+        auto const found = std::ranges::find(rows, name, &Row::name);
+        return found == rows.end() ? nullptr : &*found;
+    }
+
+    /// The gated features a `--component-features` value names: `none`, or feature names (wasm-tools'
+    /// `--features` spellings) joined by commas.
+    [[nodiscard]] std::expected<component::ComponentFeatureSet, std::string> componentFeaturesNamed(
+        std::string_view value)
+    {
+        auto features = component::ComponentFeatureSet::defaults();
+        if (value == "none")
+            return features;
+        for (auto const name: std::views::split(value, ','))
+        {
+            auto const text = std::string_view { name.begin(), name.end() };
+            auto const row = std::ranges::find(
+                component::ComponentFeatureTable, text, &component::ComponentFeatureRow::name);
+            if (row == component::ComponentFeatureTable.end())
+                return std::unexpected { std::format("no component feature named '{}'", text) };
+            features = features.with(row->feature);
+        }
+        return features;
+    }
+
+    /// Every option of the command line. Adding one is adding a row.
+    constexpr auto Options = std::to_array<OptionRow>({
+        { .flag = "--features",
+          .presence = OptionPresence::Required,
+          .read = [](RunOptions& options, std::string_view value) -> std::expected<void, std::string> {
+              auto const features = featureSetNamed(value);
+              if (!features)
+                  return std::unexpected { std::format("no feature set named '{}'", value) };
+              options.features = *features;
+              return {};
+          },
+          .usage = "<wasm2|wasm3|all>" },
+        { .flag = "--engine",
+          .presence = OptionPresence::Optional,
+          .read = [](RunOptions& options, std::string_view value) -> std::expected<void, std::string> {
+              auto const* const row = rowNamed(Engines, value);
+              if (row == nullptr)
+                  return std::unexpected { std::format("no engine named '{}'", value) };
+              options.engine = row->engine;
+              return {};
+          },
+          .usage = "<reference>" },
+        { .flag = "--suite",
+          .presence = OptionPresence::Optional,
+          .read = [](RunOptions& options, std::string_view value) -> std::expected<void, std::string> {
+              auto const* const row = rowNamed(Suites, value);
+              if (row == nullptr)
+                  return std::unexpected { std::format("no suite named '{}'", value) };
+              options.suite = *row;
+              return {};
+          },
+          .usage = "<core|component>" },
+        { .flag = "--component-features",
+          .presence = OptionPresence::Optional,
+          .read = [](RunOptions& options, std::string_view value) -> std::expected<void, std::string> {
+              return componentFeaturesNamed(value).transform(
+                  [&](component::ComponentFeatureSet features) { options.componentFeatures = features; });
+          },
+          .usage = "<none|name,name…>" },
+    });
+
+    /// The options a command line gives after its directory and skip count, as `--flag value` pairs.
+    /// @param arguments The pairs.
+    /// @return The options; or why they are none (an unknown or repeated flag, a bad value, a missing one).
+    [[nodiscard]] std::expected<RunOptions, std::string> parseOptions(std::span<char const* const> arguments)
+    {
+        if (arguments.size() % 2 != 0)
+            return std::unexpected { std::string { "every option takes a value" } };
+        auto options = RunOptions { .features = FeatureSet::wasm3() };
+        auto given = std::array<std::size_t, Options.size()> {};
+        for (auto const index: std::views::iota(std::size_t { 0 }, arguments.size() / 2))
+        {
+            auto const flag = std::string_view { arguments[2 * index] };
+            auto const row = std::ranges::find(Options, flag, &OptionRow::flag);
+            if (row == Options.end())
+                return std::unexpected { std::format("unknown option '{}'", flag) };
+            if (++given.at(static_cast<std::size_t>(row - Options.begin())) > 1)
+                return std::unexpected { std::format("'{}' given twice", flag) };
+            if (auto const read = row->read(options, arguments[(2 * index) + 1]); !read)
+                return std::unexpected { read.error() };
+        }
+        for (auto const index: std::views::iota(std::size_t { 0 }, Options.size()))
+            if (Options.at(index).presence == OptionPresence::Required && given.at(index) == 0)
+                return std::unexpected { std::format("'{}' is required", Options.at(index).flag) };
+        return options;
+    }
+
+    /// The command line's usage, every option listed.
+    [[nodiscard]] std::string usage()
+    {
+        auto text = std::string { "usage: isoline_spec_runner <directory> <expected skips>" };
+        for (auto const& option: Options)
+            text += option.presence == OptionPresence::Required
+                        ? std::format(" {} {}", option.flag, option.usage)
+                        : std::format(" [{} {}]", option.flag, option.usage);
+        return text;
+    }
 } // namespace
 
 } // namespace isoline::spectest
@@ -885,18 +1551,22 @@ int main(int argc, char const* argv[])
 {
     auto const arguments = std::span { argv, static_cast<std::size_t>(argc) };
     auto const expectedSkips =
-        arguments.size() == 5 ? isoline::spectest::parseCount(arguments[2]) : std::nullopt;
-    auto const features = arguments.size() == 5 && std::string_view { arguments[3] } == "--features"
-                              ? isoline::spectest::featureSetNamed(arguments[4])
-                              : std::nullopt;
-    if (!expectedSkips || !features)
+        arguments.size() >= 3 ? isoline::spectest::parseCount(arguments[2]) : std::nullopt;
+    auto const options =
+        arguments.size() >= 3
+            ? isoline::spectest::parseOptions(arguments.subspan(3))
+            : std::expected<isoline::spectest::RunOptions, std::string> { std::unexpect,
+                                                                          "no directory and skip count" };
+    if (!expectedSkips || !options)
     {
-        std::cerr << "usage: isoline_spec_runner <directory> <expected skips> --features <wasm2|wasm3|all>\n";
+        if (!options)
+            std::cerr << "isoline_spec_runner: " << options.error() << '\n';
+        std::cerr << isoline::spectest::usage() << '\n';
         return 2;
     }
     try
     {
-        return isoline::spectest::runDirectory(arguments[1], *expectedSkips, *features);
+        return isoline::spectest::runDirectory(arguments[1], *expectedSkips, *options);
     }
     catch (std::exception const& error)
     {

@@ -51,12 +51,11 @@ namespace
         return false;
     }
 
-    /// Whether a command loads a module the script gives as text, `quote` included: the only modules
-    /// the oracle's binary is checked against, and whose text can diverge in its error.
+    /// Whether a command loads a module or a component the script gives as text, `quote` included: the
+    /// only ones the oracle's binary is checked against, and whose text can diverge in its error.
     [[nodiscard]] bool hasTextModule(Command const& command) noexcept
     {
-        return hasModule(command)
-               && (command.source.form == ModuleForm::Text || command.source.form == ModuleForm::Quote);
+        return hasModule(command) && isTextForm(command.source.form);
     }
 
     /// What a command is, for a message: its kind, and the form of its module when it has one.
@@ -83,8 +82,9 @@ namespace
         });
         static_assert(Kinds.size() == static_cast<std::size_t>(CommandKind::Skip) + 1,
                       "Kinds names every CommandKind, in enumerator order");
-        constexpr auto Forms = std::to_array<std::string_view>({ "text", "binary", "quote" });
-        static_assert(Forms.size() == static_cast<std::size_t>(ModuleForm::Quote) + 1,
+        constexpr auto Forms = std::to_array<std::string_view>(
+            { "text", "binary", "quote", "component text", "component binary", "component quote" });
+        static_assert(Forms.size() == static_cast<std::size_t>(ModuleForm::ComponentQuote) + 1,
                       "Forms names every ModuleForm, in enumerator order");
         auto const kind = Kinds.at(static_cast<std::size_t>(command.kind));
         if (!hasModule(command))

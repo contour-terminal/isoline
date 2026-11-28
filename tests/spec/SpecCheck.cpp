@@ -14,6 +14,7 @@
 #include <variant>
 
 #include <isoline/binary/Types.hpp>
+#include <isoline/component/Features.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/validate/Subtyping.hpp>
 
@@ -219,20 +220,58 @@ CheckResult checkResults(std::span<ExpectedValue const> expected, std::span<Valu
     return std::unexpected { std::format("expected {}, got {}", describeAll(expected), describeAll(actual)) };
 }
 
-CheckResult checkFailure(Stage stage, std::string_view expectedMessage, std::optional<Failure> const& actual)
+CheckResult checkFailure(Stage stage,
+                         std::string_view expectedMessage,
+                         std::optional<Failure> const& actual,
+                         MessageRule rule)
 {
     if (!actual)
         return std::unexpected { std::format(
             "expected {} failure '{}', but it succeeded", stageName(stage), expectedMessage) };
     if (actual->stage == Stage::Harness)
         return std::unexpected { actual->message };
-    if (actual->stage != stage || !actual->message.starts_with(expectedMessage))
+    auto const found = rule == MessageRule::Prefix ? actual->message.starts_with(expectedMessage)
+                                                   : actual->message.contains(expectedMessage);
+    if (actual->stage != stage || !found)
         return std::unexpected { std::format("expected {} failure '{}', got {} failure '{}'",
                                              stageName(stage),
                                              expectedMessage,
                                              stageName(actual->stage),
                                              actual->message) };
     return {};
+}
+
+CheckResult checkFailure(Stage stage, std::string_view expectedMessage, std::optional<Failure> const& actual)
+{
+    return checkFailure(stage, expectedMessage, actual, MessageRule::Prefix);
+}
+
+SkipReasonRow const* skipReasonOf(std::string_view reason) noexcept
+{
+    auto const argumentFits = [](SkipArgument argument, std::string_view text) {
+        switch (argument)
+        {
+            case SkipArgument::None: return text.empty();
+            case SkipArgument::Gate:
+                return std::ranges::find(
+                           component::ComponentFeatureTable, text, &component::ComponentFeatureRow::gate)
+                       != component::ComponentFeatureTable.end();
+            case SkipArgument::Name: return !text.empty() && !text.contains(' ');
+            case SkipArgument::Line:
+                return !text.empty()
+                       && std::ranges::all_of(text, [](char digit) { return digit >= '0' && digit <= '9'; });
+        }
+        return false;
+    };
+    auto const row = std::ranges::find_if(SkipReasons, [&](SkipReasonRow const& candidate) {
+        if (!reason.starts_with(candidate.prefix) || !reason.ends_with(candidate.suffix)
+            || reason.size() < candidate.prefix.size() + candidate.suffix.size())
+            return false;
+        auto const argument = reason.substr(
+            candidate.prefix.size(), reason.size() - candidate.prefix.size() - candidate.suffix.size());
+        return argumentFits(candidate.argument, argument);
+    });
+    return row == SkipReasons.end() ? nullptr : &*row;
 }
 
 std::string describe(Value const& value)

@@ -103,8 +103,66 @@ add_test(NAME spec-features-wasm2
          COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-features" 0 --features wasm2)
 set_tests_properties(spec-features-wasm2 PROPERTIES LABELS unit PASS_REGULAR_EXPRESSION "passed 0, failed 2, skipped 0")
 
-# The command line: a skip count and a feature set are required, and the set must be one it knows.
-foreach(usage IN ITEMS "1" "1;--features" "1;--features;wasm4" "x;--features;wasm2" "1;--feature;wasm2")
+# The component runner (D12), on the reference engine under the component suites' rules. component-good
+# passes every command: a component given as text, binary and quote, called with record, option, float
+# and integer values, a core trap worded as Wasmtime words it and the locked-down instance after it, a
+# definition instantiated twice in stores of their own, the spectest's host functions, a component that
+# is malformed, invalid, unlinkable and uninstantiable, and a core module beside them; its components
+# given as text agree with the oracle's binaries, one of which (component-good.9.wasm) pads a section size
+# so that only the canonical comparison agrees. component-wrong fails exactly one command, line 10's
+# wrong expected value, which is pinned by its line and both values.
+add_test(NAME spec-selftest-component
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-good" 0
+                 --features wasm3 --suite component --engine reference)
+set_tests_properties(spec-selftest-component PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "^passed 27, failed 0, skipped 0\n$")
+add_test(NAME spec-selftest-component-wrong
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-wrong" 0
+                 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-wrong PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "^[^\n]*component-wrong.wast:10: 'add': expected [(]u32.const 5[)], got [(]u32.const 4[)]\npassed 4, failed 1, skipped 0\n$")
+add_test(NAME spec-selftest-component-wrong-exit
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-wrong" 0
+                 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-wrong-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
+# The layer checks: a component value given to a core function or expected of it, a core value given to a
+# component function or expected of it, a global read of a component, a call of an export that re-exports
+# a host import, a register of a component instance, and an assert_exception of a component call that
+# returns, each the harness's failure, at its line; a core module's register and a component call pass.
+add_test(NAME spec-selftest-component-layers
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-layers" 0
+                 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-layers PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "component-layers.wast:12: a component value passed to the core function 'f'.*component-layers.wast:13: 'f': a component value expected of a core function.*component-layers.wast:14: a core value passed to the component function 'f'.*component-layers.wast:15: 'f': a core pattern expected of a component function.*component-layers.wast:16: a component exports no global 'g'.*component-layers.wast:17: no export 'two'.*component-layers.wast:18: register: a component instance where a core module is expected.*component-layers.wast:19: expected execute failure 'uncaught exception', but it succeeded.*passed 4, failed 8, skipped 0")
+# A component suite's skips: one for a SkipReasons row's reason counts against its pinned skip; one for
+# any other reason fails the file.
+add_test(NAME spec-selftest-component-skips
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-skips" 1
+                 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-skips PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "passed 0, failed 0, skipped 1")
+add_test(NAME spec-selftest-component-bad-skip
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-bad-skip" 1
+                 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-bad-skip PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "skipped for 'because it is hard', which is no SkipReasons row")
+add_test(NAME spec-selftest-component-bad-skip-exit
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-bad-skip" 1
+                 --features wasm3 --suite component)
+set_tests_properties(spec-selftest-component-bad-skip-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
+# Under the core suites' rules the same skip passes: their importer words its own reasons.
+add_test(NAME spec-selftest-component-core-skip
+         COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-bad-skip" 1
+                 --features wasm3)
+set_tests_properties(spec-selftest-component-core-skip PROPERTIES LABELS unit
+                     PASS_REGULAR_EXPRESSION "passed 0, failed 0, skipped 1")
+
+# The command line: a skip count and a feature set are required, the set must be one it knows, and so
+# must every other option's value; no option is given twice.
+foreach(usage IN ITEMS "1" "1;--features" "1;--features;wasm4" "x;--features;wasm2" "1;--feature;wasm2"
+                       "1;--features;wasm2;--engine;jit" "1;--features;wasm2;--suite;gc"
+                       "1;--features;wasm2;--component-features;cm-nope"
+                       "1;--features;wasm2;--features;wasm3")
     string(REPLACE ";" "-" usageName "${usage}")
     add_test(NAME spec-usage-${usageName}
              COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-skips" ${usage})

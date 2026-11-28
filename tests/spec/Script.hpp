@@ -57,7 +57,10 @@ struct Action
     ActionKind kind = ActionKind::Invoke; ///< Invoke or get.
     std::string field;                    ///< The export's name.
     std::optional<std::string> module;    ///< The named module it belongs to; the current one if empty.
-    std::vector<runtime::Value> args;     ///< Invoke: the arguments.
+    std::vector<runtime::Value> args;     ///< Invoke: the arguments that read as core values.
+    /// Invoke: how many arguments the script gives, whichever layer they read as. A core function takes
+    /// them when args holds them all, a component function when Command::componentArgs does.
+    std::size_t arity = 0;
 };
 
 /// How a v128 of Pattern::Lanes is split into the lanes its patterns apply to.
@@ -143,20 +146,68 @@ static_assert(std::ranges::all_of(std::views::iota(std::size_t { 0 }, LaneFormat
     return LaneFormats.at(static_cast<std::size_t>(shape));
 }
 
-/// How a command gives its module.
+/// How a command gives its module or component.
 enum class ModuleForm : uint8_t
 {
-    Text,   ///< A `.wast` script's `(module …)`, in the text format.
-    Binary, ///< A `.wast` script's `(module binary "…")`: the bytes of its strings.
-    Quote,  ///< A `.wast` script's `(module quote "…")`: the text of its strings.
+    Text,            ///< A `.wast` script's `(module …)`, in the text format.
+    Binary,          ///< A `.wast` script's `(module binary "…")`: the bytes of its strings.
+    Quote,           ///< A `.wast` script's `(module quote "…")`: the text of its strings.
+    ComponentText,   ///< A `(component …)`, in the component text format.
+    ComponentBinary, ///< A `(component binary "…")`: the bytes of its strings.
+    ComponentQuote,  ///< A `(component quote "…")`: the text of its strings, a component's fields.
 };
 
-/// The module a command loads, in the form the script gives it.
+/// Whether @p form gives a component rather than a core module.
+/// @param form A form.
+/// @return true for the three component forms.
+[[nodiscard]] constexpr bool isComponentForm(ModuleForm form) noexcept
+{
+    return form == ModuleForm::ComponentText || form == ModuleForm::ComponentBinary
+           || form == ModuleForm::ComponentQuote;
+}
+
+/// Whether @p form gives its module as text the runner compiles: `(module …)`, `(module quote …)` and
+/// their component siblings.
+/// @param form A form.
+/// @return true unless the form is one of the two binary ones.
+[[nodiscard]] constexpr bool isTextForm(ModuleForm form) noexcept
+{
+    return form != ModuleForm::Binary && form != ModuleForm::ComponentBinary;
+}
+
+/// One value of a component value literal (ComponentLiteral), in pre-order: a node and its descendants
+/// are subtreeSize consecutive nodes. Untyped: the runner converts it against the type a function
+/// declares (ComponentValues.hpp).
+struct LiteralNode
+{
+    /// Its form: the index of its ComponentValueForms row (ComponentValues.hpp).
+    uint8_t form = 0;
+    uint64_t bits = 0;   ///< A number's bits at its form's width, a bool's 0 or 1, a char's code point.
+    std::string text {}; ///< A string's UTF-8 text.
+    std::vector<std::string>
+        labels {};            ///< A record's field labels, a variant's or an enum's case, the flags set.
+    uint32_t childCount = 0;  ///< Its children: elements, fields, a payload, a map's keys and values.
+    uint32_t subtreeSize = 1; ///< It and its descendants.
+
+    bool operator==(LiteralNode const&) const = default;
+};
+
+/// A component value as a script gives it, `(u32.const 7)` or `(record.const (field "a" …))`: a flat
+/// tree, root first.
+struct ComponentLiteral
+{
+    std::size_t line = 0;              ///< Its 1-based line in the script.
+    std::vector<LiteralNode> nodes {}; ///< Its nodes in pre-order; the root is nodes[0].
+
+    bool operator==(ComponentLiteral const&) const = default;
+};
+
+/// The module or component a command loads, in the form the script gives it.
 struct ModuleSource
 {
     ModuleForm form = ModuleForm::Text; ///< How the module is given.
-    /// Text: the verbatim `(module …)` source. Binary: the module's bytes. Quote: its strings,
-    /// concatenated.
+    /// Text and ComponentText: the verbatim `(module …)` or `(component …)` source. Binary and
+    /// ComponentBinary: the bytes. Quote and ComponentQuote: its strings, concatenated.
     std::string text;
     /// Text and Quote: where the module's `(` is in the script. A text error's position in the module's
     /// text is shifted by it for Text, whose text is the script's own; Binary: unused.
@@ -185,7 +236,15 @@ struct Command
     std::string text;
 
     Action action;                       ///< Invoke, AssertException and the action assertions: the action.
-    std::vector<ExpectedValue> expected; ///< AssertReturn: the values expected.
+    std::vector<ExpectedValue> expected; ///< AssertReturn: the values expected that read as core values.
+
+    /// The action's arguments that read as component values: a component function takes them when
+    /// there are Action::arity of them. `(f32.const …)` and `(f64.const …)` read as both.
+    std::vector<ComponentLiteral> componentArgs;
+    /// AssertReturn: the values expected that read as component values, as componentArgs reads them.
+    std::vector<ComponentLiteral> componentExpected;
+    /// AssertReturn: how many values the script expects, whichever layer they read as.
+    std::size_t expectedCount = 0;
 };
 
 /// Why a script could not be parsed.

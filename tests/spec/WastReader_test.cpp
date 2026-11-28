@@ -176,6 +176,68 @@ TEST_CASE("WastReader.binaryAndQuote")
     CHECK(commands[1].source.position.line == 2);
 }
 
+TEST_CASE("WastReader.componentForms")
+{
+    auto const commands =
+        commandsOf("(component $c (core module))\n"
+                   "(component binary \"\\00asm\\0d\\00\\01\\00\")\n"
+                   "(component quote \"(core module)\")\n"
+                   "(component definition $d (core module))\n"
+                   "(component instance $i $d)\n"
+                   "(assert_invalid (component (core module)) \"m\")\n"
+                   "(assert_trap (component (core module)) \"t\")\n"
+                   "(assert_return (invoke $c \"f\" (u32.const 7) (f32.const 1))\n"
+                   "               (record.const (field \"a\" u8.const 1) (field \"b\" str.const \"x\")))\n"
+                   "(assert_return (invoke \"g\") (f64.const 2) (f64.const nan:canonical))");
+    REQUIRE(commands.size() == 9);
+    CHECK(commands[0].kind == CommandKind::Module);
+    CHECK(commands[0].source.form == ModuleForm::ComponentText);
+    CHECK(commands[0].name == "c");
+    CHECK(commands[0].source.text == "(component $c (core module))");
+    CHECK(commands[1].source.form == ModuleForm::ComponentBinary);
+    CHECK(commands[1].source.text == std::string { "\0asm\x0d\0\1\0", 8 });
+    CHECK(commands[2].source.form == ModuleForm::ComponentQuote);
+    CHECK(commands[2].source.text == "(core module)");
+    CHECK(commands[3].kind == CommandKind::ModuleDefinition);
+    CHECK(commands[3].source.form == ModuleForm::ComponentText);
+    CHECK(commands[3].name == "d");
+    CHECK(commands[4].kind == CommandKind::ModuleInstance);
+    CHECK(commands[4].name == "i");
+    CHECK(commands[4].definition == "d");
+    CHECK(commands[5].kind == CommandKind::AssertInvalid);
+    CHECK(commands[5].source.form == ModuleForm::ComponentText);
+    CHECK(commands[6].kind == CommandKind::AssertTrapModule);
+    CHECK(commands[6].source.form == ModuleForm::ComponentText);
+
+    // A u32 reads as a component value only, an f32 as both: the arity says which layer has them all.
+    auto const& call = commands[7];
+    CHECK(call.action.module == "c");
+    CHECK(call.action.arity == 2);
+    CHECK(call.action.args == std::vector<Value> { F32 { 0x3F80'0000 } });
+    REQUIRE(call.componentArgs.size() == 2);
+    CHECK(call.componentArgs[0].nodes.size() == 1);
+    CHECK(call.componentArgs[0].nodes[0].bits == 7);
+    CHECK(call.componentArgs[1].nodes[0].bits == 0x3F80'0000);
+    CHECK(call.expectedCount == 1);
+    CHECK(call.expected.empty());
+    REQUIRE(call.componentExpected.size() == 1);
+    auto const& record = call.componentExpected[0];
+    CHECK(record.line == 9);
+    REQUIRE(record.nodes.size() == 3);
+    CHECK(record.nodes[0].labels == std::vector<std::string> { "a", "b" });
+    CHECK(record.nodes[0].childCount == 2);
+    CHECK(record.nodes[0].subtreeSize == 3);
+    CHECK(record.nodes[1].bits == 1);
+    CHECK(record.nodes[1].subtreeSize == 1);
+    CHECK(record.nodes[2].text == "x");
+
+    // A NaN pattern is no component value: the f64 pattern reads as a core value alone.
+    auto const& patterns = commands[8];
+    CHECK(patterns.expectedCount == 2);
+    CHECK(patterns.expected.size() == 2);
+    CHECK(patterns.componentExpected.size() == 1);
+}
+
 TEST_CASE("WastReader.v128Patterns")
 {
     auto const expected = expectedOf("(v128.const f32x4 nan:canonical 1 nan:arithmetic 0)");
@@ -424,6 +486,67 @@ TEST_CASE("WastReader.refusesMalformedScripts")
              { .script = R"((assert_exhaustion (get "f") "m" "n"))", .line = 1, .message = "expected ')'" },
              { .script = R"((assert_exception (invoke "f") "m"))", .line = 1, .message = "expected ')'" },
              { .script = "(assert_exception (module))", .line = 1, .message = "expected an action" },
+             // Components.
+             { .script = "(assert_invalid (component instance $d) \"m\")",
+               .line = 1,
+               .message = "an assertion on a module instance is not supported" },
+             { .script = "(component binary x)", .line = 1, .message = "expected a string in 'component'" },
+             { .script = "(invoke \"f\" (u8.const 256))",
+               .line = 1,
+               .message = "constant out of range '256'" },
+             { .script = "(invoke \"f\" (u8.const -1))", .line = 1, .message = "constant out of range '-1'" },
+             { .script = "(invoke \"f\" (s8.const 256))",
+               .line = 1,
+               .message = "constant out of range '256'" },
+             { .script = "(invoke \"f\" (u32.const))",
+               .line = 1,
+               .message = "'u32.const' takes 1 operand, got 0" },
+             { .script = R"((invoke "f" (u32.const "1")))", .line = 1, .message = "expected a number" },
+             { .script = "(invoke \"f\" (bool.const 1))", .line = 1, .message = "expected true or false" },
+             { .script = R"((invoke "f" (char.const "ab")))",
+               .line = 1,
+               .message = "'\"ab\"' is no one character" },
+             { .script = "(invoke \"f\" (char.const x))", .line = 1, .message = "expected a string" },
+             { .script = R"((invoke "f" (str.const "\ff")))",
+               .line = 1,
+               .message = "malformed UTF-8 encoding" },
+             { .script = "(invoke \"f\"\n(record.const (u8.const 1)))",
+               .line = 2,
+               .message = "expected '(field …)'" },
+             { .script = R"((invoke "f" (record.const (field "a"))))",
+               .line = 1,
+               .message = "'field' takes a label and a value" },
+             { .script = R"((invoke "f" (record.const (field "a" (u8.const 1)))))",
+               .line = 1,
+               .message = "expected a component value, got '(field" },
+             { .script = "(invoke \"f\" (record.const (field a u8.const 1)))",
+               .line = 1,
+               .message = "expected a label" },
+             { .script = "(invoke \"f\" (map.const (entry (u8.const 1))))",
+               .line = 1,
+               .message = "'entry' takes 2 operands, got 1" },
+             { .script = "(invoke \"f\" (variant.const))",
+               .line = 1,
+               .message = "'variant.const' takes a case label" },
+             { .script = "(invoke \"f\" (enum.const))",
+               .line = 1,
+               .message = "'enum.const' takes 1 operand" },
+             { .script = "(invoke \"f\" (flags.const x))", .line = 1, .message = "expected a label" },
+             { .script = "(invoke \"f\" (option.none (u8.const 1)))",
+               .line = 1,
+               .message = "'option.none' takes 0 operands, got 1" },
+             { .script = "(invoke \"f\" (option.some))",
+               .line = 1,
+               .message = "'option.some' takes 1 operand" },
+             { .script = "(invoke \"f\" (result.ok (u8.const 1) (u8.const 2)))",
+               .line = 1,
+               .message = "'result.ok' takes at most one value" },
+             { .script = "(invoke \"f\" (list.const 1))",
+               .line = 1,
+               .message = "expected a component value" },
+             { .script = "(invoke \"f\" (tuple.const (i32.const 1)))",
+               .line = 1,
+               .message = "expected a component value" },
              // Values.
              { .script = "(invoke \"f\" (i32.const))",
                .line = 1,

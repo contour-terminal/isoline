@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "ComponentValues.hpp"
 #include <isoline/binary/Types.hpp>
 #include <isoline/runtime/Value.hpp>
 #include <isoline/text/FloatLiteral.hpp>
@@ -529,11 +530,55 @@ namespace
         return expected;
     }
 
+    /// One value as each layer reads it: a core value where it is one of ValueForms, a component value
+    /// where it is one of ComponentValueForms; `(f32.const …)` and `(f64.const …)` read as both.
+    struct LayeredValue
+    {
+        std::optional<ExpectedValue> core {};         ///< As a core value, if it reads as one.
+        std::optional<ComponentLiteral> component {}; ///< As a component value, if it reads as one.
+    };
+
+    /// Reads one value as every layer that reads it, consumed from @p cursor. A value one layer reads and
+    /// another refuses (`(f32.const nan:canonical)`, no component value) is that layer's alone.
+    [[nodiscard]] Result<LayeredValue> readLayeredValue(Reader const& reader, Cursor& cursor, ValueUse use)
+    {
+        auto const& tree = reader.tree;
+        auto const node = cursor.peek();
+        auto const keyword = node != NoNode && tree.nodes()[node].kind == NodeKind::List
+                                 ? text::headKeyword(tree, node)
+                                 : std::string_view {};
+        auto const isCore = std::ranges::find(ValueForms, keyword, &ValueForm::keyword) != ValueForms.end();
+        if (!isComponentValueKeyword(keyword) || keyword.empty())
+            return readValue(reader, cursor, use).transform([](ExpectedValue value) {
+                return LayeredValue { .core = std::move(value), .component = std::nullopt };
+            });
+        auto component = readComponentLiteral(tree, node, reader.limits);
+        auto layered = LayeredValue {};
+        if (isCore)
+        {
+            auto core = readValue(reader, cursor, use);
+            if (!core && !component)
+                return std::unexpected { core.error() };
+            if (core)
+                layered.core = std::move(*core);
+        }
+        else
+        {
+            cursor.take();
+            if (!component)
+                return std::unexpected { component.error() };
+        }
+        if (component)
+            layered.component = std::move(*component);
+        return layered;
+    }
+
     // Actions.
 
-    /// The action `(invoke [$module] "name" <arg>…)` or `(get [$module] "name")`.
+    /// The action `(invoke [$module] "name" <arg>…)` or `(get [$module] "name")`, into command.action and
+    /// command.componentArgs.
     /// @param list An `invoke` or `get` list.
-    [[nodiscard]] Result<Action> readAction(Reader const& reader, NodeId list)
+    [[nodiscard]] Result<void> readAction(Reader const& reader, NodeId list, Command& command)
     {
         auto const& tree = reader.tree;
         auto action = Action {};
@@ -549,12 +594,16 @@ namespace
         action.field = std::move(*field);
         while (action.kind == ActionKind::Invoke && !cursor.atEnd())
         {
-            auto const argument = readValue(reader, cursor, ValueUse::Argument);
+            auto argument = readLayeredValue(reader, cursor, ValueUse::Argument);
             if (!argument)
                 return std::unexpected { argument.error() };
-            action.args.push_back(argument->value);
+            ++action.arity;
+            if (argument->core)
+                action.args.push_back(argument->core->value);
+            if (argument->component)
+                command.componentArgs.push_back(std::move(*argument->component));
         }
-        return finish(tree, cursor).transform([&] { return std::move(action); });
+        return finish(tree, cursor).transform([&] { command.action = std::move(action); });
     }
 
     /// The action an assertion is about, consumed from @p cursor into command.action.
@@ -563,9 +612,7 @@ namespace
         auto const node = cursor.peek();
         if (!isListOf(reader.tree, node, "invoke") && !isListOf(reader.tree, node, "get"))
             return std::unexpected { unexpected(reader.tree, cursor, "an action") };
-        return readAction(reader, cursor.take()).transform([&](Action action) {
-            command.action = std::move(action);
-        });
+        return readAction(reader, cursor.take(), command);
     }
 
     // Modules.
@@ -577,10 +624,33 @@ namespace
         ModuleForm form;          ///< What its strings are.
     };
 
-    constexpr auto EncodedForms = std::to_array<EncodedForm>({
-        { .keyword = "binary", .form = ModuleForm::Binary },
-        { .keyword = "quote", .form = ModuleForm::Quote },
+    /// The forms a layer's list gives its module or component in: as text, or by its strings.
+    struct LayerForms
+    {
+        std::string_view keyword;           ///< `module` or `component`.
+        ModuleForm text;                    ///< The form of its text.
+        std::array<EncodedForm, 2> encoded; ///< The forms of its strings, after `binary` or `quote`.
+    };
+
+    /// The lists that give a module or a component. Adding a layer is adding a row.
+    constexpr auto Layers = std::to_array<LayerForms>({
+        { .keyword = "module",
+          .text = ModuleForm::Text,
+          .encoded = { { { .keyword = "binary", .form = ModuleForm::Binary },
+                         { .keyword = "quote", .form = ModuleForm::Quote } } } },
+        { .keyword = "component",
+          .text = ModuleForm::ComponentText,
+          .encoded = { { { .keyword = "binary", .form = ModuleForm::ComponentBinary },
+                         { .keyword = "quote", .form = ModuleForm::ComponentQuote } } } },
     });
+
+    /// The layer @p node gives, if it is a `(module …)` or a `(component …)`.
+    [[nodiscard]] LayerForms const* layerOf(SExpressionTree const& tree, NodeId node) noexcept
+    {
+        auto const layer = std::ranges::find_if(
+            Layers, [&](LayerForms const& row) { return isListOf(tree, node, row.keyword); });
+        return layer == Layers.end() ? nullptr : &*layer;
+    }
 
     /// How a `(module …)` is written, which decides the command it makes.
     enum class ModuleKeyword : uint8_t
@@ -635,10 +705,13 @@ namespace
         return concatenated;
     }
 
-    /// A `(module …)` list.
+    /// A `(module …)` or `(component …)` list.
     [[nodiscard]] Result<ModuleList> readModule(Reader& reader, NodeId list)
     {
         auto const& tree = reader.tree;
+        auto const* const layer = layerOf(tree, list);
+        Require(layer != nullptr);
+        auto const& encodedForms = layer->encoded;
         auto module = ModuleList {};
         auto cursor = Cursor { tree, list };
         if (isKeyword(tree, cursor.peek(), "instance"))
@@ -659,13 +732,13 @@ namespace
         module.source.position = reader.positions.at(tree.nodes()[list].offset);
         auto const encoded =
             isAtom(tree, cursor.peek(), TokenKind::Keyword)
-                ? std::ranges::find(EncodedForms, tree.textOf(cursor.peek()), &EncodedForm::keyword)
-                : EncodedForms.end();
-        if (encoded == EncodedForms.end())
+                ? std::ranges::find(encodedForms, tree.textOf(cursor.peek()), &EncodedForm::keyword)
+                : encodedForms.end();
+        if (encoded == encodedForms.end())
         {
             // A module given as text keeps its verbatim source, `$name` and all, which compileText reads
             // as the reference interpreter does.
-            module.source.form = ModuleForm::Text;
+            module.source.form = layer->text;
             module.source.text = std::string { tree.sourceOf(list) };
             return module;
         }
@@ -677,11 +750,12 @@ namespace
         });
     }
 
-    /// The module an assertion is about, consumed from @p cursor: a module of any form, not an instance.
+    /// The module an assertion is about, consumed from @p cursor: a module or a component of any form, not
+    /// an instance.
     [[nodiscard]] Result<void> takeAssertedModule(Reader& reader, Cursor& cursor, Command& command)
     {
         auto const node = cursor.peek();
-        if (!isListOf(reader.tree, node, "module"))
+        if (layerOf(reader.tree, node) == nullptr)
             return std::unexpected { unexpected(reader.tree, cursor, "a module") };
         auto module = readModule(reader, cursor.take());
         if (!module)
@@ -695,7 +769,7 @@ namespace
 
     // Commands, each read from the cursor after its keyword into a command of its row's kind.
 
-    /// `(module …)`: a module, a definition, or an instance.
+    /// `(module …)` and `(component …)`: a module or component, a definition, or an instance.
     [[nodiscard]] Result<void> readModuleCommand(Reader& reader, Cursor& cursor, Command& command)
     {
         auto module = readModule(reader, cursor.list());
@@ -730,9 +804,7 @@ namespace
     /// `(invoke …)` and `(get …)` as commands: the command's list is the action.
     [[nodiscard]] Result<void> readActionCommand(Reader& reader, Cursor& cursor, Command& command)
     {
-        return readAction(reader, cursor.list()).transform([&](Action action) {
-            command.action = std::move(action);
-        });
+        return readAction(reader, cursor.list(), command);
     }
 
     /// `(assert_return <action> <expected>…)`.
@@ -742,10 +814,14 @@ namespace
             return action;
         while (!cursor.atEnd())
         {
-            auto expected = readValue(reader, cursor, ValueUse::Expected);
+            auto expected = readLayeredValue(reader, cursor, ValueUse::Expected);
             if (!expected)
                 return std::unexpected { expected.error() };
-            command.expected.push_back(std::move(*expected));
+            ++command.expectedCount;
+            if (expected->core)
+                command.expected.push_back(std::move(*expected->core));
+            if (expected->component)
+                command.componentExpected.push_back(std::move(*expected->component));
         }
         return {};
     }
@@ -762,7 +838,7 @@ namespace
     /// module must trap.
     [[nodiscard]] Result<void> readAssertTrap(Reader& reader, Cursor& cursor, Command& command)
     {
-        if (!isListOf(reader.tree, cursor.peek(), "module"))
+        if (layerOf(reader.tree, cursor.peek()) == nullptr)
             return readActionMessage(reader, cursor, command);
         command.kind = CommandKind::AssertTrapModule;
         return takeAssertedModule(reader, cursor, command).and_then([&] {
@@ -798,9 +874,10 @@ namespace
         CommandReader read;       ///< What reads the rest of it.
     };
 
-    /// Every command a script may hold. Adding one is adding a row; P11 adds the component rows.
+    /// Every command a script may hold. Adding one is adding a row.
     constexpr auto ScriptCommands = std::to_array<ScriptCommand>({
         { .keyword = "module", .kind = CommandKind::Module, .read = &readModuleCommand },
+        { .keyword = "component", .kind = CommandKind::Module, .read = &readModuleCommand },
         { .keyword = "register", .kind = CommandKind::Register, .read = &readRegister },
         { .keyword = "invoke", .kind = CommandKind::Invoke, .read = &readActionCommand },
         { .keyword = "get", .kind = CommandKind::Invoke, .read = &readActionCommand },

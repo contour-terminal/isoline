@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Script.hpp"
@@ -267,4 +269,56 @@ TEST_CASE("SpecCheck.exceptionReferencesAreSpelledExn")
           == "ref.null:exn ref.null:exn ref.exn:3");
     CHECK(matches(exactly(nullExn), noExn));
     CHECK_FALSE(matches(exactly(nullExn), Ref { .kind = RefKind::Null, .heap = FuncHeap, .address = 0 }));
+}
+
+TEST_CASE("SpecCheck.messageRules")
+{
+    auto const trap = std::optional { Failure { .stage = Stage::Execute,
+                                                .message = "wasm `unreachable` instruction executed" } };
+    using isoline::spectest::MessageRule;
+    CHECK(checkFailure(Stage::Execute, "unreachable", trap, MessageRule::Substring).has_value());
+    CHECK_FALSE(checkFailure(Stage::Execute, "unreachable", trap, MessageRule::Prefix).has_value());
+    CHECK(checkFailure(Stage::Execute, "wasm `unreachable`", trap, MessageRule::Prefix).has_value());
+    CHECK_FALSE(checkFailure(Stage::Execute, "unreachable code", trap, MessageRule::Substring).has_value());
+    CHECK_FALSE(checkFailure(Stage::Validate, "unreachable", trap, MessageRule::Substring).has_value());
+    CHECK_FALSE(checkFailure(Stage::Execute, "", std::nullopt, MessageRule::Substring).has_value());
+}
+
+TEST_CASE("SpecCheck.skipReasons")
+{
+    using isoline::spectest::skipReasonOf;
+    using isoline::spectest::SkipReasons;
+    for (auto const reason: std::to_array<std::string_view>({
+             "async (P12)",
+             "gated 🧵",
+             "gated 🧵②",
+             "upstream nyi.txt",
+             "core feature cut gc",
+             "legacy text indices",
+             "diverges from CM pin (definitions.py:1234)",
+             "diverges from CM pin (Binary.md:350)",
+         }))
+    {
+        INFO(reason);
+        CHECK(skipReasonOf(reason) != nullptr);
+    }
+    CHECK(skipReasonOf("diverges from CM pin (Binary.md:350)") == &SkipReasons.back());
+    for (auto const reason: std::to_array<std::string_view>({
+             "",
+             "because",
+             "async (P12) later",
+             "async",
+             "gated 🐙",
+             "gated ",
+             "core feature cut ",
+             "core feature cut two words",
+             "diverges from CM pin (Binary.md:)",
+             "diverges from CM pin (Binary.md:3x0)",
+             "diverges from CM pin (Binary.md:350",
+             "diverges from CM pin (Explainer.md:1)",
+         }))
+    {
+        INFO(reason);
+        CHECK(skipReasonOf(reason) == nullptr);
+    }
 }
