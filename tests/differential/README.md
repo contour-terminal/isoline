@@ -42,6 +42,7 @@ Wasmtime is the oracle of results and traps for import-free modules whose export
 | The hard edges, by hand | `edges/*.wat` | `Differential.agreesOnTheEdges`, `Differential.reachesTheEdges` (unit) |
 | Divergences once found | `regressions/<seed>.wasm` | `CorpusReplay.everyRegressionAgrees` (unit) |
 | 10'000 `wasm-tools smith` modules | `out/corpus/differential/` (never committed) | `ctest -L differential` |
+| Modules of the fuzz generator | `tests/fuzz/` (`ModuleGenerator.hpp`) | `isoline_differential_fuzzer` (`tests/fuzz/README.md`) |
 
 The unit run (`isoline_differential_test`, label `unit`) compares every spec binary on every engine, both
 lanes and both observation modes. ThreadSanitizer is too slow for all of them within the test's timeout, so

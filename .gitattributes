@@ -7,3 +7,6 @@
 
 # The vendored wasm-c-api copy is checked byte for byte against its MANIFEST: never converted.
 vendor/wasm-c-api/** -text
+
+# Fuzz inputs are bytes, whatever their extension: a text input too, which the text target reads byte for byte.
+tests/fuzz/regressions/** binary

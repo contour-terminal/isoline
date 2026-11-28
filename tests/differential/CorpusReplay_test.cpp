@@ -25,6 +25,7 @@
 #include "WasmtimeOracle.hpp"
 #include "testing/EnvironmentNumber.hpp"
 #include "testing/RecordedRunner.hpp"
+#include "testing/ScratchDirectory.hpp"
 #include <isoline/text/TextLimits.hpp>
 #include <isoline/text/TopLevel.hpp>
 
@@ -54,29 +55,7 @@ constexpr auto MinAgreesPerSampledModule = 0.65;
     return std::filesystem::path { ISOLINE_SOURCE_DIR } / "out" / "corpus" / "differential";
 }
 
-/// A directory of the build's own for the oracle's modules and outputs, removed with its scope.
-class ScratchDirectory
-{
-  public:
-    explicit ScratchDirectory(std::filesystem::path path): _path { std::move(path) }
-    {
-        std::filesystem::create_directories(_path);
-    }
-    ~ScratchDirectory()
-    {
-        auto ignored = std::error_code {};
-        std::filesystem::remove_all(_path, ignored);
-    }
-    ScratchDirectory(ScratchDirectory const&) = delete;
-    ScratchDirectory(ScratchDirectory&&) = delete;
-    ScratchDirectory& operator=(ScratchDirectory const&) = delete;
-    ScratchDirectory& operator=(ScratchDirectory&&) = delete;
-
-    [[nodiscard]] std::filesystem::path const& path() const noexcept { return _path; }
-
-  private:
-    std::filesystem::path _path;
-};
+using testing::ScratchDirectory;
 
 void writeFile(std::filesystem::path const& path, std::span<std::byte const> bytes)
 {

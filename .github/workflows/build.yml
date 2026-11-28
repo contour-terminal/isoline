@@ -265,6 +265,84 @@ jobs:
     with:
       sample: ${{ fromJSON(inputs.differential-sample || '8') }}
 
+  linux-clang-fuzz-smoke:
+    name: Linux Clang (fuzz smoke, libFuzzer + ASan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get install -qy ninja-build
+      - name: Configure
+        run: >
+          cmake --preset clang-fuzz-asan
+          -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
+          -DISOLINE_FETCH_DEPS=ON
+      - name: Build
+        run: cmake --build --preset clang-fuzz-asan
+      - name: Seed
+        # Each target's generated seeds within its -max_len (the table below), and the spec suite's binaries for
+        # the load target, each under its digest.
+        run: |
+          set -euo pipefail
+          out/clang-fuzz-asan/tests/fuzz/isoline-fuzz-seeds load out/fuzz/seeds/load 262144
+          out/clang-fuzz-asan/tests/fuzz/isoline-fuzz-seeds text out/fuzz/seeds/text 262144
+          find tests/spec -name '*.wasm' -size -256k -print0 | while IFS= read -r -d '' module; do
+            cp "$module" "out/fuzz/seeds/load/spec-$(sha256sum < "$module" | cut -c1-16).wasm"
+          done
+          mkdir -p out/fuzz/seeds/differential
+      - name: Fuzz
+        # Five minutes per target and active lane, side by side on the runner's cores, from the committed inputs
+        # (tests/fuzz/regressions/<target>) and the generated seeds. One row per run: its name, its target, its
+        # inputs, its -max_len, and the lane the differential target runs (empty: every active lane). Lane 2 is
+        # inactive until P5 (FuzzTargets.hpp's DifferentialLanes): it has no row.
+        run: |
+          mkdir -p out/fuzz
+          runs=(
+            "differential|isoline_differential_fuzzer|differential|8192|deterministic"
+            "load|isoline_load_fuzzer|load|262144|"
+            "text|isoline_text_fuzzer|text|262144|"
+          )
+          pids=()
+          for row in "${runs[@]}"; do
+            IFS='|' read -r name target inputs maxLength lane <<< "$row"
+            mkdir -p "out/fuzz/$name"
+            extra=()
+            if [ "$inputs" = text ]; then extra=(tests/differential/edges); fi
+            ISOLINE_FUZZ_LANE="$lane" "out/clang-fuzz-asan/tests/fuzz/$target" -max_total_time=300 \
+              -rss_limit_mb=2048 -timeout=10 -max_len="$maxLength" -print_final_stats=1 \
+              -artifact_prefix="out/fuzz/$name-" "out/fuzz/$name" "tests/fuzz/regressions/$inputs" \
+              "out/fuzz/seeds/$inputs" "${extra[@]}" > "out/fuzz/$name.log" 2>&1 &
+            pids+=($!)
+          done
+          status=0
+          for index in "${!runs[@]}"; do
+            name="${runs[$index]%%|*}"
+            if ! wait "${pids[$index]}"; then
+              status=1
+              echo "::error::fuzz run $name found a failure"
+            fi
+            echo "== $name"
+            tail -n 30 "out/fuzz/$name.log"
+          done
+          exit "$status"
+      - name: Upload the findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings
+          path: |
+            out/fuzz/*.log
+            out/fuzz/*-crash-*
+            out/fuzz/*-timeout-*
+            out/fuzz/*-oom-*
+            out/fuzz/*-leak-*
+          if-no-files-found: ignore
+
   macos-clang:
     name: macOS Apple Clang
     runs-on: macos-15

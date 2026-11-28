@@ -65,6 +65,11 @@ jobs:
           -DISOLINE_FETCH_DEPS=ON
           -DISOLINE_DIFFERENTIAL_SAMPLE=${{ inputs.sample }}
       - name: Build
-        run: cmake --build --preset clang-release --target isoline_differential_test isoline-differential-replay
+        run: cmake --build --preset clang-release --target isoline_differential_test isoline-differential-replay isoline_fuzz_test
       - name: Replay the corpus on every engine
         run: ctest --test-dir out/clang-release -L differential -j"$(nproc)" --output-on-failure
+      # The generator's import-free modules against Wasmtime (tests/fuzz/OracleReplay_test.cpp): the oracle
+      # alone checks the numeric kernels the engines share. Nightly only, with every seed.
+      - name: Generated modules against the oracle
+        if: inputs.sample == 1
+        run: ctest --test-dir out/clang-release -L oracle-nightly --output-on-failure

@@ -125,6 +125,30 @@
             }
         },
         {
+            "name": "clang-fuzz",
+            "displayName": "Clang RelWithDebInfo + libFuzzer (tests/fuzz)",
+            "description": "The fuzz targets, optimized; clang-tidy runs in clang-asan",
+            "inherits": [
+                "clang-common"
+            ],
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "ISOLINE_FUZZING": "ON",
+                "ISOLINE_CLANG_TIDY": "OFF"
+            }
+        },
+        {
+            "name": "clang-fuzz-asan",
+            "displayName": "Clang RelWithDebInfo + libFuzzer + ASan/UBSan (tests/fuzz)",
+            "description": "The fuzz targets under AddressSanitizer and UndefinedBehaviorSanitizer",
+            "inherits": [
+                "clang-fuzz"
+            ],
+            "cacheVariables": {
+                "ISOLINE_SANITIZE": "address"
+            }
+        },
+        {
             "name": "gcc-debug",
             "displayName": "GCC Debug",
             "inherits": [
@@ -369,6 +393,8 @@
             "description": "What the hardened-stdlib label's tests run",
             "targets": ["isoline_hardened_stdlib_tests"]
         },
+        { "name": "clang-fuzz", "configurePreset": "clang-fuzz", "targets": [ "isoline_differential_fuzzer", "isoline_load_fuzzer", "isoline_text_fuzzer", "isoline-fuzz-module", "isoline-fuzz-seeds" ] },
+        { "name": "clang-fuzz-asan", "configurePreset": "clang-fuzz-asan", "targets": [ "isoline_differential_fuzzer", "isoline_load_fuzzer", "isoline_text_fuzzer", "isoline-fuzz-module", "isoline-fuzz-seeds" ] },
         { "name": "gcc-debug", "configurePreset": "gcc-debug" },
         { "name": "gcc-release", "configurePreset": "gcc-release" },
         { "name": "gcc-cxx26", "configurePreset": "gcc-cxx26" },
@@ -403,10 +429,10 @@
             "name": "isoline-test-common",
             "hidden": true,
             "inherits": "isoline-test-base",
-            "description": "Every test but the perf label's, which asserts wall-clock latency and runs on request only, and the differential label's, which replays the generated corpus (ctest -L differential)",
+            "description": "Every test but the perf label's, which asserts wall-clock latency and runs on request only, and the differential label's, which replays the generated corpus (ctest -L differential), and the oracle-nightly label's, which the nightly differential run selects",
             "filter": {
                 "exclude": {
-                    "label": "perf|differential"
+                    "label": "perf|differential|oracle-nightly"
                 }
             }
         },

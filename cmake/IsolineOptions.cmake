@@ -34,6 +34,12 @@ set(ISOLINE_EXPECT_LANGUAGE_FEATURES "" CACHE STRING
     "Fail the configure unless every C++26 language feature takes this path: empty (any), native or fallback")
 set_property(CACHE ISOLINE_EXPECT_LANGUAGE_FEATURES PROPERTY STRINGS "" native fallback)
 
+option(ISOLINE_FUZZING
+       "Build the libFuzzer targets of tests/fuzz, and instrument Isoline's own targets for them (Clang)" OFF)
+if(ISOLINE_FUZZING AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "ISOLINE_FUZZING needs Clang: libFuzzer is part of its compiler runtime.")
+endif()
+
 set(ISOLINE_SANITIZE "" CACHE STRING
     "Sanitizer mode for Isoline's own targets: empty, address (ASan + UBSan) or thread")
 set_property(CACHE ISOLINE_SANITIZE PROPERTY STRINGS "" address thread)

@@ -236,6 +236,8 @@ CheckOptions:
   readability-identifier-naming.EnumCase: CamelCase
   readability-identifier-naming.EnumConstantCase: CamelCase
   readability-identifier-naming.FunctionCase: camelBack
+  # libFuzzer calls its targets' entry points by these names (tests/fuzz): the only functions not camelBack.
+  readability-identifier-naming.FunctionIgnoredRegexp: '^LLVMFuzzer(Initialize|TestOneInput)$'
   readability-identifier-naming.MethodCase: camelBack
   readability-identifier-naming.ParameterCase: camelBack
   readability-identifier-naming.PrivateMemberCase: camelBack

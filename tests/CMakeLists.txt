@@ -12,6 +12,8 @@ if(ISOLINE_C_API)
 endif()
 # The differential harness: every engine on the same modules, and Wasmtime as the oracle.
 add_subdirectory(differential)
+# The module generator and the fuzz targets, on the differential harness.
+add_subdirectory(fuzz)
 
 # The spec runner's self-test: a script with wrong assertions the runner must report and fail on.
 # Two are wrong in their values (1 + 2 is not 4, and dividing by zero is no overflow). The rest pin

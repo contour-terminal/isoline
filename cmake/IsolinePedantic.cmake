@@ -164,6 +164,21 @@ endif()
 list(APPEND ISOLINE_COMPILE_OPTIONS ${_isolineSanitizerFlags})
 list(APPEND ISOLINE_LINK_OPTIONS ${_isolineSanitizerFlags})
 
+# Fuzzing: every Isoline target is instrumented for libFuzzer's coverage feedback, which the fuzzer-no-link
+# runtime serves to the executables that are not fuzz targets; the targets themselves add -fsanitize=fuzzer,
+# which links libFuzzer's main (tests/fuzz/CMakeLists.txt).
+if(ISOLINE_FUZZING)
+    list(APPEND ISOLINE_COMPILE_OPTIONS -fsanitize=fuzzer-no-link)
+    list(APPEND ISOLINE_LINK_OPTIONS -fsanitize=fuzzer-no-link)
+    # Vendored core-cpp too, whose code the engine runs: its compiled libraries, as for the sanitizers below.
+    if(ISOLINE_VENDORED_CORE_CPP)
+        get_property(_isolineFuzzedCoreCppTargets GLOBAL PROPERTY CORE_CPP_TARGETS)
+        foreach(coreCppTarget IN LISTS _isolineFuzzedCoreCppTargets)
+            target_compile_options(${coreCppTarget} PRIVATE -fsanitize=fuzzer-no-link)
+        endforeach()
+    endif()
+endif()
+
 # The vendored core-cpp is compiled with the same sanitizers, so no core-cpp code runs uninstrumented
 # beside Isoline's (the mix that makes TSan report races that are not there). As a subproject
 # core-cpp refuses CORE_CPP_SANITIZERS; it names its compiled libraries in the global property
