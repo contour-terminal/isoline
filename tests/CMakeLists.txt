@@ -575,6 +575,10 @@ if(NOT CMAKE_CROSSCOMPILING AND ISOLINE_CONTRACTS_PATH STREQUAL "native")
     add_test(NAME make-differential-corpus-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/make-differential-corpus_test.py")
     set_tests_properties(make-differential-corpus-selftest PROPERTIES LABELS lint)
+    # The benchmark script's statistics, gates, pins and report, with fake runners and a fake clock: offline.
+    add_test(NAME benchmark-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/benchmark_test.py")
+    set_tests_properties(benchmark-selftest PROPERTIES LABELS lint)
 endif()
 
 # How long the text memory suite may run before its timeout stops it: five minutes natively. Under ASan

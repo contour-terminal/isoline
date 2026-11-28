@@ -71,5 +71,10 @@ if(ISOLINE_TESTING)
     isoline_add_coverage_check()
 endif()
 
+# The benchmark harness: its guests' tests in every testing build, its runners with ISOLINE_BENCHMARKS.
+if(ISOLINE_TESTING OR ISOLINE_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
 # Last, because it installs and exports library targets every directory above has created.
 include(IsolineInstall)

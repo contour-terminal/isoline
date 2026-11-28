@@ -9,3 +9,58 @@ Apache License, Version 2.0; see vendor/core-cpp/LICENSE and vendor/core-cpp/NOT
 It includes the WebAssembly C API's header wasm.h (vendor/wasm-c-api), at revision 9d6b937 of
 https://github.com/WebAssembly/wasm-c-api, licensed under the Apache License, Version 2.0; see
 vendor/wasm-c-api/LICENSE.
+
+The benchmark harness (benchmarks/) includes third-party code:
+
+- The shootout guests (benchmarks/sources/shootout-*.c) are adapted from Sightglass
+  (https://github.com/bytecodealliance/sightglass, commit f0d2040f, benchmarks/shootout/src). Frank Denis
+  wrote them for Sightglass, which was licensed Apache-2.0 or MIT at the time; Sightglass now distributes
+  them under The Computer Language Benchmarks Game's licence (BSD-3-Clause), below. base64, ed25519, gimli and xchacha20
+  also reproduce functions of libsodium and libhydrogen (Copyright (c) 2013-2026 Frank Denis), under the ISC
+  licence, below. benchmarks/sources/PROVENANCE.md has each guest's licence chain and the functions it
+  reproduces, and each file's header names its licence.
+
+    Copyright (c) 2004-2008 Brent Fulgham, 2005-2020 Isaac Gouy
+    All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without modification, are permitted provided
+    that the following conditions are met:
+
+    - Redistributions of source code must retain the above copyright notice, this list of conditions and the
+      following disclaimer.
+    - Redistributions in binary form must reproduce the above copyright notice, this list of conditions and
+      the following disclaimer in the documentation and/or other materials provided with the distribution.
+    - Neither the name "The Computer Language Benchmarks Game" nor the name "The Benchmarks Game" nor the
+      name "The Computer Language Shootout Benchmarks" nor the names of its contributors may be used to
+      endorse or promote products derived from this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED
+    WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+    PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY
+    DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+    PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+    HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+    NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+
+    ISC License
+
+    Copyright (c) 2013-2026 Frank Denis <j at pureftpd dot org>
+
+    Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is
+    hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE
+    INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+    ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF
+    USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+- The micro-kernels (benchmarks/sources/micro-*.c), the shim and the runners are Isoline's, under the
+  Apache License, Version 2.0. The guests link compiler-rt's builtins from wasi-sdk (Apache-2.0 WITH
+  LLVM-exception).
+
+- Contour's WAMR patches (benchmarks/wamr/patches/*.patch) are copied from Contour
+  (https://github.com/contour-terminal/contour, Apache-2.0) and apply to WAMR
+  (https://github.com/bytecodealliance/wasm-micro-runtime, Apache-2.0 WITH LLVM-exception), which the WAMR
+  runners download and build; WAMR itself is not part of this repository.

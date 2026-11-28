@@ -1,0 +1,9 @@
+# Contour's patches of its WAMR (cmake/patches/ at the commit below), copied byte for byte and applied in
+# this order to WAMR's source (scripts/tools.lock's wamr rows) for the wamr-contour runner. ApplyPatches.cmake
+# and scripts/benchmark.py refuse a patch whose SHA-256 is not the one pinned here.
+# One `key = value` per line; '#' starts a comment.
+contour.repository = https://github.com/contour-terminal/contour
+contour.commit = 54387ba8140a81e62e92a2b1beb9a76b591be04f
+patches = wamr-unlink-exec-env-under-cluster-lock.patch wamr-map-jit-only-for-executable-memory.patch
+sha256.wamr-unlink-exec-env-under-cluster-lock.patch = 84bfa9f50b8b0836bb9165e3dc5f1abb7e58921c6f6cdb59bdb0c6c7e0e158e0
+sha256.wamr-map-jit-only-for-executable-memory.patch = 5a0df0172e592b0c28e42e38614e96d1f4d6f5ead572e9cc28f93c3b8c7ee9f8

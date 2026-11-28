@@ -743,7 +743,7 @@ jobs:
       - name: Check formatting
         run: |
           dirs=()
-          for dir in src tests; do
+          for dir in src tests benchmarks; do
             if [ -d "$dir" ]; then dirs+=("$dir"); fi
           done
           # C++ and C sources alike: the C API's headers (*.h) and its C tests (*.c) included.

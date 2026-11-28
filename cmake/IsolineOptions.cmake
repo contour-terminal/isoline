@@ -40,6 +40,11 @@ if(ISOLINE_FUZZING AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "ISOLINE_FUZZING needs Clang: libFuzzer is part of its compiler runtime.")
 endif()
 
+# The benchmark runners (benchmarks/CMakeLists.txt): built in the trees scripts/benchmark.py configures with its
+# flag table, never by default. Their WAMR runners download WAMR's pinned source.
+option(ISOLINE_BENCHMARKS
+       "Build the benchmark runners of benchmarks/ (isoline-benchmark and the WAMR runners, which download WAMR)" OFF)
+
 set(ISOLINE_SANITIZE "" CACHE STRING
     "Sanitizer mode for Isoline's own targets: empty, address (ASan + UBSan) or thread")
 set_property(CACHE ISOLINE_SANITIZE PROPERTY STRINGS "" address thread)
