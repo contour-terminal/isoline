@@ -236,8 +236,6 @@ CheckOptions:
   readability-identifier-naming.EnumCase: CamelCase
   readability-identifier-naming.EnumConstantCase: CamelCase
   readability-identifier-naming.FunctionCase: camelBack
-  # libFuzzer calls its targets' entry points by these names (tests/fuzz): the only functions not camelBack.
-  readability-identifier-naming.FunctionIgnoredRegexp: '^LLVMFuzzer(Initialize|TestOneInput)$'
   readability-identifier-naming.MethodCase: camelBack
   readability-identifier-naming.ParameterCase: camelBack
   readability-identifier-naming.PrivateMemberCase: camelBack
@@ -259,7 +257,8 @@ CheckOptions:
   # (plan P17a, I4). clang-tidy anchors an IgnoredRegexp at both ends, so each pattern spells out the
   # whole name; and a member is checked under its access's style, so a struct's public member is
   # PublicMember's, not Member's.
-  readability-identifier-naming.FunctionIgnoredRegexp: '(wasm|isoline)_.*'
+  # libFuzzer calls its targets' entry points by LLVMFuzzerInitialize and LLVMFuzzerTestOneInput (tests/fuzz).
+  readability-identifier-naming.FunctionIgnoredRegexp: '(wasm|isoline)_.*|LLVMFuzzer(Initialize|TestOneInput)'
   readability-identifier-naming.TypedefIgnoredRegexp: '(wasm|isoline)_.*'
   readability-identifier-naming.StructIgnoredRegexp: '(wasm|isoline)_.*'
   readability-identifier-naming.MemberIgnoredRegexp: '(wasm|isoline)_.*'
