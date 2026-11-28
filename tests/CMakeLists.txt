@@ -403,6 +403,23 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME check-conformance-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-conformance_test.py")
     set_tests_properties(check-conformance-selftest PROPERTIES LABELS lint)
+    # The Spectre select survives optimization (docs/interpreter.md, "Spectre"): every memory-0 load and
+    # store handler of an optimized ELF build selects its offset (scripts/check-spectre-select.py), and the
+    # checker's own fixtures. Unoptimized, sanitized or coverage builds keep the mask's arithmetic as
+    # written, so only an optimized one can lose it.
+    add_test(NAME check-spectre-select-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-spectre-select_test.py")
+    set_tests_properties(check-spectre-select-selftest PROPERTIES LABELS lint)
+    get_property(isolineDispatchNames GLOBAL PROPERTY ISOLINE_INTERPRETER_DISPATCH_NAMES)
+    find_program(ISOLINE_OBJDUMP NAMES objdump llvm-objdump)
+    if("tailcall" IN_LIST isolineDispatchNames AND ISOLINE_OBJDUMP AND NOT WIN32 AND NOT APPLE
+       AND CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$" AND NOT ISOLINE_SANITIZE
+       AND NOT ISOLINE_COVERAGE)
+        add_test(NAME interpreter-spectre-select
+                 COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-spectre-select.py"
+                         --objdump "${ISOLINE_OBJDUMP}" --object "$<TARGET_OBJECTS:isoline_core>")
+        set_tests_properties(interpreter-spectre-select PROPERTIES LABELS "lint;interpreter")
+    endif()
     # The pinned-tool fetcher's lock rows, digest check and cache, on fixture archives: offline.
     add_test(NAME fetch-tools-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/fetch-tools_test.py")
