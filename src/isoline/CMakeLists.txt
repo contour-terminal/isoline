@@ -68,7 +68,7 @@ add_library(isoline::core ALIAS isoline_core)
 # (-Wframe-larger-than=4096, fastinterpreter/CMakeLists.txt). A row is the flavour, then the reference's, the
 # fast engine's and the small thread's bytes.
 set(isolineNestingRows
-    "release|2304|3072|524288"
+    "release|4352|4608|524288"
     "debug|13056|12544|3145728"
     "address|12288|11264|3145728"
     "thread|10752|9728|3145728"

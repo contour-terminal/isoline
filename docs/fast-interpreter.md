@@ -80,7 +80,7 @@ under Switch and TailCall):
 
 | Flavour | Builds measured | Reference | Fast | Published (reference, fast) | Small thread |
 |---|---|---|---|---|---|
-| release | clang-release | 1'472 | 1'984, 2'016 | 2'304, 3'072 | 512 KiB |
+| release | clang-release; GCC 14 arm64 (scripts/arm64-podman.sh, qemu); clang-aarch64-cross-release (qemu) | 1'472; 2'768; 1'504 | 1'984, 2'016; 3'024 (Switch only); 2'288, 2'320 | 4'352, 4'608 | 512 KiB |
 | debug | gcc-debug; clangcl-cross-debug (wine); clang-aarch64-cross (qemu); msvc-debug, real cl.exe (wine) | 3'712; 5'344; 4'784; 8'592 | 3'344, 3'440; 4'992, 5'168; 4'656, 4'752; 8'352 (Switch only) | 13'056, 12'544 | 3 MiB |
 | address | clang-asan | 8'096 | 7'104, 7'424 | 12'288, 11'264 | 3 MiB |
 | thread | clang-tsan | 7'040 | 6'400, 6'320 | 10'752, 9'728 | 3 MiB |
