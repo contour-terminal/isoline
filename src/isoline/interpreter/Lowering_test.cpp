@@ -196,6 +196,48 @@ TEST_CASE("Lowering.readsAnEarlierResultFromItsSlot")
     CHECK(listingOf(chain) == "i32.add s2, s0, s1\ni32.mul s2, s2, s0\nreturn s2\n");
 }
 
+TEST_CASE("Lowering.writesAResultStraightIntoTheLocalSetOrTeedNext")
+{
+    SECTION("a folded immediate and a unary go straight to the local")
+    {
+        auto const increment =
+            functionOf({ binary::I32 }, {}, {}, code({ localGet(0), i32Const(1), op(0x6A), localSet(0) }));
+        CHECK(listingOf(increment) == "i32.add.imm s0, s0, #1\nreturn s1\n");
+        auto const zero = functionOf({ binary::I32 }, {}, {}, code({ localGet(0), op(0x45), localSet(0) }));
+        CHECK(listingOf(zero).starts_with("i32.eqz s0, s0\n"));
+    }
+    SECTION("a local whose old value an operand still forwards is set by a move")
+    {
+        // (local.get 0) (local.get 0) (i32.const 1) (i32.add) (local.set 0) (return): the forwarder below is
+        // copied first, so the sum is moved into local 0 after it.
+        auto const kept =
+            functionOf({ binary::I32 },
+                       { binary::I32 },
+                       {},
+                       code({ localGet(0), localGet(0), i32Const(1), op(0x6A), localSet(0), op(0x0F) }));
+        CHECK(listingOf(kept) == "i32.add.imm s2, s0, #1\nmove64 s1, s0\nmove64 s0, s2\nreturn s1\n");
+    }
+    SECTION("a result teed into a local goes to the local, and the operand forwards it")
+    {
+        // (local.get 0) (i32.const 1) (i32.add) (local.tee 0) (i32.const 2) (i32.mul): the product reads
+        // the sum from local 0.
+        auto const tee =
+            functionOf({ binary::I32 },
+                       { binary::I32 },
+                       {},
+                       code({ localGet(0), i32Const(1), op(0x6A), op(0x22, 0), i32Const(2), op(0x6C) }));
+        CHECK(listingOf(tee) == "i32.add.imm s0, s0, #1\ni32.mul.imm s1, s0, #2\nreturn s1\n");
+    }
+    SECTION("a result neither set nor teed next stays an operand")
+    {
+        auto const kept = functionOf({ binary::I32 },
+                                     { binary::I32 },
+                                     {},
+                                     code({ localGet(0), i32Const(1), op(0x6A), op(0x1A), localGet(0) }));
+        CHECK(listingOf(kept).starts_with("i32.add.imm s1, s0, #1\n"));
+    }
+}
+
 TEST_CASE("Lowering.skipsAnEmptyLocalRun")
 {
     // A declaration of no locals of one type, then one i64: the i64 is local 0, in slot 0.
@@ -218,7 +260,8 @@ TEST_CASE("Lowering.localSetFromEachKindOfEntry")
     {
         auto const sum = functionOf(
             { binary::I32, binary::I32 }, {}, {}, code({ localGet(0), localGet(1), op(0x6A), localSet(1) }));
-        CHECK(listingOf(sum) == "i32.add s2, s0, s1\nmove64 s1, s2\nreturn s2\n");
+        // The sum goes straight to local 1: no move.
+        CHECK(listingOf(sum) == "i32.add s1, s0, s1\nreturn s2\n");
     }
     SECTION("from another local")
     {
@@ -676,7 +719,7 @@ TEST_CASE("Lowering.fusesCompareAndBranch")
                                                          op(0x47),
                                                          op(0x0D, 0) })));
         CHECK(listingOf(countDown)
-              == "i32.sub.imm s1, s0, #1\nmove64 s0, s1\ni32.ne.imm.br_if.loop s0, #0 → @0\nreturn s1\n");
+              == "i32.sub.imm s0, s0, #1\ni32.ne.imm.br_if.loop s0, #0 → @0\nreturn s1\n");
     }
     SECTION("not where the br_if moves its values: the comparison's result is its condition")
     {

@@ -87,6 +87,23 @@ namespace
         Unreachable, ///< It is the else or end that dead code after a terminator ran to.
     };
 
+    /// Where an operation writes its result.
+    enum class ResultTarget : uint8_t
+    {
+        Operand, ///< Its home slot, as the operand stack's new top entry.
+        Local,   ///< A local's slot: the local.set right after it, lowered with it.
+        Tee,     ///< A local's slot, the local.tee right after it lowered with it: the new top forwards it.
+    };
+
+    /// An operation's result: its type, and the slot it is written to.
+    struct Result
+    {
+        ValueType type {};                           ///< Its type.
+        uint32_t slot = 0;                           ///< The slot it is written to.
+        ResultTarget target = ResultTarget::Operand; ///< Whose slot that is.
+        uint32_t local = 0;                          ///< Local and Tee: the local.
+    };
+
     /// What a control instruction opened.
     enum class ControlKind : uint8_t
     {
@@ -715,13 +732,15 @@ namespace
             push(Entry { .type = resultTypeOf(opcode) });
         }
 
-        /// Lowers a Unary row: its operand's slot to a result in the operand's home slot.
+        /// Lowers a Unary row: its operand's slot to a result in the operand's home slot, or in a local
+        /// (resultOf()).
         void lowerUnary(LoweringRow const& row)
         {
             auto operand = pop();
             auto const source = readable(operand);
-            emit(row.operation, { operand.slot, source }, {});
-            push(Entry { .type = resultTypeOf(row.opcode) });
+            auto const result = resultOf(resultTypeOf(row.opcode), operand.slot);
+            emit(row.operation, { result.slot, source }, {});
+            pushResult(result);
         }
 
         /// Lowers a Binary or BinaryImmediate row: a constant right operand folds into the immediate twin
@@ -731,11 +750,15 @@ namespace
             auto right = pop();
             auto left = pop();
             auto const leftSource = readable(left);
-            if (row.form == OperationForm::BinaryImmediate && right.kind == EntryKind::Constant)
-                emit(row.immediate, { left.slot, leftSource }, { right.constant });
+            auto const folds =
+                row.form == OperationForm::BinaryImmediate && right.kind == EntryKind::Constant;
+            auto const rightSource = folds ? 0 : readable(right);
+            auto const result = resultOf(resultTypeOf(row.opcode), left.slot);
+            if (folds)
+                emit(row.immediate, { result.slot, leftSource }, { right.constant });
             else
-                emit(row.operation, { left.slot, leftSource, readable(right) }, {});
-            push(Entry { .type = resultTypeOf(row.opcode) });
+                emit(row.operation, { result.slot, leftSource, rightSource }, {});
+            pushResult(result);
         }
 
         /// Lowers the comparison of @p row and the br_if or if right after it as one operation, where
@@ -844,9 +867,11 @@ namespace
             auto const source = readable(address);
             if (access.shape == binary::VectorShape::Lane)
                 Require(homed(vector) == address.slot + 1);
-            emitAccess(row, instruction, OperationId::LoadIndexed, { address.slot, source });
-            // Its signature is its address type's (Special); the value's type is the access's.
-            push(Entry { .type = ValueType { .kind = access.value } });
+            // Its signature is its address type's (Special); the value's type is the access's. A lane load's
+            // vector takes two slots, so its result is never a local's (resultOf()).
+            auto const result = resultOf(ValueType { .kind = access.value }, address.slot);
+            emitAccess(row, instruction, OperationId::LoadIndexed, { result.slot, source });
+            pushResult(result);
         }
 
         /// Lowers a Store row: the value's slot to memory at the address's.
@@ -1465,6 +1490,39 @@ namespace
         }
 
         // --- The abstract operand stack ---
+
+        /// Where an operation's result goes: straight into local L where the next instruction is
+        /// local.set L or local.tee L, the result takes one slot and no entry forwards L's value (its old
+        /// value is then read by no one after the operation, which reads its operands before it writes its
+        /// result); the local.set or local.tee is then lowered with it, and saves its move. Else to @p home,
+        /// the result's home slot.
+        /// @param type The result's type.
+        /// @param home The home slot of the entry the result is pushed as.
+        [[nodiscard]] Result resultOf(ValueType type, uint32_t home)
+        {
+            auto const& next = _source.body[_position + 1];
+            auto const set = next.opcode == Opcode::LocalSet || next.opcode == Opcode::LocalTee;
+            if (!set || widthOf(type) != 1 || _chains[next.a] != NoEntry)
+                return Result { .type = type, .slot = home, .target = ResultTarget::Operand };
+            ++_position;
+            return Result { .type = type,
+                            .slot = localSlot(next.a),
+                            .target =
+                                next.opcode == Opcode::LocalSet ? ResultTarget::Local : ResultTarget::Tee,
+                            .local = next.a };
+        }
+
+        /// Pushes @p result: as a new entry in its home slot, or as one forwarding the local a local.tee
+        /// wrote it to; one a local.set wrote is not on the stack.
+        void pushResult(Result const& result)
+        {
+            switch (result.target)
+            {
+                case ResultTarget::Operand: push(Entry { .type = result.type }); break;
+                case ResultTarget::Local: break;
+                case ResultTarget::Tee: pushLocal(result.local); break;
+            }
+        }
 
         /// Pops the operand on top into @p local, after materializing every entry forwarding the local's
         /// old value, and only those.
