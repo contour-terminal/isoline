@@ -3,7 +3,7 @@
 # One `key = value` per line; '#' starts a comment. scripts/fetch-tools.py verifies every download
 # against the SHA-256 recorded here. Each tool is a `version`, a `url` template of {version} and
 # {archive}, and per platform its `archive` and the `executable` inside it (templates of {version})
-# and the archive's `sha256`.
+# and the archive's `sha256`; optionally the `members` to extract, when not the whole archive.
 
 wasm-tools.version = 1.263.0
 wasm-tools.url = https://github.com/bytecodealliance/wasm-tools/releases/download/v{version}/{archive}
@@ -56,6 +56,18 @@ wasmtime.sha256.x86_64-linux = c59133a9334e96eaca5e26f0d4c35199bfe43ab34049aa254
 wasmtime.sha256.aarch64-linux = c6aabff1e38536c05b0cb90d60a6a93770f3c49bacd5f7881653bc2c41263268
 wasmtime.sha256.aarch64-macos = b16fc3c60341fb20b85adb3ba04549eeb3e99b9e56a6d317a142584c07a505d4
 wasmtime.sha256.x86_64-windows = d1e3fbca4af955381104065afc5147770a58d02abb768cba547909c8bf0b455a
+
+# The x86-64 encoding oracle's disassembler (scripts/check-encodings.py, tests/encoding): only bin/llvm-mc of the
+# LLVM release is extracted. 22.1.8 is the LLVM the lint lanes pin (one LLVM release for the repository's LLVM
+# tools), and the one tests/encoding/x86_64.golden was checked with. The SHA-256 is of the archive whose detached
+# signature (.sig) verified against releases.llvm.org's release keys (Douglas Yung's,
+# FFB3368980F3E6BB5737145A316C56D064CACBA5) on 2026-11-27, and equals the digest GitHub reports for the asset.
+llvm-mc.version = 22.1.8
+llvm-mc.url = https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/{archive}
+llvm-mc.archive.x86_64-linux = LLVM-{version}-Linux-X64.tar.xz
+llvm-mc.executable.x86_64-linux = LLVM-{version}-Linux-X64/bin/llvm-mc
+llvm-mc.members.x86_64-linux = LLVM-{version}-Linux-X64/bin/llvm-mc
+llvm-mc.sha256.x86_64-linux = df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384
 
 # The WAMR the benchmarks compare with: Contour's pin (cmake/ContourThirdParties.cmake), built from source
 # with Contour's patches, so it is a source archive rather than a tool: no `wamr.version` row, which would

@@ -13,6 +13,10 @@ Every tool is a set of lock rows, so pinning another one is adding rows, not cod
   <tool>.archive.<platform>     the release asset for a platform, a template of {version}
   <tool>.executable.<platform>  the executable's path inside that archive, a template of {version}
   <tool>.sha256.<platform>      the asset's SHA-256
+  <tool>.members.<platform>     optional: the archive members to extract, space-separated templates of
+                                {version}; without it the whole archive is. A tarball is then read as one
+                                stream that stops once every member is out, so of LLVM's ~2 GB release
+                                only bin/llvm-mc reaches the disk.
 
 Concurrent runs may share a cache (parallel worktrees do). A run of one tool holds an exclusive lock on
 downloads/<stem>/.lock from its first look at the cache to its last, so runs of the same tool, version
@@ -25,8 +29,10 @@ and are renamed into place too, so a run killed mid-download leaves no file that
 run of the tool sweeps such staging directories and partial files away under the lock.
 
 Usage: python3 -I scripts/fetch-tools.py [--tool <name>] [--lock <tools.lock>] [--cache <dir>]
-                                         [--platform <platform>]
-Prints the path of the verified executable (by default wasm-tools').
+                                         [--platform <platform>] [--cached]
+Prints the path of the verified executable (by default wasm-tools'). With --cached it downloads nothing:
+it prints the path only when the cache holds the tool's complete tree, and nothing when it does not or the
+lock pins the tool for no such platform (how CMake finds a fetched tool without needing one).
 
        python3 -I scripts/fetch-tools.py --tool <name> --print-version
 Prints the tool's pinned version, fetching nothing.
@@ -40,6 +46,10 @@ lock does not pin: gcc, msvc, python) names the expected version (default: the t
 one of its releases (expected 22 accepts 22.1.8), with no pre-release or development suffix (4.3.0-rc1,
 1.13.0.git, a GCC snapshot's "(experimental)"). A CI lane runs it on every tool its row pins, so a runner whose PATH holds another
 one fails instead of building with it.
+
+       python3 -I scripts/fetch-tools.py --check-libraries <executable>
+Fails unless ldd lists only system libraries for the executable (Linux): a prebuilt tool that loads a
+library from anywhere else (or finds one missing) depends on the machine it was fetched to.
 """
 
 import argparse
@@ -222,19 +232,55 @@ def extract(archive, destination):
                 bundle.extractall(root)
 
 
+def extractMembers(archive, destination, members):
+    """Extracts only the named members of archive into destination, each a regular file. A tarball is read
+    as one stream, which stops once every member is out; a zip is read by name. Fails naming any member
+    the archive does not hold, or holds as anything but a regular file."""
+    destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
+    for member in members:
+        if not (root / member).resolve().is_relative_to(root):
+            raise SystemExit(f"{archive}: member {member!r} escapes the extraction directory")
+    remaining = set(members)
+    if archive.name.endswith(".zip"):
+        with zipfile.ZipFile(archive) as bundle:
+            for member in sorted(remaining & set(bundle.namelist())):
+                bundle.extract(member, root)
+                remaining.discard(member)
+    else:
+        with tarfile.open(archive, "r|*") as bundle:
+            for member in bundle:
+                if member.name not in remaining:
+                    continue
+                if not member.isreg():
+                    raise SystemExit(f"{archive}: member {member.name!r} is not a regular file")
+                if hasattr(tarfile, "data_filter"):
+                    bundle.extract(member, root, filter="data")
+                else:
+                    bundle.extract(member, root)
+                remaining.discard(member.name)
+                if not remaining:
+                    break
+    if remaining:
+        raise SystemExit(f"{archive}: no member {', '.join(sorted(remaining))}")
+
+
 def isComplete(extracted, digest):
     """Whether the tree extracted carries the completion marker of the archive whose SHA-256 is digest."""
     marker = extracted / COMPLETION_MARKER
     return marker.is_file() and marker.read_text(encoding="utf-8").strip() == digest
 
 
-def extractInPlace(archive, extracted, digest):
-    """Extracts archive to the directory extracted through a temporary sibling that receives the
-    completion marker (digest) and is then renamed into place. The caller holds the tool's lock and has
-    removed any incomplete tree; a staging copy is dropped when anything fails."""
+def extractInPlace(archive, extracted, digest, members=None):
+    """Extracts archive (only its members, when given) to the directory extracted through a temporary
+    sibling that receives the completion marker (digest) and is then renamed into place. The caller holds
+    the tool's lock and has removed any incomplete tree; a staging copy is dropped when anything fails."""
     staging = pathlib.Path(tempfile.mkdtemp(dir=extracted.parent, prefix=extracted.name + ".", suffix=".part"))
     try:
-        extract(archive, staging)
+        if members:
+            extractMembers(archive, staging, members)
+        else:
+            extract(archive, staging)
         (staging / COMPLETION_MARKER).write_text(digest, encoding="utf-8")
         staging.rename(extracted)
     finally:
@@ -260,6 +306,25 @@ def lockRow(lock, key, lockPath):
     return lock[key]
 
 
+def cachedTool(tool, lockPath=DEFAULT_LOCK, cache=DEFAULT_CACHE, name=None):
+    """Returns the path of the pinned tool's executable when the cache holds its complete tree, else None,
+    downloading nothing; also None when the lock pins the tool for no platform name (default: this
+    host's). It reads the tree without the tool's lock: a tree is renamed into place complete."""
+    lock = readLock(lockPath)
+    try:
+        name = name or hostPlatform()
+    except SystemExit:
+        return None
+    if f"{tool}.sha256.{name}" not in lock:
+        return None
+    version = lockRow(lock, f"{tool}.version", lockPath)
+    extracted = pathlib.Path(cache) / f"{tool}-{version}-{name}"
+    executable = extracted / lockRow(lock, f"{tool}.executable.{name}", lockPath).format(version=version)
+    if isComplete(extracted, lock[f"{tool}.sha256.{name}"].lower()) and executable.exists():
+        return executable
+    return None
+
+
 def ensureTool(tool, lockPath=DEFAULT_LOCK, cache=DEFAULT_CACHE, name=None):
     """Returns the path of the pinned tool's executable, downloading and verifying it when not cached.
     name is the platform to fetch for (default: this host's)."""
@@ -270,6 +335,7 @@ def ensureTool(tool, lockPath=DEFAULT_LOCK, cache=DEFAULT_CACHE, name=None):
     executablePath = lockRow(lock, f"{tool}.executable.{name}", lockPath).format(version=version)
     expected = lockRow(lock, f"{tool}.sha256.{name}", lockPath).lower()
     url = lockRow(lock, f"{tool}.url", lockPath).format(version=version, archive=archiveName)
+    members = [member.format(version=version) for member in lock.get(f"{tool}.members.{name}", "").split()]
     stem = f"{tool}-{version}-{name}"
 
     cache = pathlib.Path(cache)
@@ -290,7 +356,7 @@ def ensureTool(tool, lockPath=DEFAULT_LOCK, cache=DEFAULT_CACHE, name=None):
             raise SystemExit(f"{archiveName}: SHA-256 {actual} does not match the pinned {expected}")
         if extracted.exists():
             shutil.rmtree(extracted)
-        extractInPlace(archive, extracted, expected)
+        extractInPlace(archive, extracted, expected, members)
         if not executable.exists():
             raise SystemExit(f"{archiveName}: no {executable.name} at {executable}")
         return markExecutable(executable, name)
@@ -331,6 +397,8 @@ VERSION_LINES = [
     # clang, clang++, clang-scan-deps ("Ubuntu clang version 22.1.8 (++2026)") and clang-tidy
     # ("LLVM version 22.1.8").
     ("llvm", re.compile(rf"\b(?:clang|LLVM) version {VERSION}"), None),
+    # llvm-mc ("LLVM (http://llvm.org/):" and then "  LLVM version 22.1.8").
+    ("llvm-mc", re.compile(rf"^LLVM version {VERSION}"), None),
     # g++ ("g++ (GCC) 15.2.0", "g++ (Ubuntu 14.2.0-4ubuntu2) 14.2.0", "g++ (GCC) 16.2.1 20260819 (Red Hat
     # 16.2.1-2)"); a snapshot says so after its date: "g++ (GCC) 16.0.0 20260101 (experimental)".
     ("gcc", re.compile(rf"^\S+ \(.*?\) {VERSION}(?:\s|$)"), re.compile(r"\((?:experimental|prerelease)\)")),
@@ -391,6 +459,44 @@ def checkVersion(executable, tool, expected, versionArgument="--version"):
     return actual
 
 
+# The directories a system library lives in: a library ldd resolves anywhere else, or cannot resolve, makes a
+# prebuilt tool depend on the machine it runs on.
+SYSTEM_LIBRARY_DIRECTORIES = ("/lib/", "/lib64/", "/usr/lib/", "/usr/lib64/")
+
+# One line of ldd's output: `name => path (address)`, `name => not found`, or a bare `path (address)` (the
+# loader). A line with neither a `=>` nor a path names a library the kernel provides (linux-vdso.so.1); `not
+# found` is no system directory either.
+LDD_LINE = re.compile(r"^(?P<name>\S+)(?:\s+=>\s+(?P<resolved>not found|\S+))?")
+
+
+def checkLibraries(executable):
+    """Fails unless ldd lists only system libraries (SYSTEM_LIBRARY_DIRECTORIES) for executable; returns the
+    libraries it lists. A statically linked executable lists none."""
+    try:
+        completed = subprocess.run(["ldd", os.fspath(executable)], capture_output=True, text=True, timeout=60,
+                                   check=False)
+    except OSError as error:
+        raise SystemExit(f"cannot run ldd on {executable}: {error}")
+    output = completed.stdout + completed.stderr
+    if "not a dynamic executable" in output or "statically linked" in output:
+        return []
+    if completed.returncode != 0:
+        raise SystemExit(f"ldd {executable} exits with {completed.returncode}: {output.strip()[:2000]}")
+    libraries = []
+    for line in completed.stdout.splitlines():
+        found = LDD_LINE.match(line.strip())
+        if not found:
+            continue
+        path = found.group("resolved") or (found.group("name") if found.group("name").startswith("/") else None)
+        if path is None:
+            continue
+        if not path.startswith(SYSTEM_LIBRARY_DIRECTORIES):
+            raise SystemExit(f"{executable} loads {found.group('name')} from {path}, not a system library directory "
+                             f"({', '.join(SYSTEM_LIBRARY_DIRECTORIES)})")
+        libraries.append(path)
+    return libraries
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tool", help=f"the tool to fetch (default: {DEFAULT_TOOL}), or whose version line "
@@ -402,12 +508,23 @@ def main():
     parser.add_argument("--check-version", metavar="EXECUTABLE", help="check the executable's version")
     parser.add_argument("--expected", help="the version --check-version expects (default: the tool's pinned one)")
     parser.add_argument("--version-argument", default="--version", help="what makes the executable print it")
+    parser.add_argument("--cached", action="store_true",
+                        help="print the executable only when the cache holds it, downloading nothing")
+    parser.add_argument("--check-libraries", metavar="EXECUTABLE",
+                        help="check that ldd lists only system libraries for the executable")
     arguments = parser.parse_args()
     if arguments.check_version and not arguments.tool:
         parser.error("--check-version needs --tool, which names the version line to read")
     arguments.tool = arguments.tool or DEFAULT_TOOL
     if arguments.print_version:
         print(pinnedVersion(arguments.tool, arguments.lock))
+    elif arguments.check_libraries:
+        libraries = checkLibraries(arguments.check_libraries)
+        print(f"{arguments.check_libraries}: {len(libraries)} libraries, all of them system libraries")
+    elif arguments.cached:
+        executable = cachedTool(arguments.tool, arguments.lock, arguments.cache, arguments.platform)
+        if executable is not None:
+            print(os.fspath(executable))
     elif arguments.check_version:
         expected = arguments.expected or pinnedVersion(arguments.tool, arguments.lock)
         actual = checkVersion(arguments.check_version, arguments.tool, expected, arguments.version_argument)

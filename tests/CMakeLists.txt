@@ -156,6 +156,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME fetch-tools-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/fetch-tools_test.py")
     set_tests_properties(fetch-tools-selftest PROPERTIES LABELS lint)
+    # The x86-64 encoding oracle's checker, against a fake llvm-mc: every way a disassembly must fail it.
+    add_test(NAME check-encodings-selftest
+             COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/check-encodings_test.py")
+    set_tests_properties(check-encodings-selftest PROPERTIES LABELS lint)
     # The differential corpus generator's entropy, smith flags and validation, with a stand-in wasm-tools.
     add_test(NAME make-differential-corpus-selftest
              COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/make-differential-corpus_test.py")

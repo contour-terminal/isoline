@@ -166,6 +166,53 @@ jobs:
     with:
       sample: ${{ fromJSON(inputs.differential-sample || '8') }}
 
+  # The x86-64 encoding oracle (tests/encoding, scripts/check-encodings.py): llvm-mc must read every sample of
+  # Encodings.def as the instruction it is meant to be. Only bin/llvm-mc of the pinned LLVM release is
+  # extracted, and the extracted tree is cached by the lock, so the ~2 GB archive is fetched once per change
+  # of scripts/tools.lock. A failed fetch or check fails the job, and --no-tests=error fails it when the
+  # oracle's test is not registered: it never passes by running nothing.
+  linux-encoding-oracle:
+    name: Linux x86-64 encodings (llvm-mc oracle)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get install -qy ninja-build
+      - name: Key the pinned llvm-mc
+        id: llvm-mc-key
+        run: |
+          set -euo pipefail
+          echo "version=$(python3 -I scripts/fetch-tools.py --tool llvm-mc --print-version)" >> "$GITHUB_OUTPUT"
+      - name: Restore the pinned llvm-mc
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/isoline-tools/llvm-mc-${{ steps.llvm-mc-key.outputs.version }}-x86_64-linux
+          key: llvm-mc-${{ hashFiles('scripts/tools.lock') }}
+      - name: Fetch and check the pinned llvm-mc
+        run: |
+          set -euo pipefail
+          llvm_mc=$(python3 -I scripts/fetch-tools.py --tool llvm-mc)
+          python3 -I scripts/fetch-tools.py --check-version "$llvm_mc" --tool llvm-mc
+          python3 -I scripts/fetch-tools.py --check-libraries "$llvm_mc"
+          echo "ISOLINE_LLVM_MC=$llvm_mc" >> "$GITHUB_ENV"
+      - name: Configure
+        # clang-tidy runs in the ASan job already.
+        run: >
+          cmake --preset clang-release
+          -DCMAKE_CXX_COMPILER="clang++-$LLVM_VERSION"
+          -DISOLINE_CLANG_TIDY=OFF
+          -DISOLINE_FETCH_DEPS=ON
+          -DISOLINE_LLVM_MC="$ISOLINE_LLVM_MC"
+      - name: Build
+        run: cmake --build --preset clang-release --target isoline_encoding_samples
+      - name: Check every encoding against llvm-mc
+        run: ctest --test-dir out/clang-release -L oracle --no-tests=error --output-on-failure
+
   macos-clang:
     name: macOS Apple Clang
     runs-on: macos-15

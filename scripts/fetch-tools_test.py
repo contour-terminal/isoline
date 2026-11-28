@@ -147,6 +147,8 @@ class FetchToolsTest(unittest.TestCase):
             ("cmake", "no version here", "nor 1.2.3 a version line", None),
             ("wasmtime", "wasmtime 50.0.3 (9bbe3e2f8 2026-11-19)", "", ("50.0.3", None)),
             ("wasmtime", "wasmtime 51.0.0-dev", "", ("51.0.0", "-dev")),
+            ("llvm-mc", "LLVM (http://llvm.org/):\n  LLVM version 22.1.8\n  Optimized build.", "", ("22.1.8", None)),
+            ("llvm-mc", "LLVM (http://llvm.org/):\n  LLVM version 23.0.0git\n", "", ("23.0.0", "git")),
         ]
         for tool, stdout, stderr, reported in cases:
             with self.subTest(tool=tool, stdout=stdout, stderr=stderr):
@@ -401,6 +403,102 @@ class FetchToolsTest(unittest.TestCase):
             self.fetch("flat", "aarch64-macos")
         self.assertIn("no row `flat.archive.aarch64-macos`", str(failure.exception.code))
 
+    def writeBundle(self, entries):
+        """Writes the tarball bundle-1.0.tar.xz of entries ((name, payload), payload None for a symlink to
+        the first entry) and pins it as the tool `bundle`, its members bundle-1.0/bin/tool alone."""
+        archive = self.releases / "bundle-1.0.tar.xz"
+        with tarfile.open(archive, "w:xz") as bundle:
+            for name, payload in entries:
+                info = tarfile.TarInfo(name)
+                if payload is None:
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = entries[0][0].rsplit("/", 1)[1]
+                    bundle.addfile(info)
+                else:
+                    info.size = len(payload)
+                    info.mode = 0o755
+                    bundle.addfile(info, io.BytesIO(payload))
+        self.writeLock({
+            "bundle.version": "1.0",
+            "bundle.url": self.releases.as_uri() + "/{archive}",
+            f"bundle.archive.{PLATFORM}": "bundle-{version}.tar.xz",
+            f"bundle.executable.{PLATFORM}": "bundle-{version}/bin/tool",
+            f"bundle.members.{PLATFORM}": "bundle-{version}/bin/tool",
+            f"bundle.sha256.{PLATFORM}": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        })
+
+    def test_onlyTheMembersAreExtracted(self):
+        self.writeBundle([("bundle-1.0/bin/other", b"other"), ("bundle-1.0/bin/tool", b"tool"),
+                          ("bundle-1.0/lib/libbig.a", b"big")])
+        executable = self.fetch("bundle")
+        self.assertEqual(executable.read_bytes(), b"tool")
+        tree = executable.parents[2]
+        self.assertEqual(sorted(path.relative_to(tree).as_posix() for path in tree.rglob("*") if path.is_file()),
+                         [fetchTools.COMPLETION_MARKER, "bundle-1.0/bin/tool"])
+
+    def test_aMissingMemberFailsNamingIt(self):
+        self.writeBundle([("bundle-1.0/bin/other", b"other")])
+        with self.assertRaises(SystemExit) as failure:
+            self.fetch("bundle")
+        self.assertIn("no member bundle-1.0/bin/tool", str(failure.exception.code))
+        self.assertFalse((self.cache / f"bundle-1.0-{PLATFORM}").exists(), "no tree is left")
+
+    def test_aMemberThatIsNoRegularFileIsRefused(self):
+        self.writeBundle([("bundle-1.0/bin/other", b"other"), ("bundle-1.0/bin/tool", None)])
+        with self.assertRaises(SystemExit) as failure:
+            self.fetch("bundle")
+        self.assertIn("is not a regular file", str(failure.exception.code))
+
+    def test_aMemberOutsideTheTreeIsRefused(self):
+        self.writeBundle([("bundle-1.0/bin/tool", b"tool")])
+        self.writeLock({**fetchTools.readLock(self.lock), f"bundle.members.{PLATFORM}": "../escape"})
+        with self.assertRaises(SystemExit) as failure:
+            self.fetch("bundle")
+        self.assertIn("escapes the extraction directory", str(failure.exception.code))
+
+    def test_theCachedToolIsFoundWithoutADownload(self):
+        self.assertIsNone(fetchTools.cachedTool("nested", self.lock, self.cache, PLATFORM), "nothing is cached yet")
+        self.assertFalse(self.cache.exists(), "asking downloads nothing")
+        executable = self.fetch("nested")
+        self.assertEqual(fetchTools.cachedTool("nested", self.lock, self.cache, PLATFORM), executable)
+        self.assertIsNone(fetchTools.cachedTool("nested", self.lock, self.cache, WINDOWS), "no row, no tool")
+        (executable.parents[2] / fetchTools.COMPLETION_MARKER).unlink()
+        self.assertIsNone(fetchTools.cachedTool("nested", self.lock, self.cache, PLATFORM), "an incomplete tree")
+
+    def test_theCachedCommandLinePrintsNothingWithoutTheTool(self):
+        command = [sys.executable, "-I", SCRIPT, "--tool", "nested", "--lock", self.lock, "--cache", self.cache,
+                   "--platform", PLATFORM, "--cached"]
+        before = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual((before.returncode, before.stdout), (0, ""), before.stderr)
+        executable = self.fetch("nested")
+        after = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual((after.returncode, after.stdout.strip()), (0, os.fspath(executable)), after.stderr)
+
+    def checkLibrariesOf(self, stdout, returncode=0, stderr=""):
+        """Runs checkLibraries against an ldd that prints stdout and stderr and exits with returncode."""
+        completed = subprocess.CompletedProcess(["ldd", "tool"], returncode, stdout, stderr)
+        with mock.patch.object(fetchTools.subprocess, "run", return_value=completed):
+            return fetchTools.checkLibraries("tool")
+
+    def test_onlySystemLibrariesPassTheLibraryCheck(self):
+        system = ("\tlinux-vdso.so.1 (0x00007f122583a000)\n"
+                  "\tlibm.so.6 => /lib64/libm.so.6 (0x00007f1222ce9000)\n"
+                  "\tlibz.so.1 => /lib/x86_64-linux-gnu/libz.so.1 (0x00007f12257e1000)\n"
+                  "\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007f1222a00000)\n"
+                  "\t/lib64/ld-linux-x86-64.so.2 (0x00007f122583c000)\n")
+        self.assertEqual(len(self.checkLibrariesOf(system)), 4)
+        self.assertEqual(self.checkLibrariesOf("", 1, "\tnot a dynamic executable\n"), [])
+        for line, named in [("\tlibLLVM.so.22 => /opt/llvm/lib/libLLVM.so.22 (0x1)\n", "/opt/llvm/lib/libLLVM.so.22"),
+                            ("\tlibxml2.so.2 => not found\n", "libxml2.so.2 from not found"),
+                            ("\tlibz.so.1 => /home/me/lib/libz.so.1 (0x1)\n", "/home/me/lib/libz.so.1")]:
+            with self.subTest(line=line):
+                with self.assertRaises(SystemExit) as failure:
+                    self.checkLibrariesOf(system + line)
+                self.assertIn(named, str(failure.exception))
+        with self.assertRaises(SystemExit) as failure:
+            self.checkLibrariesOf("", 1, "ldd: tool: No such file or directory\n")
+        self.assertIn("exits with 1", str(failure.exception))
+
     def test_theCommandLinePrintsTheExecutable(self):
         result = subprocess.run([sys.executable, "-I", SCRIPT, "--tool", "nested", "--lock", self.lock,
                                  "--cache", self.cache, "--platform", PLATFORM],
@@ -424,6 +522,13 @@ class LockTest(unittest.TestCase):
                 for column in ("archive", "executable"):
                     self.assertIn(f"{tool}.{column}.{name}", lock)
                 self.assertRegex(lock[f"{tool}.sha256.{name}"], r"^[0-9a-f]{64}$")
+
+    def test_theEncodingOraclesLlvmMcIsPinnedAlone(self):
+        # Only bin/llvm-mc of the LLVM release is extracted, and it is the executable the lock names.
+        lock = fetchTools.readLock(fetchTools.DEFAULT_LOCK)
+        self.assertRegex(lock["llvm-mc.version"], r"^\d+\.\d+\.\d+$")
+        self.assertEqual(lock["llvm-mc.members.x86_64-linux"], lock["llvm-mc.executable.x86_64-linux"])
+        self.assertTrue(lock["llvm-mc.executable.x86_64-linux"].endswith("/bin/llvm-mc"))
 
     def test_theWamrSourceIsPinned(self):
         # A source archive, not a tool: a release, the commit it is, and the archive's URL and digest.
