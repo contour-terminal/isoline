@@ -119,13 +119,23 @@ class ITarget
                                                                    ModuleLabels const& labels,
                                                                    CodeBuffer& buffer) const = 0;
 
-    /// Emits the entry adapter of functions of @p type: the host's RawValue arguments and results to and
-    /// from the internal convention.
+    /// Emits the entry adapter of functions of @p type at @p buffer's current offset: what the entry
+    /// trampoline calls (EntryTrampoline's adapter), with the pinned registers set and, in registers of the
+    /// target's choosing that the trampoline and its adapters agree on, the function's code and the RawValue
+    /// cells. It passes the cells' arguments under the internal convention, calls the function, and writes
+    /// its results back into the cells.
+    /// @param type The functions' type: one compiledFeatures() admits.
+    /// @param buffer The module's code buffer.
     virtual void emitEntryAdapter(binary::FuncType const& type, CodeBuffer& buffer) const = 0;
 
-    /// Emits the module's entry trampoline: the host's callee-saved registers saved per the host convention,
-    /// the context registers set, the entry stack pointer recorded, and the trap exit.
-    virtual void emitEntryTrampoline(CodeBuffer& buffer) const = 0;
+    /// Emits the module's entry trampoline at @p buffer's current offset, which is EntryTrampoline's entry:
+    /// the host's callee-saved registers saved per the host convention, the pinned registers set, the entry
+    /// stack pointer recorded, the adapter called; and binds @p trapExit, its trap exit, which every trap
+    /// site and failed stub of the module's functions jumps to (ModuleLabels::trapExit). Both ways out
+    /// restore every callee-saved register and return an EntryStatus.
+    /// @param buffer The module's code buffer.
+    /// @param trapExit The module's trap-exit label, not bound yet.
+    virtual void emitEntryTrampoline(CodeBuffer& buffer, CodeLabel trapExit) const = 0;
 
   protected:
     ITarget() = default;

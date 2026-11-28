@@ -109,22 +109,6 @@ namespace
         { Type::F64, 8, Mnemonic::MovsdMR },
     });
 
-    /// The IR type of a WebAssembly value type the compiler compiles.
-    [[nodiscard]] Type typeOf(binary::ValueType const& type) noexcept
-    {
-        switch (type.kind)
-        {
-            case binary::ValueKind::I32: return Type::I32;
-            case binary::ValueKind::I64: return Type::I64;
-            case binary::ValueKind::F32: return Type::F32;
-            case binary::ValueKind::F64: return Type::F64;
-            case binary::ValueKind::Ref: return Type::Ref;
-            case binary::ValueKind::V128: break; // uncovered(simd-value-type)
-        }
-        Require(false);   // checkModule refuses SIMD before translation
-        return Type::I64; // uncovered(simd-value-type)
-    }
-
     /// Whether @p row's emitter is an integer comparison's, which CompareIntoBranch and CompareIntoSelect
     /// fold.
     [[nodiscard]] constexpr bool isIntegerComparison(Operation operation) noexcept

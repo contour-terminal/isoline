@@ -481,8 +481,8 @@ class BasicFakeTarget final: public ITarget
     /// Emits nothing.
     void emitEntryAdapter(binary::FuncType const& /*type*/, CodeBuffer& /*buffer*/) const override {}
 
-    /// Emits nothing.
-    void emitEntryTrampoline(CodeBuffer& /*buffer*/) const override {}
+    /// Binds @p trapExit and emits nothing else.
+    void emitEntryTrampoline(CodeBuffer& buffer, CodeLabel trapExit) const override { buffer.bind(trapExit); }
 
   private:
     /// A placeholder (x86-64, the file's ABI): the fake target generates for no machine.

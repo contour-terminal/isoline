@@ -201,6 +201,8 @@ ISOLINE_ENCODING(MovsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x10), Register, Non
 ISOLINE_ENCODING(MovsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x10), Register, None, (def(X), use(M64)),  "movsd {0}, {1}")
 ISOLINE_ENCODING(MovsdMR,  ModRmRegister, HexF2, W0, (0x0f, 0x11), Register, None, (use(M64), use(X)),  "movsd {0}, {1}")
 ISOLINE_ENCODING(MovapsRR, RegisterModRm, None,  W0, (0x0f, 0x28), Register, None, (def(X), use(X)),    "movaps {0}, {1}")
+ISOLINE_ENCODING(MovapsRM, RegisterModRm, None,  W0, (0x0f, 0x28), Register, None, (def(X), use(M128)), "movaps {0}, {1}")
+ISOLINE_ENCODING(MovapsMR, ModRmRegister, None,  W0, (0x0f, 0x29), Register, None, (use(M128), use(X)), "movaps {0}, {1}")
 ISOLINE_ENCODING(MovdXR,   RegisterModRm, Hex66, W0, (0x0f, 0x6e), Register, None, (def(X), use(G32)),  "movd {0}, {1}")
 ISOLINE_ENCODING(MovqXR,   RegisterModRm, Hex66, W1, (0x0f, 0x6e), Register, None, (def(X), use(G64)),  "movq {0}, {1}")
 ISOLINE_ENCODING(MovdRX,   ModRmRegister, Hex66, W0, (0x0f, 0x7e), Register, None, (def(G32), use(X)),  "movd {0}, {1}")

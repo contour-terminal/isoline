@@ -34,6 +34,7 @@
 #include <isoline/compiler/intermediate/Operation.hpp>
 #include <isoline/compiler/machine/CallingConvention.hpp>
 #include <isoline/compiler/machine/CodeBuffer.hpp>
+#include <isoline/compiler/machine/FrameRule.hpp>
 #include <isoline/compiler/machine/MachineFunction.hpp>
 #include <isoline/compiler/machine/Target.hpp>
 #include <isoline/compiler/x86_64/Encoder.hpp>
@@ -44,15 +45,16 @@
 namespace isoline::compiler::x86_64
 {
 
-/// The stack a prologue keeps free below its frame for the deepest runtime stub that is not a host call:
-/// what `rsp - (frameBytes + StubReserveBytes) < nativeStackLimit` checks before a frame is allocated (P5
-/// Decision "Native stack limit from the real stack"). An upper estimate until P5 Task 14 measures the stubs
-/// by stack painting and replaces it.
-inline constexpr auto StubReserveBytes = uint64_t { 16 } * 1024;
+/// The stack a prologue keeps free below its frame: machine::StubReserveBytes, the target-independent row.
+inline constexpr auto StubReserveBytes = machine::StubReserveBytes;
 
 /// The page a frame larger than one is probed by: one touch per page, top down, as Windows' guard pages
 /// require of every OS row.
 inline constexpr auto ProbePageBytes = uint64_t { 4096 };
+
+/// The IR type of a WebAssembly value type the compiler compiles (Require: not a v128, which checkModule()
+/// refuses): what selection gives a signature's values, and what an entry adapter passes a cell as.
+[[nodiscard]] intermediate::Type typeOf(binary::ValueType const& type) noexcept;
 
 /// The width of a float a sequence works on.
 enum class FloatWidth : uint8_t
@@ -849,6 +851,11 @@ class FunctionEmitter
     machine::CodeLabel _pendingExit;
 };
 
+/// Allocates @p bytes of stack below rsp: one sub, or past ProbePageBytes a loop that moves rsp a page at a
+/// time and touches each page, top down, as Windows' guard pages require of every OS row; then the rest.
+/// @param counter The loop's count: a register free here, which it clobbers.
+void allocateStack(Assembler& assembler, uint64_t bytes, Gpr counter);
+
 /// The prologue: push rbp and mov rbp, rsp; the entry's steps the Entry pseudo-instruction asks for, in the
 /// reference's order (the FunctionEntry poll, the call depth, the stack values); the native stack check
 /// `rsp − (frameBytes + StubReserveBytes)` against ExecutionState::nativeStackLimit, trapping
@@ -863,9 +870,9 @@ void enterFrame(FunctionEmitter& emitter);
 /// StubReserveBytes, which every caller's native check keeps free below its own frame.
 [[nodiscard]] uint64_t entryPathBytes(CallConventions const& conventions, std::pmr::memory_resource& memory);
 
-/// The stack a runtime stub other than a host call may take below its caller: what P5 Task 14 measures every
-/// stub against by stack painting.
-inline constexpr auto StubStackBudgetBytes = uint64_t { 8 } * 1024;
+/// The stack a runtime stub other than a host call may take below its caller: machine::StubStackBudgetBytes,
+/// which StackBounds.stubReserveCoversEveryStub measures every stub against by stack painting.
+inline constexpr auto StubStackBudgetBytes = machine::StubStackBudgetBytes;
 
 /// The FunctionEntry poll's slow path, before the frame: every argument register of the internal convention
 /// kept on the reserve, callStubNow(PollSlow), a failed status to the trap exit, the arguments restored, back

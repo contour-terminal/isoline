@@ -313,6 +313,16 @@
 # runs isSelectionTableComplete() on broken tables. Encoder.cpp, Encoder.hpp, EncodingSamples.cpp and Registers.hpp rise
 # with the selector's rows encoded.
 # src/isoline/interpreter/Simd.hpp's row is gone again: the three-way merge f31c40d0 brought back the row P4 had dropped.
+#
+# src/isoline/compiler/x86_64/Lowering.cpp's entries were lowered from 99.93 to 99.80 (lines) and 91.68 to 91.51 (branches)
+# when typeOf() moved there from Selector.cpp (P5 Task 14), so that the entry adapters share it: its v128 case and the
+# return after its Require, the two lines simd-value-type marks, and their branch, came with it; Selector.cpp gained the
+# share it lost. No line or branch a test takes lost its coverage.
+#
+# src/isoline/execution/StackBoundsPosix.cpp's entries were lowered from 100.00 to 85.71 (lines) and 60.00 to 50.00 (branches)
+# when its stack query stopped aborting and began returning Unavailable (P5 Task 14, fix round 1): the two returns
+# stack-query-refused marks, and their branches, are reached only where glibc cannot report the stack. No line or branch
+# a test takes lost its coverage.
 
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
 exclude src/isoline/compiler/FeatureSupport.cpp extern-kind-without-case checkImport() of an ExternKind without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
@@ -333,13 +343,15 @@ exclude src/isoline/compiler/x86_64/Encoder.cpp byte-opcode-register an opcode-r
 exclude src/isoline/compiler/x86_64/Encoder.cpp non-immediate-kind immediateOf() of a slot kind that is no immediate or condition: every row's immediate and condition slots are of those kinds, which isWellFormed() checks of each row in a static_assert
 exclude src/isoline/compiler/x86_64/Encoder.hpp field-without-case fits() of a Field without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/compiler/x86_64/Lowering.cpp argument-register-of-another-row argumentIndexOf() of a register its convention row does not pass an argument in: its callers ask only of a location assignCall() placed under that row (its Require)
+exclude src/isoline/compiler/x86_64/Lowering.cpp simd-value-type typeOf() of a v128: checkModule() refuses every SIMD signature before a function is translated, so no selected signature or entry adapter's type holds one
 exclude src/isoline/compiler/x86_64/Selector.cpp kind-of-another-group an emitter group (emitArithmetic(), emitMemory(), emitState(), emitControl()) given a kind of another group: emitRow() dispatches each EmitterKind to the one group that has its case (their Require)
 exclude src/isoline/compiler/x86_64/Selector.cpp pattern-without-case matches() of a Pattern without a case: the switch names every enumerator and returns in each, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/compiler/x86_64/Selector.cpp result-register-of-another-row emitReturn()'s position of a result register the internal convention returns no result in: assignCall() places results only in that row's registers (its Require)
 exclude src/isoline/compiler/x86_64/Selector.cpp sequence-without-case emitSequence() of a Sequence without a case: the switch names every enumerator and returns in each, and -Wswitch makes a new one without a case a build error
-exclude src/isoline/compiler/x86_64/Selector.cpp simd-value-type typeOf() of a v128: checkModule() refuses every SIMD signature before a function is translated, so no selected signature holds one
-exclude src/isoline/compiler/x86_64/Target.cpp entry-code-is-task-14 emitEntryAdapter() and emitEntryTrampoline(): core::todo until P5 Task 14 writes the entry adapters and the trampoline, which nothing calls before the Compiled engine runs code
 exclude src/isoline/compiler/x86_64/Target.cpp layout-breaks-a-loop encodeFunction() of a layout linearize() refuses: linearize() keeps every loop contiguous by construction, so it refuses only on a compiler bug (Linearize.cpp's linearize-breaks-a-loop)
+exclude src/isoline/execution/CodeMemoryPosix.cpp address-space-refused seal() of code mmap refuses: only an exhausted address space or a mapping limit refuses anonymous read-write pages, which no test can bring about on a shared machine; CodeMemory.sealedCodeIsNotWritable covers the mapping
+exclude src/isoline/execution/CodeMemoryPosix.cpp execute-refused seal() of pages mprotect refuses to make read-execute: only a policy that forbids executable memory (SELinux execmem, a hardened runtime) refuses it, which the test process runs under none of; the pages are unmapped by their owner either way
+exclude src/isoline/execution/StackBoundsPosix.cpp stack-query-refused lowestUsableAddress() of a thread whose stack glibc cannot report: only a sandbox without /proc (the main thread's query reads /proc/self/maps) refuses it, which the test process does not run in; StackBounds.unknownBoundsRefuseTheEntry covers what the caller does with Unavailable through an injected IStackBounds
 exclude src/isoline/fastinterpreter/Listing.cpp unknown-kernel a generic vector operation whose kernel word is no OpcodeTable row's: lowering writes only simdKernelWordOf() of an instruction, so no code holds another
 exclude src/isoline/fastinterpreter/Lowering.cpp code-words-past-32-bits the refusal of a function whose code bound passes 32-bit branch targets: it needs a body past a gigabyte, more than any test can decode, and a budget past 32 GiB
 exclude src/isoline/fastinterpreter/Lowering.cpp materialize-in-slot materialize() of an entry in its slot already: its callers pass only forwarded locals and constants, the entries of the index list and the forwarding chains
@@ -367,7 +379,7 @@ src/isoline/api/Imports.cpp                               100.00 82.35
 src/isoline/api/Imports.hpp                               100.00 -
 src/isoline/api/Module.cpp                                100.00 91.42
 src/isoline/api/Module.hpp                                100.00 -
-src/isoline/api/Store.cpp                                 99.83 97.53
+src/isoline/api/Store.cpp                                 99.83 97.56
 src/isoline/api/Store.hpp                                 100.00 -
 src/isoline/binary/BodyUnits.hpp                          100.00 -
 src/isoline/binary/BranchHints.cpp                        100.00 100.00
@@ -434,7 +446,7 @@ src/isoline/compiler/optimization/ConstantFolding.cpp     97.87 91.30
 src/isoline/compiler/optimization/ControlFlow.cpp         100.00 89.81
 src/isoline/compiler/optimization/DeadCode.cpp            99.04 97.82
 src/isoline/compiler/optimization/FoldingTable.hpp        91.66 87.93
-src/isoline/compiler/optimization/PassTable.cpp           100.00 95.00
+src/isoline/compiler/optimization/PassTable.cpp           100.00 100.00
 src/isoline/compiler/optimization/PassTable.hpp           100.00 -
 src/isoline/compiler/optimization/Rewrite.cpp             100.00 90.83
 src/isoline/compiler/optimization/Rewrite.hpp             100.00 -
@@ -448,27 +460,37 @@ src/isoline/compiler/translation/LoopAssignments.hpp      100.00 -
 src/isoline/compiler/translation/MemoryTranslation.cpp    100.00 100.00
 src/isoline/compiler/translation/MemoryTranslation.hpp    88.88 87.50
 src/isoline/compiler/translation/NumericRules.hpp         100.00 100.00
-src/isoline/compiler/translation/Translator.cpp           99.58 92.83
+src/isoline/compiler/translation/Translator.cpp           99.58 93.70
 src/isoline/compiler/translation/Translator.hpp           100.00 -
 src/isoline/compiler/x86_64/Encoder.cpp                   99.33 96.73
 src/isoline/compiler/x86_64/Encoder.hpp                   99.20 90.16
 src/isoline/compiler/x86_64/EncodingSamples.cpp           100.00 97.77
 src/isoline/compiler/x86_64/EncodingSamples.hpp           100.00 -
 src/isoline/compiler/x86_64/Instructions.hpp              100.00 93.75
-src/isoline/compiler/x86_64/Lowering.cpp                  99.93 91.68
+src/isoline/compiler/x86_64/Lowering.cpp                  99.80 91.51
 src/isoline/compiler/x86_64/Lowering.hpp                  100.00 100.00
 src/isoline/compiler/x86_64/Registers.hpp                 100.00 95.23
 src/isoline/compiler/x86_64/Selection.def                 100.00 -
-src/isoline/compiler/x86_64/Selector.cpp                  99.29 89.47
+src/isoline/compiler/x86_64/Selector.cpp                  99.44 90.05
 src/isoline/compiler/x86_64/Selector.hpp                  100.00 85.71
-src/isoline/compiler/x86_64/Target.cpp                    94.73 87.09
+src/isoline/compiler/x86_64/Target.cpp                    99.21 87.09
 src/isoline/compiler/x86_64/Target.hpp                    100.00 -
+src/isoline/compiler/x86_64/Trampoline.cpp                100.00 87.32
+src/isoline/execution/CodeMemory.hpp                      100.00 100.00
+src/isoline/execution/CodeMemoryPosix.cpp                 90.47 66.66
+src/isoline/execution/CpuFeatureProbe.hpp                 100.00 100.00
+src/isoline/execution/CpuFeatureProbeX86_64.cpp           100.00 -
+src/isoline/execution/CpuidGnu.cpp                        100.00 -
+src/isoline/execution/RuntimeStubs.cpp                    100.00 88.37
+src/isoline/execution/RuntimeStubs.hpp                    100.00 -
+src/isoline/execution/StackBounds.hpp                     100.00 83.33
+src/isoline/execution/StackBoundsPosix.cpp                85.71 50.00
 src/isoline/fastinterpreter/Bounds.hpp                    100.00 100.00
 src/isoline/fastinterpreter/Code.cpp                      100.00 71.05
 src/isoline/fastinterpreter/Code.hpp                      100.00 -
 src/isoline/fastinterpreter/Context.hpp                   100.00 100.00
 src/isoline/fastinterpreter/Dispatch.cpp                  100.00 100.00
-src/isoline/fastinterpreter/FastInterpreter.cpp           100.00 91.34
+src/isoline/fastinterpreter/FastInterpreter.cpp           100.00 91.41
 src/isoline/fastinterpreter/Listing.cpp                   97.14 95.12
 src/isoline/fastinterpreter/LittleEndian.hpp              100.00 -
 src/isoline/fastinterpreter/Lowering.cpp                  99.54 92.49
@@ -516,7 +538,7 @@ src/isoline/runtime/ModuleCode.hpp                        100.00 -
 src/isoline/runtime/PollGate.hpp                          100.00 81.25
 src/isoline/runtime/RawValue.hpp                          100.00 -
 src/isoline/runtime/Segment.hpp                           100.00 100.00
-src/isoline/runtime/Store.cpp                             99.70 82.70
+src/isoline/runtime/Store.cpp                             99.74 82.70
 src/isoline/runtime/Store.hpp                             100.00 81.25
 src/isoline/runtime/Trap.hpp                              100.00 75.00
 src/isoline/runtime/Value.hpp                             100.00 94.44

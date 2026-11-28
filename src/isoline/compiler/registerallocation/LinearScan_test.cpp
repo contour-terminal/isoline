@@ -1485,9 +1485,10 @@ class ForwardingTarget: public isoline::compiler::machine::ITarget
     {
         _fake.emitEntryAdapter(type, buffer);
     }
-    void emitEntryTrampoline(isoline::compiler::machine::CodeBuffer& buffer) const override
+    void emitEntryTrampoline(isoline::compiler::machine::CodeBuffer& buffer,
+                             isoline::compiler::machine::CodeLabel trapExit) const override
     {
-        _fake.emitEntryTrampoline(buffer);
+        _fake.emitEntryTrampoline(buffer, trapExit);
     }
 
   private:

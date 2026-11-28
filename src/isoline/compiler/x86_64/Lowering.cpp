@@ -205,6 +205,21 @@ namespace
 
 // --- Writer -----------------------------------------------------------------------------------------------
 
+Type typeOf(binary::ValueType const& type) noexcept
+{
+    switch (type.kind)
+    {
+        case binary::ValueKind::I32: return Type::I32;
+        case binary::ValueKind::I64: return Type::I64;
+        case binary::ValueKind::F32: return Type::F32;
+        case binary::ValueKind::F64: return Type::F64;
+        case binary::ValueKind::Ref: return Type::Ref;
+        case binary::ValueKind::V128: break; // uncovered(simd-value-type)
+    }
+    Require(false);   // checkModule refuses SIMD before translation
+    return Type::I64; // uncovered(simd-value-type)
+}
+
 VirtualRegister Writer::general() const
 {
     return _function->createVirtualRegister(RegisterClass::General);
@@ -1517,6 +1532,27 @@ void entrySlowPath(FunctionEmitter& emitter, OutOfLinePath const& path)
     assembler.jumpTo(path.resume);
 }
 
+void allocateStack(Assembler& assembler, uint64_t bytes, Gpr counter)
+{
+    // A page at a time past one page, touching each, so no guard page is skipped.
+    if (bytes > ProbePageBytes)
+    {
+        auto const pages = bytes / ProbePageBytes;
+        auto const rest = bytes % ProbePageBytes;
+        assembler.emit(Mnemonic::Mov64RI, { gpr(counter), immediate(static_cast<int64_t>(pages)) });
+        auto const probe = assembler.label();
+        assembler.bind(probe);
+        assembler.emit(Mnemonic::Sub64RI, { gpr(Gpr::Rsp), immediate(static_cast<int64_t>(ProbePageBytes)) });
+        assembler.emit(Mnemonic::Test64MR, { at(Gpr::Rsp), gpr(Gpr::Rsp) });
+        assembler.emit(Mnemonic::Dec64R, { gpr(counter) });
+        assembler.jumpTo(probe, ConditionCode::NotEqual);
+        if (rest != 0)
+            assembler.emit(Mnemonic::Sub64RI, { gpr(Gpr::Rsp), immediate(static_cast<int64_t>(rest)) });
+    }
+    else if (bytes != 0)
+        assembler.emit(Mnemonic::Sub64RI, { gpr(Gpr::Rsp), immediate(static_cast<int64_t>(bytes)) });
+}
+
 void enterFrame(FunctionEmitter& emitter)
 {
     auto& assembler = emitter.assembler();
@@ -1550,23 +1586,7 @@ void enterFrame(FunctionEmitter& emitter)
     assembler.emit(Mnemonic::Cmp64RM,
                    { gpr(Gpr::Rax), at(Gpr::R15, offsetOf(ExecutionStateField::NativeStackLimit)) });
     assembler.jumpTo(exhausted, ConditionCode::Below);
-    // The frame: a page at a time past one page, touching each, so no guard page is skipped.
-    if (body > ProbePageBytes)
-    {
-        auto const pages = body / ProbePageBytes;
-        auto const rest = body % ProbePageBytes;
-        assembler.emit(Mnemonic::Mov64RI, { gpr(Gpr::R11), immediate(static_cast<int64_t>(pages)) });
-        auto const probe = assembler.label();
-        assembler.bind(probe);
-        assembler.emit(Mnemonic::Sub64RI, { gpr(Gpr::Rsp), immediate(static_cast<int64_t>(ProbePageBytes)) });
-        assembler.emit(Mnemonic::Test64MR, { at(Gpr::Rsp), gpr(Gpr::Rsp) });
-        assembler.emit(Mnemonic::Dec64R, { gpr(Gpr::R11) });
-        assembler.jumpTo(probe, ConditionCode::NotEqual);
-        if (rest != 0)
-            assembler.emit(Mnemonic::Sub64RI, { gpr(Gpr::Rsp), immediate(static_cast<int64_t>(rest)) });
-    }
-    else if (body != 0)
-        assembler.emit(Mnemonic::Sub64RI, { gpr(Gpr::Rsp), immediate(static_cast<int64_t>(body)) });
+    allocateStack(assembler, body, Gpr::R11);
     forEachSavedRegister(emitter.frame(), [&](PhysicalRegister reg, int64_t offset) {
         assembler.emit(Mnemonic::Mov64MR, { at(Gpr::Rsp, offset), operandOf(reg) });
     });

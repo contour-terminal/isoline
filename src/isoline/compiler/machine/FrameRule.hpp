@@ -22,6 +22,19 @@
 namespace isoline::compiler::machine
 {
 
+/// The stack every prologue keeps free below its frame for what may run there before the callee's own frame
+/// exists or outside any frame: a callee's entry (its return address, the saved frame pointer, the entry
+/// poll's slow path) and the deepest runtime stub that is not a host call. What `rsp − (frameBytes +
+/// StubReserveBytes) < nativeStackLimit` checks before a frame is allocated (P5 Decision "Native stack limit
+/// from the real stack"). Published for every target: the stubs are the same C++ on each.
+inline constexpr auto StubReserveBytes = uint64_t { 16 } * 1024;
+
+/// The stack a runtime stub other than a host call may take below its caller, at the most: what
+/// StackBounds.stubReserveCoversEveryStub measures every stub against by stack painting, on every build
+/// flavour. With a target's entry path (its return address, saved frame pointer and entry poll's saves) it
+/// must fit StubReserveBytes.
+inline constexpr auto StubStackBudgetBytes = uint64_t { 8 } * 1024;
+
 /// A target's bound on a native frame.
 struct FrameRule
 {

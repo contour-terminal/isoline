@@ -56,11 +56,18 @@ class X64Target final: public machine::ITarget
                                                            machine::ModuleLabels const& labels,
                                                            machine::CodeBuffer& buffer) const override;
 
-    /// The entry adapter of @p type: P5 Task 14's (Trampoline.cpp).
+    /// The entry adapter of @p type (Trampoline.cpp): called with the function's code in r11 and the
+    /// RawValue cells in r10, it keeps the cells' address in its frame, passes the arguments under the
+    /// internal convention (stack arguments and a result area in its own frame), calls r11, and writes the
+    /// results back into the cells.
     void emitEntryAdapter(binary::FuncType const& type, machine::CodeBuffer& buffer) const override;
 
-    /// The module's entry trampoline and trap exit: P5 Task 14's (Trampoline.cpp).
-    void emitEntryTrampoline(machine::CodeBuffer& buffer) const override;
+    /// The module's entry trampoline and its trap exit (Trampoline.cpp), under the description's host
+    /// convention: rbp pushed, every other General register the convention preserves pushed, every Float one
+    /// saved whole below them (Microsoft x64's xmm6–15), the pinned registers and the adapter's r10 and r11
+    /// taken from the arguments, rsp recorded as ExecutionState::entryStackPointer, the adapter called; the
+    /// trap exit resets rsp from entryStackPointer, so both ways out restore from the same layout.
+    void emitEntryTrampoline(machine::CodeBuffer& buffer, machine::CodeLabel trapExit) const override;
 
     /// The conventions its calls are selected under: the internal one, and the description's host one.
     [[nodiscard]] CallConventions conventions() const noexcept;

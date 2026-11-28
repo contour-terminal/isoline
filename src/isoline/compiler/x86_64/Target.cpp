@@ -137,18 +137,6 @@ std::expected<void, CompileError> X64Target::encode(machine::MachineFunction con
     return encodeFunction(function, frame, conventions(), labels, buffer, nullptr, memory);
 }
 
-// uncovered-begin(entry-code-is-task-14)
-void X64Target::emitEntryAdapter(binary::FuncType const& /*type*/, machine::CodeBuffer& /*buffer*/) const
-{
-    core::todo("P5 Task 14: the entry adapters (compiler/x86_64/Trampoline.cpp)");
-}
-
-void X64Target::emitEntryTrampoline(machine::CodeBuffer& /*buffer*/) const
-{
-    core::todo("P5 Task 14: the entry trampoline and its trap exit (compiler/x86_64/Trampoline.cpp)");
-}
-// uncovered-end(entry-code-is-task-14)
-
 namespace
 {
     /// Emits @p move: between registers, between a register and a slot, or between slots by push and pop.

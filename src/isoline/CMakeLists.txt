@@ -200,6 +200,7 @@ isoline_apply_target_policy(isoline_core)
 
 add_subdirectory(numerics)
 add_subdirectory(compiler)
+add_subdirectory(execution)
 add_subdirectory(fastinterpreter)
 add_subdirectory(text)
 add_subdirectory(cli)
@@ -237,11 +238,24 @@ if(ISOLINE_TESTING)
     else()
         list(APPEND isolineTestSources runtime/testing/StackAddressGnu.cpp)
     endif()
+    # The compiled-code harness (execution/testing/CompileOne.hpp) and the platform's half of the page
+    # protection the code memory tests read (execution/testing/PageProtection.hpp), one row per platform.
+    list(APPEND isolineTestSources execution/testing/CompileOne.cpp)
+    if(ISOLINE_TARGET_WINDOWS)
+        list(APPEND isolineTestSources execution/testing/PageProtectionWindows.cpp)
+        set_source_files_properties(execution/testing/PageProtectionWindows.cpp
+            PROPERTIES COMPILE_DEFINITIONS "NOMINMAX;WIN32_LEAN_AND_MEAN")
+    elseif(ISOLINE_TARGET_APPLE)
+        list(APPEND isolineTestSources execution/testing/PageProtectionMacOS.cpp)
+    else()
+        list(APPEND isolineTestSources execution/testing/PageProtectionLinux.cpp)
+    endif()
     # The encoding oracle's samples (compiler/x86_64/EncodingSamples.hpp): test support, built into the unit
     # tests and tests/encoding's isoline_encoding_samples, never into the library.
     list(APPEND isolineTestSources compiler/x86_64/EncodingSamples.cpp)
     add_executable(isoline_test ${isolineTestSources})
-    target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
+    # The text format, which the compiled-code suites build their modules from (execution/testing/CompileOne.hpp).
+    target_link_libraries(isoline_test PRIVATE isoline::core isoline::text Catch2::Catch2WithMain)
     # The stack of the tests' small threads (SmallStackBytes): the host-stack row's, above.
     target_compile_definitions(isoline_test PRIVATE ISOLINE_SMALL_STACK_BYTES=${isolineSmallStackBytes})
     if(NOT WIN32)
@@ -274,6 +288,7 @@ if(ISOLINE_TESTING)
         "Calls|300"
         "Code"
         "CodeBuffer"
+        "CodeMemory"
         "CompileCancellation"
         "CompileConfig"
         "CompileError"
@@ -281,6 +296,7 @@ if(ISOLINE_TESTING)
         "ContextLayout"
         "Contract"
         "CountingArena"
+        "CpuFeatureProbe"
         "CpuFeatures"
         "DecodeError"
         "Decoder"
@@ -339,12 +355,14 @@ if(ISOLINE_TESTING)
         "ReferenceInterpreter|300"
         "Relaxed"
         "Rewrite"
+        "RuntimeStubs"
         "Segment"
         "Selector|600"
         "Simd|300"
         "SimdKernels"
         "SlotCodec"
         "SpillSlots"
+        "StackBounds"
         "Store"
         "Subtyping"
         "Tables"
@@ -352,6 +370,7 @@ if(ISOLINE_TESTING)
         "TargetDescription"
         "Threads"
         "Translator|300"
+        "Trampoline"
         "Trap"
         "TypeCanon"
         "Types"

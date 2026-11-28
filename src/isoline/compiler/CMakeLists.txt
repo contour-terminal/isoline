@@ -41,6 +41,7 @@ target_sources(isoline_core
         x86_64/Lowering.cpp
         x86_64/Selector.cpp
         x86_64/Target.cpp
+        x86_64/Trampoline.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES

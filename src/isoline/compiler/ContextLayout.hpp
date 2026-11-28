@@ -68,7 +68,8 @@ struct ExecutionState
     void const* const* stubs = nullptr;              ///< The runtime stubs' entries, by their table's row.
     runtime::DispatchView const* dispatch = nullptr; ///< The store's dispatch rows.
     PendingAbrupt pending {};                        ///< What a trap exit leaves pending.
-    /// The host-call scratch: max(params, results) of the widest host function called so far.
+    /// The host-call scratch: max(params, results) of the widest host function of the store
+    /// (execution::hostScratchValuesOf()), which the CallHost stub requires.
     runtime::RawValue* hostScratch = nullptr;
     uint32_t hostScratchCapacity = 0; ///< How many values hostScratch holds.
     /// The executor's per-store record: the store, the executor, the poll gate, a stub's full Abrupt,
@@ -136,6 +137,33 @@ struct StubResult
 
 /// The status of a stub that succeeded.
 inline constexpr auto StubSucceeded = uint64_t { 0 };
+
+/// How a call through the entry trampoline ended. The trampoline returns it zero-extended to a uint32_t, the
+/// width of every status at the host-call boundary (P5 Decision "Calling conventions are rows", I8).
+enum class EntryStatus : uint8_t
+{
+    Returned, ///< The function returned; its results are in the values the trampoline was given.
+    Pending,  ///< It left through the trap exit: ExecutionState::pending says what is pending.
+};
+
+/// The module's entry trampoline as the host calls it: a non-member function of the host convention, taking
+/// only pointers (I8). It saves the host's callee-saved registers, points the pinned registers at @p state
+/// and @p context, records ExecutionState::entryStackPointer, and calls @p adapter, the entry adapter of
+/// @p function's type, which takes @p function's arguments from @p values and writes its results there
+/// (RawValue cells, max(params, results) of them). It returns an EntryStatus: Returned once @p function
+/// returned, Pending when it left through the trap exit, with every callee-saved register restored either
+/// way. The caller saves and restores entryStackPointer around it, so that invocations may nest.
+/// @param state The store's execution state; its lease lent, its native stack limit set.
+/// @param context The instance @p function belongs to.
+/// @param adapter The entry adapter of @p function's type.
+/// @param function The function's code.
+/// @param values Its arguments in, its results out.
+/// @return std::to_underlying() of the EntryStatus.
+using EntryTrampoline = uint32_t (*)(ExecutionState* state,
+                                     InstanceContext const* context,
+                                     void const* adapter,
+                                     void const* function,
+                                     runtime::RawValue* values) noexcept;
 
 /// The rounding FloatRound performs: its first operand. FloatRound's second is the value's bits (an F32's
 /// zero-extended), and its value the rounded bits, computed by numerics:: as both interpreters do.

@@ -281,7 +281,7 @@ struct CallSite
 /// instruction of the body but an allocator move the encoder expands: x86-64 moves a spill slot to another
 /// slot as push m64 then pop m64, with no register of the function's free. The pair leaves the stack pointer
 /// where it was and is never split by a call; between them it writes the 8 bytes below the frame's bottom,
-/// within the StubReserveBytes the prologue's native check kept free (x86_64/Lowering.hpp).
+/// within the StubReserveBytes the prologue's native check kept free (FrameRule.hpp).
 struct FrameLayout
 {
     /// The frame's size, from the caller's stack pointer at its call down to the frame's bottom: what the
