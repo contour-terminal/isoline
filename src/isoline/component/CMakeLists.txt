@@ -60,7 +60,8 @@ target_sources(isoline_component
             api/Component.hpp
             api/CallError.hpp
             api/ComponentStore.hpp
-            api/Linker.hpp)
+            api/Linker.hpp
+            api/Typed.hpp)
 target_compile_features(isoline_component PUBLIC cxx_std_23)
 target_link_libraries(isoline_component PUBLIC isoline::core)
 isoline_apply_target_policy(isoline_component)

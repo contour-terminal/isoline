@@ -584,6 +584,7 @@ failure is a row of `ComponentCallFailureTable`, which names its detail and what
 - `ForeignFunction` (`std::monostate`): unchanged; function or resource of another component store.
 - `StoreDeleted` (`std::monostate`): unchanged; component store is gone.
 - `Instantiating` (`std::monostate`): unchanged; component store is instantiating.
+- `ResourceExhausted` (`canonical::Trap`): locked down; component store resources exhausted.
 <!-- component-call-failures:end -->
 
 The block is generated from `api::ComponentCallFailureTable`; `CallError.docsMatchTable` fails, printing
@@ -596,13 +597,44 @@ own handle among its arguments is the host's (lifting removed it from the guest'
 a table of the owns the host holds, as Wasmtime does: lifting an own to the host, as an argument or a
 call's result, and `hostResource(Own)` add one; `drop`, passing it to a call and returning it from a host
 function take one, and an own the host does not hold is refused (`ArgumentMismatch`, or the host
-function's `HostFailure`), so a resource is destroyed once. The host hands an own back or drops it with
+function's `HostFailure`), so a resource is destroyed once. The table is capped by `maxHostOwns`
+(1000000), and each of its entries is charged `HostOwnEntryBytes` (64) to `maxLiveValueBytes`, so no
+guest grows it without bound: an own past either cap fails the call that would hand it to the host
+(`ResourceExhausted`, which locks the store down; the owns it could not hold are destroyed at the store's
+end), and `hostResource` refuses it (`HostOwns` or `LiveValueBytes`). The store's end destroys every own
+the host still holds once, by its host type's destructor (no guest destructor runs, as for the owns guest
+tables hold), so an own the host forgot no longer outlives the store. A host destructor that calls back
+into the store during that teardown (a parent's destructor dropping a child's own) is refused with
+`StoreDeleted`: the store names no state once its teardown starts, and its instances' tokens have expired. The host hands an own back or drops it with
 `ComponentStore::drop`, which runs a host type's destructor, or a guest
 type's through the canonical ABI (refused in a locked-down store), and refuses a borrow. A host type's
 destructor also runs once for each own a guest table still holds when the store is destroyed, never at
 lockdown. The store is move-only; its instances and functions stay valid across a move, and moving it
 while a call or an instantiation of it runs is a precondition violation (`isBusy()` tells). A drop while
 the store instantiates, from a host function a start function calls, is refused (`Instantiating`).
+
+**Typed bindings.** `component::api::typed` (`Typed.hpp`) puts C++ types over the same calls, one
+`TypeOf<T>` row per type: `bool`, the integers, `float`, `double`, `char32_t`, `std::string`,
+`std::vector<T>` (`list`), `std::optional<T>`, `std::tuple<T…>`, `std::expected<T, E>` (`result`, with
+`Unit` for a case without payload), `std::map<K, V>` (a duplicated key read from a guest keeps its last
+value), records and enums and flags the embedder describes by specializing `Record`, `Enum` and `Flags`,
+`std::variant` of `Case<"label", T>` alternatives, and `Own<R>` and `Borrow<R>` for the host resource type
+a `ResourceTypes<R…>` binds to `R`. `functionType<Signature>(linker)` gives `defineFunction` the type of
+`Result(Params…)`, its parameters labelled `p0`, `p1`, … unless named; `makeTypedHostFunction<Signature>`
+takes a `noexcept` callable (with or without the `HostComponentContext&` first, returning the result or
+`std::expected<Result, HostFailure>`) and refuses arguments not of their types with
+`HostFailure{ArgumentMismatch}`; a callable that may throw does not compile. `TypedFunction<Signature>::bind`
+finds an export of that type (labels of parameters aside) or none. Every value crosses as `Values`, one
+copy. An `Own` is move-only and dropped explicitly by design, as Wasmtime's `Resource<T>` is: destroying one
+runs nothing, and the store keeps the own until it is dropped or the store ends. `typed::drop` and a
+call (which takes owns as non-const rvalues only) consume an own exactly when the store no longer holds
+it afterwards: a drop or call that ran, the owns a failed call's lowering took, never a refusal. An
+empty own is refused before the store sees it (`ArgumentMismatch`; a host body returning one fails
+`HostFailure{ResultMismatch}`), so no own is dropped twice. `TypedFunction::bind(instance, path,
+resources)` checks that an `Own<R>` or `Borrow<R>` of an `R` bound in `resources` names that host
+resource type; a resource the guest defines, which no `HostResourceType` stands for, matches by kind. `HostResourceTable<T>` keeps the host's objects behind their reps: a rep carries its slot
+and the slot's generation, so an erased object's rep finds nothing however the slot is reused, and a slot
+whose generations run out is retired; a full table is a `Handles` trap.
 
 ## Interrupts and poll sites
 

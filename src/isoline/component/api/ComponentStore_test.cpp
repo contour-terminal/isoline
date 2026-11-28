@@ -154,7 +154,8 @@ TEST_CASE("CallError.tableNamesEveryFailure")
     {
         auto const entered = row.failure == ComponentCallFailure::Trap
                              || row.failure == ComponentCallFailure::Interrupted
-                             || row.failure == ComponentCallFailure::HostFailure;
+                             || row.failure == ComponentCallFailure::HostFailure
+                             || row.failure == ComponentCallFailure::ResourceExhausted;
         CHECK((row.effect == StoreEffect::LocksDown) == entered);
         CHECK_FALSE(row.text.empty());
     }

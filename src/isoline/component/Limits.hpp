@@ -84,6 +84,9 @@ struct ComponentLimits
     /// hop takes host stack (docs/embedding.md measures it: 4.6 KB with clang, 5.4 KB with MSVC, release
     /// builds), so 80 hops fit a 1 MiB thread stack with a 2x margin.
     uint32_t maxNestedCalls = 80;
+    /// Per ComponentStore: the owns the host holds (R12), each lifted to the host or made by
+    /// hostResource(); their table is charged to maxLiveValueBytes too.
+    uint32_t maxHostOwns = 1'000'000;
 
     /// Two sets of limits are equal when every limit is.
     bool operator==(ComponentLimits const&) const = default;
@@ -120,10 +123,11 @@ enum class ComponentLimit : uint8_t
     CoreTags,
     CoreMatchingSteps,
     NestedCalls,
+    HostOwns,
 };
 
 /// The last ComponentLimit enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastComponentLimit = ComponentLimit::NestedCalls;
+inline constexpr auto LastComponentLimit = ComponentLimit::HostOwns;
 
 /// The number of ComponentLimit enumerators, as LastComponentLimit counts them.
 inline constexpr auto ComponentLimitCount = static_cast<std::size_t>(LastComponentLimit) + 1;
@@ -312,6 +316,14 @@ inline constexpr auto LimitTable = std::to_array<ComponentLimitRow>({
               "call and each hop back into a guest; one more traps CallStackExhausted",
       .message = "nested calls exceed the limit of {}",
       .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxNestedCalls; } },
+    // Isoline's own: the host's side of R12, which no guest may grow without bound.
+    { .limit = ComponentLimit::HostOwns,
+      .name = "maxHostOwns",
+      .rule =
+          "owns one ComponentStore's host holds at once, each lifted to a host function or a call's caller "
+          "or made by hostResource(); one more fails the call ResourceExhausted",
+      .message = "host-held owns exceed the limit of {}",
+      .value = [](ComponentLimits const& limits) noexcept -> uint64_t { return limits.maxHostOwns; } },
 });
 
 static_assert(

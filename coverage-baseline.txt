@@ -28,6 +28,10 @@
 # src/isoline/component/api/CallError.hpp, ComponentStore.cpp/.hpp and Linker.cpp/.hpp entered the baseline with P11 Task 16's
 # fix round 1 (the task itself ran the light gate); their unreachable lines are the six api exclusions below.
 #
+# src/isoline/component/api/ComponentStore.cpp's entries were lowered from 97.88/88.46 to 97.81/87.95 at P11 Task 17, the first
+# coverage gate after Task 16's fix rounds 2 to 4: those rounds moved the owns rollback into runtime::ComponentStore::undeliver()
+# and took 26 covered lines out of the file, so its marked host-memory lines are a larger share; no line or branch lost a test.
+#
 # src/isoline/api/CallError.hpp, Imports.cpp, Imports.hpp, Store.cpp and Store.hpp entered the baseline with the backend
 # contract (P3 Task 11): Task 10 added them under the light gate, which runs no coverage. Their uncovered lines were covered
 # then (CallError's equality, resolve() leaving concrete types on both sides to the store, a new host type over the type
@@ -259,6 +263,7 @@ exclude src/isoline/component/api/Linker.cpp handle-measure an own or borrow the
 exclude src/isoline/component/api/Linker.cpp instance-is-not-a-leaf resolveLeaf() of a store instance: resolveAt() hands an instance-typed import to the instance paths, and any other import's kind mismatch is reported before the visit
 exclude src/isoline/component/api/Linker.cpp root-type-cap a component whose root type the arena could not measure: the root's measure is the one validation already held to the caps
 exclude src/isoline/component/api/Linker.cpp unsatisfied-inside an Unsatisfied failure inside a linker instance: an export's resolution fails only by mismatch there, a missing export being reported as one
+exclude src/isoline/component/api/Typed.hpp bound-result-reads TypedFunction's refusal of a result that does not read: bind() checked the result's type against the function's, and a lifted string is valid text, so a lifted result always reads
 exclude src/isoline/component/binary/Decoder.cpp values-sections the 🪙 start and values sections' decoder: P11 refuses 🪙, so the gate of their SectionTable rows refuses them first
 exclude src/isoline/component/canonical/Layout.cpp exhaustive-switch the fall-through after LayoutBuilder::build()'s switch over the value kinds, whose every case returns; -Wswitch makes a new enumerator without a case a build error
 exclude src/isoline/component/canonical/LiftLower.cpp exhaustive-switch the fall-through after a switch whose every case returns (valueOf()'s core kinds, childOf()'s compound shapes, liftedScalar()'s rules); -Wswitch makes a new enumerator without a case a build error
@@ -368,10 +373,11 @@ src/isoline/component/Limits.hpp                 100.00 -
 src/isoline/component/api/CallError.hpp          100.00 -
 src/isoline/component/api/Component.cpp          100.00 95.23
 src/isoline/component/api/Component.hpp          100.00 -
-src/isoline/component/api/ComponentStore.cpp     97.88 88.46
-src/isoline/component/api/ComponentStore.hpp     100.00 66.66
+src/isoline/component/api/ComponentStore.cpp     97.81 87.95
+src/isoline/component/api/ComponentStore.hpp     100.00 75.00
 src/isoline/component/api/Linker.cpp             97.88 90.36
 src/isoline/component/api/Linker.hpp             100.00 -
+src/isoline/component/api/Typed.hpp              96.05 72.80
 src/isoline/component/binary/Component.hpp       100.00 100.00
 src/isoline/component/binary/Decoder.cpp         99.74 97.70
 src/isoline/component/binary/Decoder.hpp         100.00 83.33
@@ -381,7 +387,7 @@ src/isoline/component/canonical/GuestMemory.cpp  100.00 88.88
 src/isoline/component/canonical/GuestMemory.hpp  100.00 -
 src/isoline/component/canonical/Layout.cpp       99.57 88.69
 src/isoline/component/canonical/Layout.hpp       100.00 -
-src/isoline/component/canonical/LiftLower.cpp    98.19 83.80
+src/isoline/component/canonical/LiftLower.cpp    98.19 84.20
 src/isoline/component/canonical/LiftLower.hpp    100.00 -
 src/isoline/component/canonical/LiftSteps.hpp    100.00 -
 src/isoline/component/canonical/Strings.cpp      99.69 95.12
@@ -392,15 +398,15 @@ src/isoline/component/canonical/Values.cpp       99.53 90.86
 src/isoline/component/canonical/Values.hpp       100.00 80.39
 src/isoline/component/runtime/Builtins.cpp       100.00 83.33
 src/isoline/component/runtime/Builtins.hpp       100.00 -
-src/isoline/component/runtime/Calls.cpp          98.32 89.47
+src/isoline/component/runtime/Calls.cpp          98.60 90.56
 src/isoline/component/runtime/Calls.hpp          100.00 -
 src/isoline/component/runtime/ComponentPlan.cpp  98.75 81.42
 src/isoline/component/runtime/ComponentPlan.hpp  100.00 -
-src/isoline/component/runtime/ComponentStore.cpp 96.42 83.12
+src/isoline/component/runtime/ComponentStore.cpp 96.47 83.13
 src/isoline/component/runtime/ComponentStore.hpp 100.00 -
-src/isoline/component/runtime/HandleTable.cpp    95.77 86.66
+src/isoline/component/runtime/HandleTable.cpp    95.83 86.66
 src/isoline/component/runtime/HandleTable.hpp    100.00 100.00
-src/isoline/component/runtime/Resources.cpp      100.00 79.46
+src/isoline/component/runtime/Resources.cpp      100.00 79.50
 src/isoline/component/runtime/Resources.hpp      100.00 100.00
 src/isoline/component/types/TypeArena.cpp        100.00 92.11
 src/isoline/component/types/TypeArena.hpp        100.00 100.00
@@ -408,9 +414,9 @@ src/isoline/component/validate/CoreTypes.cpp     100.00 100.00
 src/isoline/component/validate/CoreTypes.hpp     96.29 90.62
 src/isoline/component/validate/Names.cpp         100.00 96.28
 src/isoline/component/validate/Names.hpp         100.00 -
-src/isoline/component/validate/Subtyping.cpp     99.55 94.53
+src/isoline/component/validate/Subtyping.cpp     99.55 95.05
 src/isoline/component/validate/Subtyping.hpp     100.00 100.00
-src/isoline/component/validate/Validator.cpp     98.46 90.05
+src/isoline/component/validate/Validator.cpp     98.46 90.49
 src/isoline/component/validate/Validator.hpp     100.00 -
 src/isoline/interpreter/Numerics.cpp             100.00 95.90
 src/isoline/interpreter/ReferenceInterpreter.cpp 98.50 93.58

@@ -73,7 +73,8 @@ TEST_CASE("Trap.messagesCarryValues")
     // The caps read as their LimitTable rows do.
     for (auto const& [code, limit]: { std::pair { TrapCode::LiveValueBytes, ComponentLimit::LiveValueBytes },
                                       std::pair { TrapCode::Handles, ComponentLimit::Handles },
-                                      std::pair { TrapCode::ResourceTypes, ComponentLimit::ResourceTypes } })
+                                      std::pair { TrapCode::ResourceTypes, ComponentLimit::ResourceTypes },
+                                      std::pair { TrapCode::HostOwns, ComponentLimit::HostOwns } })
         CHECK(trapOf(code, 7).message() == isoline::component::limitMessage(limit, 7));
 
     // One wording per trap: the component-model tests' as a prefix, the values after it.

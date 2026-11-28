@@ -30,10 +30,13 @@ enum class ComponentCallFailure : uint8_t
     ForeignFunction,  ///< The function, or the resource, is of another store: nothing ran.
     StoreDeleted,     ///< The store the instance or function belongs to is gone: nothing ran.
     Instantiating,    ///< The store is instantiating (a drop from a start function's host call): nothing ran.
+    /// The owns the host holds would pass a cap (detail: the HostOwns or LiveValueBytes trap); the owns
+    /// that could not be held are destroyed at the store's end.
+    ResourceExhausted,
 };
 
 /// The last ComponentCallFailure enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastComponentCallFailure = ComponentCallFailure::Instantiating;
+inline constexpr auto LastComponentCallFailure = ComponentCallFailure::ResourceExhausted;
 
 /// What a failure did to the store.
 ///
@@ -129,6 +132,12 @@ inline constexpr auto ComponentCallFailureTable = std::to_array<ComponentCallFai
       .alternative = "std::monostate",
       .effect = StoreEffect::Unchanged,
       .text = "component store is instantiating" },
+    { .failure = ComponentCallFailure::ResourceExhausted,
+      .name = "ResourceExhausted",
+      .detail = detailIndexOf<canonical::Trap>(),
+      .alternative = "canonical::Trap",
+      .effect = StoreEffect::LocksDown,
+      .text = "component store resources exhausted" },
 });
 
 static_assert(

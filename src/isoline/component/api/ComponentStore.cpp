@@ -16,6 +16,7 @@
 #include <new>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -83,11 +84,45 @@ namespace
 
     using HostOwnKey = std::pair<uint32_t, uint32_t>;
 
-    /// The host holds @p owns now: each is counted in the store's table.
-    void hold(StoreState& state, std::span<ResourceValue const> owns)
+    /// Makes the live-bytes budget hold HostOwnEntryBytes per entry of the host's owns table: it charges
+    /// what entries were added, refusing when the budget is full, and releases what entries were removed.
+    [[nodiscard]] bool settleEntryCharge(StoreState& state, std::size_t entries) noexcept
+    {
+        auto& budget = *state.runtime.liveBytes();
+        if (entries < state.chargedEntries)
+            budget.release((state.chargedEntries - entries) * HostOwnEntryBytes);
+        else if (entries > state.chargedEntries
+                 && !budget.charge((entries - state.chargedEntries) * HostOwnEntryBytes))
+            return false;
+        state.chargedEntries = entries;
+        return true;
+    }
+
+    /// Counts @p owns in the store's table, past any cap.
+    void holdUnchecked(StoreState& state, std::span<ResourceValue const> owns)
     {
         for (auto const& own: owns)
             ++state.hostOwns[HostOwnKey { own.type.value, own.rep }];
+        state.hostOwnCount += owns.size();
+    }
+
+    /// The host holds @p owns now: each is counted in the store's table, within maxHostOwns and the
+    /// live-bytes budget, or none is.
+    [[nodiscard]] std::expected<void, canonical::Trap> hold(StoreState& state,
+                                                            std::span<ResourceValue const> owns)
+    {
+        if (state.hostOwnCount + owns.size() > state.limits.maxHostOwns)
+            return std::unexpected { canonical::trapOf(canonical::TrapCode::HostOwns,
+                                                       state.limits.maxHostOwns) };
+        auto fresh = std::set<HostOwnKey> {};
+        for (auto const& own: owns)
+            if (auto const key = HostOwnKey { own.type.value, own.rep }; !state.hostOwns.contains(key))
+                fresh.insert(key);
+        if (!settleEntryCharge(state, std::max(state.chargedEntries, state.hostOwns.size() + fresh.size())))
+            return std::unexpected { canonical::trapOf(canonical::TrapCode::LiveValueBytes,
+                                                       state.runtime.liveBytes()->limit()) };
+        holdUnchecked(state, owns);
+        return {};
     }
 
     /// The host gives up @p owns: each must be held (as often as it occurs), else nothing is taken.
@@ -113,7 +148,27 @@ namespace
             if (held->second == 0)
                 state.hostOwns.erase(held);
         }
+        state.hostOwnCount -= owns.size();
+        std::ignore = settleEntryCharge(state, state.hostOwns.size()); // a release never fails
         return {};
+    }
+
+    /// A HostFailure standing for the failure a host callee recorded in StoreState::pendingFailure.
+    [[nodiscard]] isoline::api::HostFailure pendingMarker() noexcept
+    {
+        return isoline::api::HostFailure { .kind = isoline::api::HostFailureKind::Embedder,
+                                           .code = 0,
+                                           .mismatch = std::nullopt };
+    }
+
+    /// @p error, or the failure a host callee of the call recorded instead (StoreState::pendingFailure).
+    [[nodiscard]] ComponentCallError pendingOr(StoreState& state, ComponentCallError error)
+    {
+        if (!state.pendingFailure)
+            return error;
+        auto pending = std::move(*state.pendingFailure);
+        state.pendingFailure.reset();
+        return pending;
     }
 
     /// The runtime's view of a linker's host function in one store.
@@ -132,7 +187,16 @@ namespace
         {
             // The store's ComponentStore cannot move while a call runs (checked there). The owns lifted
             // into the arguments left the guest's table: the host holds them (R12).
-            hold(*_state, runtime::ownsOf(args));
+            auto const owns = runtime::ownsOf(args);
+            if (auto held = hold(*_state, owns); !held)
+            {
+                // The owns left the guest's table and the host cannot hold them: the store destroys the host
+                // resources among them at its end, and the call fails ResourceExhausted.
+                _state->runtime.resources().adoptOrphans(owns);
+                _state->pendingFailure =
+                    callError(ComponentCallFailure::ResourceExhausted, std::move(held.error()));
+                return std::unexpected { pendingMarker() };
+            }
             auto context = HostComponentContext { *_state->owner };
             return _function->call(context, args, results);
         }
@@ -351,9 +415,17 @@ std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
     };
     // The owns were taken before the call: a lowering that fails hands them back (StoreState::returned()).
     if (auto called = runtime::canonLift(store, lifted, start, resolve); !called)
-        return std::unexpected { fromRuntime(std::move(called.error())) };
-    // The owns returned left the guest's table: the host holds them (R12).
-    hold(*state, runtime::ownsOf(*results));
+        return std::unexpected { pendingOr(*state, fromRuntime(std::move(called.error()))) };
+    // The owns returned left the guest's table: the host holds them (R12), or, past its caps, the store
+    // destroys their host resources at its end and locks down, as the row says.
+    auto const returned = runtime::ownsOf(*results);
+    if (auto held = hold(*state, returned); !held)
+    {
+        store.resources().adoptOrphans(returned);
+        store.lockDown();
+        return std::unexpected { callError(ComponentCallFailure::ResourceExhausted,
+                                           std::move(held.error())) };
+    }
     return std::move(*results);
 }
 
@@ -373,6 +445,45 @@ std::expected<canonical::ValueBuilder, ComponentCallError> ComponentInstance::ar
     };
 }
 
+std::optional<canonical::ResourceTypeIndex> ComponentInstance::resourceTypeOf(
+    ComponentFunction const& function, types::TypeId handle) const
+{
+    auto* const state = live();
+    if (state == nullptr || function._serial != _serial)
+        return std::nullopt;
+    auto const& side = state->runtime.lifted(function._lifted).side;
+    auto const& type = (*side.arena)[handle];
+    if (!type.resource)
+        return std::nullopt;
+    return (*side.bindings)[*type.resource];
+}
+
+std::optional<canonical::ResourceTypeIndex> ComponentInstance::hostResourceTypeOf(
+    HostResourceType const& type) const
+{
+    auto* const state = live();
+    if (state == nullptr)
+        return std::nullopt;
+    return state->runtime.hostResourceTypeOf(*type.identity());
+}
+
+uint32_t ComponentInstance::hostHolds(ResourceValue const& own) const noexcept
+{
+    auto* const state = live();
+    return state == nullptr ? 0 : hostHoldsIn(*state, own);
+}
+
+uint32_t hostHoldsIn(StoreState const& state, ResourceValue const& own) noexcept
+{
+    auto const held = state.hostOwns.find(std::pair { own.type.value, own.rep });
+    return held == state.hostOwns.end() ? 0 : held->second;
+}
+
+uint32_t ComponentStore::hostHolds(ResourceValue const& own) const noexcept
+{
+    return _state == nullptr ? 0 : hostHoldsIn(*_state, own);
+}
+
 bool ComponentInstance::belongsTo(ComponentStore const& store) const noexcept
 {
     return store._state != nullptr && store._state->serial == _serial;
@@ -389,9 +500,36 @@ StoreState::StoreState(isoline::api::Engine const& engine,
 {
 }
 
+StoreState::~StoreState()
+{
+    // Teardown begins: every handle's alive-token expires, so an instance or a function a host destructor
+    // reaches refuses (StoreDeleted); the ComponentStore no longer names this state, so the store refuses
+    // too.
+    alive.reset();
+    // The owns the host still holds are destroyed once each, as a guest table's are: a host type's
+    // destructor runs, and no guest code (R12, D6). The table is moved out first, so nothing a destructor
+    // does reaches the nodes the loop walks.
+    auto const held = std::exchange(hostOwns, {});
+    hostOwnCount = 0;
+    auto const& types = runtime.resources().types();
+    for (auto const& [key, count]: held)
+    {
+        auto const type = canonical::ResourceTypeIndex { key.first };
+        auto const* const host = std::get_if<runtime::HostImplementor>(&types[type]);
+        if (host == nullptr || host->destructor == nullptr)
+            continue;
+        for ([[maybe_unused]] auto const each: std::views::iota(uint32_t { 0 }, count))
+            host->destructor->destroy(key.second);
+    }
+    runtime.liveBytes()->release(chargedEntries * HostOwnEntryBytes);
+}
+
 void StoreState::returned(std::span<canonical::ResourceValue const> owns) noexcept
 {
-    hold(*this, owns);
+    // They were held before the call took them: they are held again past the caps, and their entries are
+    // charged as far as the budget lets (settleEntryCharge() keeps the charge exact either way).
+    holdUnchecked(*this, owns);
+    std::ignore = settleEntryCharge(*this, hostOwns.size());
 }
 
 ComponentStore::ComponentStore(isoline::api::Engine const& engine,
@@ -427,16 +565,27 @@ ComponentStore& ComponentStore::operator=(ComponentStore&& other) noexcept
         return *this;
     Require(other._state == nullptr || !isBusyState(*other._state));
     Require(_state == nullptr || !isBusyState(*_state));
+    // The old state is torn down while this store already names none: what its host destructors call on the
+    // store is refused (StoreDeleted), never run on the state being destroyed or on the one taking its place.
+    _state.reset();
     _state = std::move(other._state);
     if (_state != nullptr)
         _state->owner = this;
     return *this;
 }
 
-ComponentStore::~ComponentStore() = default;
+ComponentStore::~ComponentStore()
+{
+    // reset() empties _state before it destroys the state, so a host destructor calling the store during
+    // teardown is refused (StoreDeleted) rather than reach a state being destroyed.
+    _state.reset();
+}
 
 std::shared_ptr<isoline::api::Interrupter> const& ComponentStore::interrupter() const noexcept
 {
+    static auto const none = std::shared_ptr<isoline::api::Interrupter> {};
+    if (_state == nullptr)
+        return none;
     return _state->runtime.coreStore().interrupter();
 }
 
@@ -444,12 +593,15 @@ std::expected<ResourceValue, canonical::Trap> ComponentStore::hostResource(HostR
                                                                            uint32_t rep,
                                                                            canonical::Ownership ownership)
 {
+    if (_state == nullptr)
+        return std::unexpected { canonical::trapOf(canonical::TrapCode::StoreDeleted) };
     auto const bound = _state->runtime.hostResourceTypeOf(*type.identity());
     if (!bound)
         return std::unexpected { canonical::trapOf(canonical::TrapCode::WrongResource, rep) };
     auto const value = ResourceValue { .type = *bound, .rep = rep, .ownership = ownership };
     if (ownership == canonical::Ownership::Own)
-        hold(*_state, std::span { &value, 1 });
+        if (auto held = hold(*_state, std::span { &value, 1 }); !held)
+            return std::unexpected { std::move(held.error()) };
     return value;
 }
 
@@ -460,6 +612,9 @@ bool ComponentStore::isBusy() const noexcept
 
 bool ComponentStore::isLockedDown() const noexcept
 {
+    // A store that is gone runs no guest code again.
+    if (_state == nullptr)
+        return true;
     return _state->runtime.state() == runtime::StoreState::LockedDown;
 }
 
@@ -474,6 +629,11 @@ std::expected<ComponentInstance, InstantiateComponentError> ComponentStore::inst
 {
     // The API boundary: resolving and instantiating allocate, and the host running out of memory is a
     // refusal, never an exception in the embedder's lap.
+    if (_state == nullptr)
+        // A store that is gone, or tearing down under a host destructor, takes no instantiation: as a call
+        // re-entering the store, it is refused before the first step.
+        return std::unexpected { InstantiateComponentError {
+            runtime::InstantiationFailure { .kind = runtime::InstantiationFailureKind::Reentrant } } };
     try
     {
         if (component.engine() != _state->engine)
@@ -482,6 +642,8 @@ std::expected<ComponentInstance, InstantiateComponentError> ComponentStore::inst
         if (resolution.refusal)
             return std::unexpected { std::move(*resolution.refusal) };
         auto root = _state->runtime.instantiate(component.code(), resolution.imports);
+        // A host callee's ResourceExhausted during a start function is the instantiation's failure.
+        _state->pendingFailure.reset();
         if (!root)
             return std::unexpected { InstantiateComponentError { std::move(root.error()) } };
         return ComponentInstance { *_state, _state->serial, *root, component };
@@ -540,7 +702,8 @@ std::expected<void, ComponentCallError> ComponentStore::drop(ResourceValue value
                 {
                     // A trap in guest code locks the store down (D6), as `resource.drop`'s would: as its
                     // failure's row says.
-                    auto error = fromRuntime(runtime::CallError { std::move(destroyed.error()) });
+                    auto error =
+                        pendingOr(*_state, fromRuntime(runtime::CallError { std::move(destroyed.error()) }));
                     if (componentCallFailureRow(error.failure).effect == StoreEffect::LocksDown)
                         store.lockDown();
                     return std::unexpected { std::move(error) };

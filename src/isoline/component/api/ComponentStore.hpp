@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <core/Assert.hpp>
+
 #include <cstdint>
 #include <expected>
 #include <map>
@@ -143,6 +145,13 @@ class ComponentFunction
     /// @return It; null once its store is gone, as the arena may be gone with it.
     [[nodiscard]] types::FunctionTypeInfo const* type() const noexcept;
 
+    /// The arena its type's ids are of.
+    /// @return It; null once its store is gone, as type() is.
+    [[nodiscard]] types::TypeArena const* types() const noexcept
+    {
+        return _alive.expired() ? nullptr : _arena;
+    }
+
     /// Two handles are equal when they name one function of one store.
     [[nodiscard]] bool operator==(ComponentFunction const& other) const noexcept
     {
@@ -209,6 +218,25 @@ class ComponentInstance
 
     /// The component it is an instance of.
     [[nodiscard]] Component const& component() const noexcept { return _component; }
+
+    /// The runtime resource type that @p handle, an own or borrow type of @p function's arena, names in
+    /// this store: what a handle passed there must be of.
+    /// @param function A function of this instance's store.
+    /// @param handle A type of its arena.
+    /// @return The runtime type; none for a type that names no resource, a function of another store, or
+    ///         a store that is gone.
+    [[nodiscard]] std::optional<canonical::ResourceTypeIndex> resourceTypeOf(
+        ComponentFunction const& function, types::TypeId handle) const;
+
+    /// The runtime resource type a host resource type is in this store.
+    /// @param type The host resource type.
+    /// @return It; none while no instantiation of the store imported @p type, or once the store is gone.
+    [[nodiscard]] std::optional<canonical::ResourceTypeIndex> hostResourceTypeOf(
+        HostResourceType const& type) const;
+
+    /// How many owns of @p own's resource the host holds in this store (ComponentStore::hostHolds()).
+    /// @return The count; 0 once the store is gone.
+    [[nodiscard]] uint32_t hostHolds(ResourceValue const& own) const noexcept;
 
     /// Whether it belongs to @p store.
     [[nodiscard]] bool belongsTo(ComponentStore const& store) const noexcept;
@@ -285,7 +313,10 @@ struct StoreState final: runtime::IHostOwnSink
     StoreState& operator=(StoreState const&) = delete;
     StoreState(StoreState&&) = delete;
     StoreState& operator=(StoreState&&) = delete;
-    ~StoreState() override = default;
+    /// Destroys every own the host still holds once, by its host type's destructor (no guest destructor
+    /// runs), and releases the table's charge. The alive-token expires first and the table is moved out
+    /// before its loop, so a destructor that calls back into the store meets a refusal (StoreDeleted).
+    ~StoreState() override;
 
     /// The host holds @p owns again: a lowering failed to deliver them to a guest (hostOwns).
     void returned(std::span<canonical::ResourceValue const> owns) noexcept override;
@@ -300,7 +331,19 @@ struct StoreState final: runtime::IHostOwnSink
     /// The owns the host holds, by (runtime type, rep), with how many of each (R12): what a lift to the
     /// host or hostResource(Own) adds, and a drop or a lowering to the guest takes.
     std::map<std::pair<uint32_t, uint32_t>, uint32_t> hostOwns {};
+    uint64_t hostOwnCount = 0;      ///< The owns hostOwns counts together, at most limits.maxHostOwns.
+    std::size_t chargedEntries = 0; ///< The entries of hostOwns charged to the live-bytes budget.
+    /// A failure a host callee recorded for the call to return in place of the HostFailure it reported:
+    /// ResourceExhausted when the owns lifted to it could not be held.
+    std::optional<ComponentCallError> pendingFailure {};
 };
+
+/// How many owns of @p own's resource the host holds in @p state.
+[[nodiscard]] uint32_t hostHoldsIn(StoreState const& state, ResourceValue const& own) noexcept;
+
+/// The live-value bytes one entry of the host's owns table is charged: a (resource type, rep, count) node of
+/// a std::map, rounded up to cover each standard library's node.
+inline constexpr uint64_t HostOwnEntryBytes = 64;
 
 /// A store of component instances (D2), the embedder's handle on a runtime::ComponentStore.
 ///
@@ -326,9 +369,12 @@ class ComponentStore
     /// Takes @p other's state; @p other is left empty, for destruction or assignment only. Precondition
     /// (checked): no call of it runs.
     ComponentStore(ComponentStore&& other) noexcept;
-    /// As the move constructor; this store's own state is destroyed first. Precondition (checked): no
-    /// call of either runs.
+    /// As the move constructor; this store's own state is destroyed first, while the store names none.
+    /// Precondition (checked): no call of either runs.
     ComponentStore& operator=(ComponentStore&& other) noexcept;
+    /// Destroys the state after the store stops naming it: a host destructor that runs in the teardown
+    /// and calls the store, or an instance or function of it, is refused (StoreDeleted; a Reentrant
+    /// instantiation failure; a StoreDeleted trap from hostResource()).
     ~ComponentStore();
 
     /// The store's interrupter: interrupt() it from any thread to stop the call running in the store,
@@ -369,6 +415,11 @@ class ComponentStore
                                                                              uint32_t rep,
                                                                              canonical::Ownership ownership);
 
+    /// How many owns of @p own's resource (its type and rep) the host holds: what a drop or a call may
+    /// still take.
+    /// @return The count; 0 for a moved-from store.
+    [[nodiscard]] uint32_t hostHolds(ResourceValue const& own) const noexcept;
+
     /// Whether a trap locked the store down (D6): no guest code of it runs again.
     [[nodiscard]] bool isLockedDown() const noexcept;
 
@@ -377,7 +428,12 @@ class ComponentStore
     [[nodiscard]] bool isBusy() const noexcept;
 
     /// The runtime store, for what the api does not cover.
-    [[nodiscard]] runtime::ComponentStore& runtime() noexcept { return _state->runtime; }
+    /// @return It (checked: the store is not gone).
+    [[nodiscard]] runtime::ComponentStore& runtime() noexcept
+    {
+        Require(_state != nullptr);
+        return _state->runtime;
+    }
 
   private:
     friend class ComponentInstance;

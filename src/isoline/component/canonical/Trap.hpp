@@ -33,6 +33,7 @@ enum class TrapCode : uint8_t
     LiveValueBytes,      ///< The store's live value bytes would pass ComponentLimits::maxLiveValueBytes.
     Handles,             ///< The store's handles would pass ComponentLimits::maxHandles.
     ResourceTypes,       ///< The store's resource types would pass ComponentLimits::maxResourceTypes.
+    HostOwns,            ///< The owns the host holds would pass ComponentLimits::maxHostOwns.
     Interrupted,         ///< The store's interrupter stopped the call: always this code, never Core (R13).
     CannotLeave,         ///< A component instance left while its `may_leave` was cleared.
     CannotEnter,         ///< A component instance entered while it may not be: locked down, or re-entered.
@@ -43,7 +44,8 @@ enum class TrapCode : uint8_t
     OwnExpected,         ///< A borrow handle lifted where an own is expected.
     WrongResource,       ///< A resource lowered as another resource type than its own.
     UncaughtException,   ///< A core exception no handler caught reached the component boundary.
-    Core,                ///< A core trap (Trap::core), its message the core's.
+    StoreDeleted, ///< The component store is gone, or tearing down: what a host destructor's call meets.
+    Core,         ///< A core trap (Trap::core), its message the core's.
 };
 
 /// The last TrapCode enumerator; it must name whichever enumerator is listed last above.
@@ -78,6 +80,8 @@ inline constexpr auto TrapCodeTable = std::to_array<TrapCodeRow>({
       .format = LimitTable[static_cast<std::size_t>(ComponentLimit::Handles)].message },
     { .code = TrapCode::ResourceTypes,
       .format = LimitTable[static_cast<std::size_t>(ComponentLimit::ResourceTypes)].message },
+    { .code = TrapCode::HostOwns,
+      .format = LimitTable[static_cast<std::size_t>(ComponentLimit::HostOwns)].message },
     { .code = TrapCode::Interrupted, .format = "interrupted" },
     { .code = TrapCode::CannotLeave, .format = "cannot leave component instance" },
     { .code = TrapCode::CannotEnter, .format = "cannot enter component instance" },
@@ -89,6 +93,7 @@ inline constexpr auto TrapCodeTable = std::to_array<TrapCodeRow>({
     { .code = TrapCode::OwnExpected, .format = "handle index {} is a borrow where an own is expected" },
     { .code = TrapCode::WrongResource, .format = "resource {} lowered as another resource type" },
     { .code = TrapCode::UncaughtException, .format = "uncaught exception" },
+    { .code = TrapCode::StoreDeleted, .format = "component store is gone" },
     { .code = TrapCode::Core, .format = "{}" },
 });
 
