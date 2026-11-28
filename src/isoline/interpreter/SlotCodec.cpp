@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/interpreter/SlotCodec.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <span>
 #include <variant>
 
+#include <isoline/meta/Check.hpp>
 #include <isoline/runtime/ValueWords.hpp>
 
 namespace isoline::interpreter
@@ -17,7 +16,7 @@ namespace isoline::interpreter
 void storeValue(runtime::Value const& value, std::span<Slot> slots) noexcept
 {
     auto const width = slotWidth(slotClassOf(binary::ValueType { .kind = runtime::kindOf(value) }));
-    Require(slots.size() == width);
+    ISOLINE_PRECONDITION(slots.size() == width);
     auto words = std::array<uint64_t, 2> {};
     runtime::encodeWords(value, words);
     std::ranges::copy(std::span { words }.first(width), slots.begin());
@@ -26,7 +25,7 @@ void storeValue(runtime::Value const& value, std::span<Slot> slots) noexcept
 runtime::Value loadValue(binary::ValueType const& type, std::span<Slot const> slots) noexcept
 {
     auto const width = slotWidth(slotClassOf(type));
-    Require(slots.size() == width);
+    ISOLINE_PRECONDITION(slots.size() == width);
     // A scalar's one slot is its first word; the second word of a scalar is 0.
     auto words = std::array<uint64_t, 2> {};
     std::ranges::copy(slots, words.begin());

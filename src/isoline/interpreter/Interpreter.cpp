@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/interpreter/Interpreter.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -29,6 +27,7 @@
 #include <isoline/interpreter/Code.hpp>
 #include <isoline/interpreter/Context.hpp>
 #include <isoline/interpreter/SlotCodec.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/runtime/HostCall.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Trap.hpp>
@@ -423,7 +422,7 @@ class Invocation final: public runtime::IExceptionRoots
                 state, leaveTrapped(_context, state.stepsLeft, Trap { TrapCode::NullExceptionReference }));
         auto const reference = loadReference(std::span<Slot const, 2> { state.fp + referenceSlot, 2 });
         // Validation typed it an exnref, and every exnref from a host is checked.
-        Require(reference.kind == runtime::RefKind::Exn);
+        ISOLINE_INVARIANT(reference.kind == runtime::RefKind::Exn);
         auto const offset = static_cast<std::size_t>(state.pc - _context.code);
         return unwind(state, reference.address, siteAt(*_frames.back().function, offset));
     }

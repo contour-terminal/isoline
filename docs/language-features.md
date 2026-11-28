@@ -161,7 +161,7 @@ by the name at its invocation, so a macro invoked through another macro is not s
 | `src/isoline/**/*.cpp`, tests and `testing/` directories left out | a `Require(` or `Guarantee(` beyond the file's throwing-site rows, fewer than they count, or a row whose file is gone or no longer defines its function (the name before a parameter list a definition's tail follows, not a call) | use `ISOLINE_PRECONDITION`/`ISOLINE_INVARIANT` in a `noexcept` function, or add a row |
 
 Comments are never code, and literals are blanked for every pattern but an `#include`. On success the lint
-prints how many `Require()`s the installed headers keep (15). They are inline header code, where a
+prints how many `Require()`s the installed headers keep (21). They are inline header code, where a
 contract would be evaluated under the consumer's semantic, so they stay `Require()`.
 
 ### Declaration contracts
@@ -286,14 +286,18 @@ throwing interface (not declared `noexcept`, a lambda or a virtual override amon
 calls may not throw). The rows were made by spelling every check as a contract and building the native
 lane, whose `static_assert` names each site in a function that may throw.
 
-Fourteen checks, in thirteen functions, are contracts. The entry checks: `Engine::Engine` and `ThreadPreparation`'s constructor
-(`api/Engine.cpp`), `StoreLink::owner()`, `Function::type()` and `Tag::type()` (`api/Extern.cpp`),
-`Store::define()` (`api/Store.cpp`), `sectionWriterOf()`'s two, that its anchor is neither
-`BeforeFirst` nor past `LastSectionAnchor` (`binary/Encoder.cpp`),
+Twenty-two checks, in eighteen functions, are contracts. The entry checks: `Engine::Engine`'s three and
+`ThreadPreparation`'s constructor (`api/Engine.cpp`), `StoreLink::owner()`, `Function::type()` and
+`Tag::type()` (`api/Extern.cpp`), `Store::define()` (`api/Store.cpp`), `sectionWriterOf()`'s two, that its
+anchor is neither `BeforeFirst` nor past `LastSectionAnchor` (`binary/Encoder.cpp`), `storeValue()` and
+`loadValue()`'s slot counts (`interpreter/SlotCodec.cpp`), `callHostFunction()`'s host function
+(`runtime/HostCall.cpp`), `CountingArena::release()` (`runtime/CountingArena.cpp`),
 `Store::releaseTrailing()` and `InvocationScope`'s constructor (`runtime/Store.cpp`), and
 `Natural::bitWidth()` (`text/FloatLiteral.cpp`). The others: `Store::call()`'s refusal naming a mismatch
-(`api/Store.cpp`), `shuffle()`'s lane (`interpreter/Simd.cpp`) and `addressOf()`'s value
-(`runtime/Instantiate.cpp`). 84 checks in 68 functions keep `Require()`, as do the 15 of the installed
+(`api/Store.cpp`), `throwReferenceFrom()`'s exnref (`interpreter/Interpreter.cpp`), `callHostFunction()`'s
+argument and result counts (`runtime/HostCall.cpp`) and `addressOf()`'s value (`runtime/Instantiate.cpp`);
+`shuffle()`'s lane is a check of an installed header (`numerics/SimdLanes.hpp`). 140 checks in 111
+functions keep `Require()`, as do the 21 of the installed
 headers. The `noexcept` accessors behind installed declarations, `Engine::Engine`, `StoreLink::owner()`,
 `Function::type()` and `Tag::type()`, also carry their entry check on the declaration ("Declaration
 contracts", above).
@@ -611,10 +615,16 @@ declaration form with the tree's Clang.
 - `c/detail/Convert.cpp`: `TypeRefusalRows`, indexed by TypeRefusal (c/detail/Convert.hpp); its rows hold the messages only the file's typeRefusalError() reads
 - `binary/Encoder.cpp`: `SectionWriters`, keyed by SectionAnchor; its rows name ModuleEncoder's member functions
 - `binary/NameSection.cpp`: `ShapeCodecs`, indexed by NameShape; its rows name the file's codec functions
-- `interpreter/Numerics.cpp`: `NumericTable`, keyed by Opcode, a subset; its rows name the file's evaluators
-- `interpreter/Numerics.cpp`: `NumericByOpcode`, NumericTable indexed by Opcode for lookup, built from it by a lambda; other opcodes' rows are empty
-- `interpreter/Numerics.cpp`: `table`, the lambda's working copy that becomes NumericByOpcode
-- `interpreter/Simd.cpp`: `SimdTable`, keyed by Opcode, a subset; its rows hold the file's evaluators
+- `reference/Numerics.cpp`: `NumericTable`, keyed by Opcode, a subset; its rows name the file's evaluators
+- `reference/Numerics.cpp`: `NumericByOpcode`, NumericTable indexed by Opcode for lookup, built from it by a lambda; other opcodes' rows are empty
+- `reference/Numerics.cpp`: `table`, the lambda's working copy that becomes NumericByOpcode
+- `reference/Simd.cpp`: `LaneTable`, keyed by Opcode, a subset: the splat, extract and replace lane operations, whose evaluators only the file runs
+- `numerics/SimdKernels.cpp`: `SimdTable`, keyed by Opcode, a subset; its rows hold the kernels the file's getters hand out
+- `api/Engine.cpp`: `FailureLimits`, keyed by LoweringFailure, a subset: the failures but the host's memory, each with the CompileLimit only the file's loadErrorOf() reports
+- `api/ExecutionEngines.cpp`: `Rows`, indexed by ExecutionEngine, read through engines::rowOf(), which checks the index; its rows name each engine's executor factory
+- `interpreter/Lowering.cpp`: `operands`, not a table: lowerSimdKernel()'s buffer of up to three popped operand entries, whose first member is their kind
+- `interpreter/LoweringTable.hpp`: `table`, the working copy of a consteval spread (spreadLoweringRows(), spreadTerminators()) that becomes LoweringTable or the continuation table
+- `runtime/ConstantExpression.cpp`: `ArithmeticTable`, keyed by Opcode, a subset: extended-const's six operations, whose bit-level evaluators only the file runs
 - `runtime/Store.cpp`: `claims`, keyed by Limit, a subset in Limit order; local to Store::checkInstanceDemand(), its rows hold the demand computed per call
 - `runtime/Store.cpp`: `Usages`, indexed by Limit; local to Store::used(), whose accessors its rows name
 - `text/Annotations.cpp`: `AnnotationReaders`, one reader per AnnotationKind, no row struct; it names the file's readers

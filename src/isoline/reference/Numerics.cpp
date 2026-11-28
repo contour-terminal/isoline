@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/reference/Numerics.hpp>
 
-#include <core/Assert.hpp>
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +10,7 @@
 #include <variant>
 
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/numerics/Float.hpp>
 #include <isoline/numerics/Integer.hpp>
 #include <isoline/runtime/Trap.hpp>

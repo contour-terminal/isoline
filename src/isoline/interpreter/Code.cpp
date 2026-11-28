@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/interpreter/Code.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -16,6 +14,7 @@
 #include <vector>
 
 #include <isoline/interpreter/Backends.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::interpreter
 {

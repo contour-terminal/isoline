@@ -23,25 +23,67 @@ binary/NameSection.cpp | byIndex | 1 | allocates (std::bad_alloc reaches the P17
 binary/NameSection.cpp | writeValidName | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 binary/NameSection.cpp | encodeNameSection | 2 | allocates (std::bad_alloc reaches the P17 boundary)
 binary/TypeCanon.cpp | canonicalTypeIds | 1 | a throwing interface
-interpreter/Numerics.cpp | operand | 1 | a throwing interface
-interpreter/Numerics.cpp | rowOf | 1 | a throwing interface
-interpreter/ReferenceInterpreter.cpp | Machine::run | 3 | allocates (std::bad_alloc reaches the P17 boundary)
-interpreter/ReferenceInterpreter.cpp | Machine::pop | 1 | a throwing interface
-interpreter/ReferenceInterpreter.cpp | Machine::keepTop | 1 | a throwing interface
-interpreter/ReferenceInterpreter.cpp | Machine::referencedCallee | 1 | calls a function that may throw
-interpreter/ReferenceInterpreter.cpp | Machine::transferToLabel | 1 | calls a function that may throw
-interpreter/ReferenceInterpreter.cpp | Machine::throwReference | 1 | calls a function that may throw
-interpreter/ReferenceInterpreter.cpp | ReferenceInterpreter::invoke | 1 | a throwing interface
-interpreter/ReferenceInterpreter.cpp | ReferenceInterpreter::evaluateConst | 2 | a throwing interface
-interpreter/Simd.cpp | bitsOf | 1 | a throwing interface
-interpreter/Simd.cpp | untrapped | 1 | a throwing interface
-interpreter/Simd.cpp | evaluatorOf | 1 | a throwing interface
+interpreter/Code.cpp | tailCallHeaderOperations | 1 | a throwing interface
+interpreter/Code.cpp | headerWord | 1 | a throwing interface
+interpreter/Code.cpp | operationOfHeader | 1 | a throwing interface
+interpreter/Code.cpp | operationExtent | 2 | a throwing interface
+interpreter/Code.cpp | LoweredModule::LoweredModule | 1 | a throwing interface
+interpreter/Interpreter.cpp | loweredModuleOf | 2 | a throwing interface
+interpreter/Interpreter.cpp | siteAt | 1 | a throwing interface
+interpreter/Interpreter.cpp | siteBefore | 1 | a throwing interface
+interpreter/Interpreter.cpp | Invocation::appendExceptionRoots | 2 | a throwing interface
+interpreter/Interpreter.cpp | Invocation::resolve | 1 | a throwing interface
+interpreter/Interpreter.cpp | Interpreter::Interpreter | 1 | a throwing interface
+interpreter/Interpreter.cpp | Interpreter::invoke | 3 | a throwing interface
+interpreter/Listing.cpp | describeEntries | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::run | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::layOutLocals | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::runOf | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerSpecial | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerLaneOperation | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerSimdKernel | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerLoad | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerCall | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerTryTable | 2 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::addSite | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::makeNode | 2 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::enterControl | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::controlAt | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerElse | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerEnd | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerConditionalBranch | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::lowerBrTable | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::push | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::pushRun | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::pop | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::leaveChain | 1 | a throwing interface
+interpreter/Lowering.cpp | FunctionLowering::emit | 2 | a throwing interface
+interpreter/Lowering.cpp | loweringReservation | 1 | a throwing interface
+interpreter/Lowering.cpp | lower | 3 | a throwing interface
+interpreter/SlotCodec.cpp | nullSlots | 1 | a throwing interface
+interpreter/TailCallControl.cpp | tailCallHeaderWords | 2 | a throwing interface
+reference/Numerics.cpp | operand | 1 | a throwing interface
+reference/Numerics.cpp | rowOf | 1 | a throwing interface
+reference/ReferenceInterpreter.cpp | Machine::run | 3 | allocates (std::bad_alloc reaches the P17 boundary)
+reference/ReferenceInterpreter.cpp | Machine::pop | 1 | a throwing interface
+reference/ReferenceInterpreter.cpp | Machine::keepTop | 1 | a throwing interface
+reference/ReferenceInterpreter.cpp | Machine::referencedCallee | 1 | calls a function that may throw
+reference/ReferenceInterpreter.cpp | Machine::transferToLabel | 1 | calls a function that may throw
+reference/ReferenceInterpreter.cpp | Machine::throwReference | 1 | calls a function that may throw
+reference/ReferenceInterpreter.cpp | ReferenceInterpreter::invoke | 1 | a throwing interface
+reference/Simd.cpp | required | 1 | a throwing interface
+reference/Simd.cpp | bitsOf | 1 | a throwing interface
+reference/Simd.cpp | laneEvaluatorOf | 1 | a throwing interface
+runtime/ConstantExpression.cpp | bitsOf | 2 | a throwing interface
+runtime/ConstantExpression.cpp | applyArithmetic | 1 | a throwing interface
+runtime/ConstantExpression.cpp | evaluateConstantExpression | 2 | a throwing interface
 runtime/Instantiate.cpp | Instantiation::Instantiation | 1 | calls a function that may throw
 runtime/Instantiate.cpp | Instantiation::internTypes | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Instantiate.cpp | Instantiation::allocateTags | 1 | calls a function that may throw
 runtime/Instantiate.cpp | Instantiation::fillInitializedTables | 1 | calls a function that may throw
 runtime/Instantiate.cpp | Instantiation::referencesOf | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Instantiate.cpp | Instantiation::resolveExports | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+runtime/Instantiate.cpp | instantiateReporting | 2 | a throwing interface
 runtime/Store.cpp | at | 1 | a throwing interface
 runtime/Store.cpp | append | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 runtime/Store.cpp | MemoryInstance::MemoryInstance | 1 | a throwing interface
@@ -67,6 +109,7 @@ text/InstructionReader.cpp | InstructionReader::readOffsetAndAlignment | 1 | cal
 text/InstructionReader.cpp | InstructionReader::readConstant | 1 | calls a function that may throw
 text/Lexer.cpp | decodeString | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 text/Lexer.cpp | identifierName | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+text/ModuleReader.cpp | acceptedExternRowOf | 1 | a throwing interface
 text/ModuleWriter.cpp | Printer::putHeapType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 text/ModuleWriter.cpp | Printer::putValueType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 text/ModuleWriter.cpp | Printer::putMemoryArgument | 1 | allocates (std::bad_alloc reaches the P17 boundary)

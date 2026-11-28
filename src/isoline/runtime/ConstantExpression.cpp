@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/runtime/ConstantExpression.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -14,6 +12,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Value.hpp>
 

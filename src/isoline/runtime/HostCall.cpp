@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/runtime/HostCall.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <cstdint>
 #include <expected>
 #include <optional>
 #include <span>
 
+#include <isoline/meta/Check.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Limits.hpp>
@@ -23,10 +22,10 @@ std::expected<void, Abrupt> callHostFunction(Store& store,
                                              std::span<Value const> args,
                                              std::span<Value> results) noexcept
 {
-    Require(function.host != nullptr);
+    ISOLINE_PRECONDITION(function.host != nullptr);
     auto const& type = store.type(function.typeId);
-    Require(args.size() == type.params.size());
-    Require(results.size() == type.results.size());
+    ISOLINE_INVARIANT(args.size() == type.params.size());
+    ISOLINE_INVARIANT(results.size() == type.results.size());
     auto const cost = hostFrameCost(type);
     if (auto const charged = store.chargeFrame(cost); !charged)
         return std::unexpected { Abrupt { charged.error() } };

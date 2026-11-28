@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/reference/ReferenceInterpreter.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -22,6 +20,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/reference/Numerics.hpp>
 #include <isoline/reference/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>

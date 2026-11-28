@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/interpreter/Lowering.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -22,6 +20,7 @@
 
 #include <isoline/interpreter/LoweringTable.hpp>
 #include <isoline/interpreter/SlotCodec.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/numerics/SimdKernels.hpp>
 #include <isoline/numerics/SimdShape.hpp>
 #include <isoline/runtime/Value.hpp>

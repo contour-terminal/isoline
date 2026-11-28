@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/reference/Simd.hpp>
 
-#include <core/Assert.hpp>
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +10,7 @@
 
 #include <isoline/binary/MemoryAccess.hpp>
 #include <isoline/binary/Opcode.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/numerics/SimdKernels.hpp>
 #include <isoline/numerics/SimdLanes.hpp>
 #include <isoline/runtime/Value.hpp>

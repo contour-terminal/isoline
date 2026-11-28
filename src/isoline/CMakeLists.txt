@@ -206,15 +206,18 @@ add_subdirectory(text)
 add_subdirectory(cli)
 
 # Module isoline: the public names of isoline_core's header set, re-exported by the generated isoline.cppm.
-# binary, runtime, validate, interpreter and meta are internal: isoline::api re-exports what of them is public.
+# binary, runtime, validate, interpreter, reference, numerics and meta are internal: isoline::api re-exports
+# what of them is public. isoline::api::engines, the engine rows, is public.
 isoline_add_module(
     NAME isoline
     LIBRARY isoline_core
     SOURCE isoline.cppm
-    NAMESPACES isoline isoline::api isoline::config
-    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta
-    # isoline/Contracts.hpp's: the declarations of the set spell their contracts through them.
-    DEFINED_MACROS ISOLINE_DECLARATION_CONTRACTS ISOLINE_PRE ISOLINE_POST)
+    NAMESPACES isoline isoline::api isoline::api::engines isoline::config
+    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::reference
+                        isoline::numerics isoline::meta
+    # isoline/Contracts.hpp's: the declarations of the set spell their contracts through them. And
+    # isoline/interpreter/DispatchAvailability.hpp's: the spelling of the tail calls the probe row passed with.
+    DEFINED_MACROS ISOLINE_DECLARATION_CONTRACTS ISOLINE_PRE ISOLINE_POST ISOLINE_INTERPRETER_MUSTTAIL)
 
 # The C API, a library of its own over isoline_core, with its own C++ tests (src/isoline/c/).
 if(ISOLINE_C_API)
@@ -288,15 +291,18 @@ if(ISOLINE_TESTING)
         "Code|interpreter"
         "ConstantExpression"
         "Contract"
+        "Contracts"
         "CountingArena"
         "DecodeError"
         "Decoder"
         "Dispatch|interpreter"
         "Encoder|300"
         "Engine"
+        "EnumRows"
         "Exceptions|interpreter"
         "Externs"
         "Features"
+        "FixedText"
         "FloatEnvironment"
         "HeapMemoryAllocator"
         "HostCall"
@@ -318,6 +324,7 @@ if(ISOLINE_TESTING)
         "NameSection"
         "Numerics"
         "Opcode"
+        "OpcodeNames"
         "OperationTable|interpreter"
         "PollGate"
         "ProvidedMemoryAllocator"

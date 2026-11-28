@@ -11,6 +11,7 @@ module;
 #include <isoline/api/CallError.hpp>
 #include <isoline/api/Engine.hpp>
 #include <isoline/api/EngineIdentity.hpp>
+#include <isoline/api/ExecutionEngines.hpp>
 #include <isoline/api/Extern.hpp>
 #include <isoline/api/Imports.hpp>
 #include <isoline/api/Module.hpp>
@@ -38,11 +39,19 @@ export namespace isoline::api
 {
 using isoline::api::Abrupt;
 using isoline::api::AllocationFailure;
+using isoline::api::availableDispatches;
+using isoline::api::bestDispatch;
 using isoline::api::CallError;
 using isoline::api::CallFailure;
+using isoline::api::CompileLimit;
+using isoline::api::CompileLimitExceeded;
+using isoline::api::CompileLimitRow;
+using isoline::api::compileLimitRow;
+using isoline::api::CompileLimitTable;
 using isoline::api::DecodeError;
 using isoline::api::DecodeLimits;
 using isoline::api::DefineError;
+using isoline::api::Dispatch;
 using isoline::api::Engine;
 using isoline::api::EngineConfig;
 using isoline::api::EngineIdentity;
@@ -70,6 +79,7 @@ using isoline::api::Global;
 using isoline::api::GlobalAccessError;
 using isoline::api::GlobalAddr;
 using isoline::api::GlobalType;
+using isoline::api::GrowRequest;
 using isoline::api::GrowthRecord;
 using isoline::api::HeapMemoryAllocator;
 using isoline::api::HostContext;
@@ -92,6 +102,7 @@ using isoline::api::InterruptState;
 using isoline::api::InvalidType;
 using isoline::api::InvalidTypeReason;
 using isoline::api::IPollObserver;
+using isoline::api::isAvailable;
 using isoline::api::isImplementationLimit;
 using isoline::api::IThreadResource;
 using isoline::api::LastCallFailure;
@@ -120,6 +131,7 @@ using isoline::api::MemorySize;
 using isoline::api::MemoryType;
 using isoline::api::MismatchKind;
 using isoline::api::Module;
+using isoline::api::ModuleLevel;
 using isoline::api::ModuleTooLarge;
 using isoline::api::PollSite;
 using isoline::api::PrepareError;
@@ -154,6 +166,16 @@ using isoline::api::ValueKind;
 using isoline::api::ValueMismatch;
 using isoline::api::ValueType;
 } // namespace isoline::api
+
+export namespace isoline::api::engines
+{
+using isoline::api::engines::CodeOutcome;
+using isoline::api::engines::CodeRequest;
+using isoline::api::engines::DispatchUse;
+using isoline::api::engines::EngineRow;
+using isoline::api::engines::rowNamed;
+using isoline::api::engines::rowOf;
+} // namespace isoline::api::engines
 
 export namespace isoline::config
 {

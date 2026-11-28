@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/runtime/CountingArena.hpp>
 
-#include <core/Assert.hpp>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +10,8 @@
 #include <new>
 #include <optional>
 #include <utility>
+
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::runtime
 {
@@ -60,7 +60,7 @@ std::expected<void, ArenaBudgetExceeded> CountingArena::reserve(uint64_t bytes) 
 
 void CountingArena::release(uint64_t bytes) noexcept
 {
-    Require(bytes <= _reserved);
+    ISOLINE_PRECONDITION(bytes <= _reserved);
     _reserved -= bytes;
     _charged -= bytes;
 }

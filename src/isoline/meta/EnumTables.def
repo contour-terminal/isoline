@@ -51,9 +51,6 @@ ISOLINE_KEYED_TABLE(binary::DataForms, "indexed by the data segment's flag byte;
 ISOLINE_LAST_ENUMERATOR(binary::LastSectionAnchor, "SectionEncodings' anchors start past BeforeFirst, not at 0")
 ISOLINE_LAST_ENUMERATOR(binary::LastNameShape, "its tables are source-local: ShapeCodecs and MultipleNameErrors")
 
-// isoline::interpreter
-ISOLINE_LAST_ENUMERATOR(interpreter::LastSimdShape, "its table is interpreter/Simd.cpp's Evaluator variant")
-
 // isoline::runtime
 ISOLINE_ENUM_TABLE(runtime::LimitTable, runtime::LastLimit, runtime::LimitRow::limit)
 ISOLINE_ENUM_TABLE(runtime::LinkErrorTable, runtime::LastLinkErrorCode, runtime::LinkErrorRow::code)
@@ -110,10 +107,16 @@ ISOLINE_SOURCE_LOCAL_TABLE("c/detail/ErrorRows.hpp", Rows, "EnumErrorRows<Enum>'
 ISOLINE_SOURCE_LOCAL_TABLE("c/detail/Convert.cpp", TypeRefusalRows, "indexed by TypeRefusal (c/detail/Convert.hpp); its rows hold the messages only the file's typeRefusalError() reads")
 ISOLINE_SOURCE_LOCAL_TABLE("binary/Encoder.cpp", SectionWriters, "keyed by SectionAnchor; its rows name ModuleEncoder's member functions")
 ISOLINE_SOURCE_LOCAL_TABLE("binary/NameSection.cpp", ShapeCodecs, "indexed by NameShape; its rows name the file's codec functions")
-ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Numerics.cpp", NumericTable, "keyed by Opcode, a subset; its rows name the file's evaluators")
-ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Numerics.cpp", NumericByOpcode, "NumericTable indexed by Opcode for lookup, built from it by a lambda; other opcodes' rows are empty")
-ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Numerics.cpp", table, "the lambda's working copy that becomes NumericByOpcode")
-ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Simd.cpp", SimdTable, "keyed by Opcode, a subset; its rows hold the file's evaluators")
+ISOLINE_SOURCE_LOCAL_TABLE("reference/Numerics.cpp", NumericTable, "keyed by Opcode, a subset; its rows name the file's evaluators")
+ISOLINE_SOURCE_LOCAL_TABLE("reference/Numerics.cpp", NumericByOpcode, "NumericTable indexed by Opcode for lookup, built from it by a lambda; other opcodes' rows are empty")
+ISOLINE_SOURCE_LOCAL_TABLE("reference/Numerics.cpp", table, "the lambda's working copy that becomes NumericByOpcode")
+ISOLINE_SOURCE_LOCAL_TABLE("reference/Simd.cpp", LaneTable, "keyed by Opcode, a subset: the splat, extract and replace lane operations, whose evaluators only the file runs")
+ISOLINE_SOURCE_LOCAL_TABLE("numerics/SimdKernels.cpp", SimdTable, "keyed by Opcode, a subset; its rows hold the kernels the file's getters hand out")
+ISOLINE_SOURCE_LOCAL_TABLE("api/Engine.cpp", FailureLimits, "keyed by LoweringFailure, a subset: the failures but the host's memory, each with the CompileLimit only the file's loadErrorOf() reports")
+ISOLINE_SOURCE_LOCAL_TABLE("api/ExecutionEngines.cpp", Rows, "indexed by ExecutionEngine, read through engines::rowOf(), which checks the index; its rows name each engine's executor factory")
+ISOLINE_SOURCE_LOCAL_TABLE("interpreter/Lowering.cpp", operands, "not a table: lowerSimdKernel()'s buffer of up to three popped operand entries, whose first member is their kind")
+ISOLINE_SOURCE_LOCAL_TABLE("interpreter/LoweringTable.hpp", table, "the working copy of a consteval spread (spreadLoweringRows(), spreadTerminators()) that becomes LoweringTable or the continuation table")
+ISOLINE_SOURCE_LOCAL_TABLE("runtime/ConstantExpression.cpp", ArithmeticTable, "keyed by Opcode, a subset: extended-const's six operations, whose bit-level evaluators only the file runs")
 ISOLINE_SOURCE_LOCAL_TABLE("runtime/Store.cpp", claims, "keyed by Limit, a subset in Limit order; local to Store::checkInstanceDemand(), its rows hold the demand computed per call")
 ISOLINE_SOURCE_LOCAL_TABLE("runtime/Store.cpp", Usages, "indexed by Limit; local to Store::used(), whose accessors its rows name")
 ISOLINE_SOURCE_LOCAL_TABLE("text/Annotations.cpp", AnnotationReaders, "one reader per AnnotationKind, no row struct; it names the file's readers")
