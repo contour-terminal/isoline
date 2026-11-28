@@ -9,22 +9,22 @@
 #include <variant>
 
 #include <isoline/binary/Opcode.hpp>
-#include <isoline/interpreter/Numerics.hpp>
+#include <isoline/reference/Numerics.hpp>
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
 using isoline::binary::Opcode;
 using isoline::binary::OpcodeSignature;
 using isoline::binary::OpcodeTable;
-using isoline::interpreter::applyBinary;
-using isoline::interpreter::applyCompare;
-using isoline::interpreter::applyTest;
-using isoline::interpreter::applyUnary;
-using isoline::interpreter::applyWide;
-using isoline::interpreter::CanonicalNanF32;
-using isoline::interpreter::CanonicalNanF64;
-using isoline::interpreter::NumericShape;
-using isoline::interpreter::numericShape;
+using isoline::reference::applyBinary;
+using isoline::reference::applyCompare;
+using isoline::reference::applyTest;
+using isoline::reference::applyUnary;
+using isoline::reference::applyWide;
+using isoline::reference::CanonicalNanF32;
+using isoline::reference::CanonicalNanF64;
+using isoline::reference::NumericShape;
+using isoline::reference::numericShape;
 using isoline::runtime::F32;
 using isoline::runtime::F64;
 using isoline::runtime::I32;

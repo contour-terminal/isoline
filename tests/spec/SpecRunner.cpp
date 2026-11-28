@@ -50,7 +50,7 @@
 #include <isoline/binary/Encoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>

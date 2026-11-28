@@ -19,8 +19,8 @@
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/meta/EnumRows.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Interrupt.hpp>
@@ -125,7 +125,7 @@ class LimitedStore
   private:
     HeapMemoryAllocator _heap;
     Store _store;
-    isoline::interpreter::ReferenceInterpreter _interpreter;
+    isoline::reference::ReferenceInterpreter _interpreter;
 };
 
 /// A module of @p count memories of @p pages pages each.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 
 #include <core/Assert.hpp>
 
@@ -22,8 +22,8 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
-#include <isoline/interpreter/Numerics.hpp>
-#include <isoline/interpreter/Simd.hpp>
+#include <isoline/reference/Numerics.hpp>
+#include <isoline/reference/Simd.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/ConstantExpression.hpp>
 #include <isoline/runtime/HostCall.hpp>
@@ -35,7 +35,7 @@
 #include <isoline/runtime/ValueCheck.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
-namespace isoline::interpreter
+namespace isoline::reference
 {
 
 namespace
@@ -952,7 +952,7 @@ namespace
         {
             auto const b = popV128();
             auto const a = popV128();
-            push(interpreter::shuffle(a, b, binary::v128LiteralOf(*instance().module, instruction)));
+            push(reference::shuffle(a, b, binary::v128LiteralOf(*instance().module, instruction)));
         }
 
         /// Executes a numeric instruction by its row in Numerics' table.
@@ -1143,4 +1143,4 @@ std::expected<void, Abrupt> ReferenceInterpreter::invoke(Store& store,
     return Machine { store, *this, _depth }.run(function, args, results);
 }
 
-} // namespace isoline::interpreter
+} // namespace isoline::reference

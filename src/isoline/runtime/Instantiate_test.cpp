@@ -22,7 +22,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -229,7 +229,7 @@ TEST_CASE("Contract.Instantiate.codeMustMatchTheExecutor", "[.contract]")
     builder.type(FuncType {}).function(0, {}, {});
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     std::ignore = instantiate(
         store, interpreter, moduleOf(builder), std::make_shared<StubCode const>(ExecutionEngine::Fast), {});
     FAIL("SURVIVED: instantiate accepted code of another engine");
@@ -256,7 +256,7 @@ TEST_CASE("Contract.Instantiate.referenceCodeIsNull", "[.contract]")
     builder.type(FuncType {}).function(0, {}, {});
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     std::ignore = instantiate(store,
                               interpreter,
                               moduleOf(builder),
@@ -943,7 +943,7 @@ TEST_CASE("Instantiate.typeIdentityAcrossModules")
 {
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const identity =
         FuncType { .params = { isoline::binary::I32 }, .results = { isoline::binary::I32 } };
 
@@ -1016,7 +1016,7 @@ TEST_CASE("Instantiate.tableInitializer")
 {
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const nonNullFunc =
         isoline::binary::ValueType { .kind = isoline::binary::ValueKind::Ref,
                                      .nullable = isoline::binary::Nullable::No,
@@ -1043,7 +1043,7 @@ TEST_CASE("Instantiate.importsMatchByStoreTypes")
 {
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const wasm3 = FeatureSet::wasm3();
     // The exporter's type 1 is (func); the importers declare it at index 0.
     auto exporter = ModuleBuilder {};
@@ -1151,7 +1151,7 @@ TEST_CASE("Instantiate.importOfAnUnheldTypeMatchesNothing")
     // element or value type names it, matches nothing — and interns nothing.
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const wasm3 = FeatureSet::wasm3();
     auto exporter = ModuleBuilder {};
     exporter.type(FuncType {})
@@ -1205,7 +1205,7 @@ TEST_CASE("Instantiate.startHostFailureFailsInstantiation")
     builder.type(FuncType {}).importFunction("env", "start", 0).start(0);
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const failure = isoline::runtime::HostFailure { .kind = isoline::runtime::HostFailureKind::Embedder,
                                                          .code = 3,
                                                          .mismatch = std::nullopt };
@@ -1229,7 +1229,7 @@ TEST_CASE("Instantiate.startHostFailureFailsInstantiation")
 TEST_CASE("Instantiate.isInterruptible", "[threading]")
 {
     auto allocator = HeapMemoryAllocator {};
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
 
     SECTION("an interrupt before instantiation instantiates nothing, and the start never runs")
     {
@@ -1307,7 +1307,7 @@ TEST_CASE("Instantiate.pollsElementEvaluation")
         auto counter = PollCounter {};
         auto store =
             Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &counter } };
-        auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+        auto interpreter = isoline::reference::ReferenceInterpreter {};
         REQUIRE(instantiate(store, interpreter, moduleOf(builder), {}).has_value());
         CHECK(counter.count(PollSite::BulkGranule) == 3);
         CHECK(counter.count(PollSite::Instantiation) == 1);
@@ -1345,7 +1345,7 @@ TEST_CASE("Instantiate.interruptBeforeStartRunsNoStart")
                                                }))
                           .value();
     auto const imports = std::vector { ExternValue { .kind = ExternKind::Func, .address = host } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     CHECK(errorOf(instantiate(store, interpreter, moduleOf(builder), imports))
           == InstantiationError { Trap { TrapCode::Interrupted } });
     CHECK(started == 0);
@@ -1379,7 +1379,7 @@ TEST_CASE("Instantiate.pollsAtEntryBeforeStartAndPerDataGranule")
     auto allocator = HeapMemoryAllocator {};
     auto counter = PollCounter {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator, .pollObserver = &counter } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     REQUIRE(instantiate(store, interpreter, moduleOf(builder), {}).has_value());
     CHECK(counter.count(PollSite::Instantiation) == 2);
     CHECK(counter.count(PollSite::BulkGranule) == 4);
@@ -1392,7 +1392,7 @@ TEST_CASE("Instantiate.chargesAFreshStepBudget")
     // fresh budget: its entry and 5 data granules take 6 steps and fit; 6 granules take 7 and do not.
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits { .maxSteps = 6 }, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto spender = ModuleBuilder {};
     spender.type(FuncType {})
         .function(
@@ -1442,7 +1442,7 @@ TEST_CASE("Instantiate.fromAHostFunctionSharesTheCallersBudget")
     auto const run = [&](uint64_t maxSteps) {
         auto allocator = HeapMemoryAllocator {};
         auto store = Store { StoreLimits { .maxSteps = maxSteps }, StoreServices { .allocator = allocator } };
-        auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+        auto interpreter = isoline::reference::ReferenceInterpreter {};
         auto result = Run {};
         auto const host =
             store
@@ -1495,7 +1495,7 @@ TEST_CASE("Instantiate.startRefusalStaysInItsScope")
         .start(0);
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const address = instantiate(store, interpreter, moduleOf(builder), {});
     REQUIRE(address.has_value());
     CHECK(store.growthRecord() == GrowthRecord {});
@@ -1513,7 +1513,7 @@ TEST_CASE("Instantiate.isOneInvocation")
     auto builder = ModuleBuilder {};
     builder.type(FuncType {}).importFunction("env", "start", 0).start(0);
     auto allocator = HeapMemoryAllocator {};
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto none = Store { StoreLimits { .maxNestedInvocations = 0 }, StoreServices { .allocator = allocator } };
     CHECK(errorOf(instantiate(none, interpreter, moduleOf(builder), {}))
           == InstantiationError { Trap { TrapCode::CallStackExhausted } });

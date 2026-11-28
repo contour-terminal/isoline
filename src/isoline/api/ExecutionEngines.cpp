@@ -9,7 +9,7 @@
 #include <utility>
 
 #include <isoline/fastinterpreter/FastInterpreter.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/CountingArena.hpp>
 
 namespace isoline::api::engines
@@ -24,7 +24,7 @@ namespace
           .code = [](validate::ValidatedModule const& /*module*/,
                      CodeRequest const& /*request*/) -> CodeOutcome { return nullptr; },
           .executor = [](fastinterpreter::Dispatch /*dispatch*/) -> std::unique_ptr<runtime::ICodeExecutor> {
-              return std::make_unique<interpreter::ReferenceInterpreter>();
+              return std::make_unique<reference::ReferenceInterpreter>();
           } },
         { .engine = runtime::ExecutionEngine::Fast,
           .name = "fast",

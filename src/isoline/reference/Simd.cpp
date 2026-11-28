@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <isoline/interpreter/Simd.hpp>
+#include <isoline/reference/Simd.hpp>
 
 #include <core/Assert.hpp>
 
@@ -16,7 +16,7 @@
 #include <isoline/numerics/SimdLanes.hpp>
 #include <isoline/runtime/Value.hpp>
 
-namespace isoline::interpreter
+namespace isoline::reference
 {
 
 namespace
@@ -178,4 +178,4 @@ V128 replaceLane(Opcode opcode, V128 vector, uint8_t lane, Value const& value)
     return laneEvaluatorOf<ReplaceFn>(opcode)(vector, lane, value);
 }
 
-} // namespace isoline::interpreter
+} // namespace isoline::reference

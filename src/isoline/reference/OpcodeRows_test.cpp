@@ -20,7 +20,7 @@
 #include <isoline/binary/Opcode.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/OpcodeRowModules.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
@@ -81,7 +81,7 @@ TEST_CASE("Opcode.everyRowDecodes")
         auto allocator = isoline::runtime::HeapMemoryAllocator {};
         auto store = isoline::runtime::Store { isoline::runtime::StoreLimits {},
                                                isoline::runtime::StoreServices { .allocator = allocator } };
-        auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+        auto interpreter = isoline::reference::ReferenceInterpreter {};
         auto const instance = isoline::runtime::instantiate(store, interpreter, std::move(*validated), {});
         REQUIRE(instance.has_value());
         auto const function = store.moduleInstance(*instance).functions.at(1);

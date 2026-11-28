@@ -28,7 +28,7 @@
 #include <isoline/fastinterpreter/testing/Engines.hpp>
 #include <isoline/fastinterpreter/testing/HostileModules.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -885,7 +885,7 @@ TEST_CASE("Exceptions.catchInAnotherInstanceRestoresMemory0")
                 executor = std::make_unique<isoline::fastinterpreter::FastInterpreter>(*under.dispatch);
             }
             else
-                executor = std::make_unique<isoline::interpreter::ReferenceInterpreter>();
+                executor = std::make_unique<isoline::reference::ReferenceInterpreter>();
             auto const instance = isoline::runtime::instantiate(store, *executor, module, code, {});
             REQUIRE(instance.has_value());
             return std::vector { ExternValue { .kind = ExternKind::Func,

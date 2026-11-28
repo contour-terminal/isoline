@@ -144,7 +144,7 @@ most twice the active frames' charge for their operands and locals, plus twice i
 invocation's own function's result slots (at most `2 × DecodeLimits::maxResults`): `A ≤ 4 × charge + 2'000`
 slots, and `A ≤ 2 × charge + 1'000` where every value is a number. The chunks hold at most the bound above of
 that A, per invocation in progress (`Calls.newChunkCopiesOnlyTheArguments`, `Calls.framesHoldTheirResults`).
-The reference interpreter takes `interpreter::ValueBytes` (one `runtime::Value`) per value, on vectors that grow
+The reference interpreter takes `reference::ValueBytes` (one `runtime::Value`) per value, on vectors that grow
 as needed: it writes no fixed frame, so it has no such overflow to guard against, and its own results take the
 same uncharged room. Running out of host memory for a chunk or a block of
 frame records terminates, as running out of it does anywhere in `runtime::invokeChecked()`.

@@ -11,7 +11,7 @@
 #include <isoline/runtime/Trap.hpp>
 #include <isoline/runtime/Value.hpp>
 
-namespace isoline::interpreter
+namespace isoline::reference
 {
 
 /// How a numeric instruction takes its operands, and so which apply function evaluates it.
@@ -96,4 +96,4 @@ using numerics::CanonicalNanF32;
 /// The canonical NaN of f64, which the float kernels produce.
 using numerics::CanonicalNanF64;
 
-} // namespace isoline::interpreter
+} // namespace isoline::reference

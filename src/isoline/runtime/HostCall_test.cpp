@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostCall.hpp>
 #include <isoline/runtime/HostFunction.hpp>
@@ -25,7 +25,7 @@
 #include <isoline/runtime/testing/PollCounter.hpp>
 
 using isoline::binary::FuncType;
-using isoline::interpreter::ReferenceInterpreter;
+using isoline::reference::ReferenceInterpreter;
 using isoline::runtime::Abrupt;
 using isoline::runtime::callHostFunction;
 using isoline::runtime::ExnAddr;

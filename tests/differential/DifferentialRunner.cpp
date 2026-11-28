@@ -29,7 +29,7 @@
 #include <isoline/fastinterpreter/Dispatch.hpp>
 #include <isoline/fastinterpreter/FastInterpreter.hpp>
 #include <isoline/fastinterpreter/Lowering.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/HostFunction.hpp>
@@ -352,7 +352,7 @@ Participant referenceParticipant()
 {
     return Participant {
         .name = "reference",
-        .makeExecutor = [] { return std::make_unique<interpreter::ReferenceInterpreter>(); },
+        .makeExecutor = [] { return std::make_unique<reference::ReferenceInterpreter>(); },
         .lowerModule =
             [](std::shared_ptr<validate::ValidatedModule const> const& /*module*/,
                runtime::ExecutionMode /*mode*/) { return std::shared_ptr<runtime::ModuleCode const> {}; },

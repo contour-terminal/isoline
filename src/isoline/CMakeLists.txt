@@ -93,9 +93,9 @@ target_sources(isoline_core
         binary/NameSection.cpp
         binary/Opcode.cpp
         binary/TypeCanon.cpp
-        interpreter/Numerics.cpp
-        interpreter/ReferenceInterpreter.cpp
-        interpreter/Simd.cpp
+        reference/Numerics.cpp
+        reference/ReferenceInterpreter.cpp
+        reference/Simd.cpp
         ${isolineFloatControl}
         runtime/ConstantExpression.cpp
         runtime/CountingArena.cpp
@@ -139,11 +139,11 @@ target_sources(isoline_core
             binary/Opcodes.def
             binary/TypeCanon.hpp
             binary/Types.hpp
-            interpreter/Numerics.hpp
-            interpreter/ReferenceInterpreter.hpp
-            interpreter/Simd.hpp
             meta/EnumRows.hpp
             meta/FixedText.hpp
+            reference/Numerics.hpp
+            reference/ReferenceInterpreter.hpp
+            reference/Simd.hpp
             runtime/Abrupt.hpp
             runtime/ConstantExpression.hpp
             runtime/CountingArena.hpp

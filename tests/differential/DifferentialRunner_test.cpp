@@ -24,7 +24,7 @@
 #include "Observation.hpp"
 #include "Reach.hpp"
 #include "testing/EnvironmentNumber.hpp"
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -82,7 +82,7 @@ class PerturbingExecutor final: public runtime::ICodeExecutor
     }
 
   private:
-    interpreter::ReferenceInterpreter _inner;
+    reference::ReferenceInterpreter _inner;
     Perturbation _perturbation;
 };
 

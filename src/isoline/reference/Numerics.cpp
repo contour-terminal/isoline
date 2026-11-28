@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include <isoline/interpreter/Numerics.hpp>
+#include <isoline/reference/Numerics.hpp>
 
 #include <core/Assert.hpp>
 
@@ -20,7 +20,7 @@
 // The Value-level face of the typed kernels in numerics/: one table row per numeric instruction,
 // each a thunk that unboxes the operands, calls the kernel and boxes its result.
 
-namespace isoline::interpreter
+namespace isoline::reference
 {
 
 namespace
@@ -375,4 +375,4 @@ std::array<uint64_t, 2> applyWide(Opcode opcode, std::span<uint64_t const> opera
     return rowOf(opcode, NumericShape::Wide, operands.size()).wide(operands);
 }
 
-} // namespace isoline::interpreter
+} // namespace isoline::reference

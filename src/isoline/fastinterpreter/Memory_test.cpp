@@ -28,7 +28,7 @@
 #include <isoline/fastinterpreter/Operations.hpp>
 #include <isoline/fastinterpreter/testing/Engines.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -297,7 +297,7 @@ class Linked
         if (engine.dispatch)
             _executor = std::make_unique<FastInterpreter>(*engine.dispatch);
         else
-            _executor = std::make_unique<isoline::interpreter::ReferenceInterpreter>();
+            _executor = std::make_unique<isoline::reference::ReferenceInterpreter>();
     }
 
     /// Instantiates @p builder's module with @p imports.

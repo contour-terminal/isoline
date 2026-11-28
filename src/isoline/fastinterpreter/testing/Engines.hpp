@@ -26,7 +26,7 @@
 #include <isoline/fastinterpreter/FastInterpreter.hpp>
 #include <isoline/fastinterpreter/Lowering.hpp>
 #include <isoline/fastinterpreter/testing/Lowering.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/HostFunction.hpp>
@@ -258,7 +258,7 @@ class Harness
             return std::make_unique<FastInterpreter>(*engine.dispatch, *engine.slotMemory);
         if (engine.dispatch)
             return std::make_unique<FastInterpreter>(*engine.dispatch);
-        return std::make_unique<interpreter::ReferenceInterpreter>();
+        return std::make_unique<reference::ReferenceInterpreter>();
     }
 
     runtime::HeapMemoryAllocator _allocator;

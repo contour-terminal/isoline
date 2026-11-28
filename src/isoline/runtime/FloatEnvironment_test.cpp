@@ -14,7 +14,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -28,7 +28,7 @@ using isoline::binary::FuncType;
 using isoline::binary::testing::code;
 using isoline::binary::testing::localGet;
 using isoline::binary::testing::ModuleBuilder;
-using isoline::interpreter::ReferenceInterpreter;
+using isoline::reference::ReferenceInterpreter;
 using isoline::runtime::F32;
 using isoline::runtime::FloatControlWord;
 using isoline::runtime::FloatEnvironmentScope;

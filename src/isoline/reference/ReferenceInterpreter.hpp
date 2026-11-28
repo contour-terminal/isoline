@@ -12,7 +12,7 @@
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Value.hpp>
 
-namespace isoline::interpreter
+namespace isoline::reference
 {
 
 /// The bytes a value the stack budget charges (runtime::StoreLimits::maxStackValues) takes on the reference
@@ -88,4 +88,4 @@ class ReferenceInterpreter final: public runtime::ICodeExecutor
     uint32_t _depth = 0;
 };
 
-} // namespace isoline::interpreter
+} // namespace isoline::reference

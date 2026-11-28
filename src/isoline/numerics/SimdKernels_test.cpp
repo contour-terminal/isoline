@@ -466,7 +466,7 @@ constexpr auto LanewiseRows = joined(
                      Opcode::F64x2Ge }));
 
 /// The kernel rows whose result lane is not a function of the same operand lane alone: they move
-/// lanes between widths or positions, reduce them, or take a third operand. interpreter/Simd_test.cpp
+/// lanes between widths or positions, reduce them, or take a third operand. reference/Simd_test.cpp
 /// checks each against worked values (Simd.extend, .extmul, .narrowSaturates,
 /// .swizzleOutOfRangeIsZero, .bitselect, .allTrue, .bitmask, .bitwise, and the Relaxed.* cases).
 constexpr auto NotLanewise = std::to_array<Opcode>({

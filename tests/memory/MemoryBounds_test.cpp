@@ -40,7 +40,7 @@
 #include <isoline/binary/NameSection.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
@@ -131,7 +131,7 @@ void checkLinear(std::vector<std::byte> const& bytes, FeatureSet features, Insta
     auto allocator = isoline::runtime::HeapMemoryAllocator {};
     auto store = isoline::runtime::Store { isoline::runtime::StoreLimits {},
                                            isoline::runtime::StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const storeScope = AllocationScope {};
     auto const instance = isoline::runtime::instantiate(store, interpreter, module, {});
     auto const storeBytes = storeScope.peakBytes();
@@ -604,7 +604,7 @@ TEST_CASE("MemoryBounds.throwLoopReclaimsItsPayloads")
     auto allocator = isoline::runtime::HeapMemoryAllocator {};
     auto store = isoline::runtime::Store { isoline::runtime::StoreLimits { .maxExceptions = MaxExceptions },
                                            isoline::runtime::StoreServices { .allocator = allocator } };
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const instance = isoline::runtime::instantiate(store, interpreter, std::move(*validated), {});
     REQUIRE(instance.has_value());
     auto const function = store.moduleInstance(*instance).functions.at(0);

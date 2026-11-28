@@ -27,7 +27,7 @@
 #include "Reach.hpp"
 #include "WasmtimeOracle.hpp"
 #include <isoline/binary/Types.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -98,7 +98,7 @@ namespace
     {
         auto allocator = runtime::HeapMemoryAllocator {};
         auto store = runtime::Store { FuzzLimits, runtime::StoreServices { .allocator = allocator } };
-        auto executor = interpreter::ReferenceInterpreter {};
+        auto executor = reference::ReferenceInterpreter {};
         auto call = FreshCall {};
         auto const instantiated = runtime::instantiateReporting(store, executor, validated, nullptr, {});
         if (!instantiated.instance)

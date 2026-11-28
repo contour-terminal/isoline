@@ -57,7 +57,7 @@ struct StoreLimits
 
     /// The stack values the frames in progress may cost together, host-nested invocations' included,
     /// before a call traps with CallStackExhausted. The charge is counted in values, the same in every
-    /// engine; what a value takes in bytes is each engine's own: interpreter::ValueBytes on the
+    /// engine; what a value takes in bytes is each engine's own: reference::ValueBytes on the
     /// reference interpreter's stacks (a runtime::Value, its size the standard library's variant's), and on
     /// the fast interpreter's slot chunks at most fastinterpreter::SlotBytesPerValue, which
     /// docs/fast-interpreter.md's chunk bound ("Calls, frames and the slot stack") scales by a constant

@@ -18,7 +18,7 @@
 // Cost: an operator is a table lookup by opcode and a call of its kernel, which computes each lane
 // with the typed scalar kernel of numerics, on bits; no lane is boxed in a runtime::Value.
 
-namespace isoline::interpreter
+namespace isoline::reference
 {
 
 /// How a SIMD instruction takes its operands; numerics owns it, as every executor shares it.
@@ -109,4 +109,4 @@ using numerics::setLane;
 /// every executor runs it.
 using numerics::shuffle;
 
-} // namespace isoline::interpreter
+} // namespace isoline::reference

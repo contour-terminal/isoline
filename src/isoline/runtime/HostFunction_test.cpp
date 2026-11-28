@@ -11,7 +11,7 @@
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -22,7 +22,7 @@
 #include <isoline/runtime/Value.hpp>
 
 using isoline::binary::FuncType;
-using isoline::interpreter::ReferenceInterpreter;
+using isoline::reference::ReferenceInterpreter;
 using isoline::runtime::Abrupt;
 using isoline::runtime::checkHostOutcome;
 using isoline::runtime::Entry;

@@ -7,7 +7,7 @@
 #include <vector>
 
 #include <isoline/binary/Types.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/LinearMemory.hpp>
@@ -327,7 +327,7 @@ TEST_CASE("ValueCheck.exceptionPayloadsAreChecked")
 
     // A host allocates exceptions through its context, which checks the payload instead of failing the
     // store's precondition: a payload of another type is the host's failure, and the process lives on.
-    auto interpreter = isoline::interpreter::ReferenceInterpreter {};
+    auto interpreter = isoline::reference::ReferenceInterpreter {};
     auto const host =
         store
             .addHostFunction(

@@ -27,7 +27,7 @@
 #include <isoline/binary/Types.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
+#include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/FloatEnvironment.hpp>
 #include <isoline/runtime/HostFunction.hpp>
@@ -63,7 +63,7 @@ using isoline::binary::testing::localGet;
 using isoline::binary::testing::memoryAccess;
 using isoline::binary::testing::memoryFill;
 using isoline::binary::testing::ModuleBuilder;
-using isoline::interpreter::ReferenceInterpreter;
+using isoline::reference::ReferenceInterpreter;
 using isoline::runtime::Abrupt;
 using isoline::runtime::ExnAddr;
 using isoline::runtime::ExternValue;
