@@ -1174,6 +1174,26 @@ TEST_CASE("Typed.ownsAreConsumedOnce")
     CHECK(destructor.destroyed == std::vector<uint32_t> { 7, 9, 11, 12, 13 });
 }
 
+TEST_CASE("Typed.ownsInsideListsOfTuplesAreVisited")
+{
+    // An own inside a list of tuples is visited, as a host result like WASI's get-directories
+    // (list<tuple<own<descriptor>, string>>) holds them: an empty one there is found, so the result is
+    // refused.
+    auto world = PaneWorld {};
+    auto store = world.store();
+    std::ignore = instanceOf(store.instantiate(*world.component, world.linker));
+    auto values = std::vector<std::tuple<Own<Pane>, std::string>> {};
+    CHECK_FALSE(isoline::component::api::typed::detail::holdsEmptyOwn(values));
+    values.emplace_back(valueOf(hostOwn<Pane>(store, world.resources, 7)), "seven");
+    CHECK_FALSE(isoline::component::api::typed::detail::holdsEmptyOwn(values));
+    values.emplace_back(Own<Pane> {}, "empty");
+    CHECK(isoline::component::api::typed::detail::holdsEmptyOwn(values));
+    REQUIRE(isoline::component::api::typed::drop(store, std::get<0>(values.front())).has_value());
+    // A dropped own is empty too.
+    values.pop_back();
+    CHECK(isoline::component::api::typed::detail::holdsEmptyOwn(values));
+}
+
 TEST_CASE("Typed.bindChecksResourceIdentity")
 {
     auto world = PaneWorld {};
