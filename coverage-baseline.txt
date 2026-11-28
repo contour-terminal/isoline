@@ -146,6 +146,56 @@
 # No branch a test takes lost its coverage. api/Store.cpp's entry stays: the one branch it lost the same way, a host function's
 # name imported as another kind, is now tested (Store.wrongKindOrTypeIsIncompatible).
 #
+# src/isoline/interpreter/Numerics.cpp's branch entry was lowered from 95.90 to 75.00 when the typed scalar kernels moved into
+# numerics/Integer.hpp and numerics/Float.hpp (100 % and 97.82 % covered): their covered branches left the file, and what stays
+# is the Value-level thunks, whose untaken branches are the failing sides of Require (an operand of another type, a row of
+# another shape), which no validated module takes. src/isoline/interpreter/Simd.cpp's was lowered from 93.44 to 77.77 when the
+# SIMD kernels moved into numerics/SimdKernels.cpp (100 % covered) and numerics/SimdLanes.hpp: it keeps the lookups and the
+# lane operations on boxed scalars, whose untaken branches are again only Require's failing sides (an opcode of another shape,
+# a scalar of another type). src/isoline/runtime/Instantiate.cpp's was lowered from 95.26 to 93.56 when constant expressions
+# moved into runtime/ConstantExpression.cpp, taking covered branches along, and instantiate() began to Require that the code
+# it is given is its executor's engine's: the failing sides of those two checks, contract violations a death test covers in
+# runtime/testing/ContractViolation.hpp's subprocess, which the coverage profile does not record. No branch lost its coverage.
+# src/isoline/api/Engine.cpp's branch entry is below 100: the failing sides of its constructor's Requires (a feature set not
+# closed, a fast engine of a dispatch the build did not compile) are contract violations that api/Engine_test.cpp runs in
+# subprocesses, unrecorded. src/isoline/interpreter/Simd.hpp's entry is gone: its lane templates moved into
+# numerics/SimdLanes.hpp, and it now holds only declarations, which have no code to cover.
+# src/isoline/runtime/PollGate.hpp's branch entry is 87.50, not 100: its two untaken branches are the failing sides of its
+# Requires (an observed poll with a countdown the store does not hold, a commit of more steps than the budget), contract
+# violations that runtime/PollGate_test.cpp runs in subprocesses, unrecorded.
+# src/isoline/fastinterpreter/Code.cpp's branch entry is 57.14, SlotCodec.cpp's 82.60 and SlotCodec.hpp's 92.85, not 100 (P4
+# Task 5). Code.cpp's three untaken branches are the failing side of LoweredModule's arena Require and the false sides of
+# the two conditions it checks, which only a container of another resource takes; SlotCodec.cpp's are the failing sides of its three
+# Requires (a slot span of the wrong width, stored into or loaded from; a concrete heap outside the instance's types): all
+# contract violations that fastinterpreter/Code_test.cpp and SlotCodec_test.cpp run in subprocesses, unrecorded. The fourth
+# in SlotCodec.cpp, and SlotCodec.hpp's one, are the implicit default of a switch over every binary::ValueKind, which no
+# valid ValueKind takes.
+#
+# src/isoline/fastinterpreter/Lowering.cpp's line entry was lowered from 98.67 to 98.59 when P4 Task 8 took the first
+# coverage run since Task 6 set it: Task 7 added the control-flow lowering, whose lines are covered but for two
+# that no input reaches, materialize() of an entry already in its slot (the materialize-in-slot exclusion), and
+# Task 8 moved the code-words-past-32-bits exclusion off the covered if before it. Task 8 removed a dead bound
+# check before a fused comparison's branch and covered what Task 7 had left: a br to the function's label and a
+# run of results cut by dead code. No covered line lost its coverage.
+#
+# P5 Task 3 took the first coverage run since P5 Task 1, and lowered seven entries, none for a line or branch a test lost.
+# P5 Task 1 hoisted the value-word codec out of fastinterpreter/SlotCodec.cpp (to runtime/ValueWords.cpp), taking its covered
+# branches along: SlotCodec.cpp's branches fall from 82.60 to 66.66, the untaken ones still its Requires' failing sides. Task 1
+# routed every host call through runtime::callHostFunction, moving covered lines out of interpreter/ReferenceInterpreter.cpp
+# (lines 98.76 to 98.74, branches 94.51 to 94.42) and fastinterpreter/Lowering.cpp (98.59 to 98.58): their uncovered lines are
+# exactly their exclusions still, now a larger share of fewer. Task 1 gave api/Store.cpp's makeExecutor() the compiled
+# engine's case (lines 98.35 to 97.71, branches 84.72 to 83.78); since the rebase onto P4's engine table makeExecutor() is a
+# row lookup, the compiled engine is refused by its missing row, and that case and its exclusion are gone. Task 2a's budget
+# lease and dispatch rows added Requires whose failing sides are contract violations, run in unrecorded subprocesses:
+# runtime/PollGate.hpp's lend()/settle() (87.50 to 81.25), runtime/Store.hpp's Settled checks of poll(), chargeFrame() and
+# releaseFrame() (94.11 to 82.75), runtime/Store.cpp's bindDispatch() (83.85 to 83.17). fastinterpreter/LoweringArena.*
+# left with Task 1's hoist (now runtime/CountingArena.*) and were pruned.
+#
+# P5 Task 6 took the first coverage run since P5 Task 3, and lowered src/isoline/compiler/FeatureSupport.cpp's line entry from
+# 98.88 to 98.37: P5 Task 4 routed tags through PositionFeatureTable (checkPosition()), whose one row's feature, exception handling,
+# is deferred, so the success return is the position-feature-compiled exclusion. No line lost its coverage. The intermediate/ and
+# translation/ files of Tasks 4 to 6 entered the baseline with it.
+#
 # src/isoline/api/Extern.cpp and Extern.hpp entered the baseline with P17a Unit A Task 3: Task 1 moved the handles there under
 # the light gate, which runs no coverage. Their only line no test reached, Tag::store() of a live tag, is now tested
 # (Externs.liveHostHandlesNameTheirStore); Extern.cpp's untaken branches are the failing sides of its alive-token Requires,
@@ -174,40 +224,6 @@
 # conditions, covered branches, went), and ModuleReader::read(std::string_view) went, its covered dispatch with it. The
 # branches no test takes are the ones that were before, Require failing sides and switches' no-case sides; no branch lost
 # its coverage.
-
-#
-# src/isoline/interpreter/Numerics.cpp's branch entry was lowered from 95.90 to 75.00 when the typed scalar kernels moved into
-# numerics/Integer.hpp and numerics/Float.hpp (100 % and 97.82 % covered): their covered branches left the file, and what stays
-# is the Value-level thunks, whose untaken branches are the failing sides of Require (an operand of another type, a row of
-# another shape), which no validated module takes. src/isoline/interpreter/Simd.cpp's was lowered from 93.44 to 77.77 when the
-# SIMD kernels moved into numerics/SimdKernels.cpp (100 % covered) and numerics/SimdLanes.hpp: it keeps the lookups and the
-# lane operations on boxed scalars, whose untaken branches are again only Require's failing sides (an opcode of another shape,
-# a scalar of another type). src/isoline/runtime/Instantiate.cpp's was lowered from 95.26 to 93.56 when constant expressions
-# moved into runtime/ConstantExpression.cpp, taking covered branches along, and instantiate() began to Require that the code
-# it is given is its executor's engine's: the failing sides of those two checks, contract violations a death test covers in
-# runtime/testing/ContractViolation.hpp's subprocess, which the coverage profile does not record. No branch lost its coverage.
-# src/isoline/api/Engine.cpp's branch entry is below 100: the failing sides of its constructor's Requires (a feature set not
-# closed, a fast engine of a dispatch the build did not compile) are contract violations that api/Engine_test.cpp runs in
-# subprocesses, unrecorded. src/isoline/interpreter/Simd.hpp's entry is gone: its lane templates moved into
-# numerics/SimdLanes.hpp, and it now holds only declarations, which have no code to cover.
-# src/isoline/runtime/PollGate.hpp's branch entry is 87.50, not 100: its two untaken branches are the failing sides of its
-# Requires (an observed poll with a countdown the store does not hold, a commit of more steps than the budget), contract
-# violations that runtime/PollGate_test.cpp runs in subprocesses, unrecorded.
-# src/isoline/fastinterpreter/Code.cpp's branch entry is 57.14, SlotCodec.cpp's 82.60 and SlotCodec.hpp's 92.85, not 100 (P4
-# Task 5). Code.cpp's three untaken branches are the failing side of LoweredModule's arena Require and the false sides of
-# the two conditions it checks, which only a container of another resource takes; SlotCodec.cpp's are the failing sides of its three
-# Requires (a slot span of the wrong width, stored into or loaded from; a concrete heap outside the instance's types): all
-# contract violations that fastinterpreter/Code_test.cpp and SlotCodec_test.cpp run in subprocesses, unrecorded. The fourth
-# in SlotCodec.cpp, and SlotCodec.hpp's one, are the implicit default of a switch over every binary::ValueKind, which no
-# valid ValueKind takes.
-
-#
-# src/isoline/fastinterpreter/Lowering.cpp's line entry was lowered from 98.67 to 98.59 when P4 Task 8 took the first
-# coverage run since Task 6 set it: Task 7 added the control-flow lowering, whose lines are covered but for two
-# that no input reaches, materialize() of an entry already in its slot (the materialize-in-slot exclusion), and
-# Task 8 moved the code-words-past-32-bits exclusion off the covered if before it. Task 8 removed a dead bound
-# check before a fused comparison's branch and covered what Task 7 had left: a br to the function's label and a
-# run of results cut by dead code. No covered line lost its coverage.
 
 #
 # P4 Task 9, after picking P5's three shared runtime commits (the counting arena and value-word codec hoisted into
@@ -248,8 +264,70 @@
 #   a generic vector operation's kernel word by its instruction; the two lines no input reaches are the unknown-kernel
 #   exclusion, and the new untaken branch is the end of its search, which only an unknown kernel reaches.
 
+#
+# P5 Task 9's fix round (the coverage of Tasks 7 and 8, which ran no coverage gate) lowered three branch entries without a
+# covered branch lost:
+# - src/isoline/compiler/intermediate/Verifier.cpp, branches 96.88 to 96.01: Tasks 7 and 8 added the countdown and
+#   memory-stretch rules. Its 18 untaken branch sides, by line:column:
+#   - 103:17, 333:21, 378:21, 718:25: each switch's fall-through past its last case; every enumerator has a case,
+#     and -Wswitch makes a new one without a case a build error.
+#   - 541:13, 798:17, 800:21, 873:17: a Require's failing side (a fixed field present; every block terminated and no
+#     edge into the entry, which the structural pass refuses first).
+#   - 737:29: a storeContext of a context value other than the countdown; checkRow() refuses a store of a read-only
+#     one, and the countdown is the only writable one.
+#   - 838:66: a removed instruction at position 0 of a block's list taken for a parameter's definition; definitions
+#     are recorded for live instructions only.
+#   - 963:25: the span operand of `span && …`, false: a guarded use whose operand has no guard span. checkGuardedUse()
+#     (Verifier.cpp:369) refuses such a use as UnguardedAddress in the earlier pass, so the stretch check never sees
+#     one.
+#   - 122:19: a schema whose fixed fields have no target and whose repeated ones do: no schema has that shape.
+#   - 296:41: a guardAddress operand past the value count, refused as UndefinedValue before any chain is read.
+#   - 310:63, 319:58: a chain resumed from a refused span, and a link short of its offset: a refused link refuses
+#     its function at its own use first, so no later chain starts from it.
+#   - 517:52: a ResultRule::None row with results; the builder gives such a row none.
+#   - 829:17: `second == BaseOfAnything` true: a parameter's first edge already met while its second still says
+#     Anything. A non-parameter's base is BaseOfNothing or a memory index of at most IndexMaximum, never Anything,
+#     and a parameter passes its base on to an edge only after it has left Anything.
+#   Its lines stay at 99.73 %.
+# - src/isoline/runtime/Store.cpp, branches 83.64 to 82.75, and runtime/Store.hpp, 82.75 to 81.25: Task 8's poll-observer
+#   contract adds Store::requireUnobserved() to every writing entry point (ObserverRefusedEntryPoints); its failing side
+#   ends the process, and the Contract.Observer.* cases that take it run in subprocesses, unrecorded.
+# P5 Task 10 lowered one branch entry without a covered branch lost:
+# - src/isoline/compiler/machine/MachineFunction.cpp, branches 77.77 to 77.21: the register allocator's records
+#   (addCallSite(), setMovesBefore(), movesBefore()) add four Requires, whose failing side ends the process; every
+#   other new branch is taken both ways (MachineFunction.movesAndCallSites).
+# P5 Task 10's fix round 1 lowered one branch entry without a covered branch lost:
+# - src/isoline/compiler/registerallocation/LinearScan.cpp, branches 88.70 to 88.64: the eviction now ranks every
+#   holder it meets before the use (holdersNeed()) and resumes per range (holderIn()); their compound conditions
+#   add short-circuit sides no generated function takes (a holder that both leaves at the read and is a window).
+# The rebase onto P4's ffbaab1 lowered one branch entry without a covered branch lost:
+# - src/isoline/runtime/Store.cpp, branches 82.75 to 82.70: MemoryInstance::grow() keeps P5's view checks and P4's tail check
+#   (keepsItsTail()) after a granted grow; its failing side ends the process, which Contract.Store.grownMemoryKeepsItsTail
+#   runs in a subprocess, unrecorded.
+# P5 Task 11's x86_64/ rows. Encoder.hpp's and Registers.hpp's branches are those of the table predicates the compiler
+# evaluates in static_asserts (isWellFormed(), fits(), isAllocationOrderOf()), which Encoder.wellFormedRefusesBrokenRows and
+# Registers.allocationOrderAndConventionsAtRunTime also run: their untaken sides are short-circuit and early-return
+# combinations of a broken row no table row is, each refusing at compile time.
+# src/isoline/interpreter/Simd.hpp's row is gone again: the three-way merge f31c40d0 brought back the row P4 had dropped.
+
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
 exclude src/isoline/fastinterpreter/Listing.cpp unknown-kernel a generic vector operation whose kernel word is no OpcodeTable row's: lowering writes only simdKernelWordOf() of an instruction, so no code holds another
+exclude src/isoline/compiler/FeatureSupport.cpp extern-kind-without-case checkImport() of an ExternKind without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/FeatureSupport.cpp position-feature-compiled checkPosition() of a position whose feature is compiled: the only Position, a tag, needs exception handling, which is deferred to P5b, so every check refuses
+exclude src/isoline/compiler/intermediate/Operation.hpp result-rule-without-case fixedTypeOf() of a ResultRule without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/intermediate/Verifier.cpp guard-scope-without-case scopeFieldOf() of a GuardScope without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/intermediate/Verifier.cpp immediate-values-without-case fits() of an ImmediateValues without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/machine/CallingConvention.cpp type-without-register-class registerClassOf() of an intermediate::Type without a case: the switch names every enumerator and returns in each, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/machine/Linearize.cpp linearize-breaks-a-loop linearize() refusing its own layout: the layout keeps every loop contiguous by construction, so the verification fails only on a compiler bug (verifyContiguousLoops() is tested on broken layouts directly, and a mutation that breaks the layout reaches this line)
+exclude src/isoline/compiler/optimization/ConstantFolding.cpp constant-of-a-non-numeric-type constantOperationOf() of a Ref or Pointer result: isFoldable() admits numeric results only (its Require), so folding never asks for a constant of another type
+exclude src/isoline/compiler/optimization/DeadCode.cpp value-neither-defined-nor-a-parameter needDefinitionOf() of a value no instruction defines and no block takes as a parameter: only an ill-formed function uses one (verify() refuses an undefined value), and dead-code elimination runs on verified functions
+exclude src/isoline/compiler/optimization/FoldingTable.hpp non-numeric-result-of-numeric-operands isFoldable() of an operation whose operands are all numeric but whose result is not: OperationTable has none (Optimization.foldingTableCoversEveryFoldableRow runs isFoldable() over every row at run time), and the cases keep the switch exhaustive
+exclude src/isoline/compiler/registerallocation/LinearScan.cpp allocator-invariant a refusal of a broken invariant of the allocator or of the layout it builds on: a live value without a place, a scan past the child count bounded before it starts or moving backwards, a holder met twice or a window evicted, a layout linearize() refuses. No function reaches one (LinearScan.randomFunctionsCheck's 400 generated functions included); each turns an allocator bug into InternalVerificationFailed rather than a miscompile
+exclude src/isoline/compiler/translation/MemoryTranslation.hpp stub-indices-without-case indexCountOf() of a StubIndices without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/translation/Translator.cpp construct-kind-without-case open() and fillEdge() of a ConstructKind without a case: each switch names every enumerator and returns in each, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/translation/Translator.cpp v128-refused-before irTypeOf() of a v128: checkValueType(), its first statement, refuses every v128, so the switch never reaches its V128 case
+exclude src/isoline/compiler/x86_64/Encoder.cpp non-immediate-kind immediateOf() of a slot kind that is no immediate or condition: every row's immediate and condition slots are of those kinds, which isWellFormed() checks of each row in a static_assert
+exclude src/isoline/compiler/x86_64/Encoder.hpp field-without-case fits() of a Field without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/fastinterpreter/Lowering.cpp code-words-past-32-bits the refusal of a function whose code bound passes 32-bit branch targets: it needs a body past a gigabyte, more than any test can decode, and a budget past 32 GiB
 exclude src/isoline/fastinterpreter/Lowering.cpp materialize-in-slot materialize() of an entry in its slot already: its callers pass only forwarded locals and constants, the entries of the index list and the forwarding chains
 exclude src/isoline/fastinterpreter/SwitchDispatchCold.cpp inline-operation the out-of-line switch's cases of the operations the loop runs inline: runSwitch() never calls runOutOfLine() for them, so their case line and body run in no build
@@ -263,135 +341,195 @@ exclude src/isoline/runtime/Store.cpp bad-alloc std::bad_alloc from a table's st
 exclude src/isoline/text/ModuleWriter.cpp non-indirect-kind innerLimitOf() of a name kind whose NameSubsections row is not Indirect: every kind has a case and the direct ones end in core::unreachable(), as namesAreInRange() asks it of the Indirect rows only
 exclude src/isoline/validate/Validator.cpp special-default a Special opcode without a case: every one has a case or a MemoryAccessTable row
 
-src/isoline/Features.hpp                           100.00 100.00
-src/isoline/Version.hpp                            100.00 -
-src/isoline/api/CallError.hpp                      100.00 -
-src/isoline/api/Engine.cpp                         100.00 80.76
-src/isoline/api/Engine.hpp                         100.00 -
-src/isoline/api/EngineIdentity.hpp                 100.00 -
-src/isoline/api/ExecutionEngines.cpp               100.00 100.00
-src/isoline/api/Extern.cpp                         100.00 66.66
-src/isoline/api/Extern.hpp                         100.00 -
-src/isoline/api/Imports.cpp                        100.00 82.35
-src/isoline/api/Imports.hpp                        100.00 -
-src/isoline/api/Module.cpp                         100.00 91.42
-src/isoline/api/Module.hpp                         100.00 -
-src/isoline/api/Store.cpp                          99.83 97.53
-src/isoline/api/Store.hpp                          100.00 -
-src/isoline/binary/BranchHints.cpp                 100.00 100.00
-src/isoline/binary/BranchHints.hpp                 100.00 -
-src/isoline/binary/ByteReader.cpp                  100.00 98.07
-src/isoline/binary/ByteWriter.hpp                  100.00 100.00
-src/isoline/binary/DecodeError.hpp                 100.00 91.66
-src/isoline/binary/DecodeLimits.hpp                100.00 -
-src/isoline/binary/Decoder.cpp                     100.00 98.96
-src/isoline/binary/Encoder.cpp                     100.00 93.51
-src/isoline/binary/MemoryAccess.hpp                100.00 100.00
-src/isoline/binary/Module.hpp                      100.00 75.92
-src/isoline/binary/NameSection.cpp                 100.00 90.32
-src/isoline/binary/NameSection.hpp                 100.00 -
-src/isoline/binary/Opcode.cpp                      100.00 100.00
-src/isoline/binary/Opcode.hpp                      100.00 -
-src/isoline/binary/TypeCanon.cpp                   100.00 80.00
-src/isoline/binary/Types.hpp                       100.00 100.00
-src/isoline/cli/EntryPosix.cpp                     100.00 -
-src/isoline/cli/FileAccess.cpp                     98.85 95.94
-src/isoline/cli/FileAccess.hpp                     100.00 -
-src/isoline/cli/HostPosix.cpp                      100.00 -
-src/isoline/cli/IsolineApp.cpp                     100.00 100.00
-src/isoline/cli/VerbArguments.cpp                  100.00 100.00
-src/isoline/cli/VerbArguments.hpp                  100.00 -
-src/isoline/cli/Verbs.cpp                          100.00 100.00
-src/isoline/cli/Verbs.hpp                          100.00 -
-src/isoline/cli/main.cpp                           100.00 100.00
-src/isoline/fastinterpreter/Bounds.hpp             100.00 100.00
-src/isoline/fastinterpreter/Code.cpp               100.00 71.05
-src/isoline/fastinterpreter/Code.hpp               100.00 -
-src/isoline/fastinterpreter/Context.hpp            100.00 100.00
-src/isoline/fastinterpreter/Dispatch.cpp           100.00 100.00
-src/isoline/fastinterpreter/FastInterpreter.cpp    100.00 91.34
-src/isoline/fastinterpreter/Listing.cpp            97.14 95.12
-src/isoline/fastinterpreter/LittleEndian.hpp       100.00 -
-src/isoline/fastinterpreter/Lowering.cpp           99.54 92.49
-src/isoline/fastinterpreter/Lowering.hpp           100.00 -
-src/isoline/fastinterpreter/LoweringAllocator.hpp  100.00 -
-src/isoline/fastinterpreter/LoweringTable.hpp      100.00 95.23
-src/isoline/fastinterpreter/Operations.def         100.00 -
-src/isoline/fastinterpreter/Operations.hpp         100.00 91.07
-src/isoline/fastinterpreter/SlotCodec.cpp          100.00 66.66
-src/isoline/fastinterpreter/SlotCodec.hpp          100.00 93.75
-src/isoline/fastinterpreter/SwitchDispatch.cpp     100.00 99.89
-src/isoline/fastinterpreter/SwitchDispatchCold.cpp 100.00 55.15
-src/isoline/fastinterpreter/TailCall.hpp           100.00 100.00
-src/isoline/fastinterpreter/TailCallControl.cpp    100.00 83.33
-src/isoline/fastinterpreter/TailCallExceptions.cpp 100.00 -
-src/isoline/fastinterpreter/TailCallMemory.cpp     100.00 -
-src/isoline/fastinterpreter/TailCallNumeric.cpp    100.00 -
-src/isoline/fastinterpreter/TailCallSimd.cpp       100.00 -
-src/isoline/interpreter/Numerics.cpp               100.00 75.00
-src/isoline/interpreter/ReferenceInterpreter.cpp   98.64 94.18
-src/isoline/interpreter/ReferenceInterpreter.hpp   100.00 -
-src/isoline/interpreter/Simd.cpp                   100.00 72.72
-src/isoline/numerics/Float.hpp                     100.00 97.82
-src/isoline/numerics/Integer.hpp                   100.00 100.00
-src/isoline/numerics/SimdKernels.cpp               100.00 100.00
-src/isoline/numerics/SimdKernels.hpp               100.00 -
-src/isoline/numerics/SimdLanes.hpp                 100.00 86.95
-src/isoline/runtime/Abrupt.hpp                     100.00 -
-src/isoline/runtime/ConstantExpression.cpp         94.93 81.35
-src/isoline/runtime/CountingArena.cpp              100.00 88.88
-src/isoline/runtime/CountingArena.hpp              100.00 -
-src/isoline/runtime/FloatControlX86_64.cpp         100.00 -
-src/isoline/runtime/FloatEnvironment.cpp           100.00 100.00
-src/isoline/runtime/FloatEnvironment.hpp           100.00 -
-src/isoline/runtime/HostCall.cpp                   100.00 80.00
-src/isoline/runtime/HostFunction.cpp               100.00 100.00
-src/isoline/runtime/HostFunction.hpp               100.00 -
-src/isoline/runtime/Instantiate.cpp                100.00 92.98
-src/isoline/runtime/Instantiate.hpp                100.00 -
-src/isoline/runtime/Interrupt.hpp                  100.00 -
-src/isoline/runtime/Limits.hpp                     100.00 -
-src/isoline/runtime/LinearMemory.cpp               91.66 100.00
-src/isoline/runtime/LinearMemory.hpp               100.00 100.00
-src/isoline/runtime/ModuleCode.hpp                 100.00 -
-src/isoline/runtime/PollGate.hpp                   100.00 87.50
-src/isoline/runtime/RawValue.hpp                   100.00 -
-src/isoline/runtime/Segment.hpp                    100.00 100.00
-src/isoline/runtime/Store.cpp                      99.70 84.50
-src/isoline/runtime/Store.hpp                      100.00 86.95
-src/isoline/runtime/Trap.hpp                       100.00 75.00
-src/isoline/runtime/Value.hpp                      100.00 94.44
-src/isoline/runtime/ValueCheck.cpp                 100.00 100.00
-src/isoline/runtime/ValueWords.cpp                 100.00 92.85
-src/isoline/text/Annotations.cpp                   100.00 98.44
-src/isoline/text/Annotations.hpp                   100.00 -
-src/isoline/text/Digits.hpp                        100.00 100.00
-src/isoline/text/FieldReader.cpp                   100.00 97.89
-src/isoline/text/FieldReader.hpp                   100.00 100.00
-src/isoline/text/FloatLiteral.cpp                  100.00 98.48
-src/isoline/text/FunctionTypes.cpp                 100.00 100.00
-src/isoline/text/FunctionTypes.hpp                 100.00 -
-src/isoline/text/InstructionReader.cpp             100.00 96.17
-src/isoline/text/InstructionReader.hpp             100.00 -
-src/isoline/text/Instructions.cpp                  100.00 100.00
-src/isoline/text/Instructions.hpp                  100.00 -
-src/isoline/text/IntegerLiteral.cpp                100.00 100.00
-src/isoline/text/Keywords.cpp                      100.00 93.33
-src/isoline/text/Lexer.cpp                         100.00 97.02
-src/isoline/text/Lexer.hpp                         100.00 -
-src/isoline/text/LiteralError.hpp                  100.00 -
-src/isoline/text/ModuleReader.cpp                  100.00 99.03
-src/isoline/text/ModuleReader.hpp                  100.00 -
-src/isoline/text/ModuleWriter.cpp                  98.70 94.49
-src/isoline/text/ModuleWriter.hpp                  100.00 -
-src/isoline/text/SExpression.cpp                   100.00 97.36
-src/isoline/text/SExpression.hpp                   100.00 100.00
-src/isoline/text/TextError.hpp                     100.00 95.45
-src/isoline/text/TopLevel.cpp                      100.00 100.00
-src/isoline/validate/Subtyping.cpp                 100.00 89.65
-src/isoline/validate/Subtyping.hpp                 100.00 66.66
-src/isoline/validate/ValidatedModule.cpp           100.00 76.92
-src/isoline/validate/ValidatedModule.hpp           100.00 66.66
-src/isoline/validate/ValidationError.hpp           100.00 96.87
-src/isoline/validate/Validator.cpp                 99.81 97.98
-src/isoline/validate/Validator.hpp                 100.00 -
+src/isoline/Features.hpp                                  100.00 100.00
+src/isoline/Version.hpp                                   100.00 -
+src/isoline/api/CallError.hpp                             100.00 -
+src/isoline/api/Engine.cpp                                100.00 80.76
+src/isoline/api/Engine.hpp                                100.00 -
+src/isoline/api/EngineIdentity.hpp                        100.00 -
+src/isoline/api/ExecutionEngines.cpp                      100.00 100.00
+src/isoline/api/Extern.cpp                                100.00 66.66
+src/isoline/api/Extern.hpp                                100.00 -
+src/isoline/api/Imports.cpp                               100.00 82.35
+src/isoline/api/Imports.hpp                               100.00 -
+src/isoline/api/Module.cpp                                100.00 91.42
+src/isoline/api/Module.hpp                                100.00 -
+src/isoline/api/Store.cpp                                 99.83 97.53
+src/isoline/api/Store.hpp                                 100.00 -
+src/isoline/binary/BodyUnits.hpp                          100.00 -
+src/isoline/binary/BranchHints.cpp                        100.00 100.00
+src/isoline/binary/BranchHints.hpp                        100.00 -
+src/isoline/binary/ByteReader.cpp                         100.00 98.07
+src/isoline/binary/ByteWriter.hpp                         100.00 100.00
+src/isoline/binary/DecodeError.hpp                        100.00 91.66
+src/isoline/binary/DecodeLimits.hpp                       100.00 -
+src/isoline/binary/Decoder.cpp                            100.00 98.96
+src/isoline/binary/Encoder.cpp                            100.00 93.51
+src/isoline/binary/MemoryAccess.hpp                       100.00 100.00
+src/isoline/binary/Module.hpp                             100.00 75.92
+src/isoline/binary/NameSection.cpp                        100.00 90.32
+src/isoline/binary/NameSection.hpp                        100.00 -
+src/isoline/binary/Opcode.cpp                             100.00 100.00
+src/isoline/binary/Opcode.hpp                             100.00 -
+src/isoline/binary/TypeCanon.cpp                          100.00 80.00
+src/isoline/binary/Types.hpp                              100.00 100.00
+src/isoline/cli/EntryPosix.cpp                            100.00 -
+src/isoline/cli/FileAccess.cpp                            98.85 95.94
+src/isoline/cli/FileAccess.hpp                            100.00 -
+src/isoline/cli/HostPosix.cpp                             100.00 -
+src/isoline/cli/IsolineApp.cpp                            100.00 100.00
+src/isoline/cli/VerbArguments.cpp                         100.00 100.00
+src/isoline/cli/VerbArguments.hpp                         100.00 -
+src/isoline/cli/Verbs.cpp                                 100.00 100.00
+src/isoline/cli/Verbs.hpp                                 100.00 -
+src/isoline/cli/main.cpp                                  100.00 100.00
+src/isoline/compiler/CompileConfig.hpp                    100.00 -
+src/isoline/compiler/CompileError.cpp                     100.00 91.66
+src/isoline/compiler/CompileError.hpp                     100.00 -
+src/isoline/compiler/CompileLimits.hpp                    100.00 -
+src/isoline/compiler/ContextLayout.hpp                    95.83 92.30
+src/isoline/compiler/FeatureSupport.cpp                   98.37 90.90
+src/isoline/compiler/FeatureSupport.hpp                   100.00 100.00
+src/isoline/compiler/intermediate/Dominators.cpp          100.00 88.88
+src/isoline/compiler/intermediate/Dominators.hpp          100.00 -
+src/isoline/compiler/intermediate/Function.cpp            100.00 81.48
+src/isoline/compiler/intermediate/Function.hpp            100.00 85.71
+src/isoline/compiler/intermediate/Guards.hpp              100.00 100.00
+src/isoline/compiler/intermediate/MemoryStretches.cpp     100.00 100.00
+src/isoline/compiler/intermediate/MemoryStretches.hpp     100.00 -
+src/isoline/compiler/intermediate/Operation.hpp           97.26 93.75
+src/isoline/compiler/intermediate/Printer.cpp             100.00 95.23
+src/isoline/compiler/intermediate/Verifier.cpp            99.73 96.01
+src/isoline/compiler/intermediate/Verifier.hpp            100.00 100.00
+src/isoline/compiler/machine/CallingConvention.cpp        99.23 89.47
+src/isoline/compiler/machine/CallingConvention.hpp        100.00 -
+src/isoline/compiler/machine/CodeBuffer.cpp               100.00 75.64
+src/isoline/compiler/machine/CodeBuffer.hpp               100.00 80.95
+src/isoline/compiler/machine/FrameRule.hpp                100.00 97.05
+src/isoline/compiler/machine/Linearize.cpp                99.50 92.24
+src/isoline/compiler/machine/Linearize.hpp                100.00 -
+src/isoline/compiler/machine/Liveness.cpp                 100.00 96.15
+src/isoline/compiler/machine/Liveness.hpp                 100.00 -
+src/isoline/compiler/machine/MachineFunction.cpp          100.00 77.21
+src/isoline/compiler/machine/MachineFunction.hpp          100.00 100.00
+src/isoline/compiler/machine/MachineVerifier.cpp          100.00 94.73
+src/isoline/compiler/machine/Registers.hpp                100.00 75.00
+src/isoline/compiler/machine/Target.hpp                   100.00 100.00
+src/isoline/compiler/machine/TargetDescription.hpp        100.00 -
+src/isoline/compiler/optimization/BoundsChecks.cpp        100.00 98.48
+src/isoline/compiler/optimization/ConstantFolding.cpp     97.87 91.30
+src/isoline/compiler/optimization/ControlFlow.cpp         100.00 89.81
+src/isoline/compiler/optimization/DeadCode.cpp            99.04 97.82
+src/isoline/compiler/optimization/FoldingTable.hpp        91.66 87.93
+src/isoline/compiler/optimization/PassTable.cpp           100.00 95.00
+src/isoline/compiler/optimization/PassTable.hpp           100.00 -
+src/isoline/compiler/optimization/Rewrite.cpp             100.00 90.83
+src/isoline/compiler/optimization/Rewrite.hpp             100.00 -
+src/isoline/compiler/optimization/TrivialParameters.cpp   100.00 100.00
+src/isoline/compiler/registerallocation/LinearScan.cpp    99.24 88.64
+src/isoline/compiler/registerallocation/LinearScan.hpp    100.00 -
+src/isoline/compiler/registerallocation/ParallelMoves.cpp 100.00 83.07
+src/isoline/compiler/registerallocation/SpillSlots.cpp    100.00 100.00
+src/isoline/compiler/translation/LoopAssignments.cpp      100.00 86.56
+src/isoline/compiler/translation/LoopAssignments.hpp      100.00 -
+src/isoline/compiler/translation/MemoryTranslation.cpp    100.00 100.00
+src/isoline/compiler/translation/MemoryTranslation.hpp    88.88 87.50
+src/isoline/compiler/translation/NumericRules.hpp         100.00 100.00
+src/isoline/compiler/translation/Translator.cpp           99.58 92.83
+src/isoline/compiler/translation/Translator.hpp           100.00 -
+src/isoline/compiler/x86_64/Encoder.cpp                   94.68 90.00
+src/isoline/compiler/x86_64/Encoder.hpp                   98.41 89.34
+src/isoline/compiler/x86_64/EncodingSamples.cpp           97.84 94.00
+src/isoline/compiler/x86_64/EncodingSamples.hpp           100.00 -
+src/isoline/compiler/x86_64/Registers.hpp                 90.32 94.44
+src/isoline/fastinterpreter/Bounds.hpp                    100.00 100.00
+src/isoline/fastinterpreter/Code.cpp                      100.00 71.05
+src/isoline/fastinterpreter/Code.hpp                      100.00 -
+src/isoline/fastinterpreter/Context.hpp                   100.00 100.00
+src/isoline/fastinterpreter/Dispatch.cpp                  100.00 100.00
+src/isoline/fastinterpreter/FastInterpreter.cpp           100.00 91.34
+src/isoline/fastinterpreter/Listing.cpp                   97.14 95.12
+src/isoline/fastinterpreter/LittleEndian.hpp              100.00 -
+src/isoline/fastinterpreter/Lowering.cpp                  99.54 92.49
+src/isoline/fastinterpreter/Lowering.hpp                  100.00 -
+src/isoline/fastinterpreter/LoweringAllocator.hpp         100.00 -
+src/isoline/fastinterpreter/LoweringTable.hpp             100.00 95.23
+src/isoline/fastinterpreter/Operations.def                100.00 -
+src/isoline/fastinterpreter/Operations.hpp                100.00 91.07
+src/isoline/fastinterpreter/SlotCodec.cpp                 100.00 66.66
+src/isoline/fastinterpreter/SlotCodec.hpp                 100.00 93.75
+src/isoline/fastinterpreter/SwitchDispatch.cpp            100.00 99.89
+src/isoline/fastinterpreter/SwitchDispatchCold.cpp        100.00 55.15
+src/isoline/fastinterpreter/TailCall.hpp                  100.00 100.00
+src/isoline/fastinterpreter/TailCallControl.cpp           100.00 83.33
+src/isoline/fastinterpreter/TailCallExceptions.cpp        100.00 -
+src/isoline/fastinterpreter/TailCallMemory.cpp            100.00 -
+src/isoline/fastinterpreter/TailCallNumeric.cpp           100.00 -
+src/isoline/fastinterpreter/TailCallSimd.cpp              100.00 -
+src/isoline/interpreter/Numerics.cpp                      100.00 75.00
+src/isoline/interpreter/ReferenceInterpreter.cpp          98.64 94.18
+src/isoline/interpreter/ReferenceInterpreter.hpp          100.00 -
+src/isoline/interpreter/Simd.cpp                          100.00 72.72
+src/isoline/numerics/Float.hpp                            100.00 97.82
+src/isoline/numerics/Integer.hpp                          100.00 100.00
+src/isoline/numerics/SimdKernels.cpp                      100.00 100.00
+src/isoline/numerics/SimdKernels.hpp                      100.00 -
+src/isoline/numerics/SimdLanes.hpp                        100.00 86.95
+src/isoline/runtime/Abrupt.hpp                            100.00 -
+src/isoline/runtime/ConstantExpression.cpp                94.93 81.35
+src/isoline/runtime/CountingArena.cpp                     100.00 88.88
+src/isoline/runtime/CountingArena.hpp                     100.00 -
+src/isoline/runtime/FloatControlX86_64.cpp                100.00 -
+src/isoline/runtime/FloatEnvironment.cpp                  100.00 100.00
+src/isoline/runtime/FloatEnvironment.hpp                  100.00 -
+src/isoline/runtime/HostCall.cpp                          100.00 80.00
+src/isoline/runtime/HostFunction.cpp                      100.00 100.00
+src/isoline/runtime/HostFunction.hpp                      100.00 -
+src/isoline/runtime/Instantiate.cpp                       100.00 92.98
+src/isoline/runtime/Instantiate.hpp                       100.00 -
+src/isoline/runtime/Interrupt.hpp                         100.00 -
+src/isoline/runtime/Limits.hpp                            100.00 -
+src/isoline/runtime/LinearMemory.cpp                      91.66 100.00
+src/isoline/runtime/LinearMemory.hpp                      100.00 100.00
+src/isoline/runtime/ModuleCode.hpp                        100.00 -
+src/isoline/runtime/PollGate.hpp                          100.00 81.25
+src/isoline/runtime/RawValue.hpp                          100.00 -
+src/isoline/runtime/Segment.hpp                           100.00 100.00
+src/isoline/runtime/Store.cpp                             99.70 82.70
+src/isoline/runtime/Store.hpp                             100.00 81.25
+src/isoline/runtime/Trap.hpp                              100.00 75.00
+src/isoline/runtime/Value.hpp                             100.00 94.44
+src/isoline/runtime/ValueCheck.cpp                        100.00 100.00
+src/isoline/runtime/ValueWords.cpp                        100.00 92.85
+src/isoline/text/Annotations.cpp                          100.00 98.44
+src/isoline/text/Annotations.hpp                          100.00 -
+src/isoline/text/Digits.hpp                               100.00 100.00
+src/isoline/text/FieldReader.cpp                          100.00 97.89
+src/isoline/text/FieldReader.hpp                          100.00 100.00
+src/isoline/text/FloatLiteral.cpp                         100.00 98.48
+src/isoline/text/FunctionTypes.cpp                        100.00 100.00
+src/isoline/text/FunctionTypes.hpp                        100.00 -
+src/isoline/text/InstructionReader.cpp                    100.00 96.17
+src/isoline/text/InstructionReader.hpp                    100.00 -
+src/isoline/text/Instructions.cpp                         100.00 100.00
+src/isoline/text/Instructions.hpp                         100.00 -
+src/isoline/text/IntegerLiteral.cpp                       100.00 100.00
+src/isoline/text/Keywords.cpp                             100.00 93.33
+src/isoline/text/Lexer.cpp                                100.00 97.02
+src/isoline/text/Lexer.hpp                                100.00 -
+src/isoline/text/LiteralError.hpp                         100.00 -
+src/isoline/text/ModuleReader.cpp                         100.00 99.03
+src/isoline/text/ModuleReader.hpp                         100.00 -
+src/isoline/text/ModuleWriter.cpp                         98.70 94.49
+src/isoline/text/ModuleWriter.hpp                         100.00 -
+src/isoline/text/SExpression.cpp                          100.00 97.36
+src/isoline/text/SExpression.hpp                          100.00 100.00
+src/isoline/text/TextError.hpp                            100.00 95.45
+src/isoline/text/TopLevel.cpp                             100.00 100.00
+src/isoline/validate/Subtyping.cpp                        100.00 89.65
+src/isoline/validate/Subtyping.hpp                        100.00 66.66
+src/isoline/validate/ValidatedModule.cpp                  100.00 76.92
+src/isoline/validate/ValidatedModule.hpp                  100.00 66.66
+src/isoline/validate/ValidationError.hpp                  100.00 96.87
+src/isoline/validate/Validator.cpp                        99.81 97.98
+src/isoline/validate/Validator.hpp                        100.00 -
