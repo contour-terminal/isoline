@@ -45,6 +45,7 @@
 #include <isoline/component/api/ComponentStore.hpp>
 #include <isoline/component/api/Linker.hpp>
 #include <isoline/component/api/Typed.hpp>
+#include <isoline/component/api/testing/StatuslineWorld.hpp>
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/runtime/testing/StoreFixtures.hpp>
 #include <isoline/component/text/Forms.hpp>
@@ -71,6 +72,20 @@ using isoline::component::api::ParameterNames;
 using isoline::component::api::Satisfied;
 using isoline::component::api::Unsatisfied;
 using isoline::component::api::UnsatisfiedImport;
+using isoline::component::api::testing::Assignment;
+using isoline::component::api::testing::CommandError;
+using isoline::component::api::testing::CommandOutput;
+using isoline::component::api::testing::Event;
+using isoline::component::api::testing::EventKinds;
+using isoline::component::api::testing::FontMetrics;
+using isoline::component::api::testing::InputMode;
+using isoline::component::api::testing::LogLevel;
+using isoline::component::api::testing::Progress;
+using isoline::component::api::testing::ProgressState;
+using isoline::component::api::testing::RenderRequest;
+using isoline::component::api::testing::Size;
+using isoline::component::api::testing::StateSnapshot;
+using isoline::component::api::testing::Tab;
 using isoline::component::api::typed::Borrow;
 using isoline::component::api::typed::Case;
 using isoline::component::api::typed::functionType;
@@ -93,142 +108,11 @@ using isoline::runtime::testing::ProvidedMemoryAllocator;
 namespace
 {
 
-// The world's types as the host's C++ types (extension.wit). Their bool fields are the WIT's: the wire's
-// yes/no, kept at this boundary as AGENT.md allows.
-
-/// types.render-request.
-enum class RenderRequest : uint8_t
-{
-    None,
-    Render,
-};
-
-/// types.input-mode.
-enum class InputMode : uint8_t
-{
-    Insert,
-    Normal,
-    Visual,
-    VisualLine,
-    VisualBlock,
-    Hint,
-};
-
-/// types.progress-state.
-enum class ProgressState : uint8_t
-{
-    Hidden,
-    Normal,
-    Error,
-    Indeterminate,
-    Warning,
-};
-
-/// types.tab.
-struct Tab
-{
-    std::string title;
-    bool isActive = false;
-
-    bool operator==(Tab const&) const = default;
-};
-
-/// types.progress.
-struct Progress
-{
-    ProgressState state = ProgressState::Hidden;
-    uint8_t percent = 0;
-};
-
-/// types.font-metrics.
-struct FontMetrics
-{
-    float sizePt = 0;
-    uint32_t cellWidthPx = 0;
-    uint32_t cellHeightPx = 0;
-};
-
-/// types.size.
-struct Size
-{
-    uint32_t cols = 0;
-    uint32_t rows = 0;
-
-    bool operator==(Size const&) const = default;
-};
-
-/// types.event-kinds: bit i for label i.
-struct EventKinds
-{
-    uint32_t bits = 0;
-
-    bool operator==(EventKinds const&) const = default;
-};
+// The world's types as the host's C++ types (extension.wit): Contour's status-line world's
+// (StatuslineWorld.hpp), and those of the host-owned surface and the control interface.
 
 /// The event-kinds bits of `title` and `cwd`.
 constexpr auto TitleAndCwd = EventKinds { .bits = 0b11 };
-
-/// A name and a value: a configuration entry, a user variable, a command argument.
-using Assignment = std::tuple<std::string, std::string>;
-
-/// types.event.
-using Event = std::variant<Case<"title", std::string>,
-                           Case<"cwd", std::string>,
-                           Case<"foreground-process", std::string>,
-                           Case<"input-mode", InputMode>,
-                           Case<"tabs", std::vector<Tab>>,
-                           Case<"user-var", Assignment>,
-                           Case<"progress", Progress>,
-                           Case<"focus", bool>,
-                           Case<"font-changed", FontMetrics>,
-                           Case<"resized", Size>,
-                           Case<"timer", Unit>,
-                           Case<"reply", std::vector<uint8_t>>>;
-
-/// host.log-level.
-enum class LogLevel : uint8_t
-{
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-};
-
-/// host.state-snapshot.
-struct StateSnapshot
-{
-    std::string title;
-    std::string cwd;
-    std::string foregroundProcess;
-    InputMode inputMode = InputMode::Insert;
-    std::vector<Tab> tabs;
-    std::vector<Assignment> userVars;
-    Progress progress {};
-    bool isFocused = false;
-    Size size {};
-    uint64_t unixTimeMs = 0;
-    int32_t utcOffsetMinutes = 0;
-    FontMetrics font {};
-};
-
-/// host.command-output.
-struct CommandOutput
-{
-    int32_t exitCode = 0;
-    std::vector<uint8_t> standardOutput;
-    std::vector<uint8_t> standardError;
-};
-
-/// host.command-error.
-enum class CommandError : uint8_t
-{
-    NotDeclared,
-    Pending,
-    Denied,
-    Failed,
-    TimedOut,
-};
 
 /// host.surface's C++ tag.
 struct Surface
@@ -268,109 +152,6 @@ using PaneList = std::expected<std::vector<Pane>, ControlError>;
 
 namespace isoline::component::api::typed
 {
-
-template <>
-struct Enum<RenderRequest>
-{
-    static constexpr auto Labels = std::to_array<std::string_view>({ "none", "render" });
-};
-
-template <>
-struct Enum<InputMode>
-{
-    static constexpr auto Labels = std::to_array<std::string_view>(
-        { "insert", "normal", "visual", "visual-line", "visual-block", "hint" });
-};
-
-template <>
-struct Enum<ProgressState>
-{
-    static constexpr auto Labels =
-        std::to_array<std::string_view>({ "hidden", "normal", "error", "indeterminate", "warning" });
-};
-
-template <>
-struct Record<Tab>
-{
-    static constexpr auto Fields =
-        std::tuple { field("title", &Tab::title), field("active", &Tab::isActive) };
-};
-
-template <>
-struct Record<Progress>
-{
-    static constexpr auto Fields =
-        std::tuple { field("state", &Progress::state), field("percent", &Progress::percent) };
-};
-
-template <>
-struct Record<FontMetrics>
-{
-    static constexpr auto Fields = std::tuple { field("size-pt", &FontMetrics::sizePt),
-                                                field("cell-width-px", &FontMetrics::cellWidthPx),
-                                                field("cell-height-px", &FontMetrics::cellHeightPx) };
-};
-
-template <>
-struct Record<Size>
-{
-    static constexpr auto Fields = std::tuple { field("cols", &Size::cols), field("rows", &Size::rows) };
-};
-
-template <>
-struct Flags<EventKinds>
-{
-    static constexpr auto Labels = std::to_array<std::string_view>({ "title",
-                                                                     "cwd",
-                                                                     "foreground-process",
-                                                                     "input-mode",
-                                                                     "tabs",
-                                                                     "user-var",
-                                                                     "progress",
-                                                                     "focus",
-                                                                     "font" });
-};
-
-template <>
-struct Enum<LogLevel>
-{
-    static constexpr auto Labels =
-        std::to_array<std::string_view>({ "trace", "debug", "info", "warn", "error" });
-};
-
-template <>
-struct Record<StateSnapshot>
-{
-    static constexpr auto Fields = std::tuple {
-        field("title", &StateSnapshot::title),
-        field("cwd", &StateSnapshot::cwd),
-        field("foreground-process", &StateSnapshot::foregroundProcess),
-        field("input-mode", &StateSnapshot::inputMode),
-        field("tabs", &StateSnapshot::tabs),
-        field("user-vars", &StateSnapshot::userVars),
-        field("progress", &StateSnapshot::progress),
-        field("focused", &StateSnapshot::isFocused),
-        field("size", &StateSnapshot::size),
-        field("unix-time-ms", &StateSnapshot::unixTimeMs),
-        field("utc-offset-minutes", &StateSnapshot::utcOffsetMinutes),
-        field("font", &StateSnapshot::font),
-    };
-};
-
-template <>
-struct Record<CommandOutput>
-{
-    static constexpr auto Fields = std::tuple { field("exit-code", &CommandOutput::exitCode),
-                                                field("stdout", &CommandOutput::standardOutput),
-                                                field("stderr", &CommandOutput::standardError) };
-};
-
-template <>
-struct Enum<CommandError>
-{
-    static constexpr auto Labels =
-        std::to_array<std::string_view>({ "not-declared", "pending", "denied", "failed", "timed-out" });
-};
 
 template <>
 struct Record<TabInfo>
