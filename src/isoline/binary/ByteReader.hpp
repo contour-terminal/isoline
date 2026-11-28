@@ -7,6 +7,7 @@
 #include <span>
 #include <string_view>
 
+#include <isoline/Contracts.hpp>
 #include <isoline/binary/DecodeError.hpp>
 
 namespace isoline::binary
@@ -33,9 +34,10 @@ class ByteReader
     /// @param baseOffset The absolute offset of @p bytes' first byte.
     explicit ByteReader(std::span<std::byte const> bytes, std::size_t baseOffset = 0) noexcept;
 
-    /// The absolute offset of the next byte to read.
+    /// The absolute offset of the next byte to read. Postcondition (checked where contracts are native): it
+    /// does not wrap, so it is never below the base offset.
     /// @return The base offset plus the number of bytes consumed.
-    [[nodiscard]] std::size_t offset() const noexcept;
+    [[nodiscard]] std::size_t offset() const noexcept ISOLINE_POST(absolute, absolute >= _baseOffset);
 
     /// The number of bytes not yet consumed.
     /// @return The bytes left to read.

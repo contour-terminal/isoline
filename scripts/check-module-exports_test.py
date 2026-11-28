@@ -25,10 +25,11 @@ CASES_DIRECTORY = pathlib.Path(__file__).resolve().parent / "testdata" / "module
 
 EXIT_SKIP = 77
 
-# How a case runs the lint: --check; --write; --write, then --check, with the written unit compared
+# How a case runs the lint: --check; --write; --list; --write, then --check, with the written unit compared
 # against the case's expected.cppm.
 CHECK = "check"
 WRITE = "write"
+LIST = "list"
 WRITE_THEN_CHECK = "write-then-check"
 
 # Options of a case: a Clang that does not exist (no-clang), more arguments to the lint (arguments), another
@@ -94,7 +95,12 @@ CASES = (
     ("global-scope-internal-reexported", CHECK, 1, {}),
     ("anonymous-namespace-type-exported", CHECK, 1, {}),
     ("public-macro", CHECK, 1, {}),
+    ("compiler-conditional-refused", CHECK, 1, {}),
     ("macro-undefined-at-end", CHECK, 0, {}),
+    ("defined-macro-listed", CHECK, 0, {}),
+    ("defined-macro-stale", CHECK, 1, {}),
+    ("header-substituted", CHECK, 0, {}),
+    ("header-substituted-native-read", CHECK, 1, {}),
     ("foreign-name-unlisted", CHECK, 1, {}),
     ("foreign-name-listed", CHECK, 0, {}),
     ("system-include-respected", CHECK, 0, {}),
@@ -108,6 +114,10 @@ CASES = (
     ("unexpected-failure", CHECK, 2, {}),
     ("undecodable-unit", CHECK, 2, {}),
     ("unreadable-manifest", CHECK, 2, {}),
+    ("list-names", LIST, 0, {}),
+    ("list-names", LIST, 0, {"arguments": ["--kinds", "UsingDecl", "EnumConstantDecl", "FunctionDecl"],
+                             "expected": "expected-kinds.txt"}),
+    ("list-names", LIST, 2, {"arguments": ["--kinds", "NamespaceAliasDecl"], "expected": "expected-refused-kind.txt"}),
     ("dump-over-ceiling", CHECK, 2, {"arguments": ["--dump-size-limit-bytes", "1"], "masks": [r"(?<=is )\d+"]}),
 )
 

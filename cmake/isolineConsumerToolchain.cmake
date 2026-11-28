@@ -22,17 +22,24 @@ if(POLICY CMP0174)
     cmake_policy(SET CMP0174 NEW)
 endif()
 
-## @brief Sets OUT to why a consumer compiling with CONSUMER_ID CONSUMER_VERSION cannot link a package
-## whose contracts took CONTRACTS_PATH and that BUILT_ID BUILT_VERSION built, or to "" when it can.
-## An empty CONSUMER_ID is a consumer that has not enabled C++.
+## @brief Sets OUT to why a consumer compiling with CONSUMER_ID CONSUMER_VERSION cannot link the COMPONENTS
+## it asks for of a package whose contracts took CONTRACTS_PATH and that BUILT_ID BUILT_VERSION built, or to
+## "" when it can. An empty CONSUMER_ID is a consumer that has not enabled C++. A component of C_COMPONENTS
+## has a C interface (the C API's shared library, libstdc++exp linked inside it), so a consumer that asks
+## for those alone, a C program included, is asked nothing.
 ##
 ## isoline_consumer_toolchain_refusal(CONTRACTS_PATH <native|fallback> BUILT_ID <id> BUILT_VERSION <version>
-##                                    CONSUMER_ID <id> CONSUMER_VERSION <version> OUT <var>)
+##                                    CONSUMER_ID <id> CONSUMER_VERSION <version>
+##                                    COMPONENTS <component>... [C_COMPONENTS <component>...] OUT <var>)
 function(isoline_consumer_toolchain_refusal)
     cmake_parse_arguments(PARSE_ARGV 0 arg "" "CONTRACTS_PATH;BUILT_ID;BUILT_VERSION;CONSUMER_ID;CONSUMER_VERSION;OUT"
-                          "")
+                          "COMPONENTS;C_COMPONENTS")
     set(refusal "")
-    if("${arg_CONTRACTS_PATH}" STREQUAL "native")
+    set(cxxComponents ${arg_COMPONENTS})
+    if(arg_C_COMPONENTS)
+        list(REMOVE_ITEM cxxComponents ${arg_C_COMPONENTS})
+    endif()
+    if("${arg_CONTRACTS_PATH}" STREQUAL "native" AND cxxComponents)
         string(REGEX MATCH "^[0-9]+[.][0-9]+" built "${arg_BUILT_VERSION}")
         string(REGEX MATCH "^[0-9]+[.][0-9]+" consumer "${arg_CONSUMER_VERSION}")
         set(why "isoline was built with native C++26 contracts by ${arg_BUILT_ID} ${built}, so it links "

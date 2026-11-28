@@ -32,6 +32,7 @@ message(STATUS "[isoline] float control row: ${isolineFloatControl}")
 add_library(isoline::core ALIAS isoline_core)
 target_sources(isoline_core
     PRIVATE
+        Contracts.cpp
         Version.cpp
         api/Engine.cpp
         api/Extern.cpp
@@ -109,6 +110,7 @@ target_sources(isoline_core
             validate/ValidationError.hpp
             validate/Validator.hpp
             Version.hpp
+            "${PROJECT_BINARY_DIR}/include/isoline/Contracts.hpp"
             "${PROJECT_BINARY_DIR}/include/isoline/VersionConfig.hpp")
 target_compile_features(isoline_core PUBLIC cxx_std_23)
 # Header-based like every target but the module consumers: never scanned for module dependencies, whatever
@@ -129,7 +131,9 @@ isoline_add_module(
     LIBRARY isoline_core
     SOURCE isoline.cppm
     NAMESPACES isoline isoline::api isoline::config
-    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta)
+    INTERNAL_NAMESPACES isoline::binary isoline::runtime isoline::validate isoline::interpreter isoline::meta
+    # isoline/Contracts.hpp's: the declarations of the set spell their contracts through them.
+    DEFINED_MACROS ISOLINE_DECLARATION_CONTRACTS ISOLINE_PRE ISOLINE_POST)
 
 # The C API, a library of its own over isoline_core, with its own C++ tests (src/isoline/c/).
 if(ISOLINE_C_API)
@@ -185,13 +189,24 @@ if(ISOLINE_TESTING)
     # and the exhaustive check of meta/EnumTables.def over every header of the libraries, installed or
     # private, but the test helpers' and the checks' own.
     isoline_add_reflection_check(isoline_meta_reflection_test TEST LABELS unit
-        SOURCES meta/reflection/EnumReflection_test.cpp
+        SOURCES meta/reflection/EnumReflection_test.cpp meta/reflection/ModuleSurface_test.cpp
+                meta/reflection/CApiReflection_test.cpp
         LINK_LIBRARIES isoline::core)
     # The annotations rehearsal (P19 Task 7): rows derived from enumerator annotations, only where
     # annotations are native.
     isoline_add_reflection_check(isoline_meta_annotations_test TEST LABELS unit FEATURE annotations
         SOURCES meta/reflection/AnnotatedRows_test.cpp
         LINK_LIBRARIES isoline::core)
+    # The reflected module surface (P19 Task 9): GCC's members_of over module isoline's public namespaces,
+    # compared with the export lint's names by the test meta-module-surface.reflection.
+    isoline_add_reflection_check(isoline_meta_surface_reflection PROGRAM
+        SOURCES meta/reflection/ModuleSurface.cpp
+        LINK_LIBRARIES isoline::core
+        UMBRELLA isoline/meta/reflection/ModuleSurfaceUmbrella.hpp
+        HEADER_TARGETS isoline_core
+        HEADER_SETS_ONLY)
+    isoline_add_module_surface_reflection(NAME meta-module-surface.reflection MODULE isoline
+                                          PROGRAM isoline_meta_surface_reflection)
     # The C API's private headers include its C headers (wasm.h among them): reached through its static
     # library where the C API is built, and left out where it is not.
     set(isolineEnumTablesLinks isoline::cli)
@@ -201,10 +216,41 @@ if(ISOLINE_TESTING)
     else()
         list(APPEND isolineEnumTablesExcludes "^isoline/c/")
     endif()
+    # The C API's enum mirrors and struct members (P19 Task 13), where the C API is built: its C headers read as
+    # C++ beside the tables of the C layer that convert them.
+    if(TARGET isoline::c_static)
+        isoline_add_reflection_check(isoline_c_api_check
+            SOURCES meta/reflection/CApiCheck.cpp
+            LINK_LIBRARIES isoline::c_static isoline::core)
+        # Every C header the C API installs, wasm.h among them, from its header set: a header added there is
+        # one whose enumerations the discovery of CApiCheck.cpp walks, without a row.
+        if(TARGET isoline_c_api_check)
+            _isoline_header_set_include_names(isoline_c_static isolineCApiHeaders "[.]h$")
+            set(isolineCApiUmbrella "// Generated from isoline_c_static's header set (src/isoline/CMakeLists.txt).\n#pragma once\n")
+            foreach(header IN LISTS isolineCApiHeaders)
+                string(APPEND isolineCApiUmbrella "#include <${header}>\n")
+            endforeach()
+            file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/isoline_c_api_check.headers/isoline/meta/reflection/CApiHeaders.hpp"
+                 CONTENT "${isolineCApiUmbrella}" @ONLY)
+            target_include_directories(isoline_c_api_check PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/isoline_c_api_check.headers")
+        endif()
+    endif()
     isoline_add_reflection_check(isoline_enum_tables_check
         SOURCES meta/reflection/EnumTablesCheck.cpp
         LINK_LIBRARIES ${isolineEnumTablesLinks}
         UMBRELLA isoline/meta/reflection/EnumTablesUmbrella.hpp
         HEADER_TARGETS isoline_core isoline_text isoline_cli
         EXCLUDE ${isolineEnumTablesExcludes})
+    # The noexcept rule of declaration contracts, only where contracts are native: every header of the
+    # libraries, the test helpers' included (Catch2 for their StringMakers), read through the proving
+    # expansion of <isoline/Contracts.hpp> (isoline_add_declaration_contracts_proof()).
+    set(isolineDeclarationContractsExcludes "")
+    if(NOT TARGET isoline::c_static)
+        list(APPEND isolineDeclarationContractsExcludes "^isoline/c/")
+    endif()
+    isoline_add_declaration_contracts_proof(isoline_declaration_contracts_check
+        SOURCES meta/reflection/DeclarationContractsCheck.cpp
+        LINK_LIBRARIES ${isolineEnumTablesLinks} Catch2::Catch2
+        HEADER_TARGETS isoline_core isoline_text isoline_cli
+        EXCLUDE ${isolineDeclarationContractsExcludes})
 endif()

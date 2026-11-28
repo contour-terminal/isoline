@@ -1,0 +1,35 @@
+{
+  "name": "isoline",
+  "source": "module.cppm",
+  "headerSet": [
+    "isoline/Contracts.hpp",
+    "isoline/api/Store.hpp"
+  ],
+  "headerBaseDirectories": [
+    "."
+  ],
+  "namespaces": [
+    "isoline",
+    "isoline::api"
+  ],
+  "internalNamespaces": [
+    "isoline::runtime"
+  ],
+  "imports": [],
+  "foreignNames": [],
+  "includeDirectories": [
+    "."
+  ],
+  "systemIncludeDirectories": [],
+  "compileDefinitions": [],
+  "cxxStandard": "23",
+  "definedMacros": [
+    "ISOLINE_PRE"
+  ],
+  "headerSubstitutes": [
+    {
+      "header": "isoline/Contracts.hpp",
+      "substitute": "substitute/isoline/Contracts.hpp"
+    }
+  ]
+}

@@ -19,6 +19,10 @@ option(ISOLINE_MODULES
 option(ISOLINE_EXPECT_IMPORT_STD
        "Fail, rather than skip, the install test of import std; where the toolchain provides no std module"
        OFF)
+option(ISOLINE_EXPECT_MODULE_SURFACE
+       "Fail the configure, rather than leave it out, where the reflected module surface's test cannot run \
+(cmake/IsolineModuleSurface.cmake); the native CI rows set it"
+       OFF)
 option(ISOLINE_FETCH_DEPS
        "Fetch a dependency (Catch2) with CPM when neither the parent project nor find_package() provides it"
        OFF)

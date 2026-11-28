@@ -112,11 +112,20 @@ endfunction()
 ## and version files. Rows of one export set must agree on its install component and EXCLUDE_FROM_ALL.
 function(isoline_install)
     set(exportSets "")
+    set(ISOLINE_INSTALL_C_COMPONENTS "")
     set(rows ${ISOLINE_INSTALL_LIBRARIES})
     set(generated "${PROJECT_BINARY_DIR}/isoline-package")
     while(rows)
         list(POP_FRONT rows library exportName exportSet component isExcludedFromAll)
         isoline_install_library(${library} ${exportName} ${exportSet} ${component} ${isExcludedFromAll})
+        # A library whose header set holds headers, none of them a `.hpp`, has a C interface: a consumer asking
+        # for it alone needs no C++ toolchain (isolineConfig.cmake, cmake/isolineConsumerToolchain.cmake). A
+        # library of modules alone has no header set, and is C++.
+        get_target_property(headers ${library} HEADER_SET)
+        _isoline_header_set_include_names(${library} cxxHeaders)
+        if(headers AND cxxHeaders STREQUAL "")
+            list(APPEND ISOLINE_INSTALL_C_COMPONENTS "${exportName}")
+        endif()
         # What the component needs loaded first, beside its targets file (isolineConfig.cmake reads it).
         isoline_install_required_components(${library} required)
         string(REGEX REPLACE "Targets$" "Requires" requiresStem "${exportSet}")
@@ -271,6 +280,8 @@ function(isoline_add_install_tests)
         "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
         "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
         "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}"
+        "-DC_COMPILER=${CMAKE_C_COMPILER}"
+        "-DC_FLAGS=${CMAKE_C_FLAGS}"
         "-DSTDLIB_MODULES_JSON=$CACHE{CMAKE_CXX_STDLIB_MODULES_JSON}"
         "-DGENERATOR=${CMAKE_GENERATOR}"
         "-DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"

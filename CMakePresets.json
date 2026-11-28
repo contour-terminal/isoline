@@ -283,6 +283,18 @@
             ]
         },
         {
+            "name": "gcc-cxx26-modules",
+            "displayName": "GCC Debug, C++ modules over C++26 reflection and contracts",
+            "description": "gcc-cxx26's native features, and module isoline over its C++26, contracts-native isoline_core; GCC's std module is expected",
+            "inherits": [
+                "modules",
+                "gcc-cxx26"
+            ],
+            "cacheVariables": {
+                "ISOLINE_EXPECT_IMPORT_STD": "ON"
+            }
+        },
+        {
             "name": "msvc-modules",
             "displayName": "MSVC Debug, C++ modules",
             "description": "MSVC (64-bit) with C++ modules; run from a Developer Command Prompt",
@@ -370,6 +382,7 @@
         { "name": "clang-modules", "configurePreset": "clang-modules" },
         { "name": "clang-modules-release", "configurePreset": "clang-modules-release" },
         { "name": "gcc-modules", "configurePreset": "gcc-modules" },
+        { "name": "gcc-cxx26-modules", "configurePreset": "gcc-cxx26-modules" },
         { "name": "msvc-modules", "configurePreset": "msvc-modules" },
         { "name": "msvc-modules-visual-studio", "configurePreset": "msvc-modules-visual-studio", "configuration": "Debug" },
         { "name": "msvc-wine-modules", "configurePreset": "msvc-wine-modules" }
@@ -444,6 +457,7 @@
         { "name": "clang-modules", "inherits": "isoline-test-common", "configurePreset": "clang-modules" },
         { "name": "clang-modules-release", "inherits": "isoline-test-common", "configurePreset": "clang-modules-release" },
         { "name": "gcc-modules", "inherits": "isoline-test-common", "configurePreset": "gcc-modules" },
+        { "name": "gcc-cxx26-modules", "inherits": "isoline-test-common", "configurePreset": "gcc-cxx26-modules" },
         { "name": "msvc-modules", "inherits": "isoline-test-common", "configurePreset": "msvc-modules" },
         { "name": "msvc-modules-visual-studio", "inherits": "isoline-test-common", "configurePreset": "msvc-modules-visual-studio", "configuration": "Debug" },
         { "name": "msvc-wine-modules", "inherits": "isoline-test-common", "configurePreset": "msvc-wine-modules" }

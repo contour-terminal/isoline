@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <print>
@@ -25,6 +26,7 @@
 #include <isoline/api/Store.hpp>
 #include <isoline/api/Types.hpp>
 #include <isoline/api/testing/EngineRows.hpp>
+#include <isoline/binary/ByteReader.hpp>
 #include <isoline/binary/Encoder.hpp>
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/testing/Code.hpp>
@@ -295,6 +297,17 @@ void threadPreparationOfNothing()
 {
     auto const token = ThreadPreparation { std::unique_ptr<IThreadResource> {} };
     std::println("ThreadPreparation of no resource was made (empty: {})", token.empty());
+}
+
+/// A reader whose base offset leaves no room for the byte it reads: its offset() would wrap past the
+/// largest std::size_t, which ByteReader::offset()'s postcondition refuses where contracts are native. On
+/// the fallback path the postcondition is not compiled, so the call returns the wrapped offset.
+void byteReaderOffsetWraps()
+{
+    auto const bytes = std::to_array<std::byte>({ std::byte { 0 } });
+    auto reader = isoline::binary::ByteReader { bytes, std::numeric_limits<std::size_t>::max() };
+    setUp(reader.readByte().has_value(), "the reader reads its one byte");
+    std::println("ByteReader::offset() returned {}", reader.offset());
 }
 
 /// The check positions (CheckPositions.hpp), each given one round, so that its check fails.

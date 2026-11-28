@@ -144,7 +144,7 @@ TEST_CASE("Readme.exampleIsTheReadmesCode")
     for (auto const& line: between(self, "    // readme-body:begin", "    // readme-body:end", self.begin()))
         expected.push_back(line.starts_with("    ") ? line.substr(4) : line);
     auto const readme = linesOfFile(ISOLINE_SOURCE_DIR "/README.md");
-    auto const section = std::ranges::find(readme, "## A taste of the embedding API");
+    auto const section = std::ranges::find(readme, std::string_view { "## A taste of the embedding API" });
     REQUIRE(section != readme.end());
     auto const block = between(readme, "```cpp", "```", section);
     std::ostringstream text;

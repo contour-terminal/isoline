@@ -1,0 +1,2 @@
+isoline::api::gccOnly: reflected, but the export lint does not list it: a declaration only one compiler sees (an #if on the compiler), or a kind the lint does not export
+module surface: 1 difference among 13 names (1 left out: listed only by the kinds members_of does not reflect, UsingDecl)

@@ -1,0 +1,13 @@
+isoline::Feature EnumDecl
+isoline::api::AnonymousConstant EnumConstantDecl
+isoline::api::Box ClassTemplateDecl
+isoline::api::BoxOf TypeAliasTemplateDecl
+isoline::api::Boxed ConceptDecl
+isoline::api::Kind EnumDecl
+isoline::api::KindFunction EnumConstantDecl
+isoline::api::Pages TypeAliasDecl
+isoline::api::Store CXXRecordDecl
+isoline::api::Value UsingDecl
+isoline::api::open FunctionDecl,FunctionTemplateDecl
+isoline::api::operator< FunctionDecl
+isoline::api::storeLimit VarDecl

@@ -353,6 +353,9 @@ set(reportRows
     "GNU|native|require|Precondition failed[.] |"
     "GNU|fallback|contract|Precondition failed[.] |"
     "Clang|fallback|require|Precondition failed[.] |"
+    "GNU|native|pre|contract violation in function [^\n]* at [^\n]*: |\n\\[assertion_kind: pre, semantic: enforce, mode: predicate_false, terminating: yes\\]"
+    "GNU|native|post|contract violation in function [^\n]* at [^\n]*: |\n\\[assertion_kind: post, semantic: enforce, mode: predicate_false, terminating: yes\\]"
+    "GNU|fallback|pre|Precondition failed[.] |"
     "MSVC|native|contract|NONE|")
 foreach(row IN LISTS reportRows)
     string(REGEX MATCH "^([^|]*)[|]([^|]*)[|]([^|]*)[|]([^|]*)[|](.*)$" matched "${row}")
@@ -366,6 +369,42 @@ foreach(row IN LISTS reportRows)
     math(EXPR caseCount "${caseCount} + 1")
     if(NOT prefix STREQUAL expectedPrefix OR NOT "${suffix}" STREQUAL expectedSuffix)
         string(APPEND failures "\n  report ${row}\n    got '${prefix}' and '${suffix}'")
+    endif()
+endforeach()
+
+# Where a spelling compiles to no check: compilerId|path|spelling|expected (ON or OFF).
+set(uncheckedRows
+    "GNU|fallback|post|ON"
+    "MSVC|fallback|post|ON"
+    "GNU|native|post|OFF"
+    "GNU|fallback|pre|OFF"
+    "GNU|fallback|contract|OFF")
+foreach(row IN LISTS uncheckedRows)
+    string(REGEX MATCH "^([^|]*)[|]([^|]*)[|]([^|]*)[|](.*)$" matched "${row}")
+    set(expected "${CMAKE_MATCH_4}")
+    isoline_contract_is_unchecked(COMPILER "${CMAKE_MATCH_1}" PATH "${CMAKE_MATCH_2}" SPELLING "${CMAKE_MATCH_3}"
+                                  OUT unchecked)
+    math(EXPR caseCount "${caseCount} + 1")
+    if(NOT unchecked STREQUAL expected)
+        string(APPEND failures "\n  unchecked ${row}\n    got ${unchecked}")
+    endif()
+endforeach()
+
+# What a native-contracts package asks of its consumers: compilerId|expectedStandard, NONE where no row does.
+set(consumerRows
+    "GNU|26"
+    "MSVC|NONE"
+    "Clang|NONE")
+foreach(row IN LISTS consumerRows)
+    string(REGEX MATCH "^([^|]*)[|](.*)$" matched "${row}")
+    set(expected "${CMAKE_MATCH_2}")
+    isoline_contract_consumer_standard(COMPILER "${CMAKE_MATCH_1}" OUT_STANDARD standard)
+    if(NOT DEFINED standard)
+        set(standard NONE)
+    endif()
+    math(EXPR caseCount "${caseCount} + 1")
+    if(NOT standard STREQUAL expected)
+        string(APPEND failures "\n  consumer ${row}\n    got ${standard}")
     endif()
 endforeach()
 

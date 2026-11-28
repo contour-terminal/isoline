@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include <isoline/meta/EnumRows.hpp>
 #include <isoline/text/SExpression.hpp>
 #include <isoline/text/TextError.hpp>
 #include <isoline/text/TextLimits.hpp>
@@ -50,6 +51,9 @@ inline constexpr auto TopLevelForms = std::to_array<TopLevelForm>({
     { .keyword = "module", .read = &compileCoreModule },
     { .keyword = "component", .read = &refuseComponent },
 });
+
+static_assert(meta::firstRepeatedKey(TopLevelForms, &TopLevelForm::keyword) == meta::NoRepeatedKey,
+              "TopLevelForms must hold each keyword once, as compileText() takes the first row it names");
 
 /// Compiles a whole text to a binary.
 ///

@@ -16,7 +16,8 @@ cmake -B build -G Ninja -DISOLINE_MODULES=ON
 ```
 
 Each module preset is an ordinary preset with the module on: `clang-modules` (Clang, Debug, ASan and
-UBSan, clang-tidy), `clang-modules-release`, `gcc-modules`, `msvc-modules` (from a Visual Studio Developer
+UBSan, clang-tidy), `clang-modules-release`, `gcc-modules`, `gcc-cxx26-modules` (GCC 16.2's C++26 reflection
+and contracts, [docs/language-features.md](language-features.md)), `msvc-modules` (from a Visual Studio Developer
 Command Prompt), `msvc-modules-visual-studio` (the same, under the Visual Studio generator) and, from a
 Linux host, `msvc-wine-modules` (MSVC under wine, [docs/cross-compiling.md](cross-compiling.md)).
 
@@ -84,6 +85,7 @@ The module lanes of `.github/workflows/build.yml`, one matrix row per toolchain:
 | `linux-clang-modules` | `clang-22-libc++-install` | Clang 22 | libc++ 22 | Release | all | expected |
 | `linux-clang-modules` | `clang-floor` | Clang 19.1.0, Ninja 1.11.1 | libstdc++ 14 | Release | all | not expected |
 | `linux-gcc-modules` | `gcc-modules` | GCC 15.2 | libstdc++ 15 | Debug | all | expected |
+| `linux-gcc-cxx26` | `gcc-cxx26-modules` | GCC 16.2, C++26 `isoline_core` | libstdc++ 16 | Debug | all | expected |
 | `windows-msvc-modules` | `msvc-modules` | MSVC 19.44 | MSVC STL | Debug, Ninja and Visual Studio 2026 | modules, lint, install | expected (Ninja) |
 
 Two rows run only the tests modules add (the labels `modules`, `lint` and `install`): the rest of the
@@ -306,15 +308,28 @@ module `isoline.recipe_fixture` re-exports `isoline`, and the tests prove each s
      able to spell them.
    - `FOREIGN_NAMES` lists names of another library that the unit re-exports, qualified
      (`core::async::Task`). Any other name outside the module's namespaces fails the lint.
+   - `DEFINED_MACROS` lists the macros a header of the set leaves defined on purpose, for the set's own
+     headers.
+   - Where contracts are native, the manifest names `isoline/Contracts.hpp`'s fallback copy as its
+     substitute: the lint's Clang has no contracts, so the lint reads the copy in its place, through a VFS
+     overlay written beside the manifest ([docs/language-features.md](language-features.md),
+     "Declaration contracts").
 3. **The interface unit** is generated, never written by hand: `cmake --build <build> --target
    isoline_write_module_exports` runs the lint's `--write` for every row, and the result is committed. A new
    row's unit must exist before its first configure: start it as the single line
    `export module <name>;`, configure, then generate it.
 4. **The lint**, the test `module-exports-<name>` (label `lint`), checks the committed unit against the
    headers. Every public name must be exported and none stale, the `export import` lines must equal
-   `IMPORTS`, no macro may be left defined, no declaration may be of internal linkage, no public header may
-   be missing from the set, and the unit must precompile, the modules it imports first. A header changed
-   without `--write` fails it, naming the name.
+   `IMPORTS`, no macro may be left defined but the row's `DEFINED_MACROS` (module isoline's are
+   `isoline/Contracts.hpp`'s three, which only the set's own headers use; a listed macro no header defines
+   is stale), no conditional directive may read a compiler's macro
+   (`__GNUC__`, `__clang__`, `_MSC_VER`, …: a header reads the same on every compiler), nor a macro's
+   definition name one, no declaration may be of internal linkage, no public header may be missing from
+   the set, and the unit must precompile, the modules it imports first. A header changed without `--write` fails it, naming the name.
+   `--list [--kinds <kind>...]` prints the public names it reads, each with the declaration kinds that
+   declare it; where reflection is native, the test
+   `meta-module-surface.reflection` compares them with GCC's reading of the same headers
+   ([docs/language-features.md](language-features.md), "The reflected module surface").
 5. **The install row**, one row of `ISOLINE_INSTALL_LIBRARIES` (`cmake/IsolineInstallRows.cmake`): the
    library, its export name (a consumer's `isoline::<name>` and `COMPONENTS <name>`), its export set
    `isoline<Name>Targets`, its install component, and whether a plain `cmake --install` leaves it out. The

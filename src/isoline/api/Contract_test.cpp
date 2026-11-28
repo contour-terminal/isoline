@@ -1351,9 +1351,10 @@ namespace
 /// Counts the contract checks (Require(), Guarantee()) that fail while it lives, through
 /// core::setFailHandler(): a case asserts that none did. A failed check still ends the process once the
 /// handler returned, so the count is also what the report says before it does. Where contracts are
-/// native, a check spelled ISOLINE_PRECONDITION or ISOLINE_INVARIANT reports through the compiler's
-/// violation handler instead, which this never sees; it still ends the process, so a case that reaches
-/// one still fails (docs/language-features.md, "Two report channels").
+/// native, a check spelled ISOLINE_PRECONDITION or ISOLINE_INVARIANT, or a declaration's ISOLINE_PRE or
+/// ISOLINE_POST, reports through the compiler's violation handler instead, which this never sees; it still
+/// ends the process, so a case that reaches one still fails (docs/language-features.md, "Two report
+/// channels").
 class FailedChecks
 {
   public:

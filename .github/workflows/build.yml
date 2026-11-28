@@ -114,17 +114,49 @@ jobs:
             compilerVersion: "16.2.0"
             cmake: pinned
             ninja: pinned
+            lint: pinned
             languageFeatures: native
+            moduleSurface: "ON"
+          # Module isoline over the C++26, contracts-native isoline_core; the preset expects import std.
+          - preset: gcc-cxx26-modules
+            compiler: g++
+            compilerVersion: "16.2.0"
+            cmake: pinned
+            ninja: pinned
+            lint: pinned
+            languageFeatures: native
+            moduleSurface: "ON"
+    env:
+      # The pinned tools' cache, in the workspace (ignored by git): a container job's runner.temp names the
+      # host's path, not the container's, so actions/cache is given a path relative to the workspace. The tools
+      # themselves are named by absolute paths ($GITHUB_WORKSPACE/$TOOLS_CACHE): a relative NINJA_EXECUTABLE,
+      # LINT_CLANG or PATH entry would resolve against whatever directory runs it, a try_compile's included.
+      TOOLS_CACHE: .cache/isoline-tools
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Install the pinned CMake and Ninja
+      # The archives only, keyed by the lock file that pins them: a changed row is a new key. The export lint's
+      # LLVM is 1.9 GB, which a cache hit saves downloading; extracting it again takes a minute.
+      - name: Restore the pinned tools' archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.TOOLS_CACHE }}/downloads
+          key: isoline-tools-${{ runner.os }}-${{ hashFiles('scripts/tools.lock') }}
+      # The export lint's Clang (`lint: pinned`, the llvm-lint row of scripts/tools.lock), for the lint tests and
+      # the reflected module surface's comparison (meta-module-surface.reflection), which reads the headers
+      # through both compilers.
+      - name: Install the pinned CMake, Ninja and export lint's Clang
         env:
-          PINNED: ${{ matrix.cmake == 'pinned' && 'cmake' || '' }} ${{ matrix.ninja == 'pinned' && 'ninja' || '' }}
+          PINNED: >-
+            ${{ matrix.cmake == 'pinned' && 'cmake' || '' }} ${{ matrix.ninja == 'pinned' && 'ninja' || '' }}
+            ${{ matrix.lint == 'pinned' && 'llvm-lint' || '' }}
         run: |
           for tool in $PINNED; do
-            executable="$(python3 -I scripts/fetch-tools.py --tool "$tool" --cache "$RUNNER_TEMP/isoline-tools")"
-            dirname "$executable" >> "$GITHUB_PATH"
-            if [ "$tool" = ninja ]; then echo "NINJA_EXECUTABLE=$executable" >> "$GITHUB_ENV"; fi
+            executable="$(python3 -I scripts/fetch-tools.py --tool "$tool" --cache "$GITHUB_WORKSPACE/$TOOLS_CACHE")"
+            case "$tool" in
+              ninja) echo "NINJA_EXECUTABLE=$executable" >> "$GITHUB_ENV" ;;
+              llvm-lint) echo "LINT_CLANG=$executable" >> "$GITHUB_ENV" ;;
+            esac
+            if [ "$tool" != llvm-lint ]; then dirname "$executable" >> "$GITHUB_PATH"; fi
           done
       - name: Show the tools, each of its row's version
         run: |
@@ -132,14 +164,27 @@ jobs:
           check "$(command -v cmake)" --tool cmake
           check "$NINJA_EXECUTABLE" --tool ninja
           check "$(command -v "${{ matrix.compiler }}")" --tool gcc --expected "${{ matrix.compilerVersion }}"
+          if [ -n "$LINT_CLANG" ]; then check "$LINT_CLANG" --tool llvm-lint; fi
       - name: Configure
-        # ISOLINE_EXPECT_LANGUAGE_FEATURES fails the configure unless every feature row's path is this one.
+        # ISOLINE_EXPECT_LANGUAGE_FEATURES fails the configure unless every feature row's path is this one, and
+        # ISOLINE_EXPECT_MODULE_SURFACE unless meta-module-surface.reflection registers.
         run: >
           cmake --preset "${{ matrix.preset }}"
           -DCMAKE_MAKE_PROGRAM="$NINJA_EXECUTABLE"
           -DCMAKE_CXX_COMPILER="${{ matrix.compiler }}"
+          -DISOLINE_MODULE_LINT_CLANG="$LINT_CLANG"
           -DISOLINE_EXPECT_LANGUAGE_FEATURES="${{ matrix.languageFeatures }}"
+          -DISOLINE_EXPECT_MODULE_SURFACE="${{ matrix.moduleSurface }}"
           -DISOLINE_FETCH_DEPS=ON
+      - name: Check that the reflected module surface's test is registered
+        if: ${{ matrix.moduleSurface == 'ON' }}
+        run: |
+          listing="$(ctest --preset "${{ matrix.preset }}" -N -R '^meta-module-surface[.]reflection$')"
+          echo "$listing"
+          if ! echo "$listing" | grep -q '^Total Tests: 1$'; then
+            echo "::error::meta-module-surface.reflection is not registered"
+            exit 1
+          fi
       - name: Build
         run: cmake --build --preset "${{ matrix.preset }}"
       - name: Test

@@ -1,0 +1,1 @@
+error: --kinds NamespaceAliasDecl: no kind the lint lists a name by (CXXRecordDecl, ClassTemplateDecl, ConceptDecl, EnumConstantDecl, EnumDecl, FunctionDecl, FunctionTemplateDecl, TypeAliasDecl, TypeAliasTemplateDecl, TypedefDecl, UsingDecl, VarDecl, VarTemplateDecl)

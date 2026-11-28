@@ -3,6 +3,57 @@
 # The C API's tests: C programs over the public headers (label c-api), and the lints of the vendored
 # wasm.h, the symbol list, the library names and the C headers (label lint).
 
+# The C API compiles with the language features isoline_core does (isoline_apply_language_features()), but its
+# headers are C, so its interface asks a consumer for no C++ standard, contracts native or not: a C program
+# links it as it is. Read through the link interface, transitively: a target it links for its consumers, not
+# merely for the link ($<LINK_ONLY:...>), gives them its compile features too.
+function(_isoline_c_interface_features target outVar)
+    set(features ${${outVar}})
+    get_target_property(aliased ${target} ALIASED_TARGET)
+    if(aliased)
+        set(target ${aliased})
+    endif()
+    get_property(seen GLOBAL PROPERTY _ISOLINE_C_INTERFACE_SEEN)
+    if(target IN_LIST seen)
+        set(${outVar} "${features}" PARENT_SCOPE)
+        return()
+    endif()
+    set_property(GLOBAL APPEND PROPERTY _ISOLINE_C_INTERFACE_SEEN ${target})
+    get_target_property(own ${target} INTERFACE_COMPILE_FEATURES)
+    if(own)
+        list(APPEND features "${target}: ${own}")
+    endif()
+    get_target_property(links ${target} INTERFACE_LINK_LIBRARIES)
+    foreach(link IN LISTS links)
+        # A generator expression is unwrapped first, conservatively: what a build or a condition would link
+        # counts, what only the link reaches ($<LINK_ONLY:...>) or only an install (INSTALL_INTERFACE) does not.
+        set(isUnwrapping ON)
+        while(isUnwrapping)
+            if(link MATCHES "^[$]<(BUILD_INTERFACE|BUILD_LOCAL_INTERFACE|COMPILE_ONLY):(.*)>$")
+                set(link "${CMAKE_MATCH_2}")
+            elseif(link MATCHES "^[$]<[$]<.*>:(.*)>$")
+                set(link "${CMAKE_MATCH_1}")
+            else()
+                set(isUnwrapping OFF)
+            endif()
+        endwhile()
+        if(link MATCHES "^[$]<(LINK_ONLY|INSTALL_INTERFACE):" OR NOT TARGET "${link}")
+            continue()
+        endif()
+        _isoline_c_interface_features(${link} features)
+    endforeach()
+    set(${outVar} "${features}" PARENT_SCOPE)
+endfunction()
+foreach(target IN ITEMS isoline_c_shared isoline_c_static)
+    set_property(GLOBAL PROPERTY _ISOLINE_C_INTERFACE_SEEN "")
+    set(isolineCInterfaceFeatures "")
+    _isoline_c_interface_features(${target} isolineCInterfaceFeatures)
+    if(isolineCInterfaceFeatures MATCHES "cxx_std_")
+        message(FATAL_ERROR "${target} asks its consumers for a C++ standard (${isolineCInterfaceFeatures}), "
+                            "but its headers are C")
+    endif()
+endforeach()
+
 # --- the C tests ---------------------------------------------------------------
 #
 # One executable per *_test.c, run as c_api.<name> for <name>_test.c, linked against the shared library
@@ -265,7 +316,8 @@ if(ISOLINE_INSTALL)
             find_program(ISOLINE_PKG_CONFIG NAMES pkg-config pkgconf REQUIRED)
             list(APPEND isolineConsumerArguments "-DC_COMPILER=${CMAKE_C_COMPILER}"
                         "-DPKG_CONFIG=${ISOLINE_PKG_CONFIG}" "-DC_FLAGS=${CMAKE_C_FLAGS}"
-                        "-DLINK_FLAGS=${ISOLINE_LINK_OPTIONS}")
+                        "-DLINK_FLAGS=${ISOLINE_LINK_OPTIONS}" "-DNM=${CMAKE_NM}"
+                        "-DCONTRACTS_PATH=${ISOLINE_CONTRACTS_PATH}")
         endif()
     endif()
     add_test(NAME c-install-layout

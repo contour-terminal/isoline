@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 
 #include <isoline/c/isoline.h>
 
@@ -25,11 +27,18 @@ namespace
     static_assert(offsetof(type, field) == (offset), #type "." #field ": the offset row"); \
     static_assert(sizeof(decltype(type::field)) == (size), #type "." #field ": the size row");
 #define ISOLINE_LAYOUT_UPSTREAM_PADDING(type, offset, size)
+#define ISOLINE_LAYOUT_FIELD_TYPE(type, field, fieldType) \
+    static_assert(std::is_same_v<decltype(type::field), fieldType>, #type "." #field ": the type row");
+#define ISOLINE_LAYOUT_UNION_MEMBER_TYPE(type, field, member, memberType)                   \
+    static_assert(std::is_same_v<decltype(std::declval<type&>().field.member), memberType>, \
+                  #type "." #field "." #member ": the type row");
 #include <isoline/c/abi/layout.def>
 #undef ISOLINE_LAYOUT_SCALAR
 #undef ISOLINE_LAYOUT_STRUCT
 #undef ISOLINE_LAYOUT_FIELD
 #undef ISOLINE_LAYOUT_UPSTREAM_PADDING
+#undef ISOLINE_LAYOUT_FIELD_TYPE
+#undef ISOLINE_LAYOUT_UNION_MEMBER_TYPE
 
 /// A struct row: the struct's name and size.
 struct StructRow

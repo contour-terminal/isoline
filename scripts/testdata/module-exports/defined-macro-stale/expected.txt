@@ -1,0 +1,2 @@
+stale DEFINED_MACROS entry: ISOLINE_GONE: no header of the set leaves it defined
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

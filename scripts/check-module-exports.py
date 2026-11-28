@@ -51,16 +51,25 @@ and --check's precompile reports the using-declaration it cannot resolve.
 `export namespace N { using N::leaf; }` blocks, and comments; nothing else), compares its `export import`
 lines with the row's imports and its names outside the module's namespaces with the row's foreign names,
 scans the header set for macros a header leaves defined (macros do not cross a module; a row file is read
-where its header includes it, as the preprocessor reads it), and finally
+where its header includes it, as the preprocessor reads it) and for conditional directives that read a
+compiler's macro, or definitions of a macro that names one (COMPILER_MACROS: a declaration only one compiler
+sees is one neither the lint nor another compiler's module build can tell from a missing name), and finally
 precompiles the unit as an importer's build would, its imported modules first, so that what Clang refuses
 to export (an entity of internal linkage) is a finding too.
+
+--list prints the surface's public names, sorted, one per line, each followed by the declaration kinds that
+declare it (LISTED_KINDS; a template's own kind, an unscoped enumeration's enumerator as EnumConstantDecl),
+comma-separated; --kinds lists only the names, and kinds, of the kinds it names. An undetermined surface (the
+findings --write refuses on) lists nothing. It is what another reading of the headers is compared with: the
+reflected module surface (src/isoline/meta/reflection/ModuleSurface.cpp, docs/language-features.md).
 
 Exit status: 0 clean, 1 findings, 2 a tool error (no Clang, an unreadable manifest, headers Clang cannot
 parse, a dump over the ceiling, an imported module without its interface unit, imports that form a cycle,
 and any failure the lint did not foresee).
 
 Usage: python3 -I scripts/check-module-exports.py --clang <clang++> --manifest <surface.json>
-                                                  (--check | --write) [--work-directory <dir>]
+                                                  (--check | --write | --list [--kinds <kind>...])
+                                                  [--work-directory <dir>]
 """
 
 import argparse
@@ -134,6 +143,13 @@ DECLARATION_KIND_ROWS = (
 DECLARATION_KINDS = {kind: action for kind, action, _ in DECLARATION_KIND_ROWS}
 DECLARATION_REASONS = {kind: why for kind, _, why in DECLARATION_KIND_ROWS}
 
+# The kind of an unscoped enumeration's enumerator, a name of the enumeration's namespace.
+ENUMERATOR_KIND = "EnumConstantDecl"
+# The kinds --list names a name by: a row's that exports, a template's (the template, not its templated
+# declaration), and an enumerator's.
+LISTED_KINDS = tuple(sorted([kind for kind, action, _ in DECLARATION_KIND_ROWS
+                             if action in (EXPORT, EXPORT_ENUMERATION, TEMPLATED)] + [ENUMERATOR_KIND]))
+
 # The kinds of a template's children that are its parameters, not its templated declaration.
 TEMPLATE_PARAMETER_KINDS = ("TemplateTypeParmDecl", "NonTypeTemplateParmDecl", "TemplateTemplateParmDecl")
 
@@ -189,6 +205,20 @@ GRAMMAR = (
 
 # A preprocessor directive that defines or undefines a macro, as the macro scan of the header set reads it.
 MACRO_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*(define|undef)[ \t]+([A-Za-z_]\w*)", re.MULTILINE)
+# A conditional directive and its condition, or a macro definition and its body, continuation lines joined before
+# it is read: a macro whose body names a compiler's macro hides a compiler's check from the conditional that reads it.
+CONDITIONAL_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|elifdef|elifndef|define)\b[ \t]*(.*)$",
+                                   re.MULTILINE)
+# The macros that name a compiler (its identity or its version), which no conditional directive of the header set
+# may read: a public header reads the same on every compiler, and a platform or compiler difference lives in a
+# CMake-selected file or a data row instead. A declaration behind one is seen by one compiler only, which neither
+# the export lint (Clang) nor another compiler's module build can tell from a missing name. Adding a compiler is a row.
+COMPILER_MACROS = (
+    "__GNUC__", "__GNUC_MINOR__", "__GNUC_PATCHLEVEL__", "__GNUG__",
+    "__clang__", "__clang_major__", "__clang_minor__", "__clang_patchlevel__",
+    "_MSC_VER", "_MSC_FULL_VER",
+)
+COMPILER_MACRO = re.compile(r"(?<![\w])(" + "|".join(re.escape(macro) for macro in COMPILER_MACROS) + r")(?![\w])")
 # An include directive, as the macro scan splices row files: its spelling, quoted or angled.
 INCLUDE_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*include[ \t]*[<\"]([^>\"\n]+)[>\"]", re.MULTILINE)
 
@@ -224,6 +254,14 @@ class Manifest:
     systemIncludeDirectories: list
     compileDefinitions: list
     cxxStandard: str
+    # The macros a header of the set leaves defined on purpose, for the set's own headers.
+    definedMacros: list = field(default_factory=list)
+    # Header (resolved) -> the file read in its place, by Clang (through vfsOverlay) and the text rules
+    # alike: a native-contracts build's isoline/Contracts.hpp, which a compiler without contracts cannot
+    # read, mapped onto its fallback copy, which declares the same public names.
+    substitutes: dict = field(default_factory=dict)
+    # The Clang VFS overlay that maps them, written beside the manifest, or None where there are none.
+    vfsOverlay: Optional[pathlib.Path] = None
 
 
 @dataclass
@@ -232,6 +270,8 @@ class Surface:
 
     # Qualified public name -> the file of its definition, or of its first declaration (_addName()).
     names: dict = field(default_factory=dict)
+    # Qualified public name -> the declaration kinds (LISTED_KINDS) that declare it, in --list's output.
+    kinds: dict = field(default_factory=dict)
     # Header -> the public namespaces it declares a name into, directly or through a row file it includes.
     declaringFiles: dict = field(default_factory=dict)
     # Qualified names of namespaces under a public one that are neither public nor internal.
@@ -281,6 +321,23 @@ def resolvePath(base, value):
     return path if path.is_absolute() else (base / path)
 
 
+def writeOverlay(path, substitutes):
+    """Writes beside the manifest at @p path the Clang VFS overlay that maps each header of @p substitutes
+    onto its substitute, keeping the header's own path in what Clang reports; returns its path, or None
+    where there is nothing to map."""
+    if not substitutes:
+        return None
+    roots = [{"type": "file", "name": header.as_posix(), "external-contents": substitute.resolve().as_posix()}
+             for header, substitute in substitutes.items()]
+    overlay = path.with_name(path.stem + ".overlay.json")
+    try:
+        overlay.write_text(json.dumps({"version": 0, "use-external-names": False, "roots": roots}, indent=2) + "\n",
+                           encoding="utf-8")
+    except OSError as error:
+        raise ToolError(f"cannot write the VFS overlay {overlay}: {error.strerror}") from error
+    return overlay
+
+
 def readManifest(path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -288,6 +345,8 @@ def readManifest(path):
         raise ToolError(f"unreadable manifest {path}: {error}") from error
     base = path.parent
     try:
+        substitutes = {resolvePath(base, row["header"]).resolve(): resolvePath(base, row["substitute"])
+                       for row in data.get("headerSubstitutes", [])}
         return Manifest(
             path=path,
             name=data["name"],
@@ -303,6 +362,9 @@ def readManifest(path):
                                       for directory in data["systemIncludeDirectories"]],
             compileDefinitions=list(data["compileDefinitions"]),
             cxxStandard=str(data["cxxStandard"]),
+            definedMacros=list(data.get("definedMacros", [])),
+            substitutes=substitutes,
+            vfsOverlay=writeOverlay(path, substitutes),
         )
     except (KeyError, TypeError) as error:
         raise ToolError(f"unreadable manifest {path}: missing or malformed field {error}") from error
@@ -334,10 +396,13 @@ def headersOutsideTheSet(manifest):
     """The spellings of the `.hpp` files beside a header of the set, in the same directory, that the set does
     not hold: a public header, by where it lives, that the module would not cover. Sorted."""
     inSet = {header.resolve() for header in manifest.headerSet}
-    directories = sorted({header.resolve().parent for header in umbrellaHeaders(manifest)})
+    # Sorted as `/`-separated text, so that the order is every operating system's (Windows' paths compare
+    # case-insensitively).
+    directories = sorted({header.resolve().parent for header in umbrellaHeaders(manifest)},
+                         key=lambda path: path.as_posix())
     return [includeSpelling(manifest, candidate)
             for directory in directories
-            for candidate in sorted(directory.glob("*.hpp"))
+            for candidate in sorted(directory.glob("*.hpp"), key=lambda path: path.as_posix())
             if candidate.resolve() not in inSet]
 
 
@@ -368,7 +433,7 @@ def commonRoot(namespaces):
 
 def compileArguments(manifest):
     """What compiling the module's headers takes, from its manifest: the C++ standard, the include
-    directories (the system ones as -isystem) and the definitions."""
+    directories (the system ones as -isystem), the VFS overlay of substituted headers and the definitions."""
     systemDirectories = [directory.resolve() for directory in manifest.systemIncludeDirectories]
     arguments = [f"-std=c++{manifest.cxxStandard}"]
     for directory in manifest.includeDirectories:
@@ -376,6 +441,8 @@ def compileArguments(manifest):
             arguments.append(f"-I{directory.resolve().as_posix()}")
     for directory in systemDirectories:
         arguments += ["-isystem", directory.as_posix()]
+    if manifest.vfsOverlay is not None:
+        arguments += ["-ivfsoverlay", manifest.vfsOverlay.as_posix()]
     return arguments + [f"-D{definition}" for definition in manifest.compileDefinitions]
 
 
@@ -713,6 +780,7 @@ class SurfaceWalker:
         if child.get("isImplicit"):
             return
         kind = child.get("kind")
+        listedKind = kind  # a template's own kind, not its templated declaration's
         action = DECLARATION_KINDS.get(kind)
         declaration = child
         if action == TEMPLATED:
@@ -740,12 +808,12 @@ class SurfaceWalker:
             action == EXPORT_ENUMERATION
             and any(inner.get("kind") == "EnumConstantDecl" for inner in child.get("inner", [])))
         if "name" in child:
-            self._addName(namespace, child["name"].split("::")[-1], file, header, isDefinition)
+            self._addName(namespace, child["name"].split("::")[-1], listedKind, file, header, isDefinition)
         # An unscoped enumeration's enumerators are names of the namespace, the enumeration named or not.
         if action == EXPORT_ENUMERATION and "scopedEnumTag" not in child:
             for enumerator in child.get("inner", []):
                 if enumerator.get("kind") == "EnumConstantDecl":
-                    self._addName(namespace, enumerator["name"], file, header, isDefinition)
+                    self._addName(namespace, enumerator["name"], ENUMERATOR_KIND, file, header, isDefinition)
 
     def _declaringHeader(self, file, includer):
         """The header of the set a declaration in @p file comes from: @p file itself, or the header that
@@ -761,10 +829,12 @@ class SurfaceWalker:
             return includer
         return file
 
-    def _addName(self, namespace, leaf, file, header, isDefinition):
-        """Records a public name. Its file is that of its definition where a class or enumeration has one in
-        the headers, else that of its first declaration: a forward declaration does not say where it lives."""
+    def _addName(self, namespace, leaf, kind, file, header, isDefinition):
+        """Records a public name, declared by a declaration of @p kind. Its file is that of its definition where
+        a class or enumeration has one in the headers, else that of its first declaration: a forward declaration
+        does not say where it lives."""
         name = f"{namespace}::{leaf}"
+        self.surface.kinds.setdefault(name, set()).add(kind)
         if name not in self.surface.names or (isDefinition and name not in self._defined):
             self.surface.names[name] = file
         if isDefinition:
@@ -916,6 +986,14 @@ def splicedText(path, files, splicing=()):
     return INCLUDE_DIRECTIVE.sub(splice, withoutComments(readSource(path)))
 
 
+def readHeaders(manifest, header):
+    """The files the text rules read for @p header: the header itself, and its substitute too, where the
+    manifest's overlay names one. Clang reads the substitute, but the build reads the header, so a rule
+    holds both to it (a native isoline/Contracts.hpp and its fallback copy alike)."""
+    substitute = manifest.substitutes.get(header.resolve())
+    return [header] if substitute is None else [header, substitute]
+
+
 def leftDefinedMacros(manifest):
     """(macro, header) for each macro a header of the set leaves defined: whose last #define no #undef
     follows. A row file is read where its header includes it, so that its directives count for that header,
@@ -923,11 +1001,30 @@ def leftDefinedMacros(manifest):
     files = rowFiles(manifest)
     leftDefined = []
     for header in umbrellaHeaders(manifest):
-        lastDirective = {}
-        for directive, macro in MACRO_DIRECTIVE.findall(splicedText(header, files)):
-            lastDirective[macro] = directive
-        leftDefined += [(macro, header) for macro, directive in lastDirective.items() if directive == "define"]
+        for read in readHeaders(manifest, header):
+            lastDirective = {}
+            for directive, macro in MACRO_DIRECTIVE.findall(splicedText(read, files)):
+                lastDirective[macro] = directive
+            leftDefined += [(macro, header) for macro, directive in lastDirective.items()
+                            if directive == "define" and (macro, header) not in leftDefined]
     return leftDefined
+
+
+def compilerConditionals(manifest):
+    """(directive, macros, header) for each conditional directive of the set that reads a compiler's macro
+    (COMPILER_MACROS), and each macro definition whose body names one, comments and literals left out. A row file is read where its header includes it, as
+    leftDefinedMacros() reads it, so that its directives are that header's."""
+    files = rowFiles(manifest)
+    found = []
+    for header in umbrellaHeaders(manifest):
+        for read in readHeaders(manifest, header):
+            text = splicedText(read, files).replace("\\\n", " ")
+            for keyword, condition in CONDITIONAL_DIRECTIVE.findall(text):
+                macros = list(dict.fromkeys(COMPILER_MACRO.findall(condition)))
+                directive = " ".join(f"#{keyword} {condition}".split())
+                if macros and (directive, macros, header) not in found:
+                    found.append((directive, macros, header))
+    return found
 
 
 def precompile(manifest, clang, workDirectory, built, importing=()):
@@ -1044,7 +1141,19 @@ def checkImports(context):
 
 def checkMacros(context):
     return [{"macro": macro, "header": shownFile(context.manifest, header)}
-            for macro, header in leftDefinedMacros(context.manifest)]
+            for macro, header in leftDefinedMacros(context.manifest) if macro not in context.manifest.definedMacros]
+
+
+def checkStaleDefinedMacros(context):
+    """A macro the row lists as left defined that no header leaves defined: a rename went unnoticed, or its
+    header is gone."""
+    defined = {macro for macro, _ in leftDefinedMacros(context.manifest)}
+    return [{"macro": macro} for macro in context.manifest.definedMacros if macro not in defined]
+
+
+def checkCompilerConditionals(context):
+    return [{"directive": directive, "macros": ", ".join(macros), "header": shownFile(context.manifest, header)}
+            for directive, macros, header in compilerConditionals(context.manifest)]
 
 
 def checkPrecompile(context):
@@ -1093,6 +1202,11 @@ RULES = (
      "header outside the header set: {header}, beside the set's own: add it to the library's FILE_SET HEADERS, "
      "or move it out of the public header directories"),
     ("macro", checkMacros, "macro left defined: {macro} in {header}"),
+    ("staleDefinedMacro", checkStaleDefinedMacros,
+     "stale DEFINED_MACROS entry: {macro}: no header of the set leaves it defined"),
+    ("compilerConditional", checkCompilerConditionals,
+     "compiler conditional: `{directive}` in {header} names {macros}: an installed header reads the same on every "
+     "compiler"),
 )
 # The tiers of rules --check applies, in order; a tier runs only where every tier before it found nothing.
 # The generated form says the unit is not what --write writes, which every finding of the first tier
@@ -1142,6 +1256,30 @@ def runWrite(manifest, surface):
     return EXIT_CLEAN
 
 
+def listedNames(surface, kinds):
+    """The lines of --list: each public name declared by a kind of @p kinds, with those of its kinds, sorted."""
+    lines = []
+    for name in sorted(surface.names):
+        nameKinds = sorted(surface.kinds.get(name, set()) & set(kinds))
+        if nameKinds:
+            lines.append(f"{name} {','.join(nameKinds)}")
+    return lines
+
+
+def runList(manifest, surface, kinds):
+    """Prints the public names (listedNames()), unless the surface is undetermined, as --write refuses to write."""
+    context = Context(manifest=manifest, surface=surface, unit=None, generatedText="")
+    findings = applyRules(context, [rule for rule in RULES if rule[0] in SURFACE_RULES])
+    if findings:
+        for finding in findings:
+            print(finding)
+        print("error: no names listed: the surface is undetermined", file=sys.stderr)
+        return EXIT_FINDINGS
+    for line in listedNames(surface, kinds):
+        print(line)
+    return EXIT_CLEAN
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--clang", required=True, help="the clang++ that dumps the AST (the pinned LLVM)")
@@ -1149,12 +1287,23 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="report what the interface unit lacks")
     mode.add_argument("--write", action="store_true", help="regenerate the interface unit")
+    mode.add_argument("--list", action="store_true",
+                      help="print the public names, one per line, each with the kinds that declare it")
+    parser.add_argument("--kinds", nargs="+", metavar="KIND",
+                        help=f"--list only the names a declaration of these kinds declares (of {', '.join(LISTED_KINDS)})")
     parser.add_argument("--work-directory", type=pathlib.Path,
                         help="where the umbrella, the dump and the BMIs go (default: a temporary directory)")
     parser.add_argument("--dump-size-limit-bytes", type=int, default=DUMP_SIZE_LIMIT_BYTES,
                         help="the ceiling of the AST dump")
     arguments = parser.parse_args()
+    kinds = arguments.kinds if arguments.kinds is not None else LISTED_KINDS
     try:
+        unlistedKinds = [kind for kind in kinds if kind not in LISTED_KINDS]
+        if unlistedKinds:
+            raise ToolError(f"--kinds {' '.join(unlistedKinds)}: no kind the lint lists a name by "
+                            f"({', '.join(LISTED_KINDS)})")
+        if arguments.kinds is not None and not arguments.list:
+            raise ToolError("--kinds selects what --list prints; it takes --list")
         manifest = readManifest(arguments.manifest.resolve())
         refuseContradictions(manifest)
         if arguments.work_directory is not None:
@@ -1164,6 +1313,8 @@ def main():
                                      arguments.dump_size_limit_bytes)
             if arguments.write:
                 return runWrite(manifest, surface)
+            if arguments.list:
+                return runList(manifest, surface, kinds)
             return runCheck(manifest, surface, arguments.clang, pathlib.Path(workDirectory))
     except ToolError as error:
         print(f"error: {error}", file=sys.stderr)

@@ -1,0 +1,3 @@
+isoline::api::Boxed: the export lint lists it (ConceptDecl), but members_of does not reflect it: a declaration only one compiler sees (an #if on the compiler), or a kind members_of does not report
+isoline::api::storeLimit: the export lint lists it (VarDecl), but members_of does not reflect it: a declaration only one compiler sees (an #if on the compiler), or a kind members_of does not report
+module surface: 2 differences among 12 names (1 left out: listed only by the kinds members_of does not reflect, UsingDecl)

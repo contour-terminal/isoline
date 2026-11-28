@@ -50,6 +50,8 @@ namespace
         { .word = "before", .side = PlacementSide::Before },
         { .word = "after", .side = PlacementSide::After },
     });
+    static_assert(meta::firstRepeatedKey(SideWords, &SideWord::word) == meta::NoRepeatedKey,
+                  "SideWords must hold each word once, as the reader takes the first row it names");
 
     /// The error a second name of one entity is refused with, by the shape of its subsection
     /// (handler_name.ml's merge functions); indexed by NameShape.

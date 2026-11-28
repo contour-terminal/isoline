@@ -184,6 +184,7 @@ exclude src/isoline/runtime/Store.cpp bad-alloc std::bad_alloc from a table's st
 exclude src/isoline/text/ModuleWriter.cpp non-indirect-kind innerLimitOf() of a name kind whose NameSubsections row is not Indirect: every kind has a case and the direct ones end in core::unreachable(), as namesAreInRange() asks it of the Indirect rows only
 exclude src/isoline/validate/Validator.cpp special-default a Special opcode without a case: every one has a case or a MemoryAccessTable row
 
+src/isoline/Contracts.cpp                        100.00 -
 src/isoline/Features.hpp                         100.00 100.00
 src/isoline/Version.hpp                          100.00 -
 src/isoline/api/CallError.hpp                    100.00 -

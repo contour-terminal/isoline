@@ -1,0 +1,4 @@
+macro left defined: ISOLINE_POST in isoline/Contracts.hpp
+macro left defined: ISOLINE_NATIVE_ONLY in isoline/Contracts.hpp
+compiler conditional: `#ifdef __GNUC__` in isoline/Contracts.hpp names __GNUC__: an installed header reads the same on every compiler
+hint: regenerate <case>/module.cppm with --write (the target isoline_write_module_exports), once what it cannot fix above is fixed in the headers or in the row

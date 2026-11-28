@@ -19,7 +19,9 @@ CASES = pathlib.Path(__file__).resolve().parent / "testdata" / "contract-spellin
 
 # Every case the fixtures must hold: a case dropped from testdata fails here rather than passing unseen.
 EXPECTED_CASES = {
-    "comments-are-not-code", "contract-in-header", "loop-post-is-not-a-contract",
+    "comments-are-not-code", "contract-in-c-api", "contract-in-header", "declaration-contract-inline", "declaration-contract-unproven",
+    "declaration-contracts-pass",
+    "loop-post-is-not-a-contract",
     "meta-include-in-installed-header", "raw-contract-assert-in-cpp", "require-in-cpp",
     "require-over-its-row-count", "row-that-is-not-a-row", "seam-headers-exempt", "stale-row",
     "stale-row-named-like-a-call",
@@ -69,6 +71,16 @@ class ContractSpelling(unittest.TestCase):
     def test_literalsAreBlankedButKeepTheirQuotes(self):
         self.assertEqual(checker.codeOnly('auto s = "Require(x) // "; char c = \'"\';'),
                          'auto s = "              "; char c = \' \';')
+
+    def test_findingsPrintInPathThenLineOrderOnEveryOperatingSystem(self):
+        # Windows walks and compares paths case-insensitively, so its filesystem order is not POSIX's: the
+        # order is the findings' text, `/`-separated, then the line as a number.
+        findings = ["src/isoline/c/detail/Handles.hpp:10: rule: x", "src\\isoline\\c\\Wasm.cpp:9: rule: x",
+                    "src/isoline/c/Wasm.cpp:10: rule: x", "scripts/contract-spelling-rows.txt:2: not a row"]
+        expected = ["scripts/contract-spelling-rows.txt:2: not a row", "src\\isoline\\c\\Wasm.cpp:9: rule: x",
+                    "src/isoline/c/Wasm.cpp:10: rule: x", "src/isoline/c/detail/Handles.hpp:10: rule: x"]
+        self.assertEqual(sorted(findings, key=checker.findingOrder), expected)
+        self.assertEqual(sorted(reversed(findings), key=checker.findingOrder), expected)
 
 
 if __name__ == "__main__":

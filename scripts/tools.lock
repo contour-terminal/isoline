@@ -50,6 +50,17 @@ llvm.archive.x86_64-linux = LLVM-{version}-Linux-X64.tar.xz
 llvm.executable.x86_64-linux = LLVM-{version}-Linux-X64/bin/clang++
 llvm.sha256.x86_64-linux = cee77d641690466a193d9b88c89705de1c02bbad46bde6a3b126793c0a0f2923
 
+# The Clang the export lint runs where the job's own compiler is no LLVM 22 Clang (.github/workflows/build.yml,
+# linux-gcc-cxx26): the major of ISOLINE_MODULE_LINT_LLVM_MAJOR (cmake/IsolineModuleSupport.cmake), passed as
+# ISOLINE_MODULE_LINT_CLANG. The SHA-256 is of the archive whose detached signature (.sig) verified against
+# releases.llvm.org's release keys (Douglas Yung's, FFB3368980F3E6BB5737145A316C56D064CACBA5) on 2026-11-27,
+# and equals the digest GitHub reports for the release asset.
+llvm-lint.version = 22.1.8
+llvm-lint.url = https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/{archive}
+llvm-lint.archive.x86_64-linux = LLVM-{version}-Linux-X64.tar.xz
+llvm-lint.executable.x86_64-linux = LLVM-{version}-Linux-X64/bin/clang++
+llvm-lint.sha256.x86_64-linux = df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384
+
 # The spec suites scripts/import-spec-tests.py imports, one source per name that tests/spec/files.txt
 # rows start with: `source.<name>.repository` and the `source.<name>.commit` imported.
 

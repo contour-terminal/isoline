@@ -1,0 +1,5 @@
+isoline::api::AnonymousConstant EnumConstantDecl
+isoline::api::KindFunction EnumConstantDecl
+isoline::api::Value UsingDecl
+isoline::api::open FunctionDecl
+isoline::api::operator< FunctionDecl

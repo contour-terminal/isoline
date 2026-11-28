@@ -7,6 +7,7 @@
 #include <memory>
 #include <span>
 
+#include <isoline/Contracts.hpp>
 #include <isoline/Features.hpp>
 #include <isoline/api/EngineIdentity.hpp>
 #include <isoline/api/Module.hpp>
@@ -120,7 +121,8 @@ class Engine
     /// An engine of @p config.
     /// @param config Its configuration. Its feature set must be closed (checked: an unclosed set is a
     ///               programming error of the embedder; FeatureSet::withPrerequisites() closes one).
-    explicit Engine(EngineConfig config) noexcept;
+    explicit Engine(EngineConfig config) noexcept
+        ISOLINE_PRE(config.features.checkPrerequisites().has_value());
 
     /// The configuration it was constructed with.
     /// @return The configuration.
