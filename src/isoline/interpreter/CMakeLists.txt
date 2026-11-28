@@ -161,7 +161,8 @@ if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU" OR (NOT CMAKE_CXX_COMPILER
     else()
         set(isolineDispatchFrameOptions "$<IF:${isolineOptimized},-Wframe-larger-than=4096,-fstack-usage>")
     endif()
-    # Source properties are per directory: these are the ones of isoline_core's, which compiles the files.
+    # Source properties are per directory: these are the ones of isoline_core's, which compiles the files, and
+    # its PIC twin copies them (cmake/IsolinePicTwins.cmake).
     set_property(SOURCE ${isolineDispatchSources} TARGET_DIRECTORY isoline_core
                  APPEND PROPERTY COMPILE_OPTIONS ${isolineDispatchFrameOptions})
 endif()
@@ -194,3 +195,4 @@ target_sources(isoline_core
             SlotCodec.hpp
             TailCall.hpp
             "${isolineInterpreterAvailabilityHeader}")
+
