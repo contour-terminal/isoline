@@ -43,6 +43,12 @@ Wasmtime is the oracle of results and traps for import-free modules whose export
 | Divergences once found | `regressions/<seed>.wasm` | `CorpusReplay.everyRegressionAgrees` (unit) |
 | 10'000 `wasm-tools smith` modules | `out/corpus/differential/` (never committed) | `ctest -L differential` |
 
+The unit run (`isoline_differential_test`, label `unit`) compares every spec binary on every engine, both
+lanes and both observation modes. ThreadSanitizer is too slow for all of them within the test's timeout, so
+the `clang-tsan` preset sets `ISOLINE_DIFFERENTIAL_SPEC_SAMPLE=8`: it compares the binaries whose index is
+divisible by 8, the same eighth lane 2 samples on a pull request. Every other preset, ASan's among them,
+compares them all; the corpus replay is never run under ThreadSanitizer.
+
 ## Running the corpus
 
 The replay is `ISOLINE_DIFFERENTIAL_SHARDS` ctest entries (8 by default), one per contiguous run of seeds,

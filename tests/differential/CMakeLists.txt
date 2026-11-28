@@ -43,11 +43,19 @@ target_compile_definitions(isoline_differential_test PRIVATE ISOLINE_SOURCE_DIR=
 isoline_apply_target_policy(isoline_differential_test TEST)
 
 # The unit run: every case but the corpus replay and the [memory] cases. The spec binaries run on every
-# engine, both lanes and both observation modes, which takes a while under a sanitizer or an emulator.
+# engine, both lanes and both observation modes, which takes a while under a sanitizer or an emulator; a
+# preset whose sanitizer is too slow for all of them (clang-tsan) compares the sample
+# ISOLINE_DIFFERENTIAL_SPEC_SAMPLE names, and every other preset compares them all.
+set(ISOLINE_DIFFERENTIAL_SPEC_SAMPLE 1 CACHE STRING
+    "The unit run compares the spec binaries whose index is divisible by this: 1 (all), 8 under ThreadSanitizer")
+if(NOT ISOLINE_DIFFERENTIAL_SPEC_SAMPLE MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "ISOLINE_DIFFERENTIAL_SPEC_SAMPLE must be a positive whole number, not '${ISOLINE_DIFFERENTIAL_SPEC_SAMPLE}'.")
+endif()
 math(EXPR isolineDifferentialTimeout "900 * ${ISOLINE_TEST_TIMEOUT_FACTOR}")
 # ProcessRunner's case starts the child itself, so a cross toolchain's ISOLINE_EMULATED_CHILD_ENVIRONMENT
 # (the qemu sysroot) goes with it.
 set(isolineDifferentialEnvironment "ISOLINE_DIFFERENTIAL_CHILD=$<TARGET_FILE:isoline_differential_child>")
+list(APPEND isolineDifferentialEnvironment "ISOLINE_DIFFERENTIAL_SPEC_SAMPLE=${ISOLINE_DIFFERENTIAL_SPEC_SAMPLE}")
 list(APPEND isolineDifferentialEnvironment ${ISOLINE_EMULATED_CHILD_ENVIRONMENT})
 add_test(NAME isoline_differential_test COMMAND isoline_differential_test "~[.] ~[memory] ~[differential]")
 set_tests_properties(isoline_differential_test PROPERTIES

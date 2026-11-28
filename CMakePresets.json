@@ -81,7 +81,8 @@
                 "debug"
             ],
             "cacheVariables": {
-                "ISOLINE_SANITIZE": "thread"
+                "ISOLINE_SANITIZE": "thread",
+                "ISOLINE_DIFFERENTIAL_SPEC_SAMPLE": "8"
             }
         },
         {
