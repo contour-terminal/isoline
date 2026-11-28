@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <core/Utils.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -21,6 +23,7 @@
 #include "DifferentialRunner.hpp"
 #include "Observation.hpp"
 #include "Reach.hpp"
+#include "testing/EnvironmentNumber.hpp"
 #include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
@@ -315,12 +318,18 @@ void requireAgreement(std::span<std::byte const> module,
 
 TEST_CASE("Differential.agreesOnTheSpecSelftests")
 {
-    // R15: the corpus is every binary of the committed spec suite, whatever its fixture format.
+    // R15: the corpus is every binary of the committed spec suite, whatever its fixture format; a build whose
+    // ISOLINE_DIFFERENTIAL_SPEC_SAMPLE is above 1 (ThreadSanitizer's) compares the binaries whose index it
+    // divides.
     auto const binaries = specBinaries();
     REQUIRE(binaries.size() > 1'000);
+    auto const scope =
+        ReplayScope { .sample = testing::numberFromEnvironment("ISOLINE_DIFFERENTIAL_SPEC_SAMPLE", 1) };
     auto compared = std::size_t { 0 };
-    for (auto const& path: binaries)
+    for (auto const [index, path]: core::views::enumerate(binaries))
     {
+        if (!isSampled(index, scope))
+            continue;
         auto const module = readModule(path);
         REQUIRE(module.has_value());
         if (loadForComparison(*module))
@@ -329,7 +338,7 @@ TEST_CASE("Differential.agreesOnTheSpecSelftests")
         requireAgreement(*module, seed, interruptionFor(seed), path.string());
     }
     // Most are invalid or malformed on purpose; the valid ones are compared.
-    CHECK(compared > 1'000);
+    CHECK(compared * std::max(scope.sample, uint64_t { 1 }) > 1'000);
 }
 
 TEST_CASE("Differential.reportsAPlantedDivergence")

@@ -3,7 +3,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -24,6 +23,7 @@
 #include "Observation.hpp"
 #include "ProcessRunner.hpp"
 #include "WasmtimeOracle.hpp"
+#include "testing/EnvironmentNumber.hpp"
 #include "testing/RecordedRunner.hpp"
 #include <isoline/text/TextLimits.hpp>
 #include <isoline/text/TopLevel.hpp>
@@ -49,19 +49,6 @@ constexpr auto MinAgreesPerSampledModule = 0.8;
     if (auto const directory = core::LiveEnvironment {}.get("ISOLINE_DIFFERENTIAL_CORPUS"))
         return *directory;
     return std::filesystem::path { ISOLINE_SOURCE_DIR } / "out" / "corpus" / "differential";
-}
-
-/// A whole number from the environment variable @p name, or @p fallback when it is unset.
-[[nodiscard]] uint64_t numberFromEnvironment(std::string_view name, uint64_t fallback)
-{
-    auto const text = core::LiveEnvironment {}.get(name);
-    if (!text)
-        return fallback;
-    auto value = uint64_t {};
-    auto const [end, error] = std::from_chars(text->data(), text->data() + text->size(), value);
-    if (error != std::errc {} || end != text->data() + text->size())
-        FAIL(std::format("{}={} is not a whole number", name, *text));
-    return value;
 }
 
 /// A directory of the build's own for the oracle's modules and outputs, removed with its scope.
@@ -209,11 +196,12 @@ TEST_CASE("CorpusReplay.everyCorpusModuleAgrees", "[differential]")
         SKIP(std::format("no corpus at {}: run scripts/make-differential-corpus.py", directory.string()));
     auto const all = corpusModules(directory);
     REQUIRE_FALSE(all.empty());
-    auto const shards = numberFromEnvironment("ISOLINE_DIFFERENTIAL_SHARDS", 1);
-    auto const shard = numberFromEnvironment("ISOLINE_DIFFERENTIAL_SHARD", 0);
+    auto const shards = testing::numberFromEnvironment("ISOLINE_DIFFERENTIAL_SHARDS", 1);
+    auto const shard = testing::numberFromEnvironment("ISOLINE_DIFFERENTIAL_SHARD", 0);
     REQUIRE(shard < shards);
     auto const modules = shardOf(all, shard, shards);
-    auto const scope = ReplayScope { .sample = numberFromEnvironment("ISOLINE_DIFFERENTIAL_SAMPLE", 1) };
+    auto const scope =
+        ReplayScope { .sample = testing::numberFromEnvironment("ISOLINE_DIFFERENTIAL_SAMPLE", 1) };
 
     // Wasmtime, where ISOLINE_WASMTIME names it: set and empty is a failed fetch, never a skipped oracle.
     auto const wasmtime = core::LiveEnvironment {}.get("ISOLINE_WASMTIME");
