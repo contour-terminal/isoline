@@ -1,0 +1,28 @@
+# Where the .wasm files of tests/component/text come from: the pinned wasm-tools (scripts/tools.lock)
+# encoding the .wat beside each, so that ComponentReader.corpusMatchesWasmTools and
+# ComponentReader.nameSectionMatchesOracle check the reader against an encoder other than Isoline's.
+# One `key = value` per line; '#' starts a comment. To make them again:
+#
+#     python3 -I scripts/fetch-tools.py
+#     for f in names sugar types canon more; do wasm-tools parse tests/component/text/$f.wat -o tests/component/text/$f.wasm; done
+#
+# then update the sha256 rows below. The components need not validate: they exercise the text format.
+#
+# Where the pinned wasm-tools diverges from the component model pin, the row is a `divergence` whose
+# reason has the skip-reason form `diverges from CM pin (Binary.md:<line>)`, the form the component
+# spec-test import (Task 19) names such a skip with. The fixtures leave out what a divergence covers.
+
+tool = wasm-tools 1.263.0
+tool.sha256.x86_64-linux = 21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431
+names.wasm.sha256 = 5ff9a78ba99dc776016ccb0dd148c6fbe1fe6f0087296639e4653f63d6030465
+sugar.wasm.sha256 = 4a398badd498eae00df525b1122f7c6a0283ee71c7fa2a0dc8da86fa0adca6da
+types.wasm.sha256 = e9879a1686f1e6b4e7699a798864f51037171d64220e30ea85c1abd8dcd88f93
+canon.wasm.sha256 = 1d13ae948677d291c42634dc2c52fef3fa94aef215014eb930d854f62f549d75
+more.wasm.sha256 = 212e9d57bb631d6da83ed7cf6f04c77ab4abd314229deb9c99c6955b31c66f21
+
+# The 🧵② built-ins thread.spawn-ref, thread.spawn-indirect and thread.available-parallelism: the pin
+# gives each a `sh?` byte, which wasm-encoder 0.263.0 does not write; Isoline encodes the pin's.
+divergence.thread-shared-byte = diverges from CM pin (Binary.md:350)
+# wast 0.263.0 spells the last of them `thread.available_parallelism`, the pin
+# `thread.available-parallelism`; Isoline reads the pin's.
+divergence.thread-available-parallelism-spelling = diverges from CM pin (Binary.md:352)

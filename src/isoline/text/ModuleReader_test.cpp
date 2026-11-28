@@ -51,6 +51,7 @@ using isoline::binary::Opcode;
 using isoline::binary::SegmentMode;
 using isoline::binary::ValueType;
 using isoline::text::compileText;
+using isoline::text::CoreForms;
 using isoline::text::ModuleReader;
 using isoline::text::NodeId;
 using isoline::text::parseSExpressions;
@@ -508,15 +509,15 @@ TEST_CASE("ModuleReader.scriptModuleForms")
     for (auto const* source: { "(module definition $d (func))", "(module $d (func))" })
     {
         INFO(source);
-        auto const bytes = compileText(source, TextLimits {});
+        auto const bytes = compileText(source, TextLimits {}, CoreForms);
         REQUIRE(bytes.has_value());
         auto const module = isoline::binary::decodeModule(*bytes, FeatureSet::all());
         REQUIRE(module.has_value());
         CHECK(namesOf(*module).module == "d");
         CHECK(module->code.size() == 1);
     }
-    auto const definition = compileText("(module definition (func))", TextLimits {});
-    auto const plain = compileText("(module (func))", TextLimits {});
+    auto const definition = compileText("(module definition (func))", TextLimits {}, CoreForms);
+    auto const plain = compileText("(module (func))", TextLimits {}, CoreForms);
     REQUIRE(definition.has_value());
     REQUIRE(plain.has_value());
     CHECK(*definition == *plain);
@@ -996,7 +997,7 @@ ReadInstructions readInstructions(std::string const& source, TextLimits const& l
 /// The bytes compileText() makes of @p source, which it must compile.
 std::vector<std::byte> compileSource(std::string const& source)
 {
-    auto bytes = compileText(source, TextLimits {});
+    auto bytes = compileText(source, TextLimits {}, CoreForms);
     INFO(source);
     if (!bytes)
         INFO(specMessage(bytes.error()));
@@ -2001,7 +2002,7 @@ TEST_CASE("ModuleReader.everyOpcodeRowRoundTrips")
         auto const fixture = isoline::binary::testing::fixtureOf(row);
         auto const source = moduleTextOf(fixture, bodyTextOf(row, fixture));
         INFO(source);
-        auto const text = compileText(source, TextLimits {});
+        auto const text = compileText(source, TextLimits {}, CoreForms);
         if (!text)
             INFO(specMessage(text.error()));
         REQUIRE(text.has_value());

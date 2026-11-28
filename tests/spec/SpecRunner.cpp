@@ -162,7 +162,7 @@ namespace
             case ModuleForm::Text:
             case ModuleForm::Quote: break;
         }
-        return text::compileText(source.text, text::TextLimits {})
+        return text::compileText(source.text, text::TextLimits {}, text::CoreForms)
             .transform_error([&](text::TextError const& error) { return textFailure(source, error); });
     }
 
@@ -793,7 +793,7 @@ namespace
     [[nodiscard]] std::expected<void, std::string> checkDivergence(Command const& command,
                                                                    std::string_view message)
     {
-        auto const compiled = text::compileText(command.source.text, text::TextLimits {});
+        auto const compiled = text::compileText(command.source.text, text::TextLimits {}, text::CoreForms);
         if (compiled)
             return std::unexpected { std::format(
                 "expected the recorded divergence '{}', but the text compiles", message) };

@@ -17,7 +17,7 @@ namespace isoline::text
 /// cases (`interpreter/text/lexer.mll`) that are no opcode's text, without the GC proposal's (Isoline
 /// implements no GC: neither its heap types, nofunc and noextern among them, nor their reference
 /// types), with custom-page-sizes' `pagesize`. With opcodeNamed() it is the vocabulary
-/// that tells a misplaced keyword from an unknown one. P11 adds the component model's keywords as rows.
+/// that tells a misplaced keyword from an unknown one; isKnownKeyword() adds the component model's.
 inline constexpr auto Keywords = std::to_array<std::string_view>({
     "assert_exception",
     "assert_exhaustion",
@@ -160,7 +160,8 @@ static_assert(meta::firstRepeatedKey(AddressTypeKeywords, &AddressTypeKeyword::k
 
 /// Whether a keyword is part of the text format's vocabulary.
 /// @param text The keyword.
-/// @return Whether it is a row of Keywords or an instruction's name (opcodeNamed()).
+/// @return Whether it is a row of Keywords, a keyword of component text, or an instruction's name
+///         (opcodeNamed()).
 [[nodiscard]] bool isKnownKeyword(std::string_view text) noexcept;
 
 /// The error a node is refused with where the grammar does not admit it, as the reference reports it.

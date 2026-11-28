@@ -32,7 +32,7 @@ target_sources(isoline_cli
             IsolineApp.hpp
             VerbArguments.hpp
             Verbs.hpp)
-target_link_libraries(isoline_cli PUBLIC isoline::text core::cli core::platform)
+target_link_libraries(isoline_cli PUBLIC isoline::text isoline::component_text core::cli core::platform)
 isoline_apply_target_policy(isoline_cli)
 
 add_executable(isoline main.cpp ${isolineCliEntry} ${isolineCliHost})

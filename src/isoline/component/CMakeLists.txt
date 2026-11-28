@@ -66,13 +66,32 @@ target_compile_features(isoline_component PUBLIC cxx_std_23)
 target_link_libraries(isoline_component PUBLIC isoline::core)
 isoline_apply_target_policy(isoline_component)
 
+# Component text (Task 18): isoline_component_text reads and writes the component text format, on
+# isoline_text and isoline_component; isoline_text never links it back (D13).
+add_library(isoline_component_text STATIC)
+add_library(isoline::component_text ALIAS isoline_component_text)
+target_sources(isoline_component_text
+    PRIVATE
+        text/ComponentReader.cpp
+        text/ComponentWriter.cpp
+        text/Forms.cpp
+    PUBLIC FILE_SET HEADERS
+        BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
+        FILES
+            text/ComponentReader.hpp
+            text/ComponentWriter.hpp
+            text/Forms.hpp)
+target_link_libraries(isoline_component_text PUBLIC isoline::component isoline::text)
+isoline_apply_target_policy(isoline_component_text)
+
 if(ISOLINE_TESTING)
     # Every *_test.cpp under src/isoline/component/ is one translation unit of the component unit-test
     # binary; isoline_test leaves them out.
     file(GLOB_RECURSE isolineComponentTestSources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*_test.cpp")
     add_executable(isoline_component_test ${isolineComponentTestSources})
     # The store and call tests write their core modules in the text format.
-    target_link_libraries(isoline_component_test PRIVATE isoline::component isoline::text Catch2::Catch2WithMain)
+    target_link_libraries(isoline_component_test PRIVATE isoline::component isoline::component_text isoline::text
+                          Catch2::Catch2WithMain)
     isoline_apply_target_policy(isoline_component_test TEST)
     # The deep-nesting call tests run on threads of a measured stack size (runtime/testing/StackThread.hpp).
     if(WIN32)

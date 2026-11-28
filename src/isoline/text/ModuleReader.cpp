@@ -1296,4 +1296,13 @@ std::expected<binary::Module, TextError> ModuleReader::readInline(SExpressionTre
     return reader.read(NoNode, tree.firstTopLevel(), NoNode);
 }
 
+std::expected<binary::Module, TextError> ModuleReader::readFields(SExpressionTree const& tree,
+                                                                  NodeId list,
+                                                                  NodeId first,
+                                                                  NodeId name) const
+{
+    auto reader = FieldReader { tree, _limits };
+    return reader.read(list, first, name);
+}
+
 } // namespace isoline::text

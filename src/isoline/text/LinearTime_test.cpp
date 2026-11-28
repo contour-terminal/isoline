@@ -25,6 +25,7 @@
 #include <isoline/text/testing/Growth.hpp>
 
 using isoline::text::compileText;
+using isoline::text::CoreForms;
 using isoline::text::ModuleWriter;
 using isoline::text::TextErrorCode;
 using isoline::text::TextLimits;
@@ -51,7 +52,7 @@ std::string repeated(std::string_view unit, std::size_t count)
 /// Compiles @p source, which must fail with @p code.
 void refuse(std::string const& source, TextErrorCode code)
 {
-    auto const compiled = compileText(source, TextLimits {});
+    auto const compiled = compileText(source, TextLimits {}, CoreForms);
     REQUIRE_FALSE(compiled.has_value());
     CHECK(compiled.error().code == code);
 }
@@ -269,7 +270,7 @@ TEST_CASE("LinearTime.craftedNamesCostWhatOthersDo", "[linear-time]")
         auto const craftedSource = moduleOf(shape, crafted);
         auto const controlSource = moduleOf(shape, control);
         auto const compile = [](std::string const& source) {
-            auto bytes = compileText(source, TextLimits {});
+            auto bytes = compileText(source, TextLimits {}, CoreForms);
             REQUIRE(bytes.has_value());
             return std::move(*bytes);
         };

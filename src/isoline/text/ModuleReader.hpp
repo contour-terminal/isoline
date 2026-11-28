@@ -48,6 +48,19 @@ class ModuleReader
     /// @return The module, or the first error.
     [[nodiscard]] std::expected<binary::Module, TextError> readInline(SExpressionTree const& tree) const;
 
+    /// Reads the fields of a module another form holds: P11's `(core module $id? field*)` in a
+    /// component, whose leading tokens are the component's to read. The fields and the annotations
+    /// within @p list are the module's; @p name names it in the name section, as read() reads it.
+    /// @param tree The tree; its source must outlive the call.
+    /// @param list The list that holds the module.
+    /// @param first The first field, a child of @p list; NoNode for a module of no fields.
+    /// @param name The module's identifier, an Identifier atom; NoNode for none.
+    /// @return The module, or the first error.
+    [[nodiscard]] std::expected<binary::Module, TextError> readFields(SExpressionTree const& tree,
+                                                                      NodeId list,
+                                                                      NodeId first,
+                                                                      NodeId name) const;
+
   private:
     TextLimits _limits; ///< The caps on reading text.
 };

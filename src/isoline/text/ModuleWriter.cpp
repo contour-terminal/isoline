@@ -402,10 +402,12 @@ namespace
     /// back re-synthesizes the identical section at the identical place. The section must be the module's
     /// only one, after every custom section written raw and in the data section's slot, where the reader
     /// appends it (binary::SynthesizedSections); decode; name something; and name only what the reader can
-    /// name.
-    Names namesOf(Module const& module, HintRendering hints)
+    /// name. NameSectionForm::Custom writes it raw regardless.
+    Names namesOf(Module const& module, HintRendering hints, NameSectionForm form)
     {
         auto names = Names {};
+        if (form == NameSectionForm::Custom)
+            return names;
         auto const isName = [](CustomSection const& custom) {
             return custom.name == binary::NameSectionName;
         };
@@ -484,7 +486,7 @@ namespace
             _options { options },
             _baseLevel { baseLevel },
             _hints { hintRenderingOf(module) },
-            _names { namesOf(module, _hints) },
+            _names { namesOf(module, _hints, options.nameSection) },
             _importedFunctions { static_cast<uint32_t>(module.importedCount(ExternKind::Func)) }
         {
         }

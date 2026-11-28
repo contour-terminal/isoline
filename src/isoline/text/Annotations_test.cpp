@@ -38,6 +38,7 @@ using isoline::binary::Opcode;
 using isoline::binary::SectionAnchor;
 using isoline::text::AnnotationKind;
 using isoline::text::compileText;
+using isoline::text::CoreForms;
 using isoline::text::CustomPlacement;
 using isoline::text::NodeId;
 using isoline::text::parseSExpressions;
@@ -76,7 +77,7 @@ TextError readError(std::string_view source, TextLimits limits = {})
 /// The bytes @p source compiles to, which it must.
 std::vector<std::byte> compiled(std::string_view source, TextLimits limits = {})
 {
-    auto bytes = compileText(source, limits);
+    auto bytes = compileText(source, limits, CoreForms);
     INFO(source);
     if (!bytes)
         INFO(specMessage(bytes.error()));
@@ -258,7 +259,7 @@ TEST_CASE("Annotations.customPlacement")
         auto limits = TextLimits {};
         limits.maxModuleBytes = 64;
         auto const big = std::string { R"wat((@custom "c" ")wat" } + std::string(100, 'x') + "\")";
-        auto const refused = compileText(big, limits);
+        auto const refused = compileText(big, limits, CoreForms);
         REQUIRE_FALSE(refused.has_value());
         CHECK(refused.error().code == TextErrorCode::OutputTooLarge);
     }
@@ -312,7 +313,7 @@ TEST_CASE("Annotations.customErrors")
             CHECK(read.code == TextErrorCode::MisplacedAnnotation);
             CHECK(stageOf(read.code) == TextErrorStage::Custom);
             CHECK(specMessage(read) == "misplaced annotation");
-            auto const compiledText = compileText(source, TextLimits {});
+            auto const compiledText = compileText(source, TextLimits {}, CoreForms);
             REQUIRE_FALSE(compiledText.has_value());
             CHECK(compiledText.error().code == TextErrorCode::MisplacedAnnotation);
         }

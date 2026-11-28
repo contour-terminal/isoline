@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <expected>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -24,8 +25,8 @@ namespace isoline::text
                                                                                  NodeId form,
                                                                                  TextLimits const& limits);
 
-/// Refuses a `(component …)` node: component text needs the component model, which P11 adds by
-/// replacing this function's TopLevelForms row.
+/// Refuses a `(component …)` node: component text needs the component model, which isoline_text does not
+/// link; component::text::Forms reads it instead, a table of its own (D13).
 /// @param tree The tree.
 /// @param form The `(component …)` list.
 /// @param limits The caps on reading text; unused.
@@ -46,24 +47,27 @@ struct TopLevelForm
     TopLevelReader read;      ///< What compiles it.
 };
 
-/// Every kind of form a whole text may hold. Adding one is adding a row.
-inline constexpr auto TopLevelForms = std::to_array<TopLevelForm>({
+/// The forms a core-only text may hold: a module, and a component refused. Adding a form is adding a
+/// row; component::text::Forms is this table with the component row read.
+inline constexpr auto CoreForms = std::to_array<TopLevelForm>({
     { .keyword = "module", .read = &compileCoreModule },
     { .keyword = "component", .read = &refuseComponent },
 });
 
-static_assert(meta::firstRepeatedKey(TopLevelForms, &TopLevelForm::keyword) == meta::NoRepeatedKey,
-              "TopLevelForms must hold each keyword once, as compileText() takes the first row it names");
+static_assert(meta::firstRepeatedKey(CoreForms, &TopLevelForm::keyword) == meta::NoRepeatedKey,
+              "CoreForms must hold each keyword once, as compileText() takes the first row it names");
 
 /// Compiles a whole text to a binary.
 ///
-/// When the text's first node (annotations aside) is a list whose keyword is a TopLevelForms row, it
-/// must be the text's only node, and its row compiles it. Otherwise the text is a bare sequence of
-/// module fields, an inline module (spec §6.6.13), which an empty text is too.
+/// When the text's first node (annotations aside) is a list whose keyword is a row of @p forms, it must
+/// be the text's only node, and its row compiles it. Otherwise the text is a bare sequence of module
+/// fields, an inline module (spec §6.6.13), which an empty text is too.
 /// @param source The text.
 /// @param limits The caps on reading text.
+/// @param forms The forms the text may hold: CoreForms by default, so a core-only consumer names no
+///              table; component::text::Forms for components (D13).
 /// @return The binary, or the first error.
-[[nodiscard]] std::expected<std::vector<std::byte>, TextError> compileText(std::string_view source,
-                                                                           TextLimits const& limits);
+[[nodiscard]] std::expected<std::vector<std::byte>, TextError> compileText(
+    std::string_view source, TextLimits const& limits, std::span<TopLevelForm const> forms = CoreForms);
 
 } // namespace isoline::text

@@ -53,7 +53,7 @@ inline constexpr auto Engines = std::to_array<isoline::api::ExecutionEngine>({
 /// @return Its bytes.
 [[nodiscard]] inline std::vector<std::byte> coreModule(std::string_view source)
 {
-    auto bytes = isoline::text::compileText(source, isoline::text::TextLimits {});
+    auto bytes = isoline::text::compileText(source, isoline::text::TextLimits {}, isoline::text::CoreForms);
     REQUIRE(bytes.has_value());
     return std::move(*bytes);
 }

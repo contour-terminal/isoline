@@ -16,6 +16,16 @@
 namespace isoline::text
 {
 
+/// How a ModuleWriter writes a module's name section.
+enum class NameSectionForm : uint8_t
+{
+    /// As identifiers and `@name` annotations wherever reading them back re-synthesizes the section.
+    Identifiers,
+    /// Always as its raw `(@custom "name" …)`: P11 nests core modules in component text, where an
+    /// identifier on `(core module …)` would name the module in the component's name section too.
+    Custom,
+};
+
 /// How a ModuleWriter lays out its text, and the most text it may produce.
 struct WriterOptions
 {
@@ -41,6 +51,8 @@ struct WriterOptions
     /// The writer refuses a module as its text reaches this limit. 1 GiB: the reader accepts no larger
     /// source (TextLimits::maxSourceBytes).
     std::size_t maxTextBytes = TextLimits {}.maxSourceBytes;
+    /// How the name section is written.
+    NameSectionForm nameSection = NameSectionForm::Identifiers;
 };
 
 /// Why a ModuleWriter refused to write a module.

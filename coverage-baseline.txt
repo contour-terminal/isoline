@@ -253,9 +253,15 @@
 # LiftLower,LiftSteps,Strings,Trap,Unicode}): every line covered but the marked ones, each listed below with its reason; the untaken
 # branches are Requires' failing sides and error returns of a guest memory that cannot fail where it was just checked.
 
+
+# src/isoline/cli/Verbs.cpp's line entry was lowered to 96.91 by Task 18: componentLoadFailure()'s branches past
+# validation and decoding (a loader refusing what its engine validated, the host's memory, another engine's
+# modules) are marked (component-load-after-validation), and the marked lines count against the percentage.
+
 exclude src/isoline/api/Store.cpp unknown-engine makeExecutor() of an ExecutionEngine without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
+exclude src/isoline/cli/Verbs.cpp component-load-after-validation componentLoadFailure()'s one branch for what is neither a validation nor a decode error: the component's core modules validated in the engine that loads them, so only the host's memory or another engine's modules, which the tool never makes, could refuse it
 exclude src/isoline/component/api/ComponentStore.cpp exhaustive-switch hostFailureText()'s fall-through after a switch over every HostFailureKind
 exclude src/isoline/component/api/ComponentStore.cpp host-memory std::bad_alloc or std::length_error while resolving or instantiating: the host out of memory, which no test injects into the linker's or the store's containers
 exclude src/isoline/component/api/ComponentStore.cpp split-yields-a-segment ComponentInstance::function() of a path that std::views::split yields no segment of: even the empty path yields one
@@ -283,6 +289,10 @@ exclude src/isoline/component/runtime/ComponentStore.cpp host-memory std::bad_al
 exclude src/isoline/component/runtime/ComponentStore.cpp prechecked a host resource type past maxResourceTypes while the imports are converted: checkImports() counted the identities the imports mint against the cap before any step
 exclude src/isoline/component/runtime/ComponentStore.cpp validated-slot a slot holding another kind of value than its validated sort says (a function slot without a function, an instance alias of a non-instance, a missing export), an import of a sort validation refuses, or a host instance converted outside run(): checkImports() and validation rule each out before any step
 exclude src/isoline/component/runtime/HandleTable.cpp chunk-allocation std::bad_alloc growing a handle table's chunk: the host out of memory, which no test injects; the charge is released and the exception propagates
+exclude src/isoline/component/text/ComponentReader.cpp exhaustive-switch canonIndex()'s fall-through after a switch over every IndexSyntax: None and LiftType are never read from the text (canonBody() handles LiftType)
+exclude src/isoline/component/text/ComponentReader.cpp lexed-number natural32() of a Keyword that starts with a digit yet is no number: the lexer reads such a word as a number or a Reserved token
+exclude src/isoline/component/text/ComponentReader.cpp lexed-string decodeString() of a String token the lexer read, which it validated already
+exclude src/isoline/component/text/ComponentWriter.cpp exhaustive-switch coreExternTypeText()'s fall-through after a switch over every ExternKind
 exclude src/isoline/component/types/TypeArena.cpp resource-rebuild substitute()'s rebuild of a resource: a resource's image is the substitution's, read by imageOf() before any type is rebuilt, so the walk never pushes one
 exclude src/isoline/component/validate/CoreTypes.hpp exhaustive-switch the fall-through after matchCoreEntity()'s switch over every core extern kind, each case of which returns; -Wswitch makes a new kind without a case a build error, and a static_assert counts the kinds
 exclude src/isoline/component/validate/Subtyping.cpp exhaustive-switch the fall-through after a switch whose every case returns (advanceComponent's phases, advance's frame kinds, context()'s context arguments and frame kinds); -Wswitch makes a new enumerator without a case a build error
@@ -365,7 +375,7 @@ src/isoline/cli/HostPosix.cpp                    100.00 -
 src/isoline/cli/IsolineApp.cpp                   100.00 100.00
 src/isoline/cli/VerbArguments.cpp                100.00 100.00
 src/isoline/cli/VerbArguments.hpp                100.00 -
-src/isoline/cli/Verbs.cpp                        100.00 100.00
+src/isoline/cli/Verbs.cpp                        96.91 100.00
 src/isoline/cli/Verbs.hpp                        100.00 -
 src/isoline/cli/main.cpp                         100.00 100.00
 src/isoline/component/Features.hpp               100.00 100.00
@@ -373,15 +383,15 @@ src/isoline/component/Limits.hpp                 100.00 -
 src/isoline/component/api/CallError.hpp          100.00 -
 src/isoline/component/api/Component.cpp          100.00 95.23
 src/isoline/component/api/Component.hpp          100.00 -
-src/isoline/component/api/ComponentStore.cpp     97.81 87.95
-src/isoline/component/api/ComponentStore.hpp     100.00 75.00
+src/isoline/component/api/ComponentStore.cpp     98.28 90.00
+src/isoline/component/api/ComponentStore.hpp     100.00 90.90
 src/isoline/component/api/Linker.cpp             97.88 90.36
 src/isoline/component/api/Linker.hpp             100.00 -
-src/isoline/component/api/Typed.hpp              96.05 72.80
+src/isoline/component/api/Typed.hpp              96.47 73.12
 src/isoline/component/binary/Component.hpp       100.00 100.00
-src/isoline/component/binary/Decoder.cpp         99.74 97.70
+src/isoline/component/binary/Decoder.cpp         99.74 97.86
 src/isoline/component/binary/Decoder.hpp         100.00 83.33
-src/isoline/component/binary/Encoder.cpp         100.00 84.87
+src/isoline/component/binary/Encoder.cpp         100.00 85.97
 src/isoline/component/binary/Encoder.hpp         100.00 -
 src/isoline/component/canonical/GuestMemory.cpp  100.00 88.88
 src/isoline/component/canonical/GuestMemory.hpp  100.00 -
@@ -406,8 +416,14 @@ src/isoline/component/runtime/ComponentStore.cpp 96.47 83.13
 src/isoline/component/runtime/ComponentStore.hpp 100.00 -
 src/isoline/component/runtime/HandleTable.cpp    95.83 86.66
 src/isoline/component/runtime/HandleTable.hpp    100.00 100.00
-src/isoline/component/runtime/Resources.cpp      100.00 79.50
+src/isoline/component/runtime/Resources.cpp      100.00 80.32
 src/isoline/component/runtime/Resources.hpp      100.00 100.00
+src/isoline/component/text/ComponentReader.cpp   99.76 98.19
+src/isoline/component/text/ComponentReader.hpp   100.00 -
+src/isoline/component/text/ComponentWriter.cpp   99.80 95.10
+src/isoline/component/text/ComponentWriter.hpp   100.00 -
+src/isoline/component/text/Forms.cpp             100.00 100.00
+src/isoline/component/text/Forms.hpp             100.00 100.00
 src/isoline/component/types/TypeArena.cpp        100.00 92.11
 src/isoline/component/types/TypeArena.hpp        100.00 100.00
 src/isoline/component/validate/CoreTypes.cpp     100.00 100.00
@@ -456,11 +472,11 @@ src/isoline/text/InstructionReader.hpp           100.00 -
 src/isoline/text/Instructions.cpp                100.00 100.00
 src/isoline/text/Instructions.hpp                100.00 -
 src/isoline/text/IntegerLiteral.cpp              100.00 100.00
-src/isoline/text/Keywords.cpp                    100.00 93.33
+src/isoline/text/Keywords.cpp                    100.00 93.75
 src/isoline/text/Lexer.cpp                       100.00 97.02
 src/isoline/text/Lexer.hpp                       100.00 -
 src/isoline/text/LiteralError.hpp                100.00 -
-src/isoline/text/ModuleReader.cpp                100.00 99.03
+src/isoline/text/ModuleReader.cpp                100.00 99.23
 src/isoline/text/ModuleReader.hpp                100.00 -
 src/isoline/text/ModuleWriter.cpp                98.70 94.49
 src/isoline/text/ModuleWriter.hpp                100.00 -

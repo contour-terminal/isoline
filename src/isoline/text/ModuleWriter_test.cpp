@@ -61,7 +61,9 @@ using isoline::binary::SegmentMode;
 using isoline::binary::testing::ModuleBuilder;
 using isoline::binary::testing::opcodeRowModules;
 using isoline::text::compileText;
+using isoline::text::CoreForms;
 using isoline::text::ModuleWriter;
+using isoline::text::NameSectionForm;
 using isoline::text::TextLimits;
 using isoline::text::WriteError;
 using isoline::text::WriterOptions;
@@ -107,7 +109,7 @@ std::string written(Module const& module)
 /// The binary @p text compiles to, which it must.
 std::vector<std::byte> compiled(std::string const& text)
 {
-    auto bytes = compileText(text, TextLimits {});
+    auto bytes = compileText(text, TextLimits {}, CoreForms);
     if (!bytes)
         INFO(isoline::text::specMessage(bytes.error())
              << " at " << bytes.error().position.line << ':' << bytes.error().position.column);
@@ -434,6 +436,22 @@ TEST_CASE("ModuleWriter.nameBeforeProducersStaysRaw")
     CHECK_FALSE(text.contains("$"));
     checkCanonicalRoundTrip(bytes);
     CHECK(compiled(text) == bytes);
+}
+
+TEST_CASE("ModuleWriter.nameSectionFormCustomStaysRaw")
+{
+    // A name section identifiers would re-synthesize is still written raw when asked, as component
+    // text asks for a core module that names itself.
+    auto module = named(oneFunction({}), functionNames({ NameAssoc { .index = 0, .name = "f" } }));
+    auto const bytes = encodeModule(module);
+    CHECK(written(decoded(bytes)).contains("$f"));
+    auto const text =
+        ModuleWriter { WriterOptions { .nameSection = NameSectionForm::Custom } }.write(decoded(bytes));
+    REQUIRE(text.has_value());
+    INFO(*text);
+    CHECK(text->contains("(@custom \"name\""));
+    CHECK_FALSE(text->contains("$"));
+    CHECK(compiled(*text) == bytes);
 }
 
 TEST_CASE("ModuleWriter.unsynthesizableSectionsStayRaw")

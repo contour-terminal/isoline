@@ -175,8 +175,9 @@ isoline disassemble app.wasm -o app.wat    # a binary module to text
 write a binary to a terminal, and both verbs refuse an output that names their input. Options may
 come before or after the input. `--features wasm3` accepts WebAssembly 3.0 alone; the default,
 `--features all`, also accepts every proposal Isoline implements. `compile` decodes and validates what
-it compiles; `disassemble` writes any module that decodes, valid or not. A component, as text or as a
-binary, is refused until Isoline has the component model. Diagnostics go to standard error, one line
+it compiles; `disassemble` writes any module that decodes, valid or not. Both take components too:
+`compile` reads component text and validates the component under the WASI 0.3 features, and
+`disassemble` writes a component's text, its core modules nested. Diagnostics go to standard error, one line
 each, as `app.wat:3:7: error: …` for text, `app.wasm: error at offset 0x1f: …` for a binary, and
 `app.wat: error: function 0, instruction 2: …` for a module that does not validate.
 
@@ -212,7 +213,6 @@ The exit status says why a run failed:
 | 1 | the text is malformed |
 | 1 | the binary is malformed |
 | 1 | the module is invalid |
-| 1 | the binary is a component |
 | 1 | the module's text would be too large |
 | 1 | a page size the text format cannot say |
 

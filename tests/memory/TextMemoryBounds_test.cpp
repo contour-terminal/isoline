@@ -35,6 +35,7 @@
 
 using isoline::testing::AllocationScope;
 using isoline::text::compileText;
+using isoline::text::CoreForms;
 using isoline::text::ModuleWriter;
 using isoline::text::parseSExpressions;
 using isoline::text::TextError;
@@ -143,7 +144,7 @@ std::expected<std::vector<std::byte>, TextError> compileWithin(std::string_view 
     auto compileBytes = std::size_t { 0 };
     {
         auto const scope = AllocationScope { bound };
-        compiled = compileText(source, limits);
+        compiled = compileText(source, limits, CoreForms);
         compileBytes = scope.peakBytes();
     }
     CAPTURE(source.size(), bound, compileBytes);

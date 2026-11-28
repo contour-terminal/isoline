@@ -45,7 +45,6 @@ enum class Refusal : uint8_t
     TextMalformed,       ///< The text does not read as a module, component text included.
     ModuleMalformed,     ///< The binary does not decode.
     ModuleInvalid,       ///< The module decodes but does not validate.
-    ComponentBinary,     ///< The binary is a component, which needs the component model.
     TextTooLarge,        ///< The module's text would be larger than the text limit.
     PageSizeNotWritable, ///< A memory's page size is one the text format cannot say.
 };
@@ -96,9 +95,6 @@ inline constexpr auto Refusals = std::to_array<RefusalRow>({
     { .refusal = Refusal::ModuleInvalid,
       .exitCode = ExitCode::InputRejected,
       .meaning = "the module is invalid" },
-    { .refusal = Refusal::ComponentBinary,
-      .exitCode = ExitCode::InputRejected,
-      .meaning = "the binary is a component" },
     { .refusal = Refusal::TextTooLarge,
       .exitCode = ExitCode::InputRejected,
       .meaning = "the module's text would be too large" },
@@ -189,8 +185,10 @@ struct VerbContext
     text::TextLimits limits;
 };
 
-/// Compiles a text module to a binary: reads it, compiles it, loads it into an api::Engine of the
-/// chosen features (which decodes and validates it, spec §13's thin client), and writes it.
+/// Compiles a text module or component to a binary: reads it, compiles it (component::text::Forms),
+/// loads it into an api::Engine of the chosen features (which decodes and validates it, spec §13's thin
+/// client) or, for a component, through component::api::Component::load() under the WASI 0.3 features,
+/// and writes it.
 ///
 /// A text error is reported at its place, `<input>:<line>:<column>: error: <message>`. A decode or
 /// validation error has no place in the text (the compiled binary carries no source map), so it is
@@ -262,14 +260,16 @@ struct BinaryFormat
                                                                         VerbContext const& context,
                                                                         std::string_view input);
 
-/// Refuses a component: its text needs the component model, which P11 adds by replacing this row.
-/// @param bytes The binary; unused.
-/// @param context Unused.
-/// @param input The binary's path, for the diagnostic.
-/// @return ComponentBinary.
-[[nodiscard]] std::expected<std::string, Failure> refuseComponentBinary(std::span<std::byte const> bytes,
-                                                                        VerbContext const& context,
-                                                                        std::string_view input);
+/// Disassembles a component: decodes it (binary::decodeComponent, every gated feature admitted) and
+/// writes it with a component::text::ComponentWriter, its core modules decoded under every core feature.
+/// @param bytes The binary.
+/// @param context The limits.
+/// @param input The binary's path, for diagnostics.
+/// @return The text, or the failure: a decode error, a core module that does not decode, or a text the
+///         writer refuses.
+[[nodiscard]] std::expected<std::string, Failure> disassembleComponent(std::span<std::byte const> bytes,
+                                                                       VerbContext const& context,
+                                                                       std::string_view input);
 
 /// Every kind of binary, by preamble. A binary that starts with none of them is read as a core module,
 /// whose decoder reports what is wrong with its preamble.
@@ -291,7 +291,7 @@ inline constexpr auto BinaryFormats = std::to_array<BinaryFormat>({
                     std::byte { 0x00 },
                     std::byte { 0x01 },
                     std::byte { 0x00 } },
-      .disassemble = &refuseComponentBinary },
+      .disassemble = &disassembleComponent },
 });
 
 static_assert(meta::firstRepeatedKey(BinaryFormats, &BinaryFormat::preamble) == meta::NoRepeatedKey,

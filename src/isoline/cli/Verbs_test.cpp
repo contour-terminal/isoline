@@ -39,6 +39,7 @@ using isoline::cli::Refusals;
 using isoline::cli::VerbContext;
 using isoline::cli::testing::MemoryFiles;
 using isoline::text::compileText;
+using isoline::text::CoreForms;
 using isoline::text::TextLimits;
 
 namespace
@@ -82,7 +83,7 @@ struct Harness
 /// The bytes of @p source, which must compile.
 std::vector<std::byte> compiled(std::string_view source)
 {
-    auto bytes = compileText(source, TextLimits {});
+    auto bytes = compileText(source, TextLimits {}, CoreForms);
     REQUIRE(bytes.has_value());
     return std::move(*bytes);
 }
@@ -185,21 +186,100 @@ TEST_CASE("Verbs.disassembleMalformed")
     CHECK(harness.diagnostics.str().starts_with("b.wasm: error at offset 0x"));
 }
 
-TEST_CASE("Verbs.componentRefused")
+TEST_CASE("Verbs.componentCompileAndDisassemble")
 {
     auto harness = Harness {};
-    SECTION("text")
+    SECTION("the empty component is its preamble, both ways")
     {
         harness.files.add("a.wat", "(component)");
-        CHECK(harness.compile() == ExitCode::InputRejected);
-        CHECK(harness.diagnostics.str() == "a.wat:1:1: error: component text needs the component model\n");
+        CHECK(harness.compile() == ExitCode::Success);
+        CHECK(harness.diagnostics.str().empty());
+        REQUIRE(harness.files.files.contains("a.wasm"));
+        CHECK(harness.files.text("a.wasm") == ComponentPreamble);
+        harness.files.files.erase("a.wat");
+        CHECK(harness.disassemble() == ExitCode::Success);
+        CHECK(harness.files.text("a.wat") == "(component\n)\n");
     }
-    SECTION("binary")
+    SECTION("a component round-trips through its text")
     {
-        harness.files.add("a.wasm", ComponentPreamble);
+        harness.files.add(
+            "a.wat",
+            R"wat((component $c (core module $m (func $g (export "f"))) (core instance $i (instantiate $m))
+                                 (type $t (func (result u32))) (alias core export $i "f" (core func $f))))wat");
+        CHECK(harness.compile() == ExitCode::Success);
+        auto const first = harness.files.files.at("a.wasm");
+        CHECK(harness.disassemble("a.wasm", "b.wat") == ExitCode::Success);
+        CHECK(harness.compile("b.wat", "b.wasm") == ExitCode::Success);
+        CHECK(harness.files.files.at("b.wasm") == first);
+        // The core module's own names are its raw name section.
+        CHECK(harness.files.text("b.wat").contains(R"wat((@custom "name" (after code) "\00\02\01m)wat"));
+    }
+    SECTION("a component whose core module needs a feature the disassembly lacks")
+    {
+        // Wide arithmetic is a proposal past Wasm 3.0, so `--features wasm3` decodes no module using it.
+        harness.files.add("a.wat", std::format("(component (core {})", WideArithmetic.substr(1)));
+        CHECK(harness.compile() == ExitCode::Success);
+        harness.features = FeatureChoice::Wasm3;
+        CHECK(harness.disassemble("a.wasm", "b.wat") == ExitCode::InputRejected);
+        CHECK(harness.diagnostics.str().starts_with("a.wasm: error: core module 0 at offset 0x"));
+        CHECK_FALSE(harness.files.files.contains("b.wat"));
+    }
+    SECTION("a component that does not validate")
+    {
+        harness.files.add("a.wat", "(component (export \"f\" (func 0)))");
+        CHECK(harness.compile() == ExitCode::InputRejected);
+        CHECK(harness.diagnostics.str().starts_with("a.wat: error: "));
+        CHECK_FALSE(harness.files.files.contains("a.wasm"));
+    }
+    SECTION("a component whose core module does not validate")
+    {
+        harness.files.add("a.wat", "(component (core module (func (result i32))))");
+        CHECK(harness.compile() == ExitCode::InputRejected);
+        CHECK(harness.diagnostics.str() == "a.wat: error: invalid core module 0\n");
+    }
+    SECTION("a component that does not decode")
+    {
+        // A binary form is its bytes: a section of the unknown id 0x7f passes compileText, not the decoder.
+        harness.files.add("a.wat", R"wat((component binary "\00asm\0d\00\01\00" "\7f\00"))wat");
+        CHECK(harness.compile() == ExitCode::InputRejected);
+        CHECK(harness.diagnostics.str().starts_with("a.wat: error: "));
+        CHECK(harness.diagnostics.str() == "a.wat: error: malformed section id: 127\n");
+        CHECK_FALSE(harness.files.files.contains("a.wasm"));
+    }
+    SECTION("component text that is malformed")
+    {
+        harness.files.add("a.wat", "(component (type (list)))");
+        CHECK(harness.compile() == ExitCode::InputRejected);
+        CHECK(harness.diagnostics.str() == "a.wat:1:23: error: unexpected token\n");
+    }
+    SECTION("a component binary that is malformed")
+    {
+        auto bytes = std::string { ComponentPreamble };
+        bytes += std::string_view { "\x07\x05", 2 };
+        harness.files.add("a.wasm", bytes);
         CHECK(harness.disassemble() == ExitCode::InputRejected);
-        CHECK(harness.diagnostics.str() == "a.wasm: error: component text needs the component model\n");
+        CHECK(harness.diagnostics.str().starts_with("a.wasm: error at offset 0x"));
         CHECK_FALSE(harness.files.files.contains("a.wat"));
+    }
+    SECTION("a component whose core module does not decode")
+    {
+        auto bytes = std::string { ComponentPreamble };
+        // A core module section of a module whose first section has the unknown id 0x7f.
+        bytes += std::string_view { "\x01\x0a\x00"
+                                    "asm\x01\x00\x00\x00\x7f\x00",
+                                    12 };
+        harness.files.add("a.wasm", bytes);
+        CHECK(harness.disassemble() == ExitCode::InputRejected);
+        CHECK(harness.diagnostics.str().starts_with("a.wasm: error: core module 0 at offset 0x8: "));
+    }
+    SECTION("a component whose text would be too large")
+    {
+        harness.files.add("a.wat", "(component (type u8))");
+        CHECK(harness.compile() == ExitCode::Success);
+        harness.limits.maxSourceBytes = 8;
+        CHECK(harness.disassemble("a.wasm", "b.wat") == ExitCode::InputRejected);
+        CHECK(harness.diagnostics.str()
+              == "a.wasm: error: its text would be larger than the limit of 8 bytes\n");
     }
 }
 

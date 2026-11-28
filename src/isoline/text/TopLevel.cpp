@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <expected>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -52,16 +53,17 @@ std::expected<std::vector<std::byte>, TextError> refuseComponent(SExpressionTree
 }
 
 std::expected<std::vector<std::byte>, TextError> compileText(std::string_view source,
-                                                             TextLimits const& limits)
+                                                             TextLimits const& limits,
+                                                             std::span<TopLevelForm const> forms)
 {
     auto const tree = parseSExpressions(source, limits);
     if (!tree)
         return std::unexpected { tree.error() };
     auto const form = firstTopLevelNode(*tree);
     auto const row = form == NoNode
-                         ? TopLevelForms.end()
-                         : std::ranges::find(TopLevelForms, headKeyword(*tree, form), &TopLevelForm::keyword);
-    if (row == TopLevelForms.end())
+                         ? forms.end()
+                         : std::ranges::find(forms, headKeyword(*tree, form), &TopLevelForm::keyword);
+    if (row == forms.end())
         return ModuleReader { limits }.readInline(*tree).and_then(
             [&](binary::Module const& module) { return encodeWithin(module, limits, SourcePosition {}); });
     if (auto const sole = requireSoleTopLevelNode(*tree, form); !sole)

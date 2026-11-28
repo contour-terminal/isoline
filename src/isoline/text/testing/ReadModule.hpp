@@ -17,7 +17,7 @@ namespace isoline::text::testing
 {
 
 /// Reads a whole text into the binary::Module the reader builds, for the tests that inspect it rather
-/// than its encoding: as compileText() reads the text, its form dispatched through TopLevelForms. A
+/// than its encoding: as compileText() reads the text, its form dispatched through CoreForms. A
 /// `(module …)` is read by ModuleReader::read(), a bare sequence of fields by readInline(), and the form of
 /// any other row, which compiles to no core module, is refused as its row refuses it, or as unexpected.
 /// @param source The text.
@@ -32,9 +32,9 @@ namespace isoline::text::testing
     auto const reader = ModuleReader { limits };
     auto const form = firstTopLevelNode(*tree);
     auto const row = form == NoNode
-                         ? TopLevelForms.end()
-                         : std::ranges::find(TopLevelForms, headKeyword(*tree, form), &TopLevelForm::keyword);
-    if (row == TopLevelForms.end())
+                         ? CoreForms.end()
+                         : std::ranges::find(CoreForms, headKeyword(*tree, form), &TopLevelForm::keyword);
+    if (row == CoreForms.end())
         return reader.readInline(*tree);
     if (auto const sole = requireSoleTopLevelNode(*tree, form); !sole)
         return std::unexpected { sole.error() };

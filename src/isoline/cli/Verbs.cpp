@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -22,6 +23,12 @@
 #include <isoline/binary/Decoder.hpp>
 #include <isoline/cli/FileAccess.hpp>
 #include <isoline/cli/VerbsTables.hpp>
+#include <isoline/component/Limits.hpp>
+#include <isoline/component/api/Component.hpp>
+#include <isoline/component/binary/Decoder.hpp>
+#include <isoline/component/text/ComponentWriter.hpp>
+#include <isoline/component/text/Forms.hpp>
+#include <isoline/component/validate/Validator.hpp>
 #include <isoline/text/ModuleWriter.hpp>
 #include <isoline/text/TextError.hpp>
 #include <isoline/text/TextLimits.hpp>
@@ -149,32 +156,6 @@ Failure loadFailure(api::LoadError const& error, std::string_view input)
 namespace
 {
 
-    /// Compiles a text, then loads it into an engine of the chosen features, which decodes and
-    /// validates it.
-    /// @param source The text.
-    /// @param context The features and limits.
-    /// @param input The text's path.
-    /// @return The binary, or the failure.
-    std::expected<std::vector<std::byte>, Failure> compileSource(std::string_view source,
-                                                                 VerbContext const& context,
-                                                                 std::string_view input)
-    {
-        auto bytes = text::compileText(source, context.limits);
-        if (!bytes)
-            return fail(Refusal::TextMalformed,
-                        std::format("{}:{}:{}: error: {}",
-                                    input,
-                                    bytes.error().position.line,
-                                    bytes.error().position.column,
-                                    text::specMessage(bytes.error())));
-        auto const engine = api::Engine { api::EngineConfig {
-            .features = featuresOf(context.features),
-            .load = api::LoadLimits { .maxModuleBytes = context.limits.maxModuleBytes } } };
-        if (auto const loaded = engine.load(*bytes); !loaded)
-            return std::unexpected { loadFailure(loaded.error(), input) };
-        return std::move(*bytes);
-    }
-
     /// The format of a binary, by its preamble: the core module's when none matches.
     /// @param bytes The binary.
     /// @return Its BinaryFormats row.
@@ -185,6 +166,93 @@ namespace
                    && std::ranges::equal(bytes.first(row.preamble.size()), row.preamble);
         });
         return format == BinaryFormats.end() ? BinaryFormats.front() : *format;
+    }
+
+    /// The failure a component's load reports.
+    /// @param error Why component::api::Component::load() refused it.
+    /// @param input The text's path.
+    /// @return The failure: malformed, invalid, a core module's refusal, or out of memory.
+    Failure componentLoadFailure(component::api::ComponentLoadError const& error, std::string_view input)
+    {
+        // A text form validates in the engine that loads it, so it is refused by validation; a binary form
+        // is its bytes, so it may also not decode. The rest is the loader refusing what its engine
+        // validated, the host's memory, or another engine's modules, which the tool never makes.
+        return std::visit(
+            core::Overloaded {
+                [input](component::validate::ValidationError const& invalid) {
+                    return Failure { .refusal = Refusal::ModuleInvalid,
+                                     .message = std::format(
+                                         "{}: error: {}", input, component::validate::specMessage(invalid)) };
+                },
+                [input](component::binary::DecodeError const& decode) {
+                    return Failure { .refusal = Refusal::ModuleMalformed,
+                                     .message = std::format(
+                                         "{}: error: {}", input, component::binary::specMessage(decode)) };
+                },
+                [input](component::api::CoreModuleLoadError const& module) {
+                    // uncovered-begin(component-load-after-validation)
+                    // The engine validated the module under the limits it loads it with: only its memory
+                    // refuses.
+                    auto failure = loadFailure(module.error, input);
+                    failure.message.insert(std::format("{}: error: ", input).size(),
+                                           std::format("core module {}: ", module.ordinal));
+                    return failure;
+                },
+                // uncovered-end(component-load-after-validation)
+                [input](auto const& other) {
+                    // uncovered-begin(component-load-after-validation)
+                    if constexpr (std::is_same_v<std::decay_t<decltype(other)>, api::HostMemoryExhausted>)
+                        return Failure { .refusal = Refusal::OutOfMemory,
+                                         .message = std::format("{}: error: out of memory", input) };
+                    else
+                        return Failure { .refusal = Refusal::InternalError,
+                                         .message = std::format(
+                                             "{}: error: internal error: core modules of another engine",
+                                             input) };
+                },
+                // uncovered-end(component-load-after-validation)
+            },
+            error);
+    }
+
+    /// Compiles a text, then loads it into an engine of the chosen features, which decodes and
+    /// validates it.
+    /// @param source The text.
+    /// @param context The features and limits.
+    /// @param input The text's path.
+    /// @return The binary, or the failure.
+    std::expected<std::vector<std::byte>, Failure> compileSource(std::string_view source,
+                                                                 VerbContext const& context,
+                                                                 std::string_view input)
+    {
+        auto bytes = text::compileText(source, context.limits, component::text::Forms);
+        if (!bytes)
+            return fail(Refusal::TextMalformed,
+                        std::format("{}:{}:{}: error: {}",
+                                    input,
+                                    bytes.error().position.line,
+                                    bytes.error().position.column,
+                                    text::specMessage(bytes.error())));
+        auto const engine = api::Engine { api::EngineConfig {
+            .features = featuresOf(context.features),
+            .load = api::LoadLimits { .maxModuleBytes = context.limits.maxModuleBytes } } };
+        if (formatOf(*bytes).disassemble == &disassembleComponent)
+        {
+            auto loader = component::api::EngineCoreModuleLoader { engine };
+            auto validator = component::api::EngineCoreModuleValidator { engine };
+            auto const config = component::api::ComponentConfig {
+                .features = component::ComponentFeatureSet::wasi03(),
+                .limits = component::ComponentLimits { .maxComponentBytes = context.limits.maxModuleBytes }
+            };
+            if (auto const loaded =
+                    component::api::Component::load(engine, *bytes, config, loader, validator);
+                !loaded)
+                return std::unexpected { componentLoadFailure(loaded.error(), input) };
+            return std::move(*bytes);
+        }
+        if (auto const loaded = engine.load(*bytes); !loaded)
+            return std::unexpected { loadFailure(loaded.error(), input) };
+        return std::move(*bytes);
     }
 
     /// What a verb writes.
@@ -273,13 +341,46 @@ std::expected<std::string, Failure> disassembleCoreModule(std::span<std::byte co
                             std::vformat(row.message, std::make_format_args(context.limits.maxSourceBytes))));
 }
 
-std::expected<std::string, Failure> refuseComponentBinary(std::span<std::byte const> /*bytes*/,
-                                                          VerbContext const& /*context*/,
-                                                          std::string_view input)
+std::expected<std::string, Failure> disassembleComponent(std::span<std::byte const> bytes,
+                                                         VerbContext const& context,
+                                                         std::string_view input)
 {
-    // The message is the text format's own for component text, so that both verbs say it alike.
-    auto const message = text::specMessage(text::TextError { text::TextErrorCode::UnsupportedComponent, {} });
-    return fail(Refusal::ComponentBinary, std::format("{}: error: {}", input, message));
+    auto const pool = component::binary::decodeComponent(
+        bytes,
+        component::text::everyComponentFeature(),
+        component::ComponentLimits { .maxComponentBytes = context.limits.maxModuleBytes });
+    if (!pool)
+        return fail(Refusal::ModuleMalformed,
+                    std::format("{}: error at offset {:#x}: {}",
+                                input,
+                                pool.error().offset,
+                                component::binary::specMessage(pool.error())));
+    auto text = component::text::ComponentWriter { text::WriterOptions { .maxTextBytes =
+                                                                             context.limits.maxSourceBytes },
+                                                   featuresOf(context.features) }
+                    .write(*pool);
+    if (text)
+        return std::move(*text);
+    return std::visit(
+        core::Overloaded {
+            [&](text::WriteError error) {
+                auto const& row = WriteRefusals[static_cast<std::size_t>(error)];
+                return fail(row.refusal,
+                            std::format("{}: error: {}",
+                                        input,
+                                        std::vformat(row.message,
+                                                     std::make_format_args(context.limits.maxSourceBytes))));
+            },
+            [&](component::text::CoreModuleMalformed const& module) {
+                return fail(Refusal::ModuleMalformed,
+                            std::format("{}: error: core module {} at offset {:#x}: {}",
+                                        input,
+                                        module.ordinal,
+                                        module.error.offset,
+                                        binary::specMessage(module.error)));
+            },
+        },
+        text.error());
 }
 
 Failure failureOfCurrentException(std::string_view subject)

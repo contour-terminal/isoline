@@ -85,10 +85,11 @@ enum class TextErrorCode : uint8_t
     BranchHintInvalidPlacement,
     BranchHintInvalidValue,
     BranchHintUnexpectedToken,
+    ComponentBinaryMalformed,
 };
 
 /// The last TextErrorCode enumerator; it must name whichever enumerator is listed last above.
-inline constexpr auto LastTextErrorCode = TextErrorCode::BranchHintUnexpectedToken;
+inline constexpr auto LastTextErrorCode = TextErrorCode::ComponentBinaryMalformed;
 
 /// One row of TextErrorTable: an error, the assertion it answers, and the message the spec test
 /// suite expects for it.
@@ -271,6 +272,11 @@ inline constexpr auto TextErrorTable = std::to_array<TextErrorRow>({
     { .code = TextErrorCode::BranchHintUnexpectedToken,
       .stage = TextErrorStage::Custom,
       .specMessage = "@metadata.code.branch_hint annotation: unexpected token" },
+    // A `(component binary …)` whose bytes do not decode; the subject is the decoder's own message.
+    { .code = TextErrorCode::ComponentBinaryMalformed,
+      .stage = TextErrorStage::Syntax,
+      .specMessage = "malformed component binary:",
+      .detail = TextErrorDetail::Suffix },
 });
 
 static_assert(meta::firstMisplacedRow<LastTextErrorCode>(TextErrorTable, &TextErrorRow::code)

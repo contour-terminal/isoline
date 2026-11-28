@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <filesystem>
+#include <format>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 
@@ -12,6 +16,7 @@
 #include <isoline/text/TopLevel.hpp>
 
 using isoline::text::compileText;
+using isoline::text::CoreForms;
 using isoline::text::positionAt;
 using isoline::text::SourcePosition;
 using isoline::text::specMessage;
@@ -38,7 +43,30 @@ struct Reachable
     TextErrorCode code;      ///< The error.
     std::string_view source; ///< A text compileText() refuses with it.
     TextLimits limits {};    ///< The limits it is compiled under.
+    /// For a row only a layer above text produces, which this suite cannot link: the test that reaches it
+    /// instead, as `<file>:<test case>` under the source directory; then no source.
+    std::string_view reachedBy {};
+    /// The row's enumerator as that test spells it, which TextError.everyRowReachable finds in its body.
+    std::string_view enumerator {};
 };
+
+/// Whether the test case @p reachedBy names (`<file>:<test case>`) exists and names `TextErrorCode::`
+/// @p enumerator in its body.
+bool reachedElsewhere(std::string_view reachedBy, std::string_view enumerator)
+{
+    auto const colon = reachedBy.find(':');
+    REQUIRE(colon != std::string_view::npos);
+    auto file = std::ifstream { std::filesystem::path { ISOLINE_SOURCE_DIR } / reachedBy.substr(0, colon) };
+    REQUIRE(file.is_open());
+    auto const contents =
+        std::string { std::istreambuf_iterator<char> { file }, std::istreambuf_iterator<char> {} };
+    auto const begin = contents.find(std::format("TEST_CASE(\"{}\")", reachedBy.substr(colon + 1)));
+    if (begin == std::string::npos)
+        return false;
+    auto const body =
+        std::string_view { contents }.substr(begin, contents.find("TEST_CASE(", begin + 1) - begin);
+    return body.contains(std::format("TextErrorCode::{}", enumerator));
+}
 
 /// One text per TextErrorTable row, in the table's order. Adding a row is adding a text here, or
 /// TextError.everyRowReachable fails: a row nothing produces is a message no test can see.
@@ -114,6 +142,12 @@ constexpr auto ReachableRows = std::to_array<Reachable>({
       .source = R"((module (func (@metadata.code.branch_hint "\02") nop)))" },
     { .code = TextErrorCode::BranchHintUnexpectedToken,
       .source = R"((module (func (@metadata.code.branch_hint (x)) nop)))" },
+    // Only component text's reader produces it: compileText() keeps a binary form verbatim.
+    { .code = TextErrorCode::ComponentBinaryMalformed,
+      .source = {},
+      .reachedBy =
+          "src/isoline/component/text/ComponentReader_test.cpp:ComponentReader.binaryFormThatDoesNotDecode",
+      .enumerator = "ComponentBinaryMalformed" },
 });
 
 } // namespace
@@ -128,8 +162,14 @@ TEST_CASE("TextError.everyRowReachable", "[TextError]")
         auto const reachable = std::ranges::find(ReachableRows, row.code, &Reachable::code);
         INFO(row.specMessage);
         REQUIRE(reachable != ReachableRows.end());
+        if (!reachable->reachedBy.empty())
+        {
+            CHECK(reachable->source.empty());
+            CHECK(reachedElsewhere(reachable->reachedBy, reachable->enumerator));
+            continue;
+        }
         INFO(reachable->source);
-        auto const compiled = compileText(reachable->source, reachable->limits);
+        auto const compiled = compileText(reachable->source, reachable->limits, CoreForms);
         REQUIRE_FALSE(compiled.has_value());
         CHECK(compiled.error().code == row.code);
         CHECK(specMessage(compiled.error()).starts_with(row.specMessage));
