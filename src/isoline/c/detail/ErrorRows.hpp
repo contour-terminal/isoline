@@ -419,6 +419,24 @@ struct ErrorRow<api::ModuleTooLarge>
     }
 };
 
+template <>
+struct ErrorRow<api::CompileLimitExceeded>
+{
+    static auto report(api::CompileLimitExceeded const& error) -> ErrorReport
+    {
+        auto const& limit = api::compileLimitRow(error.kind);
+        auto const where = error.codeIndex == api::ModuleLevel ? std::string { "the module" }
+                                                               : std::format("function {}", error.codeIndex);
+        return { .code = ISOLINE_ERROR_COMPILE_LIMIT_EXCEEDED,
+                 .message = std::format("lowering {} asked for {} {}, past the {} of {}",
+                                        where,
+                                        error.requested,
+                                        limit.unit,
+                                        limit.name,
+                                        error.limit) };
+    }
+};
+
 /// The host out of memory is the immortal error itself, which needs none: a row that names an error
 /// instead of reporting one.
 template <>
