@@ -32,6 +32,7 @@ using isoline::component::ComponentLimit;
 using isoline::component::ComponentLimits;
 using isoline::component::limitMessage;
 using isoline::component::canonical::BudgetExceeded;
+using isoline::component::canonical::BudgetScope;
 using isoline::component::canonical::ChargedVector;
 using isoline::component::canonical::equal;
 using isoline::component::canonical::LiveBytesBudget;
@@ -1189,6 +1190,54 @@ TEST_CASE("LiveBytesBudget.chargesWholeOrNothing")
     CHECK_FALSE(budget.charge(1).has_value());
     budget.release(100);
     CHECK(budget.live() == 0);
+}
+
+TEST_CASE("LiveBytesBudget.hostCallWithinTheStore")
+{
+    // A host call's budget charges itself and the store's, whole or not at all: refused at its own cap
+    // (HostCall) or at the store's (Store), neither holding what the other did not take.
+    auto const store = std::make_shared<LiveBytesBudget>(100);
+    auto call = LiveBytesBudget { 30, store };
+    CHECK(call.scope() == BudgetScope::HostCall);
+    CHECK(store->scope() == BudgetScope::Store);
+    CHECK(call.enclosing() == store);
+    REQUIRE(call.charge(20).has_value());
+    CHECK(call.live() == 20);
+    CHECK(store->live() == 20);
+    auto const overCall = call.charge(11);
+    REQUIRE_FALSE(overCall.has_value());
+    CHECK(overCall.error()
+          == BudgetExceeded { .requested = 11, .live = 20, .limit = 30, .scope = BudgetScope::HostCall });
+    CHECK(overCall.error().message() == "host call arguments exceed the limit of 30 bytes");
+    CHECK(store->live() == 20);
+    // The store holding 75 elsewhere refuses what the call's cap would allow; the call holds nothing more.
+    REQUIRE(store->charge(75).has_value());
+    CHECK(call.available() == 5);
+    auto const overStore = call.charge(6);
+    REQUIRE_FALSE(overStore.has_value());
+    CHECK(overStore.error().scope == BudgetScope::Store);
+    CHECK(overStore.error().limit == 100);
+    CHECK(call.live() == 20);
+    CHECK(store->live() == 95);
+    // Within the headroom: the store's grant bounds the call's, and both keep the same bytes.
+    auto const within = call.chargeWithin(1, 10, 1);
+    REQUIRE(within.has_value());
+    CHECK(*within == 5);
+    CHECK(call.live() == 25);
+    CHECK(store->live() == 100);
+    auto const none = call.chargeWithin(1, 10, 1);
+    REQUIRE_FALSE(none.has_value());
+    CHECK(none.error().scope == BudgetScope::Store);
+    CHECK(call.live() == 25);
+    store->release(75);
+    auto const capped = call.chargeWithin(6, 10, 1);
+    REQUIRE_FALSE(capped.has_value());
+    CHECK(capped.error().scope == BudgetScope::HostCall);
+    CHECK(store->live() == 25);
+    // A release releases both.
+    call.release(25);
+    CHECK(call.live() == 0);
+    CHECK(store->live() == 0);
 }
 
 TEST_CASE("ChargedVector.growthIsChargedFirst")

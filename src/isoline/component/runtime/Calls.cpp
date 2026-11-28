@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <utility>
@@ -453,6 +454,19 @@ std::expected<void, isoline::api::Abrupt> LoweredFunction::call(
     return std::unexpected { isoline::api::Abrupt { std::get<isoline::api::HostFailure>(outcome.error()) } };
 }
 
+std::shared_ptr<canonical::LiveBytesBudget> LoweredFunction::argumentBudget() const
+{
+    // A host callee with a cap of its own lifts its arguments into a budget of that cap within the
+    // store's; every other callee, into the store's.
+    auto const* const host = std::get_if<std::shared_ptr<IHostCallee>>(&_callee);
+    if (host == nullptr)
+        return _store->liveBytes();
+    auto const cap = (*host)->maxArgumentBytes();
+    if (!cap)
+        return _store->liveBytes();
+    return std::make_shared<canonical::LiveBytesBudget>(*cap, _store->liveBytes());
+}
+
 std::expected<void, CallError> LoweredFunction::run(std::span<isoline::api::Value const> args,
                                                     std::span<isoline::api::Value> results)
 {
@@ -471,7 +485,7 @@ std::expected<void, CallError> LoweredFunction::run(std::span<isoline::api::Valu
                                             .layouts = _caller.layouts->all(),
                                             .memory = memory ? &*memory : nullptr,
                                             .encoding = _options.encoding,
-                                            .budget = _store->liveBytes(),
+                                            .budget = argumentBudget(),
                                             .handles = handles };
 
     // Results that do not fit flat go where the last argument points (lower_flat_values's out_param).

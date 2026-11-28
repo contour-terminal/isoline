@@ -176,9 +176,16 @@ namespace
     class LinkedFunction final: public runtime::IHostCallee
     {
       public:
-        LinkedFunction(StoreState& state, std::shared_ptr<IHostComponentFunction> function) noexcept:
-            _state { &state }, _function { std::move(function) }
+        LinkedFunction(StoreState& state,
+                       std::shared_ptr<IHostComponentFunction> function,
+                       std::optional<uint64_t> maxCallBytes) noexcept:
+            _state { &state }, _function { std::move(function) }, _maxCallBytes { maxCallBytes }
         {
+        }
+
+        [[nodiscard]] std::optional<uint64_t> maxArgumentBytes() const noexcept override
+        {
+            return _maxCallBytes;
         }
 
         [[nodiscard]] std::expected<void, isoline::api::HostFailure> call(
@@ -217,6 +224,7 @@ namespace
       private:
         StoreState* _state;
         std::shared_ptr<IHostComponentFunction> _function;
+        std::optional<uint64_t> _maxCallBytes; ///< Its FunctionTypeSpec::maxCallBytes.
     };
 
     /// Whether every handle of @p args is of the runtime resource type its type names in @p side: what
@@ -709,9 +717,9 @@ bool ComponentStore::isLockedDown() const noexcept
 }
 
 std::shared_ptr<runtime::IHostCallee> ComponentStore::hostCallee(
-    StoreState& state, std::shared_ptr<IHostComponentFunction> function)
+    StoreState& state, std::shared_ptr<IHostComponentFunction> function, std::optional<uint64_t> maxCallBytes)
 {
-    return std::make_shared<LinkedFunction>(state, std::move(function));
+    return std::make_shared<LinkedFunction>(state, std::move(function), maxCallBytes);
 }
 
 std::expected<ComponentInstance, InstantiateComponentError> ComponentStore::instantiate(

@@ -1177,7 +1177,11 @@ std::expected<void, Trap> BulkPolls::copied(IGuestMemoryAccess& memory, uint64_t
 Trap builderTrap(LiftContext const& context, ValueError const& error)
 {
     Guarantee(error.code == ValueErrorCode::Budget);
-    return trapOf(TrapCode::LiveValueBytes, context.budget->limit());
+    // A host call's budget refuses at its own cap or at the store's it charges as well.
+    if (error.budget == BudgetScope::HostCall)
+        return trapOf(TrapCode::HostCallBytes, context.budget->limit());
+    auto const& store = context.budget->enclosing() ? context.budget->enclosing() : context.budget;
+    return trapOf(TrapCode::LiveValueBytes, store->limit());
 }
 
 BlockWriter::BlockWriter(LiftContext& context, uint32_t block, uint32_t size) noexcept:

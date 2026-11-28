@@ -39,15 +39,23 @@ struct ResourceTypeIndex
     auto operator<=>(ResourceTypeIndex const&) const = default;
 };
 
-/// A charge LiveBytesBudget refused: what was asked, and what the budget held when it refused.
+/// Which budget a LiveBytesBudget is: the store's, or one host call's within it.
+enum class BudgetScope : uint8_t
+{
+    Store,    ///< The store's: ComponentLimits::maxLiveValueBytes.
+    HostCall, ///< One host call's arguments, within the store's: FunctionTypeSpec::maxCallBytes.
+};
+
+/// A charge LiveBytesBudget refused: what was asked, and what the budget that refused held when it did.
 struct BudgetExceeded
 {
-    uint64_t requested = 0; ///< The bytes asked for.
-    uint64_t live = 0;      ///< The bytes the budget held.
-    uint64_t limit = 0;     ///< The most it holds.
+    uint64_t requested = 0;                 ///< The bytes asked for.
+    uint64_t live = 0;                      ///< The bytes the refusing budget held.
+    uint64_t limit = 0;                     ///< The most it holds.
+    BudgetScope scope = BudgetScope::Store; ///< Which budget refused.
 
-    /// The refusal's text, LimitTable's LiveValueBytes row.
-    /// @return "live value bytes exceed the limit of <limit>".
+    /// The refusal's text: LimitTable's LiveValueBytes row, or the HostCallBytes trap's.
+    /// @return "live value bytes exceed the limit of <limit>", or the host call's.
     [[nodiscard]] std::string message() const;
 
     /// Two refusals are equal when every member is.
@@ -63,9 +71,15 @@ struct BudgetExceeded
 class LiveBytesBudget
 {
   public:
-    /// A budget holding nothing.
+    /// A store's budget, holding nothing.
     /// @param limit The most bytes it holds at once.
     explicit LiveBytesBudget(uint64_t limit) noexcept: _limit { limit } {}
+
+    /// One host call's budget within @p enclosing, holding nothing: every charge is charged to both, whole
+    /// or not at all, so a value it holds counts against the store's cap as well as its own.
+    /// @param limit The most bytes it holds at once.
+    /// @param enclosing The store's budget (checked: one of BudgetScope::Store).
+    LiveBytesBudget(uint64_t limit, std::shared_ptr<LiveBytesBudget> enclosing) noexcept;
 
     LiveBytesBudget(LiveBytesBudget const&) = delete;
     LiveBytesBudget& operator=(LiveBytesBudget const&) = delete;
@@ -105,12 +119,31 @@ class LiveBytesBudget
     [[nodiscard]] uint64_t limit() const noexcept { return _limit; }
 
     /// The bytes a charge may take now: a hint for sizing a charge, which charge() decides.
-    /// @return limit() minus live().
-    [[nodiscard]] uint64_t available() const noexcept { return _limit - live(); }
+    /// @return limit() minus live(), and no more than the enclosing budget has available.
+    [[nodiscard]] uint64_t available() const noexcept
+    {
+        auto const own = _limit - live();
+        return _enclosing ? std::min(own, _enclosing->available()) : own;
+    }
+
+    /// Which budget it is: a host call's when it has an enclosing one.
+    [[nodiscard]] BudgetScope scope() const noexcept
+    {
+        return _enclosing ? BudgetScope::HostCall : BudgetScope::Store;
+    }
+
+    /// The budget it charges as well; null for a store's.
+    [[nodiscard]] std::shared_ptr<LiveBytesBudget> const& enclosing() const noexcept { return _enclosing; }
 
   private:
+    [[nodiscard]] std::expected<void, BudgetExceeded> chargeOwn(uint64_t bytes) noexcept;
+    [[nodiscard]] std::expected<uint64_t, BudgetExceeded> chargeOwnWithin(uint64_t least,
+                                                                          uint64_t most,
+                                                                          uint64_t unit) noexcept;
+
     uint64_t _limit;
     std::atomic<uint64_t> _live { 0 };
+    std::shared_ptr<LiveBytesBudget> _enclosing {}; ///< The store's, for a host call's; null for a store's.
 };
 
 /// How a growth for the caller to fill in place starts out.
@@ -680,6 +713,8 @@ struct ValueError
     /// field's, an element's or a map's child position, or a variant's, option's or result's case.
     std::string path;
     std::string detail; ///< What was wrong there.
+    /// For a Budget error, which budget refused: the store's or a host call's.
+    BudgetScope budget = BudgetScope::Store;
 
     /// The error's text.
     /// @return Its ValueErrorMessages row, formatted with the path and the detail.

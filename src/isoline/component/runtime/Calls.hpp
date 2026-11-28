@@ -190,6 +190,9 @@ class LoweredFunction final: public isoline::api::IHostFunction
   private:
     [[nodiscard]] std::expected<void, CallError> run(std::span<isoline::api::Value const> args,
                                                      std::span<isoline::api::Value> results);
+    /// The budget the arguments are lifted into: a host callee's own cap within the store's, or the
+    /// store's.
+    [[nodiscard]] std::shared_ptr<canonical::LiveBytesBudget> argumentBudget() const;
 
     ComponentStore* _store;
     InstanceSide _caller;

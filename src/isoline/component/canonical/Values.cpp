@@ -24,6 +24,7 @@
 
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/canonical/Layout.hpp>
+#include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Unicode.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/meta/Check.hpp>
@@ -441,24 +442,65 @@ namespace
 
 std::string BudgetExceeded::message() const
 {
+    if (scope == BudgetScope::HostCall)
+        return trapOf(TrapCode::HostCallBytes, limit).message();
     return limitMessage(ComponentLimit::LiveValueBytes, limit);
+}
+
+LiveBytesBudget::LiveBytesBudget(uint64_t limit, std::shared_ptr<LiveBytesBudget> enclosing) noexcept:
+    _limit { limit }, _enclosing { std::move(enclosing) }
+{
+    ISOLINE_PRECONDITION(_enclosing != nullptr && _enclosing->scope() == BudgetScope::Store);
 }
 
 std::expected<void, BudgetExceeded> LiveBytesBudget::charge(uint64_t bytes) noexcept
 {
-    auto current = _live.load(std::memory_order_relaxed);
-    do
+    if (auto charged = chargeOwn(bytes); !charged)
+        return charged;
+    if (!_enclosing)
+        return {};
+    if (auto charged = _enclosing->charge(bytes); !charged)
     {
-        if (bytes > _limit - current)
-            return std::unexpected { BudgetExceeded {
-                .requested = bytes, .live = current, .limit = _limit } };
-    } while (!_live.compare_exchange_weak(current, current + bytes, std::memory_order_relaxed));
+        _live.fetch_sub(bytes, std::memory_order_relaxed);
+        return charged;
+    }
     return {};
 }
 
 std::expected<uint64_t, BudgetExceeded> LiveBytesBudget::chargeWithin(uint64_t least,
                                                                       uint64_t most,
                                                                       uint64_t unit) noexcept
+{
+    auto own = chargeOwnWithin(least, most, unit);
+    if (!own || !_enclosing)
+        return own;
+    // The enclosing budget grants at most what this one did, and at least what will do; this one keeps
+    // only what it granted, so neither holds bytes the other does not.
+    auto enclosing = _enclosing->chargeWithin(least, *own, unit);
+    if (!enclosing)
+    {
+        _live.fetch_sub(*own, std::memory_order_relaxed);
+        return std::unexpected { enclosing.error() };
+    }
+    _live.fetch_sub(*own - *enclosing, std::memory_order_relaxed);
+    return *enclosing;
+}
+
+std::expected<void, BudgetExceeded> LiveBytesBudget::chargeOwn(uint64_t bytes) noexcept
+{
+    auto current = _live.load(std::memory_order_relaxed);
+    do
+    {
+        if (bytes > _limit - current)
+            return std::unexpected { BudgetExceeded {
+                .requested = bytes, .live = current, .limit = _limit, .scope = scope() } };
+    } while (!_live.compare_exchange_weak(current, current + bytes, std::memory_order_relaxed));
+    return {};
+}
+
+std::expected<uint64_t, BudgetExceeded> LiveBytesBudget::chargeOwnWithin(uint64_t least,
+                                                                         uint64_t most,
+                                                                         uint64_t unit) noexcept
 {
     ISOLINE_PRECONDITION(unit != 0 && least % unit == 0 && most % unit == 0);
     auto current = _live.load(std::memory_order_relaxed);
@@ -469,7 +511,7 @@ std::expected<uint64_t, BudgetExceeded> LiveBytesBudget::chargeWithin(uint64_t l
         granted -= granted % unit;
         if (granted < least)
             return std::unexpected { BudgetExceeded {
-                .requested = least, .live = current, .limit = _limit } };
+                .requested = least, .live = current, .limit = _limit, .scope = scope() } };
     } while (!_live.compare_exchange_weak(current, current + granted, std::memory_order_relaxed));
     return granted;
 }
@@ -478,6 +520,8 @@ void LiveBytesBudget::release(uint64_t bytes) noexcept
 {
     auto const previous = _live.fetch_sub(bytes, std::memory_order_relaxed);
     ISOLINE_PRECONDITION(previous >= bytes);
+    if (_enclosing)
+        _enclosing->release(bytes);
 }
 
 std::expected<std::string, StringError> StringValue::utf8() const
@@ -798,8 +842,11 @@ ValueError ValueBuilder::errorHere(ValueErrorCode code, std::string detail) cons
 template <typename T>
 std::expected<void, ValueError> ValueBuilder::reserve(ChargedVector<T>& vector, std::size_t extra) const
 {
-    return vector.reserveFor(extra).transform_error(
-        [&](BudgetExceeded const& refusal) { return errorHere(ValueErrorCode::Budget, refusal.message()); });
+    return vector.reserveFor(extra).transform_error([&](BudgetExceeded const& refusal) {
+        auto error = errorHere(ValueErrorCode::Budget, refusal.message());
+        error.budget = refusal.scope;
+        return error;
+    });
 }
 
 std::expected<ValueBuilder::Slot, ValueError> ValueBuilder::slotFor(BuildStep step) const

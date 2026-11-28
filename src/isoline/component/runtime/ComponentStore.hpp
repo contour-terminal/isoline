@@ -81,6 +81,12 @@ class IHostCallee
         return {};
     }
 
+    /// The most host bytes the arguments a guest passes to one call may take once lifted, counted against
+    /// the store's live-bytes budget as well; one more traps HostCallBytes before the callee runs. None by
+    /// default: only the store's cap.
+    /// @return The cap, or none.
+    [[nodiscard]] virtual std::optional<uint64_t> maxArgumentBytes() const noexcept { return std::nullopt; }
+
   protected:
     IHostCallee() = default;
     IHostCallee(IHostCallee const&) = default;

@@ -484,9 +484,11 @@ class ComponentStore
     friend class Linker;
 
     /// The runtime's view of a host function of a linker, bound to @p state: it calls @p function with a
-    /// HostComponentContext of the store.
+    /// HostComponentContext of the store, its arguments lifted within @p maxCallBytes when it has one.
     [[nodiscard]] static std::shared_ptr<runtime::IHostCallee> hostCallee(
-        StoreState& state, std::shared_ptr<IHostComponentFunction> function);
+        StoreState& state,
+        std::shared_ptr<IHostComponentFunction> function,
+        std::optional<uint64_t> maxCallBytes);
 
     std::unique_ptr<StoreState> _state;
 };

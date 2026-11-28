@@ -47,6 +47,11 @@ struct FunctionTypeSpec
     std::vector<std::pair<std::string, types::TypeId>> params {}; ///< The parameters, labelled, in order.
     std::optional<types::TypeId> result {};                       ///< The result's type, if any.
     ParameterNames names = ParameterNames::Named; ///< Whether an import must match the labels.
+    /// The most host bytes the arguments of one call may take once lifted from a guest, within the store's
+    /// maxLiveValueBytes: one more traps HostCallBytes before the function runs (locking the store down), as
+    /// an embedder caps what an extension passes to one host call. None: the store's cap alone. No part of
+    /// the type: an import matches whatever it is.
+    std::optional<uint64_t> maxCallBytes {};
 };
 
 /// Why a Linker refused a definition.
@@ -280,6 +285,7 @@ class Linker
         types::FunctionTypeId type;
         std::shared_ptr<IHostComponentFunction> function;
         ParameterNames names = ParameterNames::Named;
+        std::optional<uint64_t> maxCallBytes {};
     };
     struct ResourceDefinition
     {
@@ -325,7 +331,9 @@ class Linker
         return instance._instance;
     }
     [[nodiscard]] static std::shared_ptr<runtime::IHostCallee> hostCallee(
-        StoreState& store, std::shared_ptr<IHostComponentFunction> const& function);
+        StoreState& store,
+        std::shared_ptr<IHostComponentFunction> const& function,
+        std::optional<uint64_t> maxCallBytes);
     [[nodiscard]] std::expected<std::vector<std::string>, LinkerError> checkPath(
         std::string const& path) const;
     [[nodiscard]] std::expected<void, LinkerError> define(std::string path, Definition definition);

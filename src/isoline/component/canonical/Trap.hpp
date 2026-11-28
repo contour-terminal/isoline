@@ -34,6 +34,7 @@ enum class TrapCode : uint8_t
     Handles,             ///< The store's handles would pass ComponentLimits::maxHandles.
     ResourceTypes,       ///< The store's resource types would pass ComponentLimits::maxResourceTypes.
     HostOwns,            ///< The owns the host holds would pass ComponentLimits::maxHostOwns.
+    HostCallBytes,       ///< One host call's lifted arguments would pass its FunctionTypeSpec::maxCallBytes.
     Interrupted,         ///< The store's interrupter stopped the call: always this code, never Core (R13).
     CannotLeave,         ///< A component instance left while its `may_leave` was cleared.
     CannotEnter,         ///< A component instance entered while it may not be: locked down, or re-entered.
@@ -82,6 +83,7 @@ inline constexpr auto TrapCodeTable = std::to_array<TrapCodeRow>({
       .format = LimitTable[static_cast<std::size_t>(ComponentLimit::ResourceTypes)].message },
     { .code = TrapCode::HostOwns,
       .format = LimitTable[static_cast<std::size_t>(ComponentLimit::HostOwns)].message },
+    { .code = TrapCode::HostCallBytes, .format = "host call arguments exceed the limit of {} bytes" },
     { .code = TrapCode::Interrupted, .format = "interrupted" },
     { .code = TrapCode::CannotLeave, .format = "cannot leave component instance" },
     { .code = TrapCode::CannotEnter, .format = "cannot enter component instance" },

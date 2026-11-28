@@ -421,7 +421,7 @@ class Linker::Walk
                                 relateUnnamed(function.type, std::get<types::FunctionTypeId>(type));
                             !related)
                             return std::unexpected { mismatchOf(std::move(related.error())) };
-                        return push(callee(function.function));
+                        return push(callee(function));
                     }
                     auto relation = validate::TypeRelation {
                         _linker._arena, componentTypes(), _resources, _linker._config.limits
@@ -429,7 +429,7 @@ class Linker::Walk
                     if (auto related = relation.isSubtype(types::ExternType { function.type }, type);
                         !related)
                         return std::unexpected { mismatchOf(std::move(related.error().message)) };
-                    return push(callee(function.function));
+                    return push(callee(function));
                 },
                 [&](ResourceDefinition const& resource) -> std::expected<uint32_t, Failure> {
                     auto const required = *boundResource(type);
@@ -602,12 +602,11 @@ class Linker::Walk
         }
     }
 
-    [[nodiscard]] std::shared_ptr<runtime::IHostCallee> callee(
-        std::shared_ptr<IHostComponentFunction> const& function)
+    [[nodiscard]] std::shared_ptr<runtime::IHostCallee> callee(FunctionDefinition const& function)
     {
         if (_store == nullptr)
             return nullptr;
-        return hostCallee(*_store, function);
+        return hostCallee(*_store, function.function, function.maxCallBytes);
     }
 
     Linker const& _linker;
@@ -812,9 +811,11 @@ std::expected<void, LinkerError> Linker::defineFunction(std::string path,
             LinkerErrorCode::TypeLimit,
             std::move(path),
             std::string { LimitTable[static_cast<std::size_t>(added.error().limit)].name }) };
-    return define(
-        std::move(path),
-        FunctionDefinition { .type = *added, .function = std::move(function), .names = type.names });
+    return define(std::move(path),
+                  FunctionDefinition { .type = *added,
+                                       .function = std::move(function),
+                                       .names = type.names,
+                                       .maxCallBytes = type.maxCallBytes });
 }
 
 std::expected<void, LinkerError> Linker::defineResource(std::string path, HostResourceType type)
@@ -848,9 +849,11 @@ std::expected<void, LinkerError> Linker::defineComponent(std::string path, Compo
 }
 
 std::shared_ptr<runtime::IHostCallee> Linker::hostCallee(
-    StoreState& store, std::shared_ptr<IHostComponentFunction> const& function)
+    StoreState& store,
+    std::shared_ptr<IHostComponentFunction> const& function,
+    std::optional<uint64_t> maxCallBytes)
 {
-    return ComponentStore::hostCallee(store, function);
+    return ComponentStore::hostCallee(store, function, maxCallBytes);
 }
 
 Linker::Resolution Linker::resolveFor(Component const& component, StoreState* store) const
