@@ -14,10 +14,12 @@
 #include <expected>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <memory_resource>
 #include <optional>
 #include <ranges>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -211,12 +213,17 @@ namespace
     /// The frame records of an invocation, a stack in blocks of FrameBlockSize: a push never copies the
     /// records already there, as a growing vector would (64 MiB at once, unpolled, a million frames deep),
     /// and a record stays where it is until it is popped. The blocks are kept for the frames entered later,
-    /// and freed when the stack ends.
+    /// and freed when the stack ends. A block is allocated, not initialized: a record is constructed where
+    /// it is pushed, so an invocation's start writes one record, not a whole block of defaults (64 KiB, the
+    /// most of a host-to-guest call's work while it did).
     class FrameStack
     {
       public:
         /// The records of one block.
         static constexpr auto FrameBlockSize = std::size_t { 1'024 };
+
+        // A record is only ever overwritten or dropped, never destroyed: a block is freed as storage.
+        static_assert(std::is_trivially_copyable_v<Frame> && std::is_trivially_destructible_v<Frame>);
 
         [[nodiscard]] bool empty() const noexcept { return _size == 0; }
 
@@ -231,21 +238,21 @@ namespace
         /// The record @p index from the oldest.
         [[nodiscard]] Frame& at(std::size_t index) noexcept
         {
-            return (*_blocks[index / FrameBlockSize])[index % FrameBlockSize];
+            return _blocks[index / FrameBlockSize][index % FrameBlockSize];
         }
 
         /// The record @p index from the oldest.
         [[nodiscard]] Frame const& at(std::size_t index) const noexcept
         {
-            return (*_blocks[index / FrameBlockSize])[index % FrameBlockSize];
+            return _blocks[index / FrameBlockSize][index % FrameBlockSize];
         }
 
         /// Pushes @p frame, starting a block where the newest is full.
         void push(Frame const& frame)
         {
             if (_size == _blocks.size() * FrameBlockSize)
-                _blocks.push_back(std::make_unique<std::array<Frame, FrameBlockSize>>());
-            at(_size) = frame;
+                _blocks.push_back(Block { std::allocator<Frame> {}.allocate(FrameBlockSize) });
+            std::construct_at(&_blocks[_size / FrameBlockSize][_size % FrameBlockSize], frame);
             ++_size;
         }
 
@@ -253,7 +260,19 @@ namespace
         void pop() noexcept { --_size; }
 
       private:
-        std::vector<std::unique_ptr<std::array<Frame, FrameBlockSize>>> _blocks;
+        /// Gives a block's storage back.
+        struct BlockDeleter
+        {
+            void operator()(Frame* block) const noexcept
+            {
+                std::allocator<Frame> {}.deallocate(block, FrameBlockSize);
+            }
+        };
+
+        /// FrameBlockSize records' storage, those below the stack's size constructed.
+        using Block = std::unique_ptr<Frame[], BlockDeleter>;
+
+        std::vector<Block> _blocks;
         std::size_t _size = 0;
     };
 } // namespace
