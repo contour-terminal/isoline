@@ -862,10 +862,13 @@ TEST_CASE("Typed.mapKeepsLastDuplicate")
 TEST_CASE("Typed.hostResourceTableGenerations")
 {
     auto table = HostResourceTable<std::string> { 2 };
+    CHECK(table.size() == 0);
     auto const first = valueOf(table.insert("one"));
+    CHECK(table.size() == 1);
     REQUIRE(table.find(first) != nullptr);
     CHECK(*table.find(first) == "one");
     table.erase(first);
+    CHECK(table.size() == 0);
     CHECK(table.find(first) == nullptr);
     auto const second = valueOf(table.insert("two"));
     CHECK(table.slotOf(second) == table.slotOf(first));
@@ -876,12 +879,15 @@ TEST_CASE("Typed.hostResourceTableGenerations")
     auto const third = valueOf(table.insert("three"));
     CHECK(table.slotOf(third) != table.slotOf(second));
     CHECK(table.find(second) == two); // an insert moves no object
+    CHECK(table.size() == 2);
     auto const full = table.insert("four");
     REQUIRE_FALSE(full.has_value());
+    CHECK(table.size() == 2);
     CHECK(full.error().code == TrapCode::Handles);
     CHECK(full.error().message() == "handles count exceeds limit of 2");
     // A stale rep erases nothing; erasing frees the slot for the next insert.
     table.erase(first);
+    CHECK(table.size() == 2);
     CHECK(*table.find(second) == "two");
     table.erase(third);
     CHECK(table.slotOf(valueOf(table.insert("five"))) == table.slotOf(third));
@@ -899,6 +905,8 @@ TEST_CASE("Typed.hostResourceTableGenerations")
     CHECK(huge.slotOf(b) == huge.slotOf(a));
     CHECK(b != a);
     huge.erase(b);
+    // A retired slot holds no object.
+    CHECK(huge.size() == 0);
     auto const c = valueOf(huge.insert("c"));
     CHECK(huge.slotOf(c) != huge.slotOf(a));
     CHECK(huge.find(a) == nullptr);

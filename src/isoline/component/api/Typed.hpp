@@ -1732,6 +1732,7 @@ class HostResourceTable
         else
             return std::unexpected { canonical::trapOf(canonical::TrapCode::Handles, _capacity) };
         _slots[slot].value.emplace(std::move(value));
+        ++_held;
         return repOf(slot);
     }
 
@@ -1753,11 +1754,15 @@ class HostResourceTable
         auto const slot = slotOf(rep);
         auto& entry = _slots[slot];
         entry.value.reset();
+        --_held;
         if (entry.generation == maxGeneration())
             return;
         ++entry.generation;
         _free.push_back(slot);
     }
+
+    /// How many objects it holds: those inserted and not erased since.
+    [[nodiscard]] std::size_t size() const noexcept { return _held; }
 
     /// The slot @p rep names.
     [[nodiscard]] uint32_t slotOf(uint32_t rep) const noexcept
@@ -1786,6 +1791,7 @@ class HostResourceTable
     uint32_t _slotBits;             ///< The rep's low bits that name the slot: enough for capacity slots.
     std::deque<Slot> _slots {};     ///< A deque: growing it moves no object, so find()'s pointers hold.
     std::vector<uint32_t> _free {}; ///< The slots erased and not retired, reused last-erased first.
+    std::size_t _held = 0;          ///< The objects held: what size() reports.
 };
 
 } // namespace isoline::component::api::typed
