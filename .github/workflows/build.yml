@@ -26,10 +26,18 @@ env:
   GCC_VERSION: "14"
 
 jobs:
+  # One row per Linux architecture: x86-64, and arm64 natively on GitHub's Cobalt 100 runners (PAC, BTI;
+  # weak memory ordering and instruction-cache rules that qemu cannot show).
   linux-clang-asan:
-    name: Linux Clang (ASan + UBSan, clang-tidy)
-    runs-on: ubuntu-24.04
+    name: Linux Clang (ASan + UBSan, clang-tidy)${{ matrix.suffix }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, suffix: "" }
+          - { runner: ubuntu-24.04-arm, suffix: " arm64" }
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
@@ -100,10 +108,18 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }} --output-on-failure
 
+  # The ratchet is x86-64's (coverage-baseline.txt); the arm64 row's report covers the files only arm64
+  # builds (its CPU feature probes) and is uploaded for merging with it.
   linux-clang-coverage:
-    name: Linux Clang (coverage)
-    runs-on: ubuntu-24.04
+    name: Linux Clang (coverage)${{ matrix.suffix }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, suffix: "", artifact: coverage-report, ratchet: true }
+          - { runner: ubuntu-24.04-arm, suffix: " arm64", artifact: coverage-report-arm64, ratchet: false }
     steps:
       - uses: actions/checkout@v4
       - name: Install LLVM ${{ env.LLVM_VERSION }} and Ninja
@@ -147,12 +163,13 @@ jobs:
           "llvm-cov-$LLVM_VERSION" show "${objects[@]}" -instr-profile=isoline.profdata \
             -ignore-filename-regex="$ignore" -format=html -output-dir=coverage-html
       - name: Coverage ratchet
+        if: ${{ matrix.ratchet }}
         run: python3 -I scripts/coverage-check.py out/clang-coverage/coverage.json coverage-baseline.txt
       - name: Upload coverage report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: ${{ matrix.artifact }}
           path: |
             out/clang-coverage/coverage-summary.txt
             out/clang-coverage/coverage.lcov
@@ -213,6 +230,33 @@ jobs:
       - name: Check every encoding against llvm-mc
         run: ctest --test-dir out/clang-release -L oracle --no-tests=error --output-on-failure
 
+  # arm64 from an x86-64 host, as a developer runs it locally (docs/cross-compiling.md): the cross toolchain
+  # and sysroot, and the suite under qemu on the baseline ARMv8.0 core, where PAC and BTI are NOPs. The
+  # sysroot is cached by the script that pins its image; the oracle is target-independent and runs above.
+  linux-arm64-qemu-smoke:
+    name: Linux arm64 cross (qemu, cortex-a53)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM ${{ env.LLVM_VERSION }}, Ninja and qemu-user
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get install -qy ninja-build qemu-user-static podman
+          # The toolchain file finds clang, clang++ and ld.lld by their plain names.
+          echo "/usr/lib/llvm-$LLVM_VERSION/bin" >> "$GITHUB_PATH"
+      - name: Restore the sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/isoline/sysroot-aarch64-trixie
+          key: sysroot-aarch64-${{ hashFiles('scripts/make-aarch64-sysroot.sh') }}
+      - name: Create the sysroot
+        run: scripts/make-aarch64-sysroot.sh
+      - name: Build and test under qemu
+        run: scripts/arm64-cross.sh --cpu cortex-a53 -- -L unit -LE oracle --no-tests=error
+
   macos-clang:
     name: macOS Apple Clang
     runs-on: macos-15
@@ -228,22 +272,29 @@ jobs:
       - name: Test
         run: ctest --preset macos-clang --output-on-failure
 
+  # One row per Windows architecture: x64 runs the whole suite, ARM64 (tier 2) the unit label.
   windows-msvc:
-    name: Windows MSVC
-    runs-on: windows-latest
+    name: Windows MSVC${{ matrix.suffix }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64, suffix: "", tests: "" }
+          - { runner: windows-11-arm, arch: arm64, suffix: " ARM64", tests: "-L unit" }
     steps:
       - uses: actions/checkout@v4
       - name: Enter the MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x64
+          arch: ${{ matrix.arch }}
       - name: Configure
         run: cmake --preset msvc-debug
       - name: Build
         run: cmake --build --preset msvc-debug
       - name: Test
-        run: ctest --preset msvc-debug --output-on-failure
+        run: ctest --preset msvc-debug --output-on-failure --no-tests=error ${{ matrix.tests }}
 
   clang-format:
     name: clang-format

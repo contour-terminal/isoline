@@ -169,6 +169,16 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(make-differential-corpus-selftest PROPERTIES LABELS lint)
 endif()
 
+# The arm64 cross scripts' checks, offline on fixtures: the sysroot's completeness (each file the cross build
+# needs, by name) and scripts/arm64-cross.sh's refusals (no binfmt registration, an unknown CPU). POSIX sh,
+# run on the host by path in every tree but Windows'.
+if(NOT CMAKE_HOST_WIN32)
+    add_test(NAME make-aarch64-sysroot-selftest
+             COMMAND sh "${PROJECT_SOURCE_DIR}/scripts/make-aarch64-sysroot_test.sh")
+    add_test(NAME arm64-cross-selftest COMMAND sh "${PROJECT_SOURCE_DIR}/scripts/arm64-cross_test.sh")
+    set_tests_properties(make-aarch64-sysroot-selftest arm64-cross-selftest PROPERTIES LABELS lint)
+endif()
+
 # The compiler's translation handles every instruction of the features it compiles: no core::todo is
 # left under it (MemoryTranslation.everyCompiledOpcodeTranslates runs each of them).
 add_test(NAME compiler-translation-no-todo

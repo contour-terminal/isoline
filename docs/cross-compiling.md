@@ -31,7 +31,7 @@ one. The system headers are passed as `/imsvc`, so the warning set and `/WX` app
 ```sh
 cmake --preset clangcl-cross-debug
 cmake --build --preset clangcl-cross-debug
-ctest --preset clangcl-cross-debug
+ctest --preset clangcl-cross-debug -L unit
 ```
 
 `clangcl-cross-release` builds the same with the release STL. MSVC's debug STL allocates inside
@@ -55,8 +55,8 @@ running an arm64 container needs), and podman to create the sysroot once:
 scripts/make-aarch64-sysroot.sh            # a no-op when the sysroot is complete; --refresh recreates it
 cmake --preset clang-aarch64-cross
 cmake --build --preset clang-aarch64-cross
-QEMU_CPU=max ctest --preset clang-aarch64-cross
-QEMU_CPU=cortex-a53 ctest --preset clang-aarch64-cross
+QEMU_CPU=max ctest --preset clang-aarch64-cross -L unit
+QEMU_CPU=cortex-a53 ctest --preset clang-aarch64-cross -L unit
 ```
 
 The sysroot is the C and C++ development files (`libc6-dev libstdc++-14-dev libgcc-14-dev
@@ -67,6 +67,36 @@ variable, default `~/.cache/isoline/sysroot-aarch64-trixie`). The Debug preset k
 `clang-aarch64-cross-release` shows what the optimizer does with the same code. `QEMU_CPU` picks the emulated CPU: `max`
 enables every extension qemu implements, `cortex-a53` is a baseline ARMv8.0 core without them, so the
 two runs cover both sides of any feature detection.
+
+`scripts/arm64-cross.sh` does all of that in one step, for one CPU at a time:
+
+```sh
+scripts/arm64-cross.sh --cpu max -- -L unit          # QEMU_CPU=max,pauth-impdef=on
+scripts/arm64-cross.sh --cpu cortex-a53 -- -L unit   # QEMU_CPU=cortex-a53
+```
+
+It refuses to run without the `qemu-aarch64` binfmt registration (programs a test starts itself, such as
+ProcessRunner's child, run through it, honouring the exported `QEMU_CPU` and `QEMU_LD_PREFIX`) or without
+a complete sysroot (`scripts/make-aarch64-sysroot.sh --check` names what is missing). It prints the qemu
+version, `QEMU_CPU` and the guest's `AT_HWCAP`/`AT_HWCAP2`, configures `out/clang-aarch64-cross-release`
+once (with `ISOLINE_CONFIGURE_ARGS`; `--preset` picks another tree), builds it, and runs ctest under a
+6 GiB address-space cap with the arguments after `--`, exiting with its status. `pauth-impdef` keeps PAC's
+semantics but replaces QARMA5, which costs hundreds of host instructions per `paciasp`. Under `max`, qemu
+10.2 reports PAC, BTI and CSSC (`HWCAP2_CSSC`, bit 34), so `max` is the one place CSSC code executes:
+none of the CI hardware has it.
+
+**Label filters.** A test preset excludes the labels `perf|differential`, and a `-LE` on the command line
+**replaces** that exclusion rather than adding to it: `ctest --preset clang-aarch64-cross -LE oracle` runs the
+corpus shards and the perf tests again. Repeated `-L` or `-LE` options are **AND-combined**: `-L unit -L lint`
+selects the tests carrying both labels, none, and `-LE perf -LE differential` excludes only the tests carrying
+both, none either. One regular expression per option says what is meant (`-LE 'perf|differential|oracle'`).
+So every gate names its labels explicitly, with `-L unit` for the unit suites (`-L lint` runs the script and
+Python checks).
+
+`scripts/arm64-podman.sh [--cpu max|cortex-a53] [-- <ctest arguments>]` is the fallback when the host's
+cross toolchain is unavailable or suspected: it builds natively with GCC 14 inside the sysroot's pinned
+Debian trixie arm64 image (the tree mounted read-only, the build in `out/gcc-arm64-podman`) and runs
+ctest there. Every compile runs emulated, so a cold build takes about half an hour where the cross build takes minutes.
 
 ## What an emulator cannot show
 
