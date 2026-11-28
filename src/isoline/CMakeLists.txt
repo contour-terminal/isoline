@@ -273,26 +273,28 @@ if(ISOLINE_TESTING)
     # isoline_test.<area> runs every case of it ("<area>.*"), so that the areas run in parallel and each has a
     # bound of its own. A row is the area, then its TIMEOUT in seconds when it is not the default, a bound
     # that turns a hang (an interrupt test whose poll went missing) into a failure; ISOLINE_TEST_TIMEOUT_FACTOR
-    # multiplies each under an emulator. isoline_test.areas checks that every case belongs to a row's area.
+    # multiplies each under an emulator. Then a label besides unit, when it has one: interpreter for the
+    # interpreter's own areas (src/isoline/interpreter), which `ctest -L interpreter` selects with the spec
+    # suite on that engine. isoline_test.areas checks that every case belongs to a row's area.
     # The hidden cases run apart: the [.contract] ones in tests/CMakeLists.txt, the [perf] ones below. So do
     # the [memory] cases (growth past a store's budgets, hostile deltas), under a hard memory cap, so that a
     # broken bound fails small instead of starving a shared machine.
     set(isolineTestDefaultTimeout 120)
     set(isolineTestAreas
         "BranchHints"
-        "Bulk"
+        "Bulk|interpreter"
         "ByteReader"
-        "Calls|300"
-        "Code"
+        "Calls|300|interpreter"
+        "Code|interpreter"
         "ConstantExpression"
         "Contract"
         "CountingArena"
         "DecodeError"
         "Decoder"
-        "Dispatch"
+        "Dispatch|interpreter"
         "Encoder|300"
         "Engine"
-        "Exceptions"
+        "Exceptions|interpreter"
         "Externs"
         "Features"
         "FloatEnvironment"
@@ -301,22 +303,22 @@ if(ISOLINE_TESTING)
         "HostFunction"
         "Imports"
         "Instantiate"
-        "Interpreter"
+        "Interpreter|interpreter"
         "Interrupt"
         "Interrupter"
         "Limits"
         "LinearMemory"
-        "LittleEndian"
-        "Lowering|600"
-        "LoweringRows"
-        "Memory"
+        "LittleEndian|interpreter"
+        "Lowering|600|interpreter"
+        "LoweringRows|interpreter"
+        "Memory|interpreter"
         "MemoryAccess"
         "Module"
         "ModuleEquality"
         "NameSection"
         "Numerics"
         "Opcode"
-        "OperationTable"
+        "OperationTable|interpreter"
         "PollGate"
         "ProvidedMemoryAllocator"
         "PublishedLimits"
@@ -326,12 +328,12 @@ if(ISOLINE_TESTING)
         "ReferenceInterpreter|300"
         "Relaxed"
         "Segment"
-        "Simd|300"
+        "Simd|300|interpreter"
         "SimdKernels"
-        "SlotCodec"
+        "SlotCodec|interpreter"
         "Store"
         "Subtyping"
-        "Tables"
+        "Tables|interpreter"
         "Threads"
         "Trap"
         "TypeCanon"
@@ -343,11 +345,12 @@ if(ISOLINE_TESTING)
         "Version")
     set(isolineTestAreaNames)
     foreach(row IN LISTS isolineTestAreas)
-        if(row MATCHES "^([A-Za-z]+)(\\|([0-9]+))?$")
+        if(row MATCHES "^([A-Za-z]+)(\\|([0-9]+))?(\\|(interpreter))?$")
             set(area "${CMAKE_MATCH_1}")
             set(timeout "${CMAKE_MATCH_3}")
+            set(labels unit ${CMAKE_MATCH_5})
         else()
-            message(FATAL_ERROR "isolineTestAreas: expected '<area>' or '<area>|<seconds>', got '${row}'")
+            message(FATAL_ERROR "isolineTestAreas: expected '<area>[|<seconds>][|interpreter]', got '${row}'")
         endif()
         if(NOT timeout)
             set(timeout ${isolineTestDefaultTimeout})
@@ -357,7 +360,7 @@ if(ISOLINE_TESTING)
         # The tags first: Catch2 reads a name pattern to the end of the argument. A name pattern selects
         # hidden cases too, which ~[.] leaves to their own tests.
         add_test(NAME isoline_test.${area} COMMAND isoline_test "~[.] ~[memory] ${area}.*")
-        set_tests_properties(isoline_test.${area} PROPERTIES LABELS unit TIMEOUT ${timeout})
+        set_tests_properties(isoline_test.${area} PROPERTIES LABELS "${labels}" TIMEOUT ${timeout})
     endforeach()
     # A cross build's emulator runs the binary there too; a list, passed with | between its items.
     string(REPLACE ";" "|" isolineAreaEmulator "${CMAKE_CROSSCOMPILING_EMULATOR}")

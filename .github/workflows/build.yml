@@ -196,6 +196,38 @@ jobs:
       - name: Test
         run: ctest --preset "${{ matrix.preset }}" --output-on-failure
 
+  # The one big-endian host: s390x, cross-compiled with GCC, the tests under qemu-user. Wasm memory and the
+  # interpreter's slots stay little-endian, so every byte-order slip fails here. The gcc-s390x test preset
+  # selects -L "unit|interpreter" -LE "perf|wallclock"; scripts/s390x-podman.sh runs the same locally.
+  linux-gcc-s390x-qemu:
+    name: Linux GCC (s390x big-endian, qemu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The fewest spec.interpreter.* tests the selection may hold: the switch dispatch's 248 files, so that a
+      # label or registration change cannot shrink the big-endian run unnoticed.
+      MIN_SPEC_INTERPRETER_TESTS: 248
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the s390x cross GCC ${{ env.GCC_VERSION }}, qemu-user and Ninja
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy "g++-$GCC_VERSION-s390x-linux-gnu" qemu-user ninja-build
+      - name: Configure
+        run: cmake --preset gcc-s390x
+      - name: Build
+        run: cmake --build --preset gcc-s390x
+      - name: Check the selection
+        run: |
+          count=$(ctest --preset gcc-s390x -N -R '^spec\.interpreter\.' | grep -c ' Test *#')
+          echo "spec.interpreter.* tests selected: $count (at least $MIN_SPEC_INTERPRETER_TESTS)"
+          if [ "$count" -lt "$MIN_SPEC_INTERPRETER_TESTS" ]; then
+            echo "::error::the s390x selection holds $count spec.interpreter.* tests, fewer than $MIN_SPEC_INTERPRETER_TESTS"
+            exit 1
+          fi
+      - name: Test
+        run: ctest --preset gcc-s390x -j "$(nproc)" --output-on-failure
+
   linux-clang-coverage:
     name: Linux Clang (coverage)
     runs-on: ubuntu-24.04

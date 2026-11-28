@@ -21,7 +21,8 @@ target_link_libraries(isoline_spectest_test PRIVATE isoline_spectest Catch2::Cat
 target_compile_definitions(isoline_spectest_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 isoline_apply_target_policy(isoline_spectest_test TEST)
 add_test(NAME isoline_spectest_test COMMAND isoline_spectest_test)
-set_tests_properties(isoline_spectest_test PROPERTIES LABELS unit TIMEOUT 600)
+math(EXPR isolineSpecUnitTestTimeout "600 * ${ISOLINE_TEST_TIMEOUT_FACTOR}")
+set_tests_properties(isoline_spectest_test PROPERTIES LABELS unit TIMEOUT ${isolineSpecUnitTestTimeout})
 
 # The feature set each suite source runs with: the 3.0 release its own standard, a proposal's suite
 # every feature Isoline knows, as its tests build on 3.0.
@@ -29,6 +30,11 @@ set(specFeatures_wasm3 wasm3)
 set(specFeatures_wide-arithmetic all)
 set(specFeatures_custom-page-sizes all)
 set(specFeatures_compact-imports all)
+
+# The bound of one spec file's test: four times the slowest one under ASan (return_call_ref, 30 s), so that a
+# hang fails instead of running to the preset's limit; ISOLINE_TEST_TIMEOUT_FACTOR multiplies it under an
+# emulator, as it does each unit-test area's.
+math(EXPR isolineSpecTestTimeout "120 * ${ISOLINE_TEST_TIMEOUT_FACTOR}")
 
 ## @brief Registers the test of one imported .wast file on one engine: the reference interpreter as
 ## spec.<source>.<path with / as .> (label spec), the interpreter under a dispatch as
@@ -50,7 +56,7 @@ function(isoline_add_spec_test engine dispatch source path skips)
     add_test(NAME ${testName}
              COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/${source}/${path}" "${skips}"
                      --features "${specFeatures_${source}}" ${engineArguments})
-    set_tests_properties(${testName} PROPERTIES LABELS "${labels}")
+    set_tests_properties(${testName} PROPERTIES LABELS "${labels}" TIMEOUT ${isolineSpecTestTimeout})
 endfunction()
 
 get_property(specDispatches GLOBAL PROPERTY ISOLINE_INTERPRETER_DISPATCH_NAMES)

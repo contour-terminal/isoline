@@ -380,6 +380,21 @@
                 "aarch64-cross-common",
                 "release"
             ]
+        },
+        {
+            "name": "gcc-s390x",
+            "displayName": "Linux s390x cross (GCC 14) Release, big-endian",
+            "description": "Big-endian s390x from an x86_64 Debian or Ubuntu host with g++-14-s390x-linux-gnu; tests run under qemu-user (scripts/s390x-podman.sh elsewhere). No sanitizers, no clang-tidy",
+            "inherits": [
+                "isoline-common",
+                "linux-host",
+                "release"
+            ],
+            "toolchainFile": "${sourceDir}/cmake/toolchains/s390x-linux-gnu.cmake",
+            "cacheVariables": {
+                "ISOLINE_FETCH_DEPS": "ON",
+                "ISOLINE_TEST_TIMEOUT_FACTOR": "10"
+            }
         }
     ],
     "buildPresets": [
@@ -412,7 +427,8 @@
         { "name": "gcc-cxx26-modules", "configurePreset": "gcc-cxx26-modules" },
         { "name": "msvc-modules", "configurePreset": "msvc-modules" },
         { "name": "msvc-modules-visual-studio", "configurePreset": "msvc-modules-visual-studio", "configuration": "Debug" },
-        { "name": "msvc-wine-modules", "configurePreset": "msvc-wine-modules" }
+        { "name": "msvc-wine-modules", "configurePreset": "msvc-wine-modules" },
+        { "name": "gcc-s390x", "configurePreset": "gcc-s390x" }
     ],
     "testPresets": [
         {
@@ -487,6 +503,17 @@
         { "name": "gcc-cxx26-modules", "inherits": "isoline-test-common", "configurePreset": "gcc-cxx26-modules" },
         { "name": "msvc-modules", "inherits": "isoline-test-common", "configurePreset": "msvc-modules" },
         { "name": "msvc-modules-visual-studio", "inherits": "isoline-test-common", "configurePreset": "msvc-modules-visual-studio", "configuration": "Debug" },
-        { "name": "msvc-wine-modules", "inherits": "isoline-test-common", "configurePreset": "msvc-wine-modules" }
+        { "name": "msvc-wine-modules", "inherits": "isoline-test-common", "configurePreset": "msvc-wine-modules" },
+        {
+            "name": "gcc-s390x",
+            "inherits": "isoline-test-base",
+            "configurePreset": "gcc-s390x",
+            "description": "What CI's big-endian job runs under qemu: the unit and interpreter labels, but neither perf nor wallclock, which assert wall-clock time an emulator does not keep",
+            "filter": {
+                "include": { "label": "unit|interpreter" },
+                "exclude": { "label": "perf|wallclock" }
+            },
+            "execution": { "noTestsAction": "error" }
+        }
     ]
 }

@@ -1,7 +1,7 @@
 # Cross-compiling
 
-A Linux host builds Isoline for Windows x64 and for Linux aarch64 and runs the whole test suite there,
-under wine and qemu-user respectively, so a portability failure shows up locally instead of on CI.
+A Linux host builds Isoline for Windows x64, for Linux aarch64 and for big-endian Linux s390x and runs the
+test suite there, under wine and qemu-user, so a portability failure shows up locally instead of on CI.
 Both are ordinary presets; `ctest` runs each test binary through the toolchain's
 `CMAKE_CROSSCOMPILING_EMULATOR`. The Python tests (label `lint`) name the host interpreter by its path
 and run on the host in every tree.
@@ -14,6 +14,7 @@ and run on the host in every tree.
 | `msvc-wine-modules` | Windows x64, Debug, real MSVC, C++ modules | the same | wine |
 | `clang-aarch64-cross` | Linux aarch64, Debug | `cmake/toolchains/aarch64-linux-gnu-clang.cmake` | `qemu-aarch64-static` |
 | `clang-aarch64-cross-release` | Linux aarch64, Release | the same | `qemu-aarch64-static` |
+| `gcc-s390x` | Linux s390x (big-endian), Release | `cmake/toolchains/s390x-linux-gnu.cmake` | `qemu-s390x` |
 
 ## Windows x64: clang-cl and wine
 
@@ -104,6 +105,26 @@ variable, default `~/.cache/isoline/sysroot-aarch64-trixie`). The Debug preset k
 `clang-aarch64-cross-release` shows what the optimizer does with the same code. `QEMU_CPU` picks the emulated CPU: `max`
 enables every extension qemu implements, `cortex-a53` is a baseline ARMv8.0 core without them, so the
 two runs cover both sides of any feature detection.
+
+## Linux s390x: GCC 14 and qemu-user, big-endian
+
+The one big-endian target: Wasm memory stays little-endian, so every load, store and slot access of the
+interpreter byte-swaps there, and a read that only works in the host's order fails. It needs the
+Debian/Ubuntu cross compiler `g++-14-s390x-linux-gnu` (its target libraries in `/usr/s390x-linux-gnu`,
+`ISOLINE_S390X_PREFIX`) and `qemu-user`, as CI's `linux-gcc-s390x-qemu` job installs them:
+
+```sh
+cmake --preset gcc-s390x
+cmake --build --preset gcc-s390x
+ctest --preset gcc-s390x
+```
+
+A host without those packages (Fedora has no s390x cross g++) runs the same three steps in an Ubuntu 24.04
+container with `scripts/s390x-podman.sh`; arguments after the options go to `ctest`, e.g.
+`scripts/s390x-podman.sh --jobs 4 -R 'LittleEndian|SlotCodec'`. The test preset runs what CI runs, the
+`unit` and `interpreter` labels without `perf` and `wallclock`. The preset is Release with neither
+sanitizers nor clang-tidy, and multiplies every area's timeout by 10 (`ISOLINE_TEST_TIMEOUT_FACTOR`): s390x
+emulation is slower than aarch64's.
 
 ## What an emulator cannot show
 
