@@ -180,10 +180,14 @@
 # branches no test takes are the ones that were before, Require failing sides and switches' no-case sides; no branch lost
 # its coverage.
 #
+# src/isoline/binary/MemoryAccess.hpp's branch entry was lowered from 100.00 to 85.71 (6 of 7), and src/isoline/text/ModuleReader.cpp's
+# from 99.03 to 98.85 (517 of 523), when -Wnull-dereference became an error again (P4 Task 17): the look-ups of a table row that
+# callers dereferenced unchecked go through memoryAccessRowOf() and acceptedExternRowOf(), whose Require(row != nullptr) adds the
+# branch of a missing row, which no caller takes (every caller asks for an opcode the table names as a load or store, or a
+# keyword readDescriptor() accepted), as every Require's failing side is. No branch lost its coverage.
 # src/isoline/c/Error.cpp's line entry was lowered from 99.15 to 96.82 when the immortal error moved into a holder that never
 # destroys it (Task 7 fix round 1): its constructor and destructor, three lines, run at compile time and at exit, and are the
 # immortal-error-lifetime exclusion. No line a test reached lost its coverage.
-#
 # src/isoline/runtime/Store.cpp's line entry was lowered from 99.70 to 99.69 (663 of 665, from 670 of 672) when Store::used()'s
 # check of its Usages table moved onto meta::firstMisplacedRow: the hand-written loop's nine lines, covered because the
 # static_assert sits in a function the tests run, became two. Its two uncovered lines are the ones they were, the bad-alloc
@@ -306,7 +310,7 @@ src/isoline/binary/DecodeLimits.hpp                100.00 -
 src/isoline/binary/Decoder.cpp                     100.00 98.96
 src/isoline/binary/Encoder.cpp                     100.00 93.51
 src/isoline/binary/Encoder.cpp                   100.00 93.27
-src/isoline/binary/MemoryAccess.hpp                100.00 100.00
+src/isoline/binary/MemoryAccess.hpp                100.00 85.71
 src/isoline/binary/Module.hpp                      100.00 75.92
 src/isoline/binary/NameSection.cpp                 100.00 90.32
 src/isoline/binary/NameSection.hpp                 100.00 -
@@ -419,7 +423,7 @@ src/isoline/text/Keywords.cpp                      100.00 93.33
 src/isoline/text/Lexer.cpp                         100.00 97.02
 src/isoline/text/Lexer.hpp                         100.00 -
 src/isoline/text/LiteralError.hpp                  100.00 -
-src/isoline/text/ModuleReader.cpp                  100.00 99.03
+src/isoline/text/ModuleReader.cpp                  100.00 98.85
 src/isoline/text/ModuleReader.hpp                  100.00 -
 src/isoline/text/ModuleWriter.cpp                  98.70 94.49
 src/isoline/text/ModuleWriter.hpp                  100.00 -
