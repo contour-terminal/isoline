@@ -719,6 +719,10 @@ namespace
                                                                std::string const& name);
         [[nodiscard]] Result<void> instance(binary::InstanceDefinition const& instance,
                                             DefinitionPosition position);
+        /// Renames each value type @p component imports to the argument's (register_type_renamings).
+        void renameImportedTypes(std::span<types::NamedExtern const> arguments,
+                                 types::ComponentTypeId component,
+                                 types::ResourceSubstitution& substitution) const;
         [[nodiscard]] Result<types::InstanceTypeId> instantiate(binary::Instantiate const& instantiate,
                                                                 DefinitionPosition position);
         [[nodiscard]] Result<types::InstanceTypeId> inlineExports(binary::InlineExports const& exports,
@@ -3279,6 +3283,48 @@ namespace
         return {};
     }
 
+    void ComponentValidator::renameImportedTypes(std::span<types::NamedExtern const> arguments,
+                                                 types::ComponentTypeId component,
+                                                 types::ResourceSubstitution& substitution) const
+    {
+        // register_type_renamings (component_types.rs:4089-4112): each value type the component imports,
+        // its own copy, stands for the argument's, inside instances too, by export name. Resources are
+        // bound by the relation already. An explicit stack of the instance pairs.
+        auto pending = std::vector<std::pair<types::ExternType const*, types::ExternType const*>> {};
+        auto byName = std::map<std::string_view, types::ExternType const*> {};
+        for (auto const& argument: arguments)
+            byName.try_emplace(argument.name.str(), &argument.type);
+        for (auto const& import: _arena[component].imports)
+            if (auto const found = byName.find(import.name.str()); found != byName.end())
+                pending.emplace_back(&import.type, found->second);
+        while (!pending.empty())
+        {
+            auto const [expected, actual] = pending.back();
+            pending.pop_back();
+            auto const* expectedType = std::get_if<types::TypeExtern>(expected);
+            auto const* actualType = std::get_if<types::TypeExtern>(actual);
+            if (expectedType != nullptr && actualType != nullptr)
+            {
+                auto const* from = std::get_if<TypeId>(&expectedType->type);
+                auto const* to = std::get_if<TypeId>(&actualType->type);
+                if (from != nullptr && to != nullptr && *from != *to)
+                    substitution.renameType(*from, *to);
+                continue;
+            }
+            auto const* expectedInstance = std::get_if<types::InstanceTypeId>(expected);
+            auto const* actualInstance = std::get_if<types::InstanceTypeId>(actual);
+            if (expectedInstance == nullptr || actualInstance == nullptr)
+                continue;
+            // By name through an ordered index, so a pair of wide instances costs O(n log n).
+            auto provided = std::map<std::string_view, types::ExternType const*> {};
+            for (auto const& entry: _arena[*actualInstance].exports)
+                provided.try_emplace(entry.name.str(), &entry.type);
+            for (auto const& entry: _arena[*expectedInstance].exports)
+                if (auto const found = provided.find(entry.name.str()); found != provided.end())
+                    pending.emplace_back(&entry.type, found->second);
+        }
+    }
+
     Result<types::InstanceTypeId> ComponentValidator::instantiate(binary::Instantiate const& instantiate,
                                                                   DefinitionPosition position)
     {
@@ -3318,6 +3364,7 @@ namespace
         if (!bound)
             return std::unexpected { relationRefusal(
                 std::move(bound.error()), ValidationErrorCode::InstantiationMismatch, position) };
+        renameImportedTypes(arguments, *component, *bound);
         auto const fresh = freshResourcesFor(_arena, _arena[*component]);
         if (!fresh)
             return std::unexpected { limitError(fresh.error(), position) };

@@ -564,3 +564,41 @@ TEST_CASE("TypeArena.lookupsAndFlagsOfEveryShape")
     CHECK(children[1]
           == interned(types.arena, DefinedType { .kind = ValueKind::Own, .resource = types.image }));
 }
+
+TEST_CASE("TypeArena.renamesOnlyTheTypesNamingARenamedType")
+{
+    // An instantiation renames an imported type to its argument's: a type naming it is rebuilt, and one
+    // naming neither it nor a resource is its own image, neither rebuilt nor charged.
+    auto arena = TypeArena { ComponentLimits {} };
+    auto const u32 = interned(arena, typeOf(ValueKind::U32, {}));
+    auto imported = typeOf(ValueKind::Record, { u32 }, { "a" });
+    imported.nominal = 1;
+    auto argument = imported;
+    argument.nominal = 2;
+    auto const from = interned(arena, std::move(imported));
+    auto const to = interned(arena, std::move(argument));
+    auto const unrelated = interned(arena, typeOf(ValueKind::List, { u32 }));
+    auto const naming = interned(arena, typeOf(ValueKind::List, { from }));
+    auto const exporting = [&](TypeId type) {
+        auto const instance = arena.add(InstanceTypeInfo {
+            .exports = { NamedExtern { .name = "t", .type = ValueExtern { .type = type } } } });
+        REQUIRE(instance.has_value());
+        return *instance;
+    };
+    auto renaming = ResourceSubstitution {};
+    renaming.renameType(from, to);
+
+    auto const kept = exporting(unrelated);
+    auto const same = arena.substitute(kept, renaming);
+    REQUIRE(same.has_value());
+    CHECK(*same == isoline::component::types::ExternType { kept });
+    CHECK(arena.substitutedTypes() == 0);
+
+    auto const renamed = arena.substitute(exporting(naming), renaming);
+    REQUIRE(renamed.has_value());
+    auto const* instance = std::get_if<InstanceTypeId>(&*renamed);
+    REQUIRE(instance != nullptr);
+    CHECK(std::get<ValueExtern>(arena[*instance].exports.front().type).type
+          == interned(arena, typeOf(ValueKind::List, { to })));
+    CHECK(arena.substitutedTypes() > 0);
+}

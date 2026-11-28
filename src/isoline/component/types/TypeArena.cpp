@@ -643,6 +643,19 @@ std::expected<ExternType, TypeLimitError> TypeArena::substitute(ExternType const
     return ExternType { result };
 }
 
+std::optional<AnyTypeId> TypeArena::directImage(AnyTypeId id, ResourceSubstitution const& substitution) const
+{
+    if (auto const* resource = std::get_if<ResourceTypeId>(&id))
+        return AnyTypeId { substitution.apply(*resource) };
+    if (auto const* value = std::get_if<TypeId>(&id))
+        if (auto const renamed = substitution.typeImage(*value))
+            return AnyTypeId { *renamed };
+    // A type naming no resource changes only by a renamed type beneath it, which the walk finds.
+    if (!namesResource(id) && !substitution.renamesTypes())
+        return id;
+    return std::nullopt;
+}
+
 std::expected<ExternType, TypeLimitError> TypeArena::substituteNamed(ExternType const& type,
                                                                      ResourceSubstitution const& substitution)
 {
@@ -653,10 +666,8 @@ std::expected<ExternType, TypeLimitError> TypeArena::substituteNamed(ExternType 
         return type;
     auto images = std::map<AnyTypeId, AnyTypeId> {};
     auto const imageOf = [&](AnyTypeId id) -> std::optional<AnyTypeId> {
-        if (auto const* resource = std::get_if<ResourceTypeId>(&id))
-            return AnyTypeId { substitution.apply(*resource) };
-        if (!namesResource(id))
-            return id;
+        if (auto const direct = directImage(id, substitution))
+            return direct;
         auto const entry = images.find(id);
         if (entry == images.end())
             return std::nullopt;
@@ -765,7 +776,17 @@ std::expected<ExternType, TypeLimitError> TypeArena::substituteNamed(ExternType 
         }
         auto const current = top.type;
         auto const children = top.children.size();
+        // A type naming no resource is rebuilt only when it names a renamed type: when a child's image
+        // is another type. Otherwise it is its own image, neither rebuilt nor charged.
+        auto const kept =
+            !namesResource(current)
+            && std::ranges::all_of(top.children, [&](AnyTypeId child) { return *imageOf(child) == child; });
         stack.pop_back();
+        if (kept)
+        {
+            images.emplace(current, current);
+            continue;
+        }
         auto const image = rebuild(current, children);
         if (!image)
             return std::unexpected { image.error() };

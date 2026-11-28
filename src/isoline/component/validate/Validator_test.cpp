@@ -1494,6 +1494,56 @@ TEST_CASE("Validator.coreFunctionBodiesAfterTheComponent")
     CHECK(later.error().coreModule->ordinal == 1);
 }
 
+TEST_CASE("Validator.instantiationRenamesImportedTypes")
+{
+    // An instantiation renames each value type the component imports to its argument
+    // (register_type_renamings, component_types.rs:4089-4112), so an exported type built on the child's
+    // import is built on the parent's, which the parent may name (external-visibility.wast:475).
+    auto const renamed = R"((component
+        (type $Rec (record (field "x" u32)))
+        (import "t" (type $Rec' (eq $Rec)))
+        (component $C
+          (type $Rec (record (field "x" u32)))
+          (import "t" (type $Rec' (eq $Rec)))
+          (type $Rec2 (record (field "r" $Rec')))
+          (export "t2" (type $Rec2)))
+        (instance $c (instantiate $C (with "t" (type $Rec'))))
+        (export "t2" (type $c "t2"))))";
+    auto const accepted = validatedText(renamed);
+    if (!accepted)
+        UNSCOPED_INFO(specMessage(accepted.error()));
+    CHECK(accepted.has_value());
+
+    // Inside an instance too.
+    auto const nested = R"((component
+        (type $Rec (record (field "x" u32)))
+        (import "i" (instance $i (export "t" (type (eq $Rec)))))
+        (alias export $i "t" (type $Rec'))
+        (component $C
+          (type $Rec (record (field "x" u32)))
+          (import "i" (instance $i (export "t" (type (eq $Rec)))))
+          (alias export $i "t" (type $Rec'))
+          (type $Rec2 (record (field "r" $Rec')))
+          (export "t2" (type $Rec2)))
+        (instance $c (instantiate $C (with "i" (instance $i))))
+        (export "t2" (type $c "t2"))))";
+    auto const nestedAccepted = validatedText(nested);
+    if (!nestedAccepted)
+        UNSCOPED_INFO(specMessage(nestedAccepted.error()));
+    CHECK(nestedAccepted.has_value());
+
+    // A type of the child's own, which the parent never named, is still refused.
+    auto const unnamed = R"((component
+        (component $C
+          (type $Rec (record (field "x" u32)))
+          (export "t" (type $Rec))
+          (type $Rec2 (record (field "r" $Rec)))
+          (export "t2" (type $Rec2)))
+        (instance $c (instantiate $C))
+        (export "t2" (type $c "t2"))))";
+    CHECK(textRefusal(unnamed) == "type not valid to be used as export");
+}
+
 TEST_CASE("Validator.coreModuleRefusalWithoutASpecMessage")
 {
     // A core refusal of no spec message of its own (a module past the engine's size) keeps Isoline's text.

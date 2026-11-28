@@ -603,10 +603,31 @@ struct InstanceTypeInfo
 };
 
 /// Which resource type stands for which: each mapped resource is replaced by its image, every other is
-/// kept. Ordered by resource, so a lookup is O(log n) whatever the resources are.
+/// kept; and which value type stands for which, as an instantiation renames the types a component imports
+/// to the arguments' (wasm-tools' Remapping::types, register_type_renamings). Ordered by resource and by
+/// type, so a lookup is O(log n) whatever they are.
 class ResourceSubstitution
 {
   public:
+    /// Maps the value type @p from to @p to, replacing an earlier image of @p from.
+    /// @param from The type replaced: an imported type's own copy.
+    /// @param to Its image.
+    void renameType(TypeId from, TypeId to) { _types.insert_or_assign(from, to); }
+
+    /// The image of a value type the substitution renames.
+    /// @param from A type.
+    /// @return Its image, or nothing when it is not renamed.
+    [[nodiscard]] std::optional<TypeId> typeImage(TypeId from) const
+    {
+        auto const entry = _types.find(from);
+        if (entry == _types.end())
+            return std::nullopt;
+        return entry->second;
+    }
+
+    /// Whether it renames any value type: then a type naming no resource may still change.
+    [[nodiscard]] bool renamesTypes() const noexcept { return !_types.empty(); }
+
     /// Maps @p from to @p to, replacing an earlier image of @p from.
     /// @param from The resource replaced.
     /// @param to Its image.
@@ -632,12 +653,13 @@ class ResourceSubstitution
     /// @return The resources and their images.
     [[nodiscard]] std::map<ResourceTypeId, ResourceTypeId> const& images() const noexcept { return _images; }
 
-    /// The number of resources mapped.
+    /// The number of resources mapped and types renamed.
     /// @return The count.
-    [[nodiscard]] std::size_t size() const noexcept { return _images.size(); }
+    [[nodiscard]] std::size_t size() const noexcept { return _images.size() + _types.size(); }
 
   private:
     std::map<ResourceTypeId, ResourceTypeId> _images;
+    std::map<TypeId, TypeId> _types {};
 };
 
 /// A resource type's definition: its representation and destructor, as its definition gives them; an
@@ -875,6 +897,10 @@ class TypeArena
     /// @param type A type the arena holds (checked).
     /// @return true for a resource, and for a type that holds a handle or names a resource.
     [[nodiscard]] bool namesResource(AnyTypeId type) const;
+    /// The image of @p id under @p substitution where no rebuild decides it: a resource's, a renamed
+    /// type's, and a type that cannot change itself; none for one rebuilt from its children.
+    [[nodiscard]] std::optional<AnyTypeId> directImage(AnyTypeId id,
+                                                       ResourceSubstitution const& substitution) const;
 
     /// The units the arena's resource substitutions have charged so far: each type they created, plus
     /// the types it names.
