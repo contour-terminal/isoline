@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "Observation.hpp"
-#include <isoline/fastinterpreter/Dispatch.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
 #include <isoline/runtime/Limits.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
@@ -22,17 +22,17 @@ namespace isoline::differential
 /// @return The participant.
 [[nodiscard]] Participant referenceParticipant();
 
-/// The fast interpreter under @p dispatch as a participant: its code lowered once per module and lane,
+/// The interpreter under @p dispatch as a participant: its code lowered once per module and lane,
 /// within the default compile budget (LoweringBudget). Precondition: @p dispatch is available.
 /// @param dispatch The dispatch.
-/// @return The participant, named "fast.<dispatch>".
-[[nodiscard]] Participant fastParticipant(fastinterpreter::Dispatch dispatch);
+/// @return The participant, named "interpreter.<dispatch>".
+[[nodiscard]] Participant interpreterParticipant(interpreter::Dispatch dispatch);
 
-/// Every engine of this build: the reference first, then the fast interpreter under each available dispatch.
+/// Every engine of this build: the reference first, then the interpreter under each available dispatch.
 /// @return The participants.
 [[nodiscard]] std::vector<Participant> everyEngine();
 
-/// The compile budget a fast participant lowers within: api::LoadLimits::maxCompileBytes' default.
+/// The compile budget an interpreter participant lowers within: api::LoadLimits::maxCompileBytes' default.
 inline constexpr auto LoweringBudget = uint64_t { 256 } << 20;
 
 /// Whether the harness compares a module, and why not.

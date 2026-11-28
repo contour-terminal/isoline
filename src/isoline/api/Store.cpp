@@ -37,7 +37,7 @@ namespace isoline::api
 
 namespace
 {
-    /// A store's executor for @p config's engine, the fast one running code lowered for its dispatch.
+    /// A store's executor for @p config's engine, the interpreter running code lowered for its dispatch.
     [[nodiscard]] std::unique_ptr<runtime::ICodeExecutor> makeExecutor(EngineConfig const& config)
     {
         // Engine's constructor checked that its engine has a row.

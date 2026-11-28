@@ -5,7 +5,7 @@
 #include <isoline/binary/DecodeError.hpp>
 #include <isoline/binary/DecodeLimits.hpp>
 #include <isoline/binary/Types.hpp>
-#include <isoline/fastinterpreter/Dispatch.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/HostFunction.hpp>
 #include <isoline/runtime/Instantiate.hpp>
@@ -101,11 +101,11 @@ using binary::TableType;
 using binary::ValueKind;
 using binary::ValueType;
 
-// --- The fast engine's dispatches (EngineConfig::dispatch) ---
-using fastinterpreter::availableDispatches;
-using fastinterpreter::bestDispatch;
-using fastinterpreter::Dispatch;
-using fastinterpreter::isAvailable;
+// --- The interpreter's dispatches (EngineConfig::dispatch) ---
+using interpreter::availableDispatches;
+using interpreter::bestDispatch;
+using interpreter::Dispatch;
+using interpreter::isAvailable;
 
 // --- Loading ---
 using binary::DecodeError;

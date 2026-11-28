@@ -29,7 +29,7 @@ inline constexpr auto NestedInvocationFlavour = "@ISOLINE_NESTING_FLAVOUR@";
 /// Every engine's row, for this build's flavour.
 inline constexpr auto NestedInvocationTable = std::to_array<NestedInvocationRow>({
     { .engine = ExecutionEngine::Reference, .bytes = @ISOLINE_NESTING_REFERENCE_BYTES@ },
-    { .engine = ExecutionEngine::Fast, .bytes = @ISOLINE_NESTING_FAST_BYTES@ },
+    { .engine = ExecutionEngine::Interpreter, .bytes = @ISOLINE_NESTING_INTERPRETER_BYTES@ },
 });
 
 /// The host stack one nested invocation on @p engine takes, at the most (NestedInvocationTable).

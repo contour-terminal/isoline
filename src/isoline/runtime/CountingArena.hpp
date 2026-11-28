@@ -45,7 +45,7 @@ struct ArenaBudgetExceeded
 /// reserve a bound before it does the work the bound covers, so a module over the budget is refused
 /// before its peak, not after it. Allocations draw on what is reserved first, then on the rest of the
 /// budget. Past the budget, allocate() throws std::bad_alloc, as the memory_resource contract has it;
-/// the engine turns that into its own error at its boundary (the fast interpreter's lower() into its
+/// the engine turns that into its own error at its boundary (the interpreter's lower() into its
 /// LoweringError), and lastRefusal() says why.
 ///
 /// It is the injection seam of that memory: a prepared module keeps its arena as long as its code

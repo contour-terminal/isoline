@@ -655,7 +655,7 @@ TEST_CASE("SimdKernels.agreeWithTheScalarKernelPerLane")
 
 TEST_CASE("SimdKernels.mapLanesAppliesTheScalarKernelToEachLane")
 {
-    // The template the fast interpreter's dedicated rows inline: no Value, no expected, one lane type.
+    // The template the interpreter's dedicated rows inline: no Value, no expected, one lane type.
     auto const lhs = V128 { .lanes = { 0x4000'0000'3F80'0000, 0x7FC0'0000'C000'0000 } }; // 1, 2, -2, NaN
     auto const rhs = V128 { .lanes = { 0x3F80'0000'3F80'0000, 0x3F80'0000'3F80'0000 } }; // 1, 1, 1, 1
     auto const sum = numerics::mapLanes<F32, &numerics::fadd<F32>>(lhs, rhs);

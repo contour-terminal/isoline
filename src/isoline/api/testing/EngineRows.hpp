@@ -32,31 +32,31 @@ struct EngineRow
 {
     std::string_view name;                               ///< How a case's report names the row.
     ExecutionEngine engine = ExecutionEngine::Reference; ///< The engine that runs the code.
-    Dispatch dispatch = Dispatch::Switch;      ///< The fast engine's dispatch; the reference ignores it.
+    Dispatch dispatch = Dispatch::Switch;      ///< The interpreter's dispatch; the reference ignores it.
     FeatureSet features = FeatureSet::wasm3(); ///< The features modules load with.
 };
 
-/// Every engine row, in the order the cases run them: the reference engine, then the fast one under each
+/// Every engine row, in the order the cases run them: the reference engine, then the interpreter under each
 /// dispatch; a build runs those it compiled (engineRows()).
 inline constexpr auto EngineRowTable = std::to_array<EngineRow>({
     { .name = "reference", .engine = ExecutionEngine::Reference, .features = FeatureSet::wasm3() },
-    { .name = "fast-switch",
-      .engine = ExecutionEngine::Fast,
+    { .name = "interpreter-switch",
+      .engine = ExecutionEngine::Interpreter,
       .dispatch = Dispatch::Switch,
       .features = FeatureSet::wasm3() },
-    { .name = "fast-tailcall",
-      .engine = ExecutionEngine::Fast,
+    { .name = "interpreter-tailcall",
+      .engine = ExecutionEngine::Interpreter,
       .dispatch = Dispatch::TailCall,
       .features = FeatureSet::wasm3() },
 });
 
-/// Whether this build runs @p row: the reference engine always, the fast one under a dispatch it compiled.
+/// Whether this build runs @p row: the reference engine always, the interpreter under a dispatch it compiled.
 /// @param row The row.
 /// @return Whether the row's engine can be constructed.
 [[nodiscard]] inline bool isAvailable(EngineRow const& row) noexcept
 {
     return engines::rowOf(row.engine)->dispatch == engines::DispatchUse::None
-           || fastinterpreter::isAvailable(row.dispatch);
+           || interpreter::isAvailable(row.dispatch);
 }
 
 /// Every engine row this build runs (EngineRowTable, isAvailable()), as GENERATE(from_range(…)) takes it.

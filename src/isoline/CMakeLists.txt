@@ -32,14 +32,14 @@ message(STATUS "[isoline] float control row: ${isolineFloatControl}")
 add_library(isoline::core ALIAS isoline_core)
 
 # The host-stack rows, one per build flavour: the bytes one nested invocation takes at the most on the
-# reference and on the fast engine (runtime/NestedInvocationBytes.hpp, generated from the row), and the stack
+# reference and on the interpreter (runtime/NestedInvocationBytes.hpp, generated from the row), and the stack
 # of the tests' small threads (runtime/testing/SmallStackThread.hpp's SmallStackBytes). The engines' bytes are
-# the most the hidden case Calls.measureNestingStack measured on the flavour's builds (docs/fast-interpreter.md
+# the most the hidden case Calls.measureNestingStack measured on the flavour's builds (docs/interpreter.md
 # lists each), rounded up by half again to a multiple of 256; Calls.nestingStackCostIsPublished checks every
 # build against its row. The small thread holds maxNestedInvocations (100) nestings of the larger engine twice
 # over, rounded up to a MiB; a release build's is 512 KiB, where the dispatch files' frames are bounded
-# (-Wframe-larger-than=4096, fastinterpreter/CMakeLists.txt). A row is the flavour, then the reference's, the
-# fast engine's and the small thread's bytes.
+# (-Wframe-larger-than=4096, interpreter/CMakeLists.txt). A row is the flavour, then the reference's, the
+# interpreter's and the small thread's bytes.
 set(isolineNestingRows
     "release|2304|3072|524288"
     "debug|13056|12544|3145728"
@@ -66,7 +66,7 @@ foreach(row IN LISTS isolineNestingRows)
     if(flavour STREQUAL isolineNestingFlavour)
         set(ISOLINE_NESTING_FLAVOUR "${flavour}")
         list(GET fields 1 ISOLINE_NESTING_REFERENCE_BYTES)
-        list(GET fields 2 ISOLINE_NESTING_FAST_BYTES)
+        list(GET fields 2 ISOLINE_NESTING_INTERPRETER_BYTES)
         list(GET fields 3 isolineSmallStackBytes)
     endif()
 endforeach()
@@ -183,7 +183,7 @@ isoline_apply_target_policy(isoline_core)
 isoline_apply_language_features(isoline_core)
 
 add_subdirectory(numerics)
-add_subdirectory(fastinterpreter)
+add_subdirectory(interpreter)
 add_subdirectory(text)
 add_subdirectory(cli)
 
@@ -276,7 +276,6 @@ if(ISOLINE_TESTING)
         "Engine"
         "Exceptions"
         "Externs"
-        "FastInterpreter"
         "Features"
         "FloatEnvironment"
         "HeapMemoryAllocator"
@@ -284,7 +283,7 @@ if(ISOLINE_TESTING)
         "HostFunction"
         "Imports"
         "Instantiate"
-        "Interpreter|300"
+        "Interpreter"
         "Interrupt"
         "Interrupter"
         "Limits"

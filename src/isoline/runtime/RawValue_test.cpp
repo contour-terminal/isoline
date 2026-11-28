@@ -9,8 +9,8 @@
 #include <span>
 
 #include <isoline/binary/Types.hpp>
-#include <isoline/fastinterpreter/Code.hpp>
-#include <isoline/fastinterpreter/SlotCodec.hpp>
+#include <isoline/interpreter/Code.hpp>
+#include <isoline/interpreter/SlotCodec.hpp>
 #include <isoline/runtime/RawValue.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -18,9 +18,9 @@
 
 using isoline::binary::AbstractHeapType;
 using isoline::binary::ValueType;
-using isoline::fastinterpreter::slotClassOf;
-using isoline::fastinterpreter::slotWidth;
-using isoline::fastinterpreter::storeValue;
+using isoline::interpreter::slotClassOf;
+using isoline::interpreter::slotWidth;
+using isoline::interpreter::storeValue;
 using isoline::runtime::decodeValue;
 using isoline::runtime::encodeValue;
 using isoline::runtime::F32;
@@ -103,14 +103,14 @@ TEST_CASE("RawValue.roundTripsEveryKind")
 
 TEST_CASE("RawValue.wordsMatchTheTable")
 {
-    // Each sample's words, written out, are what encodeValue() gives and what the fast interpreter's
+    // Each sample's words, written out, are what encodeValue() gives and what the interpreter's
     // slots hold: a scalar its first word only, a vector and a reference both.
     for (auto const& sample: Samples)
     {
         CAPTURE(sample.words[0], sample.words[1]);
         CHECK(encodeValue(sample.value) == RawValue { .words = sample.words });
         auto const width = slotWidth(slotClassOf(sample.type));
-        auto slots = std::array<isoline::fastinterpreter::Slot, 2> {};
+        auto slots = std::array<isoline::interpreter::Slot, 2> {};
         storeValue(sample.value, std::span { slots }.first(width));
         CHECK(std::span<uint64_t const> { slots }.first(width).front() == sample.words[0]);
         if (width == 2)

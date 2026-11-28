@@ -711,8 +711,8 @@ set(isolineContractRows
     "Contract.Store.grownMemoryKeepsItsTail|keepsItsTail\\(\\*_memory\\)"
     "Contract.Lowering.dispatchMustBeAvailable|isAvailable\\(config\\.dispatch\\)"
     "Contract.Listing.wholeOperations|row\\.words <= code\\.size\\(\\)"
-    "Contract.FastInterpreter.dispatchMustBeAvailable|isAvailable\\(dispatch\\)"
-    "Contract.Engine.fastDispatchMustBeAvailable|engines::rowOf\\(_config\\.engine\\)->dispatch == engines::DispatchUse::None \\|\\| fastinterpreter::isAvailable\\(_config\\.dispatch\\)"
+    "Contract.Interpreter.dispatchMustBeAvailable|isAvailable\\(dispatch\\)"
+    "Contract.Engine.interpreterDispatchMustBeAvailable|engines::rowOf\\(_config\\.engine\\)->dispatch == engines::DispatchUse::None \\|\\| interpreter::isAvailable\\(_config\\.dispatch\\)"
     "Contract.Engine.knownEngine|engines::rowOf\\(_config\\.engine\\) != nullptr")
 set(isolineContractCases)
 foreach(contract IN LISTS isolineContractRows)

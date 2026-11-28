@@ -7,7 +7,7 @@
 
 #include <isoline/Features.hpp>
 #include <isoline/api/ExecutionEngines.hpp>
-#include <isoline/fastinterpreter/Dispatch.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
 
 namespace isoline::spectest
 {
@@ -17,8 +17,8 @@ namespace isoline::spectest
 struct SpecEngine
 {
     api::engines::EngineRow const* row =
-        api::engines::rowOf(runtime::ExecutionEngine::Reference);         ///< Never null.
-    fastinterpreter::Dispatch dispatch = fastinterpreter::bestDispatch(); ///< The reference ignores it.
+        api::engines::rowOf(runtime::ExecutionEngine::Reference); ///< Never null.
+    interpreter::Dispatch dispatch = interpreter::bestDispatch(); ///< The reference ignores it.
 
     /// Two engines are equal when row and dispatch are.
     bool operator==(SpecEngine const&) const = default;
@@ -32,8 +32,8 @@ struct RunOptions
 };
 
 /// Reads the options of a command line: `--features <wasm2|wasm3|all>`, required, then
-/// `--engine <name>` (an api::engines row; reference unless named) and, for the fast engine only,
-/// `--dispatch <name>` (a fastinterpreter::dispatchNamed() name; this build's fastest unless named), each at
+/// `--engine <name>` (an api::engines row; reference unless named) and, for the interpreter only,
+/// `--dispatch <name>` (a interpreter::dispatchNamed() name; this build's fastest unless named), each at
 /// most once, in any order.
 /// @param arguments The arguments after the directory and the expected skips.
 /// @return The options, or why the command line names none: an unknown or repeated option, a value no

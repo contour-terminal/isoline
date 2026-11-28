@@ -111,8 +111,8 @@ inline constexpr auto GranuleItems = BulkPollBytes / sizeof(T);
 /// upwards in granules of GranuleItems<T>, polling before each, so a poll that fails leaves the granules
 /// before it filled.
 ///
-/// Every engine runs a fill through it (the reference interpreter and the fast one), so that they poll and
-/// leave partial writes alike.
+/// Every engine runs a fill through it (the reference interpreter and the production one), so that they poll
+/// and leave partial writes alike.
 /// @param target The memory's bytes or the table's elements.
 /// @param destination The first item filled.
 /// @param count How many items.
@@ -150,8 +150,8 @@ template <typename T, GranulePoll Poll>
 /// so that an overlapping copy within one memory or table is correct and a poll that fails leaves the
 /// granules before it copied.
 ///
-/// Every engine runs a copy through it (the reference interpreter and the fast one), so that they poll and
-/// leave partial writes alike.
+/// Every engine runs a copy through it (the reference interpreter and the production one), so that they poll
+/// and leave partial writes alike.
 /// @param from The source's bytes or elements.
 /// @param source The first item copied.
 /// @param to The destination's bytes or elements; may be @p from.

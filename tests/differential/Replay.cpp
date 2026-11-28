@@ -3,7 +3,7 @@
 //                             [--interrupt-at <poll>] [--oracle <wasmtime>]
 //
 // Replays one module of the differential corpus (or a regression) on every engine of this build, prints
-// what each observed and the fast interpreter's lowered listing, and the first divergence. Exits with 0
+// what each observed and the interpreter's lowered listing, and the first divergence. Exits with 0
 // when every participant agrees (or the module is not compared), 1 on a divergence, which is what
 // tests/fuzz/shrink-predicate.py asks of it, and 2 on a usage or input error.
 #include <charconv>
@@ -29,9 +29,9 @@
 #include "Observation.hpp"
 #include "ProcessRunner.hpp"
 #include "WasmtimeOracle.hpp"
-#include <isoline/fastinterpreter/Dispatch.hpp>
-#include <isoline/fastinterpreter/Listing.hpp>
-#include <isoline/fastinterpreter/Lowering.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
+#include <isoline/interpreter/Listing.hpp>
+#include <isoline/interpreter/Lowering.hpp>
 #include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/Limits.hpp>
 
@@ -113,11 +113,11 @@ void printListings(std::span<std::byte const> module, Lane lane)
     auto const validated = loadForComparison(module);
     if (!validated)
         return;
-    for (auto const dispatch: isoline::fastinterpreter::availableDispatches())
+    for (auto const dispatch: isoline::interpreter::availableDispatches())
     {
-        auto const lowered = isoline::fastinterpreter::lower(
+        auto const lowered = isoline::interpreter::lower(
             **validated,
-            isoline::fastinterpreter::LoweringConfig { .mode = modeOf(lane), .dispatch = dispatch },
+            isoline::interpreter::LoweringConfig { .mode = modeOf(lane), .dispatch = dispatch },
             std::make_shared<isoline::runtime::CountingArena>(LoweringBudget,
                                                               *std::pmr::new_delete_resource()));
         if (!lowered)
@@ -128,8 +128,8 @@ void printListings(std::span<std::byte const> module, Lane lane)
         for (auto const& function: (*lowered)->functions())
             std::print("lowered function {} ({}):\n{}",
                        function.codeIndex,
-                       fastParticipant(dispatch).name,
-                       isoline::fastinterpreter::describe(function));
+                       interpreterParticipant(dispatch).name,
+                       isoline::interpreter::describe(function));
     }
 }
 

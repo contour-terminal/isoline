@@ -9,13 +9,13 @@
 #include "SpecEngine.hpp"
 #include <isoline/Features.hpp>
 #include <isoline/api/ExecutionEngines.hpp>
-#include <isoline/fastinterpreter/Dispatch.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 
 using isoline::FeatureSet;
-using isoline::fastinterpreter::availableDispatches;
-using isoline::fastinterpreter::bestDispatch;
-using isoline::fastinterpreter::Dispatch;
+using isoline::interpreter::availableDispatches;
+using isoline::interpreter::bestDispatch;
+using isoline::interpreter::Dispatch;
 using isoline::runtime::ExecutionEngine;
 using isoline::spectest::parseOptions;
 using isoline::spectest::SpecEngine;
@@ -33,7 +33,7 @@ namespace
 
 TEST_CASE("SpecEngine.optionsNameTheEngine")
 {
-    auto const* const fastRow = isoline::api::engines::rowOf(ExecutionEngine::Fast);
+    auto const* const interpreterRow = isoline::api::engines::rowOf(ExecutionEngine::Interpreter);
     auto const reference = parsed({ "--features", "wasm3" });
     REQUIRE(reference.has_value());
     CHECK(reference->features == FeatureSet::wasm3());
@@ -42,15 +42,15 @@ TEST_CASE("SpecEngine.optionsNameTheEngine")
     REQUIRE(named.has_value());
     CHECK(named->features == FeatureSet::all());
     CHECK(named->engine.row->engine == ExecutionEngine::Reference);
-    auto const fast = parsed({ "--features", "wasm3", "--engine", "fast" });
-    REQUIRE(fast.has_value());
-    CHECK(fast->engine == SpecEngine { .row = fastRow, .dispatch = bestDispatch() });
+    auto const interpreter = parsed({ "--features", "wasm3", "--engine", "interpreter" });
+    REQUIRE(interpreter.has_value());
+    CHECK(interpreter->engine == SpecEngine { .row = interpreterRow, .dispatch = bestDispatch() });
     for (auto const dispatch: availableDispatches())
     {
         auto const* const name = dispatch == Dispatch::Switch ? "switch" : "tailcall";
-        auto const chosen = parsed({ "--dispatch", name, "--engine", "fast", "--features", "wasm3" });
+        auto const chosen = parsed({ "--dispatch", name, "--engine", "interpreter", "--features", "wasm3" });
         REQUIRE(chosen.has_value());
-        CHECK(chosen->engine == SpecEngine { .row = fastRow, .dispatch = dispatch });
+        CHECK(chosen->engine == SpecEngine { .row = interpreterRow, .dispatch = dispatch });
     }
 }
 
@@ -58,7 +58,7 @@ TEST_CASE("SpecEngine.refusesWhatNamesNoRun")
 {
     for (auto const& arguments: std::to_array<std::vector<char const*>>({
              {},
-             { "--engine", "fast" },
+             { "--engine", "interpreter" },
              { "--features" },
              { "--features", "wasm4" },
              { "--features", "wasm3", "--engine", "jit" },
@@ -66,8 +66,15 @@ TEST_CASE("SpecEngine.refusesWhatNamesNoRun")
              { "--features", "wasm3", "--dispatch", "switch" },
              { "--features", "wasm3", "--engine", "reference", "--dispatch", "switch" },
              { "--features", "wasm3", "--features", "all" },
-             { "--features", "wasm3", "--engine", "fast", "--engine", "fast" },
-             { "--features", "wasm3", "--engine", "fast", "--dispatch", "switch", "--dispatch", "switch" },
+             { "--features", "wasm3", "--engine", "interpreter", "--engine", "interpreter" },
+             { "--features",
+               "wasm3",
+               "--engine",
+               "interpreter",
+               "--dispatch",
+               "switch",
+               "--dispatch",
+               "switch" },
              { "--features", "wasm3", "--fast" },
          }))
     {

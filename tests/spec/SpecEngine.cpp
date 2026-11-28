@@ -12,7 +12,7 @@
 
 #include "SpecFeatures.hpp"
 #include <isoline/api/ExecutionEngines.hpp>
-#include <isoline/fastinterpreter/Dispatch.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
 
 namespace isoline::spectest
 {
@@ -21,7 +21,7 @@ std::expected<RunOptions, std::string> parseOptions(std::span<char const* const>
 {
     auto features = std::optional<FeatureSet> {};
     auto const* row = static_cast<api::engines::EngineRow const*>(nullptr);
-    auto dispatch = std::optional<fastinterpreter::Dispatch> {};
+    auto dispatch = std::optional<interpreter::Dispatch> {};
     if (arguments.size() % 2 != 0)
         return std::unexpected { std::string { "every option takes one value" } };
     for (auto const pair: std::views::iota(std::size_t { 0 }, arguments.size() / 2))
@@ -49,10 +49,10 @@ std::expected<RunOptions, std::string> parseOptions(std::span<char const* const>
         {
             if (dispatch)
                 return std::unexpected { repeated };
-            dispatch = fastinterpreter::dispatchNamed(value);
+            dispatch = interpreter::dispatchNamed(value);
             if (!dispatch)
                 return std::unexpected { std::format("no dispatch is named '{}'", value) };
-            if (!fastinterpreter::isAvailable(*dispatch))
+            if (!interpreter::isAvailable(*dispatch))
                 return std::unexpected { std::format("this build did not compile the {} dispatch", value) };
         }
         else
@@ -63,10 +63,10 @@ std::expected<RunOptions, std::string> parseOptions(std::span<char const* const>
     if (row == nullptr)
         row = api::engines::rowOf(runtime::ExecutionEngine::Reference);
     if (row->dispatch == api::engines::DispatchUse::None && dispatch)
-        return std::unexpected { std::string { "--dispatch names the fast engine's dispatch" } };
+        return std::unexpected { std::string { "--dispatch names the interpreter's dispatch" } };
     return RunOptions { .features = *features,
-                        .engine = SpecEngine {
-                            .row = row, .dispatch = dispatch.value_or(fastinterpreter::bestDispatch()) } };
+                        .engine = SpecEngine { .row = row,
+                                               .dispatch = dispatch.value_or(interpreter::bestDispatch()) } };
 }
 
 } // namespace isoline::spectest

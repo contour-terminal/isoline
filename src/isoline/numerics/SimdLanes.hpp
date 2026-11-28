@@ -3,7 +3,7 @@
 
 // A v128's lanes, and the templates that lift a scalar kernel to every lane of a vector: no boxed
 // runtime::Value, no std::expected and no check per lane, so that an executor that inlines one
-// (the fast interpreter's dedicated rows) pays for the lanes' arithmetic alone.
+// (the interpreter's dedicated rows) pays for the lanes' arithmetic alone.
 //
 // A lane type is either an unsigned integer of the lane's width (uint8_t to uint64_t), for the
 // integer lane kernels below, or a scalar value type (runtime::I32, I64, F32, F64), for the scalar

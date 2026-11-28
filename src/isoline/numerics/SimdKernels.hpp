@@ -4,7 +4,7 @@
 // The SIMD operator kernels every executor evaluates vector instructions with, one per opcode, built
 // on the typed scalar kernels of Integer.hpp and Float.hpp through SimdLanes.hpp's templates: each
 // is a plain function of v128 operands, with no boxed runtime::Value, no std::expected and no check
-// per lane. An executor resolves an opcode to its kernel once (the fast interpreter at lowering, the
+// per lane. An executor resolves an opcode to its kernel once (the interpreter at lowering, the
 // reference interpreter per instruction) and calls it.
 //
 // Relaxed SIMD: the Wasmtime-deterministic profile (Wasmtime v48.0.10, the version Contour pins).

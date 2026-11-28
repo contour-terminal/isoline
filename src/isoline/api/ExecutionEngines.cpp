@@ -8,7 +8,7 @@
 #include <string_view>
 #include <utility>
 
-#include <isoline/fastinterpreter/FastInterpreter.hpp>
+#include <isoline/interpreter/Interpreter.hpp>
 #include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/CountingArena.hpp>
 
@@ -23,24 +23,23 @@ namespace
           .dispatch = DispatchUse::None,
           .code = [](validate::ValidatedModule const& /*module*/,
                      CodeRequest const& /*request*/) -> CodeOutcome { return nullptr; },
-          .executor = [](fastinterpreter::Dispatch /*dispatch*/) -> std::unique_ptr<runtime::ICodeExecutor> {
+          .executor = [](interpreter::Dispatch /*dispatch*/) -> std::unique_ptr<runtime::ICodeExecutor> {
               return std::make_unique<reference::ReferenceInterpreter>();
           } },
-        { .engine = runtime::ExecutionEngine::Fast,
-          .name = "fast",
+        { .engine = runtime::ExecutionEngine::Interpreter,
+          .name = "interpreter",
           .dispatch = DispatchUse::Lowered,
           .code = [](validate::ValidatedModule const& module, CodeRequest const& request) -> CodeOutcome {
-              return fastinterpreter::lower(
+              return interpreter::lower(
                          module,
-                         fastinterpreter::LoweringConfig { .mode = request.mode,
-                                                           .dispatch = request.dispatch },
+                         interpreter::LoweringConfig { .mode = request.mode, .dispatch = request.dispatch },
                          std::make_shared<runtime::CountingArena>(request.budget, request.memory))
-                  .transform([](std::shared_ptr<fastinterpreter::LoweredModule const> lowered) {
+                  .transform([](std::shared_ptr<interpreter::LoweredModule const> lowered) {
                       return std::shared_ptr<runtime::ModuleCode const> { std::move(lowered) };
                   });
           },
-          .executor = [](fastinterpreter::Dispatch dispatch) -> std::unique_ptr<runtime::ICodeExecutor> {
-              return std::make_unique<fastinterpreter::FastInterpreter>(dispatch);
+          .executor = [](interpreter::Dispatch dispatch) -> std::unique_ptr<runtime::ICodeExecutor> {
+              return std::make_unique<interpreter::Interpreter>(dispatch);
           } },
     });
 

@@ -50,7 +50,7 @@ enum class Lane : uint8_t
 /// One engine under comparison: how to make its executor, and the code it runs for a module.
 struct Participant
 {
-    /// Its name in a Divergence: "reference", "fast.switch".
+    /// Its name in a Divergence: "reference", "interpreter.switch".
     std::string_view name;
     /// Makes a fresh executor, one per store.
     std::function<std::unique_ptr<runtime::ICodeExecutor>()> makeExecutor;

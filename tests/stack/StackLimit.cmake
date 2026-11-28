@@ -2,7 +2,7 @@
 
 # The host-stack and memory rows: unit cases hidden from the unit run ([.memory]) that run alone, each under
 # a cap of the memory it may take, and, on Linux, under a small main-thread stack, because Wasm calls never
-# recurse on the host stack (fastinterpreter/FastInterpreter.hpp).
+# recurse on the host stack (interpreter/Interpreter.hpp).
 #
 # The memory cap is the build's: under AddressSanitizer its own RSS limit (an address-space limit breaks its
 # shadow memory), elsewhere on Linux `prlimit --as`. ThreadSanitizer, which reserves its address space too,

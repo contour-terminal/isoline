@@ -35,19 +35,19 @@ auto const called = instance->call(*instance->function("run"), args, results);
 ```
 
 1. **`Engine`** holds an `EngineConfig`, and the memory its lowered code comes from: the features modules
-   are decoded and validated with, the execution engine and mode, the fast engine's `Dispatch`, the
+   are decoded and validated with, the execution engine and mode, the interpreter's `Dispatch`, the
    `LoadLimits`, and the `StoreLimits` every store made for it keeps to unless it overrides them
    (`StoreOptions`). The feature set must be closed over its prerequisites (checked);
-   `FeatureSet::withPrerequisites()` closes one. The engine is the fast interpreter by default
-   (`ExecutionEngine::Fast`), under the fastest dispatch the build compiled (`bestDispatch()`; a fast engine
+   `FeatureSet::withPrerequisites()` closes one. The engine is the interpreter by default
+   (`ExecutionEngine::Interpreter`), under the fastest dispatch the build compiled (`bestDispatch()`; an interpreter
    of a dispatch outside `availableDispatches()` is a programming error, checked);
-   `ExecutionEngine::Reference` runs the reference interpreter instead. The fast engine's code is
+   `ExecutionEngine::Reference` runs the reference interpreter instead. The interpreter's code is
    allocated from `EngineConfig::loweringMemory`, a `std::shared_ptr<std::pmr::memory_resource>` (the
    global heap when null), which the code keeps alive for as long as any module or instance holds it.
 2. **`Module`** is what `Engine::load()` makes of a module's bytes: decoded, validated, described
-   (`imports()`, `exports()`) and, by the fast engine, lowered once (`code()`), never linked. Every store
+   (`imports()`, `exports()`) and, by the interpreter, lowered once (`code()`), never linked. Every store
    that instantiates it runs that one lowered code. A module loads whatever it imports. It carries the
-   engine's `EngineIdentity` (engine, mode, features, and the dispatch of a fast engine's code), and only a
+   engine's `EngineIdentity` (engine, mode, features, and the dispatch of an interpreter's code), and only a
    store of an engine of the same identity instantiates it (`EngineMismatch` otherwise): two reference
    engines that differ only in `EngineConfig::dispatch` share their modules.
 3. **`Store`** is where instances live, with their memories, tables, globals, tags and host functions,
@@ -144,7 +144,7 @@ embedder places guest memory in storage of its own.
 - A memory of `size` bytes must keep `MaxAccessWidth − min(size, MaxAccessWidth)` bytes past its end
   (`requiredTailBytesOf()`), readable (`ILinearMemory::tailBytes()`: storage the memory owns, never the guest's or
   another object's) or guarded (`guardBytes()`), together, whatever its page size: a memory of no pages needs
-  `MaxAccessWidth`. The fast interpreter's Spectre mask sends an access that fails its bounds check to the
+  `MaxAccessWidth`. The interpreter's Spectre mask sends an access that fails its bounds check to the
   memory's base, and code running ahead of the check reads the access's width there, past the end of a memory
   smaller than it. The store checks `MemoryRequest::requiredTailBytes` when the memory is allocated, refusing it
   with `Refusal::Guard`. A grow asks for the new size's tail the same way: `ILinearMemory::grow()` takes a
@@ -294,7 +294,7 @@ builds with MSVC, and every other standard library, refuse as described; the mem
 
 `Engine::load()` fails with a `LoadError`: `ModuleTooLarge` (before a byte is decoded),
 `HostMemoryExhausted`, a `DecodeError`, a `ValidationError`, or `CompileLimitExceeded` when lowering it
-for the fast engine would exceed one of its limits (`CompileLimit`). The refusal names the limit, the
+for the interpreter would exceed one of its limits (`CompileLimit`). The refusal names the limit, the
 function it came at (its index in the code section, or `ModuleLevel`), and what was asked for and allowed,
 in the limit's unit:
 

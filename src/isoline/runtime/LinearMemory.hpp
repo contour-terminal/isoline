@@ -28,7 +28,7 @@ namespace detail
     }
 } // namespace detail
 
-/// The widest access an executor makes at an offset its Spectre mask chose (fastinterpreter accessMask()): on
+/// The widest access an executor makes at an offset its Spectre mask chose (interpreter::accessMask()): on
 /// a mispredicted bounds check it reads this many bytes at a memory's base, so a memory of fewer bytes is
 /// read past its end, speculatively: MaxAccessWidth bytes past the end of a memory of none. Every memory
 /// keeps the difference readable, or as a guard, after its end (requiredTailBytesOf()).

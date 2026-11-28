@@ -16,7 +16,7 @@
 #include <variant>
 
 #include <isoline/api/ExecutionEngines.hpp>
-#include <isoline/fastinterpreter/Lowering.hpp>
+#include <isoline/interpreter/Lowering.hpp>
 #include <isoline/meta/Check.hpp>
 #include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/ModuleCode.hpp>
@@ -27,24 +27,24 @@ namespace isoline::api
 
 namespace
 {
-    static_assert(ModuleLevel == fastinterpreter::NoFunction, "the API names the same module-level refusal");
+    static_assert(ModuleLevel == interpreter::NoFunction, "the API names the same module-level refusal");
 
     /// Which compile limit each lowering failure but the host's memory is.
     struct FailureLimit
     {
-        fastinterpreter::LoweringFailure failure; ///< Why lowering refused.
-        CompileLimit limit;                       ///< The limit the API reports.
+        interpreter::LoweringFailure failure; ///< Why lowering refused.
+        CompileLimit limit;                   ///< The limit the API reports.
     };
 
     constexpr auto FailureLimits = std::to_array<FailureLimit>({
-        { .failure = fastinterpreter::LoweringFailure::Budget, .limit = CompileLimit::Budget },
-        { .failure = fastinterpreter::LoweringFailure::FrameSlots, .limit = CompileLimit::FrameSlots },
-        { .failure = fastinterpreter::LoweringFailure::CodeWords, .limit = CompileLimit::CodeWords },
+        { .failure = interpreter::LoweringFailure::Budget, .limit = CompileLimit::Budget },
+        { .failure = interpreter::LoweringFailure::FrameSlots, .limit = CompileLimit::FrameSlots },
+        { .failure = interpreter::LoweringFailure::CodeWords, .limit = CompileLimit::CodeWords },
     });
 
-    /// How Engine::load() reports a module the fast engine refused to lower: the host out of memory as
+    /// How Engine::load() reports a module the interpreter refused to lower: the host out of memory as
     /// such, which is not the module's to answer for, and every other refusal as the limit it met.
-    [[nodiscard]] LoadError loadErrorOf(fastinterpreter::LoweringError const& error) noexcept
+    [[nodiscard]] LoadError loadErrorOf(interpreter::LoweringError const& error) noexcept
     {
         auto const limit = std::ranges::find(FailureLimits, error.reason, &FailureLimit::failure);
         if (limit == FailureLimits.end())
@@ -72,7 +72,7 @@ Engine::Engine(EngineConfig config) noexcept: _config { std::move(config) }
     ISOLINE_PRECONDITION(engines::rowOf(_config.engine) != nullptr);
     // An engine that lowers for its dispatch runs with it too, which this build must have compiled.
     ISOLINE_PRECONDITION(engines::rowOf(_config.engine)->dispatch == engines::DispatchUse::None
-                         || fastinterpreter::isAvailable(_config.dispatch));
+                         || interpreter::isAvailable(_config.dispatch));
 }
 
 ThreadPreparation::ThreadPreparation(std::unique_ptr<IThreadResource> resource) noexcept:

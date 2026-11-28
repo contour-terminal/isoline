@@ -16,8 +16,8 @@ enum class ExecutionEngine : uint8_t
     /// differential fuzzing, never a production path. It runs the validated module itself, so its
     /// instances hold no ModuleCode.
     Reference,
-    /// The fast interpreter, which runs code lowered from the validated module once, at load.
-    Fast,
+    /// The interpreter, which runs code lowered from the validated module once, at load.
+    Interpreter,
 };
 
 /// The code an engine made of a validated module, for its executor (runtime::ICodeExecutor) to run.

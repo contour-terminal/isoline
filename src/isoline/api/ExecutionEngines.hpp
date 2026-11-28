@@ -7,8 +7,8 @@
 #include <memory_resource>
 #include <string_view>
 
-#include <isoline/fastinterpreter/Dispatch.hpp>
-#include <isoline/fastinterpreter/Lowering.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
+#include <isoline/interpreter/Lowering.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/ModuleCode.hpp>
@@ -22,17 +22,17 @@ namespace isoline::api::engines
 /// What an engine is asked to make of a module: how to lower it, within which budget, from which memory.
 struct CodeRequest
 {
-    runtime::ExecutionMode mode = runtime::ExecutionMode::Production;       ///< The execution mode.
-    fastinterpreter::Dispatch dispatch = fastinterpreter::Dispatch::Switch; ///< One of availableDispatches().
-    uint64_t budget = 0;                                                    ///< The compile budget, in bytes.
+    runtime::ExecutionMode mode = runtime::ExecutionMode::Production; ///< The execution mode.
+    interpreter::Dispatch dispatch = interpreter::Dispatch::Switch;   ///< One of availableDispatches().
+    uint64_t budget = 0;                                              ///< The compile budget, in bytes.
     /// What code is allocated from; the global heap when null.
     std::shared_ptr<std::pmr::memory_resource> memory = nullptr;
 };
 
 /// What a module's code is, or why the engine refused to make it.
-using CodeOutcome = std::expected<std::shared_ptr<runtime::ModuleCode const>, fastinterpreter::LoweringError>;
+using CodeOutcome = std::expected<std::shared_ptr<runtime::ModuleCode const>, interpreter::LoweringError>;
 
-/// Whether an engine's code depends on a fastinterpreter::Dispatch.
+/// Whether an engine's code depends on a interpreter::Dispatch.
 enum class DispatchUse : uint8_t
 {
     None = 0, ///< It lowers nothing, and ignores the dispatch.
@@ -44,13 +44,13 @@ enum class DispatchUse : uint8_t
 struct EngineRow
 {
     runtime::ExecutionEngine engine; ///< The engine.
-    std::string_view name;           ///< How command lines name it: reference or fast.
+    std::string_view name;           ///< How command lines name it: reference or interpreter.
     DispatchUse dispatch;            ///< Whether its code depends on the dispatch.
     /// The code the engine runs @p module with; null for an engine that runs the validated module itself.
     CodeOutcome (*code)(validate::ValidatedModule const& module, CodeRequest const& request);
     /// An executor of the engine, running code lowered for @p dispatch (one of availableDispatches()) where
     /// the engine lowers.
-    std::unique_ptr<runtime::ICodeExecutor> (*executor)(fastinterpreter::Dispatch dispatch);
+    std::unique_ptr<runtime::ICodeExecutor> (*executor)(interpreter::Dispatch dispatch);
 };
 
 /// The row of @p engine.

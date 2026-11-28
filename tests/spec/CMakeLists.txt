@@ -31,11 +31,11 @@ set(specFeatures_custom-page-sizes all)
 set(specFeatures_compact-imports all)
 
 ## @brief Registers the test of one imported .wast file on one engine: the reference interpreter as
-## spec.<source>.<path with / as .> (label spec), the fast one under a dispatch as
-## spec.fast.<dispatch>.<source>.<path> (labels spec and fast). Each fails unless the file's script skips
+## spec.<source>.<path with / as .> (label spec), the interpreter under a dispatch as
+## spec.interpreter.<dispatch>.<source>.<path> (labels spec and interpreter). Each fails unless the file's script skips
 ## exactly as many commands as files.txt pins, the same on every engine.
-## @param engine reference or fast.
-## @param dispatch The fast engine's dispatch (switch or tailcall); empty for the reference.
+## @param engine reference or interpreter.
+## @param dispatch The interpreter's dispatch (switch or tailcall); empty for the reference.
 function(isoline_add_spec_test engine dispatch source path skips)
     string(REPLACE "/" "." testName "${source}.${path}")
     set(engineArguments)
@@ -53,10 +53,10 @@ function(isoline_add_spec_test engine dispatch source path skips)
     set_tests_properties(${testName} PROPERTIES LABELS "${labels}")
 endfunction()
 
-get_property(specDispatches GLOBAL PROPERTY ISOLINE_FAST_DISPATCH_NAMES)
+get_property(specDispatches GLOBAL PROPERTY ISOLINE_INTERPRETER_DISPATCH_NAMES)
 if(NOT specDispatches)
-    message(FATAL_ERROR "tests/spec: no fast dispatch is compiled, so no spec.fast.* test would run; "
-                        "src/isoline/fastinterpreter/CMakeLists.txt must set ISOLINE_FAST_DISPATCH_NAMES first")
+    message(FATAL_ERROR "tests/spec: no interpreter dispatch is compiled, so no spec.interpreter.* test would run; "
+                        "src/isoline/interpreter/CMakeLists.txt must set ISOLINE_INTERPRETER_DISPATCH_NAMES first")
 endif()
 
 # One test per imported .wast file and engine, in files.txt's order (isoline_add_spec_test()). An `exclude`
@@ -79,6 +79,6 @@ foreach(entry IN LISTS specFiles)
     endif()
     isoline_add_spec_test(reference "" "${source}" "${path}" "${skips}")
     foreach(dispatch IN LISTS specDispatches)
-        isoline_add_spec_test(fast "${dispatch}" "${source}" "${path}" "${skips}")
+        isoline_add_spec_test(interpreter "${dispatch}" "${source}" "${path}" "${skips}")
     endforeach()
 endforeach()

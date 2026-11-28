@@ -667,7 +667,7 @@ TEST_CASE("ReferenceInterpreter.bulkMemory")
           == 3 * PageSize);
 }
 
-TEST_CASE("Interpreter.byteGranularMemory")
+TEST_CASE("ReferenceInterpreter.byteGranularMemory")
 {
     // A memory of 1-byte pages, three of them: sizes and growth count bytes.
     auto builder = ModuleBuilder {};
@@ -1188,7 +1188,7 @@ Value v128(uint64_t low, uint64_t high)
 
 } // namespace
 
-TEST_CASE("Interpreter.v128LoadAtMemoryEnd")
+TEST_CASE("ReferenceInterpreter.v128LoadAtMemoryEnd")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({ TypeI32 }, { TypeV128 }))
@@ -1203,7 +1203,7 @@ TEST_CASE("Interpreter.v128LoadAtMemoryEnd")
     CHECK(harness.trap(1, { i32(65533) }) == TrapCode::OutOfBoundsMemoryAccess);
 }
 
-TEST_CASE("Interpreter.vectorLoads")
+TEST_CASE("ReferenceInterpreter.vectorLoads")
 {
     // Memory 0 .. 15: F0 81 82 03 84 85 86 87 08 09 0A 0B 0C 0D 0E 0F.
     auto const data = code({ { 0x00 },
@@ -1265,7 +1265,7 @@ TEST_CASE("Interpreter.vectorLoads")
     }
 }
 
-TEST_CASE("Interpreter.vectorStores")
+TEST_CASE("ReferenceInterpreter.vectorStores")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({}, {}))
@@ -1297,7 +1297,7 @@ TEST_CASE("Interpreter.vectorStores")
     CHECK(harness.trap(2) == TrapCode::OutOfBoundsMemoryAccess);
 }
 
-TEST_CASE("Interpreter.vectorOperators")
+TEST_CASE("ReferenceInterpreter.vectorOperators")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({}, { TypeV128 }))
@@ -1345,7 +1345,7 @@ Bytes memoryAccess64(uint8_t opcode, uint32_t align, uint64_t offset)
 
 } // namespace
 
-TEST_CASE("Interpreter.memory64EffectiveAddressOverflowTraps")
+TEST_CASE("ReferenceInterpreter.memory64EffectiveAddressOverflowTraps")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({ TypeI64 }, { TypeI32 }))
@@ -1362,7 +1362,7 @@ TEST_CASE("Interpreter.memory64EffectiveAddressOverflowTraps")
     CHECK(harness.trap(1, { I64 { 0 } }) == TrapCode::OutOfBoundsMemoryAccess);
 }
 
-TEST_CASE("Interpreter.memoryGrow64ReturnsI64")
+TEST_CASE("ReferenceInterpreter.memoryGrow64ReturnsI64")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({ TypeI64 }, { TypeI64 }))
@@ -1378,7 +1378,7 @@ TEST_CASE("Interpreter.memoryGrow64ReturnsI64")
     CHECK(harness.result(0, { I64 { 0 } }) == Value { I64 { 2 } });
 }
 
-TEST_CASE("Interpreter.table64CallIndirect")
+TEST_CASE("ReferenceInterpreter.table64CallIndirect")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({ TypeI64 }, { TypeI32 }))
@@ -1400,7 +1400,7 @@ TEST_CASE("Interpreter.table64CallIndirect")
     CHECK(isoline::runtime::specMessage(last.error()) == "undefined element -1");
 }
 
-TEST_CASE("Interpreter.table64Instructions")
+TEST_CASE("ReferenceInterpreter.table64Instructions")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({}, { TypeI64 }))
@@ -1445,7 +1445,7 @@ Bytes vectorAccessIn(uint32_t subOpcode, uint32_t memory, uint32_t align, uint32
 
 } // namespace
 
-TEST_CASE("Interpreter.laneAccessOnSecondMemory")
+TEST_CASE("ReferenceInterpreter.laneAccessOnSecondMemory")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({}, {}))
@@ -1463,7 +1463,7 @@ TEST_CASE("Interpreter.laneAccessOnSecondMemory")
     CHECK(harness.result(2) == v128(0, 0));
 }
 
-TEST_CASE("Interpreter.copyBetweenMemories")
+TEST_CASE("ReferenceInterpreter.copyBetweenMemories")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({}, { TypeI32 }))
@@ -1496,7 +1496,7 @@ TEST_CASE("Interpreter.copyBetweenMemories")
     CHECK(harness.trap(3) == TrapCode::OutOfBoundsMemoryAccess);
 }
 
-TEST_CASE("Interpreter.copyBetweenMixedAddressMemories")
+TEST_CASE("ReferenceInterpreter.copyBetweenMixedAddressMemories")
 {
     // Memory 0 has i64 addresses, memory 1 i32 ones; a copy's count is typed as the narrower side.
     auto builder = ModuleBuilder {};
@@ -1574,7 +1574,7 @@ Bytes callRef0()
 
 } // namespace
 
-TEST_CASE("Interpreter.callRefNullTraps")
+TEST_CASE("ReferenceInterpreter.callRefNullTraps")
 {
     auto harness =
         Harness { typedReferenceModule({ code({ localGet(0), callRef0() }) },
@@ -1584,7 +1584,7 @@ TEST_CASE("Interpreter.callRefNullTraps")
     CHECK(harness.invoke(3).error() == Trap { TrapCode::NullFunctionReference });
 }
 
-TEST_CASE("Interpreter.refAsNonNullTraps")
+TEST_CASE("ReferenceInterpreter.refAsNonNullTraps")
 {
     auto harness = Harness { typedReferenceModule(
         {}, { code({ refFunc0(), { 0xD4 }, callRef0() }), code({ refNull0(), { 0xD4 }, callRef0() }) }) };
@@ -1592,7 +1592,7 @@ TEST_CASE("Interpreter.refAsNonNullTraps")
     CHECK(harness.trap(2) == TrapCode::NullReference);
 }
 
-TEST_CASE("Interpreter.brOnNullBranches")
+TEST_CASE("ReferenceInterpreter.brOnNullBranches")
 {
     // block (result i32) i32.const 42 local.get 0 br_on_null 0 call_ref 0 i32.add end: a null branches
     // with the 42 beneath it; a function falls through with the reference, which call_ref calls.
@@ -1603,7 +1603,7 @@ TEST_CASE("Interpreter.brOnNullBranches")
     CHECK(harness.result(3) == i32(49));
 }
 
-TEST_CASE("Interpreter.brOnNonNullBranches")
+TEST_CASE("ReferenceInterpreter.brOnNonNullBranches")
 {
     // block (result (ref 0)) local.get 0 br_on_non_null 0 i32.const -1 return end call_ref 0: a
     // function branches with the reference; a null falls through without it.
@@ -1619,7 +1619,7 @@ TEST_CASE("Interpreter.brOnNonNullBranches")
     CHECK(harness.result(3) == i32(7));
 }
 
-TEST_CASE("Interpreter.callRefOfAHostReference")
+TEST_CASE("ReferenceInterpreter.callRefOfAHostReference")
 {
     // A host function hands the guest a (ref 0) to another host function, which call_ref calls. The
     // reference's function must have type 0: one of another type is a checked abort (Require), which
@@ -1684,7 +1684,7 @@ Bytes countDown(Bytes const& self, uint32_t blocks = 0)
 
 } // namespace
 
-TEST_CASE("Interpreter.tailCallDoesNotGrowDepth")
+TEST_CASE("ReferenceInterpreter.tailCallDoesNotGrowDepth")
 {
     // A store allowing 100 frames: a million tail calls run in one frame, where plain calls trap.
     // The tail call sits in 5 blocks: were their labels left behind, a million calls would leave 6
@@ -1702,7 +1702,7 @@ TEST_CASE("Interpreter.tailCallDoesNotGrowDepth")
     CHECK(harness.result(0, { I64 { 0 } }) == Value { I64 { 0 } });
 }
 
-TEST_CASE("Interpreter.tailCallKeepsLocalsBounded")
+TEST_CASE("ReferenceInterpreter.tailCallKeepsLocalsBounded")
 {
     // 50'000 locals per frame exhaust the stacks' budget after about 80 plain calls; a tail call
     // frees the frame's locals before the callee's are pushed, so a thousand of them complete.
@@ -1716,7 +1716,7 @@ TEST_CASE("Interpreter.tailCallKeepsLocalsBounded")
     CHECK(harness.trap(1, { I64 { 1'000 } }) == TrapCode::CallStackExhausted);
 }
 
-TEST_CASE("Interpreter.returnCallToHost")
+TEST_CASE("ReferenceInterpreter.returnCallToHost")
 {
     // Function 1 tail-calls the host import 0 over an operand of its own, and what follows the
     // return_call never runs; function 2 calls 1 with a value beneath, which the tail call leaves in
@@ -1743,7 +1743,7 @@ TEST_CASE("Interpreter.returnCallToHost")
     CHECK(harness.result(2) == i32(42));
 }
 
-TEST_CASE("Interpreter.returnCallMovesArgumentsOverOperands")
+TEST_CASE("ReferenceInterpreter.returnCallMovesArgumentsOverOperands")
 {
     // Function 1 leaves 99 beneath its argument, local 0, and tail-calls the identity function 0:
     // the callee's parameter is the local, not the 99 the frame's operands begin with.
@@ -1755,7 +1755,7 @@ TEST_CASE("Interpreter.returnCallMovesArgumentsOverOperands")
     CHECK(harness.result(1, { i32(5) }) == i32(5));
 }
 
-TEST_CASE("Interpreter.returnCallIndirectTrapsAsCallIndirect")
+TEST_CASE("ReferenceInterpreter.returnCallIndirectTrapsAsCallIndirect")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({}, { TypeI32 }))
@@ -1775,7 +1775,7 @@ TEST_CASE("Interpreter.returnCallIndirectTrapsAsCallIndirect")
     CHECK(isoline::runtime::specMessage(undefined.error()) == "undefined element 3");
 }
 
-TEST_CASE("Interpreter.returnCallRefTrapsOnNull")
+TEST_CASE("ReferenceInterpreter.returnCallRefTrapsOnNull")
 {
     // Function 1 tail-calls its (ref null 0) argument; 2 passes it function 0, 3 a null.
     auto harness =
@@ -1822,7 +1822,7 @@ Thrown thrownOf(std::expected<std::vector<Value>, Abrupt> const& outcome)
 
 } // namespace
 
-TEST_CASE("Interpreter.catchPayload")
+TEST_CASE("ReferenceInterpreter.catchPayload")
 {
     // 5 + block (result i32) try_table (catch $e 0) i32.const 99 i32.const 42 throw $e end i32.const 0
     // end: the catch resets the operands to the try_table's, dropping the 99, and branches to the block
@@ -1846,7 +1846,7 @@ TEST_CASE("Interpreter.catchPayload")
     CHECK(harness.result(0) == i32(47));
 }
 
-TEST_CASE("Interpreter.catchClauseOrder")
+TEST_CASE("ReferenceInterpreter.catchClauseOrder")
 {
     // Tags 0 and 1, both [i32]; each function throws one of them with payload 7:
     //   block $outer (result i32) block $one (result i32) block $all
@@ -1882,7 +1882,7 @@ TEST_CASE("Interpreter.catchClauseOrder")
     CHECK(harness.result(1) == i32(1007)); // the inner catch 1, to $one
 }
 
-TEST_CASE("Interpreter.throwRefRethrows")
+TEST_CASE("ReferenceInterpreter.throwRefRethrows")
 {
     // block (result i32) try_table (catch $e 0)
     //   block (result exnref) try_table (catch_all_ref 0) i32.const 7 throw $e end unreachable end
@@ -1912,7 +1912,7 @@ TEST_CASE("Interpreter.throwRefRethrows")
     CHECK(harness.store().liveExceptions() == 1);
 }
 
-TEST_CASE("Interpreter.throwRefOfNullTraps")
+TEST_CASE("ReferenceInterpreter.throwRefOfNullTraps")
 {
     auto builder = ModuleBuilder {};
     builder.type(signature({}, {})).function(0, {}, { 0xD0, 0x69, 0x0A });
@@ -1921,7 +1921,7 @@ TEST_CASE("Interpreter.throwRefOfNullTraps")
     CHECK(isoline::runtime::specMessage(harness.invoke(0).error()) == "null exception reference");
 }
 
-TEST_CASE("Interpreter.unwindDeepFrames")
+TEST_CASE("ReferenceInterpreter.unwindDeepFrames")
 {
     // Function 0 counts its i32 down in nested calls and throws at 0; function 1 calls it with 10'000
     // inside try_table (catch_all 1) and returns 1 once it catches: 10'001 frames unwound in a loop,
@@ -1958,7 +1958,7 @@ TEST_CASE("Interpreter.unwindDeepFrames")
     CHECK(harness.result(1) == i32(1));
 }
 
-TEST_CASE("Interpreter.exceptionCapTraps")
+TEST_CASE("ReferenceInterpreter.exceptionCapTraps")
 {
     // Each call throws and catches with catch_all_ref, keeping the exnref in table slot i: a store of
     // 16 exceptions holds 16, and the 17th throw traps.
@@ -1986,7 +1986,7 @@ TEST_CASE("Interpreter.exceptionCapTraps")
     CHECK(table.elements[16].kind == isoline::runtime::RefKind::Null);
 }
 
-TEST_CASE("Interpreter.exceptionCrossesHost")
+TEST_CASE("ReferenceInterpreter.exceptionCrossesHost")
 {
     // Function 2 calls the host import 0 inside try_table (catch $e 0); the host invokes function 1,
     // which throws $e 5 uncaught there, and returns the Thrown: the exception goes on in function 2.
@@ -2036,7 +2036,7 @@ TEST_CASE("Interpreter.exceptionCrossesHost")
     CHECK(harness.store().exception(thrown.exception).payload == std::vector { i32(9) });
 }
 
-TEST_CASE("Interpreter.uncaughtIsThrown")
+TEST_CASE("ReferenceInterpreter.uncaughtIsThrown")
 {
     // throw $e 3, with no handler: the invocation ends with Thrown, whose exception carries the tag
     // and payload. A try_table left by its end, or by a branch, no longer catches.
@@ -2065,7 +2065,7 @@ TEST_CASE("Interpreter.uncaughtIsThrown")
     }
 }
 
-TEST_CASE("Interpreter.importedTagIsTheSameTag")
+TEST_CASE("ReferenceInterpreter.importedTagIsTheSameTag")
 {
     // Tag identity is the store's address: function 0 throws the imported tag and catches it by that
     // import; function 1 throws it too, but catches only tag 1, a tag of its own of the same type.
@@ -2094,7 +2094,7 @@ TEST_CASE("Interpreter.importedTagIsTheSameTag")
     CHECK(harness.store().exception(thrown.exception).tag == shared);
 }
 
-TEST_CASE("Interpreter.catchToALoop")
+TEST_CASE("ReferenceInterpreter.catchToALoop")
 {
     // loop try_table (catch_all 0) local 0 += 1; if local 0 < 3 throw end end end local.get 0: the
     // clause's label is the loop, so a catch repeats it, until a pass throws no more.
@@ -2118,7 +2118,7 @@ TEST_CASE("Interpreter.catchToALoop")
     CHECK(harness.result(0) == i32(3));
 }
 
-TEST_CASE("Interpreter.catchToTheFunctionLabel")
+TEST_CASE("ReferenceInterpreter.catchToTheFunctionLabel")
 {
     // try_table (catch $e 0) i32.const 11 throw $e end i32.const 0: label 0 outside the try_table is
     // the function's, so the catch returns the payload; function 1 adds it to an operand of its own.
@@ -2136,7 +2136,7 @@ TEST_CASE("Interpreter.catchToTheFunctionLabel")
     CHECK(harness.result(1) == i32(111));
 }
 
-TEST_CASE("Interpreter.hostThrowsAPayloadOfItsTagsKinds")
+TEST_CASE("ReferenceInterpreter.hostThrowsAPayloadOfItsTagsKinds")
 {
     // The host throws the guest's tag [i64 f32] with a payload of those kinds (Store::addException
     // checks them); the guest's catch hands both to a block of [i64 f32] (type 2) and keeps the i64.
@@ -3508,7 +3508,7 @@ TEST_CASE("ReferenceInterpreter.keepsAnExceptionAHostReturned")
     CHECK(harness.store().liveExceptions() <= 16);
 }
 
-TEST_CASE("Interpreter.uninitializedTypedLocalNamesItsTypeId")
+TEST_CASE("ReferenceInterpreter.uninitializedTypedLocalNamesItsTypeId")
 {
     // Types 0 and 1 are equal, so they share TypeId 0 and type 2 gets TypeId 1: a (ref null 2) local
     // starts as the null of TypeId 1, as ref.null 2 does, not of type index 2.

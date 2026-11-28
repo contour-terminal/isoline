@@ -338,7 +338,7 @@ namespace
         auto const& row = NumericByOpcode[index];
         auto const arity =
             std::size_t { binary::signatureInfo(binary::OpcodeTable[index].signature).paramCount };
-        // The pair comparison keeps this one branch in the coverage ratchet's view; a fast
+        // The pair comparison keeps this one branch in the coverage ratchet's view; an
         // interpreter should not reuse rowOf on its hot path.
         Require((std::pair { row.shape, arity } == std::pair { shape, operandCount }));
         return row;

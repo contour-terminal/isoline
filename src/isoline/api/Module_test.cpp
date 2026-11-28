@@ -210,17 +210,17 @@ TEST_CASE("Module.carriesItsEngineIdentity")
     CHECK(capped->engine() == first->engine());
 }
 
-TEST_CASE("Module.identityIncludesDispatchOnlyForFast")
+TEST_CASE("Module.identityIncludesDispatchOnlyForInterpreter")
 {
-    // The fast engine lowers its code for its dispatch, so a store of one dispatch refuses a module of the
+    // The interpreter lowers its code for its dispatch, so a store of one dispatch refuses a module of the
     // other; the reference engine lowers nothing, so two of them that differ only in the dispatch share
     // their modules.
     auto const bytes = ModuleBuilder {}.build();
-    auto const fastOf = [](Dispatch dispatch) {
-        return EngineConfig { .engine = ExecutionEngine::Fast, .dispatch = dispatch };
+    auto const interpreterOf = [](Dispatch dispatch) {
+        return EngineConfig { .engine = ExecutionEngine::Interpreter, .dispatch = dispatch };
     };
-    CHECK(fastOf(Dispatch::Switch).identity() != fastOf(Dispatch::TailCall).identity());
-    CHECK(fastOf(Dispatch::Switch).identity().dispatch == Dispatch::Switch);
+    CHECK(interpreterOf(Dispatch::Switch).identity() != interpreterOf(Dispatch::TailCall).identity());
+    CHECK(interpreterOf(Dispatch::Switch).identity().dispatch == Dispatch::Switch);
     auto allocator = isoline::api::HeapMemoryAllocator {};
     // Every ordered pair of distinct dispatches this build compiled: none where it compiled Switch alone.
     for (auto const loading: isoline::api::availableDispatches())
@@ -229,9 +229,9 @@ TEST_CASE("Module.identityIncludesDispatchOnlyForFast")
         {
             if (loading == instantiating)
                 continue;
-            auto const module = Engine { fastOf(loading) }.load(bytes);
+            auto const module = Engine { interpreterOf(loading) }.load(bytes);
             REQUIRE(module.has_value());
-            auto const engine = Engine { fastOf(instantiating) };
+            auto const engine = Engine { interpreterOf(instantiating) };
             auto store = isoline::api::Store { engine, allocator };
             auto const instance = store.instantiate(*module, isoline::api::Imports {});
             REQUIRE_FALSE(instance.has_value());

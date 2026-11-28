@@ -220,31 +220,31 @@ TEST_CASE("Engine.requiresAClosedFeatureSet")
     CHECK(engine.load(v128ConstBytes()).has_value());
 }
 
-TEST_CASE("Engine.fastIsTheDefault")
+TEST_CASE("Engine.interpreterIsTheDefault")
 {
-    CHECK(EngineConfig {}.engine == ExecutionEngine::Fast);
+    CHECK(EngineConfig {}.engine == ExecutionEngine::Interpreter);
     CHECK(EngineConfig {}.dispatch == isoline::api::bestDispatch());
 }
 
 TEST_CASE("Engine.refusesOverTheCompileBudget")
 {
-    // 1'000 instructions lower into more than 128 bytes: the fast engine refuses the module at its one
+    // 1'000 instructions lower into more than 128 bytes: the interpreter refuses the module at its one
     // function, an implementation limit; the reference engine lowers nothing, and loads it.
     auto const bytes = pushAndDropBytes(500);
-    auto const fast = Engine { EngineConfig { .load = { .maxCompileBytes = 128 } } }.load(bytes);
-    REQUIRE_FALSE(fast.has_value());
-    REQUIRE(std::holds_alternative<CompileLimitExceeded>(fast.error()));
-    auto const refused = std::get<CompileLimitExceeded>(fast.error());
+    auto const interpreted = Engine { EngineConfig { .load = { .maxCompileBytes = 128 } } }.load(bytes);
+    REQUIRE_FALSE(interpreted.has_value());
+    REQUIRE(std::holds_alternative<CompileLimitExceeded>(interpreted.error()));
+    auto const refused = std::get<CompileLimitExceeded>(interpreted.error());
     CHECK(refused.codeIndex == 0);
     CHECK(refused.limit == 128);
     CHECK(refused.kind == isoline::api::CompileLimit::Budget);
     CHECK(refused.requested > 0);
-    CHECK(fast.error()
+    CHECK(interpreted.error()
           == LoadError {
               CompileLimitExceeded { .codeIndex = 0, .requested = refused.requested, .limit = 128 } });
     CHECK(refused != CompileLimitExceeded { .codeIndex = 1, .requested = refused.requested, .limit = 128 });
-    CHECK(isoline::api::isImplementationLimit(fast.error()));
-    CHECK_FALSE(isoline::api::requiredFeature(fast.error()).has_value());
+    CHECK(isoline::api::isImplementationLimit(interpreted.error()));
+    CHECK_FALSE(isoline::api::requiredFeature(interpreted.error()).has_value());
     auto const reference = Engine {
         EngineConfig { .engine = ExecutionEngine::Reference, .load = { .maxCompileBytes = 128 } }
     }.load(bytes);
@@ -302,14 +302,14 @@ class LiveMemory final: public std::pmr::memory_resource
 
 TEST_CASE("Engine.lowersIntoItsLoweringMemory")
 {
-    // The fast engine lowers into the memory its configuration names: one with nothing to give refuses the
+    // The interpreter lowers into the memory its configuration names: one with nothing to give refuses the
     // module as the host out of memory, which no limit lifts. The reference engine lowers nothing.
     auto const bytes = pushAndDropBytes(1);
     auto const exhausted = std::make_shared<ExhaustedMemory>();
-    auto const fast = Engine { EngineConfig { .loweringMemory = exhausted } }.load(bytes);
-    REQUIRE_FALSE(fast.has_value());
-    CHECK(fast.error() == LoadError { isoline::api::HostMemoryExhausted {} });
-    CHECK_FALSE(isoline::api::isImplementationLimit(fast.error()));
+    auto const interpreted = Engine { EngineConfig { .loweringMemory = exhausted } }.load(bytes);
+    REQUIRE_FALSE(interpreted.has_value());
+    CHECK(interpreted.error() == LoadError { isoline::api::HostMemoryExhausted {} });
+    CHECK_FALSE(isoline::api::isImplementationLimit(interpreted.error()));
     CHECK(Engine { EngineConfig { .engine = ExecutionEngine::Reference, .loweringMemory = exhausted } }
               .load(bytes)
               .has_value());
@@ -403,7 +403,7 @@ TEST_CASE("Engine.identityIsWhatCodeDependsOn")
 {
     auto const wasm3 = EngineConfig {};
     CHECK(wasm3.identity()
-          == EngineIdentity { .engine = isoline::api::ExecutionEngine::Fast,
+          == EngineIdentity { .engine = isoline::api::ExecutionEngine::Interpreter,
                               .mode = ExecutionMode::Production,
                               .features = FeatureSet::wasm3(),
                               .dispatch = isoline::api::bestDispatch() });
@@ -473,20 +473,20 @@ TEST_CASE("Engine.hostMemoryExhaustionIsNeitherALimitNorAFeature")
         isoline::api::requiredFeature(LoadError { ModuleTooLarge { .bytes = 9, .limit = 8 } }).has_value());
 }
 
-TEST_CASE("Contract.Engine.fastDispatchMustBeAvailable", "[.contract]")
+TEST_CASE("Contract.Engine.interpreterDispatchMustBeAvailable", "[.contract]")
 {
     isoline::runtime::testing::endAtContractViolation();
     // One past the last Dispatch: no build compiles it, whether or not a probe row passed for TailCall.
     auto const uncompiled = static_cast<Dispatch>(std::to_underlying(Dispatch::TailCall) + 1);
-    std::ignore = Engine { EngineConfig { .engine = ExecutionEngine::Fast, .dispatch = uncompiled } };
-    FAIL("SURVIVED: the fast engine accepted a dispatch this build did not compile");
+    std::ignore = Engine { EngineConfig { .engine = ExecutionEngine::Interpreter, .dispatch = uncompiled } };
+    FAIL("SURVIVED: the interpreter accepted a dispatch this build did not compile");
 }
 
 TEST_CASE("Contract.Engine.knownEngine", "[.contract]")
 {
     isoline::runtime::testing::endAtContractViolation();
     // One past the last ExecutionEngine: no row names it.
-    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Fast) + 1);
+    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Interpreter) + 1);
     std::ignore = Engine { EngineConfig { .engine = unknown } };
     FAIL("SURVIVED: an engine of no ExecutionEngine enumerator");
 }
@@ -495,8 +495,8 @@ TEST_CASE("Engine.rowsNameEveryEngine")
 {
     namespace engines = isoline::api::engines;
     // One past the last ExecutionEngine: no row names it, and no identity carries a dispatch for it.
-    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Fast) + 1);
-    for (auto const engine: { ExecutionEngine::Reference, ExecutionEngine::Fast })
+    auto const unknown = static_cast<ExecutionEngine>(std::to_underlying(ExecutionEngine::Interpreter) + 1);
+    for (auto const engine: { ExecutionEngine::Reference, ExecutionEngine::Interpreter })
     {
         REQUIRE(engines::rowOf(engine) != nullptr);
         CHECK(engines::rowOf(engine)->engine == engine);

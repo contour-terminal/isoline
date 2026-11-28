@@ -261,14 +261,15 @@
 # - src/isoline/fastinterpreter/Listing.cpp, lines 100.00 to 97.14 and branches 96.77 to 95.12 (39 of 41): a listing names
 #   a generic vector operation's kernel word by its instruction; the two lines no input reaches are the unknown-kernel
 #   exclusion, and the new untaken branch is the end of its search, which only an unknown kernel reaches.
-# P4 Task 15b renamed src/isoline/interpreter/ (the reference oracle) to src/isoline/reference/; the comments above keep the old path.
+# P4 Task 15b renamed src/isoline/interpreter/ (the reference oracle) to src/isoline/reference/, then
+# src/isoline/fastinterpreter/ to src/isoline/interpreter/ (FastInterpreter.cpp to Interpreter.cpp); the comments above keep the old paths.
 
 exclude src/isoline/c/Error.cpp immortal-error-lifetime the immortal error's holder: constinit, so its constructor runs at compile time, and its destructor, which destroys nothing, runs at exit after the profile is written
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
-exclude src/isoline/fastinterpreter/Listing.cpp unknown-kernel a generic vector operation whose kernel word is no OpcodeTable row's: lowering writes only simdKernelWordOf() of an instruction, so no code holds another
-exclude src/isoline/fastinterpreter/Lowering.cpp code-words-past-32-bits the refusal of a function whose code bound passes 32-bit branch targets: it needs a body past a gigabyte, more than any test can decode, and a budget past 32 GiB
-exclude src/isoline/fastinterpreter/Lowering.cpp materialize-in-slot materialize() of an entry in its slot already: its callers pass only forwarded locals and constants, the entries of the index list and the forwarding chains
-exclude src/isoline/fastinterpreter/SwitchDispatchCold.cpp inline-operation the out-of-line switch's cases of the operations the loop runs inline: runSwitch() never calls runOutOfLine() for them, so their case line and body run in no build
+exclude src/isoline/interpreter/Listing.cpp unknown-kernel a generic vector operation whose kernel word is no OpcodeTable row's: lowering writes only simdKernelWordOf() of an instruction, so no code holds another
+exclude src/isoline/interpreter/Lowering.cpp code-words-past-32-bits the refusal of a function whose code bound passes 32-bit branch targets: it needs a body past a gigabyte, more than any test can decode, and a budget past 32 GiB
+exclude src/isoline/interpreter/Lowering.cpp materialize-in-slot materialize() of an entry in its slot already: its callers pass only forwarded locals and constants, the entries of the index list and the forwarding chains
+exclude src/isoline/interpreter/SwitchDispatchCold.cpp inline-operation the out-of-line switch's cases of the operations the loop runs inline: runSwitch() never calls runOutOfLine() for them, so their case line and body run in no build
 exclude src/isoline/meta/FixedText.hpp constant-evaluation-only the body of detail::fixedTextNeedsANulTerminatedLiteral(): FixedText calls it only in constant evaluation, to end one with its name (compile-fail-fixed-text-unterminated), so it never runs
 exclude src/isoline/reference/ReferenceInterpreter.cpp execute-default an opcode without a case or table row: Opcode.everyRowDecodes runs a module of every row of the opcode table, so an instruction without one aborts that test
 exclude src/isoline/reference/ReferenceInterpreter.cpp number-of numberOf a vector or reference kind: scalar loads have number kinds, and vector loads take accessVector
@@ -339,38 +340,30 @@ src/isoline/cli/VerbArguments.hpp                  100.00 -
 src/isoline/cli/Verbs.cpp                          100.00 100.00
 src/isoline/cli/Verbs.hpp                          100.00 -
 src/isoline/cli/main.cpp                           100.00 100.00
-src/isoline/fastinterpreter/Bounds.hpp             100.00 100.00
-src/isoline/fastinterpreter/Code.cpp               100.00 71.05
-src/isoline/fastinterpreter/Code.hpp               100.00 -
-src/isoline/fastinterpreter/Context.hpp            100.00 100.00
-src/isoline/fastinterpreter/Dispatch.cpp           100.00 100.00
-src/isoline/fastinterpreter/FastInterpreter.cpp    100.00 91.34
-src/isoline/fastinterpreter/FastInterpreter.cpp    98.59 78.68
-src/isoline/fastinterpreter/Listing.cpp            97.14 95.12
-src/isoline/fastinterpreter/LittleEndian.hpp       100.00 -
-src/isoline/fastinterpreter/LittleEndian.hpp       100.00 -
-src/isoline/fastinterpreter/Lowering.cpp           99.54 92.49
-src/isoline/fastinterpreter/Lowering.cpp  98.70 90.19
-src/isoline/fastinterpreter/Lowering.hpp           100.00 -
-src/isoline/fastinterpreter/LoweringAllocator.hpp  100.00 -
-src/isoline/fastinterpreter/LoweringTable.hpp      100.00 95.23
-src/isoline/fastinterpreter/Operations.def         100.00 -
-src/isoline/fastinterpreter/Operations.hpp         100.00 78.57
-src/isoline/fastinterpreter/Operations.hpp         100.00 91.07
-src/isoline/fastinterpreter/SlotCodec.cpp          100.00 66.66
-src/isoline/fastinterpreter/SlotCodec.cpp          100.00 82.60
-src/isoline/fastinterpreter/SlotCodec.hpp          100.00 92.85
-src/isoline/fastinterpreter/SlotCodec.hpp          100.00 93.75
-src/isoline/fastinterpreter/SwitchDispatch.cpp     100.00 99.85
-src/isoline/fastinterpreter/SwitchDispatch.cpp     100.00 99.89
-src/isoline/fastinterpreter/SwitchDispatchCold.cpp 100.00 50.30
-src/isoline/fastinterpreter/SwitchDispatchCold.cpp 100.00 55.15
-src/isoline/fastinterpreter/TailCall.hpp           100.00 100.00
-src/isoline/fastinterpreter/TailCallControl.cpp    100.00 83.33
-src/isoline/fastinterpreter/TailCallExceptions.cpp 100.00 -
-src/isoline/fastinterpreter/TailCallMemory.cpp     100.00 -
-src/isoline/fastinterpreter/TailCallNumeric.cpp    100.00 -
-src/isoline/fastinterpreter/TailCallSimd.cpp       100.00 -
+src/isoline/interpreter/Bounds.hpp                 100.00 100.00
+src/isoline/interpreter/Code.cpp                   100.00 71.05
+src/isoline/interpreter/Code.hpp                   100.00 -
+src/isoline/interpreter/Context.hpp                100.00 100.00
+src/isoline/interpreter/Dispatch.cpp               100.00 100.00
+src/isoline/interpreter/Interpreter.cpp            100.00 91.34
+src/isoline/interpreter/Listing.cpp                97.14 95.12
+src/isoline/interpreter/LittleEndian.hpp           100.00 -
+src/isoline/interpreter/Lowering.cpp               99.54 92.49
+src/isoline/interpreter/Lowering.hpp               100.00 -
+src/isoline/interpreter/LoweringAllocator.hpp      100.00 -
+src/isoline/interpreter/LoweringTable.hpp          100.00 95.23
+src/isoline/interpreter/Operations.def             100.00 -
+src/isoline/interpreter/Operations.hpp             100.00 91.07
+src/isoline/interpreter/SlotCodec.cpp              100.00 66.66
+src/isoline/interpreter/SlotCodec.hpp              100.00 93.75
+src/isoline/interpreter/SwitchDispatch.cpp         100.00 99.89
+src/isoline/interpreter/SwitchDispatchCold.cpp     100.00 55.15
+src/isoline/interpreter/TailCall.hpp               100.00 100.00
+src/isoline/interpreter/TailCallControl.cpp        100.00 83.33
+src/isoline/interpreter/TailCallExceptions.cpp     100.00 -
+src/isoline/interpreter/TailCallMemory.cpp         100.00 -
+src/isoline/interpreter/TailCallNumeric.cpp        100.00 -
+src/isoline/interpreter/TailCallSimd.cpp           100.00 -
 src/isoline/meta/FixedText.hpp                   66.66 -
 src/isoline/meta/fallback/contracts/Check.hpp    100.00 -
 src/isoline/numerics/Float.hpp                     100.00 97.82

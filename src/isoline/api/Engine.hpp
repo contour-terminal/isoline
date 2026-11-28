@@ -19,7 +19,7 @@
 namespace isoline::api
 {
 
-/// The limits loading a module enforces: one on its size, those decoding enforces, and the fast engine's
+/// The limits loading a module enforces: one on its size, those decoding enforces, and the interpreter's
 /// compile budget.
 ///
 /// They decide whether a module loads, not what its code is, so they are no part of EngineIdentity.
@@ -32,7 +32,7 @@ struct LoadLimits
     /// The implementation limits of decoding and validation.
     DecodeLimits decode {};
 
-    /// The most bytes the fast engine may hold at once while it lowers a module, its code included; a
+    /// The most bytes the interpreter may hold at once while it lowers a module, its code included; a
     /// module that needs more is refused (CompileLimitExceeded) at the first byte past it. 256 MiB by
     /// default, a quarter of Contour's helper data limit. The reference engine lowers nothing, so it
     /// ignores this limit.
@@ -51,10 +51,10 @@ struct EngineConfig
     /// closes a set.
     FeatureSet features = FeatureSet::wasm3();
 
-    /// The engine that runs modules' code: the fast interpreter by default.
-    ExecutionEngine engine = ExecutionEngine::Fast;
+    /// The engine that runs modules' code: the interpreter by default.
+    ExecutionEngine engine = ExecutionEngine::Interpreter;
 
-    /// The dispatch the fast engine lowers code for and runs it with: one of availableDispatches(), the
+    /// The dispatch the interpreter lowers code for and runs it with: one of availableDispatches(), the
     /// fastest by default. The reference engine ignores it.
     Dispatch dispatch = bestDispatch();
 
@@ -68,13 +68,13 @@ struct EngineConfig
     /// (StoreOptions::limits).
     StoreLimits store {};
 
-    /// What the fast engine allocates a module's lowered code from, through a budget of
+    /// What the interpreter allocates a module's lowered code from, through a budget of
     /// LoadLimits::maxCompileBytes; the global heap when null. The lowered code shares its ownership, so
     /// it lives as long as any module, or any instance in any store, that holds code lowered into it.
     std::shared_ptr<std::pmr::memory_resource> loweringMemory = nullptr;
 
     /// What a module this configuration loads depends on: the engine, the mode, the features and, for
-    /// the fast engine alone, the dispatch; not the limits.
+    /// the interpreter alone, the dispatch; not the limits.
     /// @return The identity of an engine of this configuration.
     [[nodiscard]] EngineIdentity identity() const noexcept;
 };
@@ -139,7 +139,7 @@ class Engine
     /// An engine of @p config.
     /// @param config Its configuration. Its feature set must be closed (checked: an unclosed set is a
     ///               programming error of the embedder; FeatureSet::withPrerequisites() closes one).
-    ///               Its engine must be an ExecutionEngine enumerator (checked), and the fast engine's
+    ///               Its engine must be an ExecutionEngine enumerator (checked), and the interpreter's
     ///               dispatch one this build compiled (isAvailable(), checked).
     explicit Engine(EngineConfig config) noexcept
         ISOLINE_PRE(config.features.checkPrerequisites().has_value());
@@ -149,7 +149,7 @@ class Engine
     [[nodiscard]] EngineConfig const& config() const noexcept { return _config; }
 
     /// Loads a module: checks its size, then decodes and validates it with the engine's features and
-    /// decode limits; the fast engine then lowers it, once, for every store that instantiates it, within
+    /// decode limits; the interpreter then lowers it, once, for every store that instantiates it, within
     /// LoadLimits::maxCompileBytes.
     ///
     /// Imports are described, never resolved: a module loads whatever it imports. Nothing is thrown:

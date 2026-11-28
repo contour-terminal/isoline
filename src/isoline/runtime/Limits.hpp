@@ -59,8 +59,8 @@ struct StoreLimits
     /// before a call traps with CallStackExhausted. The charge is counted in values, the same in every
     /// engine; what a value takes in bytes is each engine's own: reference::ValueBytes on the
     /// reference interpreter's stacks (a runtime::Value, its size the standard library's variant's), and on
-    /// the fast interpreter's slot chunks at most fastinterpreter::SlotBytesPerValue, which
-    /// docs/fast-interpreter.md's chunk bound ("Calls, frames and the slot stack") scales by a constant
+    /// the interpreter's slot chunks at most interpreter::SlotBytesPerValue, which
+    /// docs/interpreter.md's chunk bound ("Calls, frames and the slot stack") scales by a constant
     /// factor. The default, 4 Mi values, is tens of MiB on the reference engine.
     ///
     /// A Wasm frame costs validate::ValidatedModule::frameCost(), params + locals + its most operands +

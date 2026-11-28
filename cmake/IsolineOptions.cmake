@@ -42,11 +42,11 @@ set_property(CACHE ISOLINE_SANITIZE PROPERTY STRINGS "" address thread)
 # cmake/IsolineLanguageFeatures.cmake from its feature rows, so that a feature is one row there; see
 # docs/language-features.md.
 
-# The fast interpreter's tail-call dispatch (fastinterpreter/CMakeLists.txt): AUTO compiles it where a probe
+# The interpreter's tail-call dispatch (interpreter/CMakeLists.txt): AUTO compiles it where a probe
 # row below passes, OFF never does, which leaves the portable Switch dispatch alone.
-set(ISOLINE_FAST_DISPATCH_TAILCALL AUTO CACHE STRING
-    "The fast interpreter's TailCall dispatch: AUTO (where a probe row passes) or OFF")
-set_property(CACHE ISOLINE_FAST_DISPATCH_TAILCALL PROPERTY STRINGS AUTO OFF)
+set(ISOLINE_INTERPRETER_DISPATCH_TAILCALL AUTO CACHE STRING
+    "The interpreter's TailCall dispatch: AUTO (where a probe row passes) or OFF")
+set_property(CACHE ISOLINE_INTERPRETER_DISPATCH_TAILCALL PROPERTY STRINGS AUTO OFF)
 
 # The tail-call probe rows: a spelling of a guaranteed tail call, and the compiler families (CMAKE_CXX_COMPILER_ID)
 # that have it. The probe tries, in order, the rows whose families name the build's compiler: it compiles the

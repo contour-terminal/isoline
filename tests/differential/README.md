@@ -1,7 +1,7 @@
 # Differential testing
 
 The differential harness runs one module on every engine of the build: the reference interpreter, and the
-fast interpreter under each compiled dispatch. It compares everything each engine observes, exactly. The
+interpreter under each compiled dispatch. It compares everything each engine observes, exactly. The
 first participant is the expected one.
 
 For each call it compares the following, in this order (`Comparison.hpp`'s `ObservationFields`):

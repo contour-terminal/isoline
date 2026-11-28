@@ -17,7 +17,7 @@ namespace isoline::runtime
 /// lane 0 then lane 1, and a reference as its tag word `kind | heap.kind << 8 | heap.typeIndex << 32`,
 /// then its address. A number leaves the second word 0. Words are written as whole integers, never
 /// through the value's bytes, so a reference's padding never enters them and the encoding is the same on
-/// every host. It is the encoding every engine shares: the fast interpreter's slots and the raw cells of
+/// every host. It is the encoding every engine shares: the interpreter's slots and the raw cells of
 /// globals.
 /// @param value The value.
 /// @param words The two words it goes into.

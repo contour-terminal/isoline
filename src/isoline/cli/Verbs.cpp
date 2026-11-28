@@ -126,7 +126,7 @@ Failure loadFailure(api::LoadError const& error, std::string_view input)
             },
             [input](api::CompileLimitExceeded const& tooLarge) {
                 // The verbs load with the reference engine, which lowers nothing: only an embedder's
-                // fast engine refuses this way.
+                // interpreter refuses this way.
                 auto const& limit = api::compileLimitRow(tooLarge.kind);
                 auto const where = tooLarge.codeIndex == api::ModuleLevel
                                        ? std::string { "the module-level records" }

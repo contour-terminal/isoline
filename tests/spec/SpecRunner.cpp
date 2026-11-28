@@ -910,7 +910,7 @@ int main(int argc, char const* argv[])
         if (!options)
             std::cerr << "isoline_spec_runner: " << options.error() << '\n';
         std::cerr << "usage: isoline_spec_runner <directory> <expected skips> --features <wasm2|wasm3|all>"
-                     " [--engine <reference|fast>] [--dispatch <switch|tailcall>]\n";
+                     " [--engine <reference|interpreter>] [--dispatch <switch|tailcall>]\n";
         return 2;
     }
     try

@@ -92,7 +92,7 @@ struct HostMemoryExhausted
     bool operator==(HostMemoryExhausted const&) const = default;
 };
 
-/// Which of the fast engine's limits a module's lowering exceeded.
+/// Which of the interpreter's limits a module's lowering exceeded.
 enum class CompileLimit : uint8_t
 {
     Budget =
@@ -143,7 +143,7 @@ inline constexpr auto CompileLimitTable = std::to_array<CompileLimitRow>({
 /// records.
 inline constexpr auto ModuleLevel = std::numeric_limits<uint32_t>::max();
 
-/// A module the fast engine refused to lower: its code needs more than one of its limits allows.
+/// A module the interpreter refused to lower: its code needs more than one of its limits allows.
 struct CompileLimitExceeded
 {
     /// The function lowering was refused at, by its index in the code section; ModuleLevel when the
@@ -163,7 +163,7 @@ using LoadError =
 
 /// Whether @p error refuses a module only for an implementation limit rather than for being malformed or
 /// invalid, which no limits change. Raising LoadLimits lifts ModuleTooLarge, a decode or validation limit,
-/// and a CompileLimitExceeded of CompileLimit::Budget; the other compile limits are the fast engine's own
+/// and a CompileLimitExceeded of CompileLimit::Budget; the other compile limits are the interpreter's own
 /// bounds, which no LoadLimits raise (the reference engine loads such a module).
 /// @param error Why the module was refused.
 /// @return Whether a ModuleTooLarge or a CompileLimitExceeded, or a decode or validation error whose row
@@ -178,7 +178,7 @@ using LoadError =
 ///         prerequisites) gets the module past that point, where another may be named.
 [[nodiscard]] std::optional<Feature> requiredFeature(LoadError const& error) noexcept;
 
-/// A module an Engine loaded: decoded, validated, described, and for the fast engine lowered.
+/// A module an Engine loaded: decoded, validated, described, and for the interpreter lowered.
 ///
 /// Its imports are only described, never resolved: a module loads whatever it imports, and whether
 /// they are satisfied is a question for instantiation. A module is immutable and cheap to copy, every
@@ -198,7 +198,7 @@ class Module
     /// @param key The passkey only an Engine has.
     /// @param validated The module, decoded and validated (checked: not null).
     /// @param engine The identity of the engine that loaded it.
-    /// @param code What the engine made of @p validated to run it: the fast engine's lowered module; null
+    /// @param code What the engine made of @p validated to run it: the interpreter's lowered module; null
     ///             for the reference engine, which runs the validated module itself.
     Module(Key key,
            std::shared_ptr<validate::ValidatedModule const> validated,
@@ -246,7 +246,7 @@ class Module
 
     /// What its engine made of it to run it, which every store instantiating it shares: lowered once,
     /// when it was loaded.
-    /// @return The fast engine's lowered module; null for the reference engine.
+    /// @return The interpreter's lowered module; null for the reference engine.
     [[nodiscard]] std::shared_ptr<runtime::ModuleCode const> const& code() const noexcept;
 
   private:

@@ -205,9 +205,9 @@ TEST_CASE("Instantiate.keepsTheCode")
     auto const validated = moduleOf(builder);
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto fast = StubExecutor { ExecutionEngine::Fast };
-    auto const code = std::make_shared<StubCode const>(ExecutionEngine::Fast);
-    auto const address = instantiate(store, fast, validated, code, {});
+    auto interpreter = StubExecutor { ExecutionEngine::Interpreter };
+    auto const code = std::make_shared<StubCode const>(ExecutionEngine::Interpreter);
+    auto const address = instantiate(store, interpreter, validated, code, {});
     REQUIRE(address.has_value());
     CHECK(store.moduleInstance(*address).code.get() == code.get());
 
@@ -223,15 +223,18 @@ TEST_CASE("Instantiate.keepsTheCode")
 
 TEST_CASE("Contract.Instantiate.codeMustMatchTheExecutor", "[.contract]")
 {
-    // Code of the fast engine, run by the reference interpreter: a contract violation.
+    // Code of the interpreter, run by the reference interpreter: a contract violation.
     isoline::runtime::testing::endAtContractViolation();
     auto builder = ModuleBuilder {};
     builder.type(FuncType {}).function(0, {}, {});
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
     auto interpreter = isoline::reference::ReferenceInterpreter {};
-    std::ignore = instantiate(
-        store, interpreter, moduleOf(builder), std::make_shared<StubCode const>(ExecutionEngine::Fast), {});
+    std::ignore = instantiate(store,
+                              interpreter,
+                              moduleOf(builder),
+                              std::make_shared<StubCode const>(ExecutionEngine::Interpreter),
+                              {});
     FAIL("SURVIVED: instantiate accepted code of another engine");
 }
 
@@ -243,7 +246,7 @@ TEST_CASE("Contract.Instantiate.nullCodeNeedsTheReference", "[.contract]")
     builder.type(FuncType {}).function(0, {}, {});
     auto allocator = HeapMemoryAllocator {};
     auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
-    auto executor = StubExecutor { ExecutionEngine::Fast };
+    auto executor = StubExecutor { ExecutionEngine::Interpreter };
     std::ignore = instantiate(store, executor, moduleOf(builder), {});
     FAIL("SURVIVED: instantiate ran an engine that needs code without any");
 }

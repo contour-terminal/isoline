@@ -29,7 +29,7 @@ the two runtimes it carries today — is the first milestone that proves the run
 - **Fast.** An optimizing ahead-of-time compiler (own SSA IR, linear-scan register allocation,
   table-driven instruction selection) for **x86-64 and arm64**, with cachable `.isoline` objects. The bar
   is **at least Wasmtime's performance**, measured and published at equal safety settings. Where there is
-  no code generator, a **fast interpreter** runs on every other 64-bit architecture, little- and big-endian.
+  no code generator, an **interpreter** runs on every other 64-bit architecture, little- and big-endian.
 - **Safe by construction.** Every limit is enforced and deterministic: memory, tables, call depth,
   execution steps, compile time and memory. A runaway guest can always be interrupted from another
   thread. Traps never escape as crashes, a guest can never exhaust the host's memory, executable memory is
@@ -50,7 +50,7 @@ the two runtimes it carries today — is the first milestone that proves the run
 | Part | What it does |
 |---|---|
 | **Runtime library** | Decoder, validator and the embedding API: engines, modules, stores, instances, host functions, limits, interrupts |
-| **Three engines** | A *reference interpreter* (spec fidelity, the fuzzing oracle), a *fast interpreter* (portable production engine), and an *optimizing compiler* for x86-64 and arm64 — chosen per engine at construction, never silently swapped |
+| **Three engines** | A *reference interpreter* (spec fidelity, the fuzzing oracle), an *interpreter* (portable production engine), and an *optimizing compiler* for x86-64 and arm64 — chosen per engine at construction, never silently swapped |
 | **AOT cache** | Cachable, authenticated `.isoline` objects, with an engine-free verifier a host process can link without the compiler |
 | **Component model** | Component binaries, the canonical ABI, resources, linking — and async streams and futures |
 | **WASI 0.3** | Every 0.3 package (`cli`, `clocks`, `random`, `filesystem`, `sockets`, `http`), capability-based and sandboxed, with a C++ binding generator for WIT |
@@ -108,7 +108,7 @@ every way a load, a call or an instantiation fails.
 |---|---|---|
 | 1 (release-gating) | Linux x86-64 and arm64, macOS arm64, Windows x86-64 | compiler + interpreters |
 | 2 (tested in CI) | Windows arm64, macOS x86-64, FreeBSD x86-64 and arm64, s390x (emulated) | compiler where available, interpreters everywhere |
-| Everything else 64-bit | ppc64le, riscv64, s390x, … | fast interpreter |
+| Everything else 64-bit | ppc64le, riscv64, s390x, … | interpreter |
 
 ## Building
 

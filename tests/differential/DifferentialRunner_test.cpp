@@ -409,7 +409,7 @@ TEST_CASE("Differential.agreesWithItself")
 TEST_CASE("Differential.reportsARefusedLowering")
 {
     auto const module = compiled(R"((module (func (export "f"))))");
-    auto refusing = fastParticipant(fastinterpreter::Dispatch::Switch);
+    auto refusing = interpreterParticipant(interpreter::Dispatch::Switch);
     refusing.lowerModule = [](std::shared_ptr<validate::ValidatedModule const> const& /*module*/,
                               runtime::ExecutionMode /*mode*/) {
         return std::shared_ptr<runtime::ModuleCode const> {};

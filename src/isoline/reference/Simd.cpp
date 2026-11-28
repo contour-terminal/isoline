@@ -42,7 +42,7 @@ namespace
     // --- Lane operations ----------------------------------------------------------------------
     //
     // They take or give a scalar, which the reference interpreter holds boxed, so they live here
-    // rather than in numerics; the fast interpreter has dedicated rows of its own for them.
+    // rather than in numerics; the interpreter has dedicated rows of its own for them.
 
     /// The bits @p value holds, of the scalar type @p Box. Precondition (checked): it holds one.
     template <typename Box>

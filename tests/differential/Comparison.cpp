@@ -17,7 +17,7 @@
 
 #include "Observation.hpp"
 #include <isoline/binary/Types.hpp>
-#include <isoline/fastinterpreter/LittleEndian.hpp>
+#include <isoline/interpreter/LittleEndian.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/Interrupt.hpp>
@@ -91,8 +91,7 @@ uint64_t memoryDigest(std::span<std::byte const> bytes) noexcept
     auto const words = bytes.size() / sizeof(uint64_t);
     for (auto const index: std::views::iota(std::size_t { 0 }, words))
     {
-        auto const word =
-            fastinterpreter::loadLittleEndian<uint64_t>(bytes.data() + (index * sizeof(uint64_t)));
+        auto const word = interpreter::loadLittleEndian<uint64_t>(bytes.data() + (index * sizeof(uint64_t)));
         digest = (digest ^ word) * DigestPrime;
         digest ^= digest >> 29U;
     }

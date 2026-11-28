@@ -26,9 +26,9 @@
 #include <isoline/Features.hpp>
 #include <isoline/binary/DecodeLimits.hpp>
 #include <isoline/binary/Types.hpp>
-#include <isoline/fastinterpreter/Dispatch.hpp>
-#include <isoline/fastinterpreter/FastInterpreter.hpp>
-#include <isoline/fastinterpreter/Lowering.hpp>
+#include <isoline/interpreter/Dispatch.hpp>
+#include <isoline/interpreter/Interpreter.hpp>
+#include <isoline/interpreter/Lowering.hpp>
 #include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/CountingArena.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
@@ -46,16 +46,16 @@ namespace isoline::differential
 
 namespace
 {
-    /// The name a fast participant has under each dispatch: string literals, which a Participant's name
-    /// views.
-    struct FastParticipantName
+    /// The name an interpreter participant has under each dispatch: string literals, which a Participant's
+    /// name views.
+    struct InterpreterParticipantName
     {
-        fastinterpreter::Dispatch dispatch; ///< The dispatch.
-        std::string_view name;              ///< The participant's name.
+        interpreter::Dispatch dispatch; ///< The dispatch.
+        std::string_view name;          ///< The participant's name.
     };
-    constexpr auto FastParticipantNames = std::to_array<FastParticipantName>({
-        { .dispatch = fastinterpreter::Dispatch::Switch, .name = "fast.switch" },
-        { .dispatch = fastinterpreter::Dispatch::TailCall, .name = "fast.tailcall" },
+    constexpr auto InterpreterParticipantNames = std::to_array<InterpreterParticipantName>({
+        { .dispatch = interpreter::Dispatch::Switch, .name = "interpreter.switch" },
+        { .dispatch = interpreter::Dispatch::TailCall, .name = "interpreter.tailcall" },
     });
 
     /// The export name of the instantiation's own observation.
@@ -333,14 +333,14 @@ namespace
         return {};
     }
 
-    [[nodiscard]] std::shared_ptr<runtime::ModuleCode const> lowerForFast(
-        fastinterpreter::Dispatch dispatch,
+    [[nodiscard]] std::shared_ptr<runtime::ModuleCode const> lowerForInterpreter(
+        interpreter::Dispatch dispatch,
         std::shared_ptr<validate::ValidatedModule const> const& module,
         runtime::ExecutionMode mode)
     {
-        auto lowered = fastinterpreter::lower(
+        auto lowered = interpreter::lower(
             *module,
-            fastinterpreter::LoweringConfig { .mode = mode, .dispatch = dispatch },
+            interpreter::LoweringConfig { .mode = mode, .dispatch = dispatch },
             std::make_shared<runtime::CountingArena>(LoweringBudget, *std::pmr::new_delete_resource()));
         if (!lowered)
             return nullptr;
@@ -359,23 +359,24 @@ Participant referenceParticipant()
     };
 }
 
-Participant fastParticipant(fastinterpreter::Dispatch dispatch)
+Participant interpreterParticipant(interpreter::Dispatch dispatch)
 {
-    auto const row = std::ranges::find(FastParticipantNames, dispatch, &FastParticipantName::dispatch);
+    auto const row =
+        std::ranges::find(InterpreterParticipantNames, dispatch, &InterpreterParticipantName::dispatch);
     return Participant {
         .name = row->name,
-        .makeExecutor = [dispatch] { return std::make_unique<fastinterpreter::FastInterpreter>(dispatch); },
+        .makeExecutor = [dispatch] { return std::make_unique<interpreter::Interpreter>(dispatch); },
         .lowerModule =
             [dispatch](std::shared_ptr<validate::ValidatedModule const> const& module,
-                       runtime::ExecutionMode mode) { return lowerForFast(dispatch, module, mode); },
+                       runtime::ExecutionMode mode) { return lowerForInterpreter(dispatch, module, mode); },
     };
 }
 
 std::vector<Participant> everyEngine()
 {
     auto participants = std::vector<Participant> { referenceParticipant() };
-    for (auto const dispatch: fastinterpreter::availableDispatches())
-        participants.push_back(fastParticipant(dispatch));
+    for (auto const dispatch: interpreter::availableDispatches())
+        participants.push_back(interpreterParticipant(dispatch));
     return participants;
 }
 
