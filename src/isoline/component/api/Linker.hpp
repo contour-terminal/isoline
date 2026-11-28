@@ -247,8 +247,9 @@ class Linker
     [[nodiscard]] std::expected<void, LinkerError> defineInstance(std::string path,
                                                                   ComponentInstance const& instance);
 
-    /// Defines a core module at @p path (spectest's `simple-module`). Its imports and exports are checked
-    /// when a component instantiates it (R7), its engine before anything runs.
+    /// Defines a core module at @p path (spectest's `simple-module`). Its type, interned into the linker's
+    /// arena here, must be a subtype of an import's to satisfy it (as Wasmtime checks one at link time);
+    /// its engine is checked before anything runs.
     /// @param path Its path.
     /// @param module The module.
     /// @return Nothing, or the refusal.
@@ -292,6 +293,7 @@ class Linker
     struct ModuleDefinition
     {
         isoline::api::Module module;
+        types::CoreModuleTypeId type; ///< Its type, in the linker's arena.
     };
     struct ComponentDefinition
     {

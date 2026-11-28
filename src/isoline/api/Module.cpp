@@ -162,6 +162,11 @@ std::span<ExportDescription const> Module::exports() const& noexcept
     return _contents->exports;
 }
 
+std::span<FuncType const> Module::types() const& noexcept
+{
+    return _contents->validated->module().types;
+}
+
 FeatureSet Module::features() const noexcept
 {
     return _contents->validated->features();

@@ -562,8 +562,12 @@ resource name not in UTF-8. Once built, a linker is read by any number of stores
 
 An import matches the definition of its exact name; else, for an interface name, the highest
 semver-compatible version (from 1.0.0 the major, `0.M.x` the major and minor, `0.0.N` only itself); else,
-for an instance import that `implements` an interface, that interface. An instance of types only (every
-export an `eq`-bound type, WIT's `use types.{…}`) needs no definition. Types match by subtyping as
+for an instance import that `implements` an interface, that interface. An import Wasmtime would check
+against no definition needs none: a type that is no resource, a resource `eq` to one an earlier import
+bound, or an instance of only such exports and of instances of them, however deep (WIT's `use
+types.{…}`). A defined core module satisfies an import of a module type only as a subtype of it, checked
+when the import links, as Wasmtime checks one: its type is read from the module's descriptions and its
+type section (`api::Module::types()`). Types match by subtyping as
 wasm-tools decides it, and a mismatch names the import and says why in wasm-tools' words
 (`ImportTypeMismatch`); `Linker::resolve` reports every import's outcome without a store. A function's
 parameter names are part of its type, as the Explainer compares them, so a host function is matched under

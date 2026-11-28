@@ -22,6 +22,7 @@
 
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/canonical/Unicode.hpp>
+#include <isoline/component/validate/CoreTypes.hpp>
 #include <isoline/component/validate/Names.hpp>
 #include <isoline/component/validate/Subtyping.hpp>
 
@@ -442,8 +443,14 @@ class Linker::Walk
                     return value;
                 },
                 [&](ModuleDefinition const& module) -> std::expected<uint32_t, Failure> {
-                    // Its imports and exports are the core instantiation's to check (R7); its engine
-                    // the store's, before anything runs.
+                    // Its type must be a subtype of the import's (module_type, component_types.rs:
+                    // 3796-3831), as Wasmtime checks a module at link time (matching.rs:123-150); its
+                    // engine the store's, before anything runs.
+                    auto relation = validate::TypeRelation {
+                        _linker._arena, componentTypes(), _resources, _linker._config.limits
+                    };
+                    if (auto related = relation.isSubtype(types::ExternType { module.type }, type); !related)
+                        return std::unexpected { mismatchOf(std::move(related.error().message)) };
                     if (_store != nullptr && module.module.engine() != _store->engine)
                         defer(isoline::api::EngineMismatch {});
                     return push(module.module);
@@ -827,7 +834,8 @@ std::expected<void, LinkerError> Linker::defineInstance(std::string path, Compon
 
 std::expected<void, LinkerError> Linker::defineModule(std::string path, isoline::api::Module const& module)
 {
-    return define(std::move(path), ModuleDefinition { .module = module });
+    auto const type = _arena.add(validate::coreModuleTypeOf(_arena, module));
+    return define(std::move(path), ModuleDefinition { .module = module, .type = type });
 }
 
 std::expected<void, LinkerError> Linker::defineComponent(std::string path, Component const& component)

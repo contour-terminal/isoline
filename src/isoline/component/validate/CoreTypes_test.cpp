@@ -8,10 +8,12 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/CoreTypes.hpp>
+#include <isoline/validate/ValidationError.hpp>
 
 using isoline::binary::AddressType;
 using isoline::binary::ExternKind;
@@ -29,6 +31,7 @@ using isoline::binary::TableType;
 using isoline::component::types::CoreEntityType;
 using isoline::component::types::TypeArena;
 using isoline::component::validate::CoreMismatchCode;
+using isoline::component::validate::coreModuleTypeOf;
 using isoline::component::validate::coreValueTypeText;
 using isoline::component::validate::matchCoreEntity;
 
@@ -171,4 +174,45 @@ TEST_CASE("CoreTypes.valueTypeTexts")
     CHECK(coreValueTypeText(isoline::binary::concreteRef(3, isoline::binary::Nullable::Yes))
           == "(ref null 3)");
     CHECK(coreValueTypeText(isoline::binary::concreteRef(3, isoline::binary::Nullable::No)) == "(ref 3)");
+}
+
+TEST_CASE("CoreTypes.moduleExportsOutsideTheirIndexSpace")
+{
+    // A module with one definition of each kind: exporting each is read, and exporting the index after it
+    // is the core validator's unknown-index error, never an out-of-range read.
+    using isoline::validate::ValidationErrorCode;
+    auto module = isoline::binary::Module {};
+    module.types.push_back(FuncType {});
+    module.functions.push_back(0);
+    module.tables.push_back(
+        isoline::binary::Table { .type = TableType { .element = FuncRef, .limits = Limits {} }, .init = {} });
+    module.memories.push_back(MemoryType {});
+    module.globals.push_back(isoline::binary::Global { .type = GlobalType { .type = I32 }, .init = {} });
+    module.tags.push_back(isoline::binary::Tag { .typeIndex = 0 });
+    struct Row
+    {
+        ExternKind kind;
+        ValidationErrorCode unknown;
+    };
+    auto const rows = std::vector<Row> {
+        { .kind = ExternKind::Func, .unknown = ValidationErrorCode::UnknownFunction },
+        { .kind = ExternKind::Table, .unknown = ValidationErrorCode::UnknownTable },
+        { .kind = ExternKind::Memory, .unknown = ValidationErrorCode::UnknownMemory },
+        { .kind = ExternKind::Global, .unknown = ValidationErrorCode::UnknownGlobal },
+        { .kind = ExternKind::Tag, .unknown = ValidationErrorCode::UnknownTag },
+    };
+    for (auto const& row: rows)
+    {
+        auto arena = TypeArena { isoline::component::ComponentLimits {} };
+        module.exports = { isoline::binary::Export { .name = "in", .kind = row.kind, .index = 0 } };
+        auto const read = coreModuleTypeOf(arena, module);
+        REQUIRE(read.has_value());
+        REQUIRE(read->exports.size() == 1);
+        CHECK(read->exports.front().type.kind == row.kind);
+        module.exports = { isoline::binary::Export { .name = "out", .kind = row.kind, .index = 1 } };
+        auto const refused = coreModuleTypeOf(arena, module);
+        REQUIRE_FALSE(refused.has_value());
+        CHECK(refused.error().code == row.unknown);
+        CHECK(refused.error().subject == 1U);
+    }
 }

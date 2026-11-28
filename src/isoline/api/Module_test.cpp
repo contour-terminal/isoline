@@ -64,6 +64,10 @@ concept DescribesWhenTemporary = requires(T&& module) {
     std::forward<T>(module).engine();
 };
 
+/// Whether a module of reference type @p T reads its type section.
+template <typename T>
+concept ReadsTypes = requires(T&& module) { std::forward<T>(module).types(); };
+
 /// A copy of @p module, as an embedder hands a module to another owner.
 Module copyOf(Module const& module)
 {
@@ -224,4 +228,25 @@ TEST_CASE("Module.movingLeavesTheSourceWhole")
     CHECK(sources.front().imports().size() == 1);
     CHECK(sources.front().exports().size() == 1);
     CHECK(validatedOf(sources.front()) == validatedOf(targets.front()));
+}
+
+TEST_CASE("Module.typesAreItsTypeSection")
+{
+    // types() is the type section in its order, and an import's function type is the entry it names:
+    // a component reads a function's type index as its position in the span.
+    auto builder = ModuleBuilder {};
+    builder.type(FuncType { .params = { I32 }, .results = {} })
+        .type(FuncType { .params = {}, .results = { I64 } })
+        .importFunction("host", "f", 1);
+    auto const module = loaded(builder.build());
+
+    auto const types = module.types();
+    REQUIRE(types.size() == 2);
+    CHECK(types[0] == FuncType { .params = { I32 }, .results = {} });
+    CHECK(types[1] == FuncType { .params = {}, .results = { I64 } });
+    REQUIRE(module.imports().size() == 1);
+    CHECK(typeAs<FuncType const*>(module.imports()[0].type) == &types[1]);
+    // A temporary's span would dangle, so only an lvalue reads it.
+    STATIC_CHECK(ReadsTypes<Module const&>);
+    STATIC_CHECK_FALSE(ReadsTypes<Module>);
 }

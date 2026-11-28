@@ -157,6 +157,14 @@ class Module
     /// Deleted: the descriptions of a temporary module would dangle at the end of the expression.
     [[nodiscard]] std::span<ExportDescription const> exports() const&& = delete;
 
+    /// Its type section, which the concrete type indices of its descriptions index (and a FuncType of
+    /// one points into): what reading a description's types across modules needs.
+    /// @return The function types, in section order, valid while any copy of this module lives.
+    [[nodiscard]] std::span<FuncType const> types() const& noexcept;
+
+    /// Deleted: the types of a temporary module would dangle at the end of the expression.
+    [[nodiscard]] std::span<FuncType const> types() const&& = delete;
+
     /// The features it was decoded and validated with: those of the engine that loaded it.
     /// @return The feature set.
     [[nodiscard]] FeatureSet features() const noexcept;

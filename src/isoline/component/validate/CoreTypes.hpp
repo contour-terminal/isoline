@@ -9,10 +9,13 @@
 #include <string>
 #include <string_view>
 
+#include <isoline/api/Module.hpp>
+#include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/validate/Subtyping.hpp>
 #include <isoline/validate/TypeMatching.hpp>
+#include <isoline/validate/ValidationError.hpp>
 
 namespace isoline::component::validate
 {
@@ -113,6 +116,27 @@ static_assert(CoreKindWords.size() == isoline::binary::ExternKindCount, "one wor
 /// @param type The entity.
 /// @return Its size.
 [[nodiscard]] uint32_t coreEntitySize(types::TypeArena const& arena, types::CoreEntityType const& type);
+
+/// The type of a validated core module in @p arena's canonical space: its function types interned in
+/// order, its imports, and its exports by the index spaces its imports and definitions make (wasm-tools'
+/// add_core_module, component.rs:536-557). Its measure is depth 1 and the module's type size; whether
+/// that or a repeated import is admitted is the caller's to check.
+/// @param arena The arena that receives its types.
+/// @param module The module; it validated, so every type reference is in range (checked: a Require).
+/// @return Its type, not yet added to @p arena; or the core validator's error for an export of an index
+///         its kind's space does not hold, which no module the core validator accepted has.
+/// @throws std::bad_alloc When the types cannot be stored.
+[[nodiscard]] std::expected<types::CoreModuleTypeInfo, isoline::validate::ValidationError> coreModuleTypeOf(
+    types::TypeArena& arena, isoline::binary::Module const& module);
+
+/// coreModuleTypeOf() of a module an engine loaded, read from its descriptions (api::Module::imports(),
+/// exports() and types()): what a Linker compares a defined module by.
+/// @param arena The arena that receives its types.
+/// @param module The module.
+/// @return Its type, not yet added to @p arena.
+/// @throws std::bad_alloc When the types cannot be stored.
+[[nodiscard]] types::CoreModuleTypeInfo coreModuleTypeOf(types::TypeArena& arena,
+                                                         isoline::api::Module const& module);
 
 /// The text of a core mismatch.
 /// @param code The mismatch.

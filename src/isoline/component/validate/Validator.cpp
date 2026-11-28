@@ -642,6 +642,7 @@ namespace
         [[nodiscard]] Result<CoreModuleTypeId> moduleType(binary::CoreModuleTypeDefinition const& type,
                                                           DefinitionPosition position);
         [[nodiscard]] Result<CoreModuleTypeId> embeddedModuleType(isoline::binary::Module const& module,
+                                                                  uint32_t ordinal,
                                                                   DefinitionPosition position);
         [[nodiscard]] Result<CoreModuleTypeId> finishModuleType(types::CoreModuleTypeInfo type,
                                                                 DefinitionPosition position);
@@ -1992,78 +1993,24 @@ namespace
     }
 
     Result<CoreModuleTypeId> ComponentValidator::embeddedModuleType(isoline::binary::Module const& module,
+                                                                    uint32_t ordinal,
                                                                     DefinitionPosition position)
     {
         // add_core_module (component.rs:536-557): the module's imports and exports, its types interned
         // into the component's one canonical space (carried: once per module, never per query).
-        using isoline::binary::ExternKind;
-        auto scope = std::vector<CoreFunctionTypeId> {};
-        scope.reserve(module.types.size());
-        for (auto const& type: module.types)
+        auto type = coreModuleTypeOf(_arena, module);
+        if (!type)
+        // uncovered-begin(export-index)
         {
-            auto const id = coreFunctionType(type, scope, position);
-            Require(id.has_value()); // the core validator checked its references
-            scope.push_back(*id);
+            return std::unexpected { ValidationError {
+                .code = ValidationErrorCode::CoreModuleRefused,
+                .position = position,
+                .subject = ordinal,
+                .coreModule = CoreModuleError { .ordinal = ordinal,
+                                                .error = isoline::api::LoadError { type.error() } } } };
         }
-        auto const canonical = [&](isoline::validate::CoreExternType entity) {
-            auto const rewrite = [&](isoline::binary::ValueType value) {
-                auto const rewritten = coreValueType(value, scope, position);
-                Require(rewritten.has_value());
-                return *rewritten;
-            };
-            if (entity.kind == ExternKind::Func || entity.kind == ExternKind::Tag)
-                entity.typeIndex = scope[entity.typeIndex].value;
-            entity.table.element = rewrite(entity.table.element);
-            entity.global.type = rewrite(entity.global.type);
-            return entity;
-        };
-        auto info = types::CoreModuleTypeInfo {};
-        info.imports.reserve(module.imports.size());
-        for (auto const& import: module.imports)
-            info.imports.push_back(types::CoreImportType {
-                .module = std::string { isoline::binary::importModuleOf(module, import) },
-                .name = import.name,
-                .type = canonical(isoline::validate::externTypeOf(import)) });
-        // Each index space: the imports of its kind first, then the module's own definitions.
-        auto functions = std::vector<uint32_t> {};
-        auto tables = std::vector<isoline::binary::TableType> {};
-        auto memories = std::vector<isoline::binary::MemoryType> {};
-        auto globals = std::vector<isoline::binary::GlobalType> {};
-        auto tags = std::vector<uint32_t> {};
-        for (auto const& import: module.imports)
-        {
-            switch (import.kind)
-            {
-                case ExternKind::Func: functions.push_back(import.typeIndex); break;
-                case ExternKind::Table: tables.push_back(import.table); break;
-                case ExternKind::Memory: memories.push_back(import.memory); break;
-                case ExternKind::Global: globals.push_back(import.global); break;
-                case ExternKind::Tag: tags.push_back(import.typeIndex); break;
-            }
-        }
-        functions.insert(functions.end(), module.functions.begin(), module.functions.end());
-        for (auto const& table: module.tables)
-            tables.push_back(table.type);
-        memories.insert(memories.end(), module.memories.begin(), module.memories.end());
-        for (auto const& global: module.globals)
-            globals.push_back(global.type);
-        for (auto const& tag: module.tags)
-            tags.push_back(tag.typeIndex);
-        info.exports.reserve(module.exports.size());
-        for (auto const& entry: module.exports)
-        {
-            auto entity = isoline::validate::CoreExternType { .kind = entry.kind };
-            switch (entry.kind)
-            {
-                case ExternKind::Func: entity.typeIndex = functions.at(entry.index); break;
-                case ExternKind::Table: entity.table = tables.at(entry.index); break;
-                case ExternKind::Memory: entity.memory = memories.at(entry.index); break;
-                case ExternKind::Global: entity.global = globals.at(entry.index); break;
-                case ExternKind::Tag: entity.typeIndex = tags.at(entry.index); break;
-            }
-            info.exports.push_back(types::CoreExportType { .name = entry.name, .type = canonical(entity) });
-        }
-        return finishModuleType(std::move(info), position);
+        // uncovered-end(export-index)
+        return finishModuleType(std::move(*type), position);
     }
 
     Result<void> ComponentValidator::coreModule(binary::CoreModuleDefinition const& module,
@@ -2083,7 +2030,7 @@ namespace
                 .subject = ordinal,
                 .coreModule = CoreModuleError { .ordinal = ordinal, .error = std::move(shape.error()) } } };
         auto const& declared = shape->module != nullptr ? shape->module->module() : *shape->declared;
-        auto const type = embeddedModuleType(declared, position);
+        auto const type = embeddedModuleType(declared, ordinal, position);
         if (!type)
             return std::unexpected { type.error() };
         shape->type = *type;

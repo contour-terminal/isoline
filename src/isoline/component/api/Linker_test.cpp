@@ -918,3 +918,62 @@ TEST_CASE("Linker.emptyInstance")
     REQUIRE(std::holds_alternative<TypeMismatch>(function.front().outcome));
     CHECK(std::get<TypeMismatch>(function.front().outcome).detail == "missing expected export `x`");
 }
+
+TEST_CASE("Linker.moduleTypesCheckedAtLink")
+{
+    // A defined module satisfies an import of a module type only as a subtype of it (module_type,
+    // component_types.rs:3796-3831), as Wasmtime checks one at link time (matching.rs:123-150): it exports
+    // all the type does, its imports are all the type's, and each is of a matching type.
+    auto harness = ApiHarness {};
+    auto const coreText = [](std::string_view source) {
+        auto bytes =
+            isoline::text::compileText(source, isoline::text::TextLimits {}, isoline::text::CoreForms);
+        REQUIRE(bytes.has_value());
+        return std::move(*bytes);
+    };
+    auto const module = harness.engine.load(coreText(R"((module
+        (import "env" "g" (global i32))
+        (type $t (func (param i32)))
+        (func (export "f") (type $t))
+        (table (export "t") 1 funcref)
+        (memory (export "m") 1)
+        (tag (export "e") (param i32))
+        (global (export "r") (ref null $t) (ref.null $t))))"));
+    REQUIRE(module.has_value());
+    auto linker = Linker { ComponentConfig {} };
+    REQUIRE(linker.defineModule("m", *module).has_value());
+    auto const outcomeFor = [&](std::string_view moduleType) {
+        return linker
+            .resolve(
+                loadText(harness, std::format(R"((component (import "m" (core module {}))))", moduleType)))
+            .front()
+            .outcome;
+    };
+    auto const detailFor = [&](std::string_view moduleType) {
+        auto const outcome = outcomeFor(moduleType);
+        REQUIRE(std::holds_alternative<TypeMismatch>(outcome));
+        return std::get<TypeMismatch>(outcome).detail;
+    };
+    CHECK(outcomeFor(
+              R"((import "env" "g" (global i32)) (export "f" (func (param i32))) (export "m" (memory 0)))")
+          == ImportOutcome { Satisfied { .matched = "m" } });
+    // More imports than the module has are fine; fewer exports than it has too.
+    CHECK(outcomeFor(R"((import "env" "g" (global i32)) (import "env" "h" (func)))")
+          == ImportOutcome { Satisfied { .matched = "m" } });
+    CHECK(detailFor(R"((import "env" "g" (global i32)) (export "x" (func)))")
+          == "missing expected export `x`");
+    CHECK(detailFor(R"((export "f" (func (param i32))))") == "missing expected import `env::g`");
+    CHECK(detailFor(R"((import "env" "g" (global i32)) (export "f" (global i32)))")
+          == "type mismatch in export `f`\nexpected global, found func");
+    CHECK(detailFor(R"((import "env" "g" (global i32)) (export "f" (func)))")
+              .starts_with("type mismatch in export `f`\nexpected: "));
+    CHECK(detailFor(R"((import "env" "g" (global i64)))").starts_with("type mismatch in import `env::g`"));
+    CHECK(detailFor(R"((import "env" "g" (global i32)) (export "t" (table 2 funcref)))")
+          == "type mismatch in export `t`\nmismatch in table limits");
+    // A tag and a reference to a type of the module's own section are read through its type section.
+    CHECK(outcomeFor(R"((import "env" "g" (global i32)) (type $t (func (param i32)))
+        (export "e" (tag (param i32))) (export "r" (global (ref null $t))))")
+          == ImportOutcome { Satisfied { .matched = "m" } });
+    CHECK(detailFor(R"((import "env" "g" (global i32)) (export "e" (tag (param i64))))")
+              .starts_with("type mismatch in export `e`"));
+}
