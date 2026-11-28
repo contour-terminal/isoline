@@ -224,6 +224,35 @@ function(isoline_contract_consumer_standard)
     unset(${arg_OUT_STANDARD} PARENT_SCOPE)
 endfunction()
 
+## @brief Adds test NAME, running COMMAND (a hidden [.contract] case alone), that passes on the report of its
+## violated check: the contract report rows' pattern for SPELLING on this build's compiler and path around
+## CHECK, a regular expression of the check's text, so it holds under the fallback's fail handler and under
+## native contracts alike (whose report ends "terminating: yes"). The case prints ContractTestSentinel after
+## the violating call: on a path that checks, that line fails the test; on one that compiles no check, it is
+## the pass, and the check's report the failure, as the require canary judges its cases.
+##
+## isoline_add_contract_test(NAME <name> SPELLING <spelling> CHECK <regex> COMMAND <command...>)
+function(isoline_add_contract_test)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;SPELLING;CHECK" "COMMAND")
+    isoline_contract_report_pattern(COMPILER "${CMAKE_CXX_COMPILER_ID}" PATH "${ISOLINE_CONTRACTS_PATH}"
+                                    SPELLING ${arg_SPELLING} OUT_PREFIX prefix OUT_SUFFIX suffix)
+    if(NOT DEFINED prefix)
+        message(FATAL_ERROR "[isoline] ${arg_NAME}: no contract report row for ${CMAKE_CXX_COMPILER_ID}, "
+                            "${ISOLINE_CONTRACTS_PATH}, ${arg_SPELLING}")
+    endif()
+    isoline_contract_is_unchecked(COMPILER "${CMAKE_CXX_COMPILER_ID}" PATH "${ISOLINE_CONTRACTS_PATH}"
+                                  SPELLING ${arg_SPELLING} OUT unchecked)
+    set(sentinel "contract-test: the check let the call through")
+    add_test(NAME ${arg_NAME} COMMAND ${arg_COMMAND})
+    if(unchecked)
+        set_tests_properties(${arg_NAME} PROPERTIES LABELS unit TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "${sentinel}" FAIL_REGULAR_EXPRESSION "${arg_CHECK}")
+    else()
+        set_tests_properties(${arg_NAME} PROPERTIES LABELS unit TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "${prefix}${arg_CHECK}${suffix}" FAIL_REGULAR_EXPRESSION "${sentinel}")
+    endif()
+endfunction()
+
 ## @brief Sets OUT to ON where a site of SPELLING compiles to no check with COMPILER on PATH, by the
 ## unchecked rows, and to OFF elsewhere.
 ##
