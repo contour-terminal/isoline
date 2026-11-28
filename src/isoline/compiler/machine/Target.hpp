@@ -128,6 +128,16 @@ class ITarget
     /// @param buffer The module's code buffer.
     virtual void emitEntryAdapter(binary::FuncType const& type, CodeBuffer& buffer) const = 0;
 
+    /// The stack the entry adapter of @p type takes beyond the published entry overhead
+    /// (execution::EntryOverheadBytes, which covers the trampoline's saves and the adapter's fixed slots):
+    /// the stack arguments and the result area the internal convention places for a type that does not fit
+    /// its registers, 0 for one that does. What an entry checks against the native stack limit before it
+    /// calls the trampoline, so that a wide signature's adapter cannot run past the limit before the first
+    /// prologue checks it.
+    /// @param type The functions' type: one compiledFeatures() admits.
+    /// @return The bytes.
+    [[nodiscard]] virtual uint64_t entryAdapterAreaBytes(binary::FuncType const& type) const = 0;
+
     /// Emits the module's entry trampoline at @p buffer's current offset, which is EntryTrampoline's entry:
     /// the host's callee-saved registers saved per the host convention, the pinned registers set, the entry
     /// stack pointer recorded, the adapter called; and binds @p trapExit, its trap exit, which every trap

@@ -1636,6 +1636,21 @@ TEST_CASE("Contract.Store.lentBudgetForbidsChargingFrames", "[.contract]")
     FAIL("SURVIVED: a frame charged through the store while the budget was lent");
 }
 
+TEST_CASE("Contract.Store.invocationEndsSettled", "[.contract]")
+{
+    // An invocation that ends with its budget lent has skipped a settle on its way out: the steps and stack
+    // values generated code counted down are lost, so its scope refuses to end there.
+    isoline::runtime::testing::endAtContractViolation();
+    auto allocator = HeapMemoryAllocator {};
+    auto store = Store { StoreLimits {}, StoreServices { .allocator = allocator } };
+    auto gate = isoline::runtime::PollGate { store };
+    {
+        auto const scope = isoline::runtime::InvocationScope { store };
+        std::ignore = gate.lend();
+    }
+    FAIL("SURVIVED: an invocation ended with its budget lent");
+}
+
 TEST_CASE("Contract.Store.lentBudgetForbidsReleasingFrames", "[.contract]")
 {
     isoline::runtime::testing::endAtContractViolation();

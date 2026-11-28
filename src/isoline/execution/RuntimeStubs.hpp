@@ -21,11 +21,13 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <isoline/compiler/ContextLayout.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/Instantiate.hpp>
 #include <isoline/runtime/PollGate.hpp>
+#include <isoline/runtime/RawValue.hpp>
 #include <isoline/runtime/Store.hpp>
 
 namespace isoline::execution
@@ -58,7 +60,24 @@ struct ExecutorRecord
     runtime::PollGate* gate = nullptr;          ///< The store's poll gate, which lends and settles.
     runtime::Lease lent {};                     ///< The lease outstanding: what the gate last lent.
     std::optional<runtime::Abrupt> abrupt {};   ///< The Abrupt of the stub that returned Pending last.
+    /// What ExecutionState::hostScratch points at: max(params, results) cells of the widest host function of
+    /// the store seen so far (coverHostFunctions()).
+    std::vector<runtime::RawValue> hostScratch {};
+    /// How many of the store's functions coverHostFunctions() has looked at: the store only adds functions,
+    /// so each is looked at once.
+    std::size_t functionsCovered = 0;
 };
+
+/// Grows @p record's host-call scratch to cover every host function its store holds, looking only at those
+/// added since the last call, and points @p state at it. What an entry into generated code calls before it
+/// lends, and the CallHost stub after its host returns: the only ways a store gains a host function while
+/// generated code runs, so that the scratch is never narrower than a host function generated code can reach.
+/// Growing moves the scratch; generated code and the CallHost stub read ExecutionState::hostScratch again
+/// after every call into the runtime, so none holds the old one.
+/// @param state The execution state.
+/// @param record Its record.
+/// @throws std::bad_alloc when the host has no memory for a wider scratch; the scratch is left as it was.
+void coverHostFunctions(compiler::ExecutionState& state, ExecutorRecord& record);
 
 namespace detail
 {
@@ -208,7 +227,11 @@ compiler::StubResult tableSet(compiler::ExecutionState* state,
                               uint64_t value) noexcept;
 
 /// CallHost: the FunctionEntry poll, then host function @p function through runtime::callHostFunction(),
-/// its arguments decoded from ExecutionState::hostScratch, its results encoded back into it.
+/// its arguments decoded from ExecutionState::hostScratch, its results encoded back into it once the scratch
+/// covers whatever host function the host added (coverHostFunctions()). The arguments and results live in a
+/// buffer of the call's own, never shared with the calls a host nests; the host memory that takes past its
+/// inline cells, or a wider scratch, is refused with Trap{CallStackExhausted} (a resource exhausted, as the
+/// spec allows), never by terminating.
 compiler::StubResult callHost(compiler::ExecutionState* state,
                               compiler::InstanceContext const* context,
                               uint64_t function) noexcept;

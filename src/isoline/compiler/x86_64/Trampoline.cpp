@@ -109,6 +109,50 @@ namespace
         }
         return saves;
     }
+
+    /// Where an entry adapter keeps what it passes and receives, from rsp up: the stack arguments, the result
+    /// area, the cells' address, the function's code.
+    struct AdapterLayout
+    {
+        machine::CallAssignment assignment; ///< The internal convention's placement of the type.
+        std::pmr::vector<Type> parameters;  ///< The parameters' types.
+        std::pmr::vector<Type> results;     ///< The results' types.
+        int64_t resultArea = 0;             ///< Where the result area begins: past the stack arguments.
+        int64_t valuesSlot = 0;             ///< The cells' address's slot.
+        int64_t functionSlot = 0;           ///< The function's code's slot.
+        int64_t frameBytes = 0;             ///< The whole frame, aligned.
+
+        /// The stack arguments and the result area, aligned: what the frame takes beyond its two slots.
+        [[nodiscard]] int64_t areaBytes() const noexcept { return roundUp(resultArea + resultBytes()); }
+
+        /// The result area's bytes.
+        [[nodiscard]] int64_t resultBytes() const noexcept
+        {
+            return static_cast<int64_t>(assignment.results.memoryBytes);
+        }
+    };
+
+    [[nodiscard]] AdapterLayout adapterLayoutOf(binary::FuncType const& type,
+                                                std::pmr::memory_resource& memory)
+    {
+        auto parameters = std::pmr::vector<Type> { &memory };
+        for (auto const& parameter: type.params)
+            parameters.push_back(typeOf(parameter));
+        auto results = std::pmr::vector<Type> { &memory };
+        for (auto const& result: type.results)
+            results.push_back(typeOf(result));
+        auto assignment = machine::assignCall(WasmInternalConvention, parameters, results, memory);
+        auto const resultArea = static_cast<int64_t>(assignment.arguments.memoryBytes);
+        auto const valuesSlot = resultArea + static_cast<int64_t>(assignment.results.memoryBytes);
+        auto const functionSlot = valuesSlot + WordBytes;
+        return AdapterLayout { .assignment = std::move(assignment),
+                               .parameters = std::move(parameters),
+                               .results = std::move(results),
+                               .resultArea = resultArea,
+                               .valuesSlot = valuesSlot,
+                               .functionSlot = functionSlot,
+                               .frameBytes = roundUp(functionSlot + WordBytes) };
+    }
 } // namespace
 
 void X64Target::emitEntryTrampoline(machine::CodeBuffer& buffer, machine::CodeLabel trapExit) const
@@ -189,20 +233,15 @@ void X64Target::emitEntryAdapter(binary::FuncType const& type, machine::CodeBuff
     auto const emit = [&](Mnemonic mnemonic, std::initializer_list<MachineOperand> operands) {
         assembler.emit(mnemonic, operands);
     };
-    auto parameters = std::pmr::vector<Type> { &memory };
-    for (auto const& parameter: type.params)
-        parameters.push_back(typeOf(parameter));
-    auto results = std::pmr::vector<Type> { &memory };
-    for (auto const& result: type.results)
-        results.push_back(typeOf(result));
-    auto const assignment = machine::assignCall(WasmInternalConvention, parameters, results, memory);
+    auto const layout = adapterLayoutOf(type, memory);
+    auto const& assignment = layout.assignment;
+    auto const& parameters = layout.parameters;
+    auto const& results = layout.results;
     auto const hidden = assignment.resultPointer.has_value() ? std::size_t { 1 } : 0;
-    // The frame, from rsp up: the stack arguments, the result area, the cells' address, the function's code.
-    auto const argumentBytes = static_cast<int64_t>(assignment.arguments.memoryBytes);
-    auto const resultArea = argumentBytes;
-    auto const valuesSlot = resultArea + static_cast<int64_t>(assignment.results.memoryBytes);
-    auto const functionSlot = valuesSlot + WordBytes;
-    auto const frameBytes = roundUp(functionSlot + WordBytes);
+    auto const resultArea = layout.resultArea;
+    auto const valuesSlot = layout.valuesSlot;
+    auto const functionSlot = layout.functionSlot;
+    auto const frameBytes = layout.frameBytes;
     emit(Mnemonic::Push64R, { gpr(Gpr::Rbp) });
     emit(Mnemonic::Mov64RR, { gpr(Gpr::Rbp), gpr(Gpr::Rsp) });
     // rax is no input of the adapter's, so it may count the probe loop of a frame past a page.
@@ -285,6 +324,12 @@ void X64Target::emitEntryAdapter(binary::FuncType const& type, machine::CodeBuff
     emit(Mnemonic::Pop64R, { gpr(Gpr::Rbp) });
     emit(Mnemonic::Ret, {});
     Require(!assembler.failure().has_value());
+}
+
+uint64_t X64Target::entryAdapterAreaBytes(binary::FuncType const& type) const
+{
+    auto memory = std::pmr::unsynchronized_pool_resource {};
+    return static_cast<uint64_t>(adapterLayoutOf(type, memory).areaBytes());
 }
 
 } // namespace isoline::compiler::x86_64

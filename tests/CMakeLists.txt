@@ -5,6 +5,8 @@ add_subdirectory(spec)
 # The differential harness: every engine on the same modules, and Wasmtime as the oracle.
 add_subdirectory(differential)
 add_subdirectory(encoding)
+# Compiled code is byte-identical across two processes.
+add_subdirectory(determinism)
 
 # The spec runner's self-test: a script with wrong assertions the runner must report and fail on.
 # Two are wrong in their values (1 + 2 is not 4, and dividing by zero is no overflow). The rest pin
@@ -318,6 +320,7 @@ set(isolineContractRows
     "Contract.Store.lentBudgetForbidsStorePolls|_budgetState == BudgetState::Settled"
     "Contract.Store.lentBudgetForbidsChargingFrames|_budgetState == BudgetState::Settled"
     "Contract.Store.lentBudgetForbidsReleasingFrames|_budgetState == BudgetState::Settled"
+    "Contract.Store.invocationEndsSettled|_store->_budgetState == BudgetState::Settled"
     "Contract.Store.bindOnlyModuleFunctions|!_functions\\[address\\]\\.isHost\\(\\)"
     "Contract.Store.bindOnlyExistingFunctions|address < _dispatchView\\.rows"
     "Contract.Store.bindOnlyTheInstancesOwnFunctions|_functions\\[address\\]\\.moduleInstance == moduleInstance"

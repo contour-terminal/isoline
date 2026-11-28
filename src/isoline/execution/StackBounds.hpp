@@ -54,6 +54,13 @@ class ThreadStackBounds final: public IStackBounds
         const noexcept override;
 };
 
+/// An address in the frame of this out-of-line function, on the real host stack: where the caller's stack is,
+/// to within the caller's own frame (a local's address would not do: a sanitizer may move locals to a stack
+/// of its own). What an entry into compiled code measures its room above the native stack limit from. The
+/// compiler's half is CMake-selected (StackAddressGnu.cpp, StackAddressMsvc.cpp).
+/// @return The address.
+[[nodiscard]] std::uintptr_t currentStackAddress() noexcept;
+
 /// The stack every prologue keeps free below its frame for a callee's entry and the deepest runtime stub that
 /// is not a host call (published; StackBounds.stubReserveCoversEveryStub measures every stub against
 /// compiler::machine::StubStackBudgetBytes, within it).
@@ -66,12 +73,14 @@ static_assert(StubReserve == uint64_t { 16 } * 1024, "the published stub reserve
 /// reference's under ASan, and the compiled executor's nesting is no deeper).
 inline constexpr uint64_t NestedInvocationBytes = uint64_t { 64 } * 1024;
 
-/// The stack an outermost invocation takes before its first function's frame, at the most: the entry
+/// The stack an entry takes before its function's frame, at the most, beyond its adapter's area: the entry
 /// trampoline's saves (rbp, the host's preserved General registers, Microsoft x64's ten XMM registers and the
-/// alignment) and the entry adapter's own frame (its saved rbp, its two slots and a return address each). The
-/// adapter's stack arguments and result area, 8 bytes per value of the entry's type past the registers, are
-/// within the entry function's FrameRule::bytesPerStackValue share, as its frame cost charges its params and
-/// results.
+/// alignment) and the entry adapter's own fixed frame (its saved rbp, its two slots and a return address
+/// each) (Trampoline.entryOverheadCoversTheEntry measures it). The adapter's stack arguments and result area,
+/// 8 bytes per value of the entry's type past the registers (machine::ITarget::entryAdapterAreaBytes()), come
+/// on top: every entry checks the two together, with the stub reserve, against the native limit before it
+/// calls the trampoline. requiredNativeStack() counts them within each invocation's NestedInvocationBytes: at
+/// the decode limits' 1'000 params and 1'000 results an area is 16 KiB at the most.
 inline constexpr uint64_t EntryOverheadBytes = 512;
 
 namespace detail

@@ -70,6 +70,15 @@ constexpr auto StubModule = std::string_view { R"((module
   (func $f))
 )" };
 
+/// HarnessLimits as @p adjust changes them.
+template <typename Adjust>
+[[nodiscard]] StoreLimits harnessLimitsWith(Adjust const& adjust)
+{
+    auto limits = isoline::execution::testing::HarnessLimits;
+    adjust(limits);
+    return limits;
+}
+
 /// The status word of a stub that left its Abrupt pending.
 constexpr auto Pending = uint64_t { std::to_underlying(StubStatus::Pending) };
 
@@ -263,14 +272,20 @@ TEST_CASE("RuntimeStubs.pollSlowKeepsTheOrder")
     };
     SECTION("lent 0 steps and interrupted: Interrupted, not the step limit")
     {
-        auto instance = instanceOf(StubModule, InstanceOptions { .limits = StoreLimits { .maxSteps = 10 } });
+        auto instance =
+            instanceOf(StubModule, InstanceOptions { .limits = harnessLimitsWith([](StoreLimits& limits) {
+                                                         limits.maxSteps = 10;
+                                                     }) });
         instance->store().interrupter()->interrupt();
         CHECK(exhausted(*instance) == Pending);
         CHECK(pendingTrapOf(*instance) == TrapCode::Interrupted);
     }
     SECTION("lent 0 steps: the step limit, no step charged past it")
     {
-        auto instance = instanceOf(StubModule, InstanceOptions { .limits = StoreLimits { .maxSteps = 10 } });
+        auto instance =
+            instanceOf(StubModule, InstanceOptions { .limits = harnessLimitsWith([](StoreLimits& limits) {
+                                                         limits.maxSteps = 10;
+                                                     }) });
         CHECK(exhausted(*instance) == Pending);
         CHECK(pendingTrapOf(*instance) == TrapCode::StepLimitExceeded);
         CHECK(instance->store().used(isoline::runtime::Limit::Steps) == 10);
@@ -291,7 +306,10 @@ TEST_CASE("RuntimeStubs.pollSlowKeepsTheOrder")
     }
     SECTION("unobserved: the countdown settled, charged and lent again")
     {
-        auto instance = instanceOf(StubModule, InstanceOptions { .limits = StoreLimits { .maxSteps = 10 } });
+        auto instance =
+            instanceOf(StubModule, InstanceOptions { .limits = harnessLimitsWith([](StoreLimits& limits) {
+                                                         limits.maxSteps = 10;
+                                                     }) });
         auto steps = std::pair<uint64_t, uint64_t> {};
         instance->lent([&](ExecutionState& state, InstanceContext const& context) {
             state.stepsLeft = 6; // generated code took 4
@@ -338,8 +356,10 @@ TEST_CASE("RuntimeStubs.bulkFillPollsPerGranule")
 
 TEST_CASE("RuntimeStubs.doTheirWork")
 {
-    auto instance = instanceOf(
-        StubModule, InstanceOptions { .limits = StoreLimits { .maxMemoryBytes = uint64_t { 2 } * 65'536 } });
+    auto instance =
+        instanceOf(StubModule, InstanceOptions { .limits = harnessLimitsWith([](StoreLimits& limits) {
+                                                     limits.maxMemoryBytes = uint64_t { 2 } * 65'536;
+                                                 }) });
     auto& store = instance->store();
     auto const memory = store.moduleInstance(0).memories[0];
     auto const table = store.moduleInstance(0).tables[0];

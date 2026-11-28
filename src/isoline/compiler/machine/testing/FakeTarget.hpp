@@ -481,6 +481,12 @@ class BasicFakeTarget final: public ITarget
     /// Emits nothing.
     void emitEntryAdapter(binary::FuncType const& /*type*/, CodeBuffer& /*buffer*/) const override {}
 
+    /// No adapter, no area.
+    [[nodiscard]] uint64_t entryAdapterAreaBytes(binary::FuncType const& /*type*/) const override
+    {
+        return 0;
+    }
+
     /// Binds @p trapExit and emits nothing else.
     void emitEntryTrampoline(CodeBuffer& buffer, CodeLabel trapExit) const override { buffer.bind(trapExit); }
 

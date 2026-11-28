@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-// Compiled code run without the Compiled engine, for the execution suites and the compiler's executed tests
-// (P5 Tasks 14 and 15): compileOne() takes a module through every stage (translation, the passes, selection,
-// register allocation, encoding) and seals its functions behind the entry trampoline; CompiledInstance
-// instantiates it in a store of its own and calls a function through the trampoline as the executor will,
-// lending the budget, setting the native stack limit and settling after. Test support, linked into no shipped
-// binary.
+// Compiled code run as the Compiled engine will run it, for the execution suites and the compiler's executed
+// tests (P5 Tasks 14 and 15): compileModule() takes a module through the Compiler and seals it;
+// CompiledInstance instantiates it in a store of its own through a CompiledExecutor, and calls its functions
+// as an embedder does (runtime::invokeChecked()), or through another trampoline, or runs a stub within a lent
+// budget. Test support, linked into no shipped binary.
 
 #include <core/Assert.hpp>
 
@@ -28,9 +27,10 @@
 #include <isoline/compiler/ContextLayout.hpp>
 #include <isoline/compiler/machine/TargetDescription.hpp>
 #include <isoline/execution/CodeMemory.hpp>
+#include <isoline/execution/CompiledExecutor.hpp>
+#include <isoline/execution/CompiledModuleCode.hpp>
 #include <isoline/execution/RuntimeStubs.hpp>
 #include <isoline/execution/StackBounds.hpp>
-#include <isoline/interpreter/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
 #include <isoline/runtime/ExecutionMode.hpp>
 #include <isoline/runtime/Limits.hpp>
@@ -56,28 +56,16 @@ namespace isoline::execution::testing
 /// Whether this host runs x86-64 code: where compiled code executes.
 [[nodiscard]] bool hostRunsCompiledCode() noexcept;
 
-/// A module's code compiled and sealed: every function of its code section, each function's entry adapter,
-/// and the module's entry trampoline.
-struct CompiledModule
-{
-    std::unique_ptr<ISealedCode> sealed; ///< The code.
-    std::vector<uint64_t> functions;     ///< Per code index, its function's offset.
-    std::vector<uint64_t> adapters;      ///< Per code index, its entry adapter's offset.
-    uint64_t trampoline = 0;             ///< The entry trampoline's offset.
+/// Store limits whose requiredNativeStack() a test thread holds, the main thread of every platform included
+/// (Windows' 1 MiB too): what the harness's stores have unless a test says otherwise, so that Deterministic
+/// code, whose executor refuses a thread with less than the grant left, runs anywhere.
+inline constexpr auto HarnessLimits =
+    runtime::StoreLimits { .maxCallDepth = 500, .maxStackValues = 4'096, .maxNestedInvocations = 4 };
 
-    /// The trampoline, as the host calls it.
-    [[nodiscard]] compiler::EntryTrampoline entry() const noexcept;
-
-    /// The address of what lies at @p offset of the code.
-    [[nodiscard]] void const* at(uint64_t offset) const noexcept;
-};
-
-/// Compiles @p module for @p config: translates, optimizes, selects, allocates and encodes every function of
-/// its code section (all of them, so that calls between them resolve), emits an entry adapter per function
-/// and the trampoline, resolves, and seals the code through @p memory.
-/// @return The code; or the first compile error.
-[[nodiscard]] std::expected<CompiledModule, compiler::CompileError> compileOne(
-    validate::ValidatedModule const& module, compiler::CompileConfig const& config, ICodeMemory& memory);
+/// Compiles @p module for @p config through the Compiler (on a budget no test reaches), and seals it.
+/// @return The module's code; or the compile error.
+[[nodiscard]] std::expected<std::shared_ptr<CompiledModuleCode const>, compiler::CompileError> compileModule(
+    validate::ValidatedModule const& module, compiler::CompileConfig const& config);
 
 /// Whether a store is interrupted before its first call.
 enum class Interruption : uint8_t
@@ -89,8 +77,8 @@ enum class Interruption : uint8_t
 /// How a CompiledInstance's store is set up.
 struct InstanceOptions
 {
-    runtime::StoreLimits limits {};             ///< The store's limits.
-    runtime::IPollObserver* observer = nullptr; ///< Its poll observer; none when null.
+    runtime::StoreLimits limits = HarnessLimits; ///< The store's limits.
+    runtime::IPollObserver* observer = nullptr;  ///< Its poll observer; none when null.
     /// The native stack an invocation is granted; none for requiredNativeStack(limits).
     std::optional<uint64_t> nativeStackBytes {};
     /// Adds the imports to the store and returns them, in import order; none when null.
@@ -101,12 +89,12 @@ struct InstanceOptions
     IStackBounds const* bounds = nullptr;
 };
 
-/// A compiled module instantiated in a store of its own, its functions called through the trampoline.
+/// A compiled module instantiated in a store of its own, run by a CompiledExecutor of its config's mode.
 class CompiledInstance
 {
   public:
-    /// Compiles @p module for @p config and instantiates it (the reference interpreter runs nothing: a module
-    /// with a start function is not for this harness), binding its dispatch rows to its compiled functions.
+    /// Compiles @p module for @p config and instantiates it through a CompiledExecutor (Require: the executor
+    /// is created, and the instance is).
     /// @return The instance; or the compile error.
     [[nodiscard]] static std::expected<std::unique_ptr<CompiledInstance>, compiler::CompileError> create(
         std::shared_ptr<validate::ValidatedModule const> module,
@@ -119,15 +107,19 @@ class CompiledInstance
     CompiledInstance& operator=(CompiledInstance&&) = delete;
     ~CompiledInstance() = default;
 
-    /// Calls the function of code index @p codeIndex with @p arguments, an outermost invocation.
-    /// @return Its results; or how it ended abruptly: Trap{CallStackExhausted} before any poll when the
-    /// thread's
-    ///         stack bounds are unknown (StackBoundsError), as no native limit can be set (T15's executor
-    ///         refuses with an error of its own there).
+    /// Calls the function of code index @p codeIndex with @p arguments, as the embedder does
+    /// (runtime::invokeChecked()).
+    /// @return Its results; or how it ended abruptly.
     [[nodiscard]] std::expected<std::vector<runtime::Value>, runtime::Abrupt> call(
         uint32_t codeIndex, std::span<runtime::Value const> arguments);
 
-    /// Runs @p work within an outermost invocation whose budget is lent, as call() lends it before the
+    /// Invokes the function at @p address of the store with @p arguments, as the embedder does
+    /// (runtime::invokeChecked()): a host function too.
+    /// @return Its results; or how it ended abruptly.
+    [[nodiscard]] std::expected<std::vector<runtime::Value>, runtime::Abrupt> invoke(
+        runtime::FuncAddr address, std::span<runtime::Value const> arguments);
+
+    /// Runs @p work within an outermost invocation whose budget is lent, as an entry lends it before the
     /// trampoline: what a test that calls a stub directly runs it in. The budget is settled after.
     void lent(std::function<void(compiler::ExecutionState&, compiler::InstanceContext const&)> const& work);
 
@@ -135,44 +127,87 @@ class CompiledInstance
     [[nodiscard]] runtime::Store& store() noexcept { return _store; }
 
     /// The execution state, as the last call left it.
-    [[nodiscard]] compiler::ExecutionState const& state() const noexcept { return _state; }
+    [[nodiscard]] compiler::ExecutionState const& state() const noexcept;
 
     /// The code.
-    [[nodiscard]] CompiledModule const& code() const noexcept { return _code; }
+    [[nodiscard]] CompiledModuleCode const& code() const noexcept { return *_code; }
 
     /// The instance's context.
-    [[nodiscard]] compiler::InstanceContext const& context() const noexcept { return _context; }
+    [[nodiscard]] compiler::InstanceContext const& context() const noexcept;
 
     /// The executor's record.
-    [[nodiscard]] ExecutorRecord& record() noexcept { return _record; }
+    [[nodiscard]] ExecutorRecord& record() noexcept;
 
-    /// Calls the function of code index @p codeIndex through @p entry instead of the module's trampoline:
-    /// what a test that wraps the trampoline (sentinels in the callee-saved registers) runs.
+    /// The executor.
+    [[nodiscard]] CompiledExecutor& executor() noexcept { return *_executor; }
+
+    /// The address of the function of code index @p codeIndex.
+    [[nodiscard]] runtime::FuncAddr addressOf(uint32_t codeIndex) const;
+
+    /// Calls the function of code index @p codeIndex through @p entry instead of the module's trampoline, in
+    /// an outermost invocation: what a test that wraps the trampoline (sentinels in the callee-saved
+    /// registers) runs.
     /// @return Its results; or how it ended abruptly.
     [[nodiscard]] std::expected<std::vector<runtime::Value>, runtime::Abrupt> callThrough(
         compiler::EntryTrampoline entry, uint32_t codeIndex, std::span<runtime::Value const> arguments);
 
   private:
     CompiledInstance(std::shared_ptr<validate::ValidatedModule const> module,
-                     CompiledModule code,
+                     std::shared_ptr<CompiledModuleCode const> code,
                      InstanceOptions options);
 
     std::shared_ptr<validate::ValidatedModule const> _module;
-    CompiledModule _code;
+    std::shared_ptr<CompiledModuleCode const> _code;
     InstanceOptions _options;
+    ThreadStackBounds _threadBounds;
     runtime::HeapMemoryAllocator _allocator;
     runtime::Store _store;
-    interpreter::ReferenceInterpreter _interpreter;
-    runtime::PollGate _gate;
-    ThreadStackBounds _bounds;
+    std::unique_ptr<CompiledExecutor> _executor;
     uint32_t _instance = 0;
-    std::vector<runtime::MemoryView const*> _memories;
-    std::vector<runtime::TableView const*> _tables;
-    std::vector<runtime::RawValue*> _globals;
-    std::vector<runtime::RawValue> _hostScratch;
-    compiler::InstanceContext _context {};
-    ExecutorRecord _record {};
-    compiler::ExecutionState _state {};
+};
+
+/// What a test reaches of a CompiledExecutor's state, which it keeps to itself otherwise.
+struct ExecutorInternals
+{
+    /// @p executor's execution state for @p store.
+    [[nodiscard]] static compiler::ExecutionState& state(CompiledExecutor& executor, runtime::Store& store)
+    {
+        return executor.bindingOf(store).state;
+    }
+
+    /// @p executor's record for @p store.
+    [[nodiscard]] static ExecutorRecord& record(CompiledExecutor& executor, runtime::Store& store)
+    {
+        return executor.bindingOf(store).record;
+    }
+
+    /// @p executor's poll gate for @p store.
+    [[nodiscard]] static runtime::PollGate& gate(CompiledExecutor& executor, runtime::Store& store)
+    {
+        return executor.bindingOf(store).gate;
+    }
+
+    /// The context of the instance @p moduleInstance of @p store (Require: prepared).
+    [[nodiscard]] static compiler::InstanceContext const& context(CompiledExecutor& executor,
+                                                                  runtime::Store& store,
+                                                                  uint32_t moduleInstance)
+    {
+        auto const& instances = executor.bindingOf(store).instances;
+        Require(moduleInstance < instances.size() && instances[moduleInstance] != nullptr);
+        return instances[moduleInstance]->context;
+    }
+
+    /// CompiledExecutor::invoke() through @p trampoline instead of the module's.
+    [[nodiscard]] static std::expected<void, runtime::Abrupt> enterThrough(
+        CompiledExecutor& executor,
+        runtime::Store& store,
+        runtime::FuncAddr function,
+        std::span<runtime::Value const> args,
+        std::span<runtime::Value> results,
+        compiler::EntryTrampoline trampoline)
+    {
+        return executor.enter(store, function, args, results, trampoline);
+    }
 };
 
 /// Calls @p entry's stub with @p state, @p context and @p words, one per operand it takes (Require).

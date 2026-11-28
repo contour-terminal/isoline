@@ -463,6 +463,13 @@ The block is generated from `runtime::PollSiteTable`, as the limits are. An `IPo
 store (`StoreOptions::observer`) sees every poll, on the executing thread, before the interrupt is
 checked; poll-counting tests and profilers use it.
 
+**Callbacks under compiled code run on the stub reserve.** Under the compiled engine an observer's
+`onPoll` runs inside the `PollSlow` runtime stub, and an `IMemoryAllocator`'s grow inside `MemoryGrow`:
+both on the stack the generated code left, within the 16 KiB stub reserve every compiled prologue keeps
+free (`execution::StubReserve`), of which the stubs' own frames take at most 8 KiB
+(`StubStackBudgetBytes`). Keep such callbacks shallow: no deep recursion and no large locals. A host
+function is different: it gets whatever stack is left beyond its caller's frames.
+
 **Unpolled host operations.** A few operations are the host's work, bounded by a limit or by the
 module's size but not interruptible midway:
 
@@ -541,3 +548,15 @@ subnormals there changes subnormal results.
 `ExecutionMode::Deterministic` makes every engine compute the same results on every host: canonical NaNs
 where the specification allows any NaN, the deterministic profile of relaxed SIMD, and the step limit
 counted alike everywhere. `maxSteps` and the static stack cost apply in both modes, by every engine.
+
+**The compiled engine's native stack.** Compiled code runs on the calling thread's stack, so the
+compiled executor bounds it: an outermost invocation may take `CompiledExecutorConfig::nativeStackBytes`
+(1 MiB by default) below its entry, and never runs into the thread's end. In Deterministic mode the
+store's static limits must always fire before that native one, so creating the executor is refused
+(`ExecutorError::GrantBelowRequired`) when the grant is below `requiredNativeStack()` of the store's
+limits: `32 × maxStackValues + 256 × maxCallDepth + 64 KiB × maxNestedInvocations + 16 KiB + 512` bytes on
+x86-64, about 137 MiB for the default limits. An outermost Deterministic invocation on a thread with less
+than the grant left traps `CallStackExhausted` before its first poll; so does any entry, in either mode,
+whose trampoline and argument area would not fit above the native limit, and any entry on a thread whose
+stack bounds the system does not report. In Production the native limit may fire first; it traps, never
+crashes.

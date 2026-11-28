@@ -139,6 +139,10 @@ struct MemoryRequest
 }
 
 /// Allocates the store's linear memories: the seam an embedder provides its own storage through.
+///
+/// Under the compiled engine a memory.grow reaches it inside a runtime stub, on the stack generated code
+/// left: within the stub reserve its prologues keep free (16 KiB, the stub's own frames at most 8 KiB of it),
+/// so an allocator keeps its own frames shallow.
 class IMemoryAllocator
 {
   public:

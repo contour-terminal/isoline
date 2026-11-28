@@ -1485,6 +1485,10 @@ class ForwardingTarget: public isoline::compiler::machine::ITarget
     {
         _fake.emitEntryAdapter(type, buffer);
     }
+    [[nodiscard]] uint64_t entryAdapterAreaBytes(isoline::binary::FuncType const& type) const override
+    {
+        return _fake.entryAdapterAreaBytes(type);
+    }
     void emitEntryTrampoline(isoline::compiler::machine::CodeBuffer& buffer,
                              isoline::compiler::machine::CodeLabel trapExit) const override
     {

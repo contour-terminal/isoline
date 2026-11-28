@@ -15,6 +15,7 @@
 
 #include <isoline/compiler/ContextLayout.hpp>
 #include <isoline/compiler/machine/FrameRule.hpp>
+#include <isoline/execution/CompiledExecutor.hpp>
 #include <isoline/execution/RuntimeStubs.hpp>
 #include <isoline/execution/StackBounds.hpp>
 #include <isoline/execution/testing/CompileOne.hpp>
@@ -232,29 +233,52 @@ TEST_CASE("StackBounds.stubReserveCoversEveryStub")
 
 TEST_CASE("StackBounds.unknownBoundsRefuseTheEntry")
 {
-    // A thread whose stack the system does not report (a sandbox without /proc) gets no native limit, so its
-    // entry into compiled code is refused with an error, before any poll, never an abort.
+    // A thread whose stack the system does not report (a sandbox without /proc) gets no native limit: the
+    // executor is refused on such a thread with an error of its own, and an entry on one (a thread other than
+    // the one that created it) is refused before any poll, never an abort.
     class UnknownStack final: public isoline::execution::IStackBounds
     {
       public:
+        /// Known for the first @p known queries, unknown after.
+        explicit UnknownStack(int known) noexcept: _known { known } {}
+
         [[nodiscard]] std::expected<std::uintptr_t, isoline::execution::StackBoundsError>
         lowestUsableAddress() const noexcept override
         {
+            if (_queries++ < _known)
+                return isoline::execution::ThreadStackBounds {}.lowestUsableAddress();
             return std::unexpected { isoline::execution::StackBoundsError::Unavailable };
         }
+
+      private:
+        int _known;
+        mutable int _queries = 0;
     };
-    auto const unknown = UnknownStack {};
-    auto created =
-        CompiledInstance::create(moduleOf("(module (func))"),
-                                 hostConfig(isoline::runtime::ExecutionMode::Deterministic, {}),
-                                 isoline::execution::testing::InstanceOptions { .bounds = &unknown });
-    REQUIRE(created.has_value());
-    auto& instance = **created;
-    auto const called = instance.call(0, {});
-    REQUIRE_FALSE(called.has_value());
-    CHECK(called.error()
-          == isoline::runtime::Abrupt {
-              isoline::runtime::Trap { isoline::runtime::TrapCode::CallStackExhausted } });
-    CHECK(instance.store().used(isoline::runtime::Limit::Steps) == 0);
-    CHECK(instance.store().budgetState() == isoline::runtime::BudgetState::Settled);
+    SECTION("on the creating thread: the executor's own error")
+    {
+        auto const unknown = UnknownStack { 0 };
+        auto const created = isoline::execution::CompiledExecutor::create(
+            isoline::execution::CompiledExecutorConfig { isoline::runtime::ExecutionMode::Production },
+            isoline::execution::testing::HarnessLimits,
+            unknown);
+        REQUIRE_FALSE(created.has_value());
+        CHECK(created.error() == isoline::execution::ExecutorError::StackBoundsUnavailable);
+    }
+    SECTION("at an entry: refused before any poll")
+    {
+        auto const unknown = UnknownStack { 1 };
+        auto created =
+            CompiledInstance::create(moduleOf("(module (func))"),
+                                     hostConfig(isoline::runtime::ExecutionMode::Deterministic, {}),
+                                     isoline::execution::testing::InstanceOptions { .bounds = &unknown });
+        REQUIRE(created.has_value());
+        auto& instance = **created;
+        auto const called = instance.call(0, {});
+        REQUIRE_FALSE(called.has_value());
+        CHECK(called.error()
+              == isoline::runtime::Abrupt {
+                  isoline::runtime::Trap { isoline::runtime::TrapCode::CallStackExhausted } });
+        CHECK(instance.store().used(isoline::runtime::Limit::Steps) == 0);
+        CHECK(instance.store().budgetState() == isoline::runtime::BudgetState::Settled);
+    }
 }

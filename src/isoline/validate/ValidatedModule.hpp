@@ -45,7 +45,9 @@ class ValidatedModule
     /// @param module The decoded module.
     /// @param features The features it was decoded and validated with.
     /// @param shape Its functions' frame shapes, as validateModule found them.
-    ValidatedModule(Key key, binary::Module module, FeatureSet features, ModuleShape shape);
+    /// @param sourceBytes The size of the bytes it was decoded from.
+    ValidatedModule(
+        Key key, binary::Module module, FeatureSet features, ModuleShape shape, uint64_t sourceBytes);
 
     /// Decodes and validates a module with the same features, which the result records.
     /// @param bytes The module's bytes, from the magic number on.
@@ -60,6 +62,10 @@ class ValidatedModule
 
     /// The features it was decoded and validated with.
     [[nodiscard]] FeatureSet features() const noexcept { return _features; }
+
+    /// The size of the bytes it was decoded from, from the magic number on: what the compiler's artifact cap
+    /// scales with (compiler::CompileLimits::artifactBytesPerModuleByte).
+    [[nodiscard]] uint64_t sourceBytes() const noexcept { return _sourceBytes; }
 
     /// The frame shape of one of its functions.
     /// @param codeIndex The function's index in the code section, imports not counted (checked).
@@ -90,6 +96,7 @@ class ValidatedModule
     FeatureSet _features;
     ModuleShape _shape;
     std::vector<uint64_t> _frameCosts; ///< frameCost() of each function, by code index.
+    uint64_t _sourceBytes = 0;         ///< sourceBytes().
 };
 
 } // namespace isoline::validate

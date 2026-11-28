@@ -230,6 +230,10 @@ inline constexpr auto ObserverRefusedEntryPoints = std::to_array<ObserverRefusal
 /// resolution picks the writable view, which is refused, and the process ends. api::Instance has no
 /// read-only view: its memoryRange() and call() are refused (their own rows above), so an observer reads an
 /// instance's memory through the const store.
+///
+/// Under the compiled engine onPoll() runs inside a runtime stub, on the stack generated code left: within
+/// the stub reserve its prologues keep free (16 KiB, the stub's own frames at most 8 KiB of it). An observer
+/// keeps its own frames shallow.
 class IPollObserver
 {
   public:

@@ -29,6 +29,7 @@
 #include <isoline/compiler/x86_64/Registers.hpp>
 #include <isoline/compiler/x86_64/Target.hpp>
 #include <isoline/execution/CodeMemory.hpp>
+#include <isoline/execution/StackBounds.hpp>
 #include <isoline/execution/testing/CompileOne.hpp>
 #include <isoline/runtime/Interrupt.hpp>
 #include <isoline/runtime/Value.hpp>
@@ -295,7 +296,7 @@ TEST_CASE("Trampoline.trapExitRestoresCalleeSaved")
     {
         auto created = CompiledInstance::create(module, hostConfig(Deterministic, {}));
         REQUIRE(created.has_value());
-        auto thunk = SentinelThunk { (*created)->code().entry() };
+        auto thunk = SentinelThunk { (*created)->code().trampoline() };
         auto const called = (*created)->callThrough(thunk.entry(), 2, arguments);
         REQUIRE_FALSE(called.has_value());
         CHECK(called.error() == isoline::runtime::Abrupt { Trap { TrapCode::Unreachable } });
@@ -305,7 +306,7 @@ TEST_CASE("Trampoline.trapExitRestoresCalleeSaved")
     {
         auto created = CompiledInstance::create(module, hostConfig(Deterministic, {}));
         REQUIRE(created.has_value());
-        auto thunk = SentinelThunk { (*created)->code().entry() };
+        auto thunk = SentinelThunk { (*created)->code().trampoline() };
         auto const called = (*created)->callThrough(thunk.entry(), 3, arguments);
         REQUIRE(called.has_value());
         // 2·(3 + … + 18), and the floats' sum, 1.5·(3 + … + 18) = 252, through $id.
@@ -316,7 +317,7 @@ TEST_CASE("Trampoline.trapExitRestoresCalleeSaved")
     {
         auto created = CompiledInstance::create(module, hostConfig(Deterministic, {}));
         REQUIRE(created.has_value());
-        auto thunk = SentinelThunk { (*created)->code().entry() };
+        auto thunk = SentinelThunk { (*created)->code().trampoline() };
         auto const called = (*created)->callThrough(thunk.entry(), 4, arguments);
         REQUIRE_FALSE(called.has_value());
         CHECK(called.error() == isoline::runtime::Abrupt { Trap { TrapCode::OutOfBoundsMemoryAccess } });
@@ -333,7 +334,7 @@ TEST_CASE("Trampoline.trapExitRestoresCalleeSaved")
                                      isoline::execution::testing::InstanceOptions { .observer = &polls });
         REQUIRE(created.has_value());
         polls.interruptAtTrigger((*created)->store().interrupter());
-        auto thunk = SentinelThunk { (*created)->code().entry() };
+        auto thunk = SentinelThunk { (*created)->code().trampoline() };
         auto const called = (*created)->callThrough(thunk.entry(), 3, arguments);
         REQUIRE_FALSE(called.has_value());
         CHECK(called.error() == isoline::runtime::Abrupt { Trap { TrapCode::Interrupted } });
@@ -415,4 +416,58 @@ TEST_CASE("Trampoline.adaptersPassEveryValue")
                                   F64 { .bits = std::bit_cast<uint64_t>(0.5) },
                                   I64 { .bits = 211 },
                                   F64 { .bits = std::bit_cast<uint64_t>(8.5) } });
+}
+
+TEST_CASE("Trampoline.entryOverheadCoversTheEntry")
+{
+    // EntryOverheadBytes, against the trampoline's and the adapter's real layout: the stack from the host's
+    // call of the trampoline to the function's entry is within it for a type that fits the registers, and
+    // within it plus entryAdapterAreaBytes() for one that does not. A function that records rsp at its entry
+    // stands in for the compiled one.
+    if (!hostRunsCompiledCode())
+        SKIP("the code is x86-64's");
+    auto arena = std::pmr::monotonic_buffer_resource {};
+    auto buffer = isoline::compiler::machine::CodeBuffer { arena };
+    auto assembler = x64::Assembler { buffer, {}, nullptr };
+    // The adapter keeps the cells in r10 up to its call: the recorder stores rsp into cell 0.
+    assembler.emit(x64::Mnemonic::Mov64MR,
+                   { x64::at(x64::Gpr::R10, 0), x64::physicalOperand(x64::Gpr::Rsp) });
+    assembler.emit(x64::Mnemonic::Ret, {});
+    REQUIRE_FALSE(assembler.failure().has_value());
+    auto padded = std::vector<std::byte>(16, std::byte { 0xcc });
+    std::ranges::copy(std::as_bytes(buffer.bytes()), std::back_inserter(padded));
+    auto sealed = PortableCodeMemory {}.seal(padded);
+    REQUIRE(sealed.has_value());
+    auto const* recorder = (*sealed)->code().subspan(16).data();
+    auto const target = x64::X64Target::create(hostConfig(Deterministic, {}).target);
+    REQUIRE(target.has_value());
+    for (auto const params: { std::size_t { 0 }, std::size_t { 6 }, std::size_t { 200 } })
+    {
+        INFO(params << " i64 parameters");
+        auto text = std::string { "(module (func (param" };
+        for ([[maybe_unused]] auto const index: std::views::iota(std::size_t { 0 }, params))
+            text.append(" i64");
+        text.append(")))");
+        auto const validated = moduleOf(text);
+        auto created = CompiledInstance::create(validated, hostConfig(Deterministic, {}));
+        REQUIRE(created.has_value());
+        auto const& code = (*created)->code();
+        auto values = std::vector<isoline::runtime::RawValue>(std::max<std::size_t>(params, 1));
+        auto state = isoline::compiler::ExecutionState {};
+        auto const context = isoline::compiler::InstanceContext {};
+        auto const before = isoline::execution::currentStackAddress();
+        auto const status = code.trampoline()(&state, &context, code.adapter(0), recorder, values.data());
+        CHECK(status == std::to_underlying(isoline::compiler::EntryStatus::Returned));
+        auto const atEntry = static_cast<std::uintptr_t>(values[0].words[0]);
+        REQUIRE(atEntry < before);
+        // The frame address is the caller's stack pointer less its return address and saved frame pointer.
+        auto const taken = static_cast<uint64_t>(before - atEntry) + 16;
+        auto const area = target->entryAdapterAreaBytes(validated->module().types[0]);
+        CAPTURE(taken, area);
+        CHECK(taken <= isoline::execution::EntryOverheadBytes + area);
+        if (params <= 6)
+            CHECK(area == 0);
+        else
+            CHECK(area >= (params - 6) * 8);
+    }
 }

@@ -33,17 +33,29 @@ if(isolineHostArchitecture STREQUAL "X64")
 else()
     set(isolineCpuFeatureProbe CpuFeatureProbePortable.cpp)
 endif()
+# Where the stack is now: GCC and Clang's frame-address builtin, or MSVC's (and clang-cl's) return-address
+# intrinsic.
+if(MSVC)
+    set(isolineStackAddress StackAddressMsvc.cpp)
+else()
+    set(isolineStackAddress StackAddressGnu.cpp)
+endif()
 message(STATUS "[isoline] execution rows: ${isolineCodeMemory}, ${isolineStackBounds}, ${isolineCpuFeatureProbe}")
 target_sources(isoline_core
     PRIVATE
         ${isolineCodeMemory}
         ${isolineStackBounds}
         ${isolineCpuFeatureProbe}
+        ${isolineStackAddress}
+        CompiledExecutor.cpp
+        CompiledModuleCode.cpp
         RuntimeStubs.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES
             CodeMemory.hpp
+            CompiledExecutor.hpp
+            CompiledModuleCode.hpp
             CpuFeatureProbe.hpp
             RuntimeStubs.hpp
             StackBounds.hpp)

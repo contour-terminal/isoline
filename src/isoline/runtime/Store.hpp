@@ -977,7 +977,8 @@ class InvocationScope
     /// @param store The store; must outlive the scope.
     explicit InvocationScope(Store& store) noexcept;
 
-    /// Ends the invocation.
+    /// Ends the invocation. Precondition (checked): the store's budget is Settled (Store::budgetState()): an
+    /// executor that lent it settles it on every way out, a trap exit included.
     ~InvocationScope();
 
     InvocationScope(InvocationScope const&) = delete;

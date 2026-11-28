@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <new>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -232,6 +233,45 @@ namespace
     {
         return call.store().table(itemAt(call.instance(context).tables, table));
     }
+
+    /// One host call's arguments and results as values: in cells of its own frame for a narrow call, on the
+    /// heap past that, so that the calls a host nests never share them.
+    class HostCallValues
+    {
+      public:
+        /// The values of a call of @p arguments params and @p results results.
+        /// @throws std::bad_alloc when a wide call's values do not fit the host's memory.
+        HostCallValues(std::size_t arguments, std::size_t results):
+            _arguments { arguments }, _results { results }
+        {
+            if (arguments + results > InlineValues)
+                _wide.resize(arguments + results);
+        }
+
+        /// The arguments.
+        [[nodiscard]] std::span<runtime::Value> arguments() noexcept { return all().first(_arguments); }
+
+        /// The results.
+        [[nodiscard]] std::span<runtime::Value> results() noexcept
+        {
+            return all().subspan(_arguments, _results);
+        }
+
+      private:
+        /// How many values a call keeps in its own frame.
+        static constexpr auto InlineValues = std::size_t { 16 };
+
+        [[nodiscard]] std::span<runtime::Value> all() noexcept
+        {
+            return _wide.empty() ? std::span<runtime::Value> { _inline }
+                                 : std::span<runtime::Value> { _wide };
+        }
+
+        std::size_t _arguments;
+        std::size_t _results;
+        std::array<runtime::Value, InlineValues> _inline {};
+        std::vector<runtime::Value> _wide;
+    };
 } // namespace
 
 void const* entryAddress(StubEntry const& entry) noexcept
@@ -248,6 +288,25 @@ std::span<void const* const> stubEntries() noexcept
         return addresses;
     }();
     return entries;
+}
+
+void coverHostFunctions(ExecutionState& state, ExecutorRecord& record)
+{
+    auto const& store = *record.store;
+    auto values = record.hostScratch.size();
+    for (auto const address: std::views::iota(record.functionsCovered, store.functionCount()))
+    {
+        auto const& function = store.function(static_cast<runtime::FuncAddr>(address));
+        if (!function.isHost())
+            continue;
+        auto const& type = store.type(function.typeId);
+        values = std::max({ values, type.params.size(), type.results.size() });
+    }
+    if (values > record.hostScratch.size())
+        record.hostScratch.resize(values);
+    record.functionsCovered = store.functionCount();
+    state.hostScratch = record.hostScratch.data();
+    state.hostScratchCapacity = static_cast<uint32_t>(record.hostScratch.size());
 }
 
 uint32_t hostScratchValuesOf(runtime::Store const& store) noexcept
@@ -458,18 +517,30 @@ StubResult callHost(ExecutionState* state, InstanceContext const* context, uint6
     auto const& host = store.function(static_cast<runtime::FuncAddr>(function));
     auto const& type = store.type(host.typeId);
     Require(std::max(type.params.size(), type.results.size()) <= state->hostScratchCapacity);
-    auto const scratch = std::span { state->hostScratch, state->hostScratchCapacity };
-    auto arguments = std::vector<runtime::Value> {};
-    arguments.reserve(type.params.size());
-    for (auto const [index, parameter]: core::views::enumerate(type.params))
-        arguments.push_back(runtime::decodeValue(scratch[static_cast<std::size_t>(index)], parameter));
-    auto results = std::vector<runtime::Value>(type.results.size());
-    auto const done = runtime::callHostFunction(
-        store, *call.record().executor, host, context->moduleInstance, arguments, results);
-    if (!done)
-        return call.pending(done.error());
-    for (auto const [index, result]: core::views::enumerate(results))
-        scratch[static_cast<std::size_t>(index)] = runtime::encodeValue(result);
+    try
+    {
+        auto values = HostCallValues { type.params.size(), type.results.size() };
+        auto const scratch = std::span { state->hostScratch, state->hostScratchCapacity };
+        for (auto const [index, parameter]: core::views::enumerate(type.params))
+            values.arguments()[static_cast<std::size_t>(index)] =
+                runtime::decodeValue(scratch[static_cast<std::size_t>(index)], parameter);
+        auto const done = runtime::callHostFunction(store,
+                                                    *call.record().executor,
+                                                    host,
+                                                    context->moduleInstance,
+                                                    values.arguments(),
+                                                    values.results());
+        if (!done)
+            return call.pending(done.error());
+        // The host may have added a wider host function, which generated code may call next.
+        coverHostFunctions(*state, call.record());
+        for (auto const [index, result]: core::views::enumerate(values.results()))
+            state->hostScratch[static_cast<std::size_t>(index)] = runtime::encodeValue(result);
+    }
+    catch (std::bad_alloc const&)
+    {
+        return call.pending(runtime::Abrupt { runtime::Trap { runtime::TrapCode::CallStackExhausted } });
+    }
     return StubCall::done();
 }
 

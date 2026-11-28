@@ -907,6 +907,9 @@ InvocationScope::InvocationScope(Store& store) noexcept:
 
 InvocationScope::~InvocationScope()
 {
+    // An executor that lent the budget settles it on every way out of its invocation: a trap exit that
+    // skipped the settle aborts here, at the boundary, not at a later poll against stale counts.
+    Require(_store->_budgetState == BudgetState::Settled);
     --_store->_invocationDepth;
 }
 

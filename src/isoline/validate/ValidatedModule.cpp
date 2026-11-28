@@ -44,11 +44,13 @@ namespace
     }
 } // namespace
 
-ValidatedModule::ValidatedModule(Key /*key*/, binary::Module module, FeatureSet features, ModuleShape shape):
+ValidatedModule::ValidatedModule(
+    Key /*key*/, binary::Module module, FeatureSet features, ModuleShape shape, uint64_t sourceBytes):
     _module { std::move(module) },
     _features { features },
     _shape { std::move(shape) },
-    _frameCosts { frameCostsOf(_module, _shape) }
+    _frameCosts { frameCostsOf(_module, _shape) },
+    _sourceBytes { sourceBytes }
 {
 }
 
@@ -58,12 +60,12 @@ std::expected<std::shared_ptr<ValidatedModule const>, ModuleError> ValidatedModu
     using Result = std::expected<std::shared_ptr<ValidatedModule const>, ModuleError>;
     return binary::decodeModule(bytes, features, limits)
         .transform_error([](binary::DecodeError const& error) { return ModuleError { error }; })
-        .and_then([features, &limits](binary::Module module) -> Result {
+        .and_then([features, &limits, sourceBytes = bytes.size()](binary::Module module) -> Result {
             auto shape = validateModule(module, features, limits);
             if (!shape)
                 return std::unexpected { ModuleError { std::move(shape.error()) } };
             return std::make_shared<ValidatedModule const>(
-                Key {}, std::move(module), features, std::move(*shape));
+                Key {}, std::move(module), features, std::move(*shape), sourceBytes);
         });
 }
 

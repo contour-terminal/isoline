@@ -12,6 +12,7 @@
 target_sources(isoline_core
     PRIVATE
         CompileError.cpp
+        Compiler.cpp
         FeatureSupport.cpp
         intermediate/Dominators.cpp
         intermediate/Function.cpp
@@ -46,8 +47,10 @@ target_sources(isoline_core
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES
             CompileConfig.hpp
+            CompiledCode.hpp
             CompileError.hpp
             CompileLimits.hpp
+            Compiler.hpp
             ContextLayout.hpp
             FeatureSupport.hpp
             intermediate/Dominators.hpp
@@ -86,3 +89,9 @@ target_sources(isoline_core
             x86_64/Selection.def
             x86_64/Selector.hpp
             x86_64/Target.hpp)
+
+# When a compile verifies its functions (optimization::Verification, Compiler.cpp's BuildVerification): after
+# each pass in a debug build, where a pass's bug is found at the pass, and once after the pipeline in an
+# optimized one. A value, not a switch in the logic.
+set_property(SOURCE Compiler.cpp TARGET_DIRECTORY isoline_core APPEND PROPERTY COMPILE_DEFINITIONS
+    "ISOLINE_COMPILE_VERIFICATION=$<IF:$<CONFIG:Debug>,AfterEachPass,AtEnd>")

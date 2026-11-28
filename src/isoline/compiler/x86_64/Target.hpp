@@ -62,6 +62,10 @@ class X64Target final: public machine::ITarget
     /// results back into the cells.
     void emitEntryAdapter(binary::FuncType const& type, machine::CodeBuffer& buffer) const override;
 
+    /// The entry adapter's stack arguments and result area (Trampoline.cpp), as emitEntryAdapter() lays them
+    /// out below its two slots, rounded to the stack's alignment.
+    [[nodiscard]] uint64_t entryAdapterAreaBytes(binary::FuncType const& type) const override;
+
     /// The module's entry trampoline and its trap exit (Trampoline.cpp), under the description's host
     /// convention: rbp pushed, every other General register the convention preserves pushed, every Float one
     /// saved whole below them (Microsoft x64's xmm6–15), the pinned registers and the adapter's r10 and r11
