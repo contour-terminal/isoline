@@ -807,7 +807,9 @@ namespace
         // index keeps the memory's address type: an I32's high half never reaches the address (GuardTable).
         auto const memory = instruction.b;
         auto const offset = instruction.c;
-        auto const value = row.kind == AccessKind::Store ? std::optional { pop() } : std::nullopt;
+        // A store's value (only a store reads it); a plain id rather than an optional, which GCC 14's
+        // -Wmaybe-uninitialized misreads across the switch below.
+        auto const value = row.kind == AccessKind::Store ? pop() : ValueId {};
         auto const index = pop();
         storeCountdownForTrap();
         if (intermediate::staticEndOverflows(offset, row.size))
@@ -835,7 +837,7 @@ namespace
                 break;
             case AccessKind::Store:
                 emitEffect(Operation::Store,
-                           std::array { address, *value },
+                           std::array { address, value },
                            std::array { uint64_t { memory }, uint64_t { row.size } });
                 break;
         }
