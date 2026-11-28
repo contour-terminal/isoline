@@ -3,9 +3,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <fstream>
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <isoline/component/Limits.hpp>
 
@@ -95,4 +98,34 @@ TEST_CASE("Limits.messages")
     CHECK(limitMessage(ComponentLimit::TypeDepth, 100) == "type nesting is too deep");
     // Isoline's own name the value they are given.
     CHECK(limitMessage(ComponentLimit::Nesting, 3) == "nesting exceeds the limit of 3 levels");
+}
+
+TEST_CASE("Limits.docsMatchTable")
+{
+    // The embedding guide lists every cap with its default, generated from the rows: it fails, printing
+    // the block as it should read, when the two part.
+    auto expected = std::vector<std::string> {};
+    for (auto const& row: LimitTable)
+        expected.push_back(
+            std::format("- `{}` ({}): {}.", row.name, row.value(ComponentLimits {}), row.rule));
+    auto lines = std::vector<std::string> {};
+    auto file = std::ifstream { ISOLINE_SOURCE_DIR "/docs/embedding.md" };
+    REQUIRE(file.is_open());
+    auto line = std::string {};
+    auto inside = false;
+    while (std::getline(file, line))
+    {
+        if (line.ends_with('\r'))
+            line.pop_back();
+        if (line == "<!-- component-limits:end -->")
+            break;
+        if (inside)
+            lines.push_back(line);
+        inside = inside || line == "<!-- component-limits:begin -->";
+    }
+    auto joined = std::string {};
+    for (auto const& entry: expected)
+        joined += entry + "\n";
+    INFO("the component-limits block of docs/embedding.md should read:\n" << joined);
+    CHECK(lines == expected);
 }

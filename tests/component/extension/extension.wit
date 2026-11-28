@@ -1,0 +1,217 @@
+// SPDX-License-Identifier: Apache-2.0
+
+/// A test world shaped like Contour's extensions (P9's template, plan P11 Task 21).
+///
+/// `types`, `host` and the exports mirror `terminal-extensions:statusline@0.1.0` as Contour's extension
+/// host defines it (wit/statusline/world.wit on its feature/out-of-process-extension-host branch at
+/// 54387ba81); `host` adds a host-owned `surface` resource, and `control` mirrors the shapes of
+/// `terminal-extensions:control/control@0.1.0` (an option parameter, a result of a list of records, and an
+/// error the guest hands back). The real WIT stays Contour's: this package exists to test Isoline with.
+package isoline-test:extension@0.1.0;
+
+/// The vocabulary shared by the host and the extension.
+interface types {
+    /// What an extension answers to `update`: whether the host should call `render` next.
+    enum render-request {
+        none,
+        render,
+    }
+
+    /// The input mode of the terminal's pane.
+    enum input-mode {
+        insert,
+        normal,
+        visual,
+        visual-line,
+        visual-block,
+        hint,
+    }
+
+    /// The state of a progress indicator.
+    enum progress-state {
+        hidden,
+        normal,
+        error,
+        indeterminate,
+        warning,
+    }
+
+    /// One tab of the window the pane lives in.
+    record tab {
+        title: string,
+        active: bool,
+    }
+
+    /// A progress indicator as the running program reports it.
+    record progress {
+        state: progress-state,
+        percent: u8,
+    }
+
+    /// The font the terminal draws its cells in.
+    record font-metrics {
+        size-pt: f32,
+        cell-width-px: u32,
+        cell-height-px: u32,
+    }
+
+    /// The size of a surface, in character cells.
+    record size {
+        cols: u32,
+        rows: u32,
+    }
+
+    /// The kinds of event an extension subscribes to.
+    flags event-kinds {
+        title,
+        cwd,
+        foreground-process,
+        input-mode,
+        tabs,
+        user-var,
+        progress,
+        focus,
+        font,
+    }
+
+    /// Something the host tells the extension about.
+    variant event {
+        title(string),
+        cwd(string),
+        foreground-process(string),
+        input-mode(input-mode),
+        tabs(list<tab>),
+        user-var(tuple<string, string>),
+        progress(progress),
+        focus(bool),
+        font-changed(font-metrics),
+        resized(size),
+        timer,
+        reply(list<u8>),
+    }
+}
+
+/// What the host offers the extension.
+interface host {
+    use types.{font-metrics, input-mode, progress, size, tab};
+
+    /// How loud a log message is.
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// The current values of everything an event can announce.
+    record state-snapshot {
+        title: string,
+        cwd: string,
+        foreground-process: string,
+        input-mode: input-mode,
+        tabs: list<tab>,
+        user-vars: list<tuple<string, string>>,
+        progress: progress,
+        focused: bool,
+        size: size,
+        unix-time-ms: u64,
+        utc-offset-minutes: s32,
+        font: font-metrics,
+    }
+
+    /// What a command that ran to completion left behind.
+    record command-output {
+        exit-code: s32,
+        stdout: list<u8>,
+        stderr: list<u8>,
+    }
+
+    /// Why a command did not produce output.
+    enum command-error {
+        not-declared,
+        pending,
+        denied,
+        failed,
+        timed-out,
+    }
+
+    /// A surface the host owns and the extension draws on: the host's object, behind a handle.
+    resource surface {
+        /// Appends VT bytes to the surface.
+        write: func(bytes: list<u8>);
+        /// The surface's size.
+        size: func() -> size;
+    }
+
+    /// Asks for a `timer` event after at least `after-ms` milliseconds.
+    request-frame: func(after-ms: u32);
+
+    /// Writes a message to the host's log.
+    log: func(level: log-level, message: string);
+
+    /// Reads the current state.
+    state: func() -> state-snapshot;
+
+    /// Runs a command the extension's manifest declares.
+    run-command: func(name: string, args: list<tuple<string, string>>) -> result<command-output, command-error>;
+
+    /// Opens a fresh surface, which the extension then owns.
+    open-surface: func() -> surface;
+
+    /// Hands a surface back to the host, which takes it over.
+    present: func(surface: surface);
+}
+
+/// The shapes of the control verbs.
+interface control {
+    /// One tab a pane lives in.
+    record tab-info {
+        id: string,
+        title: string,
+        is-active: bool,
+    }
+
+    /// One pane.
+    record pane {
+        id: string,
+        title: option<string>,
+        tabs: list<tab-info>,
+    }
+
+    /// Why a verb failed: it fails with one rather than trapping.
+    variant control-error {
+        bad-request(string),
+        not-found(string),
+        forbidden,
+        failed(string),
+    }
+
+    /// Lists the panes, those whose id starts with `filter` when one is given.
+    list-panes: func(filter: option<string>) -> result<list<pane>, control-error>;
+}
+
+/// An extension that draws a status line and drives its terminal.
+world extension {
+    use types.{event, event-kinds, render-request, size};
+    use control.{pane, control-error};
+
+    import host;
+    import control;
+
+    /// Called once, first, with the extension's configuration. Returns the event kinds it wants.
+    export load: func(config: list<tuple<string, string>>) -> event-kinds;
+
+    /// Called for each event the extension subscribed to.
+    export update: func(ev: event) -> render-request;
+
+    /// Returns VT bytes that draw the status line on a surface of `cols` by `rows` cells.
+    export render: func(cols: u32, rows: u32) -> list<u8>;
+
+    /// Lists the panes through `control`, handing the verb's answer back unchanged.
+    export panes: func(filter: option<string>) -> result<list<pane>, control-error>;
+
+    /// Opens a surface, writes `bytes` to it three times, reads its size and drops it; then opens a second
+    /// and presents it to the host. Returns the first surface's size.
+    export paint: func(bytes: list<u8>) -> size;
+}

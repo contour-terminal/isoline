@@ -102,8 +102,12 @@ if(ISOLINE_TESTING)
     else()
         target_sources(isoline_component_test PRIVATE runtime/testing/StackThreadPosix.cpp)
     endif()
-    add_test(NAME isoline_component_test COMMAND isoline_component_test)
+    # The [memory] cases (a hostile guest's lying lengths) run apart, under a hard memory cap, so that a
+    # broken bound fails small instead of starving a shared machine.
+    add_test(NAME isoline_component_test COMMAND isoline_component_test "~[memory]")
     set_tests_properties(isoline_component_test PROPERTIES LABELS unit TIMEOUT 600)
+    isoline_add_capped_test(NAME isoline_component_test_memory TARGET isoline_component_test LABELS unit
+                            ARGS "[memory]")
     # The guide's generated blocks are checked against their tables (CallError.docsMatchTable).
     target_compile_definitions(isoline_component_test PRIVATE ISOLINE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     # Moving a store while its call runs is a contract violation: the hidden case reports it and exits.

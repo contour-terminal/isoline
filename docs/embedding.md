@@ -660,6 +660,220 @@ resource type; a resource the guest defines, which no `HostResourceType` stands 
 and the slot's generation, so an erased object's rep finds nothing however the slot is reused, and a slot
 whose generations run out is retired; a full table is a `Handles` trap.
 
+## Components
+
+A component is hosted in five steps: describe its world's types in C++, define the host's side in a
+`Linker`, load the component once, instantiate it in a `ComponentStore` of its own, and call its exports.
+`src/isoline/component/api/Extension_test.cpp` does all five for a world shaped like Contour's
+extensions (`tests/component/extension/extension.wit`: Contour's status-line world, a host-owned
+`surface` resource and a control-shaped interface), against two guests of it, one written by hand in the
+text format and one built by the C toolchain (`wit-bindgen c` and wasi-sdk). It is written only against
+`component::api` and its typed bindings, and is the template for an embedder; the excerpts below are
+from it.
+
+### Hosting an extension
+
+**The world's types.** Each WIT type is a C++ type with a `TypeOf` row: records, enums and flags by
+specializing `Record`, `Enum` and `Flags`, variants as `std::variant`s of `Case`s, `result` as
+`std::expected`, `option` as `std::optional`, and a host resource as a tag type that `Own` and `Borrow`
+name:
+
+```cpp
+struct Size { uint32_t cols = 0; uint32_t rows = 0; };
+template <> struct Record<Size> {
+    static constexpr auto Fields = std::tuple { field("cols", &Size::cols), field("rows", &Size::rows) };
+};
+using Event = std::variant<Case<"title", std::string>, /* … */ Case<"timer", Unit>, Case<"reply", std::vector<uint8_t>>>;
+struct Surface {};                                     // host.surface
+```
+
+**The host's side.** A `Linker` holds every definition, each under the path of its interface's name and
+version: `isoline-test:extension/host@0.1.0#log`. A host resource type is a `HostResourceType`, its
+destructor erasing the host's object; the objects themselves sit in a `HostResourceTable`, whose reps the
+handles carry. Each function is `functionType<Signature>()` and `makeTypedHostFunction<Signature>()` over a
+`noexcept` body:
+
+```cpp
+auto surface = HostResourceType { "surface", std::make_shared<SurfaceDestructor>(surfaces, destroyed) };
+auto resources = ResourceTypes<Surface> { surface };
+if (auto defined = linker.defineResource("isoline-test:extension/host@0.1.0#surface", surface); !defined)
+    return std::unexpected { defined.error() };                     // a LinkerError: the linker is unchanged
+// A host body fails with a HostFailure whose code says which failure it was.
+auto const failure = [](HostError error) {
+    return HostFailure { .kind = HostFailureKind::Embedder, .code = static_cast<uint32_t>(error), .mismatch = {} };
+};
+auto spec = functionType<Own<Surface>()>(linker, resources);
+spec->maxCallBytes = 64 * 1024;                                     // Contour's maxHostCallBytes
+linker.defineFunction("isoline-test:extension/host@0.1.0#open-surface", *spec,
+    makeTypedHostFunction<Own<Surface>()>(
+        [&](HostComponentContext& context) noexcept -> std::expected<Own<Surface>, HostFailure> {
+            auto const rep = surfaces.insert(SurfaceObject {});
+            if (!rep)
+                return std::unexpected { failure(HostError::SurfaceTableFull) };
+            auto own = hostOwn<Surface>(context.store(), resources, *rep);   // the guest's own, once returned
+            if (!own)
+            {
+                surfaces.erase(*rep);                                // the store holds no own of it
+                return std::unexpected { failure(HostError::OwnRefused) };   // maxHostOwns or maxLiveValueBytes
+            }
+            return std::move(*own);
+        }));
+```
+
+The functions of `host` are labelled as the WIT names their parameters (`functionType`'s third argument),
+which an import must match (`ParameterNames::Named`); those of `control`, a generated catalog, are defined
+`ParameterNames::Unnamed`, matching whatever the import calls them. `FunctionTypeSpec::maxCallBytes` caps
+the host bytes the arguments of one call take once lifted from the guest, within the store's
+`maxLiveValueBytes`: one byte more traps `HostCallBytes` before the body runs, and locks the store down. It
+is no part of the type, so an import matches the function whatever it is. The `types` interface and the world's
+`use` of its types are imports of types only and need no definition. A body that is given an `Own` drops
+it (`typed::drop(context.store(), own)`) unless it hands it back: an own it forgets stays held, against
+`maxHostOwns`, until the store ends.
+
+**Loading.** `Component::load` decodes and validates the component, then loads each embedded core module
+through the `ICoreModuleLoader` it is given, keyed by the component's SHA-256 and the module's ordinal: the
+hand-written guest has two core modules, the C toolchain's three (its code, and wit-component's shim and
+fixup). A `Component` is immutable and shared, so it is loaded once and instantiated any number of times.
+
+**Instantiating.** Each instance of an extension gets a store of its own, with an allocator of its own:
+
+```cpp
+auto store = ComponentStore { engine, allocator, ComponentConfig { .limits = limits } };
+auto instance = store.instantiate(component, linker);
+```
+
+`Linker::resolve(component)` reports how each import resolves without a store. A guest built against
+`@0.1.0` links to a host that defines `@0.1.2` (0.M.x matches on the major and minor); one defining
+`@0.2.0` leaves the import unsatisfied, refused before anything runs.
+
+**Calling.** `TypedFunction<Signature>::bind(instance, "render")` finds an export of that type, or none.
+Each call converts its arguments, lends them, and converts the results back:
+
+```cpp
+auto render = TypedFunction<std::vector<uint8_t>(uint32_t, uint32_t)>::bind(instance, "render");
+auto const bytes = (*render)(80, 1);   // std::expected<std::vector<uint8_t>, ComponentCallError>
+```
+
+A watchdog on another thread stops a call that runs past its deadline (`render`, or `load` itself) with
+`store.interrupter()->interrupt()`: the call fails `Interrupted` and the store is locked down, so every
+later call fails `LockedDown`. The embedder then drops the store and instantiates the component afresh in
+a new one, of the same caps and with a fresh memory provision (the old store is destroyed before its
+allocator). The guests' `mode` configuration makes them misbehave, each contained:
+
+| The guest | Fails |
+|---|---|
+| returns a list its memory does not hold (a `list<u8>` of 2^28 − 1 bytes from one page) | `Trap` `OutOfBounds`, before the host allocates a byte of it, whatever the store's `maxLiveValueBytes` |
+| returns 4 MiB its memory holds, against a `maxLiveValueBytes` of 1 MiB | `Trap` `LiveValueBytes`, charged before it is allocated |
+| passes 80 KiB to a host function of a 64 KiB `maxCallBytes` | `Trap` `HostCallBytes`, before the host function runs |
+| executes `unreachable` | `Trap` `Core` (`unreachable`) |
+| keeps every surface it opens, until the host's 64-slot table is full | the host body's `HostFailure`, its code `SurfaceTableFull`; the store's end destroys the 64 it kept |
+| hands out memory it does not have from `cabi_realloc` while `host.state` is lowered | `Trap` `OutOfBounds`, before a byte is written |
+
+Each locks the store down.
+
+**Embedder memory.** Contour hands each extension one memory of 32 MiB followed by a 32 MiB guard, refusing
+any further request (`ProvidedMemoryAllocator` models it). Both guests allocate exactly one memory, so
+each runs there; a second instance in the same store is refused (`AllocationFailure { Memory, Embedder }`),
+and so is a provision smaller than the guest's initial memory. The Reference engine needs no guard
+(`Engine::requiredGuardBytes()` is 0), so no guard is too small for it; an engine that compiles will need
+one, and refuse a memory with less (`Refusal::Guard`).
+
+### Component limits
+
+Every cap a component, its store and its calls are held to, with its default:
+
+<!-- component-limits:begin -->
+- `maxComponentBytes` (268435456): bytes of one encoded component, refused before the decoder copies it.
+- `maxNesting` (100): scopes open at once, the outermost component counted: nested components, component and instance types, nested scopes, in the binary and the text format.
+- `maxTypeDepth` (100): nesting depth of one value, function, component or instance type, refused where it is defined.
+- `maxTypeSize` (1000000): effective type size of one type, and the sum of the effective sizes of the types aliased into one component from outside it, as wasm-tools measures them; refused when reached.
+- `maxTypes` (1000000): entries of every index space of sort type, per component.
+- `maxDefinitions` (1000000): definitions of every section, custom sections included, per component.
+- `maxDecodedItems` (1000000): items of one decoded component and every component nested in it: definitions, nested components, and the elements of the vectors inside definitions (arguments, inline exports, attributes), charged before each is read.
+- `maxNameBytes` (100000): bytes of one name, attribute or custom section name, refused before it is copied.
+- `maxCoreInstances` (10000): core instances of one ComponentStore.
+- `maxComponentInstances` (10000): component instances of one ComponentStore.
+- `maxInstantiationSteps` (1000000): plan steps one instantiate() executes.
+- `maxResourceTypes` (100000): runtime resource types of one ComponentStore, one per resource definition executed; and the resource types one validation mints, one per resource definition and `(sub resource)` import or export.
+- `maxHandles` (1000000): handle slots of every handle table of one ComponentStore together, each kept by its table for reuse once freed, plus the handles lent to calls in progress; one table hands out indices up to 2^28 - 1.
+- `maxLiveValueBytes` (268435456): host bytes of every live Values of one ComponentStore.
+- `maxSubtypingSteps` (1000000): steps of one type relation: a whole validation's subtype checks together (instantiations and ascribed exports share one relation), or one linker resolve; one per pair of types compared and per name looked up or compared, plus one per 64 bytes of the names compared; it bounds the relation's memo at as many entries.
+- `maxSubstitutedTypes` (1000000): units the resource substitutions of one type arena charge, one per type created plus one per type it names: each instantiation, and each import or export of an instance type that defines resources, rewrites the types naming them, sharing their names.
+- `maxModules` (1000): entries of one component's core module index space: embedded, imported, aliased and exported modules.
+- `maxComponents` (1000): entries of one component's component index space: nested, imported, aliased and exported components.
+- `maxInstances` (4096): entries of one component's core and component instance index spaces together.
+- `maxFunctions` (1000000): entries of one component's core and component function index spaces together.
+- `maxExports` (1000000): exports of one component.
+- `maxCoreTables` (1000000): entries of one component's core table index space, each an alias of a core instance's export.
+- `maxCoreMemories` (1000000): entries of one component's core memory index space, each an alias of a core instance's export.
+- `maxCoreGlobals` (1000000): entries of one component's core global index space, each an alias of a core instance's export.
+- `maxCoreTags` (1000000): entries of one component's core tag index space, each an alias of a core instance's export.
+- `maxCoreMatchingSteps` (10000000): steps of all core instantiations of one validation: one per import looked up and matched, and per export or inline export measured, plus one per 64 bytes of the names its lookups compare.
+- `maxNestedCalls` (80): invocations in progress at once in one ComponentStore's core store: the outermost component call and each hop back into a guest; one more traps CallStackExhausted.
+- `maxHostOwns` (1000000): owns one ComponentStore's host holds at once, each lifted to a host function or a call's caller or made by hostResource(); one more fails the call ResourceExhausted.
+<!-- component-limits:end -->
+
+The block is generated from `component::LimitTable` and `ComponentLimits {}`; `Limits.docsMatchTable`
+fails, printing the block as it should read, when the two part. The decode caps are fixed when a
+component is loaded (`ComponentConfig::limits` given to `Component::load`), the store's when it is
+constructed, and the linker's (`maxSubtypingSteps` for one resolve) when it is.
+
+### Mapping failures
+
+An embedder reports a failed extension in its own terms. Contour's extension host has four
+(`ExtensionError`: `Trapped`, `DeadlineExceeded`, `OutputTooLarge`, `WorldMismatch`), and maps Isoline's
+failures onto them by a table, the first matching row winning, as `Extension_test.cpp` does:
+
+| `ComponentCallFailure` | Its trap | `ExtensionError` |
+|---|---|---|
+| `Trap` | `LiveValueBytes` (Contour's `maxRenderBytes`, the store's `maxLiveValueBytes`) | `OutputTooLarge` |
+| `Trap` | `HostCallBytes` (Contour's `maxHostCallBytes`, a host function's `maxCallBytes`) | `OutputTooLarge` |
+| `Trap` | any other | `Trapped` |
+| `Interrupted` | | `DeadlineExceeded` |
+| `ArgumentMismatch`, `ForeignFunction` | | `WorldMismatch` |
+| `HostFailure`, `LockedDown`, `StoreDeleted`, `Instantiating`, `ResourceExhausted` | | `Trapped` |
+
+A failed instantiation (`InstantiateComponentError`) is a `WorldMismatch` when the component is of another
+engine or an import is unsatisfied, mistyped or foreign (`ImportMismatch` among the runtime's failures), and
+`Trapped` otherwise; an export `TypedFunction::bind` does not find at its type is a `WorldMismatch` too. A host
+body's own failures are told apart by their `HostFailure::code`: the extension test's host reports a refused
+own (a `HostOwns` cap breach inside a body) as `OwnRefused`, and a full table as `SurfaceTableFull`.
+
+### Lockdown and core modules
+
+A component store locks down whole on the first failure whose row says so (D6): a trap, an interrupt, the
+step limit, a host function's failure, a nested trap even when a host swallowed it, and any failure of an
+instantiation after its first step. No guest code of that store runs again. That is the component model's
+rule, and it is stricter than the core's: a core `Store`'s instances stay callable after a trap, and a
+store built on the core API alone keeps that contract. What lockdown leaves untouched is the `Component`:
+its core modules were loaded once, are shared and immutable, and serve every new store, so re-instantiating
+after a lockdown costs an instantiation, not a load (nor, with a cache behind the loader, a compile).
+
+### Checklist for an embedder hosting extensions
+
+What Contour's extension host (P9) does, each item shown by `Extension_test.cpp`:
+
+- Load each extension's component once, through an `ICoreModuleLoader` backed by the module cache, keyed by
+  the engine's identity, the component's hash and the module's ordinal.
+- Give every instance a `ComponentStore` of its own, with an allocator of its own: Contour's provision holds
+  one memory, and each guest's instantiation allocates one.
+- Set the caps: a lower `maxComponentBytes` for untrusted components, `maxLiveValueBytes` (Contour's
+  `maxRenderBytes`), each host function's `maxCallBytes` (Contour's `maxHostCallBytes`), `maxHostOwns`, and
+  the engine's `maxSteps` as a backstop for the interrupt.
+- Run component calls on a thread whose stack fits the store's nesting limit (the formula above).
+- Define each interface at the host's own version; older guests link by semver. Interfaces of types only
+  need no definition.
+- Label host functions as the WIT does, or define a generated catalog's `ParameterNames::Unnamed`.
+- Write every host body `noexcept`, failing with a `HostFailure`, never by throwing.
+- Drop every `Own` a body is given and does not hand back.
+- Keep the host's resource objects (the `HostResourceTable`, and what its destructors reach) alive until
+  the store is gone: the store's end destroys every own the host still holds, once.
+- Interrupt a call past its deadline from a watchdog thread; after any failure that locks the store down,
+  drop the store and instantiate afresh.
+- Refuse an extension whose exports `TypedFunction::bind` does not find at their types.
+- Map every failure onto the embedder's own errors by a table (Mapping failures, above), and tell a host
+  body's failures apart by their codes.
+
 ## Interrupts and poll sites
 
 `Store::interrupter()` returns the store's `Interrupter`, shared. `interrupt()` is one release store to

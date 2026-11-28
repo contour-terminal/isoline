@@ -339,6 +339,8 @@ VERSION_LINES = [
     # cl.exe, run without arguments: "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35217 for x64".
     ("msvc", re.compile(rf"\bCompiler Version {VERSION}(?:\s|$)"), None),
     ("wasm-tools", re.compile(rf"^wasm-tools {VERSION}"), None),
+    # wit-bindgen's CLI names its crate: "wit-bindgen-cli 0.63.0".
+    ("wit-bindgen", re.compile(rf"^wit-bindgen-cli {VERSION}"), None),
     # CPython ("Python 3.14.0"), the selftest's executable of a known version.
     ("python", re.compile(rf"^Python {VERSION}$"), None),
 ]

@@ -126,6 +126,7 @@ class FetchToolsTest(unittest.TestCase):
         cases = [
             ("cmake", "cmake version 4.3.0\n\nCMake suite maintained", "", ("4.3.0", None)),
             ("ninja", "1.11.1\n", "", ("1.11.1", None)),
+            ("wit-bindgen", "wit-bindgen-cli 0.63.0\n", "", ("0.63.0", None)),
             ("llvm", "Ubuntu clang version 22.1.8 (++2026)", "", ("22.1.8", None)),
             ("llvm", "clang version 22.1.8 (Fedora 22.1.8-1.fc44)", "", ("22.1.8", None)),
             ("llvm", "LLVM (http://llvm.org/):\n  LLVM version 22.1.8\n  Optimized build.", "", ("22.1.8", None)),

@@ -20,6 +20,40 @@ wasm-tools.sha256.aarch64-linux = 773b5e6bf957f0d93a9a337c9c5fc4c35509706301a807
 wasm-tools.sha256.aarch64-macos = b568f04746a699c4068b8d751779b60b501cf2cab6d259a3bc973eb5eeb1f62b
 wasm-tools.sha256.x86_64-windows = 0803df158b4dbea6b029d11f4206c414f432f0447af91542817061e4f0bd912e
 
+# The C toolchain of the extension world's C guest (tests/component/extension/build-guests.sh): wit-bindgen
+# generates its bindings, and wasi-sdk's clang builds it for wasm32-unknown-unknown without a libc. Neither is
+# needed by a build: the guest is committed prebuilt. The SHA-256 are the digests GitHub reports for the
+# release assets; the x86_64-linux ones were verified by scripts/fetch-tools.py on 2026-11-28.
+wit-bindgen.version = 0.63.0
+wit-bindgen.url = https://github.com/bytecodealliance/wit-bindgen/releases/download/v{version}/{archive}
+wit-bindgen.archive.x86_64-linux = wit-bindgen-{version}-x86_64-linux.tar.gz
+wit-bindgen.archive.aarch64-linux = wit-bindgen-{version}-aarch64-linux.tar.gz
+wit-bindgen.archive.aarch64-macos = wit-bindgen-{version}-aarch64-macos.tar.gz
+wit-bindgen.archive.x86_64-windows = wit-bindgen-{version}-x86_64-windows.zip
+wit-bindgen.executable.x86_64-linux = wit-bindgen-{version}-x86_64-linux/wit-bindgen
+wit-bindgen.executable.aarch64-linux = wit-bindgen-{version}-aarch64-linux/wit-bindgen
+wit-bindgen.executable.aarch64-macos = wit-bindgen-{version}-aarch64-macos/wit-bindgen
+wit-bindgen.executable.x86_64-windows = wit-bindgen-{version}-x86_64-windows/wit-bindgen.exe
+wit-bindgen.sha256.x86_64-linux = bf4efe883ab70d34a4740253911dda20caf895d58a003af58369506b04684cbe
+wit-bindgen.sha256.aarch64-linux = 1f9b4fb9f3af15374e2a2d026f6a1fcd8b48f37655f59f48a32cb421e169cbe4
+wit-bindgen.sha256.aarch64-macos = cccbf4b17e00c11b020b389ddfcd4d3a214bc072295566263fc8b358b336815a
+wit-bindgen.sha256.x86_64-windows = 213393e4a8b4875a3f19856e943e43067d0315141fca5743e4cfb7795bc9af14
+
+wasi-sdk.version = 34.0
+wasi-sdk.url = https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/{archive}
+wasi-sdk.archive.x86_64-linux = wasi-sdk-{version}-x86_64-linux.tar.gz
+wasi-sdk.archive.aarch64-linux = wasi-sdk-{version}-arm64-linux.tar.gz
+wasi-sdk.archive.aarch64-macos = wasi-sdk-{version}-arm64-macos.tar.gz
+wasi-sdk.archive.x86_64-windows = wasi-sdk-{version}-x86_64-windows.tar.gz
+wasi-sdk.executable.x86_64-linux = wasi-sdk-{version}-x86_64-linux/bin/clang
+wasi-sdk.executable.aarch64-linux = wasi-sdk-{version}-arm64-linux/bin/clang
+wasi-sdk.executable.aarch64-macos = wasi-sdk-{version}-arm64-macos/bin/clang
+wasi-sdk.executable.x86_64-windows = wasi-sdk-{version}-x86_64-windows/bin/clang.exe
+wasi-sdk.sha256.x86_64-linux = b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
+wasi-sdk.sha256.aarch64-linux = f7e243dff54d60bcc576e94d6166b69f410f2500ae4a9ceef34315be10e77971
+wasi-sdk.sha256.aarch64-macos = 9c59398106b417f8f14913380fdf0097a8cc0ff4af9eb3ce0065a859e88d49e9
+wasi-sdk.sha256.x86_64-windows = cccb5c323a9b34f0349a9b09e8804a0a7632c68c3310f4b5f437ed57d7e71d8f
+
 # The CMake and Ninja the C++ module lanes build with (.github/workflows/build.yml): CMake 4.3 is
 # the modules floor (cmake/IsolineModuleSupport.cmake), and neither runner image ships it.
 cmake.version = 4.3.0

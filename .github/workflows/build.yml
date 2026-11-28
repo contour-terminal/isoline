@@ -636,3 +636,20 @@ jobs:
         run: cmake -DMODE=check -DDEST=vendor/core-cpp -P vendor/core-cpp/cmake/CoreCppVendor.cmake
       - name: Check vendor/wasm-c-api
         run: cmake -DMODE=check -DDEST=vendor/wasm-c-api -P cmake/WasmCApiVendor.cmake
+
+  extension-guests:
+    name: The extension world's prebuilt guests match their sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Rebuild them with the pinned tools and compare
+        # tests/component/extension/build-guests.sh --check: wasm-tools parse of extension.wat, and the C
+        # toolchain's build of guest.c, each byte for byte against the committed .wasm.
+        run: |
+          fetch() { python3 -I scripts/fetch-tools.py --tool "$1" --cache "$RUNNER_TEMP/isoline-tools"; }
+          WASM_TOOLS="$(fetch wasm-tools)"
+          WIT_BINDGEN="$(fetch wit-bindgen)"
+          WASI_SDK="$(dirname "$(dirname "$(fetch wasi-sdk)")")"
+          export WASM_TOOLS WIT_BINDGEN WASI_SDK
+          tests/component/extension/build-guests.sh --check
