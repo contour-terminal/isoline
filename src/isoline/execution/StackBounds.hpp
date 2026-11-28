@@ -63,7 +63,7 @@ class ThreadStackBounds final: public IStackBounds
 
 /// The stack every prologue keeps free below its frame for a callee's entry and the deepest runtime stub that
 /// is not a host call (published; StackBounds.stubReserveCoversEveryStub measures every stub against
-/// compiler::machine::StubStackBudgetBytes, within it).
+/// its architecture's row of compiler::machine::StubStackBudgetTable, within it).
 inline constexpr uint64_t StubReserve = compiler::machine::StubReserveBytes;
 
 static_assert(StubReserve == uint64_t { 16 } * 1024, "the published stub reserve");

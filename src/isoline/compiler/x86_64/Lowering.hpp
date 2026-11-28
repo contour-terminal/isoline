@@ -870,9 +870,10 @@ void enterFrame(FunctionEmitter& emitter);
 /// StubReserveBytes, which every caller's native check keeps free below its own frame.
 [[nodiscard]] uint64_t entryPathBytes(CallConventions const& conventions, std::pmr::memory_resource& memory);
 
-/// The stack a runtime stub other than a host call may take below its caller: machine::StubStackBudgetBytes,
-/// which StackBounds.stubReserveCoversEveryStub measures every stub against by stack painting.
-inline constexpr auto StubStackBudgetBytes = machine::StubStackBudgetBytes;
+/// The stack a runtime stub other than a host call may take below its caller on x86-64: its row of
+/// machine::StubStackBudgetTable, which StackBounds.stubReserveCoversEveryStub measures every stub against by
+/// stack painting.
+inline constexpr auto StubStackBudgetBytes = machine::stubStackBudgetBytes(machine::Architecture::X64);
 
 /// The FunctionEntry poll's slow path, before the frame: every argument register of the internal convention
 /// kept on the reserve, callStubNow(PollSlow), a failed status to the trap exit, the arguments restored, back

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <initializer_list>
@@ -18,6 +19,7 @@
 #include <isoline/compiler/CompileError.hpp>
 #include <isoline/compiler/machine/CallingConvention.hpp>
 #include <isoline/compiler/machine/MachineFunction.hpp>
+#include <isoline/compiler/machine/TargetDescription.hpp>
 
 namespace isoline::compiler::machine
 {
@@ -29,11 +31,45 @@ namespace isoline::compiler::machine
 /// from the real stack"). Published for every target: the stubs are the same C++ on each.
 inline constexpr auto StubReserveBytes = uint64_t { 16 } * 1024;
 
-/// The stack a runtime stub other than a host call may take below its caller, at the most: what
-/// StackBounds.stubReserveCoversEveryStub measures every stub against by stack painting, on every build
-/// flavour. With a target's entry path (its return address, saved frame pointer and entry poll's saves) it
-/// must fit StubReserveBytes.
-inline constexpr auto StubStackBudgetBytes = uint64_t { 8 } * 1024;
+/// The stack a runtime stub other than a host call may take below its caller, at the most, on one
+/// architecture: what StackBounds.stubReserveCoversEveryStub measures every stub against by stack painting,
+/// on every build flavour of it. The stubs are the same C++ everywhere, but each architecture compiles them
+/// to frames of its own, and ASan's are the largest. With the architecture's entry path (its return address
+/// or frame record, saved frame pointer and entry poll's saves) it must fit StubReserveBytes.
+struct StubStackBudgetRow
+{
+    Architecture architecture; ///< The architecture; equal to the row's index.
+    uint64_t bytes;            ///< The most stack a stub there may take.
+};
+
+/// Every architecture's stub budget. x86-64's is P5's 8 KiB, which its deepest stub (MemoryGrow, 7'312 bytes
+/// under ASan) keeps. arm64's is the most measured, by half again, to a multiple of 256: TableGrow's 9'152
+/// bytes under ASan on ubuntu-24.04-arm, 13'824.
+inline constexpr auto StubStackBudgetTable = std::to_array<StubStackBudgetRow>({
+    { .architecture = Architecture::X64, .bytes = uint64_t { 8 } * 1024 },
+    { .architecture = Architecture::Arm64, .bytes = 13'824 },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: StubStackBudgetTable)
+            if (static_cast<std::size_t>(row.architecture) != index++ || row.bytes >= StubReserveBytes)
+                return false;
+        return index == static_cast<std::size_t>(Architecture::Arm64) + 1;
+    }(),
+    "StubStackBudgetTable must hold one row per Architecture, at the index of its enumerator, each within "
+    "StubReserveBytes");
+
+/// The stack a runtime stub other than a host call may take on @p architecture, at the most.
+[[nodiscard]] constexpr uint64_t stubStackBudgetBytes(Architecture architecture) noexcept
+{
+    return StubStackBudgetTable[static_cast<std::size_t>(architecture)].bytes;
+}
+
+/// The largest stub budget of any architecture: what a build for several at once is held to.
+inline constexpr auto LargestStubStackBudgetBytes =
+    std::ranges::max(StubStackBudgetTable, {}, &StubStackBudgetRow::bytes).bytes;
 
 /// A target's bound on a native frame.
 struct FrameRule

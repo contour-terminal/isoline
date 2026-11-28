@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include <isoline/HostTarget.hpp>
 #include <isoline/compiler/ContextLayout.hpp>
 #include <isoline/compiler/machine/FrameRule.hpp>
 #include <isoline/execution/CompiledExecutor.hpp>
@@ -29,7 +30,6 @@
 using isoline::compiler::FloatRoundOperation;
 using isoline::compiler::RuntimeStub;
 using isoline::compiler::machine::FrameRule;
-using isoline::compiler::machine::StubStackBudgetBytes;
 using isoline::execution::nativeStackLimitOf;
 using isoline::execution::requiredNativeStack;
 using isoline::execution::rowOf;
@@ -158,7 +158,8 @@ TEST_CASE("StackBounds.nativeStackFollowsTheLimits")
     }
     SECTION("the reserve holds every stub's budget")
     {
-        STATIC_CHECK(StubStackBudgetBytes <= StubReserve);
+        for (auto const& row: isoline::compiler::machine::StubStackBudgetTable)
+            CHECK(row.bytes <= StubReserve);
     }
 }
 
@@ -168,8 +169,11 @@ TEST_CASE("StackBounds.stubReserveCoversEveryStub")
     if (!hostRunsCompiledCode())
         SKIP("the code is x86-64's");
     // Every stub but CallHost (a host function gets whatever stack is left) runs on the reserve the
-    // prologue's native check keeps free, and so must stay within StubStackBudgetBytes on every build
-    // flavour.
+    // prologue's native check keeps free, and so must stay within the host architecture's stub budget on
+    // every build flavour (the largest, where the build serves several).
+    constexpr auto Budget = isoline::HostArchitecture
+                                ? isoline::compiler::machine::stubStackBudgetBytes(*isoline::HostArchitecture)
+                                : isoline::compiler::machine::LargestStubStackBudgetBytes;
     auto created = CompiledInstance::create(moduleOf(StubModule),
                                             hostConfig(isoline::runtime::ExecutionMode::Deterministic, {}));
     REQUIRE(created.has_value());
@@ -205,7 +209,7 @@ TEST_CASE("StackBounds.stubReserveCoversEveryStub")
         INFO(rowOf(stub).name << " took " << depth << " bytes");
         CHECK(status == isoline::compiler::StubSucceeded);
         deepest = std::max(deepest, depth);
-        CHECK(depth <= StubStackBudgetBytes);
+        CHECK(depth <= Budget);
         measured.push_back(stub);
     }
     // The painting sees frames below its margin: a recursion of known depth (testing/StackCalibration.hpp)
