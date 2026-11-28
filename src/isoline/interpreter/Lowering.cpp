@@ -819,7 +819,7 @@ namespace
             auto const access = _context.memoryAddressTypes[memory] == binary::AddressType::I64
                                     ? row.memory64
                                     : row.operation;
-            auto const lane = binary::memoryAccessOf(row.opcode)->shape == binary::VectorShape::Lane;
+            auto const lane = binary::memoryAccessRowOf(row.opcode).shape == binary::VectorShape::Lane;
             if (memory != 0)
                 emit(indexed,
                      slots,
@@ -836,7 +836,7 @@ namespace
         /// vector, above the address, is moved to its home slots first, where the access finds it.
         void lowerLoad(LoweringRow const& row, binary::Instruction const& instruction)
         {
-            auto const& access = *binary::memoryAccessOf(row.opcode);
+            auto const& access = binary::memoryAccessRowOf(row.opcode);
             auto vector = Entry {};
             if (access.shape == binary::VectorShape::Lane)
                 vector = pop();

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "Corpus.hpp"
 
+#include <core/Assert.hpp>
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -320,12 +322,14 @@ namespace
                         lane == Lane::Deterministic ? "deterministic" : "production"));
     }
 
-    /// The first participant's observation in @p mode.
-    [[nodiscard]] ParticipantObservation const* firstIn(std::span<ParticipantObservation const> observations,
-                                                        ObservationMode mode) noexcept
+    /// The first participant's observation in @p mode, which a successful observe() holds for each mode: one
+    /// without fails the Require instead of reading through a null observation.
+    [[nodiscard]] ParticipantObservation const& firstIn(std::span<ParticipantObservation const> observations,
+                                                        ObservationMode mode)
     {
         auto const found = std::ranges::find(observations, mode, &ParticipantObservation::mode);
-        return found == observations.end() ? nullptr : &*found;
+        Require(found != observations.end());
+        return *found;
     }
 } // namespace
 
@@ -354,12 +358,11 @@ ReplayTally replayCorpus(std::span<CorpusModule const> modules,
             continue;
         }
         ++tally.modules[std::to_underlying(Applicability::Compared)];
-        if (auto const* unobserved = firstIn(*observations, ObservationMode::Unobserved);
-            unobserved != nullptr && unobserved->observation)
-            tally.calls += unobserved->observation->calls.size();
-        if (auto const* observed = firstIn(*observations, ObservationMode::Observed);
-            observed != nullptr && observed->observation)
-            tally.reach.add(*observed->observation);
+        if (auto const& unobserved = firstIn(*observations, ObservationMode::Unobserved);
+            unobserved.observation)
+            tally.calls += unobserved.observation->calls.size();
+        if (auto const& observed = firstIn(*observations, ObservationMode::Observed); observed.observation)
+            tally.reach.add(*observed.observation);
         if (auto const outcome = first.compare(*module, bytes, *observations); !outcome)
             recordDivergence(tally, entry, Lane::Deterministic, outcome.error());
         if (!isSampled(seed, scope))
@@ -368,8 +371,8 @@ ReplayTally replayCorpus(std::span<CorpusModule const> modules,
 
         // Lane 2 reuses the reference's observations: it runs the validated module itself, whatever the lane.
         auto const reference =
-            std::vector<ParticipantObservation> { *firstIn(*observations, ObservationMode::Unobserved),
-                                                  *firstIn(*observations, ObservationMode::Observed) };
+            std::vector<ParticipantObservation> { firstIn(*observations, ObservationMode::Unobserved),
+                                                  firstIn(*observations, ObservationMode::Observed) };
         auto const second = DifferentialRunner { participants, Lane::Production, FuzzLimits, plan };
         if (auto const secondObservations = second.observe(*module, bytes, reference))
         {

@@ -27,7 +27,7 @@ namespace isoline::interpreter::testing
     return std::ranges::any_of(LoweringRows, [id](LoweringRow const& row) {
         return (row.form == OperationForm::Load || row.form == OperationForm::Store)
                && (row.operation == id || row.memory64 == id)
-               && binary::memoryAccessOf(row.opcode)->value == binary::ValueKind::V128;
+               && binary::memoryAccessRowOf(row.opcode).value == binary::ValueKind::V128;
     });
 }
 

@@ -1207,7 +1207,7 @@ namespace
 
     Emission FunctionWriter::emitAccess(binary::OpcodeInfo const& row)
     {
-        auto const& access = *binary::memoryAccessOf(row.opcode);
+        auto const& access = binary::memoryAccessRowOf(row.opcode);
         // Memory 0, the cached one, three times in four.
         auto const memory = _entropy.isOneIn(4) ? 1 + _entropy.below(Memories.size() - 1) : uint32_t { 0 };
         auto const isLoad = access.access == binary::MemoryAccessKind::Load;

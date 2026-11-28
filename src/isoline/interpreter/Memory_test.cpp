@@ -519,7 +519,7 @@ struct EdgeCase
                                       Opcode::V128Load8Lane,
                                       Opcode::V128Store64Lane })
             {
-                auto const width = uint64_t { binary::memoryAccessOf(opcode)->width };
+                auto const width = uint64_t { binary::memoryAccessRowOf(opcode).width };
                 add(name(std::format(
                         "{} bytes: {} at the last address", bytes, binary::opcodeInfo(opcode).text)),
                     memory,

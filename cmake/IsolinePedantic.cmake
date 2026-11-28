@@ -35,11 +35,6 @@ set(_isolineGnuStyleWarnings
 # Contour's set also names -Wdangling-reference, which only GCC knows and Contour switches off there
 # for its false positives (gcc.gnu.org commit 6b927b12), so it is left out here.
 
-# GCC >= 16 emits -Wnull-dereference false positives from inside libstdc++ and Catch2 headers: kept as
-# a warning, but not an error.
-set(_isolineGccOverrides
-    -Wno-error=null-dereference)
-
 # Test binaries only: Catch2's TEST_CASE expands __COUNTER__, which Clang flags as a C2y extension
 # under -pedantic. Contour's test targets carry the same flag.
 set(_isolineTestWarnings
@@ -134,9 +129,6 @@ if(MSVC)
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX -fdiagnostics-color=always ${_isolineGnuStyleWarnings})
     list(APPEND ISOLINE_COMPILE_OPTIONS ${_isolineFloatPolicy})
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        _isoline_supported_flags(ISOLINE_CXX_WARNINGS CXX ${_isolineGccOverrides})
-    endif()
     _isoline_supported_flags(ISOLINE_C_WARNINGS C -fdiagnostics-color=always ${ISOLINE_C_API_GNU_WARNINGS})
     _isoline_supported_flags(ISOLINE_TEST_COMPILE_OPTIONS CXX ${_isolineTestWarnings})
     if(ISOLINE_WERROR)

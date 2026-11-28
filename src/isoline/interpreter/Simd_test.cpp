@@ -515,18 +515,18 @@ void checkOperators(Agreement& agreement)
                                uint64_t { 0xFFFF'FFFF },
                                std::numeric_limits<uint64_t>::max() })
     {
-        auto set = std::vector<Value> { addressValue(addressType, address) };
+        auto const addressArgument = addressValue(addressType, address);
         if (access.access == MemoryAccessKind::Store || access.shape == VectorShape::Lane)
         {
             for (auto const& vector: { vectors[1], vectors[3] })
             {
-                auto withVector = set;
+                auto& withVector = sets.emplace_back();
+                withVector.push_back(addressArgument);
                 withVector.emplace_back(vector);
-                sets.push_back(std::move(withVector));
             }
         }
         else
-            sets.push_back(std::move(set));
+            sets.emplace_back().push_back(addressArgument);
     }
     return sets;
 }

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <core/Utils.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
 #include <filesystem>
 #include <format>
-#include <fstream>
-#include <iterator>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -383,10 +383,8 @@ TEST_CASE("Verbs.loadFailure")
 TEST_CASE("Verbs.readmeListsEveryRefusal")
 {
     // README.md's exit status table is Refusals, row for row.
-    auto readme = std::ifstream { std::filesystem::path { ISOLINE_SOURCE_DIR } / "README.md" };
-    REQUIRE(readme.is_open());
-    auto const text =
-        std::string { std::istreambuf_iterator<char> { readme }, std::istreambuf_iterator<char> {} };
+    auto const text = core::readFileAsString(std::filesystem::path { ISOLINE_SOURCE_DIR } / "README.md");
+    REQUIRE_FALSE(text.empty());
     auto table =
         std::string { "| Status | Refusal |\n| --- | --- |\n| 0 | none: the output was written |\n" };
     for (auto const& row: Refusals)

@@ -7,8 +7,6 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -543,9 +541,9 @@ TEST_CASE("WastReader.ordinalsMatchWasmTools")
     // per command: the reader must give one command per JSON command, in the same order.
     auto const directory = std::filesystem::path { ISOLINE_SOURCE_DIR } / "tests" / "spec" / "ordinals";
     auto const read = [](std::filesystem::path const& path) {
-        auto stream = std::ifstream { path, std::ios::binary };
-        REQUIRE(stream);
-        return std::string { std::istreambuf_iterator<char> { stream }, std::istreambuf_iterator<char> {} };
+        auto text = core::readFileAsString(path);
+        REQUIRE_FALSE(text.empty());
+        return text;
     };
     // The JSON type each command kind is, as wasm-tools names it.
     constexpr auto JsonTypes = std::to_array<std::pair<CommandKind, std::string_view>>({

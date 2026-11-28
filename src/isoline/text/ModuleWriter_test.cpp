@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <core/Sha256.hpp>
+#include <core/Utils.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -9,7 +10,6 @@
 #include <expected>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <iterator>
 #include <optional>
 #include <ranges>
@@ -79,9 +79,7 @@ FeatureSet const& features()
 /// The bytes of a file.
 std::vector<std::byte> readFile(std::filesystem::path const& path)
 {
-    auto stream = std::ifstream { path, std::ios::binary };
-    auto const text =
-        std::string { std::istreambuf_iterator<char> { stream }, std::istreambuf_iterator<char> {} };
+    auto const text = core::readFileAsString(path);
     auto bytes = std::vector<std::byte> {};
     bytes.reserve(text.size());
     std::ranges::transform(text, std::back_inserter(bytes), [](char byte) { return std::byte(byte); });

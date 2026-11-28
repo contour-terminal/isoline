@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <iterator>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -45,12 +44,18 @@ void removeOutputs(std::filesystem::path const& outputPath, std::filesystem::pat
 
 std::expected<std::string, std::string> readWholeFile(std::filesystem::path const& path)
 {
+    // Sized from the file, then read in one go: GCC 14 reports a potential null dereference of the stream
+    // buffer inside an istreambuf_iterator slurp.
+    auto error = std::error_code {};
+    auto const size = std::filesystem::file_size(path, error);
     auto stream = std::ifstream { path, std::ios::binary };
-    if (!stream)
+    if (error || !stream)
         return std::unexpected { std::format("cannot open {}", path.string()) };
-    auto text = std::string { std::istreambuf_iterator<char> { stream }, std::istreambuf_iterator<char> {} };
+    auto text = std::string(static_cast<std::size_t>(size), '\0');
+    stream.read(text.data(), static_cast<std::streamsize>(size));
     if (stream.bad())
         return std::unexpected { std::format("cannot read {}", path.string()) };
+    text.resize(static_cast<std::size_t>(stream.gcount()));
     return text;
 }
 

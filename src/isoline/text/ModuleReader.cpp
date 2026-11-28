@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <isoline/text/ModuleReader.hpp>
 
+#include <core/Assert.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -55,6 +57,16 @@ namespace
     {
         auto const found = std::ranges::find(ExternRows, keyword, &ExternRow::keyword);
         return found == ExternRows.end() ? nullptr : &*found;
+    }
+
+    /// The row of a descriptor keyword readDescriptor() accepted: a keyword it let through without a row
+    /// fails the Require instead of reading through a null row.
+    /// @return The row.
+    ExternRow const& acceptedExternRowOf(std::string_view keyword)
+    {
+        auto const* row = externRowOf(keyword);
+        Require(row != nullptr);
+        return *row;
     }
 
     /// The name of the synthesized section the reader builds from identifiers, and where it goes.
@@ -1007,7 +1019,7 @@ Outcome FieldReader::readImport(NodeId field)
         auto import = readDescriptor(descriptor, use);
         if (!import)
             return std::unexpected { std::move(import.error()) };
-        auto const index = allocate(externRowOf(headKeyword(_tree, descriptor))->space);
+        auto const index = allocate(acceptedExternRowOf(headKeyword(_tree, descriptor)).space);
         if (import->kind == ExternKind::Func)
             addParamNames(NameKind::Local, index, use.paramNames);
         import->name = std::move(name);
@@ -1076,7 +1088,7 @@ Outcome FieldReader::readImport(NodeId field)
         auto const import = readDescriptor(*descriptor, use);
         if (!import)
             return std::unexpected { import.error() };
-        auto const space = externRowOf(headKeyword(_tree, *descriptor))->space;
+        auto const space = acceptedExternRowOf(headKeyword(_tree, *descriptor)).space;
         for (auto& name: sharedNames)
         {
             allocate(space);

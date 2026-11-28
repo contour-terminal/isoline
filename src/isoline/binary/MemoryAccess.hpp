@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <core/Assert.hpp>
+
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -216,6 +218,17 @@ namespace detail
 {
     auto const row = detail::MemoryAccessRowByOpcode[static_cast<std::size_t>(opcode)];
     return row == 0 ? nullptr : &MemoryAccessTable[row - 1U];
+}
+
+/// The row of @p opcode, which a table names as a load or store: a broken table fails the Require
+/// instead of reading through a null row.
+/// @param opcode The instruction; a load or store.
+/// @return Its row of MemoryAccessTable.
+[[nodiscard]] constexpr MemoryAccess const& memoryAccessRowOf(Opcode opcode)
+{
+    auto const* row = memoryAccessOf(opcode);
+    Require(row != nullptr);
+    return *row;
 }
 
 } // namespace isoline::binary
