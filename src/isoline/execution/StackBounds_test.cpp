@@ -49,8 +49,28 @@ constexpr auto PaintBytes = std::size_t { 64 } * 1024;
 /// The bytes left unpainted below the measuring frame: what the painting's own calls may take there.
 constexpr auto PaintMargin = std::uintptr_t { 1024 };
 
+/// How deep the work that calibrates the painting recurses: at 16 bytes a frame at the least (a return
+/// address and the level it keeps), 8 KiB, far past PaintMargin wherever its first frame starts.
+constexpr auto CalibrationLevels = std::uint32_t { 512 };
+
 /// The pattern a painting fills the stack with.
 constexpr auto Paint = std::byte { 0xa5 };
+
+/// The calibration's recursion. Each level calls the next through a volatile pointer, which no compiler can
+/// turn into a loop or inline, and keeps its level across the call: a frame on the real stack for every level
+/// (it holds no addressable local, which ASan would move to its fake stack).
+struct Calibration
+{
+    std::uint32_t (*volatile level)(Calibration const&, std::uint32_t); ///< The next level.
+};
+
+/// One level of @p calibration, with @p levels more below it.
+std::uint32_t calibrationLevel(Calibration const& calibration, std::uint32_t levels)
+{
+    if (levels == 0)
+        return 0;
+    return calibration.level(calibration, levels - 1) ^ levels;
+}
 
 /// The stack @p work takes below the caller of this function, measured by painting: PaintBytes below this
 /// frame are filled with Paint, top down (so that every guard page is met in order), @p work runs, and the
@@ -195,8 +215,16 @@ TEST_CASE("StackBounds.stubReserveCoversEveryStub")
         CHECK(depth <= StubStackBudgetBytes);
         measured.push_back(stub);
     }
-    // The painting sees a stub's frames: one of them went past the unpainted margin.
-    CHECK(deepest > PaintMargin);
+    // The painting sees frames below its margin: a recursion known to go far past it measures past it. (A
+    // stub need not: an optimized arm64 build runs every one within the margin.) Not 16 bytes a level: GCC
+    // devirtualizes the call speculatively and inlines a level into its caller, so gcc-release on x86-64
+    // takes 4'040 bytes for the 512 levels.
+    auto const calibration = Calibration { .level = &calibrationLevel };
+    auto result = std::uint32_t { 0 };
+    auto const calibrated = stackDepthOf([&] { result = calibration.level(calibration, CalibrationLevels); });
+    INFO("the deepest stub took " << deepest << " bytes, " << CalibrationLevels << " levels " << calibrated
+                                  << " (" << result << ")");
+    CHECK(calibrated > PaintMargin);
     // Every stub but CallHost, the one a host function's own stack follows.
     for (auto const& row: isoline::execution::RuntimeStubTable)
         CHECK((row.stub == RuntimeStub::CallHost || std::ranges::contains(measured, row.stub)));
