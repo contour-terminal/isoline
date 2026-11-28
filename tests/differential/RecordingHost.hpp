@@ -31,6 +31,21 @@ using ImportRefusal = std::variant<runtime::LimitExceeded, runtime::AllocationFa
 /// @return Nothing, or the first import that cannot.
 [[nodiscard]] std::expected<void, UnsupportedImport> checkImports(binary::Module const& module);
 
+/// The re-entries the host functions make between two takeTrace()s, at most: a guest that calls a
+/// re-entering import k times per entry would otherwise fan out to k^maxNestedInvocations host calls, each
+/// costing a guest step or two but microseconds of host work, which under ASan ran a 100'000-step budget
+/// past the fuzz smoke's 10-second timeout. Depth-first, a chain of re-entries still reaches the
+/// nested-invocation limit (8) long before the budget runs out.
+inline constexpr auto MaxReentriesPerCall = uint32_t { 256 };
+
+/// What a RecordingHost's functions share: the trace they append to, and the re-entries they may still
+/// make before the next takeTrace() (MaxReentriesPerCall).
+struct HostLog
+{
+    std::vector<std::string> trace;               ///< The calls since the last takeTrace(), in order.
+    uint32_t reentriesLeft = MaxReentriesPerCall; ///< The re-entries left; at 0 one is recorded and skipped.
+};
+
 /// The host every participant's store binds a module's imports to, the same in each, so that what the
 /// guest does through its imports compares.
 ///
@@ -62,8 +77,9 @@ class RecordingHost
     [[nodiscard]] std::vector<std::string> takeTrace();
 
   private:
-    /// The trace the host functions append to: shared with each of them, which the store keeps.
-    std::shared_ptr<std::vector<std::string>> _trace;
+    /// The trace the host functions append to and their re-entry budget: shared with each of them, which
+    /// the store keeps.
+    std::shared_ptr<HostLog> _log;
 };
 
 } // namespace isoline::differential

@@ -138,11 +138,19 @@ namespace
                  uint32_t importIndex,
                  std::string_view target,
                  uint64_t digest,
-                 std::vector<std::string>& trace)
+                 HostLog& log)
     {
         auto const caller = context.callerInstance();
         if (!caller)
             return;
+        if (log.reentriesLeft == 0)
+        {
+            log.trace.push_back(
+                std::format("{} reenters nothing: the re-entry budget is spent", importIndex));
+            return;
+        }
+        --log.reentriesLeft;
+        auto& trace = log.trace;
         auto const& store = context.store();
         auto targets = std::vector<std::pair<std::string_view, runtime::FuncAddr>> {};
         for (auto const& [name, value]: store.moduleInstance(*caller).exports)
@@ -186,14 +194,13 @@ namespace
 
     /// The host function bound to function import @p importIndex of type @p type, which re-enters the guest
     /// as @p reentry says.
-    [[nodiscard]] std::shared_ptr<runtime::IHostFunction> recordingFunction(
-        uint32_t importIndex,
-        binary::FuncType type,
-        ReentryRule reentry,
-        std::shared_ptr<std::vector<std::string>> trace)
+    [[nodiscard]] std::shared_ptr<runtime::IHostFunction> recordingFunction(uint32_t importIndex,
+                                                                            binary::FuncType type,
+                                                                            ReentryRule reentry,
+                                                                            std::shared_ptr<HostLog> log)
     {
         return runtime::makeHostFunction(
-            [importIndex, type = std::move(type), reentry, trace = std::move(trace)](
+            [importIndex, type = std::move(type), reentry, log = std::move(log)](
                 runtime::HostContext& context,
                 std::span<runtime::Value const> args,
                 std::span<runtime::Value> results) noexcept -> std::expected<void, runtime::Abrupt> {
@@ -202,25 +209,25 @@ namespace
                     digest = digestOf(digest, argument);
                 if (digest % FailureStride == 0)
                 {
-                    trace->push_back(std::format("{}({}) -> host failure", importIndex, describe(args)));
+                    log->trace.push_back(std::format("{}({}) -> host failure", importIndex, describe(args)));
                     return std::unexpected { runtime::HostFailure { .kind =
                                                                         runtime::HostFailureKind::Embedder,
                                                                     .code = HostFailureCode,
                                                                     .mismatch = std::nullopt } };
                 }
                 if (reentry.reentry == Reentry::Always || (digest >> ReentryShift) % ReentryStride == 0)
-                    reenter(context, importIndex, reentry.target, digest, *trace);
+                    reenter(context, importIndex, reentry.target, digest, *log);
                 if ((digest >> WriteShift) % WriteStride == 0)
-                    writeCallerMemory(context, importIndex, digest, *trace);
+                    writeCallerMemory(context, importIndex, digest, log->trace);
                 for (auto const index: std::views::iota(std::size_t { 0 }, results.size()))
                 {
                     digest = combine(digest, index);
                     results[index] = derivedValue(type.results[index], digest);
                 }
-                trace->push_back(std::format("{}({}) -> {}",
-                                             importIndex,
-                                             describe(args),
-                                             describe(std::span<runtime::Value const> { results })));
+                log->trace.push_back(std::format("{}({}) -> {}",
+                                                 importIndex,
+                                                 describe(args),
+                                                 describe(std::span<runtime::Value const> { results })));
                 return {};
             });
     }
@@ -246,7 +253,7 @@ std::expected<void, UnsupportedImport> checkImports(binary::Module const& module
     return {};
 }
 
-RecordingHost::RecordingHost(): _trace { std::make_shared<std::vector<std::string>>() }
+RecordingHost::RecordingHost(): _log { std::make_shared<HostLog>() }
 {
 }
 
@@ -263,8 +270,8 @@ std::expected<std::vector<runtime::ExternValue>, ImportRefusal> RecordingHost::b
         {
             case binary::ExternKind::Func: {
                 auto const& type = module.types[import.typeIndex];
-                auto const function = store.addHostFunction(
-                    type, recordingFunction(index, type, reentryOf(import.name), _trace));
+                auto const function =
+                    store.addHostFunction(type, recordingFunction(index, type, reentryOf(import.name), _log));
                 if (!function)
                     return std::unexpected { ImportRefusal { function.error() } };
                 address = *function;
@@ -307,7 +314,8 @@ std::expected<std::vector<runtime::ExternValue>, ImportRefusal> RecordingHost::b
 
 std::vector<std::string> RecordingHost::takeTrace()
 {
-    return std::exchange(*_trace, {});
+    _log->reentriesLeft = MaxReentriesPerCall;
+    return std::exchange(_log->trace, {});
 }
 
 } // namespace isoline::differential

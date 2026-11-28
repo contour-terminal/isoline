@@ -23,6 +23,7 @@
 #include "DifferentialRunner.hpp"
 #include "Observation.hpp"
 #include "Reach.hpp"
+#include "RecordingHost.hpp"
 #include "testing/EnvironmentNumber.hpp"
 #include <isoline/reference/ReferenceInterpreter.hpp>
 #include <isoline/runtime/Abrupt.hpp>
@@ -404,6 +405,41 @@ TEST_CASE("Differential.agreesWithItself")
                                             InterruptionPlan {} };
     CHECK(twice.run(module, seedBytes(1)).has_value());
     requireAgreement(module, seedBytes(1), InterruptionPlan {}, "the perturbed module");
+}
+
+TEST_CASE("Differential.boundsTheHostsReentries")
+{
+    // Each entry of f calls the re-entering import three times, so that re-entry fans out to 3^8 host calls
+    // under the nested-invocation limit: the recording host makes MaxReentriesPerCall of them per call, and
+    // records each one past the budget as skipped (the fuzz smoke's timeout,
+    // tests/fuzz/regressions/differential/timeout-reentry-fanout.bin).
+    auto const module = compiled(R"((module
+        (import "env" "reenter" (func $reenter (param i32) (result i32)))
+        (func (export "f") (param i32) (result i32)
+            (drop (call $reenter (local.get 0)))
+            (drop (call $reenter (local.get 0)))
+            (call $reenter (local.get 0)))))");
+    auto const runner = DifferentialRunner {
+        { referenceParticipant() }, Lane::Deterministic, FuzzLimits, InterruptionPlan {}
+    };
+    auto const observed = runner.observe(module, seedBytes(1));
+    REQUIRE(observed.has_value());
+    REQUIRE_FALSE(observed->empty());
+    REQUIRE(observed->front().observation.has_value());
+    auto const& calls = observed->front().observation->calls;
+    REQUIRE_FALSE(calls.empty());
+    for (auto const& call: calls)
+    {
+        auto const reentries = std::ranges::count_if(call.hostTrace, [](std::string const& line) {
+            return line.contains(" reenters ") && !line.contains("reenters nothing");
+        });
+        auto const skipped = std::ranges::count_if(call.hostTrace, [](std::string const& line) {
+            return line.contains("re-entry budget is spent");
+        });
+        auto const budget = static_cast<std::ptrdiff_t>(MaxReentriesPerCall);
+        CHECK(reentries == budget);
+        CHECK(skipped > 0);
+    }
 }
 
 TEST_CASE("Differential.reportsARefusedLowering")
