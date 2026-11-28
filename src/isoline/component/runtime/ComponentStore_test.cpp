@@ -78,10 +78,10 @@ namespace
 constexpr auto ThreadDeadline = std::chrono::seconds { 60 };
 
 /// The failure an instantiation ended in (REQUIREd to have failed).
-[[nodiscard]] InstantiationFailure failureOf(std::expected<uint32_t, InstantiationFailure> const& outcome)
+[[nodiscard]] InstantiationFailure failureOf(std::expected<uint32_t, InstantiationFailure>&& outcome)
 {
     REQUIRE_FALSE(outcome.has_value());
-    return outcome.error();
+    return std::move(outcome).error();
 }
 
 /// A component instantiating identityModule() @p count times, exporting nothing.
