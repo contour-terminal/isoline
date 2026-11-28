@@ -1,0 +1,249 @@
+{
+  "micro-call": {
+    "isoline-interpreter-tailcall": 190,
+    "isoline-interpreter-switch": 216,
+    "isoline-interpreter-switch-gcc": 159,
+    "isoline-reference": 79,
+    "wamr-contour": 415,
+    "wamr-classic": 320,
+    "wamr-default": 772,
+    "wasmtime": 7394
+  },
+  "micro-call_indirect": {
+    "isoline-interpreter-tailcall": 144,
+    "isoline-interpreter-switch": 164,
+    "isoline-interpreter-switch-gcc": 123,
+    "isoline-reference": 69,
+    "wamr-contour": 385,
+    "wamr-classic": 287,
+    "wamr-default": 550,
+    "wasmtime": 1969
+  },
+  "micro-float": {
+    "isoline-interpreter-tailcall": 2017,
+    "isoline-interpreter-switch": 1602,
+    "isoline-interpreter-switch-gcc": 636,
+    "isoline-reference": 165,
+    "wamr-contour": 2385,
+    "wamr-classic": 709,
+    "wamr-default": 2599,
+    "wasmtime": 5475
+  },
+  "micro-loop": {
+    "isoline-interpreter-tailcall": 3953,
+    "isoline-interpreter-switch": 1761,
+    "isoline-interpreter-switch-gcc": 796,
+    "isoline-reference": 108,
+    "wamr-contour": 1980,
+    "wamr-classic": 933,
+    "wamr-default": 2217,
+    "wasmtime": 9205
+  },
+  "micro-memory": {
+    "isoline-interpreter-tailcall": 1318,
+    "isoline-interpreter-switch": 1313,
+    "isoline-interpreter-switch-gcc": 471,
+    "isoline-reference": 90,
+    "wamr-contour": 1533,
+    "wamr-classic": 744,
+    "wamr-default": 1746,
+    "wasmtime": 15847
+  },
+  "micro-simd": {
+    "isoline-interpreter-tailcall": 592,
+    "isoline-interpreter-switch": 248,
+    "isoline-interpreter-switch-gcc": 199,
+    "isoline-reference": 205,
+    "wasmtime": 13206
+  },
+  "shootout-ackermann": {
+    "isoline-interpreter-tailcall": 60,
+    "isoline-interpreter-switch": 74,
+    "isoline-interpreter-switch-gcc": 51,
+    "isoline-reference": 22,
+    "wamr-contour": 91,
+    "wamr-classic": 70,
+    "wamr-default": 226,
+    "wasmtime": 1888
+  },
+  "shootout-base64": {
+    "isoline-interpreter-tailcall": 12669,
+    "isoline-interpreter-switch": 6681,
+    "isoline-interpreter-switch-gcc": 3367,
+    "isoline-reference": 503,
+    "wamr-contour": 7731,
+    "wamr-classic": 3859,
+    "wamr-default": 10626,
+    "wasmtime": 169808
+  },
+  "shootout-ctype": {
+    "isoline-interpreter-tailcall": 1160,
+    "isoline-interpreter-switch": 679,
+    "isoline-interpreter-switch-gcc": 277,
+    "isoline-reference": 40,
+    "wamr-contour": 583,
+    "wamr-classic": 290,
+    "wamr-default": 900,
+    "wasmtime": 10927
+  },
+  "shootout-ed25519": {
+    "isoline-interpreter-tailcall": 226,
+    "isoline-interpreter-switch": 219,
+    "isoline-interpreter-switch-gcc": 123,
+    "isoline-reference": 33,
+    "wamr-contour": 350,
+    "wamr-classic": 205,
+    "wamr-default": 442,
+    "wasmtime": 6898
+  },
+  "shootout-fib2": {
+    "isoline-interpreter-tailcall": 164,
+    "isoline-interpreter-switch": 186,
+    "isoline-interpreter-switch-gcc": 137,
+    "isoline-reference": 53,
+    "wamr-contour": 275,
+    "wamr-classic": 206,
+    "wamr-default": 591,
+    "wasmtime": 7592
+  },
+  "shootout-gimli": {
+    "isoline-interpreter-tailcall": 1168098,
+    "isoline-interpreter-switch": 602061,
+    "isoline-interpreter-switch-gcc": 280247,
+    "isoline-reference": 39901,
+    "wamr-contour": 743622,
+    "wamr-classic": 291435,
+    "wamr-default": 905468,
+    "wasmtime": 11550151
+  },
+  "shootout-heapsort": {
+    "isoline-interpreter-tailcall": 356,
+    "isoline-interpreter-switch": 305,
+    "isoline-interpreter-switch-gcc": 126,
+    "isoline-reference": 17,
+    "wamr-contour": 140,
+    "wamr-classic": 85,
+    "wamr-default": 223,
+    "wasmtime": 1794
+  },
+  "shootout-keccak": {
+    "isoline-interpreter-tailcall": 403164,
+    "isoline-interpreter-switch": 237738,
+    "isoline-interpreter-switch-gcc": 117604,
+    "isoline-reference": 16462,
+    "wamr-contour": 314597,
+    "wamr-classic": 61014,
+    "wamr-default": 310938,
+    "wasmtime": 1723668
+  },
+  "shootout-matrix": {
+    "isoline-interpreter-tailcall": 237349,
+    "isoline-interpreter-switch": 185008,
+    "isoline-interpreter-switch-gcc": 74878,
+    "isoline-reference": 17632,
+    "wamr-contour": 285266,
+    "wamr-classic": 140440,
+    "wamr-default": 349681,
+    "wasmtime": 2998017
+  },
+  "shootout-memmove": {
+    "isoline-interpreter-tailcall": 1314,
+    "isoline-interpreter-switch": 990,
+    "isoline-interpreter-switch-gcc": 753,
+    "isoline-reference": 371,
+    "wamr-contour": 1620,
+    "wamr-classic": 1478,
+    "wamr-default": 1740,
+    "wasmtime": 2187
+  },
+  "shootout-minicsv": {
+    "isoline-interpreter-tailcall": 250600,
+    "isoline-interpreter-switch": 215310,
+    "isoline-interpreter-switch-gcc": 113682,
+    "isoline-reference": 24919,
+    "wamr-contour": 161177,
+    "wamr-classic": 100507,
+    "wamr-default": 295827,
+    "wasmtime": 6051728
+  },
+  "shootout-nestedloop": {
+    "isoline-interpreter-tailcall": 263,
+    "isoline-interpreter-switch": 206,
+    "isoline-interpreter-switch-gcc": 82,
+    "isoline-reference": 17,
+    "wamr-contour": 179,
+    "wamr-classic": 119,
+    "wamr-default": 340,
+    "wasmtime": 6659
+  },
+  "shootout-random": {
+    "isoline-interpreter-tailcall": 3323,
+    "isoline-interpreter-switch": 2323,
+    "isoline-interpreter-switch-gcc": 1051,
+    "isoline-reference": 187,
+    "wamr-contour": 2718,
+    "wamr-classic": 1476,
+    "wamr-default": 3591,
+    "wasmtime": 4243
+  },
+  "shootout-ratelimit": {
+    "isoline-interpreter-tailcall": 7995,
+    "isoline-interpreter-switch": 5301,
+    "isoline-interpreter-switch-gcc": 2945,
+    "isoline-reference": 552,
+    "wamr-contour": 6555,
+    "wamr-classic": 3799,
+    "wamr-default": 6850,
+    "wasmtime": 173825
+  },
+  "shootout-seqhash": {
+    "isoline-interpreter-tailcall": 146,
+    "isoline-interpreter-switch": 106,
+    "isoline-interpreter-switch-gcc": 43,
+    "isoline-reference": 12,
+    "wamr-contour": 80,
+    "wamr-classic": 49,
+    "wamr-default": 87,
+    "wasmtime": 1429
+  },
+  "shootout-sieve": {
+    "isoline-interpreter-tailcall": 9685,
+    "isoline-interpreter-switch": 7204,
+    "isoline-interpreter-switch-gcc": 3490,
+    "isoline-reference": 530,
+    "wamr-contour": 4218,
+    "wamr-classic": 2440,
+    "wamr-default": 10215,
+    "wasmtime": 128315
+  },
+  "shootout-switch": {
+    "isoline-interpreter-tailcall": 24650,
+    "isoline-interpreter-switch": 23843,
+    "isoline-interpreter-switch-gcc": 11051,
+    "isoline-reference": 21,
+    "wamr-contour": 6879,
+    "wamr-classic": 21,
+    "wamr-default": 23942,
+    "wasmtime": 35492
+  },
+  "shootout-xblabla20": {
+    "isoline-interpreter-tailcall": 223694,
+    "isoline-interpreter-switch": 120878,
+    "isoline-interpreter-switch-gcc": 62799,
+    "isoline-reference": 10767,
+    "wamr-contour": 152283,
+    "wamr-classic": 72360,
+    "wamr-default": 162058,
+    "wasmtime": 2784795
+  },
+  "shootout-xchacha20": {
+    "isoline-interpreter-tailcall": 109710,
+    "isoline-interpreter-switch": 76279,
+    "isoline-interpreter-switch-gcc": 31940,
+    "isoline-reference": 5461,
+    "wamr-contour": 62990,
+    "wamr-classic": 38357,
+    "wamr-default": 72969,
+    "wasmtime": 1425718
+  }
+}
