@@ -183,6 +183,10 @@ INSTRUCTION_TOLERANCE = 0.01
 # The runner kinds callgrind counts: Isoline's and WAMR's interpreters. Wasmtime's compiler runs on threads of
 # its own and its count is mostly compilation, so it has no row.
 INSTRUCTION_KINDS = ("isoline", "wamr")
+# Runners of those kinds callgrind cannot run, and why.
+INSTRUCTION_EXCLUDED = {
+    "wamr-default": "its hardware bounds checks catch SIGSEGV, which valgrind's own handler does not pass on",
+}
 # The core every timed process is pinned to.
 PIN_COMMAND = ("taskset", "-c", "{core}")
 
@@ -554,9 +558,34 @@ def formatPerIteration(seconds):
     return f"{seconds / 1e-9:.3g} ns"
 
 
-def reportMarkdown(result):
+def instructionsMarkdown(instructions, baseline):
+    """The instruction-count table of a baseline-instructions.json: every guest's kernel count per runner, and
+    its ratio over @p baseline's where that runner counted the guest."""
+    runners = sorted(instructions)
+    guests = sorted({guest for counts in instructions.values() for guest in counts})
+    lines = ["### Instructions", "", "callgrind's instruction count of one run() iteration (1 iteration less 0), "
+             f"and its ratio over {baseline}'s: deterministic, whatever the machine's load "
+             "(`benchmark.py instructions`).", "",
+             "| guest | " + " | ".join(runners) + " |", "|---|" + "---:|" * len(runners)]
+    for guest in guests:
+        reference = instructions.get(baseline, {}).get(guest)
+        cells = []
+        for runner in runners:
+            count = instructions[runner].get(guest)
+            if count is None:
+                cells.append("–")
+            elif reference and runner != baseline:
+                cells.append(f"{count:,} ({count / reference:.2f}×)".replace(",", "'"))
+            else:
+                cells.append(f"{count:,}".replace(",", "'"))
+        lines.append(f"| {guest} | " + " | ".join(cells) + " |")
+    return lines + [""]
+
+
+def reportMarkdown(result, instructions=None):
     """The report of a benchmark.json: the bar, the shootout and micro tables (ratios over wamr-contour), the
-    cold-start row, the A/A verdicts and the provenance."""
+    cold-start row, the A/A verdicts, the call round trip, the instruction counts (@p instructions, a
+    baseline-instructions.json, where given) and the provenance."""
     kernels = result["kernels"]
     runners = result["runners"]
     gate = result["bar"]
@@ -610,6 +639,8 @@ def reportMarkdown(result):
         lines += ["", "### Host → guest call round trip", "", "| runner | per call |", "|---|---:|"]
         for runner, perCall in sorted(result["calls"].items()):
             lines.append(f"| {runner} | {perCall * 1e9:.0f} ns |")
+    if instructions:
+        lines += [""] + instructionsMarkdown(instructions, baseline)
     flags = " ".join(f"`{flag['flag']}`" for flag in result["provenance"]["flags"])
     lines += ["", f"The flag table of every C and C++ build: {flags}.", ""]
     return "\n".join(lines)
@@ -748,7 +779,7 @@ def commandInstructions(arguments):
     scratch = ROOT / "out" / "benchmark-callgrind"
     scratch.mkdir(parents=True, exist_ok=True)
     for runner in runners:
-        if runner.kind not in INSTRUCTION_KINDS:
+        if runner.kind not in INSTRUCTION_KINDS or runner.name in INSTRUCTION_EXCLUDED:
             continue
         for guest in [g for g in guests if runner.simd or not g.simd]:
             counts = {}
@@ -773,7 +804,8 @@ def commandInstructions(arguments):
 
 def commandReport(arguments):
     result = json.loads(pathlib.Path(arguments.json).read_text())
-    writeReport(arguments.doc, reportMarkdown(result))
+    instructions = json.loads(INSTRUCTIONS_BASELINE.read_text()) if INSTRUCTIONS_BASELINE.is_file() else None
+    writeReport(arguments.doc, reportMarkdown(result, instructions))
     print(f"wrote {arguments.doc}")
     return 0
 

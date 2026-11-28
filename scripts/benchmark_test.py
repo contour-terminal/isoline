@@ -322,6 +322,12 @@ class BenchmarkTest(unittest.TestCase):
         with self.assertRaises(benchmark.Refused):
             benchmark.kernelInstructions(100, 200)
 
+    def test_instruction_table(self):
+        instructions = {"wamr-contour": {"a.wasm": 200, "b.wasm": 100}, "isoline-interpreter-tailcall": {"a.wasm": 100}}
+        lines = benchmark.instructionsMarkdown(instructions, "wamr-contour")
+        self.assertIn("| a.wasm | 100 (0.50×) | 200 |", lines)
+        self.assertIn("| b.wasm | – | 100 |", lines)
+
     def test_runner_commands(self):
         commandOf = benchmark.commandFactory({"clang": pathlib.Path("/c"), "gcc": pathlib.Path("/g")},
                                              pathlib.Path("/w/wasmtime"))
