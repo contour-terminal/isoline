@@ -32,10 +32,13 @@ enum class Convention : uint8_t
     WasmInternal, ///< Between compiled Wasm functions: the target's own.
     SystemV,      ///< The System V AMD64 ABI: Linux, the BSDs, macOS on x86-64.
     Windows64,    ///< The Microsoft x64 convention: shadow space, xmm6–15 and rdi/rsi callee-saved.
+    /// The Arm 64-bit procedure call standard, as Linux, macOS and Windows on arm64 all call the host-call
+    /// boundary: x0–x7 and v0–v7, x19–x28 and the low halves of v8–v15 preserved, x18 reserved.
+    Aapcs64,
 };
 
 /// The last Convention enumerator.
-inline constexpr auto LastConvention = Convention::Windows64;
+inline constexpr auto LastConvention = Convention::Aapcs64;
 
 /// How a convention hands out argument registers to the two classes.
 enum class ArgumentSlots : uint8_t
@@ -198,7 +201,6 @@ struct HostConventionRow
 };
 
 /// The host convention of every (architecture, ABI) with a backend, sorted by architecture, then ABI.
-/// P6 appends arm64's rows (Convention::Aapcs64 for every ABI).
 inline constexpr auto HostConventionTable = std::to_array<HostConventionRow>({
     { .architecture = Architecture::X64,
       .abi = OperatingSystemAbi::SystemV,
@@ -210,6 +212,18 @@ inline constexpr auto HostConventionTable = std::to_array<HostConventionRow>({
     { .architecture = Architecture::X64,
       .abi = OperatingSystemAbi::Apple,
       .convention = Convention::SystemV },
+    // arm64: one host convention for every ABI. The three differ in nothing the host-call boundary uses
+    // (x18 is reserved everywhere; no stub takes stack, variadic or narrow arguments), only in their
+    // hardening rows (P6 Decision "Calling conventions are rows").
+    { .architecture = Architecture::Arm64,
+      .abi = OperatingSystemAbi::SystemV,
+      .convention = Convention::Aapcs64 },
+    { .architecture = Architecture::Arm64,
+      .abi = OperatingSystemAbi::Windows,
+      .convention = Convention::Aapcs64 },
+    { .architecture = Architecture::Arm64,
+      .abi = OperatingSystemAbi::Apple,
+      .convention = Convention::Aapcs64 },
 });
 
 static_assert(

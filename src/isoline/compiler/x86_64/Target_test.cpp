@@ -47,6 +47,13 @@ TEST_CASE("Target.refusesAnotherArchitecture")
     auto const arm = X64Target::create(TargetDescription { .architecture = Architecture::Arm64 });
     REQUIRE_FALSE(arm.has_value());
     CHECK(arm.error().code == CompileErrorCode::UnsupportedTarget);
+    // An arm64 feature on x86-64 names no instruction it may use.
+    auto const cssc =
+        X64Target::create(TargetDescription { .architecture = Architecture::X64,
+                                              .features = isoline::compiler::machine::CpuFeatures {}.with(
+                                                  isoline::compiler::machine::CpuFeature::Cssc) });
+    REQUIRE_FALSE(cssc.has_value());
+    CHECK(cssc.error().code == CompileErrorCode::UnsupportedTarget);
     for (auto const abi:
          { OperatingSystemAbi::SystemV, OperatingSystemAbi::Windows, OperatingSystemAbi::Apple })
     {
@@ -189,4 +196,18 @@ TEST_CASE("Target.constraintTablesRebuildAtRuntime")
     CHECK(Constraints::wasmCall(leadCount).size() == Constraints::DirectLayout.size());
     CHECK(x64::detail::general(isoline::compiler::machine::OperandRole::Use).registerClass
           == RegisterClass::General);
+}
+
+TEST_CASE("Target.codeLimitIsARowPerTarget")
+{
+    // x86-64's call and jump forms take a rel32: a module's code spans at most 2 GiB − 1, under every ABI.
+    // (arm64's 128 MiB row is checked with Arm64Target, P6 Task 9.)
+    for (auto const abi:
+         { OperatingSystemAbi::SystemV, OperatingSystemAbi::Windows, OperatingSystemAbi::Apple })
+    {
+        auto const target =
+            X64Target::create(TargetDescription { .architecture = Architecture::X64, .abi = abi });
+        REQUIRE(target.has_value());
+        CHECK(target->codeLimit() == (uint64_t { 1 } << 31U) - 1);
+    }
 }

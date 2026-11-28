@@ -319,6 +319,11 @@
 # return after its Require, the two lines simd-value-type marks, and their branch, came with it; Selector.cpp gained the
 # share it lost. No line or branch a test takes lost its coverage.
 #
+# src/isoline/compiler/x86_64/Registers.hpp's branch entry was lowered from 95.23 to 91.66 when conventionRow() began to
+# Require a convention of x86-64's (P6 Task 1), as Convention gained arm64's Aapcs64: its failing side ends the process,
+# which isoline_require_canary.convention-row-of-another-architecture runs in a subprocess, unrecorded. No line or branch a
+# test takes lost its coverage.
+#
 # src/isoline/execution/StackBoundsPosix.cpp's entries were lowered from 100.00 to 85.71 (lines) and 60.00 to 50.00 (branches)
 # when its stack query stopped aborting and began returning Unavailable (P5 Task 14, fix round 1): the two returns
 # stack-query-refused marks, and their branches, are reached only where glibc cannot report the stack. No line or branch
@@ -469,7 +474,7 @@ src/isoline/compiler/x86_64/EncodingSamples.hpp           100.00 -
 src/isoline/compiler/x86_64/Instructions.hpp              100.00 93.75
 src/isoline/compiler/x86_64/Lowering.cpp                  99.80 91.51
 src/isoline/compiler/x86_64/Lowering.hpp                  100.00 100.00
-src/isoline/compiler/x86_64/Registers.hpp                 100.00 95.23
+src/isoline/compiler/x86_64/Registers.hpp                 100.00 91.66
 src/isoline/compiler/x86_64/Selection.def                 100.00 -
 src/isoline/compiler/x86_64/Selector.cpp                  99.44 90.05
 src/isoline/compiler/x86_64/Selector.hpp                  100.00 85.71

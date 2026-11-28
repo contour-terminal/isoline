@@ -1451,6 +1451,8 @@ class ForwardingTarget: public isoline::compiler::machine::ITarget
     {
         return _fake.stackRule();
     }
+
+    [[nodiscard]] uint64_t codeLimit() const noexcept override { return _fake.codeLimit(); }
     [[nodiscard]] isoline::compiler::machine::ConventionRow const& conventionRow(
         isoline::compiler::machine::Convention convention) const override
     {

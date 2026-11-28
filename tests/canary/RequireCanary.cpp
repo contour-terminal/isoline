@@ -24,6 +24,8 @@
 #include <isoline/api/testing/EngineRows.hpp>
 #include <isoline/binary/testing/Code.hpp>
 #include <isoline/binary/testing/ModuleBuilder.hpp>
+#include <isoline/compiler/machine/CallingConvention.hpp>
+#include <isoline/compiler/x86_64/Registers.hpp>
 
 namespace
 {
@@ -257,6 +259,13 @@ void hostTableStoreAfterDelete()
 void hostGlobalStoreAfterDelete()
 {
     wentThrough("a defined Global::store()", deletedHostHandles().global.store().serial());
+}
+
+void conventionRowOfAnotherArchitecture()
+{
+    auto const& row =
+        isoline::compiler::x86_64::conventionRow(isoline::compiler::machine::Convention::Aapcs64);
+    std::println("x86-64's row of Aapcs64 returned ({} argument registers)", row.integerArguments.size());
 }
 
 /// A case: its name on the command line, and what it calls.

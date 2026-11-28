@@ -6,9 +6,10 @@
 // label is bound. How a kind of fixup lays the displacement into its field is a row of FixupKindTable: the
 // field's parts (each a run of bits of the displacement, placed at a bit offset of the field), whether the
 // displacement is signed, and what it is relative to. Each row's range follows from its parts, and
-// resolve() refuses a displacement outside it with BranchOutOfRange, never truncating it. P5 lands x86-64's
-// rows; P6 appends arm64's branch rows (amended for P6, 2026-11-26: F3). Resolution depends on nothing but
-// the emitted bytes and fixups, in their order: the same emission gives the same bytes.
+// resolve() refuses a displacement outside it with BranchOutOfRange, never truncating it. x86-64's rows come
+// first, then arm64's branch rows (amended for P6, 2026-11-26: F3), each a field of one instruction word.
+// Resolution depends on nothing but the emitted bytes and fixups, in their order: the same emission gives the
+// same bytes.
 
 #include <algorithm>
 #include <array>
@@ -35,10 +36,16 @@ enum class FixupKind : uint8_t
     Rel32,
     /// A jump table's entry: a signed 32-bit displacement from the table's own label to a target.
     TableEntry32,
+    /// arm64's b and bl: imm26 at bits 0..25, the displacement from the instruction over 4 (±128 MiB).
+    Branch26,
+    /// arm64's b.cond, cbz and cbnz: imm19 at bits 5..23, the displacement over 4 (−1 MiB .. 1 MiB − 4).
+    Branch19,
+    /// arm64's tbz and tbnz: imm14 at bits 5..18, the displacement over 4 (±32 KiB).
+    Branch14,
 };
 
 /// The last FixupKind enumerator.
-inline constexpr auto LastFixupKind = FixupKind::TableEntry32;
+inline constexpr auto LastFixupKind = FixupKind::Branch14;
 
 /// Whether a fixup's displacement is signed.
 enum class Signedness : uint8_t
@@ -77,7 +84,8 @@ struct FixupKindRow
     Anchor anchor = Anchor::FixupSite;                 ///< What the displacement is relative to.
 };
 
-/// Every FixupKind's row, in enumerator order. P6 appends arm64's Branch26, Branch19 and Branch14.
+/// Every FixupKind's row, in enumerator order. An arm64 row's field is the instruction word itself (the
+/// fixup site is the instruction, which its displacement counts from), of which it patches only its bits.
 inline constexpr auto FixupKindTable = std::to_array<FixupKindRow>({
     { .kind = FixupKind::Rel32,
       .name = "rel32",
@@ -91,6 +99,24 @@ inline constexpr auto FixupKindTable = std::to_array<FixupKindRow>({
       .partCount = 1,
       .signedness = Signedness::Signed,
       .anchor = Anchor::Label },
+    { .kind = FixupKind::Branch26,
+      .name = "branch26",
+      .parts = { { { .bitOffset = 0, .width = 26, .sourceShift = 2 } } },
+      .partCount = 1,
+      .signedness = Signedness::Signed,
+      .anchor = Anchor::FixupSite },
+    { .kind = FixupKind::Branch19,
+      .name = "branch19",
+      .parts = { { { .bitOffset = 5, .width = 19, .sourceShift = 2 } } },
+      .partCount = 1,
+      .signedness = Signedness::Signed,
+      .anchor = Anchor::FixupSite },
+    { .kind = FixupKind::Branch14,
+      .name = "branch14",
+      .parts = { { { .bitOffset = 5, .width = 14, .sourceShift = 2 } } },
+      .partCount = 1,
+      .signedness = Signedness::Signed,
+      .anchor = Anchor::FixupSite },
 });
 
 /// The parts of @p row in use.

@@ -10,6 +10,8 @@ using isoline::compiler::machine::Architecture;
 using isoline::compiler::machine::CpuFeature;
 using isoline::compiler::machine::CpuFeatureCount;
 using isoline::compiler::machine::CpuFeatures;
+using isoline::compiler::machine::CpuFeatureTable;
+using isoline::compiler::machine::extendsOnly;
 using isoline::compiler::machine::OperatingSystemAbi;
 using isoline::compiler::machine::TargetDescription;
 
@@ -53,4 +55,20 @@ TEST_CASE("TargetDescription.equality")
     auto features = base;
     features.features = CpuFeatures {};
     CHECK(features != base);
+}
+
+TEST_CASE("CpuFeatures.eachExtendsOneArchitecture")
+{
+    // x86-64's features, then arm64's: a set of one architecture's extends only it.
+    for (auto const& row: CpuFeatureTable)
+    {
+        INFO("feature " << static_cast<int>(row.feature));
+        auto const alone = CpuFeatures {}.with(row.feature);
+        CHECK(extendsOnly(alone, row.architecture));
+        auto const other = row.architecture == Architecture::X64 ? Architecture::Arm64 : Architecture::X64;
+        CHECK_FALSE(extendsOnly(alone, other));
+    }
+    CHECK(CpuFeatureTable[static_cast<std::size_t>(CpuFeature::Cssc)].architecture == Architecture::Arm64);
+    CHECK(extendsOnly(CpuFeatures {}, Architecture::X64));
+    CHECK(extendsOnly(CpuFeatures {}, Architecture::Arm64));
 }

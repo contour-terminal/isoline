@@ -23,6 +23,7 @@
 #include <utility>
 
 #include <isoline/compiler/machine/CallingConvention.hpp>
+#include <isoline/compiler/machine/CodeBuffer.hpp>
 #include <isoline/compiler/machine/FrameRule.hpp>
 #include <isoline/compiler/machine/Registers.hpp>
 
@@ -383,6 +384,9 @@ inline constexpr auto ConventionTable = std::to_array<machine::ConventionRow con
     &Windows64Convention,
 });
 
+/// x86-64's last convention: ConventionTable holds WasmInternal through it (the ones after it are arm64's).
+inline constexpr auto X64LastConvention = machine::Convention::Windows64;
+
 static_assert(
     [] {
         auto index = std::size_t { 0 };
@@ -397,14 +401,18 @@ static_assert(
                     return false;
             ++index;
         }
-        return index == static_cast<std::size_t>(machine::LastConvention) + 1;
+        return index == static_cast<std::size_t>(X64LastConvention) + 1;
     }(),
-    "ConventionTable must hold one row per Convention, at the index of its enumerator, each preserving the "
-    "pinned registers");
+    "ConventionTable must hold one row per x86-64 Convention, at the index of its enumerator, each "
+    "preserving "
+    "the pinned registers");
 
 /// x86-64's row of @p convention.
+/// @param convention One of x86-64's conventions, WasmInternal through X64LastConvention (Require: another
+///                   architecture's, such as Aapcs64, has no row here).
 [[nodiscard]] constexpr machine::ConventionRow const& conventionRow(machine::Convention convention) noexcept
 {
+    Require(static_cast<std::size_t>(convention) < ConventionTable.size());
     return *ConventionTable[static_cast<std::size_t>(convention)];
 }
 
@@ -419,6 +427,10 @@ inline constexpr auto X64FrameRule = machine::FrameRule { .bytesPerStackValue = 
 inline constexpr auto X64StackRule = machine::StackRule {
     .alignment = 16, .returnAddressBytes = 8, .savedRegisterBytes = { 8, 16 }, .framePointerBytes = 8
 };
+
+/// x86-64's code limit (ITarget::codeLimit()): what its call and jmp rel32 reach, 2 GiB − 1.
+inline constexpr auto X64CodeLimit =
+    static_cast<uint64_t>(machine::maximumDisplacement(machine::fixupKindRow(machine::FixupKind::Rel32)));
 
 /// Whether @p T may cross the host-call boundary as a parameter (P5 Decision "Calling conventions are rows",
 /// amendment I8): a 32- or 64-bit integer, or a pointer.

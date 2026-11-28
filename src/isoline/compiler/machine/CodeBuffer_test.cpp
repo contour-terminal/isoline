@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory_resource>
 #include <optional>
+#include <ranges>
 #include <vector>
 
 #include <isoline/compiler/CompileError.hpp>
@@ -233,4 +234,152 @@ TEST_CASE("CodeBuffer.fixupRangesFollowFromTheRows")
     auto zeroWidth = empty;
     zeroWidth.partCount = 1; // one part of no bits
     CHECK_FALSE(isWellFormed(zeroWidth));
+}
+
+namespace
+{
+
+/// Resolves one fixup of @p kind whose target is its own site, displaced by @p displacement, in the
+/// instruction word @p word; @p resolved is the word afterwards.
+std::expected<void, isoline::compiler::CompileError> resolveInWord(FixupKind kind,
+                                                                   int64_t displacement,
+                                                                   uint32_t word,
+                                                                   uint32_t& resolved)
+{
+    auto arena = Arena {};
+    auto buffer = CodeBuffer { arena.memory };
+    auto const site = buffer.createLabel();
+    buffer.bind(site);
+    buffer.emitFixup(FixupRequest { .kind = kind, .target = site, .anchor = {}, .addend = displacement });
+    buffer.emitLittleEndian(word, 4);
+    auto const result = buffer.resolve();
+    resolved = 0;
+    for (auto const index: std::views::iota(uint32_t { 0 }, uint32_t { 4 }))
+        resolved |= uint32_t { buffer.bytes()[index] } << (8U * index);
+    return result;
+}
+
+/// One arm64 branch row's published range: what its instructions reach.
+struct Arm64BranchRange
+{
+    FixupKind kind;
+    int64_t minimum;
+    int64_t maximum;
+};
+
+/// b and bl (±128 MiB), b.cond, cbz and cbnz (−1 MiB .. 1 MiB − 4), tbz and tbnz (±32 KiB).
+constexpr auto Arm64BranchRanges = std::to_array<Arm64BranchRange>({
+    { .kind = FixupKind::Branch26,
+      .minimum = -(int64_t { 1 } << 27U),
+      .maximum = (int64_t { 1 } << 27U) - 4 },
+    { .kind = FixupKind::Branch19,
+      .minimum = -(int64_t { 1 } << 20U),
+      .maximum = (int64_t { 1 } << 20U) - 4 },
+    { .kind = FixupKind::Branch14,
+      .minimum = -(int64_t { 1 } << 15U),
+      .maximum = (int64_t { 1 } << 15U) - 4 },
+});
+
+} // namespace
+
+TEST_CASE("CodeBuffer.arm64FixupRowsPatchTheirFields")
+{
+    // Each word as llvm-mc -triple=aarch64 reads it after the patch; the instruction's other bits (the
+    // condition, the register, the tested bit) are kept.
+    struct Sample
+    {
+        FixupKind kind;
+        int64_t displacement;
+        uint32_t word;     ///< The instruction with its displacement field zero.
+        uint32_t expected; ///< The instruction with it filled in.
+    };
+    constexpr auto Samples = std::to_array<Sample>({
+        { .kind = FixupKind::Branch19,
+          .displacement = 4096,
+          .word = 0x5400'0001,
+          .expected = 0x5400'8001 }, // b.ne
+        { .kind = FixupKind::Branch19,
+          .displacement = 8,
+          .word = 0xB400'0007,
+          .expected = 0xB400'0047 }, // cbz x7
+        { .kind = FixupKind::Branch26,
+          .displacement = 4096,
+          .word = 0x1400'0000,
+          .expected = 0x1400'0400 }, // b
+        { .kind = FixupKind::Branch26,
+          .displacement = -8,
+          .word = 0x1400'0000,
+          .expected = 0x17FF'FFFE }, // b
+        { .kind = FixupKind::Branch14,
+          .displacement = 4096,
+          .word = 0x3618'0000,
+          .expected = 0x3618'8000 }, // tbz w0, #3
+        // Backward, over words whose other bits are set: the sign fills the field only, never the opcode.
+        { .kind = FixupKind::Branch19,
+          .displacement = -8,
+          .word = 0x5400'0001,
+          .expected = 0x54FF'FFC1 }, // b.ne
+        { .kind = FixupKind::Branch19,
+          .displacement = -4096,
+          .word = 0x3500'0003,
+          .expected = 0x35FF'8003 }, // cbnz w3
+        { .kind = FixupKind::Branch14,
+          .displacement = -8,
+          .word = 0xB708'0005,
+          .expected = 0xB70F'FFC5 }, // tbnz x5, #33
+    });
+    for (auto const& sample: Samples)
+    {
+        INFO(fixupKindRow(sample.kind).name << " by " << sample.displacement);
+        auto resolved = uint32_t { 0 };
+        REQUIRE(resolveInWord(sample.kind, sample.displacement, sample.word, resolved).has_value());
+        CHECK(resolved == sample.expected);
+    }
+
+    // Through a label bound 4 KiB on, as an encoder records it: b.ne at 0, its target at 4096.
+    auto arena = Arena {};
+    auto buffer = CodeBuffer { arena.memory };
+    auto const target = buffer.createLabel();
+    buffer.emitFixup(
+        FixupRequest { .kind = FixupKind::Branch19, .target = target, .anchor = {}, .addend = 0 });
+    buffer.emitLittleEndian(0x5400'0001, 4);
+    buffer.emit(std::vector<uint8_t>(4092, 0));
+    buffer.bind(target);
+    REQUIRE(buffer.resolve().has_value());
+    CHECK(std::vector<uint8_t> { buffer.bytes().begin(), buffer.bytes().begin() + 4 }
+          == std::vector<uint8_t> { 0x01, 0x80, 0x00, 0x54 });
+}
+
+TEST_CASE("CodeBuffer.arm64FixupRangesAreAsymmetric")
+{
+    for (auto const& range: Arm64BranchRanges)
+    {
+        auto const& row = fixupKindRow(range.kind);
+        INFO(row.name);
+        CHECK(isWellFormed(row));
+        CHECK(row.anchor == Anchor::FixupSite);
+        CHECK(fieldBytes(row) <= 4);
+        CHECK(minimumDisplacement(row) == range.minimum);
+        CHECK(maximumDisplacement(row) == range.maximum);
+
+        // Both ends resolve; one instruction past either is refused, with what it asked and what the row
+        // takes.
+        auto const pastMaximum = static_cast<uint64_t>(range.maximum + 4);
+        auto const maximum = static_cast<uint64_t>(range.maximum);
+        auto const pastMinimum = static_cast<uint64_t>(-(range.minimum - 4));
+        auto const minimum = static_cast<uint64_t>(-range.minimum);
+        auto resolved = uint32_t { 0 };
+        CHECK(resolveInWord(range.kind, range.minimum, 0, resolved).has_value());
+        CHECK(resolveInWord(range.kind, range.maximum, 0, resolved).has_value());
+        auto const above = resolveInWord(range.kind, range.maximum + 4, 0, resolved);
+        REQUIRE_FALSE(above.has_value());
+        CHECK(above.error().code == CompileErrorCode::BranchOutOfRange);
+        CHECK(above.error().requested == pastMaximum);
+        CHECK(above.error().limit == maximum);
+        auto const below = resolveInWord(range.kind, range.minimum - 4, 0, resolved);
+        REQUIRE_FALSE(below.has_value());
+        CHECK(below.error().code == CompileErrorCode::BranchOutOfRange);
+        CHECK(below.error().requested == pastMinimum);
+        CHECK(below.error().limit == minimum);
+    }
 }

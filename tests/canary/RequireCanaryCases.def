@@ -21,3 +21,4 @@ ISOLINE_REQUIRE_CANARY_CASE(importsHostTypeBottom, "imports-host-type-bottom", "
 ISOLINE_REQUIRE_CANARY_CASE(hostMemoryStoreAfterDelete, "host-memory-store-after-delete", "isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(hostTableStoreAfterDelete, "host-table-store-after-delete", "isAlive[(][)]")
 ISOLINE_REQUIRE_CANARY_CASE(hostGlobalStoreAfterDelete, "host-global-store-after-delete", "isAlive[(][)]")
+ISOLINE_REQUIRE_CANARY_CASE(conventionRowOfAnotherArchitecture, "convention-row-of-another-architecture", "static_cast<std::size_t>[(]convention[)] < ConventionTable[.]size[(][)]")

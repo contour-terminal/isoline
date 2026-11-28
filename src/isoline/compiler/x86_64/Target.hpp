@@ -26,7 +26,9 @@ class X64Target final: public machine::ITarget
   public:
     /// The target for @p description.
     /// @param description What to generate code for: x86-64, an ABI with a host convention row, any features.
-    /// @return The target; or UnsupportedTarget for another architecture or an ABI without a host convention.
+    /// @return The target; or UnsupportedTarget for another architecture, an ABI without a host convention,
+    /// or
+    ///         a feature of another architecture (arm64's Cssc).
     [[nodiscard]] static std::expected<X64Target, CompileError> create(
         machine::TargetDescription description);
 
@@ -38,6 +40,8 @@ class X64Target final: public machine::ITarget
     [[nodiscard]] machine::FrameRule frameRule() const noexcept override;
 
     [[nodiscard]] machine::StackRule stackRule() const noexcept override;
+
+    [[nodiscard]] uint64_t codeLimit() const noexcept override;
 
     [[nodiscard]] machine::ConventionRow const& conventionRow(machine::Convention convention) const override;
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -28,7 +29,7 @@ enum class OperatingSystemAbi : uint8_t
 };
 
 /// An optional instruction-set extension generated code may use, given by the embedder (never probed
-/// by the compiler itself). P6 appends arm64's.
+/// by the compiler itself). x86-64's, then arm64's.
 enum class CpuFeature : uint8_t
 {
     Sse41,  ///< SSE4.1: roundss/roundsd, pinsr/pextr, pmulld.
@@ -39,10 +40,11 @@ enum class CpuFeature : uint8_t
     Bmi2,   ///< BMI2: SHLX, SHRX, SARX.
     Avx,    ///< AVX (VEX encodings).
     Avx2,   ///< AVX2.
+    Cssc,   ///< arm64 FEAT_CSSC: the general-register cnt and ctz.
 };
 
 /// The last CpuFeature enumerator.
-inline constexpr auto LastCpuFeature = CpuFeature::Avx2;
+inline constexpr auto LastCpuFeature = CpuFeature::Cssc;
 
 /// How many CpuFeature enumerators there are.
 inline constexpr auto CpuFeatureCount = static_cast<std::size_t>(LastCpuFeature) + 1;
@@ -94,6 +96,48 @@ class CpuFeatures
 
     uint32_t _bits = 0;
 };
+
+/// Which architecture a CPU feature extends.
+struct CpuFeatureRow
+{
+    CpuFeature feature;        ///< The feature; equal to the row's index.
+    Architecture architecture; ///< The instruction set it extends.
+};
+
+/// Every CpuFeature's row, in enumerator order.
+inline constexpr auto CpuFeatureTable = std::to_array<CpuFeatureRow>({
+    { .feature = CpuFeature::Sse41, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Sse42, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Popcnt, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Lzcnt, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Bmi1, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Bmi2, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Avx, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Avx2, .architecture = Architecture::X64 },
+    { .feature = CpuFeature::Cssc, .architecture = Architecture::Arm64 },
+});
+
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        for (auto const& row: CpuFeatureTable)
+            if (static_cast<std::size_t>(row.feature) != index++)
+                return false;
+        return index == CpuFeatureCount;
+    }(),
+    "CpuFeatureTable must hold one row per CpuFeature, at the index of its enumerator");
+
+/// Whether every feature of @p features extends @p architecture: what a target for it may be given.
+/// @param features The features.
+/// @param architecture The instruction set.
+/// @return Whether none of them belongs to another architecture.
+[[nodiscard]] constexpr bool extendsOnly(CpuFeatures features, Architecture architecture) noexcept
+{
+    for (auto const& row: CpuFeatureTable)
+        if (features.contains(row.feature) && row.architecture != architecture)
+            return false;
+    return true;
+}
 
 /// What code is generated for: the instruction set, the operating-system ABI, and the CPU features it
 /// may use. Data only, so that an artifact's key (P8) can name it without the backend.

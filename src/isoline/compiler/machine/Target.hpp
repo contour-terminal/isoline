@@ -82,6 +82,11 @@ class ITarget
     /// The target's stack rule: the alignment every call leaves with, and what a call pushes.
     [[nodiscard]] virtual StackRule stackRule() const noexcept = 0;
 
+    /// The most bytes of code one module may span: the reach of the target's call and branch forms, which a
+    /// module's code buffer must keep from its first byte to its last (x86-64's rel32: 2 GiB − 1; arm64's
+    /// b and bl: 128 MiB). A module past it is refused with ArtifactTooLarge, never encoded.
+    [[nodiscard]] virtual uint64_t codeLimit() const noexcept = 0;
+
     /// The target's row of @p convention: its internal convention's, or its host's
     /// (hostConvention(description())), which the stubs and the entry trampoline use.
     /// @param convention WasmInternal or the host convention (Require).

@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cstdint>
 #include <memory_resource>
 #include <optional>
 #include <span>
@@ -132,10 +133,38 @@ TEST_CASE("CallingConvention.hostConventionFollowsTheAbiRow")
     auto withFeatures = x64(OperatingSystemAbi::Windows);
     withFeatures.features = CpuFeatures {}.with(isoline::compiler::machine::CpuFeature::Avx2);
     CHECK(hostConvention(withFeatures) == Convention::Windows64);
-    // arm64 has no backend yet: no row (P6 appends Aapcs64's).
     CHECK(hasHostConvention(x64(OperatingSystemAbi::Apple)));
-    CHECK_FALSE(hasHostConvention(TargetDescription {
-        .architecture = Architecture::Arm64, .abi = OperatingSystemAbi::SystemV, .features = {} }));
+}
+
+TEST_CASE("CallingConvention.anAbiWithoutARowHasNoHostConvention")
+{
+    // Every (architecture, ABI) enumerated has a row; a description naming an ABI past them (an artifact's
+    // key from a newer build) has none, which hasHostConvention() reports instead of guessing.
+    constexpr auto Unknown =
+        static_cast<OperatingSystemAbi>(static_cast<uint8_t>(OperatingSystemAbi::Apple) + 1);
+    for (auto const architecture: { Architecture::X64, Architecture::Arm64 })
+        CHECK_FALSE(hasHostConvention(
+            TargetDescription { .architecture = architecture, .abi = Unknown, .features = {} }));
+}
+
+TEST_CASE("CallingConvention.arm64HostConventionIsAapcs64ForEveryAbi")
+{
+    // One host row for arm64: Linux, macOS and Windows differ in nothing the host-call boundary uses (x18 is
+    // reserved everywhere, no stub takes stack, variadic or narrow arguments; P6 Decision "Calling
+    // conventions are rows").
+    for (auto const abi:
+         { OperatingSystemAbi::SystemV, OperatingSystemAbi::Windows, OperatingSystemAbi::Apple })
+    {
+        auto const target =
+            TargetDescription { .architecture = Architecture::Arm64, .abi = abi, .features = {} };
+        INFO("abi " << static_cast<int>(abi));
+        REQUIRE(hasHostConvention(target));
+        CHECK(hostConvention(target) == Convention::Aapcs64);
+        // CPU features choose no convention.
+        auto withFeatures = target;
+        withFeatures.features = CpuFeatures {}.with(isoline::compiler::machine::CpuFeature::Cssc);
+        CHECK(hostConvention(withFeatures) == Convention::Aapcs64);
+    }
 }
 
 namespace

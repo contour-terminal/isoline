@@ -442,6 +442,12 @@ class BasicFakeTarget final: public ITarget
 
     [[nodiscard]] StackRule stackRule() const noexcept override { return File.stack; }
 
+    /// The fake encodes nothing, so it bounds a module's code as x86-64 does: rel32's reach.
+    [[nodiscard]] uint64_t codeLimit() const noexcept override
+    {
+        return static_cast<uint64_t>(maximumDisplacement(fixupKindRow(FixupKind::Rel32)));
+    }
+
     [[nodiscard]] ConventionRow const& conventionRow(Convention convention) const override
     {
         Require(convention == Convention::WasmInternal || convention == File.host->convention);

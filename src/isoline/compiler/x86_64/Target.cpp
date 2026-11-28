@@ -77,7 +77,8 @@ std::string_view nameOf(Pseudo pseudo) noexcept
 
 std::expected<X64Target, CompileError> X64Target::create(machine::TargetDescription description)
 {
-    if (description.architecture != machine::Architecture::X64 || !machine::hasHostConvention(description))
+    if (description.architecture != machine::Architecture::X64 || !machine::hasHostConvention(description)
+        || !machine::extendsOnly(description.features, machine::Architecture::X64))
         return std::unexpected { CompileError { .code = CompileErrorCode::UnsupportedTarget } };
     return X64Target { description, machine::hostConvention(description) };
 }
@@ -90,6 +91,11 @@ machine::FrameRule X64Target::frameRule() const noexcept
 machine::StackRule X64Target::stackRule() const noexcept
 {
     return X64StackRule;
+}
+
+uint64_t X64Target::codeLimit() const noexcept
+{
+    return X64CodeLimit;
 }
 
 machine::ConventionRow const& X64Target::conventionRow(machine::Convention convention) const
