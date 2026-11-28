@@ -40,9 +40,10 @@ namespace
 /// export calls per module, and 1.10 to 1.69 calls Wasmtime agreed on per sampled module. In 24 shards at a
 /// 1/8 sample, a shard samples 52 modules, and the agreed calls per sampled module fall to 0.73 (shard 3,
 /// whose calls end on Isoline's own limits more often) and 0.77 (shard 20), every other shard at 0.8 or more.
+/// The agree floor sits just under that lowest shard, so a corpus that stops producing agreed calls fails.
 constexpr auto MinComparedShare = 0.95;
 constexpr auto MinCallsPerModule = 6.0;
-constexpr auto MinAgreesPerSampledModule = 0.5;
+constexpr auto MinAgreesPerSampledModule = 0.65;
 
 /// The corpus directory: ISOLINE_DIFFERENTIAL_CORPUS, or out/corpus/differential in the source tree, where
 /// scripts/make-differential-corpus.py writes it.
