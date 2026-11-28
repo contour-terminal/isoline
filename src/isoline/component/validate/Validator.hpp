@@ -137,6 +137,9 @@ enum class ValidationErrorDetail : uint8_t
     Mismatch,   ///< As Named, then a line of the error's detail: the mismatch found inside.
     Verbatim,   ///< The error's detail, as it is: a type relation's message, its contexts included.
     CoreGate,   ///< The text of the CoreFeatureGate in subject (CoreFeatureGateTable).
+    /// The core module error's own message, as wasm-tools reports an embedded module's refusal; the text
+    /// formatted with the subject, an index, for a refusal with no such message (a module too large).
+    CoreModule,
 };
 
 /// One row of ValidationErrorMessages: an error and how its message reads.
@@ -160,10 +163,11 @@ inline constexpr auto ValidationErrorMessages = std::to_array<ValidationErrorRow
     { .code = ValidationErrorCode::FeatureDisabled,
       .text = "feature not enabled",
       .detail = ValidationErrorDetail::Refusal },
-    // Isoline's own: the ICoreModuleValidator refused the embedded core module of this ordinal.
+    // The ICoreModuleValidator refused the embedded core module of this ordinal: the core error's message,
+    // as wasmparser reports it, and Isoline's own text where the core error has none.
     { .code = ValidationErrorCode::CoreModuleRefused,
       .text = "invalid core module {0}",
-      .detail = ValidationErrorDetail::Index },
+      .detail = ValidationErrorDetail::CoreModule },
     { .code = ValidationErrorCode::TypeIndexOutOfBounds,
       .text = "unknown type {0}: type index out of bounds",
       .detail = ValidationErrorDetail::Index },
@@ -943,6 +947,19 @@ class ICoreModuleValidator
     ICoreModuleValidator(ICoreModuleValidator&&) = default;
     ICoreModuleValidator& operator=(ICoreModuleValidator&&) = default;
 };
+
+/// What an ICoreModuleValidator makes of one core module: it decodes and validates @p bytes as
+/// ValidatedModule::load() does, the bodies last (BodyOrder::Last), and keeps a module whose function bodies
+/// alone are refused as a shape of
+/// its decoded module and the refusal (CoreModuleShape::bodyRefusal), since wasmparser validates bodies only
+/// once the whole component has been read.
+/// @param bytes The module's bytes, from its preamble on.
+/// @param features The core features it is decoded and validated under.
+/// @param limits The caps decoding it enforces.
+/// @return Its shape; or why it was refused, a function body's refusal aside.
+/// @throws std::bad_alloc When the module cannot be stored.
+[[nodiscard]] std::expected<CoreModuleShape, isoline::api::LoadError> loadCoreModule(
+    std::span<std::byte const> bytes, FeatureSet features, isoline::binary::DecodeLimits const& limits);
 
 /// Validates a decoded component, as wasm-tools 1.263.0 validates one (wasmparser 0.263.0
 /// src/validator/component.rs), refusing at the stage and in the words it does.

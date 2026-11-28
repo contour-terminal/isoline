@@ -6,6 +6,8 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/api/Module.hpp>
+#include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/canonical/Layout.hpp>
@@ -19,8 +21,16 @@ namespace isoline::component::validate
 struct CoreModuleShape
 {
     /// The validated module, from the ICoreModuleValidator. validateComponent() drops it once it has read
-    /// the module's type, so a ValidatedComponent holds only the type: empty there.
+    /// the module's type, so a ValidatedComponent holds only the type: empty there, and empty for a module
+    /// whose function bodies were refused.
     std::shared_ptr<isoline::validate::ValidatedModule const> module;
+    /// For a module whose function bodies the core validator refused (bodyRefusal): the decoded module,
+    /// whose type validation reads all the same. wasmparser validates a body only once the whole component
+    /// has been read, so the component's own errors are reported before it; empty otherwise.
+    std::shared_ptr<isoline::binary::Module const> declared {};
+    /// Why a function body of the module was refused, reported once the rest of the component validated;
+    /// empty for a valid module.
+    std::optional<isoline::api::LoadError> bodyRefusal {};
     /// Its type, in the arena of the ValidatedComponent: its imports and exports in canonical core ids.
     types::CoreModuleTypeId type {};
 };

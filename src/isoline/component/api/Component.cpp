@@ -47,11 +47,7 @@ std::expected<validate::CoreModuleShape, isoline::api::LoadError> EngineCoreModu
     if (bytes.size() > config.load.maxModuleBytes)
         return std::unexpected { isoline::api::LoadError {
             isoline::api::ModuleTooLarge { .bytes = bytes.size(), .limit = config.load.maxModuleBytes } } };
-    auto loaded = isoline::validate::ValidatedModule::load(bytes, config.features, config.load.decode);
-    if (!loaded)
-        return std::unexpected { std::visit(
-            [](auto& error) { return isoline::api::LoadError { std::move(error) }; }, loaded.error()) };
-    return validate::CoreModuleShape { .module = std::move(*loaded) };
+    return validate::loadCoreModule(bytes, config.features, config.load.decode);
 }
 
 FeatureSet EngineCoreModuleValidator::coreFeatures() const noexcept

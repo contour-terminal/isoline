@@ -600,7 +600,27 @@ TEST_CASE("Validator.coreModules")
     CHECK(refused.code == ValidationErrorCode::CoreModuleRefused);
     REQUIRE(refused.coreModule.has_value());
     CHECK(refused.coreModule->ordinal == 1);
-    CHECK(specMessage(refused) == "invalid core module 1");
+    // Its message is the core error's own, as wasmparser reports an embedded module's error.
+    REQUIRE(std::holds_alternative<isoline::binary::DecodeError>(refused.coreModule->error));
+    CHECK(specMessage(refused)
+          == isoline::binary::specMessage(std::get<isoline::binary::DecodeError>(refused.coreModule->error)));
+    CHECK(specMessage(refused) != "invalid core module 1");
+}
+
+TEST_CASE("Validator.deferredBodyOnlyOfAnOtherwiseValidModule")
+{
+    // A body's refusal is deferred only for a module whose other rules hold: one that also exports a
+    // function it does not have is refused for the export, never read for its type.
+    auto module = modulePreamble();
+    appendBytes(module, { 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f }); // type 0: [] -> [i32]
+    appendBytes(module, { 0x03, 0x02, 0x01, 0x00 });                   // function 0 of type 0
+    appendBytes(module, { 0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x63 }); // export "f" (func 99)
+    appendBytes(module, { 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b });       // its body returns nothing
+    auto builder = ComponentBuilder {};
+    std::ignore = builder.coreModule(module);
+    auto const refused = refusal(builder.pool());
+    CHECK(refused.code == ValidationErrorCode::CoreModuleRefused);
+    CHECK(specMessage(refused).starts_with("unknown function"));
 }
 
 TEST_CASE("Validator.typeNestingTooDeep")
@@ -1434,4 +1454,55 @@ TEST_CASE("Validator.coreTagsNeedExceptionHandling")
         (core instance (export "" (tag 0)))))";
     CHECK(textRefusal(inlineExport, withoutExceptions) == "exceptions proposal not enabled");
     CHECK(textRefusal(inlineExport) == "unknown tag 0: tag index out of bounds");
+}
+
+TEST_CASE("Validator.coreFunctionBodiesAfterTheComponent")
+{
+    // wasmparser validates an embedded module's function bodies only once it has read the whole component
+    // (wasm-tools adapt.wast:138), so the component's own error is reported first: here a body that
+    // returns nothing where its type has a result, and a repeated realloc option.
+    auto const repeatedOption = R"((component
+        (core module $m
+          (memory (export "m") 1)
+          (func (export "f") (param i32 i32))
+          (func (export "r") (param i32 i32 i32 i32) (result i32)))
+        (core instance $i (instantiate $m))
+        (func (param "p1" (list u8))
+          (canon lift (core func $i "f") (memory (core memory $i "m"))
+            (realloc (core func $i "r")) (realloc (core func $i "r"))))))";
+    CHECK(textRefusal(repeatedOption) == "canonical option `realloc` is specified more than once");
+
+    // Without another error the body's is reported, in the core validator's words, for its module.
+    auto const bodyOnly = R"((component
+        (core module $a)
+        (core module $b (func (result i32)))
+        (core module $c (func (result i64)))))";
+    auto const refused = validatedText(bodyOnly);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code == ValidationErrorCode::CoreModuleRefused);
+    REQUIRE(refused.error().coreModule.has_value());
+    CHECK(refused.error().coreModule->ordinal == 1);
+    CHECK(specMessage(refused.error()).starts_with("type mismatch"));
+
+    // A later module's own error comes before an earlier module's body.
+    auto const laterModule = R"((component
+        (core module $b (func (result i32)))
+        (core module $c (memory 1) (memory 1) (memory 1) (data (memory 3) (i32.const 0)))))";
+    auto const later = validatedText(laterModule, FeatureSet::wasm2());
+    REQUIRE_FALSE(later.has_value());
+    REQUIRE(later.error().coreModule.has_value());
+    CHECK(later.error().coreModule->ordinal == 1);
+}
+
+TEST_CASE("Validator.coreModuleRefusalWithoutASpecMessage")
+{
+    // A core refusal of no spec message of its own (a module past the engine's size) keeps Isoline's text.
+    auto const error = ValidationError { .code = ValidationErrorCode::CoreModuleRefused,
+                                         .position = DefinitionPosition {},
+                                         .subject = 3,
+                                         .coreModule = isoline::component::validate::CoreModuleError {
+                                             .ordinal = 3,
+                                             .error = isoline::api::LoadError { isoline::api::ModuleTooLarge {
+                                                 .bytes = 9, .limit = 8 } } } };
+    CHECK(specMessage(error) == "invalid core module 3");
 }

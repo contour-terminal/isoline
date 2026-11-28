@@ -55,11 +55,20 @@ ValidatedModule::ValidatedModule(Key /*key*/, binary::Module module, FeatureSet 
 std::expected<std::shared_ptr<ValidatedModule const>, ModuleError> ValidatedModule::load(
     std::span<std::byte const> bytes, FeatureSet features, binary::DecodeLimits const& limits)
 {
+    return load(bytes, features, limits, BodyOrder::InSectionOrder);
+}
+
+std::expected<std::shared_ptr<ValidatedModule const>, ModuleError> ValidatedModule::load(
+    std::span<std::byte const> bytes,
+    FeatureSet features,
+    binary::DecodeLimits const& limits,
+    BodyOrder order)
+{
     using Result = std::expected<std::shared_ptr<ValidatedModule const>, ModuleError>;
     return binary::decodeModule(bytes, features, limits)
         .transform_error([](binary::DecodeError const& error) { return ModuleError { error }; })
-        .and_then([features, &limits](binary::Module module) -> Result {
-            auto shape = validateModule(module, features, limits);
+        .and_then([features, &limits, order](binary::Module module) -> Result {
+            auto shape = validateModule(module, features, limits, order);
             if (!shape)
                 return std::unexpected { ModuleError { std::move(shape.error()) } };
             return std::make_shared<ValidatedModule const>(

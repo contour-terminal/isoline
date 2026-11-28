@@ -1403,8 +1403,13 @@ namespace
         {
         }
 
-        [[nodiscard]] std::expected<ModuleShape, ValidationError> validate()
+        [[nodiscard]] std::expected<ModuleShape, ValidationError> validate(BodyOrder order)
         {
+            auto const bodies = [&](BodyOrder at) {
+                return [this, at, order]() -> std::expected<void, ValidationError> {
+                    return order == at ? checkBodies() : std::expected<void, ValidationError> {};
+                };
+            };
             return checkTypeSection()
                 .and_then([this] { return checkImports(); })
                 .and_then([this] { return checkTags(); })
@@ -1414,9 +1419,10 @@ namespace
                 .and_then([this] { return checkGlobals(); })
                 .and_then([this] { return checkElements(); })
                 .and_then([this] { return checkData(); })
-                .and_then([this] { return checkBodies(); })
+                .and_then(bodies(BodyOrder::InSectionOrder))
                 .and_then([this] { return checkStart(); })
                 .and_then([this] { return checkExports(); })
+                .and_then(bodies(BodyOrder::Last))
                 .and_then([this] { return checkCounts(); })
                 .transform([this] { return std::move(_shape); });
         }
@@ -1760,11 +1766,12 @@ namespace
     std::expected<ModuleShape, ValidationError> validateWatched(binary::Module const& module,
                                                                 FeatureSet const& features,
                                                                 binary::DecodeLimits const& limits,
-                                                                IValidationObserver* observer)
+                                                                IValidationObserver* observer,
+                                                                BodyOrder order)
     {
         // A set decodeModule accepted is closed; this keeps a validator called with another set honest.
         Require(features.checkPrerequisites().has_value());
-        return ModuleValidator { module, features, limits, observer }.validate();
+        return ModuleValidator { module, features, limits, observer }.validate(order);
     }
 
 } // namespace
@@ -1775,7 +1782,15 @@ std::expected<ModuleShape, ValidationError> validateModule(binary::Module const&
                                                            FeatureSet const& features,
                                                            binary::DecodeLimits const& limits)
 {
-    return validateWatched(module, features, limits, nullptr);
+    return validateWatched(module, features, limits, nullptr, BodyOrder::InSectionOrder);
+}
+
+std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
+                                                           FeatureSet const& features,
+                                                           binary::DecodeLimits const& limits,
+                                                           BodyOrder order)
+{
+    return validateWatched(module, features, limits, nullptr, order);
 }
 
 std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
@@ -1783,7 +1798,7 @@ std::expected<ModuleShape, ValidationError> validateModule(binary::Module const&
                                                            binary::DecodeLimits const& limits,
                                                            IValidationObserver& observer)
 {
-    return validateWatched(module, features, limits, &observer);
+    return validateWatched(module, features, limits, &observer, BodyOrder::InSectionOrder);
 }
 
 } // namespace isoline::validate

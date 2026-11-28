@@ -23,6 +23,9 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/binary/DecodeError.hpp>
+#include <isoline/binary/Decoder.hpp>
+#include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/component/Features.hpp>
 #include <isoline/component/Limits.hpp>
@@ -33,6 +36,8 @@
 #include <isoline/component/validate/CoreTypes.hpp>
 #include <isoline/component/validate/Names.hpp>
 #include <isoline/component/validate/Subtyping.hpp>
+#include <isoline/validate/ValidatedModule.hpp>
+#include <isoline/validate/ValidationError.hpp>
 
 namespace isoline::component::validate
 {
@@ -749,6 +754,9 @@ namespace
         std::vector<ScopeInfo> _scopes;
         types::ComponentTypeInfo _rootType {};
         std::vector<CoreModuleShape> _coreModules {};
+        /// The refusal of the first embedded module whose function bodies were refused (bodyRefusal), which
+        /// run() reports once the rest of the component validated, as wasmparser does.
+        std::optional<ValidationError> _bodyRefusal {};
         uint32_t _nextNominal = 1;
         uint32_t _nextAlias = 1;
         /// The component and instance types found to name no resource they do not bind: a later walk
@@ -778,6 +786,9 @@ namespace
             if (auto stepped = step(definitions[position.definition], position); !stepped)
                 return stepped;
         }
+        // The first function body refused, now that the rest of the component validated.
+        if (_bodyRefusal)
+            return std::unexpected { std::move(*_bodyRefusal) };
         return {};
     }
 
@@ -2071,10 +2082,18 @@ namespace
                 .position = position,
                 .subject = ordinal,
                 .coreModule = CoreModuleError { .ordinal = ordinal, .error = std::move(shape.error()) } } };
-        auto const type = embeddedModuleType(shape->module->module(), position);
+        auto const& declared = shape->module != nullptr ? shape->module->module() : *shape->declared;
+        auto const type = embeddedModuleType(declared, position);
         if (!type)
             return std::unexpected { type.error() };
         shape->type = *type;
+        if (shape->bodyRefusal && !_bodyRefusal)
+            _bodyRefusal = ValidationError { .code = ValidationErrorCode::CoreModuleRefused,
+                                             .position = position,
+                                             .subject = ordinal,
+                                             .coreModule = CoreModuleError { .ordinal = ordinal,
+                                                                             .error = *shape->bodyRefusal } };
+        shape->declared.reset();
         current().spaces.coreModules.push_back(*type);
         _coreModules.push_back(std::move(*shape));
         return {};
@@ -3706,6 +3725,27 @@ std::optional<Feature> requiredCoreFeature(ValidationError const& error) noexcep
     return CoreFeatureGateTable[*error.subject].feature;
 }
 
+std::expected<CoreModuleShape, isoline::api::LoadError> loadCoreModule(
+    std::span<std::byte const> bytes, FeatureSet features, isoline::binary::DecodeLimits const& limits)
+{
+    // The bodies last, so that a body's refusal is deferred only for a module whose every other rule,
+    // its start function's and its exports' indices among them, holds (a shape reads them).
+    auto loaded =
+        isoline::validate::ValidatedModule::load(bytes, features, limits, isoline::validate::BodyOrder::Last);
+    if (loaded)
+        return CoreModuleShape { .module = std::move(*loaded) };
+    auto const* invalid = std::get_if<isoline::validate::ValidationError>(&loaded.error());
+    if (invalid == nullptr || invalid->function == isoline::validate::NoFunction)
+        return std::unexpected { std::visit(
+            [](auto& error) { return isoline::api::LoadError { std::move(error) }; }, loaded.error()) };
+    // A body's refusal: the module decoded, so it decodes again, to the module the shape reads.
+    auto decoded = isoline::binary::decodeModule(bytes, features, limits);
+    Require(decoded.has_value());
+    return CoreModuleShape { .module = nullptr,
+                             .declared = std::make_shared<isoline::binary::Module const>(std::move(*decoded)),
+                             .bodyRefusal = isoline::api::LoadError { *invalid } };
+}
+
 std::string specMessage(ValidationError const& error)
 {
     auto const& row = ValidationErrorMessages[static_cast<std::size_t>(error.code)];
@@ -3740,6 +3780,17 @@ std::string specMessage(ValidationError const& error)
         case ValidationErrorDetail::Limit:
             Require(exceededLimit(error).has_value());
             return limitMessage(*exceededLimit(error), subject >> 8U);
+        case ValidationErrorDetail::CoreModule:
+            if (error.coreModule)
+            {
+                if (auto const* malformed =
+                        std::get_if<isoline::binary::DecodeError>(&error.coreModule->error))
+                    return isoline::binary::specMessage(*malformed);
+                if (auto const* invalid =
+                        std::get_if<isoline::validate::ValidationError>(&error.coreModule->error))
+                    return isoline::validate::specMessage(*invalid);
+            }
+            return std::vformat(row.text, std::make_format_args(subject));
     }
     return std::string { row.text }; // uncovered(exhaustive-switch)
 }

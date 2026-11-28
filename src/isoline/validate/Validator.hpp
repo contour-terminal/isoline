@@ -67,6 +67,27 @@ struct ModuleShape
 [[nodiscard]] std::expected<ModuleShape, ValidationError> validateModule(
     binary::Module const& module, FeatureSet const& features, binary::DecodeLimits const& limits = {});
 
+/// Where validateModule() checks the function bodies among a module's other rules: the first error found
+/// is the one reported, so the order decides it for a module with several.
+enum class BodyOrder : uint8_t
+{
+    InSectionOrder, ///< Where the code section is: before the start function and the exports.
+    /// After every other rule but the data count's, which reads the bodies: as wasmparser, which validates
+    /// the bodies only once the whole module (or the component around it) has been read.
+    Last,
+};
+
+/// validateModule, checking the bodies where @p order says.
+/// @param module The decoded module.
+/// @param features The proposals whose typing rules apply; those decodeModule accepted.
+/// @param limits The implementation limits; the validator enforces maxOperandsPerInstruction.
+/// @param order Where the bodies are checked.
+/// @return As validateModule.
+[[nodiscard]] std::expected<ModuleShape, ValidationError> validateModule(binary::Module const& module,
+                                                                         FeatureSet const& features,
+                                                                         binary::DecodeLimits const& limits,
+                                                                         BodyOrder order);
+
 /// Watches the work validation does, for a test or a profiler to bound it: never consulted for what is
 /// valid. A seam of the validator for its tests, not part of the embedding API.
 class IValidationObserver

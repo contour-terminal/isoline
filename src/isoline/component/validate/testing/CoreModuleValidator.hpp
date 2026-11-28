@@ -30,11 +30,7 @@ class CoreModuleValidator final: public ICoreModuleValidator
         std::span<std::byte const> bytes) override
     {
         ++_calls;
-        auto loaded = isoline::validate::ValidatedModule::load(bytes, _features, {});
-        if (!loaded)
-            return std::unexpected { std::visit(
-                [](auto const& error) { return isoline::api::LoadError { error }; }, loaded.error()) };
-        return CoreModuleShape { .module = std::move(*loaded) };
+        return loadCoreModule(bytes, _features, {});
     }
 
     /// The modules validated so far.

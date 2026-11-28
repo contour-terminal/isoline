@@ -55,6 +55,18 @@ class ValidatedModule
     [[nodiscard]] static std::expected<std::shared_ptr<ValidatedModule const>, ModuleError> load(
         std::span<std::byte const> bytes, FeatureSet features, binary::DecodeLimits const& limits);
 
+    /// load(), checking the bodies where @p order says (validateModule()).
+    /// @param bytes The module's bytes, from the magic number on.
+    /// @param features The proposals it is decoded and validated with.
+    /// @param limits The implementation limits decoding enforces.
+    /// @param order Where the bodies are checked among the module's rules.
+    /// @return The validated module, or the first decode or validation error.
+    [[nodiscard]] static std::expected<std::shared_ptr<ValidatedModule const>, ModuleError> load(
+        std::span<std::byte const> bytes,
+        FeatureSet features,
+        binary::DecodeLimits const& limits,
+        BodyOrder order);
+
     /// The decoded module.
     [[nodiscard]] binary::Module const& module() const noexcept { return _module; }
 

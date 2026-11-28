@@ -235,7 +235,8 @@ TEST_CASE("Verbs.componentCompileAndDisassemble")
     {
         harness.files.add("a.wat", "(component (core module (func (result i32))))");
         CHECK(harness.compile() == ExitCode::InputRejected);
-        CHECK(harness.diagnostics.str() == "a.wat: error: invalid core module 0\n");
+        // The core validator's own message, as wasm-tools reports an embedded module's error.
+        CHECK(harness.diagnostics.str().starts_with("a.wat: error: type mismatch"));
     }
     SECTION("a component that does not decode")
     {
