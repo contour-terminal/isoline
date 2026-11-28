@@ -34,10 +34,12 @@ def loadFetchTools():
 fetchTools = loadFetchTools()
 
 # The fixture tools, one per archive shape the real lock pins: a versioned directory in a tarball
-# (wasm-tools, CMake), a bare executable in a zip (Ninja), and a Windows zip.
+# (wasm-tools, CMake), a bare executable in a zip (Ninja), a Windows zip, and an asset that is no archive
+# (the preview-1 adapter).
 TOOLS = {
     "nested": ("nested-{version}.tar.gz", "nested-{version}/bin/nested"),
     "flat": ("flat.zip", "flat"),
+    "bare": ("bare-{version}.wasm", "bare-{version}.wasm"),
 }
 PLATFORM = "x86_64-linux"
 WINDOWS = "x86_64-windows"
@@ -72,7 +74,12 @@ class FetchToolsTest(unittest.TestCase):
             name = archive.format(version="1.0")
             member = executable.format(version="1.0")
             payload = f"#!/bin/sh\necho {tool}\n".encode()
-            (tarball if name.endswith(".tar.gz") else zipped)(self.releases / name, member, payload)
+            if name.endswith(".tar.gz"):
+                tarball(self.releases / name, member, payload)
+            elif name.endswith(".zip"):
+                zipped(self.releases / name, member, payload)
+            else:
+                (self.releases / name).write_bytes(payload)
             self.digests[tool] = hashlib.sha256((self.releases / name).read_bytes()).hexdigest()
         zipped(self.releases / "flat-win.zip", "flat.exe", b"MZ")
         self.digests["flat-win"] = hashlib.sha256((self.releases / "flat-win.zip").read_bytes()).hexdigest()
@@ -109,6 +116,11 @@ class FetchToolsTest(unittest.TestCase):
         if HAS_EXECUTABLE_BIT:
             self.assertTrue(executable.stat().st_mode & 0o111, "a zip loses the mode; it is restored")
 
+    def test_aBareAssetIsVerifiedAndPlacedAsItIs(self):
+        executable = self.fetch("bare")
+        self.assertEqual(executable, self.cache / f"bare-1.0-{PLATFORM}" / "bare-1.0.wasm")
+        self.assertEqual(executable.read_bytes(), (self.releases / "bare-1.0.wasm").read_bytes())
+
     def test_thePinnedVersionIsTheLocksRow(self):
         self.assertEqual(fetchTools.pinnedVersion("nested", self.lock), "1.0")
 
@@ -127,6 +139,8 @@ class FetchToolsTest(unittest.TestCase):
             ("cmake", "cmake version 4.3.0\n\nCMake suite maintained", "", ("4.3.0", None)),
             ("ninja", "1.11.1\n", "", ("1.11.1", None)),
             ("wit-bindgen", "wit-bindgen-cli 0.63.0\n", "", ("0.63.0", None)),
+            ("rust", "rustc 1.100.0 (0ef1bc386 2026-11-09)\n", "", ("1.100.0", None)),
+            ("rust", "rustc 1.101.0-beta.3 (5a1b2c3d4 2026-11-20)\n", "", ("1.101.0", "-beta.3")),
             ("llvm", "Ubuntu clang version 22.1.8 (++2026)", "", ("22.1.8", None)),
             ("llvm", "clang version 22.1.8 (Fedora 22.1.8-1.fc44)", "", ("22.1.8", None)),
             ("llvm", "LLVM (http://llvm.org/):\n  LLVM version 22.1.8\n  Optimized build.", "", ("22.1.8", None)),

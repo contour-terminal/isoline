@@ -81,6 +81,9 @@ LOCK_TIMEOUT = 1800
 LOCK_POLL_INTERVAL = 0.1
 # The lock file, in the tool's download directory.
 LOCK_NAME = ".lock"
+# The names of the release assets that are archives: a zip, or a tarball of any compression tarfile reads. An asset
+# of any other name is a bare file (the preview-1 adapter, a module): its `executable` row is its own name.
+ARCHIVE_SUFFIXES = (".zip", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2")
 # The file a complete extracted tree carries at its root: the SHA-256 of the archive it came from.
 COMPLETION_MARKER = ".fetch-tools-complete"
 
@@ -201,10 +204,13 @@ def download(url, target):
 
 
 def extract(archive, destination):
-    """Extracts archive into destination, refusing members that would land outside it."""
+    """Extracts archive into destination, refusing members that would land outside it. An asset of no archive's
+    name (ARCHIVE_SUFFIXES) is a file of its own, such as a module, and is copied into destination as it is."""
     destination.mkdir(parents=True, exist_ok=True)
     root = destination.resolve()
-    if archive.name.endswith(".zip"):
+    if not archive.name.endswith(ARCHIVE_SUFFIXES):
+        shutil.copyfile(archive, root / archive.name)
+    elif archive.name.endswith(".zip"):
         with zipfile.ZipFile(archive) as bundle:
             for member in bundle.namelist():
                 if not (root / member).resolve().is_relative_to(root):
@@ -341,6 +347,8 @@ VERSION_LINES = [
     ("wasm-tools", re.compile(rf"^wasm-tools {VERSION}"), None),
     # wit-bindgen's CLI names its crate: "wit-bindgen-cli 0.63.0".
     ("wit-bindgen", re.compile(rf"^wit-bindgen-cli {VERSION}"), None),
+    # rustc ("rustc 1.100.0 (0ef1bc386 2026-11-09)"); a channel build says so: "rustc 1.101.0-beta.3 (…)".
+    ("rust", re.compile(rf"^rustc {VERSION}"), None),
     # CPython ("Python 3.14.0"), the selftest's executable of a known version.
     ("python", re.compile(rf"^Python {VERSION}$"), None),
 ]
