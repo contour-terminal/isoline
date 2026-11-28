@@ -1367,7 +1367,7 @@ namespace
                 std::ranges::find(PrimitiveValueTypeTable, *byte, &PrimitiveValueTypeRow::byte);
             primitive != PrimitiveValueTypeTable.end())
         {
-            return TypeDefinition { .type = DefinedValueType { primitive->type } };
+            return Result<TypeDefinition> { std::in_place, DefinedValueType { primitive->type } };
         }
         auto const row = std::ranges::find(DefinedValueTypeTable, *byte, &DefinedValueTypeRow::byte);
         if (row == DefinedValueTypeTable.end())
