@@ -1158,6 +1158,9 @@ namespace
                         return entity;
                     });
             case ExternKind::Tag:
+                // The feature first, then the tag (component.rs:3699-3704).
+                if (auto admitted = coreGate(CoreFeatureGate::Tag, position); !admitted)
+                    return std::unexpected { admitted.error() };
                 return entryAt(spaces.coreTags, index, ValidationErrorCode::TagIndexOutOfBounds, position)
                     .transform([&](CoreFunctionTypeId id) {
                         entity.typeIndex = id.value;
@@ -3189,8 +3192,11 @@ namespace
     Result<void> ComponentValidator::coreExportAlias(binary::AliasDefinition const& alias,
                                                      DefinitionPosition position)
     {
-        // alias_core_instance_export (component.rs:3723-3811): room in the space first; the core
-        // instance's export of the name, which must be of the sort.
+        // alias_core_instance_export (component.rs:3723-3811): a tag's feature first (3794-3798), then
+        // room in the space; the core instance's export of the name, which must be of the sort.
+        if (coreKindOf(alias.sort) == isoline::binary::ExternKind::Tag)
+            if (auto admitted = coreGate(CoreFeatureGate::Tag, position); !admitted)
+                return admitted;
         if (auto reserved = reserve(alias.sort, position); !reserved)
             return reserved;
         auto const instance = coreInstanceAt(alias.instance, position);

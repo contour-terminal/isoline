@@ -9,10 +9,12 @@
 #include <optional>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include <isoline/Features.hpp>
 #include <isoline/component/Features.hpp>
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Component.hpp>
@@ -20,10 +22,14 @@
 #include <isoline/component/binary/testing/Builder.hpp>
 #include <isoline/component/binary/testing/DecoderFixtures.hpp>
 #include <isoline/component/canonical/Layout.hpp>
+#include <isoline/component/text/Forms.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/Validator.hpp>
 #include <isoline/component/validate/testing/CoreModuleValidator.hpp>
+#include <isoline/text/TextLimits.hpp>
+#include <isoline/text/TopLevel.hpp>
 
+using isoline::FeatureSet;
 using isoline::component::ComponentFeature;
 using isoline::component::ComponentFeatureSet;
 using isoline::component::ComponentLimit;
@@ -1384,4 +1390,48 @@ TEST_CASE("Validator.layoutsLinear")
     INFO(std::format("layout steps {} at n, {} at 2n", single, twice));
     CHECK(single >= 5'000);
     CHECK(twice * 10 <= single * 21);
+}
+
+namespace
+{
+/// Validates the component @p source gives as text, under the core features @p coreFeatures; the text must
+/// compile and decode.
+[[nodiscard]] Validated validatedText(std::string_view source, FeatureSet coreFeatures = FeatureSet::all())
+{
+    auto const bytes =
+        isoline::text::compileText(source, isoline::text::TextLimits {}, isoline::component::text::Forms);
+    REQUIRE(bytes.has_value());
+    auto pool = decodeComponent(*bytes, ComponentFeatureSet::defaults(), ComponentLimits {});
+    REQUIRE(pool.has_value());
+    auto coreModules = CoreModuleValidator { coreFeatures };
+    return validateComponent(
+        std::move(*pool), ComponentFeatureSet::defaults(), ComponentLimits {}, coreModules);
+}
+
+/// The message validating the component @p source gives as text refuses it with; it must be refused.
+[[nodiscard]] std::string textRefusal(std::string_view source, FeatureSet coreFeatures = FeatureSet::all())
+{
+    auto const result = validatedText(source, coreFeatures);
+    REQUIRE_FALSE(result.has_value());
+    return specMessage(result.error());
+}
+} // namespace
+
+TEST_CASE("Validator.coreTagsNeedExceptionHandling")
+{
+    // wasmparser asks for the exceptions feature before it looks the tag up (component.rs:3699-3704 for
+    // an inline export, 3794-3798 for an alias), so a tag that is no tag is refused for the feature.
+    auto const withoutExceptions = FeatureSet::all().without(isoline::Feature::ExceptionHandling);
+    auto const alias = R"((component
+        (core module $m (func (export "")))
+        (core instance $i (instantiate $m))
+        (alias core export $i "" (core tag $t))))";
+    CHECK(textRefusal(alias, withoutExceptions) == "exceptions proposal not enabled");
+    CHECK(textRefusal(alias) == "export `` for core instance 0 is not a tag");
+    auto const inlineExport = R"((component
+        (core module $m (func (export "")))
+        (core instance $i (instantiate $m))
+        (core instance (export "" (tag 0)))))";
+    CHECK(textRefusal(inlineExport, withoutExceptions) == "exceptions proposal not enabled");
+    CHECK(textRefusal(inlineExport) == "unknown tag 0: tag index out of bounds");
 }
