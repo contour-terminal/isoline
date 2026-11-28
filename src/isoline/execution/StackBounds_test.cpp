@@ -37,6 +37,7 @@ using isoline::execution::ThreadStackBounds;
 using isoline::execution::testing::callStub;
 using isoline::execution::testing::CompiledInstance;
 using isoline::execution::testing::hostConfig;
+using isoline::execution::testing::hostRunsCompiledCode;
 using isoline::execution::testing::moduleOf;
 using isoline::runtime::StoreLimits;
 using isoline::runtime::testing::stackAddress;
@@ -175,6 +176,9 @@ TEST_CASE("StackBounds.nativeStackFollowsTheLimits")
 
 TEST_CASE("StackBounds.stubReserveCoversEveryStub")
 {
+    // A compiled instance needs the host's backend: no stub runs without one (arm64's comes with P6).
+    if (!hostRunsCompiledCode())
+        SKIP("the code is x86-64's");
     // Every stub but CallHost (a host function gets whatever stack is left) runs on the reserve the
     // prologue's native check keeps free, and so must stay within StubStackBudgetBytes on every build
     // flavour.
@@ -233,6 +237,9 @@ TEST_CASE("StackBounds.stubReserveCoversEveryStub")
 
 TEST_CASE("StackBounds.unknownBoundsRefuseTheEntry")
 {
+    // A compiled instance needs the host's backend: no stub runs without one (arm64's comes with P6).
+    if (!hostRunsCompiledCode())
+        SKIP("the code is x86-64's");
     // A thread whose stack the system does not report (a sandbox without /proc) gets no native limit: the
     // executor is refused on such a thread with an error of its own, and an entry on one (a thread other than
     // the one that created it) is refused before any poll, never an abort.

@@ -187,6 +187,9 @@ TEST_CASE("RuntimeStubs.boundaryTypesAreWordSized")
 
 TEST_CASE("RuntimeStubs.trappingStubsReturn")
 {
+    // A compiled instance needs the host's backend: no stub runs without one (arm64's comes with P6).
+    if (!hostRunsCompiledCode())
+        SKIP("the code is x86-64's");
     SECTION("an out-of-bounds memory.fill returns Pending, writes nothing and lends the budget again")
     {
         auto instance = instanceOf(StubModule);
@@ -219,8 +222,6 @@ TEST_CASE("RuntimeStubs.trappingStubsReturn")
     }
     SECTION("compiled code: a failing host and an out-of-bounds fill end the call, nothing left charged")
     {
-        if (!hostRunsCompiledCode())
-            SKIP("the code is x86-64's");
         constexpr auto Failing = std::string_view { R"((module
   (import "host" "fail" (func $fail (param i32) (result i32)))
   (memory 1)
@@ -260,6 +261,9 @@ TEST_CASE("RuntimeStubs.trappingStubsReturn")
 
 TEST_CASE("RuntimeStubs.pollSlowKeepsTheOrder")
 {
+    // A compiled instance needs the host's backend: no stub runs without one (arm64's comes with P6).
+    if (!hostRunsCompiledCode())
+        SKIP("the code is x86-64's");
     auto const site = std::vector<uint64_t> { std::to_underlying(PollSite::LoopBackEdge) };
     // Generated code that took every step lent has a countdown of 0, which sends its next poll here.
     auto const exhausted = [&](CompiledInstance& instance) {
@@ -322,6 +326,9 @@ TEST_CASE("RuntimeStubs.pollSlowKeepsTheOrder")
 
 TEST_CASE("RuntimeStubs.bulkFillPollsPerGranule")
 {
+    // A compiled instance needs the host's backend: no stub runs without one (arm64's comes with P6).
+    if (!hostRunsCompiledCode())
+        SKIP("the code is x86-64's");
     // A 1 MiB fill polls 16 times at BulkGranule, once per 64 KiB, as the reference does.
     constexpr auto Fill = std::string_view { R"((module
   (memory 16)
@@ -343,8 +350,6 @@ TEST_CASE("RuntimeStubs.bulkFillPollsPerGranule")
     }
     SECTION("compiled code: the same polls and steps as the reference")
     {
-        if (!hostRunsCompiledCode())
-            SKIP("the code is x86-64's");
         auto polls = PollCounter {};
         auto instance = instanceOf(Fill, InstanceOptions { .observer = &polls });
         REQUIRE(instance->call(0, {}).has_value());
@@ -356,6 +361,9 @@ TEST_CASE("RuntimeStubs.bulkFillPollsPerGranule")
 
 TEST_CASE("RuntimeStubs.doTheirWork")
 {
+    // A compiled instance needs the host's backend: no stub runs without one (arm64's comes with P6).
+    if (!hostRunsCompiledCode())
+        SKIP("the code is x86-64's");
     auto instance =
         instanceOf(StubModule, InstanceOptions { .limits = harnessLimitsWith([](StoreLimits& limits) {
                                                      limits.maxMemoryBytes = uint64_t { 2 } * 65'536;
