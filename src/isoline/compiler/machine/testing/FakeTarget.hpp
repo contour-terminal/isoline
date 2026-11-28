@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-// A target for testing the machine layer and the register allocator without an instruction set: two
-// registers per class, a handful of opcodes whose rows exercise each kind of constraint (plain, tied,
-// fixed, early clobber, memory-capable, a call that clobbers every register), a convention row and a
-// frame rule. It selects and encodes nothing: tests build their machine functions by hand.
+// A target for testing the machine layer and the register allocator without an instruction set: a handful
+// of opcodes whose rows exercise each kind of constraint (plain, tied, fixed, early clobber, memory-capable,
+// a call that clobbers every register its convention does not preserve), over a register file with its
+// conventions and stack rule, and a frame rule. FakeTarget runs them on two registers per class; a real
+// target's tests run them on its own file (x86_64/testing/X64FakeTarget.hpp). It selects and encodes
+// nothing: tests build their machine functions by hand.
 
 #include <core/Assert.hpp>
 
@@ -137,6 +139,31 @@ inline constexpr auto FakeStackRule = StackRule {
 /// FakeTarget's frame rule unless a test asks for another: x86-64's numbers.
 inline constexpr auto FakeFrameRule = FrameRule { .bytesPerStackValue = 32, .frameOverhead = 256 };
 
+/// A register file the fake opcodes run on: the registers the allocator assigns, per class, the internal
+/// conventions a FakeSaves picks from, the host convention and the stack rule. Its General registers 0 and 1
+/// are allocatable: the fixed rows name them (x86-64's rax and rcx, which its div and shifts fix too).
+struct FakeRegisterFile
+{
+    std::span<PhysicalRegister const> general; ///< The allocatable General registers, in preference order.
+    std::span<PhysicalRegister const> floats;  ///< The allocatable Float registers, in preference order.
+    ConventionRow const* internal;             ///< The internal convention of FakeSaves::Nothing.
+    ConventionRow const* savingInternal;       ///< The internal convention of FakeSaves::SecondGeneral.
+    ConventionRow const* host;                 ///< The host convention (a poll's slow path).
+    StackRule stack;                           ///< The stack rule.
+    OperatingSystemAbi abi; ///< The ABI description() names, whose host convention is host's.
+};
+
+/// FakeTarget's register file: two registers per class and the Fake conventions.
+inline constexpr auto TwoRegisterFile = FakeRegisterFile {
+    .general = FakeGeneralRegisters,
+    .floats = FakeFloatRegisters,
+    .internal = &FakeConvention,
+    .savingInternal = &FakeSavingConvention,
+    .host = &FakeHostConvention,
+    .stack = FakeStackRule,
+    .abi = OperatingSystemAbi::SystemV,
+};
+
 namespace fake
 {
     /// A General operand of @p role.
@@ -187,27 +214,30 @@ namespace fake
         OperandConstraint {
             .role = OperandRole::Use, .registerClass = RegisterClass::General, .memory = AllowsMemory::Yes },
     });
-    /// How many of FakeTarget's registers a call under @p row clobbers: those it does not preserve, walked as
+    /// How many of @p file's registers a call under @p row clobbers: those it does not preserve, walked as
     /// callerSavedRegisters() walks them.
-    constexpr std::size_t clobberCount(ConventionRow const& row) noexcept
+    constexpr std::size_t clobberCount(FakeRegisterFile const& file, ConventionRow const& row) noexcept
     {
         auto count = std::size_t { 0 };
-        forEachCallerSaved(row, FakeGeneralRegisters, FakeFloatRegisters, [&](PhysicalRegister) { ++count; });
+        forEachCallerSaved(row, file.general, file.floats, [&](PhysicalRegister) { ++count; });
         return count;
     }
 
-    /// The rows of a call under @p row: one Def fixed to each register it clobbers, General then Float, after
-    /// @p Lead leading rows of @p lead. Derived from the convention row by callerSavedRegisters()'s own walk
-    /// (forEachCallerSaved()), over the files allocatable() returns, so the two never drift apart.
+    /// The rows of a call under @p row on @p file: one Def fixed to each register it clobbers, General then
+    /// Float, after @p Lead leading rows of @p lead. Derived from the convention row by
+    /// callerSavedRegisters()'s own walk (forEachCallerSaved()), over the files allocatable() returns, so the
+    /// two never drift apart.
     template <std::size_t Count, std::size_t Lead = 0>
     constexpr std::array<OperandConstraint, Count + Lead> clobberRows(
-        ConventionRow const& row, std::array<OperandConstraint, Lead> const& lead = {}) noexcept
+        FakeRegisterFile const& file,
+        ConventionRow const& row,
+        std::array<OperandConstraint, Lead> const& lead = {}) noexcept
     {
         auto rows = std::array<OperandConstraint, Count + Lead> {};
         auto next = std::size_t { 0 };
         for (auto const& constraint: lead)
             rows[next++] = constraint;
-        forEachCallerSaved(row, FakeGeneralRegisters, FakeFloatRegisters, [&](PhysicalRegister reg) {
+        forEachCallerSaved(row, file.general, file.floats, [&](PhysicalRegister reg) {
             rows[next++] = OperandConstraint { .role = OperandRole::Def,
                                                .registerClass = reg.registerClass,
                                                .fixed = reg.number };
@@ -215,7 +245,6 @@ namespace fake
         return rows;
     }
 
-    inline constexpr auto Call = clobberRows<clobberCount(FakeConvention)>(FakeConvention);
     inline constexpr auto Jump = std::to_array({ general(OperandRole::Use) });
     inline constexpr auto Branch = std::to_array({
         general(OperandRole::Use),
@@ -228,9 +257,6 @@ namespace fake
         OperandConstraint {
             .role = OperandRole::Use, .registerClass = RegisterClass::General, .memory = AllowsMemory::Yes },
     });
-    inline constexpr auto Poll = clobberRows<clobberCount(FakeHostConvention)>(FakeHostConvention);
-    inline constexpr auto CallIndirect =
-        clobberRows<clobberCount(FakeConvention), 1>(FakeConvention, { general(OperandRole::Use) });
     inline constexpr auto PassArguments =
         std::to_array({ fixedGeneral(OperandRole::Use, 0), fixedGeneral(OperandRole::Use, 1) });
     inline constexpr auto PassArgumentsSwapped =
@@ -241,48 +267,80 @@ namespace fake
     });
 } // namespace fake
 
-/// One FakeOpcode's operand constraints.
+/// One FakeOpcode's constraints.
 struct FakeConstraintRow
 {
     FakeOpcode opcode;                           ///< The opcode; equal to the row's index.
     std::span<OperandConstraint const> operands; ///< Its operands' constraints, by position.
 };
 
-/// Every FakeOpcode's constraints, in enumerator order.
-inline constexpr auto FakeConstraintTable = std::to_array<FakeConstraintRow>({
-    { .opcode = FakeOpcode::Constant, .operands = fake::Constant },
-    { .opcode = FakeOpcode::Copy, .operands = fake::Copy },
-    { .opcode = FakeOpcode::CopyFloat, .operands = fake::CopyFloat },
-    { .opcode = FakeOpcode::Add, .operands = fake::Add },
-    { .opcode = FakeOpcode::AddTied, .operands = fake::AddTied },
-    { .opcode = FakeOpcode::Divide, .operands = fake::Divide },
-    { .opcode = FakeOpcode::Shift, .operands = fake::Shift },
-    { .opcode = FakeOpcode::EarlyClobber, .operands = fake::EarlyClobber },
-    { .opcode = FakeOpcode::Load, .operands = fake::Load },
-    { .opcode = FakeOpcode::Call, .operands = fake::Call },
-    { .opcode = FakeOpcode::Jump, .operands = fake::Jump },
-    { .opcode = FakeOpcode::Branch, .operands = fake::Branch },
-    { .opcode = FakeOpcode::Return, .operands = fake::Return },
-    { .opcode = FakeOpcode::Store, .operands = fake::Store },
-    { .opcode = FakeOpcode::Poll, .operands = fake::Poll },
-    { .opcode = FakeOpcode::CallIndirect, .operands = fake::CallIndirect },
-    { .opcode = FakeOpcode::PassArguments, .operands = fake::PassArguments },
-    { .opcode = FakeOpcode::PassArgumentsSwapped, .operands = fake::PassArgumentsSwapped },
-    { .opcode = FakeOpcode::ConstantFloat, .operands = fake::ConstantFloat },
-});
+/// The constraint rows of the fake opcodes on @p File: the calls' and the poll's clobbers are its own.
+template <FakeRegisterFile const& File>
+struct FakeConstraints
+{
+    /// A Wasm call's rows: a Def of every register the internal convention does not preserve.
+    static constexpr auto Call =
+        fake::clobberRows<fake::clobberCount(File, *File.internal)>(File, *File.internal);
+    /// A poll's rows: a Def of every register the host convention does not preserve.
+    static constexpr auto Poll = fake::clobberRows<fake::clobberCount(File, *File.host)>(File, *File.host);
+    /// An indirect call's rows: its target's Use, then Call's.
+    static constexpr auto CallIndirect = fake::clobberRows<fake::clobberCount(File, *File.internal), 1>(
+        File, *File.internal, { fake::general(OperandRole::Use) });
 
-static_assert(
-    [] {
+    /// Every FakeOpcode's constraints, in enumerator order.
+    static constexpr auto Table = std::to_array<FakeConstraintRow>({
+        { .opcode = FakeOpcode::Constant, .operands = fake::Constant },
+        { .opcode = FakeOpcode::Copy, .operands = fake::Copy },
+        { .opcode = FakeOpcode::CopyFloat, .operands = fake::CopyFloat },
+        { .opcode = FakeOpcode::Add, .operands = fake::Add },
+        { .opcode = FakeOpcode::AddTied, .operands = fake::AddTied },
+        { .opcode = FakeOpcode::Divide, .operands = fake::Divide },
+        { .opcode = FakeOpcode::Shift, .operands = fake::Shift },
+        { .opcode = FakeOpcode::EarlyClobber, .operands = fake::EarlyClobber },
+        { .opcode = FakeOpcode::Load, .operands = fake::Load },
+        { .opcode = FakeOpcode::Call, .operands = Call },
+        { .opcode = FakeOpcode::Jump, .operands = fake::Jump },
+        { .opcode = FakeOpcode::Branch, .operands = fake::Branch },
+        { .opcode = FakeOpcode::Return, .operands = fake::Return },
+        { .opcode = FakeOpcode::Store, .operands = fake::Store },
+        { .opcode = FakeOpcode::Poll, .operands = Poll },
+        { .opcode = FakeOpcode::CallIndirect, .operands = CallIndirect },
+        { .opcode = FakeOpcode::PassArguments, .operands = fake::PassArguments },
+        { .opcode = FakeOpcode::PassArgumentsSwapped, .operands = fake::PassArgumentsSwapped },
+        { .opcode = FakeOpcode::ConstantFloat, .operands = fake::ConstantFloat },
+    });
+
+    /// Whether Table holds one row per FakeOpcode, at its enumerator's index, over a file whose General
+    /// registers 0 and 1 (the fixed rows') are allocatable and whose ABI's host convention is its host's.
+    [[nodiscard]] static constexpr bool isComplete() noexcept
+    {
         auto index = std::size_t { 0 };
-        for (auto const& row: FakeConstraintTable)
+        for (auto const& row: Table)
         {
             if (static_cast<std::size_t>(row.opcode) != index)
                 return false;
             ++index;
         }
-        return index == static_cast<std::size_t>(LastFakeOpcode) + 1;
-    }(),
-    "FakeConstraintTable must hold one row per FakeOpcode, at the index of its enumerator");
+        auto const allocatable = [](uint8_t number) {
+            for (auto const reg: File.general)
+                if (reg.number == number)
+                    return true;
+            return false;
+        };
+        auto hostAgrees = false;
+        for (auto const& row: HostConventionTable)
+            if (row.architecture == Architecture::X64 && row.abi == File.abi)
+                hostAgrees = row.convention == File.host->convention;
+        return index == static_cast<std::size_t>(LastFakeOpcode) + 1 && allocatable(0) && allocatable(1)
+               && hostAgrees;
+    }
+};
+
+/// FakeTarget's constraints: every FakeOpcode's on TwoRegisterFile, in enumerator order.
+inline constexpr auto const& FakeConstraintTable = FakeConstraints<TwoRegisterFile>::Table;
+
+static_assert(FakeConstraints<TwoRegisterFile>::isComplete(),
+              "FakeConstraintTable must hold one row per FakeOpcode, at the index of its enumerator");
 
 /// @p opcode as a machine opcode.
 [[nodiscard]] constexpr uint16_t opcodeOf(FakeOpcode opcode) noexcept
@@ -365,14 +423,15 @@ struct LoopsOf
     intermediate::LoopNesting loops;        ///< Its loops.
 };
 
-/// The fake target: two registers per class and FakeConstraintTable's opcodes.
-class FakeTarget final: public ITarget
+/// A fake target: the fake opcodes on the register file @p File.
+template <FakeRegisterFile const& File>
+class BasicFakeTarget final: public ITarget
 {
   public:
     /// A fake target bounding frames by @p rule.
     /// @param rule Its frame rule; a test of the frame bound passes a tighter one.
     /// @param saves Which internal convention it has.
-    explicit FakeTarget(FrameRule rule = FakeFrameRule, FakeSaves saves = FakeSaves::Nothing) noexcept:
+    explicit BasicFakeTarget(FrameRule rule = FakeFrameRule, FakeSaves saves = FakeSaves::Nothing) noexcept:
         _rule { rule }, _saves { saves }
     {
     }
@@ -381,27 +440,26 @@ class FakeTarget final: public ITarget
 
     [[nodiscard]] FrameRule frameRule() const noexcept override { return _rule; }
 
-    [[nodiscard]] StackRule stackRule() const noexcept override { return FakeStackRule; }
+    [[nodiscard]] StackRule stackRule() const noexcept override { return File.stack; }
 
     [[nodiscard]] ConventionRow const& conventionRow(Convention convention) const override
     {
-        Require(convention == Convention::WasmInternal || convention == Convention::SystemV);
+        Require(convention == Convention::WasmInternal || convention == File.host->convention);
         if (convention != Convention::WasmInternal)
-            return FakeHostConvention;
-        return _saves == FakeSaves::Nothing ? FakeConvention : FakeSavingConvention;
+            return *File.host;
+        return _saves == FakeSaves::Nothing ? *File.internal : *File.savingInternal;
     }
 
     [[nodiscard]] std::span<PhysicalRegister const> allocatable(
         RegisterClass registerClass) const noexcept override
     {
-        return registerClass == RegisterClass::General ? std::span { FakeGeneralRegisters }
-                                                       : std::span { FakeFloatRegisters };
+        return registerClass == RegisterClass::General ? File.general : File.floats;
     }
 
     [[nodiscard]] std::span<OperandConstraint const> constraints(uint16_t machineOpcode) const override
     {
-        Require(machineOpcode < FakeConstraintTable.size());
-        return FakeConstraintTable[machineOpcode].operands;
+        Require(machineOpcode < FakeConstraints<File>::Table.size());
+        return FakeConstraints<File>::Table[machineOpcode].operands;
     }
 
     /// Selects nothing: an empty function. Tests build machine functions by hand.
@@ -426,10 +484,13 @@ class FakeTarget final: public ITarget
     void emitEntryTrampoline(CodeBuffer& /*buffer*/) const override {}
 
   private:
-    /// A placeholder (x86-64, System V): the fake target generates for no machine.
-    TargetDescription _description {};
+    /// A placeholder (x86-64, the file's ABI): the fake target generates for no machine.
+    TargetDescription _description { .abi = File.abi };
     FrameRule _rule;
     FakeSaves _saves;
 };
+
+/// The fake target on two registers per class.
+using FakeTarget = BasicFakeTarget<TwoRegisterFile>;
 
 } // namespace isoline::compiler::machine::testing

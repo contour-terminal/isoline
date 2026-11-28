@@ -114,10 +114,12 @@ enum class IndexExtension : uint8_t
 /// instruction.
 struct MemoryOperand
 {
-    RegisterName base {};     ///< The base register; kind None for none.
-    RegisterName index {};    ///< The index register; kind None for none.
-    uint8_t scale = 1;        ///< The index's scale: 1, 2, 4 or 8.
-    int32_t displacement = 0; ///< The displacement; a larger offset is added by an instruction of its own.
+    RegisterName base {};  ///< The base register; kind None for none.
+    RegisterName index {}; ///< The index register; kind None for none.
+    uint8_t scale = 1;     ///< The index's scale: 1, 2, 4 or 8.
+    /// The displacement. Wide enough for any frame offset; a target refuses one its encoding cannot hold
+    /// (x86-64: beyond a signed 32 bits), and the selector adds a larger offset by an instruction of its own.
+    int64_t displacement = 0;
     IndexExtension extension = IndexExtension::None; ///< How the index is widened.
 
     /// Whether both are the same operand.
