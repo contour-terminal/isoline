@@ -74,9 +74,22 @@ function(isoline_probe_tail_call resultVar)
     if(NOT coreBase)
         set(coreBase core::base)
     endif()
-    get_target_property(coreIncludes ${coreBase} INTERFACE_INCLUDE_DIRECTORIES)
-    list(TRANSFORM coreIncludes REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1")
-    list(FILTER coreIncludes EXCLUDE REGEX "^\\$<")
+    # An imported core::base (an installed core-cpp, or a consumer's) brings its usage requirements through
+    # LINK_LIBRARIES; an in-tree one, which try_compile cannot link, by its include directories, which it may
+    # also leave to a target it links (then none are named here, and its headers are found as installed).
+    set(coreLinks "")
+    get_target_property(coreImported ${coreBase} IMPORTED)
+    if(coreImported)
+        set(coreIncludes "")
+        set(coreLinks LINK_LIBRARIES ${coreBase})
+    else()
+        get_target_property(coreIncludes ${coreBase} INTERFACE_INCLUDE_DIRECTORIES)
+        if(NOT coreIncludes)
+            set(coreIncludes "")
+        endif()
+        list(TRANSFORM coreIncludes REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1")
+        list(FILTER coreIncludes EXCLUDE REGEX "^\\$<")
+    endif()
     set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
     foreach(row families IN ZIP_LISTS ISOLINE_TAILCALL_PROBE_ROWS ISOLINE_TAILCALL_PROBE_FAMILIES)
         string(REPLACE " " ";" families "${families}")
@@ -94,6 +107,7 @@ function(isoline_probe_tail_call resultVar)
             SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/TailCallControl.cpp"
             CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${includes}"
             COMPILE_DEFINITIONS ${compileOptions}
+            ${coreLinks}
             CXX_STANDARD 23
             CXX_STANDARD_REQUIRED ON
             CXX_EXTENSIONS OFF
