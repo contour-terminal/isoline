@@ -229,6 +229,15 @@ class Linker
     /// @throws std::bad_alloc When the definition cannot be stored.
     [[nodiscard]] std::expected<void, LinkerError> defineResource(std::string path, HostResourceType type);
 
+    /// Defines an instance of the linker at @p path that holds no definition yet: what an import of an
+    /// instance resolves to however few of its exports the linker defines beneath it (none is needed for
+    /// an instance of types only). As Wasmtime's Linker::instance(), which its script runner calls for
+    /// every named component, its exports or none.
+    /// @param path Its path.
+    /// @return Nothing, or the refusal; an instance already there is no refusal.
+    /// @throws std::bad_alloc When the definition cannot be stored.
+    [[nodiscard]] std::expected<void, LinkerError> defineEmptyInstance(std::string const& path);
+
     /// Defines an instance of a store at @p path: only that store instantiates with it (ForeignInstance
     /// elsewhere), and it must outlive the linker's use there.
     /// @param path Its path.

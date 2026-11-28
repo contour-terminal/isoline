@@ -882,3 +882,39 @@ TEST_CASE("Linker.boundResourcesNeedNoDefinition")
           (export "missing" (type (sub resource)))))))");
     CHECK(std::holds_alternative<TypeMismatch>(linker.resolve(fresh).front().outcome));
 }
+
+TEST_CASE("Linker.emptyInstance")
+{
+    // An instance of no definitions (Wasmtime's Linker::instance(), its linking.wast:6-19): an import of
+    // an instance resolves to it, one of another sort meets an instance, and an export it lacks is missing.
+    auto harness = ApiHarness {};
+    auto store = harness.store();
+    auto linker = Linker { ComponentConfig {} };
+    REQUIRE(linker.defineEmptyInstance("i").has_value());
+    REQUIRE(linker.defineEmptyInstance("i").has_value()); // already there
+    REQUIRE(linker.defineEmptyInstance("outer#inner").has_value());
+    CHECK_FALSE(linker.defineEmptyInstance("Not Kebab").has_value());
+    // A leaf at an empty instance's path conflicts with the instance: one with nothing sorting after it,
+    // and one before an unrelated definition, which is no definition inside it.
+    auto const u32 = primitive(linker, ValueKind::U32);
+    REQUIRE(linker.defineEmptyInstance("zz").has_value());
+    auto const atLast = linker.defineFunction("zz", functionSpec({}, u32), constantFunction(1));
+    REQUIRE_FALSE(atLast.has_value());
+    CHECK(atLast.error().code == LinkerErrorCode::PathConflict);
+    CHECK(atLast.error().message() == "`zz` conflicts with the definition `zz`");
+    REQUIRE(linker.defineEmptyInstance("m").has_value());
+    require(linker.defineFunction("m-after", functionSpec({}, u32), constantFunction(1)));
+    auto const beforeAnother = linker.defineFunction("m", functionSpec({}, u32), constantFunction(1));
+    REQUIRE_FALSE(beforeAnother.has_value());
+    CHECK(beforeAnother.error().message() == "`m` conflicts with the definition `m`");
+    auto const instance =
+        loadText(harness, R"((component (import "i" (instance)) (import "outer" (instance))))");
+    CHECK(store.instantiate(instance, linker).has_value());
+    auto const module = linker.resolve(loadText(harness, R"((component (import "i" (core module))))"));
+    REQUIRE(std::holds_alternative<TypeMismatch>(module.front().outcome));
+    CHECK(std::get<TypeMismatch>(module.front().outcome).detail == "expected module, found instance");
+    auto const function =
+        linker.resolve(loadText(harness, R"((component (import "i" (instance (export "x" (func))))))"));
+    REQUIRE(std::holds_alternative<TypeMismatch>(function.front().outcome));
+    CHECK(std::get<TypeMismatch>(function.front().outcome).detail == "missing expected export `x`");
+}

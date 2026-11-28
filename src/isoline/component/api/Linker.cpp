@@ -641,8 +641,13 @@ std::expected<std::vector<std::string>, LinkerError> Linker::checkPath(std::stri
         return std::unexpected { linkerError(LinkerErrorCode::Redefinition, path) };
     if (_instances.contains(path))
     {
-        auto const inside = _definitions.lower_bound(path + PathSeparator);
-        return std::unexpected { linkerError(LinkerErrorCode::PathConflict, path, inside->first) };
+        // The first definition inside the instance; an empty one (defineEmptyInstance()) has none, and
+        // what sorts after its path may lie outside it.
+        auto const inner = path + PathSeparator;
+        auto const inside = _definitions.lower_bound(inner);
+        auto const holds = inside != _definitions.end() && inside->first.starts_with(inner);
+        return std::unexpected { linkerError(
+            LinkerErrorCode::PathConflict, path, holds ? inside->first : path) };
     }
     auto prefix = std::string {};
     for (auto const& segment: std::span { segments }.first(segments.size() - 1))
@@ -668,6 +673,23 @@ std::expected<void, LinkerError> Linker::define(std::string path, Definition def
     }
     _children[parent].insert(segments->back());
     _definitions.emplace(std::move(path), std::move(definition));
+    return {};
+}
+
+std::expected<void, LinkerError> Linker::defineEmptyInstance(std::string const& path)
+{
+    if (_instances.contains(path))
+        return {};
+    auto segments = checkPath(path);
+    if (!segments)
+        return std::unexpected { std::move(segments.error()) };
+    auto parent = std::string {};
+    for (auto const& segment: *segments)
+    {
+        _children[parent].insert(segment);
+        parent = childPath(parent, segment);
+        _instances.insert(parent);
+    }
     return {};
 }
 

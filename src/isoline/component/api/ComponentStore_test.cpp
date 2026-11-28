@@ -28,7 +28,10 @@
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/runtime/testing/ResourceDoubles.hpp>
 #include <isoline/component/runtime/testing/StoreFixtures.hpp>
+#include <isoline/component/text/Forms.hpp>
 #include <isoline/runtime/testing/ReportedContractChecks.hpp>
+#include <isoline/text/TextLimits.hpp>
+#include <isoline/text/TopLevel.hpp>
 
 using isoline::component::api::ComponentCallError;
 using isoline::component::api::ComponentCallFailure;
@@ -1608,4 +1611,104 @@ TEST_CASE("HostResources.failedResultLiftKeepsTheOwn")
         CHECK(destructor->destroyed.empty());
     }
     CHECK(destructor->destroyed == std::vector<uint32_t> { 40 });
+}
+
+namespace
+{
+/// The bytes of the component @p source gives as text; the text must compile.
+[[nodiscard]] std::vector<std::byte> componentText(std::string_view source)
+{
+    auto bytes =
+        isoline::text::compileText(source, isoline::text::TextLimits {}, isoline::component::text::Forms);
+    if (!bytes)
+        UNSCOPED_INFO(std::format("{}:{}", bytes.error().position.line, bytes.error().position.column));
+    REQUIRE(bytes.has_value());
+    return std::move(*bytes);
+}
+} // namespace
+
+TEST_CASE("ComponentInstance.exportedModulesAndResources")
+{
+    // What Wasmtime's script runner reads of a named component (wast.rs:400-427): its exported core
+    // modules, and its resource types, which another store's components import through a linker.
+    auto harness = ApiHarness {};
+    auto const linker = [] {
+        auto made = Linker { ComponentConfig {} };
+        require(made.defineResource("host-r", HostResourceType { "host-r", nullptr }));
+        return made;
+    }();
+    auto const component = harness.load(componentText(R"((component
+        (import "host-r" (type $h (sub resource)))
+        (core module $m (func (export "f")))
+        (type $r (resource (rep i32)))
+        (export "m" (core module $m))
+        (export "r" (type $r))
+        (export "h" (type $h))
+        (instance $i (export "inner" (core module $m)))
+        (export "i" (instance $i))))"));
+    auto store = harness.store();
+    auto const first = instanceOf(store.instantiate(component, linker));
+    auto const second = instanceOf(store.instantiate(component, linker));
+
+    auto const module = first.module("m");
+    REQUIRE(module.has_value());
+    REQUIRE(module->has_value());
+    CHECK((*module)->exports().size() == 1);
+    auto const inner = first.module("i#inner");
+    REQUIRE(inner.has_value());
+    CHECK(inner->has_value());
+    auto const notAModule = first.module("r");
+    REQUIRE(notAModule.has_value());
+    CHECK_FALSE(notAModule->has_value());
+    auto const missing = first.module("nothing");
+    REQUIRE(missing.has_value());
+    CHECK_FALSE(missing->has_value());
+
+    // A guest's resource type has one identity per store and runtime type: asked twice, one type; of
+    // another instance, another.
+    auto const resource = first.resource("r");
+    REQUIRE(resource.has_value());
+    REQUIRE(resource->has_value());
+    auto const again = first.resource("r");
+    REQUIRE(again.has_value());
+    REQUIRE(again->has_value());
+    CHECK(**resource == **again);
+    CHECK((*resource)->destructor() == nullptr);
+    auto const other = second.resource("r");
+    REQUIRE(other.has_value());
+    REQUIRE(other->has_value());
+    CHECK_FALSE(**resource == **other);
+    // A host type it re-exports is the host's.
+    auto const host = first.resource("h");
+    REQUIRE(host.has_value());
+    REQUIRE(host->has_value());
+    CHECK((*host)->name() == "host-r");
+    auto const notAResource = first.resource("m");
+    REQUIRE(notAResource.has_value());
+    CHECK_FALSE(notAResource->has_value());
+
+    // Defined in a linker, the guest's type is what another store's import binds: one type is one, two
+    // are two.
+    auto named = Linker { ComponentConfig {} };
+    require(named.defineResource("a#r", **resource));
+    require(named.defineResource("b#r", **again));
+    require(named.defineResource("c#r", **other));
+    auto const importer = [&](std::string_view second) {
+        return harness.load(componentText(std::format(R"((component
+            (import "a" (instance $a (export "r" (type (sub resource)))))
+            (alias export $a "r" (type $r))
+            (import "{}" (instance (export "r" (type (eq $r)))))))",
+                                                      second)));
+    };
+    auto otherStore = harness.store();
+    CHECK(otherStore.instantiate(importer("b"), named).has_value());
+    CHECK_FALSE(otherStore.instantiate(importer("c"), named).has_value());
+
+    // Once the store is gone both refuse.
+    auto const orphan = [&] {
+        auto gone = harness.store();
+        return instanceOf(gone.instantiate(component, linker));
+    }();
+    CHECK_FALSE(orphan.module("m").has_value());
+    CHECK_FALSE(orphan.resource("r").has_value());
 }

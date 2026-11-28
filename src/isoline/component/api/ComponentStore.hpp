@@ -71,6 +71,14 @@ class HostResourceType
     }
 
   private:
+    friend class ComponentInstance;
+
+    HostResourceType(std::shared_ptr<HostResourceIdentity const> identity,
+                     std::shared_ptr<IHostResourceDestructor> destructor) noexcept:
+        _identity { std::move(identity) }, _destructor { std::move(destructor) }
+    {
+    }
+
     std::shared_ptr<HostResourceIdentity const> _identity;
     std::shared_ptr<IHostResourceDestructor> _destructor;
 };
@@ -195,6 +203,26 @@ class ComponentInstance
     [[nodiscard]] std::expected<std::optional<ComponentFunction>, ComponentCallError> function(
         std::string_view path) const;
 
+    /// The core module exported at @p path (function()'s paths), as Wasmtime's script runner defines a named
+    /// component's modules in its linker.
+    /// @param path The path.
+    /// @return The module; none for no such export or an export of another sort; or StoreDeleted once
+    ///         the store is gone.
+    [[nodiscard]] std::expected<std::optional<isoline::api::Module>, ComponentCallError> module(
+        std::string_view path) const;
+
+    /// The resource type exported at @p path (function()'s paths) as a host resource type, which a Linker
+    /// defines (Linker::defineResource()) for another store's components to import: a host's resource
+    /// type the instance re-exports is that type; a guest's has an identity of its own, one per store and
+    /// runtime type however often it is asked for, and no host destructor (its guest destroys it). As
+    /// Wasmtime's script runner defines a named component's resources in its linker.
+    /// @param path The path.
+    /// @return The type; none for no such export or an export of another sort; or StoreDeleted once the
+    ///         store is gone.
+    /// @throws std::bad_alloc When a guest type's identity cannot be stored.
+    [[nodiscard]] std::expected<std::optional<HostResourceType>, ComponentCallError> resource(
+        std::string_view path) const;
+
     /// Calls @p function with @p args, which the call lends and the caller keeps. Before anything runs
     /// it refuses a store that is gone (StoreDeleted), a function of another store (ForeignFunction), a
     /// locked-down store (LockedDown), and arguments not of the function's arena, count or types,
@@ -252,6 +280,9 @@ class ComponentInstance
 
     /// The store's state, or null once the store is gone.
     [[nodiscard]] StoreState* live() const noexcept { return _alive.expired() ? nullptr : _state; }
+
+    /// The value exported at @p path of the instance in @p state; none for no such export.
+    [[nodiscard]] std::optional<runtime::SlotValue> exportAt(StoreState& state, std::string_view path) const;
 
     StoreState* _state;
     std::weak_ptr<void const> _alive; ///< The store's alive-token; expired once the store is gone.
@@ -333,6 +364,9 @@ struct StoreState final: runtime::IHostOwnSink
     std::map<std::pair<uint32_t, uint32_t>, uint32_t> hostOwns {};
     uint64_t hostOwnCount = 0;      ///< The owns hostOwns counts together, at most limits.maxHostOwns.
     std::size_t chargedEntries = 0; ///< The entries of hostOwns charged to the live-bytes budget.
+    /// The host resource types that stand for the store's guest resource types outside it
+    /// (ComponentInstance::resource()), by runtime type: one identity each, made when first asked for.
+    std::map<uint32_t, HostResourceType> guestResourceTypes {};
     /// A failure a host callee recorded for the call to return in place of the HostFailure it reported:
     /// ResourceExhausted when the owns lifted to it could not be held.
     std::optional<ComponentCallError> pendingFailure {};

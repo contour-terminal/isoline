@@ -552,8 +552,9 @@ raises `maxNestedCalls`, runs component calls on a thread sized by the formula.
 components are instantiated with, each under a *path* of extern names joined by `#`: `ns:p/i@0.1.2#f` is
 the function `f` of the interface instance `ns:p/i@0.1.2`, and its leading segments make the linker's
 instances. It defines host functions (`defineFunction`, a `FunctionTypeSpec` of its own arena's types),
-host resource types (`defineResource`), an instance of a store (`defineInstance`), a core module
-(`defineModule`) and a component (`defineComponent`). Every misuse is a named `LinkerError` and leaves
+host resource types (`defineResource`), an instance of a store (`defineInstance`), an instance of no
+definitions yet (`defineEmptyInstance(path)`, as Wasmtime's `Linker::instance`), a core module (`defineModule`)
+and a component (`defineComponent`). Every misuse is a named `LinkerError` and leaves
 the linker as it was: a path that is not extern names (`InvalidPath`), one defined already
 (`Redefinition`: nothing is replaced), one inside or around another definition (`PathConflict`), a null
 function, a type not of the linker's arena, a parameter label that is not kebab-case or repeats, a
@@ -574,6 +575,12 @@ The wast runner's spectest defines its host functions so. Host resource
 types match by identity: copies of one `HostResourceType` are one resource type, so two imports defined
 with copies pass handles between them. `ComponentStore::instantiate` refuses a component of another
 engine, an unsatisfied or mistyped import, and an instance of another store before anything runs.
+
+`ComponentInstance::module(path)` and `ComponentInstance::resource(path)` give a core module and a
+resource type an instance exports, as Wasmtime's script runner defines a named component's in its linker:
+the resource type as a `HostResourceType` another store's linker defines with `defineResource`, a host's
+type re-exported being that type, a guest's one identity per store and runtime type, without a host
+destructor.
 
 `ComponentInstance::call` lends its arguments and checks them first: a function of another store
 (`ForeignFunction`), a locked-down store (`LockedDown`), and arguments not of the function's arena, count

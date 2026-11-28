@@ -350,13 +350,9 @@ ComponentInstance::ComponentInstance(StoreState& state,
 {
 }
 
-std::expected<std::optional<ComponentFunction>, ComponentCallError> ComponentInstance::function(
-    std::string_view path) const
+std::optional<runtime::SlotValue> ComponentInstance::exportAt(StoreState& state, std::string_view path) const
 {
-    auto* const state = live();
-    if (state == nullptr)
-        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
-    auto& store = state->runtime;
+    auto& store = state.runtime;
     auto exports = store.exportsOf(_instance);
     auto value = std::optional<runtime::SlotValue> {};
     for (auto const segment: std::views::split(path, PathSeparator))
@@ -366,24 +362,66 @@ std::expected<std::optional<ComponentFunction>, ComponentCallError> ComponentIns
         {
             auto const* instance = std::get_if<runtime::InstanceRef>(&*value);
             if (instance == nullptr)
-                return std::optional<ComponentFunction> {};
+                return std::nullopt;
             exports = store.exportsOf(*instance);
         }
         auto const found = std::ranges::find(exports, name, &runtime::NamedValue::name);
         if (found == exports.end())
-            return std::optional<ComponentFunction> {};
+            return std::nullopt;
         value = found->value;
     }
+    return value;
+}
+
+std::expected<std::optional<ComponentFunction>, ComponentCallError> ComponentInstance::function(
+    std::string_view path) const
+{
+    auto* const state = live();
+    if (state == nullptr)
+        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
+    auto const value = exportAt(*state, path);
     if (!value)
-        return std::optional<ComponentFunction> {}; // uncovered(split-yields-a-segment)
+        return std::optional<ComponentFunction> {};
     auto const* function = std::get_if<runtime::ComponentFunction>(&*value);
     if (function == nullptr)
         return std::optional<ComponentFunction> {};
     auto const* lifted = std::get_if<runtime::LiftedRef>(function);
     if (lifted == nullptr)
         return std::optional<ComponentFunction> {};
-    auto const& definition = store.lifted(*lifted);
+    auto const& definition = state->runtime.lifted(*lifted);
     return ComponentFunction { _serial, _alive, *lifted, *definition.side.arena, definition.type };
+}
+
+std::expected<std::optional<isoline::api::Module>, ComponentCallError> ComponentInstance::module(
+    std::string_view path) const
+{
+    auto* const state = live();
+    if (state == nullptr)
+        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
+    auto const value = exportAt(*state, path);
+    if (auto const* module = value ? std::get_if<isoline::api::Module>(&*value) : nullptr)
+        return *module;
+    return std::optional<isoline::api::Module> {};
+}
+
+std::expected<std::optional<HostResourceType>, ComponentCallError> ComponentInstance::resource(
+    std::string_view path) const
+{
+    auto* const state = live();
+    if (state == nullptr)
+        return std::unexpected { callError(ComponentCallFailure::StoreDeleted) };
+    auto const value = exportAt(*state, path);
+    auto const* type = value ? std::get_if<canonical::ResourceTypeIndex>(&*value) : nullptr;
+    if (type == nullptr)
+        return std::optional<HostResourceType> {};
+    auto const& implementor = state->runtime.resources().types()[*type];
+    if (auto const* host = std::get_if<runtime::HostImplementor>(&implementor))
+        return HostResourceType { host->identity, host->destructor };
+    if (auto const found = state->guestResourceTypes.find(type->value);
+        found != state->guestResourceTypes.end())
+        return found->second;
+    return state->guestResourceTypes.emplace(type->value, HostResourceType { std::string { path }, nullptr })
+        .first->second;
 }
 
 std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
