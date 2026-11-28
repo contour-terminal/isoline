@@ -20,6 +20,9 @@ enum class ExecutionEngine : uint8_t
     Interpreter,
 };
 
+/// The last ExecutionEngine enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastExecutionEngine = ExecutionEngine::Interpreter;
+
 /// The code an engine made of a validated module, for its executor (runtime::ICodeExecutor) to run.
 ///
 /// Made once per module and shared by every instance of it (ModuleInstance::code), in any store, so it

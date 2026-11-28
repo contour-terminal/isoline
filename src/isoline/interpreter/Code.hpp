@@ -63,6 +63,9 @@ enum class OperationFamily : uint8_t
     Exceptions, ///< Throwing and catching.
 };
 
+/// The last OperationFamily enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastOperationFamily = OperationFamily::Exceptions;
+
 /// Where the switch dispatch runs the operations of a family.
 enum class SwitchPlacement : uint8_t
 {
@@ -167,6 +170,9 @@ inline constexpr auto OperationTable = std::to_array<OperationRow>({
 
 /// The number of operations in OperationTable.
 inline constexpr auto OperationCount = OperationTable.size();
+
+/// The last OperationId enumerator: Operations.def's last row, which generates both.
+inline constexpr auto LastOperationId = static_cast<OperationId>(OperationCount - 1);
 
 namespace detail
 {

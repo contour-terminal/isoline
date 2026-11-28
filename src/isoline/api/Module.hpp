@@ -101,6 +101,9 @@ enum class CompileLimit : uint8_t
     CodeWords,  ///< The code words of one function, which the code's 32-bit branch targets reach.
 };
 
+/// The last CompileLimit enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastCompileLimit = CompileLimit::CodeWords;
+
 /// One row of CompileLimitTable: a compile limit, the unit its requests and limits count in, and what it
 /// bounds.
 struct CompileLimitRow

@@ -22,6 +22,9 @@ enum class Dispatch : uint8_t
     TailCall,
 };
 
+/// The last Dispatch enumerator; it must name whichever enumerator is listed last above.
+inline constexpr auto LastDispatch = Dispatch::TailCall;
+
 /// A dispatch and how command lines and test names spell it (DispatchNames).
 struct DispatchName
 {

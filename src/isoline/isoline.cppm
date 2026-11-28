@@ -106,6 +106,7 @@ using isoline::api::isAvailable;
 using isoline::api::isImplementationLimit;
 using isoline::api::IThreadResource;
 using isoline::api::LastCallFailure;
+using isoline::api::LastCompileLimit;
 using isoline::api::LastExportAccessError;
 using isoline::api::LastFunctionRefError;
 using isoline::api::LastGlobalAccessError;

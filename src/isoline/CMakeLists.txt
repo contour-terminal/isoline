@@ -456,4 +456,10 @@ if(ISOLINE_TESTING)
         LINK_LIBRARIES ${isolineEnumTablesLinks} Catch2::Catch2
         HEADER_TARGETS isoline_core isoline_text isoline_cli
         EXCLUDE ${isolineDeclarationContractsExcludes})
+    # The test helpers it reads include runtime/testing/SmallStackThread.hpp, whose stack size is the build's
+    # host-stack row, as isoline_test's is.
+    if(TARGET isoline_declaration_contracts_check)
+        target_compile_definitions(isoline_declaration_contracts_check
+                                   PRIVATE ISOLINE_SMALL_STACK_BYTES=${isolineSmallStackBytes})
+    endif()
 endif()

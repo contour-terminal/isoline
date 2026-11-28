@@ -51,7 +51,20 @@ ISOLINE_KEYED_TABLE(binary::DataForms, "indexed by the data segment's flag byte;
 ISOLINE_LAST_ENUMERATOR(binary::LastSectionAnchor, "SectionEncodings' anchors start past BeforeFirst, not at 0")
 ISOLINE_LAST_ENUMERATOR(binary::LastNameShape, "its tables are source-local: ShapeCodecs and MultipleNameErrors")
 
+// isoline::interpreter
+ISOLINE_ENUM_TABLE(interpreter::OperationFamilyTable, interpreter::LastOperationFamily, interpreter::OperationFamilyRow::family)
+ISOLINE_ENUM_TABLE(interpreter::OperationTable, interpreter::LastOperationId, interpreter::OperationRow::id)
+ISOLINE_ENUM_TABLE(interpreter::LoweringTable, binary::LastOpcode, interpreter::LoweringRow::opcode)
+ISOLINE_ENUM_TABLE(interpreter::configured::DispatchNames, interpreter::LastDispatch, interpreter::DispatchName::dispatch)
+ISOLINE_KEYED_TABLE(interpreter::LoweringRows, "one row per instruction lowering knows, a subset of Opcode; LoweringTable spreads them")
+ISOLINE_KEYED_TABLE(interpreter::SimdLaneTable, "one row per SIMD lane instruction, a subset of Opcode")
+ISOLINE_KEYED_TABLE(interpreter::WideArithmeticTable, "one row per wide-arithmetic instruction, a subset of Opcode")
+ISOLINE_KEYED_TABLE(interpreter::FusionTable, "one row per fused (comparison, branch) pair; a comparison repeats")
+ISOLINE_KEYED_TABLE(interpreter::ConditionalBranchTable, "one row per conditional branch instruction, a subset of Opcode")
+ISOLINE_KEYED_TABLE(interpreter::CallTable, "one row per call operation, keyed by OperationId, a subset")
+
 // isoline::runtime
+ISOLINE_ENUM_TABLE(runtime::NestedInvocationTable, runtime::LastExecutionEngine, runtime::NestedInvocationRow::engine)
 ISOLINE_ENUM_TABLE(runtime::LimitTable, runtime::LastLimit, runtime::LimitRow::limit)
 ISOLINE_ENUM_TABLE(runtime::LinkErrorTable, runtime::LastLinkErrorCode, runtime::LinkErrorRow::code)
 ISOLINE_ENUM_TABLE(runtime::PollSiteTable, runtime::LastPollSite, runtime::PollSiteRow::site)
@@ -80,6 +93,7 @@ ISOLINE_KEYED_TABLE(text::IndexImmediates, "the immediate kinds that take indice
 
 // isoline::api: the errors the C API reports. Each Last sizes c::detail::EnumErrorRows<Enum>::Rows, a class
 // template member discovery does not reach; c/detail/ErrorRows.hpp checks those rows (rowsAreComplete()).
+ISOLINE_ENUM_TABLE(api::CompileLimitTable, api::LastCompileLimit, api::CompileLimitRow::kind)
 ISOLINE_LAST_ENUMERATOR(api::LastCallFailure, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
 ISOLINE_LAST_ENUMERATOR(api::LastInvalidTypeReason, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
 ISOLINE_LAST_ENUMERATOR(api::LastMemoryAccessError, "sizes the C API's EnumErrorRows (c/detail/ErrorRows.hpp)")
