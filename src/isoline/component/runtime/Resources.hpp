@@ -318,9 +318,6 @@ class ResourceStore
     /// @throws std::bad_alloc When they cannot be stored.
     void adoptOrphans(std::span<ResourceValue const> owns);
 
-    /// The owns adoptOrphans() kept and teardown has not destroyed yet.
-    [[nodiscard]] std::size_t orphanCount() const noexcept { return _orphans.size(); }
-
   private:
     HandleBudget _budget;
     InstanceTables _instances;
