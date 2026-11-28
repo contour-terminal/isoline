@@ -21,6 +21,7 @@ using Bytes = std::vector<std::byte>;
 /// @param bytes The bytes to append, as written.
 inline void appendBytes(Bytes& out, std::initializer_list<uint8_t> bytes)
 {
+    out.reserve(out.size() + bytes.size());
     for (auto const byte: bytes)
         out.push_back(std::byte { byte });
 }
@@ -38,6 +39,7 @@ inline void appendBytes(Bytes& out, Bytes const& bytes)
 /// @param bytes The bytes to append.
 inline void appendBytes(Bytes& out, std::vector<uint8_t> const& bytes)
 {
+    out.reserve(out.size() + bytes.size());
     for (auto const byte: bytes)
         out.push_back(std::byte { byte });
 }
@@ -114,11 +116,15 @@ inline void appendName(Bytes& out, std::string_view name)
 /// @return Its bytes.
 [[nodiscard]] inline Bytes taggedModule(std::string_view tag)
 {
+    // The custom section is appended in place: GCC 14 at -O3 reads the destruction of a temporary section
+    // here as a delete of a pointer into the middle of an allocation (-Wfree-nonheap-object).
     auto name = Bytes {};
     appendName(name, tag);
-    auto bytes = modulePreamble();
-    appendBytes(bytes, section(0, name));
-    return bytes;
+    auto module = modulePreamble();
+    module.push_back(std::byte { 0 });
+    appendLeb128(module, name.size());
+    appendBytes(module, name);
+    return module;
 }
 
 /// @p depth components, each but the innermost holding the next in its one component section.
