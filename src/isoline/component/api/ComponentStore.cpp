@@ -254,16 +254,16 @@ namespace
         return {};
     }
 
-    /// Whether @p args fit @p function's parameters: its arena, one root per parameter, each of the
-    /// parameter's type, every handle of its resource type.
-    [[nodiscard]] std::expected<void, ComponentCallError> checkArguments(
-        runtime::ComponentStore& store,
-        ComponentLimits const& limits,
-        runtime::LiftedFunction const& function,
-        canonical::Values const& args)
+    /// Whether @p args fit the parameters of @p type in @p side: its arena, one root per parameter, each of
+    /// the parameter's type, every handle of its resource type.
+    [[nodiscard]] std::expected<void, ComponentCallError> checkArguments(runtime::ComponentStore& store,
+                                                                         ComponentLimits const& limits,
+                                                                         runtime::InstanceSide const& side,
+                                                                         types::FunctionTypeId type,
+                                                                         canonical::Values const& args)
     {
-        auto const& arena = *function.side.arena;
-        auto const& params = arena[function.type].params;
+        auto const& arena = *side.arena;
+        auto const& params = arena[type].params;
         if (args.arena() != arena.id())
             return std::unexpected { argumentMismatch(
                 canonical::ValueErrorCode::TypeMismatch, {}, "arguments built in another type arena") };
@@ -284,7 +284,29 @@ namespace
                                                           std::format("[{}]", index),
                                                           std::move(equal.error().message)) };
         }
-        return checkHandles(store, function.side, args);
+        return checkHandles(store, side, args);
+    }
+
+    /// The type of the function a component exports at @p path (ComponentInstance::function()'s paths),
+    /// in its arena: what a host function it re-exports is called as.
+    [[nodiscard]] types::FunctionTypeId exportedFunctionType(validate::ValidatedComponent const& validated,
+                                                             std::string_view path)
+    {
+        auto const& arena = validated.types;
+        Require(validated.typeId.has_value()); // an instance's component has its type
+        auto const* exports = &arena[*validated.typeId].exports;
+        auto type = std::optional<types::ExternType> {};
+        for (auto const segment: std::views::split(path, PathSeparator))
+        {
+            if (type)
+                exports = &arena[std::get<types::InstanceTypeId>(*type)].exports;
+            auto const name = std::string_view { segment.begin(), segment.end() };
+            auto const found = std::ranges::find_if(
+                *exports, [name](types::NamedExtern const& entry) { return entry.name.str() == name; });
+            Require(found != exports->end()); // the instance exports what its type does
+            type = found->type;
+        }
+        return std::get<types::FunctionTypeId>(*type);
     }
 
 } // namespace
@@ -373,6 +395,22 @@ std::optional<runtime::SlotValue> ComponentInstance::exportAt(StoreState& state,
     return value;
 }
 
+bool ComponentFunction::operator==(ComponentFunction const& other) const noexcept
+{
+    return _serial == other._serial
+           && std::visit(
+               core::Overloaded {
+                   [](runtime::LiftedRef mine, runtime::LiftedRef theirs) {
+                       return mine.index == theirs.index;
+                   },
+                   [](std::shared_ptr<runtime::IHostCallee> const& mine,
+                      std::shared_ptr<runtime::IHostCallee> const& theirs) { return mine == theirs; },
+                   [](auto const&, auto const&) { return false; },
+               },
+               _function,
+               other._function);
+}
+
 std::expected<std::optional<ComponentFunction>, ComponentCallError> ComponentInstance::function(
     std::string_view path) const
 {
@@ -385,11 +423,19 @@ std::expected<std::optional<ComponentFunction>, ComponentCallError> ComponentIns
     auto const* function = std::get_if<runtime::ComponentFunction>(&*value);
     if (function == nullptr)
         return std::optional<ComponentFunction> {};
-    auto const* lifted = std::get_if<runtime::LiftedRef>(function);
-    if (lifted == nullptr)
-        return std::optional<ComponentFunction> {};
-    auto const& definition = state->runtime.lifted(*lifted);
-    return ComponentFunction { _serial, _alive, *lifted, *definition.side.arena, definition.type };
+    if (auto const* lifted = std::get_if<runtime::LiftedRef>(function))
+    {
+        auto const& definition = state->runtime.lifted(*lifted);
+        return ComponentFunction { _serial, _alive, *lifted, definition.side, definition.type };
+    }
+    // A host function re-exported: called in the types the instance exports it with, its resources bound
+    // as the instance binds them.
+    auto const& validated = _component.validated();
+    auto const side = runtime::InstanceSide { .instance = _instance,
+                                              .arena = &validated.types,
+                                              .layouts = &validated.layouts,
+                                              .bindings = &state->runtime.bindings(_instance) };
+    return ComponentFunction { _serial, _alive, *function, side, exportedFunctionType(validated, path) };
 }
 
 std::expected<std::optional<isoline::api::Module>, ComponentCallError> ComponentInstance::module(
@@ -435,8 +481,7 @@ std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
     auto& store = state->runtime;
     if (store.state() == runtime::StoreState::LockedDown)
         return std::unexpected { callError(ComponentCallFailure::LockedDown) };
-    auto const& lifted = store.lifted(function._lifted);
-    if (auto checked = checkArguments(store, state->limits, lifted, args); !checked)
+    if (auto checked = checkArguments(store, state->limits, function._side, function._type, args); !checked)
         return std::unexpected { std::move(checked.error()) };
     // The owns passed go to the guest's table: the host must hold each, and holds it no more.
     auto const owns = runtime::ownsOf(args);
@@ -451,8 +496,11 @@ std::expected<canonical::Values, ComponentCallError> ComponentInstance::call(
         results.emplace(std::move(values));
         return {};
     };
-    // The owns were taken before the call: a lowering that fails hands them back (StoreState::returned()).
-    if (auto called = runtime::canonLift(store, lifted, start, resolve); !called)
+    // The owns were taken before the call: a lowering that fails hands them back (StoreState::returned()),
+    // and a host function re-exported holds them as its arguments (LinkedFunction::call()).
+    if (auto called = runtime::callComponentFunction(
+            store, function._function, function._side, function._type, start, resolve);
+        !called)
         return std::unexpected { pendingOr(*state, fromRuntime(std::move(called.error()))) };
     // The owns returned left the guest's table: the host holds them (R12), or, past its caps, the store
     // destroys their host resources at its end and locks down, as the row says.
@@ -489,7 +537,7 @@ std::optional<canonical::ResourceTypeIndex> ComponentInstance::resourceTypeOf(
     auto* const state = live();
     if (state == nullptr || function._serial != _serial)
         return std::nullopt;
-    auto const& side = state->runtime.lifted(function._lifted).side;
+    auto const& side = function._side;
     auto const& type = (*side.arena)[handle];
     if (!type.resource)
         return std::nullopt;

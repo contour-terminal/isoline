@@ -1246,25 +1246,53 @@ TEST_CASE("ComponentStore.selfAssignmentKeepsTheStore")
     CHECK(u32Of(callWith(instance, "id", { 2 })) == 2);
 }
 
-TEST_CASE("ComponentStore.reexportedHostFunctionIsNoFunction")
+TEST_CASE("ComponentStore.reexportedHostFunctionIsCallable")
 {
-    // An export of an imported host function is no lifted function: the host calls it where it defined it.
+    // An export of an imported host function is the host's callee: called from the host, it runs as a
+    // guest's call of it does, its arguments and results checked and built in the exporting component's
+    // types.
     auto harness = ApiHarness {};
     auto builder = ComponentBuilder {};
     auto const f = builder.import(
-        "f", ExternDesc { .sort = Sort::Func, .index = functionType(builder, {}, PrimitiveValueType::U32) });
+        "f",
+        ExternDesc { .sort = Sort::Func,
+                     .index = functionType(builder, { PrimitiveValueType::U32 }, PrimitiveValueType::U32) });
     std::ignore = builder.exportItem("g", Sort::Func, f);
+    auto const core = builder.coreInstantiate(
+        builder.coreModule(coreModule(R"((module (func (export "h") (result i32) (i32.const 3))))")), {});
+    std::ignore = builder.exportItem("h",
+                                     Sort::Func,
+                                     builder.canonLift(builder.aliasCoreExport(core, "h", CoreSort::Func),
+                                                       {},
+                                                       functionType(builder, {}, PrimitiveValueType::U32)));
     auto linker = Linker { ComponentConfig {} };
     require(linker.defineFunction(
         "f",
-        functionSpec({}, primitive(linker, ValueKind::U32)),
-        hostFunction([](HostComponentContext&, Values const&, ValueBuilder& results) -> HostResult {
-            results.scalar(1);
+        functionSpec({ primitive(linker, ValueKind::U32) }, primitive(linker, ValueKind::U32)),
+        hostFunction([](HostComponentContext&, Values const& args, ValueBuilder& results) -> HostResult {
+            results.scalar(args.root(0).scalar<uint32_t>() + 1);
             return {};
         })));
     auto store = harness.store();
     auto instance = instanceOf(store.instantiate(harness.load(builder.build()), linker));
-    CHECK_FALSE(lookup(instance, "g").has_value());
+    auto const g = lookup(instance, "g");
+    REQUIRE(g.has_value());
+    REQUIRE(g->type() != nullptr);
+    CHECK(g->type()->params.size() == 1);
+    CHECK(*g == *lookup(instance, "g"));
+    CHECK_FALSE(*g == *lookup(instance, "h")); // a lifted function is another
+    CHECK(u32Of(callWith(instance, "g", { 41 })) == 42);
+    // A function of another store is refused.
+    auto arguments = instance.argumentsFor(*g);
+    REQUIRE(arguments.has_value());
+    arguments->scalar(1);
+    auto const one = arguments->finish();
+    REQUIRE(one.has_value());
+    auto otherStore = harness.store();
+    auto other = instanceOf(otherStore.instantiate(harness.load(builder.build()), linker));
+    CHECK(u32Of(instance.call(*g, *one)) == 2);
+    CHECK(failureOf(other.call(*g, *one)).failure == ComponentCallFailure::ForeignFunction);
+    CHECK_FALSE(store.isLockedDown());
 }
 
 TEST_CASE("HostResources.guestResourceWithoutDestructor")
@@ -1711,4 +1739,92 @@ TEST_CASE("ComponentInstance.exportedModulesAndResources")
     }();
     CHECK_FALSE(orphan.module("m").has_value());
     CHECK_FALSE(orphan.resource("r").has_value());
+}
+
+TEST_CASE("HostResources.reexportedHostResourceFunctions")
+{
+    // A host instance re-exported whole: its resource's constructor returns an own the host then holds, its
+    // method borrows it, and its consumer takes it back; the owns move as between the host and a guest.
+    auto harness = ApiHarness {};
+    auto const component = harness.load(componentText(R"((component
+        (import "host" (instance $h
+            (export "r" (type (sub resource)))
+            (export "[constructor]r" (func (param "rep" u32) (result (own 0))))
+            (export "[method]r.get" (func (param "self" (borrow 0)) (result u32)))
+            (export "consume" (func (param "x" (own 0)) (result u32)))))
+        (export "h" (instance $h))))"));
+    auto const destructor = std::make_shared<RecordingDestructor>();
+    auto const type = HostResourceType { "r", destructor };
+    auto linker = Linker { ComponentConfig {} };
+    require(linker.defineResource("host#r", type));
+    auto const ownType = linker.ownType(type);
+    auto const borrowType = linker.borrowType(type);
+    REQUIRE(ownType.has_value());
+    REQUIRE(borrowType.has_value());
+    auto const u32 = primitive(linker, ValueKind::U32);
+    require(linker.defineFunction(
+        "host#[constructor]r",
+        FunctionTypeSpec { .params = { { "rep", u32 } }, .result = *ownType },
+        hostFunction(
+            [&](HostComponentContext& context, Values const& args, ValueBuilder& results) -> HostResult {
+                auto fresh = context.newOwn(type, args.root(0).scalar<uint32_t>());
+                if (!fresh)
+                    return std::unexpected { embedderFailure() };
+                results.resource(*fresh);
+                return {};
+            })));
+    require(linker.defineFunction(
+        "host#[method]r.get",
+        FunctionTypeSpec { .params = { { "self", *borrowType } }, .result = u32 },
+        hostFunction([](HostComponentContext&, Values const& args, ValueBuilder& results) -> HostResult {
+            auto const self = args.root(0).resource();
+            results.scalar(self.ownership == Ownership::Borrow ? self.rep * 10 : 0);
+            return {};
+        })));
+    require(linker.defineFunction(
+        "host#consume",
+        FunctionTypeSpec { .params = { { "x", *ownType } }, .result = u32 },
+        hostFunction(
+            [](HostComponentContext& context, Values const& args, ValueBuilder& results) -> HostResult {
+                auto const own = args.root(0).resource();
+                if (!context.drop(own))
+                    return std::unexpected { embedderFailure() };
+                results.scalar(own.rep);
+                return {};
+            })));
+    {
+        auto store = harness.store();
+        auto instance = instanceOf(store.instantiate(component, linker));
+        auto const made = callWith(instance, "h#[constructor]r", { 7 });
+        REQUIRE(made.has_value());
+        auto const own = made->root(0).resource();
+        CHECK(own.rep == 7);
+        CHECK(instance.hostHolds(own) == 1);
+
+        auto const get = lookup(instance, "h#[method]r.get");
+        REQUIRE(get.has_value());
+        auto lent = instance.argumentsFor(*get);
+        REQUIRE(lent.has_value());
+        lent->resource(ResourceValue { .type = own.type, .rep = own.rep, .ownership = Ownership::Borrow });
+        auto const borrowed = lent->finish();
+        REQUIRE(borrowed.has_value());
+        CHECK(u32Of(instance.call(*get, *borrowed)) == 70);
+        CHECK(instance.hostHolds(own) == 1);
+
+        auto const consume = lookup(instance, "h#consume");
+        REQUIRE(consume.has_value());
+        auto given = instance.argumentsFor(*consume);
+        REQUIRE(given.has_value());
+        given->resource(own);
+        auto const passed = given->finish();
+        REQUIRE(passed.has_value());
+        CHECK(u32Of(instance.call(*consume, *passed)) == 7);
+        CHECK(instance.hostHolds(own) == 0);
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 7 });
+        // An own the host no longer holds is refused before the callee runs.
+        CHECK(failureOf(instance.call(*consume, *passed)).failure == ComponentCallFailure::ArgumentMismatch);
+        CHECK(destructor->destroyed == std::vector<uint32_t> { 7 });
+        CHECK_FALSE(store.isLockedDown());
+    }
+    CHECK(destructor->destroyed == std::vector<uint32_t> { 7 });
 }

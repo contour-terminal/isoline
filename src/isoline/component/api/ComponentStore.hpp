@@ -161,27 +161,33 @@ class ComponentFunction
     }
 
     /// Two handles are equal when they name one function of one store.
-    [[nodiscard]] bool operator==(ComponentFunction const& other) const noexcept
-    {
-        return _serial == other._serial && _lifted.index == other._lifted.index;
-    }
+    [[nodiscard]] bool operator==(ComponentFunction const& other) const noexcept;
 
   private:
     friend class ComponentInstance;
 
     ComponentFunction(uint64_t serial,
                       std::weak_ptr<void const> alive,
-                      runtime::LiftedRef lifted,
-                      types::TypeArena const& arena,
+                      runtime::ComponentFunction function,
+                      runtime::InstanceSide side,
                       types::FunctionTypeId type) noexcept:
-        _serial { serial }, _alive { std::move(alive) }, _lifted { lifted }, _arena { &arena }, _type { type }
+        _serial { serial },
+        _alive { std::move(alive) },
+        _function { std::move(function) },
+        _arena { side.arena },
+        _side { side },
+        _type { type }
     {
     }
 
     uint64_t _serial;
     std::weak_ptr<void const> _alive; ///< The store's alive-token; expired once the store is gone.
-    runtime::LiftedRef _lifted;
+    /// What it calls: a function an instance lifts, or a host function an instance re-exports.
+    runtime::ComponentFunction _function;
     types::TypeArena const* _arena;
+    /// The types and resource bindings its arguments and results are of: the lifting instance's, or the
+    /// re-exporting one's; its pointers are the store's, read only while the store lives.
+    runtime::InstanceSide _side;
     types::FunctionTypeId _type;
 };
 
@@ -197,8 +203,8 @@ class ComponentInstance
     /// The function exported at @p path: export names joined by `#` (`api#run` for the export `run` of
     /// the instance the root exports as `api`).
     /// @param path The path.
-    /// @return The function; none for no such export, an export of another sort, or a function the
-    ///         component re-exports from its imports (which the host calls where it defined it); or
+    /// @return The function: one the instance lifts, or a host function it re-exports from its imports,
+    ///         typed as the instance exports it; none for no such export or an export of another sort; or
     ///         StoreDeleted once the store is gone.
     [[nodiscard]] std::expected<std::optional<ComponentFunction>, ComponentCallError> function(
         std::string_view path) const;
@@ -229,7 +235,10 @@ class ComponentInstance
     /// handles not of the resource types its parameters name, or owns the host does not hold
     /// (ArgumentMismatch); none of these changes the store. The owns among @p args pass to the guest, so
     /// the host holds them no longer; the owns among the results are the host's. Any failure past them locks
-    /// the store down (D6). As canonical calls do, the host running out of memory ends the process.
+    /// the store down (D6). As canonical calls do, the host running out of memory ends the process. A host
+    /// function the instance re-exports is called as a guest calls it (runtime::callComponentFunction()):
+    /// the owns among @p args pass to the host function, which holds them as its arguments, and the owns
+    /// it returns pass back to the caller.
     /// @param function A function of this instance's store.
     /// @param args One root per parameter, built in the function's arena (argumentsFor()).
     /// @return The results, one root per result, in the function's arena; or how the call failed.

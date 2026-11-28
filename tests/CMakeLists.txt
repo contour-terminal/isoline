@@ -126,14 +126,15 @@ add_test(NAME spec-selftest-component-wrong-exit
                  --features wasm3 --suite component)
 set_tests_properties(spec-selftest-component-wrong-exit PROPERTIES LABELS unit WILL_FAIL TRUE)
 # The layer checks: a component value given to a core function or expected of it, a core value given to a
-# component function or expected of it, a global read of a component, a call of an export that re-exports
-# a host import, a register of a component instance, and an assert_exception of a component call that
-# returns, each the harness's failure, at its line; a core module's register and a component call pass.
+# component function or expected of it, a global read of a component, a call of an export it lacks, a
+# register of a component instance, and an assert_exception of a component call that returns, each the
+# harness's failure, at its line; a core module's register, a component call and one of a host function it
+# re-exports pass.
 add_test(NAME spec-selftest-component-layers
          COMMAND isoline_spec_runner "${CMAKE_CURRENT_SOURCE_DIR}/spec-selftest-component/component-layers" 0
                  --features wasm3 --suite component)
 set_tests_properties(spec-selftest-component-layers PROPERTIES LABELS unit
-                     PASS_REGULAR_EXPRESSION "component-layers.wast:12: a component value passed to the core function 'f'.*component-layers.wast:13: 'f': a component value expected of a core function.*component-layers.wast:14: a core value passed to the component function 'f'.*component-layers.wast:15: 'f': a core pattern expected of a component function.*component-layers.wast:16: a component exports no global 'g'.*component-layers.wast:17: no export 'two'.*component-layers.wast:18: register: a component instance where a core module is expected.*component-layers.wast:19: expected execute failure 'uncaught exception', but it succeeded.*passed 4, failed 8, skipped 0")
+                     PASS_REGULAR_EXPRESSION "component-layers.wast:13: a component value passed to the core function 'f'.*component-layers.wast:14: 'f': a component value expected of a core function.*component-layers.wast:15: a core value passed to the component function 'f'.*component-layers.wast:16: 'f': a core pattern expected of a component function.*component-layers.wast:17: a component exports no global 'g'.*component-layers.wast:18: no export 'three'.*component-layers.wast:19: register: a component instance where a core module is expected.*component-layers.wast:20: expected execute failure 'uncaught exception', but it succeeded.*passed 5, failed 8, skipped 0")
 # A component suite's skips: one for a SkipReasons row's reason counts against its pinned skip; one for
 # any other reason fails the file.
 add_test(NAME spec-selftest-component-skips

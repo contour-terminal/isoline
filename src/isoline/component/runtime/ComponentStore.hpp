@@ -397,6 +397,11 @@ class ComponentStore final: public IBuiltinHost
     [[nodiscard]] std::optional<ResourceTypeIndex> hostResourceTypeOf(
         HostResourceIdentity const& identity) const;
 
+    /// The resource bindings of a component instance: the runtime type of each resource its types name.
+    /// @param instance Its number (checked).
+    /// @return Them; they live as long as the store.
+    [[nodiscard]] ResourceBindings const& bindings(uint32_t instance) const noexcept;
+
     /// A lifted function of the store.
     /// @param function Its reference (checked).
     /// @return It.

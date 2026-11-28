@@ -586,6 +586,13 @@ the resource type as a `HostResourceType` another store's linker defines with `d
 type re-exported being that type, a guest's one identity per store and runtime type, without a host
 destructor.
 
+`ComponentInstance::function(path)` gives a function the instance lifts, and as well a host function it
+re-exports from its imports (Wasmtime's `restrictions.wast` refuses such a component; the component model
+does not). The host calls the latter as a guest would: its arguments are checked against, and its results
+built in, the types the instance exports it with, its handles' resources bound as the instance binds them;
+the owns among the arguments pass from the host to the host function, which holds them as its arguments,
+and the owns it returns pass back, so `hostHolds` counts each as one call through a guest does.
+
 `ComponentInstance::call` lends its arguments and checks them first: a function of another store
 (`ForeignFunction`), a locked-down store (`LockedDown`), and arguments not of the function's arena, count
 or types, or a handle of another resource type than its parameter's (`ArgumentMismatch`) are refused

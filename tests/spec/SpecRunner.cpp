@@ -1127,9 +1127,7 @@ namespace
             if (!found)
                 return std::unexpected { callFailure(found.error()) };
             if (!*found)
-                return std::unexpected { harnessFailure(std::format(
-                    "no export '{}' (or one that re-exports a host import, which the runner does not call)",
-                    action.field)) };
+                return std::unexpected { harnessFailure(std::format("no export '{}'", action.field)) };
             auto const& function = **found;
             auto builder = run.instance.argumentsFor(function);
             if (!builder)

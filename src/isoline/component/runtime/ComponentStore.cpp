@@ -895,6 +895,12 @@ std::optional<ResourceTypeIndex> ComponentStore::hostResourceTypeOf(
     return std::nullopt;
 }
 
+ResourceBindings const& ComponentStore::bindings(uint32_t instance) const noexcept
+{
+    Require(instance < _bindings.size());
+    return _bindings[instance];
+}
+
 LiftedFunction const& ComponentStore::lifted(LiftedRef function) const noexcept
 {
     Require(function.index < _lifted.size());
