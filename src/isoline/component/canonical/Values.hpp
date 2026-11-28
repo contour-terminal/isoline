@@ -1084,7 +1084,8 @@ class ValueBuilder
 [[nodiscard]] bool equal(ValueView lhs, ValueView rhs);
 
 /// A value in the wast value syntax (wast 263.0.0's component values: `(u32.const 7)`,
-/// `(record.const (field "a" (u32.const 7)))`, `(map.const (entry … …))`, …), NaN printed as `nan`.
+/// `(record.const (field "a" u32.const 7))`, its field's value bare as wast reads it, `(map.const (entry …
+/// …))`, …), NaN printed as `nan`.
 /// A handle, which has no wast form, prints as `(own <type> <rep>)` or `(borrow <type> <rep>)`.
 /// Iterative, whatever the depth.
 /// @param arena The arena of @p value's types, whose labels it prints (checked).

@@ -345,11 +345,20 @@ namespace
         return row->form;
     }
 
-    /// Appends a value's opening: `(form` and what it holds besides its children.
-    void appendHead(std::string& text, types::TypeArena const& arena, ValueView value)
+    /// Whether a value's text opens its own parenthesis.
+    enum class Enclosure : uint8_t
+    {
+        Parenthesized, ///< `(form …)`: every value but a record field's.
+        Bare,          ///< `form …`: a record field's, whose `(field "label" …)` holds it (wast 263).
+    };
+
+    /// Appends a value's opening: `(form`, or `form` when @p enclosure is Bare, and what it holds besides
+    /// its children.
+    void appendHead(std::string& text, types::TypeArena const& arena, ValueView value, Enclosure enclosure)
     {
         auto const& row = valueShapeRow(value.kind());
-        text.push_back('(');
+        if (enclosure == Enclosure::Parenthesized)
+            text.push_back('(');
         switch (row.shape)
         {
             case ValueShape::Cases:
@@ -403,19 +412,21 @@ namespace
         text += row.form;
     }
 
-    /// What precedes and what follows child @p index of @p parent: a record field's
-    /// `(field "label" … )`, a map entry's `(entry key value)`.
+    /// What precedes and what follows child @p index of @p parent, and how the child itself opens: a
+    /// record field's `(field "label" form …)`, whose value's own closing parenthesis closes it (wast 263
+    /// reads a field's value bare), a map entry's `(entry key value)`.
     struct ChildFrame
     {
         std::string_view before;
         std::string_view after;
+        Enclosure enclosure = Enclosure::Parenthesized;
     };
 
     [[nodiscard]] ChildFrame childFrame(ValueKind parent, std::size_t index) noexcept
     {
         constexpr auto EntryWidth = std::size_t { 2 };
         if (parent == ValueKind::Record)
-            return { .before = "(field ", .after = ")" };
+            return { .before = "(field ", .after = {}, .enclosure = Enclosure::Bare };
         if (parent == ValueKind::Map)
             return index % EntryWidth == 0 ? ChildFrame { .before = "(entry ", .after = {} }
                                            : ChildFrame { .before = {}, .after = ")" };
@@ -1121,15 +1132,15 @@ std::string toText(types::TypeArena const& arena, ValueView value)
     };
     auto text = std::string {};
     auto pending = std::vector<Frame> {};
-    auto const open = [&](ValueView opened) {
-        appendHead(text, arena, opened);
+    auto const open = [&](ValueView opened, Enclosure enclosure) {
+        appendHead(text, arena, opened, enclosure);
         if (opened.childCount() == 0)
             text.push_back(')');
         else
             pending.push_back(Frame {
                 .next = opened.children().begin(), .end = opened.children().end(), .parent = opened });
     };
-    open(value);
+    open(value, Enclosure::Parenthesized);
     while (!pending.empty())
     {
         auto& top = pending.back();
@@ -1152,7 +1163,7 @@ std::string toText(types::TypeArena const& arena, ValueView value)
         }
         ++top.next;
         ++top.index;
-        open(child);
+        open(child, frame.enclosure);
     }
     return text;
 }

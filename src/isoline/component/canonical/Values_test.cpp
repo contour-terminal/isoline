@@ -268,7 +268,7 @@ TEST_CASE("Values.buildAndView")
     CHECK(root.child(1).child(1).string().utf8() == std::string { "yz" });
     CHECK(
         toText(types.arena(), root)
-        == R"((record.const (field "a" (u32.const 7)) (field "b" (list.const (str.const "x") (str.const "yz")))))");
+        == R"((record.const (field "a" u32.const 7) (field "b" list.const (str.const "x") (str.const "yz"))))");
 }
 
 TEST_CASE("Values.builderRejectsMismatch")
@@ -801,7 +801,7 @@ TEST_CASE("Values.equalAcrossArenas")
     CHECK_FALSE(equal(a.root(0), valueOf(right, rightRecord, std::bit_cast<uint32_t>(1.5F), "x").root(0)));
     CHECK(
         toText(left.arena(), a.root(0))
-        == R"((record.const (field "a" (u32.const 7)) (field "b" (f32.const nan)) (field "c" (list.const (str.const "x")))))");
+        == R"((record.const (field "a" u32.const 7) (field "b" f32.const nan) (field "c" list.const (str.const "x"))))");
 
     // Kinds, counts, cases and floats that differ.
     auto types = Types {};
