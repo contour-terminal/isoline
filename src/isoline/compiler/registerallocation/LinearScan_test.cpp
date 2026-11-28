@@ -1475,9 +1475,10 @@ class ForwardingTarget: public isoline::compiler::machine::ITarget
     [[nodiscard]] std::expected<void, CompileError> encode(
         MachineFunction const& function,
         FrameLayout const& frame,
+        isoline::compiler::machine::ModuleLabels const& labels,
         isoline::compiler::machine::CodeBuffer& buffer) const override
     {
-        return _fake.encode(function, frame, buffer);
+        return _fake.encode(function, frame, labels, buffer);
     }
     void emitEntryAdapter(isoline::binary::FuncType const& type,
                           isoline::compiler::machine::CodeBuffer& buffer) const override

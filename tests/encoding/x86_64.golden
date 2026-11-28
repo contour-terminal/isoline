@@ -15744,6 +15744,22 @@ f7 d7	not edi	Not32R
 41 f7 d5	not r13d	Not32R
 41 f7 d6	not r14d	Not32R
 41 f7 d7	not r15d	Not32R
+48 ff c8	dec rax	Dec64R
+48 ff c9	dec rcx	Dec64R
+48 ff ca	dec rdx	Dec64R
+48 ff cb	dec rbx	Dec64R
+48 ff cc	dec rsp	Dec64R
+48 ff cd	dec rbp	Dec64R
+48 ff ce	dec rsi	Dec64R
+48 ff cf	dec rdi	Dec64R
+49 ff c8	dec r8	Dec64R
+49 ff c9	dec r9	Dec64R
+49 ff ca	dec r10	Dec64R
+49 ff cb	dec r11	Dec64R
+49 ff cc	dec r12	Dec64R
+49 ff cd	dec r13	Dec64R
+49 ff ce	dec r14	Dec64R
+49 ff cf	dec r15	Dec64R
 48 d3 e0	shl rax, cl	Shl64RCl
 48 d3 e1	shl rcx, cl	Shl64RCl
 48 d3 e2	shl rdx, cl	Shl64RCl

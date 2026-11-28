@@ -199,4 +199,18 @@ TEST_CASE("MachineVerifier.refusesAPhysicalRegisterAcrossBlocks")
                                 { def(function, v), MemoryOperand { .base = RegisterName::of(g0) } }));
         terminate(function, next, {}, v);
     }));
+    // A register the target never allocates (x86-64's pinned r15 and r14, the stack pointer) holds one value
+    // throughout, so a memory operand may name it as its base in any block.
+    auto const pinned = PhysicalRegister { .registerClass = RegisterClass::General, .number = 15 };
+    CHECK_FALSE(refuses([&](MachineFunction& function, auto entry) {
+        auto const v = function.createVirtualRegister(RegisterClass::General);
+        auto const next = function.createBlock(Hotness::Normal);
+        terminate(function, entry, std::array { EdgeTo { .target = next } });
+        std::ignore =
+            function.append(next,
+                            opcodeOf(FakeOpcode::Load),
+                            std::to_array<MachineOperand>(
+                                { def(function, v), MemoryOperand { .base = RegisterName::of(pinned) } }));
+        terminate(function, next, {}, v);
+    }));
 }

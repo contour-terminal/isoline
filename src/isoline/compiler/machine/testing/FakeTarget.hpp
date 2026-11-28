@@ -472,6 +472,7 @@ class BasicFakeTarget final: public ITarget
     /// Encodes nothing.
     [[nodiscard]] std::expected<void, CompileError> encode(MachineFunction const& /*function*/,
                                                            FrameLayout const& /*frame*/,
+                                                           ModuleLabels const& /*labels*/,
                                                            CodeBuffer& /*buffer*/) const override
     {
         return {};

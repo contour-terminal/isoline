@@ -30,6 +30,9 @@ enum class CompileErrorCode : uint8_t
     BranchOutOfRange,       ///< A branch's displacement does not fit its encoding.
     LiveSetTooLarge, ///< Liveness would take more than CompileLimits::maxLiveSetBits (values × blocks).
     Cancelled,       ///< The compile was cancelled (CompileCancellation).
+    /// A target was asked for code it does not generate: another architecture, or an ABI without its host
+    /// convention (X64Target::create()).
+    UnsupportedTarget,
     /// A pass left a function ill-formed (intermediate::verify()): a compiler bug, caught before any of the
     /// function's code is generated, so the module is refused rather than miscompiled.
     InternalVerificationFailed,
@@ -95,6 +98,9 @@ inline constexpr auto CompileErrorTable = std::to_array<CompileErrorRow>({
       .text = "too many values live across blocks",
       .limit = ImplementationLimit::Yes },
     { .code = CompileErrorCode::Cancelled, .text = "compile cancelled", .limit = ImplementationLimit::No },
+    { .code = CompileErrorCode::UnsupportedTarget,
+      .text = "target not supported by this backend",
+      .limit = ImplementationLimit::No },
     { .code = CompileErrorCode::InternalVerificationFailed,
       .text = "internal compiler error: ill-formed intermediate code",
       .limit = ImplementationLimit::No },

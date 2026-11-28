@@ -14,15 +14,20 @@
 #include <isoline/compiler/ContextLayout.hpp>
 
 using isoline::compiler::ContextLayoutRow;
+using isoline::compiler::DispatchViewLayout;
 using isoline::compiler::ExecutionState;
 using isoline::compiler::ExecutionStateLayout;
+using isoline::compiler::FunctionDispatchLayout;
 using isoline::compiler::InstanceContext;
 using isoline::compiler::InstanceContextLayout;
 using isoline::compiler::layoutOf;
 using isoline::compiler::memberCount;
+using isoline::compiler::MemoryViewLayout;
 using isoline::compiler::PendingAbrupt;
 using isoline::compiler::PendingAbruptLayout;
+using isoline::compiler::RefFieldLayout;
 using isoline::compiler::rowsCoverEveryMember;
+using isoline::compiler::TableViewLayout;
 
 namespace
 {
@@ -96,6 +101,21 @@ TEST_CASE("ContextLayout.rowsCoverEveryMember")
         CHECK(&layoutOf(row.field) == &row);
     for (auto const& row: InstanceContextLayout)
         CHECK(&layoutOf(row.field) == &row);
+    for (auto const& row: MemoryViewLayout)
+        CHECK(&layoutOf(row.field) == &row);
+    for (auto const& row: TableViewLayout)
+        CHECK(&layoutOf(row.field) == &row);
+    for (auto const& row: FunctionDispatchLayout)
+        CHECK(&layoutOf(row.field) == &row);
+    for (auto const& row: DispatchViewLayout)
+        CHECK(&layoutOf(row.field) == &row);
+    for (auto const& row: RefFieldLayout)
+        CHECK(&layoutOf(row.field) == &row);
+    // The store's views and rows generated code reads by offset (ledger carry to T13).
+    CHECK(rowsCoverEveryMember<isoline::runtime::MemoryView>(MemoryViewLayout));
+    CHECK(rowsCoverEveryMember<isoline::runtime::TableView>(TableViewLayout));
+    CHECK(rowsCoverEveryMember<isoline::runtime::FunctionDispatch>(FunctionDispatchLayout));
+    CHECK(rowsCoverEveryMember<isoline::runtime::DispatchView>(DispatchViewLayout));
 
     // The predicate fails each way a table can be wrong.
     STATIC_CHECK(memberCount<Probe>() == 3);
@@ -134,6 +154,11 @@ TEST_CASE("ContextLayout.matchesTheGolden")
     render(rendered, "PendingAbrupt", PendingAbruptLayout);
     render(rendered, "ExecutionState", ExecutionStateLayout);
     render(rendered, "InstanceContext", InstanceContextLayout);
+    render(rendered, "MemoryView", MemoryViewLayout);
+    render(rendered, "TableView", TableViewLayout);
+    render(rendered, "FunctionDispatch", FunctionDispatchLayout);
+    render(rendered, "DispatchView", DispatchViewLayout);
+    render(rendered, "Ref", RefFieldLayout);
     auto file = std::ifstream { std::string { Golden } };
     REQUIRE(file.is_open());
     auto golden = std::string {};

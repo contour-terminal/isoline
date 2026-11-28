@@ -95,6 +95,7 @@ TEST_CASE("CompileError.everyCodeHasItsExactText")
         { .code = CompileErrorCode::BranchOutOfRange, .text = "branch out of range" },
         { .code = CompileErrorCode::LiveSetTooLarge, .text = "too many values live across blocks" },
         { .code = CompileErrorCode::Cancelled, .text = "compile cancelled" },
+        { .code = CompileErrorCode::UnsupportedTarget, .text = "target not supported by this backend" },
         { .code = CompileErrorCode::InternalVerificationFailed,
           .text = "internal compiler error: ill-formed intermediate code" },
     });

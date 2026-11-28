@@ -277,7 +277,11 @@ struct CallSite
 /// and the host convention's shadow space, which a callee may write), the spill slots, the callee-saved
 /// registers, the caller's frame pointer (StackRule::framePointerBytes), and at the top what the call into
 /// the function pushed (x86-64's return address). No instruction of the body moves the stack pointer, so
-/// every call leaves from the frame's bottom, which checkFrame() relies on.
+/// every call leaves from the frame's bottom, which checkFrame() relies on. The one exception is no
+/// instruction of the body but an allocator move the encoder expands: x86-64 moves a spill slot to another
+/// slot as push m64 then pop m64, with no register of the function's free. The pair leaves the stack pointer
+/// where it was and is never split by a call; between them it writes the 8 bytes below the frame's bottom,
+/// within the StubReserveBytes the prologue's native check kept free (x86_64/Lowering.hpp).
 struct FrameLayout
 {
     /// The frame's size, from the caller's stack pointer at its call down to the frame's bottom: what the

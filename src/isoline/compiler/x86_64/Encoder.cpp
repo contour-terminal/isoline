@@ -352,7 +352,7 @@ namespace
                         return std::unexpected { reg.error() };
                     assembly.rex.b = static_cast<uint8_t>(*reg >> 3U);
                     if (needsRexForByte(kind, *reg))
-                        assembly.rex.byteRex = ByteRex::Required;
+                        assembly.rex.byteRex = ByteRex::Required; // uncovered(byte-opcode-register)
                     assembly.opcodeAddend = static_cast<uint8_t>(*reg & 7U);
                     break;
                 }

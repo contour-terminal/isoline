@@ -100,6 +100,8 @@ ISOLINE_ENCODING(Neg64R,    ModRmOnly,              None, W1, (0xf7),       Digi
 ISOLINE_ENCODING(Neg32R,    ModRmOnly,              None, W0, (0xf7),       Digit3,   None,  (useDef(G32)),                  "neg {0}")
 ISOLINE_ENCODING(Not64R,    ModRmOnly,              None, W1, (0xf7),       Digit2,   None,  (useDef(G64)),                  "not {0}")
 ISOLINE_ENCODING(Not32R,    ModRmOnly,              None, W0, (0xf7),       Digit2,   None,  (useDef(G32)),                  "not {0}")
+// The poll fast path's `dec rSteps` and the stack probe's page count (ledger carry M7).
+ISOLINE_ENCODING(Dec64R,    ModRmOnly,              None, W1, (0xff),       Digit1,   None,  (useDef(G64)),                  "dec {0}")
 
 // Shifts and rotates, by cl or by an immediate count.
 ISOLINE_ENCODING(Shl64RCl, ModRmOnly,      None, W1, (0xd3), Digit4, None,  (useDef(G64), implicitUse(Gpr::Rcx)), "shl {0}, cl")

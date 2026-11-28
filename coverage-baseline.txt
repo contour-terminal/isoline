@@ -308,10 +308,13 @@
 # evaluates in static_asserts (isWellFormed(), fits(), isAllocationOrderOf()), which Encoder.wellFormedRefusesBrokenRows and
 # Registers.allocationOrderAndConventionsAtRunTime also run: their untaken sides are short-circuit and early-return
 # combinations of a broken row no table row is, each refusing at compile time.
+# P5 Task 13's x86_64/ rows. Selector.hpp's and Instructions.hpp's code is constexpr table derivation, which
+# Selector.emittersSpellTheirRows and Target.constraintTablesRebuildAtRuntime also run at run time; Selector.tableIsComplete
+# runs isSelectionTableComplete() on broken tables. Encoder.cpp, Encoder.hpp, EncodingSamples.cpp and Registers.hpp rise
+# with the selector's rows encoded.
 # src/isoline/interpreter/Simd.hpp's row is gone again: the three-way merge f31c40d0 brought back the row P4 had dropped.
 
 exclude src/isoline/cli/FileAccess.cpp non-utf8-path a path that core::pathFromUtf8 refuses: only Windows refuses one (text that is not UTF-8), and the coverage run is Linux's; SystemFileAccess.files covers it under wine
-exclude src/isoline/fastinterpreter/Listing.cpp unknown-kernel a generic vector operation whose kernel word is no OpcodeTable row's: lowering writes only simdKernelWordOf() of an instruction, so no code holds another
 exclude src/isoline/compiler/FeatureSupport.cpp extern-kind-without-case checkImport() of an ExternKind without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/compiler/FeatureSupport.cpp position-feature-compiled checkPosition() of a position whose feature is compiled: the only Position, a tag, needs exception handling, which is deferred to P5b, so every check refuses
 exclude src/isoline/compiler/intermediate/Operation.hpp result-rule-without-case fixedTypeOf() of a ResultRule without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
@@ -326,8 +329,18 @@ exclude src/isoline/compiler/registerallocation/LinearScan.cpp allocator-invaria
 exclude src/isoline/compiler/translation/MemoryTranslation.hpp stub-indices-without-case indexCountOf() of a StubIndices without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/compiler/translation/Translator.cpp construct-kind-without-case open() and fillEdge() of a ConstructKind without a case: each switch names every enumerator and returns in each, and -Wswitch makes a new one without a case a build error
 exclude src/isoline/compiler/translation/Translator.cpp v128-refused-before irTypeOf() of a v128: checkValueType(), its first statement, refuses every v128, so the switch never reaches its V128 case
+exclude src/isoline/compiler/x86_64/Encoder.cpp byte-opcode-register an opcode-register field (Intel's O and OI) of a byte register that needs a REX prefix: no encoding row puts a byte register in the opcode's low bits, which every isWellFormed() row allows, so only a future row reaches it
 exclude src/isoline/compiler/x86_64/Encoder.cpp non-immediate-kind immediateOf() of a slot kind that is no immediate or condition: every row's immediate and condition slots are of those kinds, which isWellFormed() checks of each row in a static_assert
 exclude src/isoline/compiler/x86_64/Encoder.hpp field-without-case fits() of a Field without a case: the switch names every enumerator, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/x86_64/Lowering.cpp argument-register-of-another-row argumentIndexOf() of a register its convention row does not pass an argument in: its callers ask only of a location assignCall() placed under that row (its Require)
+exclude src/isoline/compiler/x86_64/Selector.cpp kind-of-another-group an emitter group (emitArithmetic(), emitMemory(), emitState(), emitControl()) given a kind of another group: emitRow() dispatches each EmitterKind to the one group that has its case (their Require)
+exclude src/isoline/compiler/x86_64/Selector.cpp pattern-without-case matches() of a Pattern without a case: the switch names every enumerator and returns in each, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/x86_64/Selector.cpp result-register-of-another-row emitReturn()'s position of a result register the internal convention returns no result in: assignCall() places results only in that row's registers (its Require)
+exclude src/isoline/compiler/x86_64/Selector.cpp sequence-without-case emitSequence() of a Sequence without a case: the switch names every enumerator and returns in each, and -Wswitch makes a new one without a case a build error
+exclude src/isoline/compiler/x86_64/Selector.cpp simd-value-type typeOf() of a v128: checkModule() refuses every SIMD signature before a function is translated, so no selected signature holds one
+exclude src/isoline/compiler/x86_64/Target.cpp entry-code-is-task-14 emitEntryAdapter() and emitEntryTrampoline(): core::todo until P5 Task 14 writes the entry adapters and the trampoline, which nothing calls before the Compiled engine runs code
+exclude src/isoline/compiler/x86_64/Target.cpp layout-breaks-a-loop encodeFunction() of a layout linearize() refuses: linearize() keeps every loop contiguous by construction, so it refuses only on a compiler bug (Linearize.cpp's linearize-breaks-a-loop)
+exclude src/isoline/fastinterpreter/Listing.cpp unknown-kernel a generic vector operation whose kernel word is no OpcodeTable row's: lowering writes only simdKernelWordOf() of an instruction, so no code holds another
 exclude src/isoline/fastinterpreter/Lowering.cpp code-words-past-32-bits the refusal of a function whose code bound passes 32-bit branch targets: it needs a body past a gigabyte, more than any test can decode, and a budget past 32 GiB
 exclude src/isoline/fastinterpreter/Lowering.cpp materialize-in-slot materialize() of an entry in its slot already: its callers pass only forwarded locals and constants, the entries of the index list and the forwarding chains
 exclude src/isoline/fastinterpreter/SwitchDispatchCold.cpp inline-operation the out-of-line switch's cases of the operations the loop runs inline: runSwitch() never calls runOutOfLine() for them, so their case line and body run in no build
@@ -387,7 +400,7 @@ src/isoline/compiler/CompileConfig.hpp                    100.00 -
 src/isoline/compiler/CompileError.cpp                     100.00 91.66
 src/isoline/compiler/CompileError.hpp                     100.00 -
 src/isoline/compiler/CompileLimits.hpp                    100.00 -
-src/isoline/compiler/ContextLayout.hpp                    95.83 92.30
+src/isoline/compiler/ContextLayout.hpp                    97.43 92.30
 src/isoline/compiler/FeatureSupport.cpp                   98.37 90.90
 src/isoline/compiler/FeatureSupport.hpp                   100.00 100.00
 src/isoline/compiler/intermediate/Dominators.cpp          100.00 88.88
@@ -412,7 +425,7 @@ src/isoline/compiler/machine/Liveness.cpp                 100.00 96.15
 src/isoline/compiler/machine/Liveness.hpp                 100.00 -
 src/isoline/compiler/machine/MachineFunction.cpp          100.00 77.21
 src/isoline/compiler/machine/MachineFunction.hpp          100.00 100.00
-src/isoline/compiler/machine/MachineVerifier.cpp          100.00 94.73
+src/isoline/compiler/machine/MachineVerifier.cpp          100.00 94.84
 src/isoline/compiler/machine/Registers.hpp                100.00 75.00
 src/isoline/compiler/machine/Target.hpp                   100.00 100.00
 src/isoline/compiler/machine/TargetDescription.hpp        100.00 -
@@ -426,7 +439,7 @@ src/isoline/compiler/optimization/PassTable.hpp           100.00 -
 src/isoline/compiler/optimization/Rewrite.cpp             100.00 90.83
 src/isoline/compiler/optimization/Rewrite.hpp             100.00 -
 src/isoline/compiler/optimization/TrivialParameters.cpp   100.00 100.00
-src/isoline/compiler/registerallocation/LinearScan.cpp    99.24 88.64
+src/isoline/compiler/registerallocation/LinearScan.cpp    99.25 89.44
 src/isoline/compiler/registerallocation/LinearScan.hpp    100.00 -
 src/isoline/compiler/registerallocation/ParallelMoves.cpp 100.00 83.07
 src/isoline/compiler/registerallocation/SpillSlots.cpp    100.00 100.00
@@ -437,11 +450,19 @@ src/isoline/compiler/translation/MemoryTranslation.hpp    88.88 87.50
 src/isoline/compiler/translation/NumericRules.hpp         100.00 100.00
 src/isoline/compiler/translation/Translator.cpp           99.58 92.83
 src/isoline/compiler/translation/Translator.hpp           100.00 -
-src/isoline/compiler/x86_64/Encoder.cpp                   94.68 90.00
-src/isoline/compiler/x86_64/Encoder.hpp                   98.41 89.34
-src/isoline/compiler/x86_64/EncodingSamples.cpp           97.84 94.00
+src/isoline/compiler/x86_64/Encoder.cpp                   99.33 96.73
+src/isoline/compiler/x86_64/Encoder.hpp                   99.20 90.16
+src/isoline/compiler/x86_64/EncodingSamples.cpp           100.00 97.77
 src/isoline/compiler/x86_64/EncodingSamples.hpp           100.00 -
-src/isoline/compiler/x86_64/Registers.hpp                 90.32 94.44
+src/isoline/compiler/x86_64/Instructions.hpp              100.00 93.75
+src/isoline/compiler/x86_64/Lowering.cpp                  99.93 91.68
+src/isoline/compiler/x86_64/Lowering.hpp                  100.00 100.00
+src/isoline/compiler/x86_64/Registers.hpp                 100.00 95.23
+src/isoline/compiler/x86_64/Selection.def                 100.00 -
+src/isoline/compiler/x86_64/Selector.cpp                  99.29 89.47
+src/isoline/compiler/x86_64/Selector.hpp                  100.00 85.71
+src/isoline/compiler/x86_64/Target.cpp                    94.73 87.09
+src/isoline/compiler/x86_64/Target.hpp                    100.00 -
 src/isoline/fastinterpreter/Bounds.hpp                    100.00 100.00
 src/isoline/fastinterpreter/Code.cpp                      100.00 71.05
 src/isoline/fastinterpreter/Code.hpp                      100.00 -

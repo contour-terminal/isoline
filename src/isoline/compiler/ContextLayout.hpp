@@ -18,9 +18,11 @@
 #include <type_traits>
 #include <utility>
 
+#include <isoline/binary/Types.hpp>
 #include <isoline/runtime/RawValue.hpp>
 #include <isoline/runtime/Store.hpp>
 #include <isoline/runtime/Trap.hpp>
+#include <isoline/runtime/Value.hpp>
 
 namespace isoline::compiler
 {
@@ -119,6 +121,36 @@ enum class RuntimeStub : uint8_t
 /// The last RuntimeStub enumerator, for checking RuntimeStubTable's size.
 inline constexpr auto LastRuntimeStub = RuntimeStub::FloatRound;
 
+/// What every runtime stub returns: its status, and its value for a stub that has one (memory.grow's old
+/// size, table.get's element, FloatRound's bits); 0 when it has none. A stub is a non-member function
+/// `StubResult stub(ExecutionState*, InstanceContext*, uint64_t...)`, its operands each one 64-bit word
+/// (RuntimeStub's order), so that one host-call shape serves every stub (P5 Decision "Calling conventions
+/// are rows", I8): two words, which System V returns in rax:rdx and Microsoft x64 through a hidden pointer.
+/// A status other than StubSucceeded means the stub left PendingKind::StubAbrupt pending: generated code
+/// then leaves through the trap exit without writing pending itself.
+struct StubResult
+{
+    uint64_t status = 0; ///< StubSucceeded, or anything else when the stub left its Abrupt pending.
+    uint64_t value = 0;  ///< The stub's value; 0 when it has none.
+};
+
+/// The status of a stub that succeeded.
+inline constexpr auto StubSucceeded = uint64_t { 0 };
+
+/// The rounding FloatRound performs: its first operand. FloatRound's second is the value's bits (an F32's
+/// zero-extended), and its value the rounded bits, computed by numerics:: as both interpreters do.
+enum class FloatRoundOperation : uint8_t
+{
+    F32Ceil,    ///< f32.ceil.
+    F32Floor,   ///< f32.floor.
+    F32Trunc,   ///< f32.trunc.
+    F32Nearest, ///< f32.nearest.
+    F64Ceil,    ///< f64.ceil.
+    F64Floor,   ///< f64.floor.
+    F64Trunc,   ///< f64.trunc.
+    F64Nearest, ///< f64.nearest.
+};
+
 /// A field of PendingAbrupt, in declaration order.
 enum class PendingAbruptField : uint8_t
 {
@@ -155,6 +187,45 @@ enum class InstanceContextField : uint8_t
     TypeIds,
     Functions,
     ModuleInstance,
+};
+
+/// A field of runtime::MemoryView, in declaration order.
+enum class MemoryViewField : uint8_t
+{
+    Base,
+    Bytes,
+};
+
+/// A field of runtime::TableView, in declaration order.
+enum class TableViewField : uint8_t
+{
+    Data,
+    Size,
+};
+
+/// A field of runtime::FunctionDispatch, in declaration order.
+enum class FunctionDispatchField : uint8_t
+{
+    Code,
+    Context,
+    TypeId,
+};
+
+/// A field of runtime::DispatchView, in declaration order.
+enum class DispatchViewField : uint8_t
+{
+    Chunks,
+    Rows,
+};
+
+/// A field of runtime::Ref as generated code reads and writes a table element in place (RefLayout), in the
+/// order of its offsets.
+enum class RefField : uint8_t
+{
+    Kind,
+    HeapKind,
+    HeapTypeIndex,
+    Address,
 };
 
 /// Where a field of a record lies.
@@ -295,6 +366,96 @@ inline constexpr auto InstanceContextLayout = std::to_array<ContextLayoutRow<Ins
       .alignment = alignof(decltype(InstanceContext::moduleInstance)) },
 });
 
+/// runtime::MemoryView's fields: what memoryBase, memoryBound and memory 0's context values load.
+inline constexpr auto MemoryViewLayout = std::to_array<ContextLayoutRow<MemoryViewField>>({
+    { .field = MemoryViewField::Base,
+      .name = "base",
+      .offset = offsetof(runtime::MemoryView, base),
+      .size = sizeof(decltype(runtime::MemoryView::base)),
+      .alignment = alignof(decltype(runtime::MemoryView::base)) },
+    { .field = MemoryViewField::Bytes,
+      .name = "bytes",
+      .offset = offsetof(runtime::MemoryView, bytes),
+      .size = sizeof(decltype(runtime::MemoryView::bytes)),
+      .alignment = alignof(decltype(runtime::MemoryView::bytes)) },
+});
+
+/// runtime::TableView's fields: what checkTable and tableSize load.
+inline constexpr auto TableViewLayout = std::to_array<ContextLayoutRow<TableViewField>>({
+    { .field = TableViewField::Data,
+      .name = "data",
+      .offset = offsetof(runtime::TableView, data),
+      .size = sizeof(decltype(runtime::TableView::data)),
+      .alignment = alignof(decltype(runtime::TableView::data)) },
+    { .field = TableViewField::Size,
+      .name = "size",
+      .offset = offsetof(runtime::TableView, size),
+      .size = sizeof(decltype(runtime::TableView::size)),
+      .alignment = alignof(decltype(runtime::TableView::size)) },
+});
+
+/// runtime::FunctionDispatch's fields: what a call through a dispatch row and loadDispatchType load.
+inline constexpr auto FunctionDispatchLayout = std::to_array<ContextLayoutRow<FunctionDispatchField>>({
+    { .field = FunctionDispatchField::Code,
+      .name = "code",
+      .offset = offsetof(runtime::FunctionDispatch, code),
+      .size = sizeof(decltype(runtime::FunctionDispatch::code)),
+      .alignment = alignof(decltype(runtime::FunctionDispatch::code)) },
+    { .field = FunctionDispatchField::Context,
+      .name = "context",
+      .offset = offsetof(runtime::FunctionDispatch, context),
+      .size = sizeof(decltype(runtime::FunctionDispatch::context)),
+      .alignment = alignof(decltype(runtime::FunctionDispatch::context)) },
+    { .field = FunctionDispatchField::TypeId,
+      .name = "typeId",
+      .offset = offsetof(runtime::FunctionDispatch, typeId),
+      .size = sizeof(decltype(runtime::FunctionDispatch::typeId)),
+      .alignment = alignof(decltype(runtime::FunctionDispatch::typeId)) },
+});
+
+/// runtime::DispatchView's fields: what checkDispatch and every call through the dispatch rows load.
+inline constexpr auto DispatchViewLayout = std::to_array<ContextLayoutRow<DispatchViewField>>({
+    { .field = DispatchViewField::Chunks,
+      .name = "chunks",
+      .offset = offsetof(runtime::DispatchView, chunks),
+      .size = sizeof(decltype(runtime::DispatchView::chunks)),
+      .alignment = alignof(decltype(runtime::DispatchView::chunks)) },
+    { .field = DispatchViewField::Rows,
+      .name = "rows",
+      .offset = offsetof(runtime::DispatchView, rows),
+      .size = sizeof(decltype(runtime::DispatchView::rows)),
+      .alignment = alignof(decltype(runtime::DispatchView::rows)) },
+});
+
+/// runtime::Ref's fields as runtime::RefLayoutOfRef places them: what a table element is read and written by,
+/// field by field. Ref's heap is a record of its own, so these rows name the fields generated code touches
+/// rather than Ref's members (rowsCoverEveryMember() does not apply); the golden pins them all the same.
+inline constexpr auto RefFieldLayout = std::to_array<ContextLayoutRow<RefField>>({
+    { .field = RefField::Kind,
+      .name = "kind",
+      .offset = runtime::RefLayoutOfRef.kindOffset,
+      .size = sizeof(runtime::RefKind),
+      .alignment = alignof(runtime::RefKind) },
+    { .field = RefField::HeapKind,
+      .name = "heap.kind",
+      .offset = runtime::RefLayoutOfRef.heapKindOffset,
+      .size = sizeof(binary::AbstractHeapType),
+      .alignment = alignof(binary::AbstractHeapType) },
+    { .field = RefField::HeapTypeIndex,
+      .name = "heap.typeIndex",
+      .offset = runtime::RefLayoutOfRef.heapTypeIndexOffset,
+      .size = sizeof(decltype(binary::HeapType::typeIndex)),
+      .alignment = alignof(decltype(binary::HeapType::typeIndex)) },
+    { .field = RefField::Address,
+      .name = "address",
+      .offset = runtime::RefLayoutOfRef.addressOffset,
+      .size = sizeof(decltype(runtime::Ref::address)),
+      .alignment = alignof(decltype(runtime::Ref::address)) },
+});
+
+/// The size of a runtime::Ref: a table's stride, which generated code scales an index by.
+inline constexpr auto RefBytes = runtime::RefLayoutOfRef.size;
+
 namespace detail
 {
     /// Converts to any member type, in unevaluated brace initialization only: what counts a record's
@@ -362,6 +523,23 @@ static_assert(std::is_standard_layout_v<InstanceContext> && std::is_trivially_co
 static_assert(rowsCoverEveryMember<PendingAbrupt>(PendingAbruptLayout));
 static_assert(rowsCoverEveryMember<ExecutionState>(ExecutionStateLayout));
 static_assert(rowsCoverEveryMember<InstanceContext>(InstanceContextLayout));
+static_assert(rowsCoverEveryMember<runtime::MemoryView>(MemoryViewLayout));
+static_assert(rowsCoverEveryMember<runtime::TableView>(TableViewLayout));
+static_assert(rowsCoverEveryMember<runtime::FunctionDispatch>(FunctionDispatchLayout));
+static_assert(rowsCoverEveryMember<runtime::DispatchView>(DispatchViewLayout));
+static_assert(
+    [] {
+        auto index = std::size_t { 0 };
+        auto end = std::size_t { 0 };
+        for (auto const& row: RefFieldLayout)
+        {
+            if (static_cast<std::size_t>(row.field) != index++ || row.offset < end)
+                return false;
+            end = row.offset + row.size;
+        }
+        return end <= RefBytes;
+    }(),
+    "RefFieldLayout must hold one row per RefField, in order of disjoint offsets within a Ref");
 
 /// The row of @p field in its record's layout table.
 /// @param field The field.
@@ -384,6 +562,37 @@ static_assert(rowsCoverEveryMember<InstanceContext>(InstanceContextLayout));
     InstanceContextField field) noexcept
 {
     return InstanceContextLayout[static_cast<std::size_t>(field)];
+}
+
+/// @copydoc layoutOf(PendingAbruptField)
+[[nodiscard]] constexpr ContextLayoutRow<MemoryViewField> const& layoutOf(MemoryViewField field) noexcept
+{
+    return MemoryViewLayout[static_cast<std::size_t>(field)];
+}
+
+/// @copydoc layoutOf(PendingAbruptField)
+[[nodiscard]] constexpr ContextLayoutRow<TableViewField> const& layoutOf(TableViewField field) noexcept
+{
+    return TableViewLayout[static_cast<std::size_t>(field)];
+}
+
+/// @copydoc layoutOf(PendingAbruptField)
+[[nodiscard]] constexpr ContextLayoutRow<FunctionDispatchField> const& layoutOf(
+    FunctionDispatchField field) noexcept
+{
+    return FunctionDispatchLayout[static_cast<std::size_t>(field)];
+}
+
+/// @copydoc layoutOf(PendingAbruptField)
+[[nodiscard]] constexpr ContextLayoutRow<DispatchViewField> const& layoutOf(DispatchViewField field) noexcept
+{
+    return DispatchViewLayout[static_cast<std::size_t>(field)];
+}
+
+/// @copydoc layoutOf(PendingAbruptField)
+[[nodiscard]] constexpr ContextLayoutRow<RefField> const& layoutOf(RefField field) noexcept
+{
+    return RefFieldLayout[static_cast<std::size_t>(field)];
 }
 
 } // namespace isoline::compiler

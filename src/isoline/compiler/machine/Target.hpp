@@ -39,15 +39,28 @@ namespace isoline::compiler::machine
 {
 
 /// What instruction selection is given beside the function: the compile's configuration, the module the
-/// function belongs to and its index in the code section, the compile's cancellation, and the arena the
-/// machine function allocates from.
+/// function belongs to, its index in the code section and the module's imported functions, the compile's
+/// cancellation, and the arena the machine function allocates from.
 struct SelectionContext
 {
     CompileConfig const& config;             ///< The compile's configuration (target, mode, guard).
     validate::ValidatedModule const& module; ///< The module.
     uint32_t codeIndex;                      ///< The function's index in the code section.
+    /// How many functions the module imports: a direct call's function index less this is its code index.
+    /// Counted once per module by its compile, so that no function scans the imports.
+    uint32_t importedFunctions;
     CompileCancellation const& cancellation; ///< Polled as selection proceeds.
     std::pmr::memory_resource& memory;       ///< What the machine function allocates from.
+};
+
+/// What a function's code reaches beyond itself in the module's code buffer: every function of the module,
+/// by code index, for a direct call's rel32, and the entry trampoline's trap exit, which every trap site
+/// jumps to (P5 Decision "Traps never skip a C++ frame"). The labels belong to the module's CodeBuffer; the
+/// module's compile binds them as it emits the functions and the trampoline.
+struct ModuleLabels
+{
+    std::span<CodeLabel const> functions {}; ///< Per code index, the label of the function's entry.
+    CodeLabel trapExit {};                   ///< The trampoline's trap exit.
 };
 
 /// A code generator for one instruction set and operating-system ABI.
@@ -93,10 +106,17 @@ class ITarget
     [[nodiscard]] virtual std::expected<MachineFunction, CompileError> select(
         intermediate::Function const& function, SelectionContext const& context) const = 0;
 
-    /// Encodes @p function, allocated and laid out, with its frame @p frame, into @p buffer.
-    /// @return Nothing; or why encoding refused (a branch out of range, an artifact too large).
+    /// Encodes @p function, allocated, with its frame @p frame, into @p buffer, at its current offset: the
+    /// prologue, the blocks in the layout linearize() gives, the moves the allocator inserted before each
+    /// instruction, and the out-of-line paths (trap sites, slow paths, jump tables) after them.
+    /// @param function The allocated function.
+    /// @param frame Its frame.
+    /// @param labels The module's labels its calls and trap sites reach.
+    /// @param buffer The module's code buffer.
+    /// @return Nothing; or why encoding refused (an instruction the target cannot encode: a compiler bug).
     [[nodiscard]] virtual std::expected<void, CompileError> encode(MachineFunction const& function,
                                                                    FrameLayout const& frame,
+                                                                   ModuleLabels const& labels,
                                                                    CodeBuffer& buffer) const = 0;
 
     /// Emits the entry adapter of functions of @p type: the host's RawValue arguments and results to and

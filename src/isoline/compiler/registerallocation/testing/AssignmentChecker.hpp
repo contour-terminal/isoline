@@ -13,7 +13,8 @@
 // to a fixpoint in reverse postorder; on an edge, the places holding an argument also hold the target's
 // parameter. Every definition is a value, a definition in a loop the same value on every iteration: it is
 // removed from every place before it is written again. A physical register read with no definition before it
-// in its block reads what it held at the function's entry (in the entry block) and is not checked elsewhere.
+// in its block reads what it held at the function's entry (in the entry block) and is not checked elsewhere,
+// but for a register the target never allocates, which holds its entry value in every block.
 // Test support (reused by Task 15 on whole modules), linked into no shipped binary.
 
 #include <algorithm>
@@ -175,10 +176,12 @@ namespace detail
         Checker(machine::MachineFunction const& before,
                 machine::MachineFunction const& after,
                 machine::FrameLayout const& frame,
+                machine::RegisterSet allocatable,
                 std::pmr::memory_resource& memory):
             _before { before },
             _after { after },
             _frame { frame },
+            _allocatable { allocatable },
             _memory { memory },
             _slots { static_cast<uint32_t>(frame.spillBytes / 8) },
             _parameterBase(before.blockCount(), NoValue, &memory),
@@ -330,7 +333,9 @@ namespace detail
         }
 
         /// The value a read of @p name in @p block expects: NoValue for a virtual register never defined (an
-        /// entry value of the function's, unchecked), Undefined for a physical one no definition reaches.
+        /// entry value of the function's, unchecked), Undefined for a physical one no definition reaches. A
+        /// register the target never allocates (a pinned context register, the stack pointer) holds its entry
+        /// value throughout, in every block.
         [[nodiscard]] uint32_t expected(machine::RegisterName const& name, uint32_t block) const noexcept
         {
             if (name.kind == machine::RegisterKind::Virtual)
@@ -342,7 +347,7 @@ namespace detail
             auto const place = placeOf(name);
             if (_physicalStamp[place] == _epoch)
                 return _physicalLocal[place];
-            return block == 0 ? place : Undefined;
+            return block == 0 || !_allocatable.contains(name.physicalRegister()) ? place : Undefined;
         }
 
         [[nodiscard]] static std::unexpected<AssignmentFault> fault(AssignmentFaultKind kind,
@@ -509,6 +514,7 @@ namespace detail
         machine::MachineFunction const& _before;
         machine::MachineFunction const& _after;
         machine::FrameLayout const& _frame;
+        machine::RegisterSet _allocatable; ///< The registers the target allocates.
         std::pmr::memory_resource& _memory;
         uint32_t _slots = 0;
         uint32_t _epoch = 0; ///< Counts transfers: a local value is of the transfer that wrote it.
@@ -570,7 +576,11 @@ namespace detail
                 return std::unexpected { AssignmentFault { .kind = AssignmentFaultKind::UnsavedRegister,
                                                            .instruction = instruction } };
     }
-    return detail::Checker { before, after, frame, memory }.run();
+    auto allocatable = machine::RegisterSet {};
+    for (auto const registerClass: { machine::RegisterClass::General, machine::RegisterClass::Float })
+        for (auto const reg: target.allocatable(registerClass))
+            allocatable = allocatable.with(reg);
+    return detail::Checker { before, after, frame, allocatable, memory }.run();
 }
 
 } // namespace isoline::compiler::registerallocation::testing

@@ -100,11 +100,20 @@ namespace
         }
         return isUnique;
     }
+    /// Whether @p target's allocator may assign @p reg.
+    [[nodiscard]] bool isAllocatable(ITarget const& target, PhysicalRegister reg) noexcept
+    {
+        auto const allocatable = target.allocatable(reg.registerClass);
+        return std::ranges::find(allocatable, reg) != allocatable.end();
+    }
+
     /// Whether every physical register read outside the entry block follows a definition of it in its own
     /// block. Physical registers are block-local: what liveness and the allocator know of one is from its
     /// definition (or, in the entry block, the function's entry, where the convention's arguments arrive) to
     /// its last read within the block, so a value carried in one across an edge is nothing they protect.
-    [[nodiscard]] bool physicalRegistersAreBlockLocal(MachineFunction const& function)
+    /// A register the allocator never assigns (a pinned context register, the stack pointer) holds the same
+    /// value throughout the function, which every convention preserves, so it may be read anywhere.
+    [[nodiscard]] bool physicalRegistersAreBlockLocal(MachineFunction const& function, ITarget const& target)
     {
         for (auto const block:
              std::views::iota(uint32_t { 1 }, std::max(function.blockCount(), uint32_t { 1 })))
@@ -112,7 +121,8 @@ namespace
             auto defined = RegisterSet {};
             auto isLocal = true;
             auto const read = [&](RegisterName const& name) {
-                if (name.kind == RegisterKind::Physical && !defined.contains(name.physicalRegister()))
+                if (name.kind == RegisterKind::Physical && !defined.contains(name.physicalRegister())
+                    && isAllocatable(target, name.physicalRegister()))
                     isLocal = false;
             };
             for (auto const instruction: function.instructions(BlockId { block }))
@@ -152,7 +162,7 @@ std::expected<void, CompileError> verifyMachineFunction(MachineFunction const& f
                                                         ITarget const& target)
 {
     if (!operandsKeepTheirRows(function, target) || !edgesMatchTheirTargets(function)
-        || !definedInOneBlock(function) || !physicalRegistersAreBlockLocal(function))
+        || !definedInOneBlock(function) || !physicalRegistersAreBlockLocal(function, target))
         return broken();
     return {};
 }

@@ -1,7 +1,8 @@
 # The code-to-runtime layout (src/isoline/compiler/ContextLayout.hpp), which every CI host must
 # reproduce byte for byte (ContextLayout.matchesTheGolden): generated code addresses these fields by
 # offset, so a host or standard library that lays them out differently would generate different code.
-# One line per field: record, field, offset, size. Changing the layout is changing this file.
+# One line per field: record, field, offset, size. Changing the layout is changing this file. The store's
+# views and dispatch rows, and a Ref's fields as a table element is read in place, are pinned here too.
 PendingAbrupt kind 0 1
 PendingAbrupt code 1 1
 PendingAbrupt subject 2 1
@@ -25,3 +26,16 @@ InstanceContext globals 24 8
 InstanceContext typeIds 32 8
 InstanceContext functions 40 8
 InstanceContext moduleInstance 48 4
+MemoryView base 0 8
+MemoryView bytes 8 8
+TableView data 0 8
+TableView size 8 8
+FunctionDispatch code 0 8
+FunctionDispatch context 8 8
+FunctionDispatch typeId 16 4
+DispatchView chunks 0 8
+DispatchView rows 8 4
+Ref kind 0 1
+Ref heap.kind 4 1
+Ref heap.typeIndex 8 4
+Ref address 12 4
