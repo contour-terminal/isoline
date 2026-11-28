@@ -608,6 +608,7 @@ TEST_CASE("Typed.hostFunctionRoundTrip")
                                            }),
         defineTyped<uint32_t(char32_t)>(
             linker, "glyph", [](char32_t glyph) noexcept { return static_cast<uint32_t>(glyph); }),
+        defineTyped<uint32_t()>(linker, "seven", []() noexcept { return uint32_t { 7 }; }),
         defineTyped<void(uint32_t)>(
             linker, "note", [&notes](uint32_t note) noexcept { notes.push_back(note); }),
         defineTyped<Unit(uint32_t)>(linker,
@@ -642,6 +643,7 @@ TEST_CASE("Typed.hostFunctionRoundTrip")
     auto const surrogate = glyph(char32_t { 0xD800 });
     CHECK(failureOf(surrogate) == ComponentCallFailure::ArgumentMismatch);
     CHECK_FALSE(store.isLockedDown());
+    CHECK(valueOf(bound<uint32_t()>(instance, "seven-relay")()) == 7); // no parameters
     REQUIRE(bound<void(uint32_t)>(instance, "note-relay")(3U).has_value());
     CHECK(valueOf(bound<Unit(uint32_t)>(instance, "mark-relay")(4U)) == Unit {});
     CHECK(notes == std::vector<uint32_t> { 3, 104 });

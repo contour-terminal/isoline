@@ -598,7 +598,8 @@ namespace detail
         auto at = views.begin();
         auto valid = true;
         [&]<std::size_t... Index>(std::index_sequence<Index...>) {
-            auto const readOne = [&]<std::size_t I>() {
+            // Unused for a function of no parameters, whose fold expands to nothing.
+            [[maybe_unused]] auto const readOne = [&]<std::size_t I>() {
                 if (!valid)
                     return;
                 using T = std::tuple_element_t<I, std::tuple<Ts...>>;
