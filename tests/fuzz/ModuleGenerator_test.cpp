@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <ranges>
 #include <set>
@@ -212,7 +213,10 @@ class SplitMix
 enum class LoopBranch : uint8_t
 {
     BrIf,
-    FusedBrIf, ///< A comparison right before the br_if, which the interpreter fuses.
+    FusedBrIf,       ///< A comparison right before the br_if, which the interpreter fuses.
+    BackEdge,        ///< A `br_if 0` that ends its loop on a local.get: a random body's counted back edge.
+    FusedBackEdge,   ///< A back edge with a comparison right before it.
+    FixtureBackEdge, ///< A back edge of a fixed program shape: the exception churn's local.tee, br_if 0.
     BrTable,
     BrOnNull,
     Catch,
@@ -230,8 +234,16 @@ enum class LoopBranch : uint8_t
                                   [&](std::string_view prefix) { return relation.starts_with(prefix); });
 }
 
-/// The branches to a loop's label @p function holds, by shape.
-[[nodiscard]] std::set<LoopBranch> loopBranches(binary::Function const& function)
+/// The shape of a back edge, a `br_if 0` that ends its loop, after @p previous.
+[[nodiscard]] LoopBranch backEdgeShape(binary::Opcode previous)
+{
+    if (isComparison(binary::opcodeInfo(previous)))
+        return LoopBranch::FusedBackEdge;
+    return previous == binary::Opcode::LocalGet ? LoopBranch::BackEdge : LoopBranch::FixtureBackEdge;
+}
+
+/// The branches to a loop's label @p function holds, counted by shape.
+[[nodiscard]] std::map<LoopBranch, uint64_t> loopBranches(binary::Function const& function)
 {
     using binary::Opcode;
     // The opcode that opened each enclosing block, innermost last; the function's own block first.
@@ -239,30 +251,38 @@ enum class LoopBranch : uint8_t
     auto const isLoop = [&](uint32_t label) {
         return label < blocks.size() && blocks[blocks.size() - 1 - label] == Opcode::Loop;
     };
-    auto found = std::set<LoopBranch> {};
+    auto found = std::map<LoopBranch, uint64_t> {};
     auto previous = Opcode::Nop;
-    for (auto const& instruction: function.body)
+    for (auto const index: std::views::iota(std::size_t { 0 }, function.body.size()))
     {
+        auto const& instruction = function.body[index];
         switch (instruction.opcode)
         {
             case Opcode::BrIf:
                 if (isLoop(instruction.a))
-                    found.insert(isComparison(binary::opcodeInfo(previous)) ? LoopBranch::FusedBrIf
-                                                                            : LoopBranch::BrIf);
+                {
+                    auto const isBackEdge = instruction.a == 0 && index + 1 < function.body.size()
+                                            && function.body[index + 1].opcode == Opcode::End;
+                    if (isBackEdge)
+                        ++found[backEdgeShape(previous)];
+                    else
+                        ++found[isComparison(binary::opcodeInfo(previous)) ? LoopBranch::FusedBrIf
+                                                                           : LoopBranch::BrIf];
+                }
                 break;
             case Opcode::BrTable:
                 for (auto const label: binary::labelsOf(function, instruction))
                     if (isLoop(label))
-                        found.insert(LoopBranch::BrTable);
+                        ++found[LoopBranch::BrTable];
                 break;
             case Opcode::BrOnNull:
                 if (isLoop(instruction.a))
-                    found.insert(LoopBranch::BrOnNull);
+                    ++found[LoopBranch::BrOnNull];
                 break;
             case Opcode::TryTable:
                 for (auto const& clause: binary::catchClausesOf(function, instruction))
                     if (isLoop(clause.label))
-                        found.insert(LoopBranch::Catch);
+                        ++found[LoopBranch::Catch];
                 blocks.push_back(Opcode::TryTable);
                 break;
             case Opcode::Block:
@@ -376,7 +396,9 @@ TEST_CASE("ModuleGenerator.boundedOutput")
 TEST_CASE("ModuleGenerator.branchesToLoopsInEveryShape")
 {
     auto missing = std::set<LoopBranch> {
-        LoopBranch::BrIf, LoopBranch::FusedBrIf, LoopBranch::BrTable, LoopBranch::BrOnNull, LoopBranch::Catch
+        LoopBranch::BrIf,          LoopBranch::FusedBrIf,       LoopBranch::BackEdge,
+        LoopBranch::FusedBackEdge, LoopBranch::FixtureBackEdge, LoopBranch::BrTable,
+        LoopBranch::BrOnNull,      LoopBranch::Catch,
     };
     for (auto const index: std::views::iota(uint32_t { 0 }, SeedCount))
     {
@@ -384,12 +406,47 @@ TEST_CASE("ModuleGenerator.branchesToLoopsInEveryShape")
             break;
         auto const module = generateModule(entropyOf(index), GeneratorLimits {});
         for (auto const& function: loaded(module, index)->module().code)
-            for (auto const shape: loopBranches(function))
+            for (auto const& [shape, count]: loopBranches(function))
                 missing.erase(shape);
     }
     for (auto const shape: missing)
         UNSCOPED_INFO("never branched to a loop as LoopBranch " << int { std::to_underlying(shape) });
     CHECK(missing.empty());
+}
+
+TEST_CASE("ModuleGenerator.fusedBranchesToLoopsAreFrequent")
+{
+    // The generator puts a comparison right before every other br_if and every other loop back edge of a
+    // random body on purpose; organically one lands there far less often. A floor of a third, for the back
+    // edges and for the other br_ifs to loops alike, keeps either bias from being lost: the fused branch to a
+    // loop is the interpreter's hottest polled transfer. The fixed shapes' back edges are left out: they are
+    // never fused.
+    constexpr auto Seeds = uint32_t { 1'000 };
+    auto counts = std::map<LoopBranch, uint64_t> {};
+    for (auto const index: std::views::iota(uint32_t { 0 }, Seeds))
+    {
+        auto const module = generateModule(entropyOf(index), GeneratorLimits {});
+        for (auto const& function: loaded(module, index)->module().code)
+            for (auto const& [shape, count]: loopBranches(function))
+                counts[shape] += count;
+    }
+    struct Floor
+    {
+        std::string_view name;
+        LoopBranch fused;
+        LoopBranch plain;
+    };
+    for (auto const& floor: std::to_array<Floor>({
+             { .name = "back edges", .fused = LoopBranch::FusedBackEdge, .plain = LoopBranch::BackEdge },
+             { .name = "other br_ifs to loops", .fused = LoopBranch::FusedBrIf, .plain = LoopBranch::BrIf },
+         }))
+    {
+        auto const fused = counts[floor.fused];
+        auto const all = fused + counts[floor.plain];
+        INFO(floor.name << ": " << fused << " of " << all << " fused");
+        REQUIRE(all > 0);
+        CHECK(fused * 3 >= all);
+    }
 }
 
 TEST_CASE("ModuleGenerator.oracleModeImportsNothing")

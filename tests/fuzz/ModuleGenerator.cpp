@@ -200,6 +200,18 @@ namespace
     /// The loop counters a random function declares: a loop is opened only while one is free.
     constexpr auto MaxLoopCounters = uint32_t { 32 };
 
+    /// The tests of a loop's back edge besides the plain `br_if` on its counter: each is "counter is not
+    /// zero", a comparison with 0 that the interpreter fuses with the br_if. The head counts down from a
+    /// positive count and leaves at zero, so the counter is never negative here.
+    constexpr auto BackEdgeComparisons = std::to_array<uint8_t>({
+        0x47, // i32.ne
+        0x4B, // i32.gt_u
+        0x4A, // i32.gt_s
+    });
+
+    /// The most instructions a loop's back edge takes: local.get, i32.const 0, a comparison and br_if.
+    constexpr auto MaxBackEdgeInstructions = uint64_t { 4 };
+
     /// The most values the generator keeps on one block's stack before it drops one.
     constexpr auto MaxOperandHeight = std::size_t { 8 };
 
@@ -888,7 +900,7 @@ namespace
             if (frame.kind == FrameKind::If && frame.branch == IfBranch::Then)
                 cost += 1 + frame.params.size() + frame.results.size();
             if (frame.kind == FrameKind::Loop)
-                cost += 2;
+                cost += MaxBackEdgeInstructions;
         }
         return cost;
     }
@@ -905,14 +917,21 @@ namespace
             frame.reach = Reachability::Reachable;
             frame.branch = IfBranch::Else;
         }
-        if (frame.kind == FrameKind::Loop && frame.reach == Reachability::Reachable)
-        {
-            // The back edge: local.get, br_if 0, while the counter, which the head decrements, is not zero.
-            instruction({ { 0x20 }, u32(frame.counter) });
-            instruction({ { 0x0D, 0x00 } });
-        }
         auto const results = frame.results;
         fixStack(results);
+        if (frame.kind == FrameKind::Loop && frame.reach == Reachability::Reachable)
+        {
+            // The back edge, last before the end: br_if 0 while the counter, which the head decrements, is
+            // not zero. Every other one tests it with a comparison, so that a fused br_if to a loop is as
+            // common as a plain one: the back edges are most of the branches to loops.
+            instruction({ { 0x20 }, u32(frame.counter) });
+            if (_entropy.isOneIn(2))
+            {
+                instruction({ { 0x41, 0x00 } });
+                instruction({ { _entropy.pick(std::span { BackEdgeComparisons }) } });
+            }
+            instruction({ { 0x0D, 0x00 } });
+        }
         if (frame.kind == FrameKind::Loop)
             --_loops;
         auto const kind = frame.kind;
