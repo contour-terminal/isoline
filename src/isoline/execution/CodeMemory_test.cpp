@@ -5,8 +5,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <isoline/execution/CodeMemory.hpp>
 #include <isoline/execution/testing/CompileOne.hpp>
@@ -19,6 +21,9 @@ using isoline::execution::testing::protectionOf;
 
 namespace
 {
+
+/// Where a called entry lies in sealed code, at the least.
+constexpr auto EntryOffset = std::size_t { 16 };
 
 /// x86-64's `mov eax, 42; ret`.
 constexpr auto ReturnFortyTwo = std::to_array<std::byte>({ std::byte { 0xb8 },
@@ -62,12 +67,18 @@ TEST_CASE("CodeMemory.runsARet")
 {
     if (!hostRunsCompiledCode())
         SKIP("the code is x86-64's");
+    // The entry lies past the mapping's first 16 bytes, as every entry of compiled code does: a caller
+    // instrumented by UBSan's function check reads the bytes before an indirect call's target, which at a
+    // mapping's first byte lie in whatever precedes it (unmapped, or another mapping's bytes it then follows
+    // as a pointer).
+    auto padded = std::vector<std::byte>(EntryOffset, std::byte { 0xcc });
+    std::ranges::copy(ReturnFortyTwo, std::back_inserter(padded));
     auto memory = PortableCodeMemory {};
-    auto const sealed = memory.seal(ReturnFortyTwo);
+    auto const sealed = memory.seal(padded);
     REQUIRE(sealed.has_value());
     using Function = uint32_t (*)() noexcept;
-    auto const function =
-        reinterpret_cast<Function>(reinterpret_cast<std::uintptr_t>((*sealed)->code().data()));
+    auto const function = reinterpret_cast<Function>(
+        reinterpret_cast<std::uintptr_t>((*sealed)->code().subspan(EntryOffset).data()));
     CHECK(function() == 42);
 }
 
