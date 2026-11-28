@@ -41,6 +41,7 @@ A table in `scripts/benchmark.py` (`RUNNERS`):
 | `isoline-interpreter-switch-gcc` | `isoline-benchmark`, GCC, the Switch dispatch |
 | `isoline-reference` | `isoline-benchmark`, Clang, the reference interpreter (information) |
 | `wamr-contour` | `isoline-benchmark-wamr`: WAMR 2.4.5 at 25bd7eb with Contour's two patches, built with exactly Contour's options |
+| `wamr-classic` | `isoline-benchmark-wamr`: Contour's WAMR with its classic interpreter instead of the fast one (information) |
 | `wamr-default` | `isoline-benchmark-wamr`: the same WAMR, unpatched, with WAMR's default options (information) |
 | `wasmtime` | the pinned Wasmtime's `wasmtime run --invoke` (information) |
 
@@ -80,11 +81,12 @@ means the machine was not quiet, and the run is repeated (exit status 3).
 `benchmark.py calls` measures the host→guest call round trip: `run(0)` of `micro-loop` called 100'000 times
 in one process, by the runner's own clock.
 
-`benchmark.py instructions --update|--compare` counts the instructions of `isoline-benchmark` on every guest
-under callgrind, at 1 iteration less at 0 (so the count is the kernel's, without the start, load and
-lowering), kept in `benchmarks/baseline-instructions.json` and compared before a merge, with a
-tolerance of 1 % per kernel: counters, not hosted CI. `isoline-benchmark-simd-lanes` counts the reference
-interpreter's SIMD lane kernels alone (`--toggle-collect='*applySimd*'`).
+`benchmark.py instructions --update|--compare` counts the instructions of `isoline-benchmark` and of both
+WAMR runners on every guest under callgrind (Wasmtime, whose count is mostly its compiler's, has no row), at
+1 iteration less at 0 (so the count is the kernel's, without the start, load and lowering), kept in
+`benchmarks/baseline-instructions.json` and compared before a merge, with a tolerance of 1 % per kernel:
+counters, not hosted CI. `isoline-benchmark-simd-lanes` counts the reference interpreter's SIMD lane
+kernels alone (`--toggle-collect='*applySimd*'`).
 
 ## The numbers
 

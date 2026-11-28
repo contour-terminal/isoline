@@ -3,8 +3,8 @@
 """Times Isoline's interpreter against Contour's WAMR, and reports it (docs/performance.md).
 
 The runners are a table (RUNNERS): every Isoline engine and dispatch through isoline-benchmark, Contour's
-WAMR and WAMR's defaults through isoline-benchmark-wamr, and the pinned Wasmtime. Each runs a guest of
-benchmarks/guests (pinned in benchmarks/guests.lock) as a whole process, timed by this script's own monotonic
+WAMR, its classic interpreter and WAMR's defaults through isoline-benchmark-wamr, and the pinned Wasmtime.
+Each runs a guest of benchmarks/guests (pinned in benchmarks/guests.lock) as a whole process, timed by this script's own monotonic
 clock around it: at n = N and at n = 0 iterations, in alternating pairs on a pinned core, the runners
 interleaved within each round, and the median of the paired differences t(N) - t(0) over N is the kernel's
 time per iteration, which every table and ratio uses. Each runner has its own N, calibrated so that its
@@ -148,6 +148,7 @@ RUNNERS = (
            ("secondary",), True),
     Runner("isoline-reference", "isoline", "clang", ("--engine", "reference"), ("information",), True),
     Runner("wamr-contour", "wamr", "clang", ("contour",), ("baseline",), False),
+    Runner("wamr-classic", "wamr", "clang", ("classic",), ("information",), False),
     Runner("wamr-default", "wamr", "clang", ("default",), ("information",), False),
     Runner("wasmtime", "wasmtime", "", (), ("information",), True),
 )
@@ -179,6 +180,9 @@ CALLS_GUEST = "micro-loop.wasm"
 # The iterations every guest runs under callgrind, and the spread of its instruction count allowed.
 INSTRUCTION_ITERATIONS = 1
 INSTRUCTION_TOLERANCE = 0.01
+# The runner kinds callgrind counts: Isoline's and WAMR's interpreters. Wasmtime's compiler runs on threads of
+# its own and its count is mostly compilation, so it has no row.
+INSTRUCTION_KINDS = ("isoline", "wamr")
 # The core every timed process is pinned to.
 PIN_COMMAND = ("taskset", "-c", "{core}")
 
@@ -735,7 +739,7 @@ def commandCalls(arguments):
 
 
 def commandInstructions(arguments):
-    """callgrind on isoline-benchmark, every Isoline runner and guest at INSTRUCTION_ITERATIONS less at 0: --update
+    """callgrind on every runner of INSTRUCTION_KINDS and guest at INSTRUCTION_ITERATIONS less at 0: --update
     writes the baseline, --compare fails on a kernel that moved by more than the tolerance."""
     guests = checkGuests()
     runners, guests = selected(arguments, guests)
@@ -744,9 +748,9 @@ def commandInstructions(arguments):
     scratch = ROOT / "out" / "benchmark-callgrind"
     scratch.mkdir(parents=True, exist_ok=True)
     for runner in runners:
-        if runner.kind != "isoline":
+        if runner.kind not in INSTRUCTION_KINDS:
             continue
-        for guest in guests:
+        for guest in [g for g in guests if runner.simd or not g.simd]:
             counts = {}
             for iterations in (INSTRUCTION_ITERATIONS, 0):
                 out = scratch / f"{runner.name}.{guest.name}.{iterations}.callgrind"
@@ -790,7 +794,7 @@ def commandBuild(arguments):
         if arguments.wamr_archive:
             configure.append(f"-DISOLINE_BENCHMARK_WAMR_ARCHIVE={arguments.wamr_archive}")
         subprocess.run(configure, check=True)
-        targets = ["isoline-benchmark", "isoline-benchmark-simd-lanes", "wamr-contour", "wamr-default"]
+        targets = ["isoline-benchmark", "isoline-benchmark-simd-lanes", "wamr-contour", "wamr-classic", "wamr-default"]
         subprocess.run(["cmake", "--build", str(build.directory), "-j", str(arguments.jobs), "--target", *targets],
                        check=True)
     return 0

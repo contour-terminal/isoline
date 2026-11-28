@@ -40,3 +40,8 @@ set(ISOLINE_WAMR_CONTOUR_OPTIONS
     "WAMR_DISABLE_WAKEUP_BLOCKING_OP 1"
     "WAMR_DISABLE_WRITE_GS_BASE 1"
     "BUILD_SHARED_LIBS OFF")
+
+# The wamr-classic runner: Contour's build with WAMR's classic interpreter in place of its fast one, the
+# interpreter the reference interpreter's design resembles (a stack machine over the decoded bytecode).
+set(ISOLINE_WAMR_CLASSIC_OPTIONS ${ISOLINE_WAMR_CONTOUR_OPTIONS})
+list(TRANSFORM ISOLINE_WAMR_CLASSIC_OPTIONS REPLACE "^WAMR_BUILD_FAST_INTERP 1$" "WAMR_BUILD_FAST_INTERP 0")
