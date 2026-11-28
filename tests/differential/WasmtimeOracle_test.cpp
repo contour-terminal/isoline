@@ -331,7 +331,8 @@ TEST_CASE("WasmtimeOracle.passesArgumentsAsWasmtimeTakesThem")
     expected.insert(expected.end(),
                     { "--invoke=f", "/modules/module.wasm", "-1", "-9223372036854775808", "nan", "-inf" });
     CHECK(runner.arguments() == expected);
-    CHECK(std::ranges::find(expected, "cranelift-enable-nan-canonicalization=true") != expected.end());
+    CHECK(std::ranges::find(expected, std::string_view { "cranelift-enable-nan-canonicalization=true" })
+          != expected.end());
     CHECK(expected[2].contains("relaxed-simd-deterministic=y"));
     CHECK(expected[2].ends_with("timeout=7s"));
 }
