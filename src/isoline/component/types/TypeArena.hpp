@@ -729,7 +729,7 @@ class TypeArena
     /// A value type of the arena.
     /// @param id A TypeId the arena returned (checked).
     /// @return Its type.
-    [[nodiscard]] DefinedType const& operator[](TypeId id) const;
+    [[nodiscard]] DefinedType const& operator[](TypeId id) const noexcept;
 
     /// The id of a primitive, which every arena holds.
     /// @param kind A primitive kind (checked).
@@ -794,7 +794,7 @@ class TypeArena
     /// A core function type of the arena.
     /// @param id An id the arena returned (checked).
     /// @return Its type, concrete references in the arena's ids.
-    [[nodiscard]] isoline::binary::FuncType const& operator[](CoreFunctionTypeId id) const;
+    [[nodiscard]] isoline::binary::FuncType const& operator[](CoreFunctionTypeId id) const noexcept;
 
     /// The number of core function types the arena holds.
     /// @return The count.
@@ -819,9 +819,9 @@ class TypeArena
     [[nodiscard]] CoreInstanceTypeId add(CoreInstanceTypeInfo type);
 
     /// A core module type of the arena. @param id An id the arena returned (checked). @return Its type.
-    [[nodiscard]] CoreModuleTypeInfo const& operator[](CoreModuleTypeId id) const;
+    [[nodiscard]] CoreModuleTypeInfo const& operator[](CoreModuleTypeId id) const noexcept;
     /// A core instance type of the arena. @param id An id the arena returned (checked). @return Its type.
-    [[nodiscard]] CoreInstanceTypeInfo const& operator[](CoreInstanceTypeId id) const;
+    [[nodiscard]] CoreInstanceTypeInfo const& operator[](CoreInstanceTypeId id) const noexcept;
 
     /// The exports of a core instance type: its module's for an instantiation.
     /// @param id A core instance type of the arena (checked).
@@ -855,13 +855,13 @@ class TypeArena
     [[nodiscard]] std::expected<ResourceTypeId, TypeLimitError> newResource(ResourceTypeInfo definition);
 
     /// A function type of the arena. @param id An id the arena returned (checked). @return Its type.
-    [[nodiscard]] FunctionTypeInfo const& operator[](FunctionTypeId id) const;
+    [[nodiscard]] FunctionTypeInfo const& operator[](FunctionTypeId id) const noexcept;
     /// A component type of the arena. @param id An id the arena returned (checked). @return Its type.
-    [[nodiscard]] ComponentTypeInfo const& operator[](ComponentTypeId id) const;
+    [[nodiscard]] ComponentTypeInfo const& operator[](ComponentTypeId id) const noexcept;
     /// An instance type of the arena. @param id An id the arena returned (checked). @return Its type.
-    [[nodiscard]] InstanceTypeInfo const& operator[](InstanceTypeId id) const;
+    [[nodiscard]] InstanceTypeInfo const& operator[](InstanceTypeId id) const noexcept;
     /// A resource type of the arena. @param id An id the arena returned (checked). @return Its definition.
-    [[nodiscard]] ResourceTypeInfo const& operator[](ResourceTypeId id) const;
+    [[nodiscard]] ResourceTypeInfo const& operator[](ResourceTypeId id) const noexcept;
 
     /// The measure of any type of the arena: a resource's is that of a type holding no other.
     /// @param type A type the arena holds (checked).

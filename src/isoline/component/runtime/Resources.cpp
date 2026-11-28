@@ -19,6 +19,7 @@
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/runtime/HandleTable.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::runtime
 {
@@ -50,7 +51,7 @@ std::expected<ResourceTypeIndex, Trap> ResourceTypeTable::create(ResourceImpleme
 
 ResourceImplementor const& ResourceTypeTable::operator[](ResourceTypeIndex type) const noexcept
 {
-    Require(contains(type));
+    ISOLINE_PRECONDITION(contains(type));
     return _types[type.value - 1];
 }
 
@@ -62,7 +63,7 @@ uint32_t InstanceTables::add()
 
 ComponentInstanceState& InstanceTables::operator[](uint32_t instance) noexcept
 {
-    Require(instance < _instances.size());
+    ISOLINE_PRECONDITION(instance < _instances.size());
     return _instances[instance];
 }
 
@@ -95,7 +96,8 @@ std::expected<void, Trap> TaskStack::resolve(TaskId id)
 
 void TaskStack::end(TaskId id) noexcept
 {
-    Require(!_tasks.empty() && _tasks.back().first == id);
+    auto const& tasks = _tasks;
+    ISOLINE_PRECONDITION(!tasks.empty() && tasks.back().first == id);
     _tasks.pop_back();
 }
 
@@ -119,9 +121,9 @@ void Subtask::deliverResolve(InstanceTables& instances) noexcept
     {
         // A lent handle cannot be removed, so its place still holds it, however its table grew.
         auto handle = instances[lender.componentInstance].handles.get(lender.handleIndex);
-        Require(handle.has_value());
+        ISOLINE_PRECONDITION(handle.has_value());
         auto& lent = std::get<ResourceHandle>(handle->get());
-        Require(lent.lendCount > 0);
+        ISOLINE_PRECONDITION(lent.lendCount > 0);
         --lent.lendCount;
     }
     instances.budget().release(static_cast<uint32_t>(lenders.size()));
@@ -132,7 +134,7 @@ void Subtask::deliverResolve(InstanceTables& instances) noexcept
 ResourceTypeIndex ResourceBindings::operator[](types::ResourceTypeId resource) const noexcept
 {
     auto const found = _types.find(resource);
-    Require(found != _types.end());
+    ISOLINE_PRECONDITION(found != _types.end());
     return found->second;
 }
 
@@ -143,7 +145,7 @@ ResourceStore::~ResourceStore()
 
 void ResourceStore::destroyHostResources() noexcept
 {
-    Require(_tasks.size() == 0);
+    ISOLINE_PRECONDITION(_tasks.size() == 0);
     for (auto const instance: std::views::iota(std::size_t { 0 }, _instances.size()))
     {
         _instances[static_cast<uint32_t>(instance)].handles.forEachSlot([&](uint32_t, HandleEntry& entry) {

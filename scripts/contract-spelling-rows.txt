@@ -23,6 +23,124 @@ binary/NameSection.cpp | byIndex | 1 | allocates (std::bad_alloc reaches the P17
 binary/NameSection.cpp | writeValidName | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 binary/NameSection.cpp | encodeNameSection | 2 | allocates (std::bad_alloc reaches the P17 boundary)
 binary/TypeCanon.cpp | canonicalTypeIds | 1 | a throwing interface
+component/api/Component.cpp | loadCoreModules | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/api/ComponentStore.cpp | exportedFunctionType | 2 | a throwing interface
+component/api/ComponentStore.cpp | callError | 1 | a throwing interface
+component/binary/Decoder.cpp | fromCore | 1 | a throwing interface
+component/binary/Decoder.cpp | ComponentDecoder::nextSection | 1 | a throwing interface
+component/binary/Decoder.cpp | ComponentDecoder::definedType | 1 | a throwing interface
+component/binary/Decoder.cpp | coreModulePositions | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/binary/Encoder.cpp | Layout::scope | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/binary/Encoder.cpp | ComponentEncoder::componentBody | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::declarationsBody | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::section | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/binary/Encoder.cpp | ComponentEncoder::entry | 4 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::sortBytes | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::coreExternSortBytes | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::storedCoreValueKind | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::storedBoolean | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::scopeType | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::heapType | 1 | a throwing interface
+component/binary/Encoder.cpp | ComponentEncoder::canonImmediates | 4 | a throwing interface
+component/binary/Encoder.cpp | encodeComponent | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/GuestMemory.cpp | checkRange | 1 | a throwing interface
+component/canonical/Layout.cpp | LayoutBuilder::build | 1 | a throwing interface
+component/canonical/Layout.cpp | LayoutBuilder::child | 1 | a throwing interface
+component/canonical/Layout.cpp | LayoutBuilder::fixedList | 1 | a throwing interface
+component/canonical/Layout.cpp | LayoutTable::extend | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/Layout.cpp | flattenFunction | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | coreKindOf | 1 | a throwing interface
+component/canonical/LiftLower.cpp | bitsOf | 1 | a throwing interface
+component/canonical/LiftLower.cpp | valueOf | 1 | a throwing interface
+component/canonical/LiftLower.cpp | casePayload | 1 | a throwing interface
+component/canonical/LiftLower.cpp | footprintOf | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | flatLength | 1 | a throwing interface
+component/canonical/LiftLower.cpp | FlatSource::bits | 2 | a throwing interface
+component/canonical/LiftLower.cpp | FlatSink::leaveCases | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | childOf | 1 | a throwing interface
+component/canonical/LiftLower.cpp | liftedScalar | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | Lifter::onSource | 1 | a throwing interface
+component/canonical/LiftLower.cpp | Lifter::enter | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | Lowerer::lower | 1 | a throwing interface
+component/canonical/LiftLower.cpp | Lowerer::onSink | 1 | a throwing interface
+component/canonical/LiftLower.cpp | Lowerer::enter | 10 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | Lowerer::enterList | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | Lowerer::lowerPacked | 2 | a throwing interface
+component/canonical/LiftLower.cpp | liftAll | 1 | a throwing interface
+component/canonical/LiftLower.cpp | builderTrap | 1 | a throwing interface
+component/canonical/LiftLower.cpp | BlockWriter::put | 1 | a throwing interface
+component/canonical/LiftLower.cpp | liftFlat | 3 | a throwing interface
+component/canonical/LiftLower.cpp | load | 1 | a throwing interface
+component/canonical/LiftLower.cpp | lowerFlat | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/LiftLower.cpp | store | 1 | a throwing interface
+component/canonical/Strings.cpp | StringStore::run | 1 | a throwing interface
+component/canonical/Strings.cpp | transcodeRow | 1 | a throwing interface
+component/canonical/Strings.cpp | liftString | 1 | a throwing interface
+component/canonical/Strings.cpp | storeString | 1 | a throwing interface
+component/canonical/Trap.cpp | Trap::message | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/Values.cpp | Values::root | 1 | a throwing interface
+component/canonical/Values.cpp | ValueView::scalarBits | 1 | a throwing interface
+component/canonical/Values.cpp | ValueView::string | 1 | a throwing interface
+component/canonical/Values.cpp | ValueView::child | 1 | a throwing interface
+component/canonical/Values.cpp | ValueView::caseIndex | 1 | a throwing interface
+component/canonical/Values.cpp | ValueView::payload | 1 | a throwing interface
+component/canonical/Values.cpp | ValueView::flagBits | 1 | a throwing interface
+component/canonical/Values.cpp | ValueView::resource | 1 | a throwing interface
+component/canonical/Values.cpp | ValueBuilder::ValueBuilder | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/Values.cpp | ValueBuilder::step | 1 | a throwing interface
+component/canonical/Values.cpp | ValueBuilder::finish | 1 | a throwing interface
+component/canonical/Values.cpp | ValueBuilder::slotFor | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/canonical/Values.cpp | toText | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/Builtins.cpp | resourceDrop | 2 | a throwing interface
+component/runtime/Calls.cpp | liftedCall | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/Calls.cpp | GuestMemory::read | 1 | a throwing interface
+component/runtime/Calls.cpp | GuestMemory::write | 1 | a throwing interface
+component/runtime/Calls.cpp | GuestMemory::reallocate | 1 | a throwing interface
+component/runtime/Calls.cpp | GuestMemory::size | 1 | a throwing interface
+component/runtime/Calls.cpp | LoweredFunction::run | 1 | a throwing interface
+component/runtime/Calls.cpp | fromCallError | 1 | a throwing interface
+component/runtime/ComponentPlan.cpp | PlanBuilder::plan | 5 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/ComponentPlan.cpp | buildPlans | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/ComponentStore.cpp | ComponentStore::bind | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/ComponentStore.cpp | ComponentStore::resolve | 1 | a throwing interface
+component/runtime/ComponentStore.cpp | ComponentStore::run | 9 | a throwing interface
+component/runtime/ComponentStore.cpp | ComponentStore::callGuestDestructor | 1 | a throwing interface
+component/runtime/HandleTable.cpp | HandleTable::add | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/Resources.cpp | TaskStack::resolve | 2 | a throwing interface
+component/runtime/Resources.cpp | Subtask::addLender | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/Resources.cpp | ResourceOperations::liftOwn | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/runtime/Resources.cpp | ResourceOperations::liftBorrow | 1 | a throwing interface
+component/runtime/Resources.cpp | ResourceOperations::lowerBorrow | 2 | a throwing interface
+component/text/ComponentReader.cpp | Reading::resolve | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/text/ComponentReader.cpp | Reading::emit | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/types/TypeArena.cpp | TypeArena::intern | 3 | allocates (std::bad_alloc reaches the P17 boundary)
+component/types/TypeArena.cpp | TypeArena::add | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/types/TypeArena.cpp | TypeArena::substituteNamed | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/CoreTypes.cpp | ModuleTypeReader::rewrite | 1 | a throwing interface
+component/validate/CoreTypes.cpp | ModuleTypeReader::canonical | 1 | a throwing interface
+component/validate/Subtyping.cpp | TypeRelation::advance | 1 | a throwing interface
+component/validate/Subtyping.cpp | TypeRelation::context | 1 | a throwing interface
+component/validate/Subtyping.cpp | TypeRelation::coreEquivalent | 1 | a throwing interface
+component/validate/Subtyping.cpp | TypeRelation::startOpen | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::layOutCopies | 1 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::run | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::open | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::finish | 2 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::coreEntityAt | 1 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::withUnique | 1 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::intern | 1 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::functionType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::declaredEntity | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::coreModule | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::checkTypeRef | 2 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::addEntity | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::itemEntity | 2 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::implements | 1 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::alias | 1 | a throwing interface
+component/validate/Validator.cpp | ComponentValidator::outerAlias | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | ComponentValidator::canon | 4 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | loadCoreModule | 1 | allocates (std::bad_alloc reaches the P17 boundary)
+component/validate/Validator.cpp | specMessage | 4 | allocates (std::bad_alloc reaches the P17 boundary)
 interpreter/Numerics.cpp | operand | 1 | a throwing interface
 interpreter/Numerics.cpp | rowOf | 1 | a throwing interface
 interpreter/ReferenceInterpreter.cpp | Machine::run | 3 | allocates (std::bad_alloc reaches the P17 boundary)
@@ -71,6 +189,7 @@ text/ModuleWriter.cpp | Printer::putHeapType | 1 | allocates (std::bad_alloc rea
 text/ModuleWriter.cpp | Printer::putValueType | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 text/ModuleWriter.cpp | Printer::putMemoryArgument | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 validate/Subtyping.cpp | isSubtype | 1 | a throwing interface
+validate/TypeMatching.cpp | TypeMatcher::matches | 1 | a throwing interface
 validate/ValidatedModule.cpp | frameCostsOf | 1 | allocates (std::bad_alloc reaches the P17 boundary)
 validate/ValidatedModule.cpp | ValidatedModule::frameShape | 1 | a throwing interface
 validate/ValidatedModule.cpp | ValidatedModule::moduleOf | 1 | a throwing interface

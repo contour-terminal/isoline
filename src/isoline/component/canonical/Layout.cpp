@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include <isoline/meta/Check.hpp>
+
 namespace isoline::component::canonical
 {
 
@@ -377,9 +379,9 @@ std::expected<void, LayoutError> LayoutTable::extend(types::TypeArena const& are
     return {};
 }
 
-Layout const& LayoutTable::operator[](types::TypeId id) const
+Layout const& LayoutTable::operator[](types::TypeId id) const noexcept
 {
-    Require(id.value < _layouts.size());
+    ISOLINE_PRECONDITION(id.value < _layouts.size());
     return _layouts[id.value];
 }
 

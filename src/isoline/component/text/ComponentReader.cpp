@@ -29,6 +29,7 @@
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/binary/Decoder.hpp>
 #include <isoline/component/text/Forms.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/text/Annotations.hpp>
 #include <isoline/text/IntegerLiteral.hpp>
 #include <isoline/text/Keywords.hpp>

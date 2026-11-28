@@ -20,6 +20,7 @@
 #include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/canonical/LiftLower.hpp>
 #include <isoline/component/runtime/Resources.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::runtime
 {
@@ -366,7 +367,7 @@ std::expected<void, CallError> callComponentFunction(ComponentStore& store,
         return std::unexpected { CallError { trapOf(TrapCode::CannotEnter) } };
     auto const active = ActiveCall { store };
     auto const& callee = std::get<std::shared_ptr<IHostCallee>>(function);
-    Require(callee != nullptr);
+    ISOLINE_PRECONDITION(callee != nullptr);
     auto outcome = hostCall(store, *callee, resultSide, resultType, onStart, onResolve);
     if (!outcome)
         store.lockDown();

@@ -11,6 +11,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/TypeCanon.hpp>
 #include <isoline/binary/Types.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::validate
 {

@@ -9,6 +9,7 @@
 #include <format>
 
 #include <isoline/component/canonical/Trap.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::canonical
 {

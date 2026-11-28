@@ -28,6 +28,7 @@
 #include <isoline/component/api/Linker.hpp>
 #include <isoline/component/runtime/Calls.hpp>
 #include <isoline/component/validate/Subtyping.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::api
 {
@@ -639,7 +640,8 @@ namespace
 
 ComponentStore::ComponentStore(ComponentStore&& other) noexcept
 {
-    Require(other._state == nullptr || !isBusyState(*other._state));
+    auto const* const incoming = other._state.get();
+    ISOLINE_PRECONDITION(incoming == nullptr || !isBusyState(*incoming));
     _state = std::move(other._state);
     if (_state != nullptr)
         _state->owner = this;
@@ -649,8 +651,10 @@ ComponentStore& ComponentStore::operator=(ComponentStore&& other) noexcept
 {
     if (this == &other)
         return *this;
-    Require(other._state == nullptr || !isBusyState(*other._state));
-    Require(_state == nullptr || !isBusyState(*_state));
+    auto const* const incoming = other._state.get();
+    auto const* const outgoing = _state.get();
+    ISOLINE_PRECONDITION(incoming == nullptr || !isBusyState(*incoming));
+    ISOLINE_PRECONDITION(outgoing == nullptr || !isBusyState(*outgoing));
     // The old state is torn down while this store already names none: what its host destructors call on the
     // store is refused (StoreDeleted), never run on the state being destroyed or on the one taking its place.
     _state.reset();

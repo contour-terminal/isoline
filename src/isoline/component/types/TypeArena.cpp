@@ -22,6 +22,8 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/meta/Check.hpp>
+
 namespace isoline::component::types
 {
 
@@ -175,15 +177,15 @@ bool TypeArena::StructuralOrder::operator()(uint32_t lhs, uint32_t rhs) const
     return std::is_lt(compareStructure(store->types[lhs], store->types[rhs]));
 }
 
-DefinedType const& TypeArena::operator[](TypeId id) const
+DefinedType const& TypeArena::operator[](TypeId id) const noexcept
 {
-    Require(id.value < _store->types.size());
+    ISOLINE_PRECONDITION(id.value < _store->types.size());
     return _store->types[id.value];
 }
 
 TypeId TypeArena::primitive(ValueKind kind) const noexcept
 {
-    Require(isPrimitive(kind));
+    ISOLINE_PRECONDITION(isPrimitive(kind));
     return TypeId { .value = static_cast<uint32_t>(kind) };
 }
 
@@ -333,9 +335,9 @@ CoreFunctionTypeId TypeArena::intern(isoline::binary::FuncType type)
     return CoreFunctionTypeId { .value = entry->second };
 }
 
-isoline::binary::FuncType const& TypeArena::operator[](CoreFunctionTypeId id) const
+isoline::binary::FuncType const& TypeArena::operator[](CoreFunctionTypeId id) const noexcept
 {
-    Require(id.value < _coreFunctions.size());
+    ISOLINE_PRECONDITION(id.value < _coreFunctions.size());
     return _coreFunctions[id.value];
 }
 
@@ -396,15 +398,15 @@ CoreInstanceTypeId TypeArena::add(CoreInstanceTypeInfo type)
     return CoreInstanceTypeId { .value = static_cast<uint32_t>(_coreInstances.size() - 1) };
 }
 
-CoreModuleTypeInfo const& TypeArena::operator[](CoreModuleTypeId id) const
+CoreModuleTypeInfo const& TypeArena::operator[](CoreModuleTypeId id) const noexcept
 {
-    Require(id.value < _coreModules.size());
+    ISOLINE_PRECONDITION(id.value < _coreModules.size());
     return _coreModules[id.value];
 }
 
-CoreInstanceTypeInfo const& TypeArena::operator[](CoreInstanceTypeId id) const
+CoreInstanceTypeInfo const& TypeArena::operator[](CoreInstanceTypeId id) const noexcept
 {
-    Require(id.value < _coreInstances.size());
+    ISOLINE_PRECONDITION(id.value < _coreInstances.size());
     return _coreInstances[id.value];
 }
 
@@ -438,27 +440,27 @@ CoreImportType const* TypeArena::findImport(CoreModuleTypeId id,
     return findOrdered(type.imports, type.importsByName, importKey, std::pair { module, name });
 }
 
-FunctionTypeInfo const& TypeArena::operator[](FunctionTypeId id) const
+FunctionTypeInfo const& TypeArena::operator[](FunctionTypeId id) const noexcept
 {
-    Require(id.value < _functions.size());
+    ISOLINE_PRECONDITION(id.value < _functions.size());
     return _functions[id.value];
 }
 
-ComponentTypeInfo const& TypeArena::operator[](ComponentTypeId id) const
+ComponentTypeInfo const& TypeArena::operator[](ComponentTypeId id) const noexcept
 {
-    Require(id.value < _components.size());
+    ISOLINE_PRECONDITION(id.value < _components.size());
     return _components[id.value];
 }
 
-InstanceTypeInfo const& TypeArena::operator[](InstanceTypeId id) const
+InstanceTypeInfo const& TypeArena::operator[](InstanceTypeId id) const noexcept
 {
-    Require(id.value < _instances.size());
+    ISOLINE_PRECONDITION(id.value < _instances.size());
     return _instances[id.value];
 }
 
-ResourceTypeInfo const& TypeArena::operator[](ResourceTypeId id) const
+ResourceTypeInfo const& TypeArena::operator[](ResourceTypeId id) const noexcept
 {
-    Require(id.value < _resources.size());
+    ISOLINE_PRECONDITION(id.value < _resources.size());
     return _resources[id.value];
 }
 

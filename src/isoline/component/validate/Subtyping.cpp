@@ -25,6 +25,7 @@
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/types/TypeArena.hpp>
 #include <isoline/component/validate/CoreTypes.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::validate
 {

@@ -11,6 +11,7 @@
 #include <utility>
 
 #include <isoline/api/Types.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::canonical
 {

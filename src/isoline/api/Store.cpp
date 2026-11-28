@@ -580,7 +580,7 @@ std::expected<void, CallError> Store::poll(BulkGranule granule) noexcept
 
 GrowthRecord const& InvocationScope::refusedGrowth() const noexcept
 {
-    Require(!_alive.expired());
+    ISOLINE_PRECONDITION(!_alive.expired());
     return _held.refusedGrowth();
 }
 

@@ -87,9 +87,9 @@ feature added as one row, and which probes run with which flags.
 
 ## What a native path changes
 
-- **Contracts native:** `isoline_core` and `isoline_text`, the libraries whose checks are spelled through the
-  seam, compile as C++26 with the contracts row's flags, then the pinned
-  semantic's flag as the last PRIVATE option `isoline_apply_language_features()` adds, and links
+- **Contracts native:** `isoline_core`, `isoline_text`, `isoline_component` and `isoline_component_text`, the
+  libraries whose checks are spelled through the seam, compile as C++26 with the contracts row's flags, then
+  the pinned semantic's flag as the last PRIVATE option `isoline_apply_language_features()` adds, and links
   `stdc++exp` PRIVATE. A static library's PRIVATE link items reach consumers as `$<LINK_ONLY:…>`. Its
   headers' declarations then carry contracts (`ISOLINE_PRE`, `ISOLINE_POST`; "Declaration contracts"
   below), so its interface asks every consumer, the tests and an installed package's included, for the
@@ -161,8 +161,8 @@ by the name at its invocation, so a macro invoked through another macro is not s
 | `src/isoline/**/*.cpp`, tests and `testing/` directories left out | a `Require(` or `Guarantee(` beyond the file's throwing-site rows, fewer than they count, or a row whose file is gone or no longer defines its function (the name before a parameter list a definition's tail follows, not a call) | use `ISOLINE_PRECONDITION`/`ISOLINE_INVARIANT` in a `noexcept` function, or add a row |
 
 Comments are never code, and literals are blanked for every pattern but an `#include`. On success the lint
-prints how many `Require()`s the installed headers keep (15). They are inline header code, where a
-contract would be evaluated under the consumer's semantic, so they stay `Require()`.
+prints how many `Require()`s the installed headers keep (30, the component layer's among them). They are
+inline header code, where a contract would be evaluated under the consumer's semantic, so they stay `Require()`.
 
 ### Declaration contracts
 
@@ -609,6 +609,18 @@ declaration form with the tree's Clang.
 <!-- source-local-tables:begin -->
 - `c/detail/ErrorRows.hpp`: `Rows`, EnumErrorRows<Enum>'s member, one per error enumeration the C API reports; rowsAreComplete() checks each
 - `c/detail/Convert.cpp`: `TypeRefusalRows`, indexed by TypeRefusal (c/detail/Convert.hpp); its rows hold the messages only the file's typeRefusalError() reads
+- `component/api/Linker.cpp`: `EntityWords`, indexed by EntityWord; its rows hold the words only the file's linker messages read
+- `component/binary/Decoder.cpp`: `CoreReadErrors`, keyed by the core ByteReader's errors; its rows hold the component decoder's error for each, read by the file's reader alone
+- `component/binary/Encoder.cpp`: `AbstractHeapCodes`, keyed by AbstractHeapType, a subset: the heaps a decoded core type names; its rows hold the codes only the file's core type writer reads
+- `component/binary/Encoder.cpp`: `CoreNumberTypes`, keyed by the core number and vector types, a subset of ValueType; its rows hold the codes only the file's core type writer reads
+- `component/canonical/Layout.cpp`: `LayoutRuleTable`, indexed by ValueKind; its rows hold the layout rules only the file's LayoutBuilder reads
+- `component/canonical/LiftLower.cpp`: `CoreKindTable`, indexed by CoreValueKind; its rows hold what only the file's flat lifting and lowering read
+- `component/canonical/LiftLower.cpp`: `JoinTable`, keyed by a pair of distinct CoreValueKinds; its rows hold the joins only the file's flat lifting and lowering read
+- `component/canonical/Strings.cpp`: `SourceForms`, keyed by StringEncoding with the SimpleEncoding it admits; its rows name the forms only the file's transcoder walks
+- `component/canonical/Values.cpp`: `BuildStepTable`, indexed by BuildStep; its rows hold what only the file's ValueBuilder reads
+- `component/runtime/Calls.cpp`: `CoreValueTypes`, indexed by CoreValueKind, no row struct; read by the file's loweredCoreType() alone
+- `component/validate/Names.cpp`: `SemanticVersionErrorTexts`, indexed by SemanticVersionErrorKind; its rows hold the semver crate's messages only the file's name errors read
+- `component/validate/Validator.cpp`: `SortLimitTable`, indexed by Sort; its rows hold the limits only the file's validator reads
 - `binary/Encoder.cpp`: `SectionWriters`, keyed by SectionAnchor; its rows name ModuleEncoder's member functions
 - `binary/NameSection.cpp`: `ShapeCodecs`, indexed by NameShape; its rows name the file's codec functions
 - `interpreter/Numerics.cpp`: `NumericTable`, keyed by Opcode, a subset; its rows name the file's evaluators

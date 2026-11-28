@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <isoline/component/binary/Decoder.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::runtime
 {

@@ -21,6 +21,7 @@
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Unicode.hpp>
 #include <isoline/component/canonical/Values.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::canonical
 {

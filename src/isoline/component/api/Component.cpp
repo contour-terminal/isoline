@@ -17,6 +17,7 @@
 #include <variant>
 #include <vector>
 
+#include <isoline/meta/Check.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 
 namespace isoline::component::api

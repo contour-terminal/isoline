@@ -16,6 +16,7 @@
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/runtime/HandleTable.hpp>
 #include <isoline/component/runtime/Resources.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::runtime
 {
@@ -51,16 +52,17 @@ namespace
             std::span<isoline::api::Value> results) noexcept override
         {
             // The store checked the arguments against the function's type: one i32.
-            Require(args.size() == 1);
+            ISOLINE_PRECONDITION(args.size() == 1);
             auto const* const argument = std::get_if<isoline::api::I32>(args.data());
-            Require(argument != nullptr);
+            ISOLINE_PRECONDITION(argument != nullptr);
             auto outcome = _operation(*_host, _instance, _type, argument->bits);
             if (!outcome)
             {
                 _host->pendingTrap().raise(std::move(outcome.error()));
                 return std::unexpected { isoline::api::Abrupt { canonical::carrierTrap() } };
             }
-            Require(results.size() == (outcome->has_value() ? 1U : 0U));
+            auto const produced = outcome->has_value();
+            ISOLINE_PRECONDITION(results.size() == (produced ? 1U : 0U));
             if (*outcome)
                 results[0] = isoline::api::I32 { .bits = **outcome };
             return {};
@@ -185,7 +187,7 @@ BuiltinFunction makeResourceRep(BuiltinBinding const& binding)
 
 BuiltinHandlerRow const& builtinHandlerRow(binary::CanonBuiltin builtin) noexcept
 {
-    Require(builtin >= FirstHandledBuiltin);
+    ISOLINE_PRECONDITION(builtin >= FirstHandledBuiltin);
     return BuiltinHandlerTable[static_cast<std::size_t>(builtin)
                                - static_cast<std::size_t>(FirstHandledBuiltin)];
 }

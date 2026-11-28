@@ -27,6 +27,7 @@
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/canonical/Values.hpp>
 #include <isoline/component/types/TypeArena.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::canonical
 {
@@ -277,7 +278,7 @@ namespace
         /// Leaves the variant entered at @p start: the slots its case did not read are skipped.
         void leaveCases(std::size_t start, Layout const& layout) noexcept
         {
-            Require(_next <= start + layout.flat.size());
+            ISOLINE_PRECONDITION(_next <= start + layout.flat.size());
             _next = start + layout.flat.size();
             --_windowDepth;
         }
@@ -1182,7 +1183,7 @@ Trap builderTrap(LiftContext const& context, ValueError const& error)
 BlockWriter::BlockWriter(LiftContext& context, uint32_t block, uint32_t size) noexcept:
     _context { &context }, _block { block }, _size { size }
 {
-    Require(context.memory != nullptr);
+    ISOLINE_PRECONDITION(context.memory != nullptr);
 }
 
 std::expected<void, Trap> BlockWriter::put(std::span<std::byte const> bytes)
@@ -1218,14 +1219,14 @@ std::expected<void, Trap> BlockWriter::flush()
 
 void BlockWriter::moveTo(uint32_t block, uint32_t size) noexcept
 {
-    Require(_filled == 0 && _flushed <= size);
+    ISOLINE_PRECONDITION(_filled == 0 && _flushed <= size);
     _block = block;
     _size = size;
 }
 
 void BlockWriter::seek(uint64_t offset) noexcept
 {
-    Require(_filled == 0 && offset <= _size);
+    ISOLINE_PRECONDITION(_filled == 0 && offset <= _size);
     _flushed = offset;
 }
 

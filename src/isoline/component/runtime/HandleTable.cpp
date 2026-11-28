@@ -12,6 +12,7 @@
 #include <variant>
 
 #include <isoline/component/canonical/Trap.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::runtime
 {
@@ -61,14 +62,14 @@ std::expected<void, Trap> HandleBudget::charge()
 
 void HandleBudget::release(uint32_t count) noexcept
 {
-    Require(count <= _used);
+    ISOLINE_PRECONDITION(count <= _used);
     _used -= count;
 }
 
 HandleTable::HandleTable(HandleBudget& budget, uint32_t maxIndex) noexcept:
     _budget { &budget }, _maxIndex { maxIndex }
 {
-    Require(maxIndex <= HandleTableMaxLength);
+    ISOLINE_PRECONDITION(maxIndex <= HandleTableMaxLength);
 }
 
 HandleTable::~HandleTable()
@@ -130,7 +131,7 @@ std::expected<HandleEntry, Trap> HandleTable::remove(uint32_t index)
 
 HandleEntry& HandleTable::slot(uint32_t index) noexcept
 {
-    Require(index < _length);
+    ISOLINE_PRECONDITION(index < _length);
     auto const [chunk, offset] = chunkPositionOf(index);
     return _chunks[chunk][offset];
 }

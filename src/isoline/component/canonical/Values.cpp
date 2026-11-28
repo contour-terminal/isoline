@@ -26,6 +26,7 @@
 #include <isoline/component/canonical/Layout.hpp>
 #include <isoline/component/canonical/Unicode.hpp>
 #include <isoline/component/types/TypeArena.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::canonical
 {
@@ -341,7 +342,7 @@ namespace
         auto const row = std::ranges::find_if(CaseForms, [&](CaseFormRow const& candidate) {
             return candidate.kind == kind && candidate.caseIndex == caseIndex;
         });
-        Require(row != CaseForms.end());
+        ISOLINE_PRECONDITION(row != CaseForms.end());
         return row->form;
     }
 
@@ -459,7 +460,7 @@ std::expected<uint64_t, BudgetExceeded> LiveBytesBudget::chargeWithin(uint64_t l
                                                                       uint64_t most,
                                                                       uint64_t unit) noexcept
 {
-    Require(unit != 0 && least % unit == 0 && most % unit == 0);
+    ISOLINE_PRECONDITION(unit != 0 && least % unit == 0 && most % unit == 0);
     auto current = _live.load(std::memory_order_relaxed);
     auto granted = uint64_t { 0 };
     do
@@ -476,7 +477,7 @@ std::expected<uint64_t, BudgetExceeded> LiveBytesBudget::chargeWithin(uint64_t l
 void LiveBytesBudget::release(uint64_t bytes) noexcept
 {
     auto const previous = _live.fetch_sub(bytes, std::memory_order_relaxed);
-    Require(previous >= bytes);
+    ISOLINE_PRECONDITION(previous >= bytes);
 }
 
 std::expected<std::string, StringError> StringValue::utf8() const

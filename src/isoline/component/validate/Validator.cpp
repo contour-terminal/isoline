@@ -36,6 +36,7 @@
 #include <isoline/component/validate/CoreTypes.hpp>
 #include <isoline/component/validate/Names.hpp>
 #include <isoline/component/validate/Subtyping.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/validate/ValidatedModule.hpp>
 #include <isoline/validate/ValidationError.hpp>
 

@@ -576,20 +576,20 @@ uint64_t Store::used(Limit limit) const noexcept
 
 Store::~Store()
 {
-    Require(!isInvocationHeld());
+    ISOLINE_PRECONDITION(!isInvocationHeld());
 }
 
 void Store::abandonHeldInvocations() noexcept
 {
     // A store destroyed while a call runs is a programmer error, never a silent abandon.
-    Require(_invocationDepth == 0);
+    ISOLINE_PRECONDITION(_invocationDepth == 0);
     _heldDepth.reset();
     _stepsHeld = StepsHeld::No;
 }
 
 std::expected<void, Trap> Store::poll(PollSite site, uint64_t bytes) noexcept
 {
-    Require(_invocationDepth > 0 || isInvocationHeld());
+    ISOLINE_PRECONDITION(_invocationDepth > 0 || isInvocationHeld());
     if (_pollObserver != nullptr)
         _pollObserver->onPoll(site);
     if (_interrupter->state() == InterruptState::Interrupted)
@@ -832,7 +832,7 @@ SharedInvocationScope::~SharedInvocationScope()
 {
     if (_role == Role::Joins)
         return;
-    Require(_store->_invocationDepth == _depth && _store->_heldDepth == _depth);
+    ISOLINE_PRECONDITION(_store->_invocationDepth == _depth && _store->_heldDepth == _depth);
     _store->_growthRecord = _outer;
     _store->_heldDepth = _outerDepth;
     if (_depth == 0)

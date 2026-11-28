@@ -21,6 +21,7 @@
 #include <isoline/binary/Module.hpp>
 #include <isoline/binary/Types.hpp>
 #include <isoline/component/types/TypeArena.hpp>
+#include <isoline/meta/Check.hpp>
 #include <isoline/validate/TypeMatching.hpp>
 
 namespace isoline::component::validate

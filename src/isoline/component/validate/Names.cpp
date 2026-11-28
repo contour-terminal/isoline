@@ -16,6 +16,7 @@
 #include <utility>
 
 #include <isoline/component/Features.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::validate
 {
@@ -233,7 +234,7 @@ namespace
     /// The UTF-8 encoded character @p text begins with (the name is valid UTF-8).
     [[nodiscard]] std::string_view firstCharacter(std::string_view text) noexcept
     {
-        Require(!text.empty());
+        ISOLINE_PRECONDITION(!text.empty());
         auto const lead = static_cast<unsigned char>(text.front());
         auto length = std::size_t { 4 };
         if (lead < 0x80)

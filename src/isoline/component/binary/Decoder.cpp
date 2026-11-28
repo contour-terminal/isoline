@@ -28,6 +28,7 @@
 #include <isoline/component/Limits.hpp>
 #include <isoline/component/binary/Component.hpp>
 #include <isoline/component/binary/Grammar.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::binary
 {

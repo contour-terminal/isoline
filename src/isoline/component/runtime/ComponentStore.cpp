@@ -23,6 +23,7 @@
 #include <isoline/api/Engine.hpp>
 #include <isoline/component/canonical/Trap.hpp>
 #include <isoline/component/runtime/Calls.hpp>
+#include <isoline/meta/Check.hpp>
 
 namespace isoline::component::runtime
 {
@@ -128,7 +129,7 @@ struct ComponentStore::Instantiation
     [[nodiscard]] static SlotValue& slot(Frame& frame, binary::Sort sort, uint32_t index) noexcept
     {
         auto& slots = frame.slots[sortIndex(sort)];
-        Require(index < slots.size());
+        ISOLINE_PRECONDITION(index < slots.size());
         return slots[index];
     }
 
@@ -859,7 +860,7 @@ std::expected<uint32_t, InstantiationFailure> ComponentStore::run(ComponentCode 
 
 std::span<NamedValue const> ComponentStore::exportsOf(uint32_t instance) const noexcept
 {
-    Require(instance < _roots.size());
+    ISOLINE_PRECONDITION(instance < _roots.size());
     if (_roots[instance] == UnfinishedInstance)
         return {};
     return exportsOf(_roots[instance]);
@@ -867,13 +868,13 @@ std::span<NamedValue const> ComponentStore::exportsOf(uint32_t instance) const n
 
 InstanceRef ComponentStore::instanceValueOf(uint32_t instance) const noexcept
 {
-    Require(instance < _roots.size() && _roots[instance] != UnfinishedInstance);
+    ISOLINE_PRECONDITION(instance < _roots.size() && _roots[instance] != UnfinishedInstance);
     return _roots[instance];
 }
 
 std::span<NamedValue const> ComponentStore::exportsOf(InstanceRef instance) const noexcept
 {
-    Require(instance.index < _instanceValues.size());
+    ISOLINE_PRECONDITION(instance.index < _instanceValues.size());
     return _instanceValues[instance.index];
 }
 
@@ -897,13 +898,13 @@ std::optional<ResourceTypeIndex> ComponentStore::hostResourceTypeOf(
 
 ResourceBindings const& ComponentStore::bindings(uint32_t instance) const noexcept
 {
-    Require(instance < _bindings.size());
+    ISOLINE_PRECONDITION(instance < _bindings.size());
     return _bindings[instance];
 }
 
 LiftedFunction const& ComponentStore::lifted(LiftedRef function) const noexcept
 {
-    Require(function.index < _lifted.size());
+    ISOLINE_PRECONDITION(function.index < _lifted.size());
     return _lifted[function.index];
 }
 

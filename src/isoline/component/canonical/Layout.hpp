@@ -149,7 +149,7 @@ class LayoutTable
     /// The layout of a value type.
     /// @param id A type the table has laid out (checked).
     /// @return Its layout.
-    [[nodiscard]] Layout const& operator[](types::TypeId id) const;
+    [[nodiscard]] Layout const& operator[](types::TypeId id) const noexcept;
 
     /// Every layout, by TypeId.
     /// @return The layouts made so far.
