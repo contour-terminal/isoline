@@ -4,6 +4,7 @@
 add_subdirectory(spec)
 # The differential harness: every engine on the same modules, and Wasmtime as the oracle.
 add_subdirectory(differential)
+add_subdirectory(encoding)
 
 # The spec runner's self-test: a script with wrong assertions the runner must report and fail on.
 # Two are wrong in their values (1 + 2 is not 4, and dividing by zero is no overflow). The rest pin
@@ -324,6 +325,7 @@ set(isolineContractRows
     "Contract.Engine.fastDispatchMustBeAvailable|engines::rowOf\\(_config\\.engine\\)->dispatch == engines::DispatchUse::None \\|\\| fastinterpreter::isAvailable\\(_config\\.dispatch\\)"
     "Contract.Engine.knownEngine|engines::rowOf\\(_config\\.engine\\) != nullptr"
     "Contract.Function.moveAssignmentStaysInItsArena|_memory == other\\._memory"
+    "Contract.Registers.registerRowOfARegister|reg\\.number < RegistersPerFile"
     "Contract.Function.removeBlocksKeepsTheEntry|index != 0 && index < _blocks\\.size\\(\\) && \\(!previous \\|\\| \\*previous < index\\)"
     "Contract.Function.removeBlocksLeavesNoEdgeIntoThem|target != Unnumbered"
     "Contract.Rewrite.substitutionRefusesACycle|resolve\\(to\\) != from"

@@ -2,7 +2,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <memory_resource>
 #include <ranges>
@@ -13,6 +15,7 @@
 
 #include <isoline/compiler/machine/MachineFunction.hpp>
 #include <isoline/compiler/registerallocation/ParallelMoves.hpp>
+#include <isoline/compiler/x86_64/Registers.hpp>
 
 using isoline::compiler::machine::Location;
 using isoline::compiler::machine::LocationKind;
@@ -191,6 +194,23 @@ TEST_CASE("ParallelMoves.breaksCycles")
     SECTION("nothing to do")
     {
         CHECK(sequentializeParallelMoves({}, Scratch, memory).empty());
+    }
+
+    SECTION("a rotation of each of x86-64's allocatable register files")
+    {
+        // Every allocatable General register takes the next one's value, and every Float register too: two
+        // cycles of 12 and 16, each broken once through the scratch slot.
+        auto moves = std::vector<Move> {};
+        for (auto const file:
+             { std::span<PhysicalRegister const> { isoline::compiler::x86_64::AllocatableGeneral },
+               std::span<PhysicalRegister const> { isoline::compiler::x86_64::AllocatableFloat } })
+            for (auto const index: std::views::iota(std::size_t { 0 }, file.size()))
+                moves.push_back(Move { .from = Location::of(file[(index + 1) % file.size()]),
+                                       .to = Location::of(file[index]) });
+        auto const sequential = sequentializeParallelMoves(moves, Scratch, memory);
+        CHECK(hasTheParallelEffect(moves, sequential));
+        CHECK(sequential.size() == moves.size() + 2);
+        CHECK(scratchMoves(sequential) == 4);
     }
 }
 

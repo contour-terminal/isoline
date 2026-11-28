@@ -5,7 +5,8 @@
 # layout through which generated code reaches the runtime, (intermediate/) its SSA representation,
 # (translation/) the translation of WebAssembly into it, (optimization/) the passes over it and
 # (machine/) the target seam and the target-independent machine layer: conventions, layout, liveness, and
-# (registerallocation/) linear-scan register allocation.
+# (registerallocation/) linear-scan register allocation, and (x86_64/) x86-64's register file, conventions
+# and its table-driven encoder.
 # Its sources take the target policy's floating-point contraction row (cmake/IsolinePedantic.cmake), so
 # that constant folding is exact.
 target_sources(isoline_core
@@ -36,6 +37,7 @@ target_sources(isoline_core
         translation/LoopAssignments.cpp
         translation/MemoryTranslation.cpp
         translation/Translator.cpp
+        x86_64/Encoder.cpp
     PUBLIC FILE_SET HEADERS
         BASE_DIRS "${PROJECT_SOURCE_DIR}/src"
         FILES
@@ -71,4 +73,7 @@ target_sources(isoline_core
             translation/LoopAssignments.hpp
             translation/MemoryTranslation.hpp
             translation/NumericRules.hpp
-            translation/Translator.hpp)
+            translation/Translator.hpp
+            x86_64/Encoder.hpp
+            x86_64/Encodings.def
+            x86_64/Registers.hpp)

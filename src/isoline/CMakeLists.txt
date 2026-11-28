@@ -237,6 +237,9 @@ if(ISOLINE_TESTING)
     else()
         list(APPEND isolineTestSources runtime/testing/StackAddressGnu.cpp)
     endif()
+    # The encoding oracle's samples (compiler/x86_64/EncodingSamples.hpp): test support, built into the unit
+    # tests and tests/encoding's isoline_encoding_samples, never into the library.
+    list(APPEND isolineTestSources compiler/x86_64/EncodingSamples.cpp)
     add_executable(isoline_test ${isolineTestSources})
     target_link_libraries(isoline_test PRIVATE isoline::core Catch2::Catch2WithMain)
     # The stack of the tests' small threads (SmallStackBytes): the host-stack row's, above.

@@ -29,6 +29,7 @@
 #include <isoline/compiler/machine/testing/FakeTarget.hpp>
 #include <isoline/compiler/registerallocation/LinearScan.hpp>
 #include <isoline/compiler/registerallocation/testing/AssignmentChecker.hpp>
+#include <isoline/compiler/x86_64/testing/X64FakeTarget.hpp>
 
 using isoline::compiler::CompileCancellation;
 using isoline::compiler::CompileError;
@@ -67,6 +68,8 @@ using isoline::compiler::registerallocation::LinearScanAllocator;
 using isoline::compiler::registerallocation::ScanWork;
 using isoline::compiler::registerallocation::testing::AssignmentFaultKind;
 using isoline::compiler::registerallocation::testing::checkAssignment;
+using isoline::compiler::x86_64::testing::X64FakeTarget;
+using isoline::compiler::x86_64::testing::X64WindowsFakeTarget;
 
 namespace
 {
@@ -83,22 +86,30 @@ MachineOperand physical(PhysicalRegister reg, OperandRole role)
     return RegisterOperand { .name = RegisterName::of(reg), .role = role };
 }
 
-/// The operands of a call under @p convention: a physical definition of every register it clobbers, derived
-/// from the convention row (callerSavedRegisters()), never listed by hand.
-std::vector<MachineOperand> clobbers(Convention convention = Convention::WasmInternal)
+/// The operands of a call under @p convention on @p target: a physical definition of every register it
+/// clobbers, derived from the convention row (callerSavedRegisters()), never listed by hand.
+std::vector<MachineOperand> clobbers(isoline::compiler::machine::ITarget const& target,
+                                     Convention convention = Convention::WasmInternal)
 {
     auto memory = std::pmr::monotonic_buffer_resource {};
     auto operands = std::vector<MachineOperand> {};
-    for (auto const reg: isoline::compiler::machine::callerSavedRegisters(FakeTarget {}, convention, memory))
+    for (auto const reg: isoline::compiler::machine::callerSavedRegisters(target, convention, memory))
         operands.push_back(physical(reg, OperandRole::Def));
     return operands;
 }
 
-/// A builder of FakeTarget machine functions.
+/// The target a Builder derives its calls' clobbers from when a test names none.
+FakeTarget const defaultTarget {};
+
+/// A builder of machine functions of the fake opcodes, on @p target's register file.
 class Builder
 {
   public:
-    explicit Builder(MachineFunction& function): _function { function } {}
+    explicit Builder(MachineFunction& function,
+                     isoline::compiler::machine::ITarget const& target = defaultTarget):
+        _function { function }, _target { target }
+    {
+    }
 
     VirtualRegister general() { return _function.createVirtualRegister(RegisterClass::General); }
     VirtualRegister floating() { return _function.createVirtualRegister(RegisterClass::Float); }
@@ -143,14 +154,14 @@ class Builder
     /// A call that clobbers every register.
     uint32_t call(BlockId block)
     {
-        auto const operands = clobbers();
+        auto const operands = clobbers(_target);
         return _function.append(block, opcodeOf(FakeOpcode::Call), operands);
     }
 
     /// An indirect call through @p target, its result @p result in g0, clobbering every other register.
     uint32_t callIndirect(BlockId block, VirtualRegister target, VirtualRegister result)
     {
-        auto operands = clobbers();
+        auto operands = clobbers(_target);
         operands[0] = def(_function, result);
         operands.insert(operands.begin(), use(_function, target));
         return _function.append(block, opcodeOf(FakeOpcode::CallIndirect), operands);
@@ -159,7 +170,8 @@ class Builder
     /// A poll, whose slow path calls the runtime: it clobbers the host convention's caller-saved registers.
     uint32_t poll(BlockId block)
     {
-        auto const operands = clobbers(Convention::SystemV);
+        auto const operands =
+            clobbers(_target, isoline::compiler::machine::hostConvention(_target.description()));
         return _function.append(block, opcodeOf(FakeOpcode::Poll), operands);
     }
 
@@ -206,8 +218,12 @@ class Builder
 
     MachineFunction& function() { return _function; }
 
+    /// The target the function is built for.
+    [[nodiscard]] isoline::compiler::machine::ITarget const& target() const { return _target; }
+
   private:
     MachineFunction& _function;
+    isoline::compiler::machine::ITarget const& _target;
 };
 
 /// A function built by a test: built twice, once to keep as selected and once to allocate.
@@ -222,16 +238,16 @@ struct Allocation
 };
 
 Allocation allocateBuilt(Build const& build,
-                         FakeTarget const& target,
+                         isoline::compiler::machine::ITarget const& target,
                          uint64_t frameCost,
                          std::pmr::memory_resource& memory,
                          CompileCancellation const& cancellation = CompileCancellation {})
 {
     auto result =
         Allocation { .before = MachineFunction { memory }, .after = MachineFunction { memory }, .frame = {} };
-    auto beforeBuilder = Builder { result.before };
+    auto beforeBuilder = Builder { result.before, target };
     build(beforeBuilder);
-    auto afterBuilder = Builder { result.after };
+    auto afterBuilder = Builder { result.after, target };
     build(afterBuilder);
     result.frame = LinearScanAllocator { CompileLimits {} }.allocate(
         result.after, target, frameCost, cancellation, memory);
@@ -241,7 +257,7 @@ Allocation allocateBuilt(Build const& build,
 /// Allocates @p build on @p target and checks the result with the AssignmentChecker.
 Allocation allocateAndCheck(Build const& build,
                             std::pmr::memory_resource& memory,
-                            FakeTarget const& target = FakeTarget {},
+                            isoline::compiler::machine::ITarget const& target = defaultTarget,
                             uint64_t frameCost = 64)
 {
     auto result = allocateBuilt(build, target, frameCost, memory);
@@ -319,231 +335,307 @@ Build loopWith(uint32_t pressure, bool withCall)
     };
 }
 
+/// Runs @p test on FakeTarget's two registers per class and on x86-64's register file (Task 10's allocator
+/// tests on the file they allocate for, ledger carry to T11), each in a section of its own. The test takes
+/// the target as an ITarget: MSVC 19.52 fails with an internal compiler error on these bodies as generic
+/// lambdas.
+template <typename Test>
+void onEachRegisterFile(Test const& test)
+{
+    SECTION("two registers per class")
+    {
+        test(FakeTarget {});
+    }
+    SECTION("x86-64's register file")
+    {
+        test(X64FakeTarget {});
+    }
+    SECTION("x86-64's register file under a Microsoft x64 host")
+    {
+        test(X64WindowsFakeTarget {});
+    }
+}
+
+/// The shadow space of @p target's host convention: what every frame's outgoing area holds at least, as its
+/// entry poll's slow path calls the host.
+uint32_t hostShadowOf(isoline::compiler::machine::ITarget const& target)
+{
+    return target.conventionRow(isoline::compiler::machine::hostConvention(target.description()))
+        .shadowSpaceBytes;
+}
+
+/// How many registers of @p registerClass @p target allocates.
+uint32_t registerCount(isoline::compiler::machine::ITarget const& target, RegisterClass registerClass)
+{
+    return static_cast<uint32_t>(target.allocatable(registerClass).size());
+}
+
 } // namespace
 
 TEST_CASE("LinearScan.noSpillsUnderPressure")
 {
-    auto memory = std::pmr::monotonic_buffer_resource {};
-    // As many live values of each class as registers: none is spilled.
-    auto const allocation = allocateAndCheck(
-        [](Builder& b) {
-            auto& f = b.function();
-            auto const block = f.createBlock(Hotness::Normal);
-            auto const x = b.general();
-            auto const y = b.general();
-            auto const p = b.floating();
-            auto const q = b.floating();
-            auto const r = b.floating();
-            b.constant(block, x, 1);
-            b.constant(block, y, 2);
-            b.append(block, FakeOpcode::CopyFloat, { def(f, p), use(f, q) }); // q undefined: an entry value
-            b.copyFloat(block, r, p);
-            auto const z = b.general();
-            b.add(block, z, x, y);
-            b.ret(block, z);
-        },
-        memory);
-    CHECK(spillSlots(*allocation.frame) == 0);
-    CHECK(allocation.frame->totalBytes == 16); // the frame pointer's save and the return address
-}
-
-TEST_CASE("LinearScan.spillsBeyondPressure")
-{
-    auto memory = std::pmr::monotonic_buffer_resource {};
-    for (auto const count: { 3U, 8U, 40U })
-    {
-        INFO(count << " live values");
-        auto const allocation = allocateAndCheck(
-            [count](Builder& b) {
-                auto& f = b.function();
-                auto const block = f.createBlock(Hotness::Normal);
-                auto values = std::vector<VirtualRegister> {};
-                for (auto const index: std::views::iota(0U, count))
-                {
-                    values.push_back(b.general());
-                    b.constant(block, values.back(), index);
-                }
-                b.ret(block, b.sum(block, values));
-            },
-            memory);
-        CHECK(spillSlots(*allocation.frame) >= count - 2);
-        CHECK(spillSlots(*allocation.frame) <= count);
-    }
-}
-
-TEST_CASE("LinearScan.honoursFixedAndTiedOperands")
-{
-    auto memory = std::pmr::monotonic_buffer_resource {};
-    auto divide = uint32_t { 0 };
-    auto shift = uint32_t { 0 };
-    auto earlyClobber = uint32_t { 0 };
-    auto tied = uint32_t { 0 };
-    auto selectorCopy = uint32_t { 0 };
-    auto const allocation = allocateAndCheck(
-        [&](Builder& b) {
-            auto& f = b.function();
-            auto const block = f.createBlock(Hotness::Normal);
-            auto const dividend = b.general();
-            auto const divisor = b.general();
-            auto const quotient = b.general();
-            b.constant(block, dividend, 100);
-            b.constant(block, divisor, 7);
-            // quotient (g0) ← dividend (g0) / divisor; both inputs live on, so they are copied into g0.
-            divide =
-                b.append(block, FakeOpcode::Divide, { def(f, quotient), use(f, dividend), use(f, divisor) });
-            auto const count = b.general();
-            b.constant(block, count, 3);
-            // quotient <<= count (g1): tied, the count fixed.
-            shift = b.append(block, FakeOpcode::Shift, { useDef(f, quotient), use(f, count) });
-            auto const clobbered = b.general();
-            earlyClobber =
-                b.append(block, FakeOpcode::EarlyClobber, { early(f, clobbered), use(f, dividend) });
-            tied = b.append(block, FakeOpcode::AddTied, { useDef(f, clobbered), use(f, divisor) });
-            // The selector's own copy into g1, read two instructions later: nothing may take g1 between.
-            auto const pinned = b.general();
-            b.add(block, pinned, quotient, clobbered);
-            selectorCopy = b.append(
-                block,
-                FakeOpcode::Copy,
-                { physical({ .registerClass = RegisterClass::General, .number = 1 }, OperandRole::Def),
-                  use(f, pinned) });
-            auto const late = b.general();
-            b.add(block, late, count, count);
-            auto const fromPinned = b.general();
-            b.append(block,
-                     FakeOpcode::Add,
-                     { def(f, fromPinned),
-                       physical({ .registerClass = RegisterClass::General, .number = 1 }, OperandRole::Use),
-                       use(f, late) });
-            b.ret(block, fromPinned);
-        },
-        memory);
-    auto const& f = allocation.after;
-    CHECK(nameOf(f, divide, 0) == generalRegister(0));
-    CHECK(nameOf(f, divide, 1) == generalRegister(0));
-    CHECK(nameOf(f, divide, 2) == generalRegister(1)); // not g0, which the fixed operands take
-    CHECK(nameOf(f, shift, 1) == generalRegister(1));
-    CHECK(nameOf(f, shift, 0) != generalRegister(1));
-    CHECK(nameOf(f, earlyClobber, 0) != nameOf(f, earlyClobber, 1));
-    CHECK(nameOf(f, tied, 0).kind == RegisterKind::Physical);
-    CHECK(nameOf(f, selectorCopy, 0) == generalRegister(1));
-    // The copies into and out of g0 around the divide.
-    CHECK(std::ranges::any_of(f.movesBefore(divide), [](Move const& move) {
-        return move.to.index == 0 && move.to.kind == LocationKind::Register;
-    }));
-}
-
-TEST_CASE("LinearScan.isDeterministic")
-{
-    auto build = loopWith(5, true);
-    auto first = std::pmr::monotonic_buffer_resource {};
-    auto second = std::pmr::monotonic_buffer_resource {};
-    auto const one = allocateAndCheck(build, first);
-    auto const two = allocateAndCheck(build, second);
-    CHECK(*one.frame == *two.frame);
-    REQUIRE(one.after.instructionCount() == two.after.instructionCount());
-    for (auto const instruction: std::views::iota(uint32_t { 0 }, one.after.instructionCount()))
-    {
-        CHECK(std::ranges::equal(one.after.operands(instruction), two.after.operands(instruction)));
-        CHECK(std::ranges::equal(one.after.movesBefore(instruction), two.after.movesBefore(instruction)));
-    }
-    CHECK(one.after.moveCount() > 0);
-}
-
-TEST_CASE("LinearScan.wideCallsKeepTheBound")
-{
-    static constexpr auto Width = 1'000U;
-    auto memory = std::pmr::monotonic_buffer_resource {};
-    auto const bound = [](uint64_t frameCost) {
-        return (32 * frameCost) + 256;
-    };
-
-    SECTION("1'000 live i64 loads marshalled into a 1'000-parameter host import")
-    {
-        // A host call's arguments go through the ExecutionState's scratch, not the frame: its outgoing area
-        // is the host convention's shadow space only. The loads all live up to the marshalling.
-        auto const allocation = allocateAndCheck(
-            [](Builder& b) {
-                auto& f = b.function();
-                auto const block = f.createBlock(Hotness::Normal);
-                auto values = std::vector<VirtualRegister> {};
-                for (auto const index: std::views::iota(0U, Width))
-                {
-                    values.push_back(b.general());
-                    b.load(block, values.back(), static_cast<int32_t>(index * 8));
-                }
-                for (auto const index: std::views::iota(0U, Width))
-                    b.store(block, values[index], static_cast<int32_t>(index * 8));
-                b.call(block);
-                auto const result = b.general();
-                b.load(block, result);
-                b.ret(block, result);
-            },
-            memory,
-            FakeTarget {},
-            Width);
-        CHECK(allocation.frame->totalBytes <= bound(Width));
-        CHECK(spillSlots(*allocation.frame) >= Width - 2);
-    }
-
-    SECTION("a 1'000-parameter, 1'000-result Wasm callee")
-    {
-        auto const types = std::vector<isoline::compiler::intermediate::Type>(
-            Width, isoline::compiler::intermediate::Type::I64);
-        auto const assignment = isoline::compiler::machine::assignCall(
-            isoline::compiler::machine::testing::FakeConvention, types, types, memory);
-        auto const outgoing = assignment.arguments.memoryBytes + assignment.results.memoryBytes;
-        REQUIRE(outgoing > 0);
-        auto call = uint32_t { 0 };
+    onEachRegisterFile([&](isoline::compiler::machine::ITarget const& target) {
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        // As many live values of each class as registers: none is spilled.
+        auto const generals = registerCount(target, RegisterClass::General);
+        auto const floats = registerCount(target, RegisterClass::Float);
         auto const allocation = allocateAndCheck(
             [&](Builder& b) {
                 auto& f = b.function();
                 auto const block = f.createBlock(Hotness::Normal);
-                auto arguments = std::vector<VirtualRegister> {};
-                for (auto const index: std::views::iota(0U, Width))
+                auto values = std::vector<VirtualRegister> {};
+                for (auto const index: std::views::iota(0U, generals))
                 {
-                    arguments.push_back(b.general());
-                    b.load(block, arguments.back(), static_cast<int32_t>(index * 8));
+                    values.push_back(b.general());
+                    b.constant(block, values.back(), index);
                 }
-                for (auto const index: std::views::iota(0U, Width))
-                    b.store(block, arguments[index], static_cast<int32_t>(index * 8));
-                call = b.call(block);
-                f.addCallSite(call, outgoing);
-                auto results = std::vector<VirtualRegister> {};
-                for (auto const index: std::views::iota(0U, Width))
+                auto floating = std::vector<VirtualRegister> {};
+                for (auto const index: std::views::iota(0U, floats))
                 {
-                    results.push_back(b.general());
-                    b.load(block, results.back(), static_cast<int32_t>(index * 8));
+                    floating.push_back(b.floating());
+                    b.constantFloat(block, floating.back(), index);
                 }
-                b.ret(block, b.sum(block, results));
+                for (auto const value: floating)
+                    b.copyFloat(block, b.floating(), value);
+                b.ret(block, b.sum(block, values));
             },
             memory,
-            FakeTarget {},
-            Width);
+            target);
         auto const& frame = *allocation.frame;
-        CHECK(frame.outgoingBytes >= outgoing);
-        CHECK(frame.spillOffset >= frame.outgoingBytes);
-        CHECK(frame.totalBytes <= bound(Width));
-        // The arguments' slots are free once the call has read them: the results take them again.
-        CHECK(spillSlots(frame) <= Width + 1);
-    }
+        CHECK(spillSlots(frame) == 0);
+        CHECK(frame.outgoingBytes == hostShadowOf(target));
+        // The host's shadow space, the frame pointer's save and the return address, and the saves of the
+        // preserved registers taken.
+        auto const stack = target.stackRule();
+        auto const fixed = frame.outgoingBytes + stack.returnAddressBytes + stack.framePointerBytes
+                           + stack.savedBytes(frame.calleeSaved);
+        CHECK(frame.totalBytes == ((fixed + stack.alignment - 1) / stack.alignment) * stack.alignment);
+    });
+}
+
+TEST_CASE("LinearScan.spillsBeyondPressure")
+{
+    onEachRegisterFile([&](isoline::compiler::machine::ITarget const& target) {
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto const registers = registerCount(target, RegisterClass::General);
+        for (auto const count: { registers + 1, registers + 6, 40U })
+        {
+            INFO(count << " live values");
+            auto const allocation = allocateAndCheck(
+                [count](Builder& b) {
+                    auto& f = b.function();
+                    auto const block = f.createBlock(Hotness::Normal);
+                    auto values = std::vector<VirtualRegister> {};
+                    for (auto const index: std::views::iota(0U, count))
+                    {
+                        values.push_back(b.general());
+                        b.constant(block, values.back(), index);
+                    }
+                    b.ret(block, b.sum(block, values));
+                },
+                memory,
+                target);
+            CHECK(spillSlots(*allocation.frame) >= count - registers);
+            CHECK(spillSlots(*allocation.frame) <= count);
+        }
+    });
+}
+
+TEST_CASE("LinearScan.honoursFixedAndTiedOperands")
+{
+    onEachRegisterFile([&](isoline::compiler::machine::ITarget const& target) {
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto divide = uint32_t { 0 };
+        auto shift = uint32_t { 0 };
+        auto earlyClobber = uint32_t { 0 };
+        auto tied = uint32_t { 0 };
+        auto selectorCopy = uint32_t { 0 };
+        auto const allocation = allocateAndCheck(
+            [&](Builder& b) {
+                auto& f = b.function();
+                auto const block = f.createBlock(Hotness::Normal);
+                auto const dividend = b.general();
+                auto const divisor = b.general();
+                auto const quotient = b.general();
+                b.constant(block, dividend, 100);
+                b.constant(block, divisor, 7);
+                // quotient (g0) ← dividend (g0) / divisor; both inputs live on, so they are copied into g0.
+                divide = b.append(
+                    block, FakeOpcode::Divide, { def(f, quotient), use(f, dividend), use(f, divisor) });
+                auto const count = b.general();
+                b.constant(block, count, 3);
+                // quotient <<= count (g1): tied, the count fixed.
+                shift = b.append(block, FakeOpcode::Shift, { useDef(f, quotient), use(f, count) });
+                auto const clobbered = b.general();
+                earlyClobber =
+                    b.append(block, FakeOpcode::EarlyClobber, { early(f, clobbered), use(f, dividend) });
+                tied = b.append(block, FakeOpcode::AddTied, { useDef(f, clobbered), use(f, divisor) });
+                // The selector's own copy into g1, read two instructions later: nothing may take g1 between.
+                auto const pinned = b.general();
+                b.add(block, pinned, quotient, clobbered);
+                selectorCopy = b.append(
+                    block,
+                    FakeOpcode::Copy,
+                    { physical({ .registerClass = RegisterClass::General, .number = 1 }, OperandRole::Def),
+                      use(f, pinned) });
+                auto const late = b.general();
+                b.add(block, late, count, count);
+                auto const fromPinned = b.general();
+                b.append(
+                    block,
+                    FakeOpcode::Add,
+                    { def(f, fromPinned),
+                      physical({ .registerClass = RegisterClass::General, .number = 1 }, OperandRole::Use),
+                      use(f, late) });
+                b.ret(block, fromPinned);
+            },
+            memory,
+            target);
+        auto const& f = allocation.after;
+        CHECK(nameOf(f, divide, 0) == generalRegister(0));
+        CHECK(nameOf(f, divide, 1) == generalRegister(0));
+        CHECK(nameOf(f, divide, 2) != generalRegister(0)); // not g0, which the fixed operands take
+        CHECK(nameOf(f, shift, 1) == generalRegister(1));
+        CHECK(nameOf(f, shift, 0) != generalRegister(1));
+        CHECK(nameOf(f, earlyClobber, 0) != nameOf(f, earlyClobber, 1));
+        CHECK(nameOf(f, tied, 0).kind == RegisterKind::Physical);
+        CHECK(nameOf(f, selectorCopy, 0) == generalRegister(1));
+        // The copies into and out of g0 around the divide.
+        CHECK(std::ranges::any_of(f.movesBefore(divide), [](Move const& move) {
+            return move.to.index == 0 && move.to.kind == LocationKind::Register;
+        }));
+    });
+}
+
+TEST_CASE("LinearScan.isDeterministic")
+{
+    onEachRegisterFile([&](isoline::compiler::machine::ITarget const& target) {
+        auto build = loopWith(5, true);
+        auto first = std::pmr::monotonic_buffer_resource {};
+        auto second = std::pmr::monotonic_buffer_resource {};
+        auto const one = allocateAndCheck(build, first, target);
+        auto const two = allocateAndCheck(build, second, target);
+        CHECK(*one.frame == *two.frame);
+        REQUIRE(one.after.instructionCount() == two.after.instructionCount());
+        for (auto const instruction: std::views::iota(uint32_t { 0 }, one.after.instructionCount()))
+        {
+            CHECK(std::ranges::equal(one.after.operands(instruction), two.after.operands(instruction)));
+            CHECK(std::ranges::equal(one.after.movesBefore(instruction), two.after.movesBefore(instruction)));
+        }
+        CHECK(one.after.moveCount() > 0);
+    });
+}
+
+TEST_CASE("LinearScan.wideCallsKeepTheBound")
+{
+    onEachRegisterFile([&](isoline::compiler::machine::ITarget const& target) {
+        static constexpr auto Width = 1'000U;
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto const bound = [](uint64_t frameCost) {
+            return (32 * frameCost) + 256;
+        };
+
+        SECTION("1'000 live i64 loads marshalled into a 1'000-parameter host import")
+        {
+            // A host call's arguments go through the ExecutionState's scratch, not the frame: its outgoing
+            // area is the host convention's shadow space only. The loads all live up to the marshalling.
+            auto const allocation = allocateAndCheck(
+                [](Builder& b) {
+                    auto& f = b.function();
+                    auto const block = f.createBlock(Hotness::Normal);
+                    auto values = std::vector<VirtualRegister> {};
+                    for (auto const index: std::views::iota(0U, Width))
+                    {
+                        values.push_back(b.general());
+                        b.load(block, values.back(), static_cast<int32_t>(index * 8));
+                    }
+                    for (auto const index: std::views::iota(0U, Width))
+                        b.store(block, values[index], static_cast<int32_t>(index * 8));
+                    b.call(block);
+                    auto const result = b.general();
+                    b.load(block, result);
+                    b.ret(block, result);
+                },
+                memory,
+                target,
+                Width);
+            CHECK(allocation.frame->totalBytes <= bound(Width));
+            CHECK(spillSlots(*allocation.frame) >= Width - registerCount(target, RegisterClass::General));
+        }
+
+        SECTION("a 1'000-parameter, 1'000-result Wasm callee")
+        {
+            auto const types = std::vector<isoline::compiler::intermediate::Type>(
+                Width, isoline::compiler::intermediate::Type::I64);
+            auto const assignment = isoline::compiler::machine::assignCall(
+                target.conventionRow(Convention::WasmInternal), types, types, memory);
+            auto const outgoing = assignment.arguments.memoryBytes + assignment.results.memoryBytes;
+            REQUIRE(outgoing > 0);
+            auto call = uint32_t { 0 };
+            auto const allocation = allocateAndCheck(
+                [&](Builder& b) {
+                    auto& f = b.function();
+                    auto const block = f.createBlock(Hotness::Normal);
+                    auto arguments = std::vector<VirtualRegister> {};
+                    for (auto const index: std::views::iota(0U, Width))
+                    {
+                        arguments.push_back(b.general());
+                        b.load(block, arguments.back(), static_cast<int32_t>(index * 8));
+                    }
+                    for (auto const index: std::views::iota(0U, Width))
+                        b.store(block, arguments[index], static_cast<int32_t>(index * 8));
+                    call = b.call(block);
+                    f.addCallSite(call, outgoing);
+                    auto results = std::vector<VirtualRegister> {};
+                    for (auto const index: std::views::iota(0U, Width))
+                    {
+                        results.push_back(b.general());
+                        b.load(block, results.back(), static_cast<int32_t>(index * 8));
+                    }
+                    b.ret(block, b.sum(block, results));
+                },
+                memory,
+                target,
+                Width);
+            auto const& frame = *allocation.frame;
+            CHECK(frame.outgoingBytes == std::max(outgoing, hostShadowOf(target)));
+            CHECK(frame.spillOffset >= frame.outgoingBytes);
+            CHECK(frame.totalBytes <= bound(Width));
+            // The arguments' slots are free once the call has read them: the results take them again.
+            CHECK(spillSlots(frame) <= Width + 1);
+        }
+    });
 }
 
 TEST_CASE("LinearScan.refusesPastTheFrameRule")
 {
-    auto memory = std::pmr::monotonic_buffer_resource {};
-    auto const target = FakeTarget { FrameRule { .bytesPerStackValue = 1, .frameOverhead = 0 } };
-    auto const allocation = allocateBuilt(loopWith(6, true), target, 4, memory);
-    REQUIRE_FALSE(allocation.frame.has_value());
-    CHECK(allocation.frame.error().code == CompileErrorCode::FrameTooLarge);
-    CHECK(allocation.frame.error().limit == 4);
-    CHECK(allocation.frame.error().requested > 4);
+    auto const check = [](isoline::compiler::machine::ITarget const& target) {
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto const allocation = allocateBuilt(loopWith(6, true), target, 4, memory);
+        REQUIRE_FALSE(allocation.frame.has_value());
+        CHECK(allocation.frame.error().code == CompileErrorCode::FrameTooLarge);
+        CHECK(allocation.frame.error().limit == 4);
+        CHECK(allocation.frame.error().requested > 4);
+    };
+    auto const tight = FrameRule { .bytesPerStackValue = 1, .frameOverhead = 0 };
+    SECTION("two registers per class")
+    {
+        check(FakeTarget { tight });
+    }
+    SECTION("x86-64's register file")
+    {
+        check(X64FakeTarget { tight });
+    }
+    SECTION("x86-64's register file under a Microsoft x64 host")
+    {
+        check(X64WindowsFakeTarget { tight });
+    }
 }
 
 namespace
 {
 
-/// @p count values live at once over two registers: every one but two spilled.
+/// @p count values live at once: every one spilled but as many as there are registers.
 Build manyLiveValues(uint32_t count)
 {
     return [count](Builder& b) {
@@ -563,16 +655,16 @@ Build manyLiveValues(uint32_t count)
     };
 }
 
-/// How long allocating @p count live values takes, and checks it spilled them.
-std::chrono::nanoseconds timeManyLiveValues(uint32_t count)
+/// How long allocating @p count live values on @p target takes, and checks it spilled them.
+std::chrono::nanoseconds timeManyLiveValues(isoline::compiler::machine::ITarget const& target, uint32_t count)
 {
     auto memory = std::pmr::monotonic_buffer_resource {};
     auto const build = manyLiveValues(count);
     auto const started = std::chrono::steady_clock::now();
-    auto const allocation = allocateBuilt(build, FakeTarget {}, count, memory);
+    auto const allocation = allocateBuilt(build, target, count, memory);
     auto const elapsed = std::chrono::steady_clock::now() - started;
     REQUIRE(allocation.frame.has_value());
-    CHECK(spillSlots(*allocation.frame) >= count - 2);
+    CHECK(spillSlots(*allocation.frame) >= count - registerCount(target, RegisterClass::General));
     return elapsed;
 }
 
@@ -582,11 +674,13 @@ TEST_CASE("LinearScan.manySpillsAreNLogN", "[.perf]")
 {
     // 50'000 spilled intervals well under a second, and four times the values in not much more than four
     // times the time: each slot comes off the heap (first-fit packing is quadratic here).
-    auto const quarter = timeManyLiveValues(12'500);
-    auto const full = timeManyLiveValues(50'000);
-    INFO("12'500: " << quarter.count() << " ns, 50'000: " << full.count() << " ns");
-    CHECK(full < std::chrono::milliseconds { 500 });
-    CHECK(full < quarter * 8);
+    onEachRegisterFile([&](isoline::compiler::machine::ITarget const& target) {
+        auto const quarter = timeManyLiveValues(target, 12'500);
+        auto const full = timeManyLiveValues(target, 50'000);
+        INFO("12'500: " << quarter.count() << " ns, 50'000: " << full.count() << " ns");
+        CHECK(full < std::chrono::milliseconds { 500 });
+        CHECK(full < quarter * 8);
+    });
 }
 
 namespace
@@ -655,85 +749,87 @@ TEST_CASE("LinearScan.rankingIsLinearInTheHolders")
 
 TEST_CASE("LinearScan.validatesAssignment")
 {
-    auto memory = std::pmr::monotonic_buffer_resource {};
-    auto build = loopWith(4, true);
-    auto allocation = allocateAndCheck(build, memory);
-    auto const target = FakeTarget {};
-    auto const& frame = *allocation.frame;
-    auto const check = [&](FrameLayout const& checked) {
-        return checkAssignment(allocation.before, allocation.after, target, checked, 64, memory);
-    };
-    REQUIRE(check(frame).has_value());
+    onEachRegisterFile([&](isoline::compiler::machine::ITarget const& target) {
+        auto memory = std::pmr::monotonic_buffer_resource {};
+        auto build = loopWith(4, true);
+        auto allocation = allocateAndCheck(build, memory, target);
+        auto const& frame = *allocation.frame;
+        auto const check = [&](FrameLayout const& checked) {
+            return checkAssignment(allocation.before, allocation.after, target, checked, 64, memory);
+        };
+        REQUIRE(check(frame).has_value());
 
-    SECTION("a read from the wrong register")
-    {
-        // The first read of a value moved to the other register reads what that one holds instead.
-        auto& f = allocation.after;
-        auto tampered = false;
-        for (auto const instruction: std::views::iota(uint32_t { 0 }, f.instructionCount()))
+        SECTION("a read from the wrong register")
         {
-            if (f.instruction(instruction).opcode != opcodeOf(FakeOpcode::Add) || tampered)
-                continue;
-            auto& operand = std::get<RegisterOperand>(f.operands(instruction)[1]);
-            operand.name.number ^= 1U;
-            tampered = true;
-        }
-        REQUIRE(tampered);
-        auto const checked = check(frame);
-        REQUIRE_FALSE(checked.has_value());
-        CHECK(checked.error().kind == AssignmentFaultKind::WrongValue);
-    }
-
-    SECTION("an outgoing area smaller than a call's")
-    {
-        allocation.after.addCallSite(0, 64);
-        auto const checked = check(frame);
-        REQUIRE_FALSE(checked.has_value());
-        CHECK(checked.error().kind == AssignmentFaultKind::OutgoingTooSmall);
-    }
-
-    SECTION("a misaligned frame")
-    {
-        auto misaligned = frame;
-        misaligned.totalBytes += 8;
-        auto const checked = check(misaligned);
-        REQUIRE_FALSE(checked.has_value());
-        CHECK(checked.error().kind == AssignmentFaultKind::FrameRefused);
-    }
-
-    SECTION("a slot outside the spill area")
-    {
-        auto shrunk = frame;
-        REQUIRE(shrunk.spillBytes > 0);
-        shrunk.spillBytes = 0;
-        auto const checked = check(shrunk);
-        REQUIRE_FALSE(checked.has_value());
-        CHECK(checked.error().kind == AssignmentFaultKind::BadPlace);
-    }
-
-    SECTION("an allocated operand off its row")
-    {
-        // The return's operand is fixed to g0; naming g1 there breaks the row, whatever g1 holds.
-        auto& f = allocation.after;
-        auto tampered = false;
-        for (auto const instruction: std::views::iota(uint32_t { 0 }, f.instructionCount()))
-            if (f.instruction(instruction).opcode == opcodeOf(FakeOpcode::Return))
+            // The first read of a value moved to the other register reads what that one holds instead.
+            auto& f = allocation.after;
+            auto tampered = false;
+            for (auto const instruction: std::views::iota(uint32_t { 0 }, f.instructionCount()))
             {
-                std::get<RegisterOperand>(f.operands(instruction)[0]).name = generalRegister(1);
+                if (f.instruction(instruction).opcode != opcodeOf(FakeOpcode::Add) || tampered)
+                    continue;
+                auto& operand = std::get<RegisterOperand>(f.operands(instruction)[1]);
+                operand.name.number ^= 1U;
                 tampered = true;
             }
-        REQUIRE(tampered);
-        auto const checked = check(frame);
-        REQUIRE_FALSE(checked.has_value());
-        CHECK(checked.error().kind == AssignmentFaultKind::ConstraintBroken);
-    }
+            REQUIRE(tampered);
+            auto const checked = check(frame);
+            REQUIRE_FALSE(checked.has_value());
+            CHECK(checked.error().kind == AssignmentFaultKind::WrongValue);
+        }
 
-    SECTION("an unallocated function")
-    {
-        auto const checked = checkAssignment(allocation.before, allocation.before, target, frame, 64, memory);
-        REQUIRE_FALSE(checked.has_value());
-        CHECK(checked.error().kind == AssignmentFaultKind::VirtualLeft);
-    }
+        SECTION("an outgoing area smaller than a call's")
+        {
+            allocation.after.addCallSite(0, 64);
+            auto const checked = check(frame);
+            REQUIRE_FALSE(checked.has_value());
+            CHECK(checked.error().kind == AssignmentFaultKind::OutgoingTooSmall);
+        }
+
+        SECTION("a misaligned frame")
+        {
+            auto misaligned = frame;
+            misaligned.totalBytes += 8;
+            auto const checked = check(misaligned);
+            REQUIRE_FALSE(checked.has_value());
+            CHECK(checked.error().kind == AssignmentFaultKind::FrameRefused);
+        }
+
+        SECTION("a slot outside the spill area")
+        {
+            auto shrunk = frame;
+            REQUIRE(shrunk.spillBytes > 0);
+            shrunk.spillBytes = 0;
+            auto const checked = check(shrunk);
+            REQUIRE_FALSE(checked.has_value());
+            CHECK(checked.error().kind == AssignmentFaultKind::BadPlace);
+        }
+
+        SECTION("an allocated operand off its row")
+        {
+            // The return's operand is fixed to g0; naming g1 there breaks the row, whatever g1 holds.
+            auto& f = allocation.after;
+            auto tampered = false;
+            for (auto const instruction: std::views::iota(uint32_t { 0 }, f.instructionCount()))
+                if (f.instruction(instruction).opcode == opcodeOf(FakeOpcode::Return))
+                {
+                    std::get<RegisterOperand>(f.operands(instruction)[0]).name = generalRegister(1);
+                    tampered = true;
+                }
+            REQUIRE(tampered);
+            auto const checked = check(frame);
+            REQUIRE_FALSE(checked.has_value());
+            CHECK(checked.error().kind == AssignmentFaultKind::ConstraintBroken);
+        }
+
+        SECTION("an unallocated function")
+        {
+            auto const checked =
+                checkAssignment(allocation.before, allocation.before, target, frame, 64, memory);
+            REQUIRE_FALSE(checked.has_value());
+            CHECK(checked.error().kind == AssignmentFaultKind::VirtualLeft);
+        }
+    });
 }
 
 TEST_CASE("LinearScan.callsClobberAcrossSplits")
@@ -965,6 +1061,51 @@ TEST_CASE("LinearScan.outgoingAreaCoversEveryCall")
     CHECK(allocation.frame->outgoingBytes == 48);
     CHECK(allocation.frame->spillOffset == 48);
     CHECK(allocation.frame->totalBytes % 16 == 0);
+}
+
+TEST_CASE("LinearScan.hostCallStackArgumentsReachTheFrame")
+{
+    // A call under the real Microsoft x64 row with six integer arguments: four in rcx, rdx, r8 and r9, two on
+    // the stack above the 32 bytes of shadow space. The selector records the call's need from assignCall()
+    // (shadow space included) and the frame's outgoing area covers it; the host's shadow space alone is the
+    // frame's floor (ledger carries to T10/T11).
+    auto memory = std::pmr::monotonic_buffer_resource {};
+    auto const target = X64WindowsFakeTarget {};
+    auto const types =
+        std::vector<isoline::compiler::intermediate::Type>(6, isoline::compiler::intermediate::Type::I64);
+    auto const assignment = isoline::compiler::machine::assignCall(
+        target.conventionRow(Convention::Windows64), types, {}, memory);
+    REQUIRE(assignment.arguments.memoryBytes == 48);
+    auto const allocation = allocateAndCheck(
+        [&](Builder& b) {
+            auto& f = b.function();
+            auto const block = f.createBlock(Hotness::Normal);
+            auto const x = b.general();
+            b.constant(block, x, 1);
+            b.store(block, x, 32); // the fifth argument
+            b.store(block, x, 40); // the sixth
+            f.addCallSite(b.poll(block), assignment.arguments.memoryBytes);
+            b.ret(block, x);
+        },
+        memory,
+        target);
+    auto const& frame = *allocation.frame;
+    CHECK(frame.outgoingBytes == assignment.arguments.memoryBytes);
+    CHECK(frame.spillOffset >= frame.outgoingBytes);
+    CHECK(frame.totalBytes % 16 == 0);
+
+    // With no call of its own, the frame still holds the host's shadow space: its entry poll calls the host.
+    auto const leaf = allocateAndCheck(
+        [](Builder& b) {
+            auto& f = b.function();
+            auto const block = f.createBlock(Hotness::Normal);
+            auto const x = b.general();
+            b.constant(block, x, 1);
+            b.ret(block, x);
+        },
+        memory,
+        target);
+    CHECK(leaf.frame->outgoingBytes == 32);
 }
 
 TEST_CASE("LinearScan.refusesWhatItCannotAllocate")
@@ -1422,7 +1563,7 @@ TEST_CASE("LinearScan.refusesWhatTheSelectorMustNotMake")
                 auto& f = b.function();
                 auto const block = f.createBlock(Hotness::Normal);
                 auto const result = b.general();
-                auto operands = clobbers();
+                auto operands = clobbers(defaultTarget);
                 operands[0] =
                     def(f, result); // the call's result, fixed to g0, as the block's last instruction
                 std::ignore = f.append(block, opcodeOf(FakeOpcode::Call), operands);

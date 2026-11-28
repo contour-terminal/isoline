@@ -1,0 +1,269 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// x86-64's encoding table: one row per instruction form, in Mnemonic order (Encoder.hpp generates the
+// enumerator, the row and its operand slots from each). Adding an instruction is adding a row here; the
+// encoder interprets the columns and has no code of any one instruction.
+//
+//   ISOLINE_ENCODING(Mnemonic, Form, Prefix, RexW, Opcode, ModRm, Immediate, Roles, "intel template")
+//
+// - Form: where the explicit operands go (FormTable): ModRM.reg, ModRM.rm, the opcode's low three bits, an
+//   immediate, a rel32, or a condition code added to the opcode's last byte.
+// - Prefix: the mandatory or operand-size prefix (Hex66, HexF2, HexF3), emitted before REX.
+// - RexW: W1 for a 64-bit operand size.
+// - Opcode: one to three bytes, escapes included.
+// - ModRm: Register when ModRM.reg holds an operand, DigitN for an opcode extension /N, None without ModRM.
+// - Immediate: the width of the immediate field (Bits8, Bits32, Bits64), or Relative32 for a rel32.
+// - Roles: the explicit operands, in the Form's order, each with its kind and what the instruction does
+//   with it; then the implicit ones, each a fixed register the encoding names without an operand (div's
+//   rdx:rax, a shift count in cl, the stack pointer a push moves). encode() takes the explicit ones only.
+// - Template: the instruction as Intel syntax (llvm-mc's) spells it, {n} the n-th explicit operand;
+//   intendedText() renders it, and scripts/check-encodings.py checks llvm-mc reads the bytes as it.
+//
+// The file has no include guard; each includer defines ISOLINE_ENCODING.
+//
+// clang-format off
+
+// Integer ALU: add, or, and, sub, xor, cmp, each register-register (the MR form), register-memory, and with
+// a 32-bit or a sign-extended 8-bit immediate.
+ISOLINE_ENCODING(Add64RR,  ModRmRegister,  None, W1, (0x01), Register, None,  (useDef(G64), use(G64)), "add {0}, {1}")
+ISOLINE_ENCODING(Add32RR,  ModRmRegister,  None, W0, (0x01), Register, None,  (useDef(G32), use(G32)), "add {0}, {1}")
+ISOLINE_ENCODING(Add64RM,  RegisterModRm,  None, W1, (0x03), Register, None,  (useDef(G64), use(M64)), "add {0}, {1}")
+ISOLINE_ENCODING(Add32RM,  RegisterModRm,  None, W0, (0x03), Register, None,  (useDef(G32), use(M32)), "add {0}, {1}")
+ISOLINE_ENCODING(Add64RI,  ModRmImmediate, None, W1, (0x81), Digit0,   Bits32, (useDef(G64), use(S32)), "add {0}, {1}")
+ISOLINE_ENCODING(Add32RI,  ModRmImmediate, None, W0, (0x81), Digit0,   Bits32, (useDef(G32), use(U32)), "add {0}, {1}")
+ISOLINE_ENCODING(Add64RI8, ModRmImmediate, None, W1, (0x83), Digit0,   Bits8,  (useDef(G64), use(S8)),  "add {0}, {1}")
+ISOLINE_ENCODING(Add32RI8, ModRmImmediate, None, W0, (0x83), Digit0,   Bits8,  (useDef(G32), use(S8)),  "add {0}, {1}")
+ISOLINE_ENCODING(Or64RR,   ModRmRegister,  None, W1, (0x09), Register, None,  (useDef(G64), use(G64)), "or {0}, {1}")
+ISOLINE_ENCODING(Or32RR,   ModRmRegister,  None, W0, (0x09), Register, None,  (useDef(G32), use(G32)), "or {0}, {1}")
+ISOLINE_ENCODING(Or64RM,   RegisterModRm,  None, W1, (0x0b), Register, None,  (useDef(G64), use(M64)), "or {0}, {1}")
+ISOLINE_ENCODING(Or32RM,   RegisterModRm,  None, W0, (0x0b), Register, None,  (useDef(G32), use(M32)), "or {0}, {1}")
+ISOLINE_ENCODING(Or64RI,   ModRmImmediate, None, W1, (0x81), Digit1,   Bits32, (useDef(G64), use(S32)), "or {0}, {1}")
+ISOLINE_ENCODING(Or32RI,   ModRmImmediate, None, W0, (0x81), Digit1,   Bits32, (useDef(G32), use(U32)), "or {0}, {1}")
+ISOLINE_ENCODING(Or64RI8,  ModRmImmediate, None, W1, (0x83), Digit1,   Bits8,  (useDef(G64), use(S8)),  "or {0}, {1}")
+ISOLINE_ENCODING(Or32RI8,  ModRmImmediate, None, W0, (0x83), Digit1,   Bits8,  (useDef(G32), use(S8)),  "or {0}, {1}")
+ISOLINE_ENCODING(And64RR,  ModRmRegister,  None, W1, (0x21), Register, None,  (useDef(G64), use(G64)), "and {0}, {1}")
+ISOLINE_ENCODING(And32RR,  ModRmRegister,  None, W0, (0x21), Register, None,  (useDef(G32), use(G32)), "and {0}, {1}")
+ISOLINE_ENCODING(And64RM,  RegisterModRm,  None, W1, (0x23), Register, None,  (useDef(G64), use(M64)), "and {0}, {1}")
+ISOLINE_ENCODING(And32RM,  RegisterModRm,  None, W0, (0x23), Register, None,  (useDef(G32), use(M32)), "and {0}, {1}")
+ISOLINE_ENCODING(And64RI,  ModRmImmediate, None, W1, (0x81), Digit4,   Bits32, (useDef(G64), use(S32)), "and {0}, {1}")
+ISOLINE_ENCODING(And32RI,  ModRmImmediate, None, W0, (0x81), Digit4,   Bits32, (useDef(G32), use(U32)), "and {0}, {1}")
+ISOLINE_ENCODING(And64RI8, ModRmImmediate, None, W1, (0x83), Digit4,   Bits8,  (useDef(G64), use(S8)),  "and {0}, {1}")
+ISOLINE_ENCODING(And32RI8, ModRmImmediate, None, W0, (0x83), Digit4,   Bits8,  (useDef(G32), use(S8)),  "and {0}, {1}")
+ISOLINE_ENCODING(Sub64RR,  ModRmRegister,  None, W1, (0x29), Register, None,  (useDef(G64), use(G64)), "sub {0}, {1}")
+ISOLINE_ENCODING(Sub32RR,  ModRmRegister,  None, W0, (0x29), Register, None,  (useDef(G32), use(G32)), "sub {0}, {1}")
+ISOLINE_ENCODING(Sub64RM,  RegisterModRm,  None, W1, (0x2b), Register, None,  (useDef(G64), use(M64)), "sub {0}, {1}")
+ISOLINE_ENCODING(Sub32RM,  RegisterModRm,  None, W0, (0x2b), Register, None,  (useDef(G32), use(M32)), "sub {0}, {1}")
+ISOLINE_ENCODING(Sub64RI,  ModRmImmediate, None, W1, (0x81), Digit5,   Bits32, (useDef(G64), use(S32)), "sub {0}, {1}")
+ISOLINE_ENCODING(Sub32RI,  ModRmImmediate, None, W0, (0x81), Digit5,   Bits32, (useDef(G32), use(U32)), "sub {0}, {1}")
+ISOLINE_ENCODING(Sub64RI8, ModRmImmediate, None, W1, (0x83), Digit5,   Bits8,  (useDef(G64), use(S8)),  "sub {0}, {1}")
+ISOLINE_ENCODING(Sub32RI8, ModRmImmediate, None, W0, (0x83), Digit5,   Bits8,  (useDef(G32), use(S8)),  "sub {0}, {1}")
+ISOLINE_ENCODING(Xor64RR,  ModRmRegister,  None, W1, (0x31), Register, None,  (useDef(G64), use(G64)), "xor {0}, {1}")
+ISOLINE_ENCODING(Xor32RR,  ModRmRegister,  None, W0, (0x31), Register, None,  (useDef(G32), use(G32)), "xor {0}, {1}")
+ISOLINE_ENCODING(Xor64RM,  RegisterModRm,  None, W1, (0x33), Register, None,  (useDef(G64), use(M64)), "xor {0}, {1}")
+ISOLINE_ENCODING(Xor32RM,  RegisterModRm,  None, W0, (0x33), Register, None,  (useDef(G32), use(M32)), "xor {0}, {1}")
+ISOLINE_ENCODING(Xor64RI,  ModRmImmediate, None, W1, (0x81), Digit6,   Bits32, (useDef(G64), use(S32)), "xor {0}, {1}")
+ISOLINE_ENCODING(Xor32RI,  ModRmImmediate, None, W0, (0x81), Digit6,   Bits32, (useDef(G32), use(U32)), "xor {0}, {1}")
+ISOLINE_ENCODING(Xor64RI8, ModRmImmediate, None, W1, (0x83), Digit6,   Bits8,  (useDef(G64), use(S8)),  "xor {0}, {1}")
+ISOLINE_ENCODING(Xor32RI8, ModRmImmediate, None, W0, (0x83), Digit6,   Bits8,  (useDef(G32), use(S8)),  "xor {0}, {1}")
+ISOLINE_ENCODING(Cmp64RR,  ModRmRegister,  None, W1, (0x39), Register, None,  (use(G64), use(G64)),    "cmp {0}, {1}")
+ISOLINE_ENCODING(Cmp32RR,  ModRmRegister,  None, W0, (0x39), Register, None,  (use(G32), use(G32)),    "cmp {0}, {1}")
+ISOLINE_ENCODING(Cmp64RM,  RegisterModRm,  None, W1, (0x3b), Register, None,  (use(G64), use(M64)),    "cmp {0}, {1}")
+ISOLINE_ENCODING(Cmp32RM,  RegisterModRm,  None, W0, (0x3b), Register, None,  (use(G32), use(M32)),    "cmp {0}, {1}")
+ISOLINE_ENCODING(Cmp64RI,  ModRmImmediate, None, W1, (0x81), Digit7,   Bits32, (use(G64), use(S32)),    "cmp {0}, {1}")
+ISOLINE_ENCODING(Cmp32RI,  ModRmImmediate, None, W0, (0x81), Digit7,   Bits32, (use(G32), use(U32)),    "cmp {0}, {1}")
+ISOLINE_ENCODING(Cmp64RI8, ModRmImmediate, None, W1, (0x83), Digit7,   Bits8,  (use(G64), use(S8)),     "cmp {0}, {1}")
+ISOLINE_ENCODING(Cmp32RI8, ModRmImmediate, None, W0, (0x83), Digit7,   Bits8,  (use(G32), use(S8)),     "cmp {0}, {1}")
+// The poll's `cmp byte ptr [flag], 0`.
+ISOLINE_ENCODING(Cmp8MI,   ModRmImmediate, None, W0, (0x80), Digit7,   Bits8,  (use(M8), use(S8)),      "cmp {0}, {1}")
+
+// test; Test64MR is the stack probe's touch of each page.
+ISOLINE_ENCODING(Test64RR, ModRmRegister,  None, W1, (0x85), Register, None,  (use(G64), use(G64)), "test {0}, {1}")
+ISOLINE_ENCODING(Test32RR, ModRmRegister,  None, W0, (0x85), Register, None,  (use(G32), use(G32)), "test {0}, {1}")
+ISOLINE_ENCODING(Test64RI, ModRmImmediate, None, W1, (0xf7), Digit0,   Bits32, (use(G64), use(S32)), "test {0}, {1}")
+ISOLINE_ENCODING(Test32RI, ModRmImmediate, None, W0, (0xf7), Digit0,   Bits32, (use(G32), use(U32)), "test {0}, {1}")
+ISOLINE_ENCODING(Test64MR, ModRmRegister,  None, W1, (0x85), Register, None,  (use(M64), use(G64)), "test {0}, {1}")
+
+// Multiplication, division and their sign extension of rax into rdx.
+ISOLINE_ENCODING(Imul64RR,  RegisterModRm,          None, W1, (0x0f, 0xaf), Register, None,  (useDef(G64), use(G64)),        "imul {0}, {1}")
+ISOLINE_ENCODING(Imul32RR,  RegisterModRm,          None, W0, (0x0f, 0xaf), Register, None,  (useDef(G32), use(G32)),        "imul {0}, {1}")
+ISOLINE_ENCODING(Imul64RM,  RegisterModRm,          None, W1, (0x0f, 0xaf), Register, None,  (useDef(G64), use(M64)),        "imul {0}, {1}")
+ISOLINE_ENCODING(Imul32RM,  RegisterModRm,          None, W0, (0x0f, 0xaf), Register, None,  (useDef(G32), use(M32)),        "imul {0}, {1}")
+ISOLINE_ENCODING(Imul64RRI, RegisterModRmImmediate, None, W1, (0x69),       Register, Bits32, (def(G64), use(G64), use(S32)), "imul {0}, {1}, {2}")
+ISOLINE_ENCODING(Imul32RRI, RegisterModRmImmediate, None, W0, (0x69),       Register, Bits32, (def(G32), use(G32), use(U32)), "imul {0}, {1}, {2}")
+ISOLINE_ENCODING(Div64R,    ModRmOnly,              None, W1, (0xf7),       Digit6,   None,  (use(G64), implicitUseDef(Gpr::Rax), implicitUseDef(Gpr::Rdx)), "div {0}")
+ISOLINE_ENCODING(Div32R,    ModRmOnly,              None, W0, (0xf7),       Digit6,   None,  (use(G32), implicitUseDef(Gpr::Rax), implicitUseDef(Gpr::Rdx)), "div {0}")
+ISOLINE_ENCODING(Idiv64R,   ModRmOnly,              None, W1, (0xf7),       Digit7,   None,  (use(G64), implicitUseDef(Gpr::Rax), implicitUseDef(Gpr::Rdx)), "idiv {0}")
+ISOLINE_ENCODING(Idiv32R,   ModRmOnly,              None, W0, (0xf7),       Digit7,   None,  (use(G32), implicitUseDef(Gpr::Rax), implicitUseDef(Gpr::Rdx)), "idiv {0}")
+ISOLINE_ENCODING(Cqo,       ZeroOperands,           None, W1, (0x99),       None,     None,  (implicitUse(Gpr::Rax), implicitDef(Gpr::Rdx)), "cqo")
+ISOLINE_ENCODING(Cdq,       ZeroOperands,           None, W0, (0x99),       None,     None,  (implicitUse(Gpr::Rax), implicitDef(Gpr::Rdx)), "cdq")
+ISOLINE_ENCODING(Neg64R,    ModRmOnly,              None, W1, (0xf7),       Digit3,   None,  (useDef(G64)),                  "neg {0}")
+ISOLINE_ENCODING(Neg32R,    ModRmOnly,              None, W0, (0xf7),       Digit3,   None,  (useDef(G32)),                  "neg {0}")
+ISOLINE_ENCODING(Not64R,    ModRmOnly,              None, W1, (0xf7),       Digit2,   None,  (useDef(G64)),                  "not {0}")
+ISOLINE_ENCODING(Not32R,    ModRmOnly,              None, W0, (0xf7),       Digit2,   None,  (useDef(G32)),                  "not {0}")
+
+// Shifts and rotates, by cl or by an immediate count.
+ISOLINE_ENCODING(Shl64RCl, ModRmOnly,      None, W1, (0xd3), Digit4, None,  (useDef(G64), implicitUse(Gpr::Rcx)), "shl {0}, cl")
+ISOLINE_ENCODING(Shl32RCl, ModRmOnly,      None, W0, (0xd3), Digit4, None,  (useDef(G32), implicitUse(Gpr::Rcx)), "shl {0}, cl")
+ISOLINE_ENCODING(Shl64RI8, ModRmImmediate, None, W1, (0xc1), Digit4, Bits8, (useDef(G64), use(U8)),               "shl {0}, {1}")
+ISOLINE_ENCODING(Shl32RI8, ModRmImmediate, None, W0, (0xc1), Digit4, Bits8, (useDef(G32), use(U8)),               "shl {0}, {1}")
+ISOLINE_ENCODING(Shr64RCl, ModRmOnly,      None, W1, (0xd3), Digit5, None,  (useDef(G64), implicitUse(Gpr::Rcx)), "shr {0}, cl")
+ISOLINE_ENCODING(Shr32RCl, ModRmOnly,      None, W0, (0xd3), Digit5, None,  (useDef(G32), implicitUse(Gpr::Rcx)), "shr {0}, cl")
+ISOLINE_ENCODING(Shr64RI8, ModRmImmediate, None, W1, (0xc1), Digit5, Bits8, (useDef(G64), use(U8)),               "shr {0}, {1}")
+ISOLINE_ENCODING(Shr32RI8, ModRmImmediate, None, W0, (0xc1), Digit5, Bits8, (useDef(G32), use(U8)),               "shr {0}, {1}")
+ISOLINE_ENCODING(Sar64RCl, ModRmOnly,      None, W1, (0xd3), Digit7, None,  (useDef(G64), implicitUse(Gpr::Rcx)), "sar {0}, cl")
+ISOLINE_ENCODING(Sar32RCl, ModRmOnly,      None, W0, (0xd3), Digit7, None,  (useDef(G32), implicitUse(Gpr::Rcx)), "sar {0}, cl")
+ISOLINE_ENCODING(Sar64RI8, ModRmImmediate, None, W1, (0xc1), Digit7, Bits8, (useDef(G64), use(U8)),               "sar {0}, {1}")
+ISOLINE_ENCODING(Sar32RI8, ModRmImmediate, None, W0, (0xc1), Digit7, Bits8, (useDef(G32), use(U8)),               "sar {0}, {1}")
+ISOLINE_ENCODING(Rol64RCl, ModRmOnly,      None, W1, (0xd3), Digit0, None,  (useDef(G64), implicitUse(Gpr::Rcx)), "rol {0}, cl")
+ISOLINE_ENCODING(Rol32RCl, ModRmOnly,      None, W0, (0xd3), Digit0, None,  (useDef(G32), implicitUse(Gpr::Rcx)), "rol {0}, cl")
+ISOLINE_ENCODING(Rol64RI8, ModRmImmediate, None, W1, (0xc1), Digit0, Bits8, (useDef(G64), use(U8)),               "rol {0}, {1}")
+ISOLINE_ENCODING(Rol32RI8, ModRmImmediate, None, W0, (0xc1), Digit0, Bits8, (useDef(G32), use(U8)),               "rol {0}, {1}")
+ISOLINE_ENCODING(Ror64RCl, ModRmOnly,      None, W1, (0xd3), Digit1, None,  (useDef(G64), implicitUse(Gpr::Rcx)), "ror {0}, cl")
+ISOLINE_ENCODING(Ror32RCl, ModRmOnly,      None, W0, (0xd3), Digit1, None,  (useDef(G32), implicitUse(Gpr::Rcx)), "ror {0}, cl")
+ISOLINE_ENCODING(Ror64RI8, ModRmImmediate, None, W1, (0xc1), Digit1, Bits8, (useDef(G64), use(U8)),               "ror {0}, {1}")
+ISOLINE_ENCODING(Ror32RI8, ModRmImmediate, None, W0, (0xc1), Digit1, Bits8, (useDef(G32), use(U8)),               "ror {0}, {1}")
+
+// Bit counts: lzcnt (LZCNT), tzcnt (BMI1) and popcnt (POPCNT), and the baseline bsr and bsf their fallback
+// rows use.
+ISOLINE_ENCODING(Lzcnt64RR,  RegisterModRm, HexF3, W1, (0x0f, 0xbd), Register, None, (def(G64), use(G64)), "lzcnt {0}, {1}")
+ISOLINE_ENCODING(Lzcnt32RR,  RegisterModRm, HexF3, W0, (0x0f, 0xbd), Register, None, (def(G32), use(G32)), "lzcnt {0}, {1}")
+ISOLINE_ENCODING(Tzcnt64RR,  RegisterModRm, HexF3, W1, (0x0f, 0xbc), Register, None, (def(G64), use(G64)), "tzcnt {0}, {1}")
+ISOLINE_ENCODING(Tzcnt32RR,  RegisterModRm, HexF3, W0, (0x0f, 0xbc), Register, None, (def(G32), use(G32)), "tzcnt {0}, {1}")
+ISOLINE_ENCODING(Popcnt64RR, RegisterModRm, HexF3, W1, (0x0f, 0xb8), Register, None, (def(G64), use(G64)), "popcnt {0}, {1}")
+ISOLINE_ENCODING(Popcnt32RR, RegisterModRm, HexF3, W0, (0x0f, 0xb8), Register, None, (def(G32), use(G32)), "popcnt {0}, {1}")
+ISOLINE_ENCODING(Bsr64RR,    RegisterModRm, None,  W1, (0x0f, 0xbd), Register, None, (def(G64), use(G64)), "bsr {0}, {1}")
+ISOLINE_ENCODING(Bsr32RR,    RegisterModRm, None,  W0, (0x0f, 0xbd), Register, None, (def(G32), use(G32)), "bsr {0}, {1}")
+ISOLINE_ENCODING(Bsf64RR,    RegisterModRm, None,  W1, (0x0f, 0xbc), Register, None, (def(G64), use(G64)), "bsf {0}, {1}")
+ISOLINE_ENCODING(Bsf32RR,    RegisterModRm, None,  W0, (0x0f, 0xbc), Register, None, (def(G32), use(G32)), "bsf {0}, {1}")
+
+// Moves between registers, from and to memory, and of immediates; lea.
+ISOLINE_ENCODING(Mov64RR,   ModRmRegister,           None,  W1, (0x89), Register, None,  (def(G64), use(G64)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov32RR,   ModRmRegister,           None,  W0, (0x89), Register, None,  (def(G32), use(G32)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov64RM,   RegisterModRm,           None,  W1, (0x8b), Register, None,  (def(G64), use(M64)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov32RM,   RegisterModRm,           None,  W0, (0x8b), Register, None,  (def(G32), use(M32)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov64MR,   ModRmRegister,           None,  W1, (0x89), Register, None,  (use(M64), use(G64)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov32MR,   ModRmRegister,           None,  W0, (0x89), Register, None,  (use(M32), use(G32)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov16MR,   ModRmRegister,           Hex66, W0, (0x89), Register, None,  (use(M16), use(G16)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov8MR,    ModRmRegister,           None,  W0, (0x88), Register, None,  (use(M8), use(G8)),   "mov {0}, {1}")
+ISOLINE_ENCODING(Mov32RI,   OpcodeRegisterImmediate, None,  W0, (0xb8), None,     Bits32, (def(G32), use(U32)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov64RI,   OpcodeRegisterImmediate, None,  W1, (0xb8), None,     Bits64, (def(G64), use(S64)), "movabs {0}, {1}")
+ISOLINE_ENCODING(Mov64RI32, ModRmImmediate,          None,  W1, (0xc7), Digit0,   Bits32, (def(G64), use(S32)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov64MI32, ModRmImmediate,          None,  W1, (0xc7), Digit0,   Bits32, (use(M64), use(S32)), "mov {0}, {1}")
+ISOLINE_ENCODING(Mov32MI,   ModRmImmediate,          None,  W0, (0xc7), Digit0,   Bits32, (use(M32), use(U32)), "mov {0}, {1}")
+// lea; with a rip-relative address, the jump-table sequence's first instruction:
+// lea table, [rip + table]; movsxd offset, dword ptr [table + 4*index]; add table, offset; jmp table.
+ISOLINE_ENCODING(Lea64RM,   RegisterModRm,           None,  W1, (0x8d), Register, None,  (def(G64), use(Address)), "lea {0}, {1}")
+
+// Zero and sign extension, from registers and from memory.
+ISOLINE_ENCODING(Movzx32R8,   RegisterModRm, None, W0, (0x0f, 0xb6), Register, None, (def(G32), use(G8)),  "movzx {0}, {1}")
+ISOLINE_ENCODING(Movzx32R16,  RegisterModRm, None, W0, (0x0f, 0xb7), Register, None, (def(G32), use(G16)), "movzx {0}, {1}")
+ISOLINE_ENCODING(Movzx32M8,   RegisterModRm, None, W0, (0x0f, 0xb6), Register, None, (def(G32), use(M8)),  "movzx {0}, {1}")
+ISOLINE_ENCODING(Movzx32M16,  RegisterModRm, None, W0, (0x0f, 0xb7), Register, None, (def(G32), use(M16)), "movzx {0}, {1}")
+ISOLINE_ENCODING(Movsx32R8,   RegisterModRm, None, W0, (0x0f, 0xbe), Register, None, (def(G32), use(G8)),  "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsx64R8,   RegisterModRm, None, W1, (0x0f, 0xbe), Register, None, (def(G64), use(G8)),  "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsx32R16,  RegisterModRm, None, W0, (0x0f, 0xbf), Register, None, (def(G32), use(G16)), "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsx64R16,  RegisterModRm, None, W1, (0x0f, 0xbf), Register, None, (def(G64), use(G16)), "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsxd64R32, RegisterModRm, None, W1, (0x63),       Register, None, (def(G64), use(G32)), "movsxd {0}, {1}")
+ISOLINE_ENCODING(Movsx32M8,   RegisterModRm, None, W0, (0x0f, 0xbe), Register, None, (def(G32), use(M8)),  "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsx64M8,   RegisterModRm, None, W1, (0x0f, 0xbe), Register, None, (def(G64), use(M8)),  "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsx32M16,  RegisterModRm, None, W0, (0x0f, 0xbf), Register, None, (def(G32), use(M16)), "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsx64M16,  RegisterModRm, None, W1, (0x0f, 0xbf), Register, None, (def(G64), use(M16)), "movsx {0}, {1}")
+ISOLINE_ENCODING(Movsxd64M32, RegisterModRm, None, W1, (0x63),       Register, None, (def(G64), use(M32)), "movsxd {0}, {1}")
+
+// Conditional moves, sets and branches: the condition code (ConditionCode) adds to the opcode's last byte.
+ISOLINE_ENCODING(Cmovcc64RR, ConditionRegisterModRm, None, W1, (0x0f, 0x40), Register, None,       (use(Condition), useDef(G64), use(G64)), "cmov{0} {1}, {2}")
+ISOLINE_ENCODING(Cmovcc32RR, ConditionRegisterModRm, None, W0, (0x0f, 0x40), Register, None,       (use(Condition), useDef(G32), use(G32)), "cmov{0} {1}, {2}")
+ISOLINE_ENCODING(Setcc8R,    ConditionModRm,         None, W0, (0x0f, 0x90), Digit0,   None,       (use(Condition), def(G8)),               "set{0} {1}")
+ISOLINE_ENCODING(Jcc,        ConditionRelative,      None, W0, (0x0f, 0x80), None,     Relative32, (use(Condition), use(Label)),            "j{0} {1}")
+
+// Control: jumps and calls (direct, through a register, through memory: a stub's address in the context),
+// the return, the trap, and the pushes and pops of the prologue, the epilogue and slot-to-slot moves. The
+// jump-table sequence ends in Jmp64R.
+ISOLINE_ENCODING(Jmp,     Relative,       None, W0, (0xe9),       None,   Relative32, (use(Label)),                                "jmp {0}")
+ISOLINE_ENCODING(Jmp64R,  ModRmOnly,      None, W0, (0xff),       Digit4, None,       (use(G64)),                                  "jmp {0}")
+ISOLINE_ENCODING(Call,    Relative,       None, W0, (0xe8),       None,   Relative32, (use(Label), implicitUseDef(Gpr::Rsp)),      "call {0}")
+ISOLINE_ENCODING(Call64R, ModRmOnly,      None, W0, (0xff),       Digit2, None,       (use(G64), implicitUseDef(Gpr::Rsp)),        "call {0}")
+ISOLINE_ENCODING(Call64M, ModRmOnly,      None, W0, (0xff),       Digit2, None,       (use(M64), implicitUseDef(Gpr::Rsp)),        "call {0}")
+ISOLINE_ENCODING(Ret,     ZeroOperands,   None, W0, (0xc3),       None,   None,       (implicitUseDef(Gpr::Rsp)),                  "ret")
+ISOLINE_ENCODING(Ud2,     ZeroOperands,   None, W0, (0x0f, 0x0b), None,   None,       (),                                          "ud2")
+ISOLINE_ENCODING(Push64R, OpcodeRegister, None, W0, (0x50),       None,   None,       (use(G64), implicitUseDef(Gpr::Rsp)),        "push {0}")
+ISOLINE_ENCODING(Pop64R,  OpcodeRegister, None, W0, (0x58),       None,   None,       (def(G64), implicitUseDef(Gpr::Rsp)),        "pop {0}")
+ISOLINE_ENCODING(Push64M, ModRmOnly,      None, W0, (0xff),       Digit6, None,       (use(M64), implicitUseDef(Gpr::Rsp)),        "push {0}")
+ISOLINE_ENCODING(Pop64M,  ModRmOnly,      None, W0, (0x8f),       Digit0, None,       (use(M64), implicitUseDef(Gpr::Rsp)),        "pop {0}")
+
+// Scalar SSE moves: between XMM registers, from and to memory, and between the register files.
+ISOLINE_ENCODING(MovssRR,  RegisterModRm, HexF3, W0, (0x0f, 0x10), Register, None, (useDef(X), use(X)), "movss {0}, {1}")
+ISOLINE_ENCODING(MovssRM,  RegisterModRm, HexF3, W0, (0x0f, 0x10), Register, None, (def(X), use(M32)),  "movss {0}, {1}")
+ISOLINE_ENCODING(MovssMR,  ModRmRegister, HexF3, W0, (0x0f, 0x11), Register, None, (use(M32), use(X)),  "movss {0}, {1}")
+ISOLINE_ENCODING(MovsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x10), Register, None, (useDef(X), use(X)), "movsd {0}, {1}")
+ISOLINE_ENCODING(MovsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x10), Register, None, (def(X), use(M64)),  "movsd {0}, {1}")
+ISOLINE_ENCODING(MovsdMR,  ModRmRegister, HexF2, W0, (0x0f, 0x11), Register, None, (use(M64), use(X)),  "movsd {0}, {1}")
+ISOLINE_ENCODING(MovapsRR, RegisterModRm, None,  W0, (0x0f, 0x28), Register, None, (def(X), use(X)),    "movaps {0}, {1}")
+ISOLINE_ENCODING(MovdXR,   RegisterModRm, Hex66, W0, (0x0f, 0x6e), Register, None, (def(X), use(G32)),  "movd {0}, {1}")
+ISOLINE_ENCODING(MovqXR,   RegisterModRm, Hex66, W1, (0x0f, 0x6e), Register, None, (def(X), use(G64)),  "movq {0}, {1}")
+ISOLINE_ENCODING(MovdRX,   ModRmRegister, Hex66, W0, (0x0f, 0x7e), Register, None, (def(G32), use(X)),  "movd {0}, {1}")
+ISOLINE_ENCODING(MovqRX,   ModRmRegister, Hex66, W1, (0x0f, 0x7e), Register, None, (def(G64), use(X)),  "movq {0}, {1}")
+
+// Scalar SSE arithmetic, register-register and register-memory.
+ISOLINE_ENCODING(AddssRR,  RegisterModRm, HexF3, W0, (0x0f, 0x58), Register, None, (useDef(X), use(X)),   "addss {0}, {1}")
+ISOLINE_ENCODING(AddssRM,  RegisterModRm, HexF3, W0, (0x0f, 0x58), Register, None, (useDef(X), use(M32)), "addss {0}, {1}")
+ISOLINE_ENCODING(AddsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x58), Register, None, (useDef(X), use(X)),   "addsd {0}, {1}")
+ISOLINE_ENCODING(AddsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x58), Register, None, (useDef(X), use(M64)), "addsd {0}, {1}")
+ISOLINE_ENCODING(SubssRR,  RegisterModRm, HexF3, W0, (0x0f, 0x5c), Register, None, (useDef(X), use(X)),   "subss {0}, {1}")
+ISOLINE_ENCODING(SubssRM,  RegisterModRm, HexF3, W0, (0x0f, 0x5c), Register, None, (useDef(X), use(M32)), "subss {0}, {1}")
+ISOLINE_ENCODING(SubsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x5c), Register, None, (useDef(X), use(X)),   "subsd {0}, {1}")
+ISOLINE_ENCODING(SubsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x5c), Register, None, (useDef(X), use(M64)), "subsd {0}, {1}")
+ISOLINE_ENCODING(MulssRR,  RegisterModRm, HexF3, W0, (0x0f, 0x59), Register, None, (useDef(X), use(X)),   "mulss {0}, {1}")
+ISOLINE_ENCODING(MulssRM,  RegisterModRm, HexF3, W0, (0x0f, 0x59), Register, None, (useDef(X), use(M32)), "mulss {0}, {1}")
+ISOLINE_ENCODING(MulsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x59), Register, None, (useDef(X), use(X)),   "mulsd {0}, {1}")
+ISOLINE_ENCODING(MulsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x59), Register, None, (useDef(X), use(M64)), "mulsd {0}, {1}")
+ISOLINE_ENCODING(DivssRR,  RegisterModRm, HexF3, W0, (0x0f, 0x5e), Register, None, (useDef(X), use(X)),   "divss {0}, {1}")
+ISOLINE_ENCODING(DivssRM,  RegisterModRm, HexF3, W0, (0x0f, 0x5e), Register, None, (useDef(X), use(M32)), "divss {0}, {1}")
+ISOLINE_ENCODING(DivsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x5e), Register, None, (useDef(X), use(X)),   "divsd {0}, {1}")
+ISOLINE_ENCODING(DivsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x5e), Register, None, (useDef(X), use(M64)), "divsd {0}, {1}")
+ISOLINE_ENCODING(MinssRR,  RegisterModRm, HexF3, W0, (0x0f, 0x5d), Register, None, (useDef(X), use(X)),   "minss {0}, {1}")
+ISOLINE_ENCODING(MinssRM,  RegisterModRm, HexF3, W0, (0x0f, 0x5d), Register, None, (useDef(X), use(M32)), "minss {0}, {1}")
+ISOLINE_ENCODING(MinsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x5d), Register, None, (useDef(X), use(X)),   "minsd {0}, {1}")
+ISOLINE_ENCODING(MinsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x5d), Register, None, (useDef(X), use(M64)), "minsd {0}, {1}")
+ISOLINE_ENCODING(MaxssRR,  RegisterModRm, HexF3, W0, (0x0f, 0x5f), Register, None, (useDef(X), use(X)),   "maxss {0}, {1}")
+ISOLINE_ENCODING(MaxssRM,  RegisterModRm, HexF3, W0, (0x0f, 0x5f), Register, None, (useDef(X), use(M32)), "maxss {0}, {1}")
+ISOLINE_ENCODING(MaxsdRR,  RegisterModRm, HexF2, W0, (0x0f, 0x5f), Register, None, (useDef(X), use(X)),   "maxsd {0}, {1}")
+ISOLINE_ENCODING(MaxsdRM,  RegisterModRm, HexF2, W0, (0x0f, 0x5f), Register, None, (useDef(X), use(M64)), "maxsd {0}, {1}")
+ISOLINE_ENCODING(SqrtssRR, RegisterModRm, HexF3, W0, (0x0f, 0x51), Register, None, (def(X), use(X)),      "sqrtss {0}, {1}")
+ISOLINE_ENCODING(SqrtssRM, RegisterModRm, HexF3, W0, (0x0f, 0x51), Register, None, (def(X), use(M32)),    "sqrtss {0}, {1}")
+ISOLINE_ENCODING(SqrtsdRR, RegisterModRm, HexF2, W0, (0x0f, 0x51), Register, None, (def(X), use(X)),      "sqrtsd {0}, {1}")
+ISOLINE_ENCODING(SqrtsdRM, RegisterModRm, HexF2, W0, (0x0f, 0x51), Register, None, (def(X), use(M64)),    "sqrtsd {0}, {1}")
+
+// Bitwise SSE: abs, neg and copysign against a mask in the constant pool, and zeroing.
+ISOLINE_ENCODING(AndpsRR,  RegisterModRm, None, W0, (0x0f, 0x54), Register, None, (useDef(X), use(X)),    "andps {0}, {1}")
+ISOLINE_ENCODING(AndpsRM,  RegisterModRm, None, W0, (0x0f, 0x54), Register, None, (useDef(X), use(M128)), "andps {0}, {1}")
+ISOLINE_ENCODING(AndnpsRR, RegisterModRm, None, W0, (0x0f, 0x55), Register, None, (useDef(X), use(X)),    "andnps {0}, {1}")
+ISOLINE_ENCODING(AndnpsRM, RegisterModRm, None, W0, (0x0f, 0x55), Register, None, (useDef(X), use(M128)), "andnps {0}, {1}")
+ISOLINE_ENCODING(OrpsRR,   RegisterModRm, None, W0, (0x0f, 0x56), Register, None, (useDef(X), use(X)),    "orps {0}, {1}")
+ISOLINE_ENCODING(OrpsRM,   RegisterModRm, None, W0, (0x0f, 0x56), Register, None, (useDef(X), use(M128)), "orps {0}, {1}")
+ISOLINE_ENCODING(XorpsRR,  RegisterModRm, None, W0, (0x0f, 0x57), Register, None, (useDef(X), use(X)),    "xorps {0}, {1}")
+ISOLINE_ENCODING(XorpsRM,  RegisterModRm, None, W0, (0x0f, 0x57), Register, None, (useDef(X), use(M128)), "xorps {0}, {1}")
+
+// Unordered compares, setting ZF, PF and CF.
+ISOLINE_ENCODING(UcomissRR, RegisterModRm, None,  W0, (0x0f, 0x2e), Register, None, (use(X), use(X)),   "ucomiss {0}, {1}")
+ISOLINE_ENCODING(UcomissRM, RegisterModRm, None,  W0, (0x0f, 0x2e), Register, None, (use(X), use(M32)), "ucomiss {0}, {1}")
+ISOLINE_ENCODING(UcomisdRR, RegisterModRm, Hex66, W0, (0x0f, 0x2e), Register, None, (use(X), use(X)),   "ucomisd {0}, {1}")
+ISOLINE_ENCODING(UcomisdRM, RegisterModRm, Hex66, W0, (0x0f, 0x2e), Register, None, (use(X), use(M64)), "ucomisd {0}, {1}")
+
+// Rounding (SSE4.1): the immediate names the mode and never defers to MXCSR (its bit 2 is clear).
+ISOLINE_ENCODING(RoundssRRI, RegisterModRmImmediate, Hex66, W0, (0x0f, 0x3a, 0x0a), Register, Bits8, (def(X), use(X), use(Rounding)), "roundss {0}, {1}, {2}")
+ISOLINE_ENCODING(RoundsdRRI, RegisterModRmImmediate, Hex66, W0, (0x0f, 0x3a, 0x0b), Register, Bits8, (def(X), use(X), use(Rounding)), "roundsd {0}, {1}, {2}")
+
+// Conversions between the integer and the floating-point files, and between the two widths.
+ISOLINE_ENCODING(Cvtsi2ss32,  RegisterModRm, HexF3, W0, (0x0f, 0x2a), Register, None, (def(X), use(G32)), "cvtsi2ss {0}, {1}")
+ISOLINE_ENCODING(Cvtsi2ss64,  RegisterModRm, HexF3, W1, (0x0f, 0x2a), Register, None, (def(X), use(G64)), "cvtsi2ss {0}, {1}")
+ISOLINE_ENCODING(Cvtsi2sd32,  RegisterModRm, HexF2, W0, (0x0f, 0x2a), Register, None, (def(X), use(G32)), "cvtsi2sd {0}, {1}")
+ISOLINE_ENCODING(Cvtsi2sd64,  RegisterModRm, HexF2, W1, (0x0f, 0x2a), Register, None, (def(X), use(G64)), "cvtsi2sd {0}, {1}")
+ISOLINE_ENCODING(Cvttss2si32, RegisterModRm, HexF3, W0, (0x0f, 0x2c), Register, None, (def(G32), use(X)), "cvttss2si {0}, {1}")
+ISOLINE_ENCODING(Cvttss2si64, RegisterModRm, HexF3, W1, (0x0f, 0x2c), Register, None, (def(G64), use(X)), "cvttss2si {0}, {1}")
+ISOLINE_ENCODING(Cvttsd2si32, RegisterModRm, HexF2, W0, (0x0f, 0x2c), Register, None, (def(G32), use(X)), "cvttsd2si {0}, {1}")
+ISOLINE_ENCODING(Cvttsd2si64, RegisterModRm, HexF2, W1, (0x0f, 0x2c), Register, None, (def(G64), use(X)), "cvttsd2si {0}, {1}")
+ISOLINE_ENCODING(Cvtss2sd,    RegisterModRm, HexF3, W0, (0x0f, 0x5a), Register, None, (def(X), use(X)),   "cvtss2sd {0}, {1}")
+ISOLINE_ENCODING(Cvtsd2ss,    RegisterModRm, HexF2, W0, (0x0f, 0x5a), Register, None, (def(X), use(X)),   "cvtsd2ss {0}, {1}")
+
+// clang-format on
