@@ -59,20 +59,23 @@ message(STATUS "[isoline] host target: ${ISOLINE_HOST_ARCHITECTURE}, ${ISOLINE_H
 add_library(isoline::core ALIAS isoline_core)
 
 # The host-stack rows, one per build flavour: the bytes one nested invocation takes at the most on the
-# reference and on the fast engine (runtime/NestedInvocationBytes.hpp, generated from the row), and the stack
-# of the tests' small threads (runtime/testing/SmallStackThread.hpp's SmallStackBytes). The engines' bytes are
-# the most the hidden case Calls.measureNestingStack measured on the flavour's builds (docs/fast-interpreter.md
-# lists each), rounded up by half again to a multiple of 256; Calls.nestingStackCostIsPublished checks every
-# build against its row. The small thread holds maxNestedInvocations (100) nestings of the larger engine twice
-# over, rounded up to a MiB; a release build's is 512 KiB, where the dispatch files' frames are bounded
-# (-Wframe-larger-than=4096, fastinterpreter/CMakeLists.txt). A row is the flavour, then the reference's, the
-# fast engine's and the small thread's bytes.
+# reference and on the fast engine (runtime/NestedInvocationBytes.hpp, generated from the row), per target
+# architecture, and the stack of the tests' small threads (runtime/testing/SmallStackThread.hpp's
+# SmallStackBytes). The engines' bytes are the most the hidden case Calls.measureNestingStack measured on the
+# flavour's builds for that architecture (docs/fast-interpreter.md lists each), rounded up by half again to a
+# multiple of 256; Calls.nestingStackCostIsPublished checks every build against its row. An architecture's
+# columns repeat x86-64's until a build of the flavour has measured it there. A build for several
+# architectures at once (no one host architecture) takes the larger of each column. The small thread holds
+# maxNestedInvocations (100) nestings of the larger engine twice over, rounded up to a MiB; a release build's
+# is 512 KiB, where the dispatch files' frames are bounded (-Wframe-larger-than=4096,
+# fastinterpreter/CMakeLists.txt), and holds 100 nestings of every release row once. A row is the flavour,
+# then x86-64's reference bytes, fast engine bytes and small thread, then arm64's.
 set(isolineNestingRows
-    "release|4352|4608|524288"
-    "debug|13056|12544|3145728"
-    "address|12288|11264|3145728"
-    "thread|10752|9728|3145728"
-    "coverage|7424|7168|2097152")
+    "release|2304|3072|524288|4352|4608|524288"
+    "debug|13056|12544|3145728|13056|12544|3145728"
+    "address|12288|11264|3145728|15360|23808|5242880"
+    "thread|10752|9728|3145728|10752|9728|3145728"
+    "coverage|7424|7168|2097152|7424|7168|2097152")
 # The flavour: an instrumented build's (address, thread, coverage) first, then an optimized single-config GCC
 # or Clang build's (release); every other is debug, a multi-config generator's included, which may build
 # unoptimized, and MSVC's, whose frames no option bounds.
@@ -92,15 +95,31 @@ foreach(row IN LISTS isolineNestingRows)
     list(GET fields 0 flavour)
     if(flavour STREQUAL isolineNestingFlavour)
         set(ISOLINE_NESTING_FLAVOUR "${flavour}")
-        list(GET fields 1 ISOLINE_NESTING_REFERENCE_BYTES)
-        list(GET fields 2 ISOLINE_NESTING_FAST_BYTES)
-        list(GET fields 3 isolineSmallStackBytes)
+        # The columns of each architecture, in the row's order: reference, fast engine, small thread.
+        set(isolineNestingColumns ISOLINE_NESTING_REFERENCE_BYTES ISOLINE_NESTING_FAST_BYTES
+                                  isolineSmallStackBytes)
+        foreach(column RANGE 2)
+            list(GET isolineNestingColumns ${column} variable)
+            math(EXPR x64Field "1 + ${column}")
+            math(EXPR arm64Field "4 + ${column}")
+            list(GET fields ${x64Field} x64Bytes)
+            list(GET fields ${arm64Field} arm64Bytes)
+            if(isolineHostArchitecture STREQUAL "X64")
+                set(${variable} ${x64Bytes})
+            elseif(isolineHostArchitecture STREQUAL "Arm64")
+                set(${variable} ${arm64Bytes})
+            elseif(arm64Bytes GREATER x64Bytes)
+                set(${variable} ${arm64Bytes})
+            else()
+                set(${variable} ${x64Bytes})
+            endif()
+        endforeach()
     endif()
 endforeach()
 if(NOT ISOLINE_NESTING_FLAVOUR)
     message(FATAL_ERROR "[isoline] no host-stack row for the build flavour '${isolineNestingFlavour}'")
 endif()
-message(STATUS "[isoline] host-stack row: ${ISOLINE_NESTING_FLAVOUR}")
+message(STATUS "[isoline] host-stack row: ${ISOLINE_NESTING_FLAVOUR}, ${isolineHostArchitecture}")
 configure_file(runtime/NestedInvocationBytes.hpp.in
                "${PROJECT_BINARY_DIR}/include/isoline/runtime/NestedInvocationBytes.hpp" @ONLY)
 target_sources(isoline_core

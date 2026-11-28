@@ -80,13 +80,15 @@ under Switch and TailCall):
 
 | Flavour | Builds measured | Reference | Fast | Published (reference, fast) | Small thread |
 |---|---|---|---|---|---|
-| release | clang-release; GCC 14 arm64 (scripts/arm64-podman.sh, qemu); clang-aarch64-cross-release (qemu) | 1'472; 2'768; 1'504 | 1'984, 2'016; 3'024 (Switch only); 2'288, 2'320 | 4'352, 4'608 | 512 KiB |
+| release | clang-release; GCC 14 arm64 (scripts/arm64-podman.sh, qemu); clang-aarch64-cross-release (qemu) | 1'472; 2'768; 1'504 | 1'984, 2'016; 3'024 (Switch only); 2'288, 2'320 | x86-64 2'304, 3'072; arm64 4'352, 4'608 | 512 KiB |
 | debug | gcc-debug; clangcl-cross-debug (wine); clang-aarch64-cross (qemu); msvc-debug, real cl.exe (wine) | 3'712; 5'344; 4'784; 8'592 | 3'344, 3'440; 4'992, 5'168; 4'656, 4'752; 8'352 (Switch only) | 13'056, 12'544 | 3 MiB |
-| address | clang-asan | 8'096 | 7'104, 7'424 | 12'288, 11'264 | 3 MiB |
+| address | clang-asan; clang-asan on ubuntu-24.04-arm | 8'096; 10'240 | 7'104, 7'424; 8'544, 15'840 | x86-64 12'288, 11'264; arm64 15'360, 23'808 | x86-64 3 MiB; arm64 5 MiB |
 | thread | clang-tsan | 7'040 | 6'400, 6'320 | 10'752, 9'728 | 3 MiB |
 | coverage | clang-coverage | 4'816 | 4'624, 4'704 | 7'424, 7'168 | 2 MiB |
 
-A multi-config generator's build and MSVC's take the debug row: their frames no option bounds. The rows are this
+Each row has a column pair per architecture; arm64's repeat x86-64's where no arm64 build of the flavour has
+measured them yet, and a build for several architectures at once takes the larger of each. A multi-config
+generator's build and MSVC's take the debug row: their frames no option bounds. The rows are this
 machine's toolchains' (Fedora's Clang 22 and GCC 16, clang-cl over the MSVC 2022 headers); before the fast
 interpreter merges, each row is raised to the most CI's GCC 14, Apple Clang and MSVC jobs measure, which
 `Calls.nestingStackCostIsPublished` prints with the published figure on every run.
