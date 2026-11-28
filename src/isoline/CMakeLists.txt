@@ -39,9 +39,12 @@ add_library(isoline::core ALIAS isoline_core)
 # build against its row. The small thread holds maxNestedInvocations (100) nestings of the larger engine twice
 # over, rounded up to a MiB; a release build's is 512 KiB, where the dispatch files' frames are bounded
 # (-Wframe-larger-than=4096, interpreter/CMakeLists.txt). A row is the flavour, then the reference's, the
-# interpreter's and the small thread's bytes.
+# interpreter's and the small thread's bytes. A flavour may have a row of its own for one target architecture,
+# "<flavour>-<target>", which that target's builds take instead: s390x's ABI gives every frame a 160-byte
+# register save area, so its frames are larger than any other target's.
 set(isolineNestingRows
     "release|2304|3072|524288"
+    "release-s390x|4864|6144|2097152"
     "debug|13056|12544|3145728"
     "address|12288|11264|3145728"
     "thread|10752|9728|3145728"
@@ -60,6 +63,21 @@ elseif(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$"
 else()
     set(isolineNestingFlavour debug)
 endif()
+# The targets with rows of their own: a row is the compiler's predefined macro that names the target, then
+# the suffix of its flavours' rows. A build for that target takes the flavour's row with the suffix when there
+# is one; chosen by the macros, as the float control row is, so that a cross build chooses right.
+set(isolineNestingTargets
+    "__s390x__|s390x")
+list(TRANSFORM isolineNestingRows REPLACE "\\|.*$" "" OUTPUT_VARIABLE isolineNestingFlavours)
+foreach(target IN LISTS isolineNestingTargets)
+    string(REPLACE "|" ";" fields "${target}")
+    list(GET fields 0 macro)
+    list(GET fields 1 suffix)
+    check_cxx_symbol_exists(${macro} "" ISOLINE_NESTING_TARGET_${suffix})
+    if(ISOLINE_NESTING_TARGET_${suffix} AND "${isolineNestingFlavour}-${suffix}" IN_LIST isolineNestingFlavours)
+        set(isolineNestingFlavour "${isolineNestingFlavour}-${suffix}")
+    endif()
+endforeach()
 foreach(row IN LISTS isolineNestingRows)
     string(REPLACE "|" ";" fields "${row}")
     list(GET fields 0 flavour)
